@@ -1,0 +1,13 @@
+{
+  "name": "@j2/orchestrator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "xstate": "^5.18.0"
+  }
+}

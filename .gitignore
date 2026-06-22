@@ -1,0 +1,12 @@
+# node / ts
+node_modules/
+dist/
+*.tsbuildinfo
+
+# go
+operator/bin/
+operator/testbin/
+
+# misc
+.DS_Store
+*.log

@@ -1,0 +1,10 @@
+{
+  "name": "@j2/harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo 'TODO: flue build --target node' && exit 0",
+    "typecheck": "tsc --noEmit"
+  }
+}

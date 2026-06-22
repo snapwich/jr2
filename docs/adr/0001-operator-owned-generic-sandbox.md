@@ -1,8 +1,8 @@
 # Sandboxes are provisioned by a Kubernetes operator via a generic CRD
 
 A `Sandbox` custom resource describes infrastructure only — image, volumes, resources, secrets, idle timeout — and a
-custom operator reconciles it into a Pod plus a Service, reporting a `status.endpoint` the Orchestrator uses to reach the
-Harness. The CRD knows nothing about git, worktrees, or Agents; those are layered on by composable helpers after the
+custom operator reconciles it into a Pod plus a Service, reporting a `status.endpoint` the Orchestrator uses to reach
+the Harness. The CRD knows nothing about git, worktrees, or Agents; those are layered on by composable helpers after the
 Sandbox reaches `Ready`.
 
 We chose the operator over the Orchestrator calling the Kubernetes API directly because the custom resource _is_ the
