@@ -69,6 +69,7 @@ make test          # envtest-backed controller suite + fast fake-client unit tes
   endpoint/refs.
 - `internal/controller/idletimeout_test.go` — fake-client: orphan idle-GC fires; owned Sandbox survives and provisions.
 
-> Note: the `-coverprofile` step in `make test` can fail with `no such tool "covdata"` when the Go toolchain is
-> auto-downloaded via `GOTOOLCHAIN`; the tests themselves pass. Run `make test` again or
-> `KUBEBUILDER_ASSETS=$(...) go test ./internal/... ./api/...` without coverage if you hit it.
+> The Makefile pins `GOTOOLCHAIN` to the `go` version in `go.mod` so local builds are reproducible and match CI. This
+> avoids two `GOTOOLCHAIN=auto` drift bugs: the `golangci-lint custom` build producing a linter that refused the newer
+> target, and `make test` failing with `no such tool "covdata"` from an auto-pulled patch toolchain. Override with
+> `make GOTOOLCHAIN=auto <target>` to opt back into auto-selection.

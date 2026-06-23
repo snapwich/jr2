@@ -3,6 +3,15 @@ IMG ?= controller:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
+# Pin the Go toolchain to the version declared in go.mod for all recipes, so
+# builds are reproducible and match CI. Without this, GOTOOLCHAIN=auto lets
+# sub-builds drift: the `golangci-lint custom` build (its module floors at an
+# older Go) produced a linter that refused our newer target, and setup-envtest
+# pulled a patch release whose downloaded toolchain shipped a broken cover tool.
+# Override with `make GOTOOLCHAIN=auto ...` to opt back into auto-selection.
+GOTOOLCHAIN ?= go$(shell sed -n 's/^go //p' go.mod)
+export GOTOOLCHAIN
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
