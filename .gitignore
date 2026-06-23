@@ -8,6 +8,9 @@ tmp/
 operator/bin/
 operator/testbin/
 
+# poc — validation artifacts kept on disk but not published; conclusions live in docs/adr/
+poc/
+
 # misc
 .DS_Store
 *.log
