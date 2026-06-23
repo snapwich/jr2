@@ -21,3 +21,31 @@ agent-awareness lives one layer up — the agent-aware "setup Sandbox" provider 
 specs and injects them into the CR's sidecar list, exactly as a Deployment's pod template carries arbitrary containers
 without the controller understanding them. The trade is that agent-shape validation moves up into the provider/Machine
 layer (where the domain types live) instead of the operator.
+
+## Known limitations
+
+These are accepted gaps in the current operator, recorded so they aren't silently forgotten. None block the PoC; each is
+a deliberate deferral.
+
+- **Network isolation is not yet enforced.** The pod is hardened at the host boundary —
+  `automountServiceAccountToken: false`, pod/container `securityContext` (`runAsNonRoot`,
+  `allowPrivilegeEscalation: false`, drop `ALL`, seccomp `RuntimeDefault`) — but nothing yet restricts pod _egress_. An
+  untrusted Agent can still reach the cluster's API server IP and sibling Sandbox Services over the pod network. The
+  next isolation layer is a default-deny `NetworkPolicy` per Sandbox (deny egress to the API server and to other
+  Sandboxes, allow only what the workflow needs). Requires a CNI that enforces NetworkPolicy (kind's default `kindnet`
+  does not; Calico/Cilium do).
+- **Sidecars are plain containers, not native sidecars.** Agents are scheduled as ordinary `containers`, not Kubernetes
+  ≥1.29 native sidecars (`initContainers` with `restartPolicy: Always`). There is no start-ordering or
+  termination-ordering guarantee between the Harness and its Agents — the Harness may begin serving before an Agent is
+  up, or outlive it during shutdown. Revisit if ordering becomes load-bearing.
+- **`idleTimeout` measures from creation, not from orphaning.** `reconcileIdleTimeout` keys off `CreationTimestamp`, so
+  a Sandbox that is owned for most of its life and only released (made ownerless) _after_ the deadline is deleted on the
+  very next reconcile, with no grace period. A correct implementation tracks "orphaned since" (e.g. a status timestamp
+  set when the last owner is removed) and measures the timeout from there.
+- **`reconcileStatus` writes status unconditionally.** Every reconcile issues a `Status().Update`, even when nothing
+  changed. Harmless today (reconciles are event-driven, not hot-looping), but add an equality guard before the write if
+  a status busy-loop ever appears.
+- **Consumers must gate on `phase: Ready`, not endpoint presence.** `status.endpoint` is populated as soon as the
+  Service exists, before the Harness is reachable; only `phase: Ready` (now backed by a readiness probe) means
+  "serving". The `Terminating` phase is best-effort — there is no finalizer, so a fast delete may GC the Pod/Service
+  before the phase is observed.

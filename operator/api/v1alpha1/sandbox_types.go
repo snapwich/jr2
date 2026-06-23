@@ -49,6 +49,12 @@ type SandboxSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
 
+	// ReadinessProbe overrides the primary container's readiness probe. When
+	// unset the operator injects a TCPSocket probe on Port so phase Ready means
+	// "the Harness accepts connections", not merely "the container started".
+	// +optional
+	ReadinessProbe *corev1.Probe `json:"readinessProbe,omitempty"`
+
 	// Sidecars are generic Kubernetes container fragments scheduled alongside
 	// the primary container. Agents live here, but the operator stays agnostic.
 	// +optional

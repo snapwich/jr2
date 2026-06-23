@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -179,21 +180,34 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *corev1alp
 // infra fields, plus the generic sidecar containers verbatim.
 func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox) *corev1.Pod {
 	primary := corev1.Container{
-		Name:         "harness",
-		Image:        sandbox.Spec.Image,
-		Command:      sandbox.Spec.Command,
-		Args:         sandbox.Spec.Args,
-		Resources:    sandbox.Spec.Resources,
-		Env:          sandbox.Spec.Env,
-		EnvFrom:      sandbox.Spec.EnvFrom,
-		VolumeMounts: sandbox.Spec.VolumeMounts,
+		Name:            "harness",
+		Image:           sandbox.Spec.Image,
+		Command:         sandbox.Spec.Command,
+		Args:            sandbox.Spec.Args,
+		Resources:       sandbox.Spec.Resources,
+		Env:             sandbox.Spec.Env,
+		EnvFrom:         sandbox.Spec.EnvFrom,
+		VolumeMounts:    sandbox.Spec.VolumeMounts,
+		ReadinessProbe:  readinessProbeFor(sandbox),
+		SecurityContext: hardenedContainerSecurityContext(),
 		Ports: []corev1.ContainerPort{{
 			Name:          "http",
 			ContainerPort: portFor(sandbox),
 			Protocol:      corev1.ProtocolTCP,
 		}},
 	}
-	containers := append([]corev1.Container{primary}, sandbox.Spec.Sidecars...)
+
+	// Sidecars (Agents) are untrusted; default each to the same hardened
+	// container baseline unless it declares its own securityContext.
+	sidecars := make([]corev1.Container, len(sandbox.Spec.Sidecars))
+	for i, c := range sandbox.Spec.Sidecars {
+		if c.SecurityContext == nil {
+			c.SecurityContext = hardenedContainerSecurityContext()
+		}
+		sidecars[i] = c
+	}
+
+	containers := append([]corev1.Container{primary}, sidecars...)
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandbox.Name,
@@ -206,7 +220,47 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox) *corev1.Pod 
 			RestartPolicy: corev1.RestartPolicyAlways,
 			Containers:    containers,
 			Volumes:       sandbox.Spec.Volumes,
+			// Isolation north star: an untrusted Agent must not reach the
+			// Kubernetes API. Don't mount the SA token, and run the pod
+			// non-root under the default seccomp profile. (Egress
+			// NetworkPolicy is the next isolation layer — see ADR-0001.)
+			AutomountServiceAccountToken: ptr.To(false),
+			SecurityContext:              hardenedPodSecurityContext(),
 		},
+	}
+}
+
+// readinessProbeFor returns the primary container's readiness probe: the
+// Sandbox's override when set, otherwise a TCPSocket probe on the serving port
+// so phase Ready means the Harness accepts connections (not just "started").
+func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
+	if sandbox.Spec.ReadinessProbe != nil {
+		return sandbox.Spec.ReadinessProbe
+	}
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{Port: intstrFromInt32(portFor(sandbox))},
+		},
+	}
+}
+
+// hardenedPodSecurityContext is the pod-level security baseline shared by every
+// container in the Sandbox: run as non-root under the default seccomp profile.
+func hardenedPodSecurityContext() *corev1.PodSecurityContext {
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot:   ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+// hardenedContainerSecurityContext drops all Linux capabilities and blocks
+// privilege escalation — the per-container half of the isolation baseline.
+func hardenedContainerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		RunAsNonRoot:             ptr.To(true),
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
 }
 

@@ -89,6 +89,27 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(pod.Spec.Containers[1].Name).To(Equal("agent"))
 			Expect(pod.OwnerReferences).To(HaveLen(1))
 
+			By("hardening the pod for isolation: no API token, non-root, default seccomp")
+			Expect(pod.Spec.AutomountServiceAccountToken).NotTo(BeNil())
+			Expect(*pod.Spec.AutomountServiceAccountToken).To(BeFalse())
+			Expect(pod.Spec.SecurityContext).NotTo(BeNil())
+			Expect(pod.Spec.SecurityContext.RunAsNonRoot).To(HaveValue(BeTrue()))
+			Expect(pod.Spec.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			By("hardening every container: non-root, no privilege escalation, drop ALL caps")
+			for _, c := range pod.Spec.Containers {
+				Expect(c.SecurityContext).NotTo(BeNil(), c.Name)
+				Expect(c.SecurityContext.RunAsNonRoot).To(HaveValue(BeTrue()), c.Name)
+				Expect(c.SecurityContext.AllowPrivilegeEscalation).To(HaveValue(BeFalse()), c.Name)
+				Expect(c.SecurityContext.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")), c.Name)
+			}
+
+			By("injecting a readiness probe on the primary port so Ready means serving")
+			probe := pod.Spec.Containers[0].ReadinessProbe
+			Expect(probe).NotTo(BeNil())
+			Expect(probe.TCPSocket).NotTo(BeNil())
+			Expect(probe.TCPSocket.Port.IntValue()).To(Equal(8080))
+
 			By("reporting phase Pending with an endpoint and refs")
 			sandbox := &corev1alpha1.Sandbox{}
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())

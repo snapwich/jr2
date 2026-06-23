@@ -98,6 +98,11 @@ func (in *SandboxSpec) DeepCopyInto(out *SandboxSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ReadinessProbe != nil {
+		in, out := &in.ReadinessProbe, &out.ReadinessProbe
+		*out = new(v1.Probe)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Sidecars != nil {
 		in, out := &in.Sidecars, &out.Sidecars
 		*out = make([]v1.Container, len(*in))
