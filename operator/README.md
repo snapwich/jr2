@@ -1,45 +1,74 @@
 # operator
 
-The Kubernetes operator that reconciles the `Sandbox` CRD into Pods + Services. A standalone Go module (kubebuilder /
-controller-runtime). See [ADR-0001](../docs/adr/0001-operator-owned-generic-sandbox.md).
+The Kubernetes operator that reconciles the generic `Sandbox` CRD into a Pod + Service and reports a `status.endpoint`.
+A standalone Go module (kubebuilder / controller-runtime). See
+[ADR-0001](../docs/adr/0001-operator-owned-generic-sandbox.md). This is **PoC #1** of the j2 orchestrator rewrite.
 
-## Status
+- **Group/Version/Kind:** `core.j2.dev/v1alpha1`, `Sandbox`
+- **Module:** `github.com/snapwich/j2/operator`
 
-Not yet scaffolded. `kubebuilder` is required and not currently installed.
+## What it does (ADR-0001)
 
-## Planned scaffolding
+The CRD is infrastructure-only — it knows nothing about git, worktrees, or Agents. Agents are injected one layer up as
+plain Kubernetes `Container` fragments in `spec.sidecars`; the operator schedules them without understanding them.
 
-```sh
-# from operator/
-kubebuilder init --domain j2.dev --repo github.com/CHANGEME/j2/operator
-kubebuilder create api --group core --version v1alpha1 --kind Sandbox --resource --controller
-```
+The reconciler (`internal/controller/sandbox_controller.go`):
 
-Proposed API (confirm before running):
+- Builds a **bare Pod** (no Deployment/Job) from `spec.image` (the primary "harness" container) plus any
+  `spec.sidecars`, with `spec.volumes` / `volumeMounts` / `resources` / `env` / `envFrom`.
+- Creates a **Service** per Sandbox selecting the pod, exposing `spec.port` (default 8080).
+- Owns both via owner references, so deleting the `Sandbox` garbage-collects the Pod + Service.
+- Reports `status.phase` (`Pending` → `Ready` → `Terminating`), gating **Ready on the pod's `Ready` condition** (not
+  just scheduling), and populates `status.endpoint` (`http://<name>.<ns>.svc:<port>`), `podRef`, `serviceRef`.
+- Garbage-collects an **orphaned** Sandbox (no owner references) once `spec.idleTimeout` elapses.
 
-- **Group/Version/Kind:** `core.j2.dev/v1alpha1`, `Kind: Sandbox`
-- **Go module path:** `github.com/CHANGEME/j2/operator` — set the real repo path before init.
-
-## Responsibilities (generic Sandbox — ADR-0001)
-
-The CRD is infrastructure-only; it knows nothing about git, worktrees, or Agents.
-
-- Reconcile a `Sandbox` CR into a Pod (the Harness image) + a Service.
-- Report `status.endpoint` (the Service DNS the Orchestrator's Actor uses to reach the Harness) and `status.phase`
-  (`Pending` → `Ready` → `Terminating`).
-- Garbage-collect via owner references; honor `spec.idleTimeout`.
-
-## Proposed Sandbox spec/status (sketch)
+## Sandbox spec/status
 
 ```yaml
 spec:
-  image: <harness image>
-  resources: { cpu, memory }
-  volumes: [...] # e.g. shared default mount, work dir
-  env / secretRefs: [...] # ANTHROPIC_API_KEY, etc.
-  idleTimeout: 30m
+  image: <harness image> # primary container, required
+  command/args: [...] # optional entrypoint override
+  port: 8080 # surfaced in status.endpoint
+  sidecars: [<corev1.Container>...] # generic; agents live here, operator stays agnostic
+  volumes / volumeMounts: [...]
+  resources: { requests, limits }
+  env / envFrom: [...] # e.g. an ANTHROPIC_API_KEY secret
+  idleTimeout: 30m # GC an orphaned Sandbox after this
 status:
-  phase: Pending|Ready|Terminating
-  endpoint: http://<sandbox>.<ns>.svc:8080
-  podRef: ...
+  phase: Pending | Ready | Terminating
+  endpoint: http://<name>.<ns>.svc:8080
+  podRef / serviceRef: { name }
+  conditions: [...] # Ready mirrors status.phase
 ```
+
+## Local dev loop
+
+Requires `kind`, `kubebuilder`, `kubectl`, Docker, Go 1.26+.
+
+```sh
+# from repo root
+just kind-up                       # create the local kind cluster (deploy/kind.yaml)
+
+# from operator/
+make install                       # install the CRD into the cluster
+make run                           # run the operator against the current kubecontext (foreground)
+
+# in another shell
+kubectl apply -f config/samples/core_v1alpha1_sandbox.yaml
+kubectl get sandbox -w             # watch Pending -> Ready, endpoint populated
+kubectl delete sandbox sandbox-sample   # owner-ref GC of Pod + Service
+```
+
+## Tests
+
+```sh
+make test          # envtest-backed controller suite + fast fake-client unit tests
+```
+
+- `internal/controller/sandbox_controller_test.go` — envtest: owned Pod+Service creation, Pending→Ready transition,
+  endpoint/refs.
+- `internal/controller/idletimeout_test.go` — fake-client: orphan idle-GC fires; owned Sandbox survives and provisions.
+
+> Note: the `-coverprofile` step in `make test` can fail with `no such tool "covdata"` when the Go toolchain is
+> auto-downloaded via `GOTOOLCHAIN`; the tests themselves pass. Run `make test` again or
+> `KUBEBUILDER_ASSETS=$(...) go test ./internal/... ./api/...` without coverage if you hit it.

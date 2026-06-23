@@ -1,0 +1,25 @@
+apiVersion: core.j2.dev/v1alpha1
+kind: Sandbox
+metadata:
+  labels:
+    app.kubernetes.io/name: operator
+    app.kubernetes.io/managed-by: kustomize
+  name: sandbox-sample
+spec:
+  # Primary container (the Harness). http-echo serves on :8080 so the
+  # status.endpoint is actually reachable from other pods.
+  image: hashicorp/http-echo:1.0.0
+  args:
+    - "-listen=:8080"
+    - "-text=hello-from-sandbox"
+  port: 8080
+  # A generic sidecar. The operator schedules this without understanding it is
+  # an "agent" — agent-awareness lives one layer up (ADR-0001).
+  sidecars:
+    - name: agent
+      image: busybox:1.36
+      command: ["sh", "-c", "sleep infinity"]
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi

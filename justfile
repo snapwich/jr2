@@ -31,5 +31,18 @@ kind-down:
 
 # --- operator (requires kubebuilder; see operator/README.md) ---
 
-# build + load the operator image into kind, then deploy
-# deploy-operator: ...  # TODO once operator is scaffolded
+# install the Sandbox CRD into the current kube context
+operator-install:
+    cd operator && make install
+
+# run the operator against the current kube context (foreground)
+operator-run:
+    cd operator && make run
+
+# run the operator test suite (envtest + fake-client unit tests)
+operator-test:
+    cd operator && make test
+
+# apply the sample Sandbox CR
+sandbox-sample:
+    kubectl apply -f operator/config/samples/core_v1alpha1_sandbox.yaml
