@@ -33,6 +33,8 @@ import (
 	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
 )
 
+const nsDefault = "default"
+
 // newScheme builds a scheme with the core k8s and Sandbox types registered.
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -50,7 +52,7 @@ func orphanSandbox(name string, owners []metav1.OwnerReference) *corev1alpha1.Sa
 	return &corev1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
-			Namespace:         "default",
+			Namespace:         nsDefault,
 			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
 			OwnerReferences:   owners,
 		},
@@ -68,7 +70,7 @@ func TestIdleTimeoutDeletesOrphanedSandbox(t *testing.T) {
 		WithObjects(orphanSandbox("orphan", nil)).Build()
 	r := &SandboxReconciler{Client: c, Scheme: s}
 
-	key := types.NamespacedName{Name: "orphan", Namespace: "default"}
+	key := types.NamespacedName{Name: "orphan", Namespace: nsDefault}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -86,7 +88,7 @@ func TestIdleTimeoutKeepsOwnedSandboxAndProvisions(t *testing.T) {
 		WithObjects(orphanSandbox("owned", owners)).Build()
 	r := &SandboxReconciler{Client: c, Scheme: s}
 
-	key := types.NamespacedName{Name: "owned", Namespace: "default"}
+	key := types.NamespacedName{Name: "owned", Namespace: nsDefault}
 	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
