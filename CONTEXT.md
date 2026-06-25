@@ -29,7 +29,13 @@ for the Kubernetes architecture — agents must not share host resources (ports,
 worker pod, container
 
 **Harness**: Flue's long-running server process running inside a Sandbox. Hosts one or more Agents and serves them over
-HTTP. _Avoid_: flue agent, server
+HTTP. Runs in its own container (the j2-owned Harness container) alongside the user container, carrying the agent's own
+toolchain since `local()` tools execute there. _Avoid_: flue agent, server
+
+**User Container**: The user-owned container in a Sandbox pod — a customizable image (nvim, dotfiles, extra CLIs) that
+the human `exec`/SSH-es into to work alongside the agent. Shares the worktree volume with the Harness container, so
+human and agent see identical files. A peer of the Harness container; the pod (not the container) is the isolation unit
+— ADR-0005. _Avoid_: workbench, workspace container (collides with Workspace), dev container
 
 **Instance ID**: Flue's identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id`. Successive
 prompts to the same `(Agent name, instance id)` continue one durable, replayable conversation; an Actor persists
