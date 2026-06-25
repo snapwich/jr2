@@ -22,6 +22,12 @@ specs and injects them into the CR's sidecar list, exactly as a Deployment's pod
 without the controller understanding them. The trade is that agent-shape validation moves up into the provider/Machine
 layer (where the domain types live) instead of the operator.
 
+One Harness **image** serves many Agent **personas** — PoC #4 (`poc/runtime/`) showed flue varies model, instructions,
+skills, and MCP tool sources at runtime without a rebuild, driven by the `defineAgent` initializer (keyed on instance
+`id`/env) and by worktree content (`AGENTS.md`, `.agents/skills/`). So the "setup Sandbox" provider injects a fixed
+Harness image plus **config** (env + the prepared worktree), not a per-persona image build. The HTTP prompt body itself
+carries only `{message, images}`, so anything persona-shaping is set at provision time, not per request.
+
 ## Known limitations
 
 These are accepted gaps in the current operator, recorded so they aren't silently forgotten. None block the PoC; each is
