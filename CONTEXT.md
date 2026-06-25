@@ -31,6 +31,11 @@ worker pod, container
 **Harness**: Flue's long-running server process running inside a Sandbox. Hosts one or more Agents and serves them over
 HTTP. _Avoid_: flue agent, server
 
+**Instance ID**: Flue's identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id`. Successive
+prompts to the same `(Agent name, instance id)` continue one durable, replayable conversation; an Actor persists
+`(name, instance id)` + stream offset to re-attach after an Orchestrator restart. Borrowed verbatim from flue rather
+than renamed, to keep j2 and flue speaking the same language. _Avoid_: conversation id, session id
+
 **Work Source**: A pluggable adapter the Orchestrator pulls work from — `tk`, a task queue, GitHub issues, Jira, etc.
 Modeled as a behavior port (verbs like `claimNext`, `updateStatus`, `comment`) gated by advertised capabilities, not a
 canonical data schema. Owns the dependency graph and emits the dependency-ordered, currently-unblocked items; the
