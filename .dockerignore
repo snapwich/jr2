@@ -1,0 +1,11 @@
+# Keep the Docker build context small. Image builds copy only what they need
+# (see harness/Dockerfile); everything heavy or irrelevant is excluded.
+**/node_modules
+**/dist
+.git
+operator/bin
+operator/testbin
+poc
+tmp
+**/*.log
+**/.env

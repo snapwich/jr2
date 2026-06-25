@@ -4,7 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "echo 'TODO: flue build --target node' && exit 0",
+    "build": "flue build",
+    "dev": "flue dev",
+    "start": "node dist/server.mjs",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@flue/runtime": "1.0.0-beta.5",
+    "hono": "^4.12.27",
+    "valibot": "^1.4.1"
+  },
+  "devDependencies": {
+    "@flue/cli": "1.0.0-beta.5",
+    "@flue/sdk": "1.0.0-beta.5"
   }
 }
