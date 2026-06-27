@@ -35,9 +35,22 @@ importers:
 
   orchestrator:
     dependencies:
+      "@flue/sdk":
+        specifier: 1.0.0-beta.5
+        version: 1.0.0-beta.5
+      "@modelcontextprotocol/sdk":
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
       xstate:
         specifier: ^5.18.0
         version: 5.32.1
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      "@types/node":
+        specifier: ^26.0.1
+        version: 26.0.1
 
 packages:
   "@anthropic-ai/sdk@0.91.1":

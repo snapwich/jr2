@@ -2,7 +2,12 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "dist"
+    // The Orchestrator runs under Node's native TypeScript type-stripping
+    // (`node src/index.ts`), so source imports carry explicit `.ts` extensions
+    // and tsc is used for type-checking only. A bundler/emit step is chosen when
+    // the pod image graduates from placeholder (see Dockerfile TODO).
+    "allowImportingTsExtensions": true,
+    "noEmit": true
   },
   "include": ["src"]
 }

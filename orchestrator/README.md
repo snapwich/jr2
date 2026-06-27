@@ -8,8 +8,16 @@ The Orchestrator runs in its own pod, loads a Machine, and interprets it to comp
 
 ## Status
 
-Placeholder. The Actor, pieces, and Machines are not yet implemented — pending resolution of the Actor ↔ Harness
-protocol (see `docs/adr/` and the open design questions).
+The core primitive exists (PoC #5 — [`poc/actor`](../poc/actor/)):
+
+- `src/control-plane.ts` — the MCP control plane (Sandbox → Orchestrator ingress), one server routed per Instance ID.
+- `src/actor.ts` — the duplex `fromCallback` Actor that drives one Agent run (ADR-0002).
+- `src/machine.ts` — a minimal driving Machine (approval gate) the PoC drives end-to-end against real flue + vLLM.
+
+The remaining pieces (worktree setup, memory, work-source, the coding Machine) and the pod entrypoint are still to come.
+
+Runs under Node's native TypeScript type-stripping (`node src/index.ts`); `pnpm typecheck` is the type gate. The pod
+image build is still a placeholder (see `Dockerfile`).
 
 ## Likely future split
 
