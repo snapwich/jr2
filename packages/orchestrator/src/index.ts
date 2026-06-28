@@ -7,3 +7,4 @@ export * from "./control-plane.ts";
 export * from "./durability.ts";
 export * from "./snapshot-store.ts";
 export * from "./actor.ts";
+export * from "./run-host.ts";

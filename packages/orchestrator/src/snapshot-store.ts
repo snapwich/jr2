@@ -9,6 +9,8 @@ import type { StoredSnapshot } from "./durability.ts";
 export interface SnapshotStore {
   init(): Promise<void>;
   load(runId: string): Promise<StoredSnapshot | null>;
+  /** Every persisted run, in insertion order. The host filters by `status` on restore. */
+  list(): Promise<StoredSnapshot[]>;
   save(runId: string, snapshot: unknown, status?: string): Promise<void>;
   markLost(runId: string, reason: string): Promise<void>;
   close(): Promise<void>;
@@ -54,6 +56,21 @@ export class SqliteSnapshotStore implements SnapshotStore {
     };
     if (row.reason !== null) stored.reason = row.reason;
     return stored;
+  }
+
+  async list(): Promise<StoredSnapshot[]> {
+    const rows = this.db
+      .prepare(`SELECT run_id, status, snapshot, reason, updated_at FROM machine_snapshots ORDER BY rowid`)
+      .all() as Row[];
+    return rows.map((row) => {
+      const stored: StoredSnapshot = {
+        runId: row.run_id,
+        status: row.status,
+        snapshot: row.snapshot === null ? null : JSON.parse(row.snapshot),
+      };
+      if (row.reason !== null) stored.reason = row.reason;
+      return stored;
+    });
   }
 
   async save(runId: string, snapshot: unknown, status = "live"): Promise<void> {

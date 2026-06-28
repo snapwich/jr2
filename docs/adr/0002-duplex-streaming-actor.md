@@ -58,3 +58,29 @@ does not drive the workflow). PoC #5b/#5c also bound this control plane to the *
 do not share a session — the agent path carries continuing memory but cannot force a structured result (`finish`), and
 the workflow path can force a result but keeps no memory across runs. So forced final picks are a Machine-level
 re-prompt on the agent path; native `finish` is reserved for self-contained single-shot decisions.
+
+## Refined: multi-run instance wiring (ADR-0008/0009)
+
+This ADR says "the Actor hosts the MCP callback endpoint," written when a process drove **one** run. Under the
+[ADR-0008](0008-orchestrator-as-deployed-app.md) instance model, one process (`replicas: 1`) hosts **many** runs behind
+**one** HTTP app, so the endpoint moves to a shared, host-owned surface — the run still **logically owns its endpoint by
+`instanceId`**, it just no longer runs a private server. The Machine **host** (`@j2/orchestrator` `RunHost`) is the seam
+that wires the control plane, the Actor, and durable snapshots together:
+
+- **Host-owned MCP mux.** The host owns one `ControlPlane`; each run's tool server (`controlPlane.server(instanceId)`)
+  is mounted on `/mcp/:instanceId` of the shared app (the hono slice). A tool call → `ControlPlane.onEvent(event)`
+  (carrying `instanceId`) → the host routes by `instanceId` into the owning Machine (`actor.send`). Misrouted/settled
+  instances are dropped at the host — the one catch point.
+- **Channel split made concrete.** **MCP = domain events** (`done`/`request_review`/`request_approval`/`report_blocked`,
+  the canonical up-channel). **flue stream = lifecycle + offset telemetry** — the Actor surfaces an `agent.offset` event
+  the Machine `assign`s into context so the `(agentName, instanceId)+offset` durable handle rides in the snapshot. (The
+  Actor's earlier flue-stream-derived _domain_ mapping is thus superseded by the MCP up-channel and slated to be
+  trimmed.)
+- **Approvals answered centrally.** A held `request_approval` (deferred tool result) is released by the host:
+  `answer(runId, decision)` → `controlPlane.resolveApproval(instanceId, decision)`. This is the seam the
+  [ADR-0009](0009-cli-and-instance-interface.md) `POST /runs/:runId/events` (`APPROVE`) sits on.
+- **Infra injected, never persisted.** Live ports (the FlueClient-backed `agentRun` actor) are injected via xstate
+  `.provide()` at start **and** restore
+  ([ADR-0003](0003-templates-with-injected-providers.md)/[ADR-0007](0007-durable-machine-state.md)), so the snapshot
+  stays JSON-safe and restore re-attaches by rewriting the child's persisted input (drop `prompt`, set `attachOffset`)
+  after reconciling against the live world.
