@@ -11,7 +11,16 @@ Kubernetes (kind locally).
 **Machine**: The xstate state machine that defines a workflow. The unit a user authors or picks from provided defaults.
 _Avoid_: workflow, graph
 
-**Orchestrator**: The runtime that executes a Machine. Runs in its own pod. _Avoid_: runner, engine
+**Orchestrator**: The runtime that executes a Machine. Deployed as a single-writer Kubernetes app (`replicas: 1`,
+Postgres-backed), hosting many runs and fed by both the Work Source (pull) and a thin API (push). _Avoid_: runner,
+engine
+
+**Workflow App**: A deployed Kubernetes app (`Deployment` + `Service`) embedding a Machine + chosen providers + the j2
+runtime — the Orchestrator for one workflow. Built as a code app into an image; machine definitions are code, never
+declarative config. _Avoid_: workflow service
+
+**j2 Application**: A GitOps repo of Kubernetes manifests that deploys one or more Workflow Apps plus their config and
+secrets. The same manifests run on kind locally and on a real cluster. _Avoid_: deployment
 
 **Actor**: An xstate actor inside a Machine that drives a remote worker via a flue client. The local handle in the
 Orchestrator; the compute is remote. _Avoid_: agent actor
@@ -56,3 +65,13 @@ unblocked subset)
 Sandbox and its worktree; the child Machine's states manage what happens inside (e.g. coding, review, merge); reaching
 its final state cleans up the Sandbox. Coder and reviewer Agents share one Workspace (per-feature isolation, not
 per-Agent-run). _Avoid_: workspace pod
+
+**Project layout**: How a project's repos sit on disk. Each repo has a `default/` main checkout with feature Worktrees
+as siblings. _Single-repo mode_: `default/` and worktrees live at the project root. _Multi-repo mode_: repos are named
+`<repo>/` subdirectories, each with its own `default/` and sibling worktrees. Inherited from jr; humans and the
+Orchestrator share this layout. _Avoid_: directory structure, repo tree
+
+**Worktree**: A git worktree aligned to a **feature** — one feature = one worktree = one branch = one PR. Sibling to
+`default/`, named from the feature ticket (`<external-ref>-<title>`, else `<ticket-id>-<title>`). Tasks within a feature
+are sequential commits on the worktree's branch, not separate worktrees. Stacked features branch off the upstream
+feature's branch, not `origin/HEAD`. _Avoid_: per-task worktree, task branch
