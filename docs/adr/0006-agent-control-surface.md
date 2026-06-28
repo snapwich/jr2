@@ -22,9 +22,8 @@ Event and output schemas are **named and resolved from a shared registry**, exac
 `actors`/`actions`/`guards` by name and fills them via `provide()` (ADR-0003). The Machine references a schema by name
 to map a result back to an event; the Harness resolves the **same name** to build the tool / result contract. The wire
 carries a **name (+ runtime params), not a serialized schema** — which removes the serialization fragility PoC #5b hit
-when it rebuilt valibot from JSON on the fly. One registry — the Actor↔Harness contract package the
-[orchestrator README](../../orchestrator/README.md) anticipated — feeds **both** the per-turn MCP menu and any forced
-final pick.
+when it rebuilt valibot from JSON on the fly. One registry — the Actor↔Harness contract package (now
+`@j2/agent-protocol`) — feeds **both** the per-turn MCP menu and any forced final pick.
 
 **Encode flat.** A named schema must compile to a flat tagged object (an `enum` discriminator + each option's params as
 optionals + a validation `check`), **never a top-level `oneOf`/`anyOf`**. PoC #5b: a strict `v.variant` (→ `oneOf`/
@@ -62,10 +61,30 @@ Machine" is not viable.**
 - **Schemas are named, flat, and resolved from the shared contract registry**, feeding the MCP menu and any single-shot
   workflow pick alike.
 
+## Direction: control events are user-definable providers (`defineAgentEvent`)
+
+The events a state offers are **not** a fixed j2 set — they are declared and bound by the **workflow author**, and j2's
+built-ins (`done`, `request_review`, `request_approval`, `report_blocked`, `check_inbox`) are a **standard library**
+built on the same primitive. The fixed part is the _mechanism_; the events are pluggable, mirroring the provider model
+(ADR-0003).
+
+- **Mechanism (fixed, in `@j2/agent-protocol`):** a tool call → validate its payload against the named schema → emit a
+  typed xstate event → drive the state's transition; plus `/mcp/:instanceId` addressing and the `ack`/`deferred`/`poll`
+  semantics.
+- **Events (pluggable, per-workflow):** `defineAgentEvent({ name, input, output?, semantics })` produces one event; a
+  state binds a set of them as its control surface (its menu). Emitting one is how the Agent drives the Machine, and a
+  user's custom event + schema is authored exactly like a built-in — so it is first-class, not a second-tier extension.
+
+This is how "the Agent drives the Machine within a frame the Machine set" becomes user-extensible: the **frame** (which
+events, what schemas, which state) is workflow configuration, not hardcoded protocol. The binding
+(tool→event→transition) lands with the orchestrator slice — where the MCP server is built and `sendBack` happens —
+against a real consumer, not speculatively. Today's `CALLBACK_TOOLS` and `Menu`/`assertInMenu` in `@j2/agent-protocol`
+are the first cut of the standard set and the binding guard; `defineAgentEvent` generalizes them.
+
 ## Consequences
 
-- The Actor↔Harness protocol crystallizes into a shared **contract package** (named schemas + result→event mapping) that
-  both `@j2/orchestrator` and `@j2/harness` depend on.
+- The Actor↔Harness protocol crystallizes into a shared **contract package** (`@j2/agent-protocol`: named schemas +
+  result→event mapping) that both the orchestrator engine and the Harness depend on.
 - "Forced structured result" is **not** a free upgrade to the duplex Actor — it is a separate, memoryless RPC surface,
   used only where context is passed in, not remembered.
 - Unsolicited mid-turn steering remains the residual hard case (unchanged from ADR-0002): the menu still only opens when

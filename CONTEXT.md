@@ -8,19 +8,30 @@ Kubernetes (kind locally).
 
 ## Language
 
-**Machine**: The xstate state machine that defines a workflow. The unit a user authors or picks from provided defaults.
-_Avoid_: workflow, graph
+**Machine**: The xstate state machine that defines a workflow's control flow. The unit a user authors or picks from
+provided templates. _Avoid_: workflow, graph
 
-**Orchestrator**: The runtime that executes a Machine. Deployed as a single-writer Kubernetes app (`replicas: 1`,
-Postgres-backed), hosting many runs and fed by both the Work Source (pull) and a thin API (push). _Avoid_: runner,
-engine
+**Workflow**: A concrete, deployable assembly — a Machine (often a built-in template) wired to chosen providers and
+config — that an Orchestrator instance registers and runs. Lives as a code module in the instance's `workflows/`
+directory; **not** declarative config, and **not** shipped by the kit. _Avoid_: app, pipeline
 
-**Workflow App**: A deployed Kubernetes app (`Deployment` + `Service`) embedding a Machine + chosen providers + the j2
-runtime — the Orchestrator for one workflow. Built as a code app into an image; machine definitions are code, never
-declarative config. _Avoid_: workflow service
+**Template**: A reusable, slot-based Machine the kit ships (e.g. the coding template). A Workflow is a Template with its
+slots filled via `provide()` (ADR-0003). _Avoid_: preset
 
-**j2 Application**: A GitOps repo of Kubernetes manifests that deploys one or more Workflow Apps plus their config and
-secrets. The same manifests run on kind locally and on a real cluster. _Avoid_: deployment
+**Orchestrator**: The runtime that executes Machines. Deployed as a single-writer Kubernetes app (`replicas: 1`,
+Postgres-backed). `replicas: 1` means single _writer_ (no split-brain on the snapshot), not one workflow per process —
+one Orchestrator hosts **many** Workflows and many runs, fed by both the Work Source (pull) and the HTTP API (push).
+_Avoid_: runner, engine
+
+**Instance**: A user-owned folder scaffolded by `j2 init` — `j2.config.ts` + a discovered `workflows/` directory +
+manifests (mirroring flue's `flue.config.ts` + `agents/`). `j2 build` bakes the engine + the instance's workflows into
+one image; this folder is the deployed Orchestrator. _Avoid_: workspace (collides), project
+
+**j2 CLI**: The `j2` binary — the primary interface to an Instance (`init`, `build`, `deploy`, `run`, status). Users
+reach for the CLI far more than the raw HTTP API; the CLI sits on top of that API. _Avoid_: cli tool
+
+**j2 Application**: An Instance under GitOps — its manifests deploy the Orchestrator plus config and secrets. The same
+folder runs on kind locally and on a real cluster. _Avoid_: deployment
 
 **Actor**: An xstate actor inside a Machine that drives a remote worker via a flue client. The local handle in the
 Orchestrator; the compute is remote. _Avoid_: agent actor
