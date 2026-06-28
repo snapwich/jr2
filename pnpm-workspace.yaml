@@ -1,4 +1,3 @@
 # operator/ is a Go module, not a pnpm package — intentionally excluded.
 packages:
-  - harness
-  - orchestrator
+  - packages/*
