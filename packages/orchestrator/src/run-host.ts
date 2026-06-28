@@ -53,7 +53,13 @@ export type RunHostOptions = {
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs. */
 type RunBlob = { workflow: string; instanceId: string; snapshot: unknown };
 
-type LiveRun = { record: RunRecord; actor: AnyActor; def: WorkflowDef };
+type LiveRun = {
+  record: RunRecord;
+  actor: AnyActor;
+  def: WorkflowDef;
+  /** Per-run observers fed by `persist()` after every transition (SSE/CLI watch). */
+  listeners: Set<(s: RunStatus) => void>;
+};
 
 export class RunHost {
   /** The single MCP control plane; its events are routed by `instanceId` into the owning run. */
@@ -62,7 +68,7 @@ export class RunHost {
   private readonly store: SnapshotStore;
   private readonly reconcile: (run: RunRecord) => boolean | Promise<boolean>;
   private readonly newId: () => string;
-  private readonly workflows = new Map<string, WorkflowDef>();
+  private readonly workflowDefs = new Map<string, WorkflowDef>();
   private readonly runs = new Map<string, LiveRun>();
   private readonly byInstance = new Map<string, string>();
 
@@ -75,12 +81,17 @@ export class RunHost {
 
   /** Register a workflow so `start`/`restore` can run it. */
   register(def: WorkflowDef): void {
-    this.workflows.set(def.name, def);
+    this.workflowDefs.set(def.name, def);
+  }
+
+  /** The names of every registered workflow (the `GET /workflows` listing — ADR-0009). */
+  workflows(): string[] {
+    return [...this.workflowDefs.keys()];
   }
 
   /** Start a fresh run of a registered workflow; returns its durable ids. */
   async start(workflow: string, input: Record<string, unknown> = {}): Promise<{ runId: string; instanceId: string }> {
-    const def = this.workflows.get(workflow);
+    const def = this.workflowDefs.get(workflow);
     if (!def) throw new Error(`no workflow registered as "${workflow}"`);
 
     const runId = this.newId();
@@ -105,7 +116,7 @@ export class RunHost {
     for (const stored of await this.store.list()) {
       if (stored.status !== "live") continue;
       const blob = stored.snapshot as RunBlob | null;
-      const def = blob ? this.workflows.get(blob.workflow) : undefined;
+      const def = blob ? this.workflowDefs.get(blob.workflow) : undefined;
       if (!blob || !def) {
         await this.store.markLost(stored.runId, blob ? `no workflow "${blob.workflow}"` : "empty snapshot");
         lost.push(stored.runId);
@@ -140,6 +151,25 @@ export class RunHost {
     const run = this.runs.get(runId);
     if (!run) throw new Error(`no active run "${runId}"`);
     this.controlPlane.resolveApproval(run.record.instanceId, decision);
+  }
+
+  /** Steer a live run: queue a down-channel message the Agent pulls on `check_inbox` (ADR-0009). */
+  steer(runId: string, msg: string): void {
+    const run = this.runs.get(runId);
+    if (!run) throw new Error(`no active run "${runId}"`);
+    this.controlPlane.enqueueInbox(run.record.instanceId, msg);
+  }
+
+  /**
+   * Observe a run's status after every transition (the `GET /runs/:id/events` SSE feed — ADR-0009).
+   * Returns an unsubscribe fn. The final status is emitted on the terminal transition right before
+   * the run is dropped from the registry. Subscribing to an unknown/settled run is a no-op.
+   */
+  subscribe(runId: string, listener: (s: RunStatus) => void): () => void {
+    const run = this.runs.get(runId);
+    if (!run) return () => {};
+    run.listeners.add(listener);
+    return () => run.listeners.delete(listener);
   }
 
   /** The MCP server for a run's instance — the hono slice mounts this on `/mcp/:instanceId`. */
@@ -182,7 +212,7 @@ export class RunHost {
   }
 
   private track(record: RunRecord, actor: AnyActor, def: WorkflowDef): void {
-    const run: LiveRun = { record, actor, def };
+    const run: LiveRun = { record, actor, def, listeners: new Set() };
     this.runs.set(record.runId, run);
     this.byInstance.set(record.instanceId, record.runId);
     actor.subscribe(() => this.persist(run));
@@ -204,7 +234,17 @@ export class RunHost {
     const blob: RunBlob = { workflow: run.record.workflow, instanceId: run.record.instanceId, snapshot: serialized };
     const status = machineStatus === "active" ? "live" : machineStatus;
     void this.store.save(run.record.runId, blob, status);
-    if (status !== "live") this.untrack(run.record);
+
+    // Feed per-run observers (SSE/CLI watch). On the terminal transition emit the final status
+    // BEFORE untrack drops the run from the registry, then drop the now-useless listener set.
+    const snap = run.actor.getSnapshot();
+    const runStatus: RunStatus = { ...run.record, status: snap.status, value: snap.value, context: snap.context };
+    for (const listener of run.listeners) listener(runStatus);
+
+    if (status !== "live") {
+      this.untrack(run.record);
+      run.listeners.clear();
+    }
   }
 }
 
