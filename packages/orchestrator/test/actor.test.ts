@@ -1,8 +1,12 @@
+// Run-lifecycle actor tests. After the multi-run trim the actor emits only telemetry
+// (`agent.offset`, `agent.fault`) — domain events come up the MCP channel via the ControlPlane,
+// not from the flue stream — so these tests assert admission, offset surfacing, fault surfacing,
+// the absence of any domain event, and CANCEL abandonment.
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createActor, setup, sendTo } from "xstate";
 import { DEFAULT_CODER_MENU } from "@j2/agent-protocol";
-import type { ControlEvent } from "@j2/agent-protocol";
 import { agentRunActorWith } from "../src/actor.ts";
 import type { AgentRunInput, AgentToolCall, FlueClient } from "../src/actor.ts";
 
@@ -11,17 +15,25 @@ class MockFlueClient implements FlueClient {
   admitted: AgentRunInput | undefined;
   push: ((call: AgentToolCall) => void) | undefined;
   cancelled: string[] = [];
+  private rejectAdmit: ((err: unknown) => void) | undefined;
 
   admit(input: AgentRunInput, onToolCall: (call: AgentToolCall) => void): Promise<void> {
     this.admitted = input;
     this.push = onToolCall;
-    // The agent run stays live until abandoned; never settle on its own.
-    return new Promise<void>(() => {});
+    // Stays live until abandoned, unless the test faults it via `fault()`.
+    return new Promise<void>((_resolve, reject) => {
+      this.rejectAdmit = reject;
+    });
   }
 
   cancel(instanceId: string): Promise<void> {
     this.cancelled.push(instanceId);
     return Promise.resolve();
+  }
+
+  /** Simulate the run's stream faulting (infra failure). */
+  fault(reason: string): void {
+    this.rejectAdmit?.(new Error(reason));
   }
 }
 
@@ -70,42 +82,40 @@ test("admits the run with the right agentName + instanceId", () => {
   assert.equal(mock.admitted?.instanceId, "inst-42");
 });
 
-test("a request_review tool call becomes an agent.requestReview ControlEvent", async () => {
-  const mock = new MockFlueClient();
-  const { received } = harness(mock, baseInput);
-
-  mock.push?.({ name: "request_review", args: { summary: "PR ready" }, offset: 7 });
-  await tick();
-
-  const event = received.find((e) => e.type === "agent.requestReview") as ControlEvent | undefined;
-  assert.ok(event, "expected an agent.requestReview event");
-  assert.deepEqual(event, { type: "agent.requestReview", instanceId: "inst-42", summary: "PR ready" });
-});
-
 test("surfaces the stream offset up as telemetry for the durable handle", async () => {
   const mock = new MockFlueClient();
   const { received } = harness(mock, baseInput);
 
-  mock.push?.({ name: "done", args: { summary: "finished" }, offset: 11 });
+  mock.push?.({ name: "request_review", args: { summary: "PR ready" }, offset: 11 });
   await tick();
 
   const offset = received.find((e) => e.type === "agent.offset");
   assert.deepEqual(offset, { type: "agent.offset", instanceId: "inst-42", offset: 11 });
-  const done = received.find((e) => e.type === "agent.done");
-  assert.deepEqual(done, { type: "agent.done", instanceId: "inst-42", summary: "finished" });
 });
 
-test("check_inbox poll calls are not mapped to up-events", async () => {
+test("does not emit domain events — those come up the MCP channel, not the flue stream", async () => {
   const mock = new MockFlueClient();
   const { received } = harness(mock, baseInput);
 
-  mock.push?.({ name: "check_inbox", args: {}, offset: 3 });
+  // Even a "domain-looking" tool call only advances the offset; it is not mapped to a ControlEvent.
+  mock.push?.({ name: "done", args: { summary: "finished" }, offset: 5 });
   await tick();
 
-  assert.equal(
-    received.some((e) => e.type.startsWith("agent.") && e.type !== "agent.offset"),
-    false,
+  assert.deepEqual(
+    received.map((e) => e.type),
+    ["agent.offset"],
   );
+});
+
+test("surfaces a stream fault as agent.fault telemetry", async () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, baseInput);
+
+  mock.fault("stream reset by peer");
+  await tick();
+
+  const fault = received.find((e) => e.type === "agent.fault");
+  assert.deepEqual(fault, { type: "agent.fault", instanceId: "inst-42", reason: "stream reset by peer" });
 });
 
 test("a CANCEL sent to the actor abandons the run on the client", async () => {
