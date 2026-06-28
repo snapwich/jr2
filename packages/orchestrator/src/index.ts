@@ -9,3 +9,5 @@ export * from "./snapshot-store.ts";
 export * from "./actor.ts";
 export * from "./run-host.ts";
 export * from "./http.ts";
+export * from "./agent-run-stub.ts";
+export * from "./instance.ts";

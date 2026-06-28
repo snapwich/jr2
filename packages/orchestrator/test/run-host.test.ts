@@ -41,13 +41,13 @@ test("offset telemetry from the flue stream is persisted into the snapshot", asy
   const { runId, instanceId } = await host.start("coding");
   await tick();
 
-  // A poll advances the durable offset without being a domain event.
-  clients.get(instanceId)!.push!({ name: "check_inbox", args: {}, offset: 17 });
-  await waitFor(() => (host.status(runId)?.context as Ctx).offsets[instanceId] === 17);
+  // A poll advances the durable offset without being a domain event. (Opaque DS offset string.)
+  clients.get(instanceId)!.push!({ name: "check_inbox", args: {}, offset: "17" });
+  await waitFor(() => (host.status(runId)?.context as Ctx).offsets[instanceId] === "17");
 
   const loaded = await store.load(runId);
   const persisted = loaded!.snapshot as { snapshot: { context: Ctx } };
-  assert.equal(persisted.snapshot.context.offsets[instanceId], 17);
+  assert.equal(persisted.snapshot.context.offsets[instanceId], "17");
 });
 
 test("a second host restores an in-flight run and re-attaches by persisted offset", async () => {
@@ -59,8 +59,8 @@ test("a second host restores an in-flight run and re-attaches by persisted offse
   hostA.register(codingDef(clientsA));
   const { runId, instanceId } = await hostA.start("coding");
   await tick();
-  clientsA.get(instanceId)!.push!({ name: "check_inbox", args: {}, offset: 23 });
-  await waitFor(() => (hostA.status(runId)?.context as Ctx).offsets[instanceId] === 23);
+  clientsA.get(instanceId)!.push!({ name: "check_inbox", args: {}, offset: "23" });
+  await waitFor(() => (hostA.status(runId)?.context as Ctx).offsets[instanceId] === "23");
 
   // Host B: a brand-new host on the SAME store; reconcile present → re-attach.
   const clientsB = new Map<string, MockFlueClient>();
@@ -71,8 +71,8 @@ test("a second host restores an in-flight run and re-attaches by persisted offse
 
   assert.deepEqual(reattached, [runId]);
   const reattachedClient = clientsB.get(instanceId);
-  assert.ok(reattachedClient?.admitted, "re-attached run must re-admit via the FlueClient");
-  assert.equal(reattachedClient!.admitted!.attachOffset, 23, "re-attach must resume from the persisted offset");
+  assert.ok(reattachedClient?.admitted, "re-attached run must re-admit via the AgentRunPort");
+  assert.equal(reattachedClient!.admitted!.attachOffset, "23", "re-attach must resume from the persisted offset");
   assert.equal(reattachedClient!.admitted!.prompt, undefined, "re-attach must not re-POST the prompt");
 });
 

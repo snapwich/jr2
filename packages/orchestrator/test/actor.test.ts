@@ -8,10 +8,10 @@ import assert from "node:assert/strict";
 import { createActor, setup, sendTo } from "xstate";
 import { DEFAULT_CODER_MENU } from "@j2/agent-protocol";
 import { agentRunActorWith } from "../src/actor.ts";
-import type { AgentRunInput, AgentToolCall, FlueClient } from "../src/actor.ts";
+import type { AgentRunInput, AgentToolCall, AgentRunPort } from "../src/actor.ts";
 
-/** A FlueClient the test drives by hand: capture the admission + push synthetic tool calls. */
-class MockFlueClient implements FlueClient {
+/** An AgentRunPort the test drives by hand: capture the admission + push synthetic tool calls. */
+class MockFlueClient implements AgentRunPort {
   admitted: AgentRunInput | undefined;
   push: ((call: AgentToolCall) => void) | undefined;
   cancelled: string[] = [];
@@ -41,7 +41,7 @@ class MockFlueClient implements FlueClient {
  * `sendBack` needs a parent to land in, so wrap the actor in a tiny machine that records every
  * event the child sends up and forwards a CANCEL down on request. Returns the live handles.
  */
-function harness(client: FlueClient, input: AgentRunInput) {
+function harness(client: AgentRunPort, input: AgentRunInput) {
   const received: Array<{ type: string; [k: string]: unknown }> = [];
 
   const machine = setup({
@@ -86,11 +86,11 @@ test("surfaces the stream offset up as telemetry for the durable handle", async 
   const mock = new MockFlueClient();
   const { received } = harness(mock, baseInput);
 
-  mock.push?.({ name: "request_review", args: { summary: "PR ready" }, offset: 11 });
+  mock.push?.({ name: "request_review", args: { summary: "PR ready" }, offset: "11" });
   await tick();
 
   const offset = received.find((e) => e.type === "agent.offset");
-  assert.deepEqual(offset, { type: "agent.offset", instanceId: "inst-42", offset: 11 });
+  assert.deepEqual(offset, { type: "agent.offset", instanceId: "inst-42", offset: "11" });
 });
 
 test("does not emit domain events — those come up the MCP channel, not the flue stream", async () => {
@@ -98,7 +98,7 @@ test("does not emit domain events — those come up the MCP channel, not the flu
   const { received } = harness(mock, baseInput);
 
   // Even a "domain-looking" tool call only advances the offset; it is not mapped to a ControlEvent.
-  mock.push?.({ name: "done", args: { summary: "finished" }, offset: 5 });
+  mock.push?.({ name: "done", args: { summary: "finished" }, offset: "5" });
   await tick();
 
   assert.deepEqual(

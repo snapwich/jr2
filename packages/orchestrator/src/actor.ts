@@ -1,5 +1,5 @@
 // The run-lifecycle Actor (ADR-0002, refined for the multi-run instance): an xstate `fromCallback`
-// actor that drives one Agent run over a `FlueClient` port. It admits (or re-attaches to) the run,
+// actor that drives one Agent run over an `AgentRunPort`. It admits (or re-attaches to) the run,
 // surfaces the durable stream's advancing offset as telemetry, accepts a down-channel CANCEL, and
 // abandons the run on stop.
 //
@@ -10,10 +10,12 @@
 // offset telemetry**; the ControlPlane owns **MCP = domain events**. The Actor therefore emits only
 // telemetry (`agent.offset`, `agent.fault`), never domain events.
 //
-// The port (not `@flue/sdk`) is the dependency, so the actor is unit-testable without a live
-// Harness/cluster: `agentRunActorWith(mockClient)` is the seam. `agentRunActor` binds the same
-// logic to a default client wired in the orchestrator slice — and because `@flue/sdk` is never
-// imported here, requiring this module (and the mock-driven tests) never pulls it in.
+// The port — `AgentRunPort`, not `@flue/sdk` — is the dependency, so the actor is unit-testable
+// without a live Harness/cluster: `agentRunActorWith(mockClient)` is the seam. `agentRunActor` binds
+// the same logic to a default port wired in the orchestrator slice — and because `@flue/sdk` is
+// never imported here, requiring this module (and the mock-driven tests) never pulls it in. (The
+// port is deliberately NOT named `FlueClient`: `@flue/sdk` exports its own, much wider, `FlueClient`,
+// which the real adapter consumes to *implement* this narrow port.)
 //
 // Durable handle (ADR-0002/0007): the re-attach key is `(agentName, instanceId) + offset`. The
 // actor cannot persist anything itself (context lives in the parent Machine), so it *surfaces* the
@@ -29,8 +31,11 @@ export type AgentRunInput = {
   agentName: string;
   instanceId: string;
   prompt?: string;
-  /** Resume the stream from this offset (re-attach) instead of admitting a fresh prompt. */
-  attachOffset?: number;
+  /**
+   * Resume the durable stream from this opaque offset (re-attach) instead of admitting a fresh
+   * prompt. Set by the host on restore (which also drops `prompt`); see {@link AgentToolCall.offset}.
+   */
+  attachOffset?: string;
   menu: Menu;
 };
 
@@ -40,15 +45,20 @@ export type AgentToolCall = {
   name: string;
   /** The tool's (already JSON-parsed) arguments. */
   args?: Record<string, unknown>;
-  /** Monotonic logical offset of this call in the run's durable stream. */
-  offset: number;
+  /**
+   * The run's durable-stream resume checkpoint as of this call. An **opaque string** — flue's
+   * Durable Streams offset (`FlueEventStream.offset` / `AgentSendResult.offset`), not a numeric
+   * index — so it is compared and stored verbatim, never arithmetic'd.
+   */
+  offset: string;
 };
 
 /** Telemetry sent up so the host can persist the durable handle's advancing offset. */
 export type OffsetTelemetry = {
   type: "agent.offset";
   instanceId: string;
-  offset: number;
+  /** Opaque durable-stream offset (see {@link AgentToolCall.offset}). */
+  offset: string;
 };
 
 /** Telemetry sent up when the run's stream faults (infra failure, not an Agent-reported block). */
@@ -70,7 +80,7 @@ export type AgentRunReceiveEvent = { type: "CANCEL" };
  * by hand. The real, `@flue/sdk`-backed implementation is composed in the orchestrator slice and is
  * never needed at test time.
  */
-export interface FlueClient {
+export interface AgentRunPort {
   /**
    * Admit (or, when `input.attachOffset` is set, re-attach to) a run, invoking `onToolCall` for
    * each stream tool call until the run settles. Resolving means the stream ended; rejecting means
@@ -82,14 +92,14 @@ export interface FlueClient {
 }
 
 /**
- * Build the run-lifecycle actor logic over an injected `FlueClient` port.
+ * Build the run-lifecycle actor logic over an injected `AgentRunPort`.
  *
  * On start it admits the run, then for each stream tool call sends up an `agent.offset` telemetry
  * event carrying the new offset (so the host persists the durable handle). A `CANCEL` received from
  * the parent (or the actor being stopped) abandons the run via the port; a stream fault surfaces as
  * `agent.fault` so the Machine can react rather than hang on a dead stream.
  */
-export function agentRunActorWith(client: FlueClient) {
+export function agentRunActorWith(client: AgentRunPort) {
   return fromCallback<AgentRunReceiveEvent, AgentRunInput>(({ input, sendBack, receive }) => {
     const { instanceId } = input;
     let stopped = false;
@@ -132,19 +142,19 @@ export function agentRunActorWith(client: FlueClient) {
 }
 
 /**
- * The default client. The real, durable-stream-backed adapter is composed in the orchestrator
- * slice with the full `(agentName, instanceId)` handle; binding it here would pull `@flue/sdk`
- * onto the module-load path and into every unit test. So the default throws, and any real run
- * supplies its client via `agentRunActorWith`.
+ * The default port. The real, durable-stream-backed adapter is composed in the orchestrator slice
+ * with the full `(agentName, instanceId)` handle; binding it here would pull `@flue/sdk` onto the
+ * module-load path and into every unit test. So the default throws, and any real run supplies its
+ * port via `agentRunActorWith` (the instance host injects the flue adapter or a dev stub).
  */
-const defaultFlueClient: FlueClient = {
+const defaultAgentRunPort: AgentRunPort = {
   async admit(): Promise<void> {
-    throw new Error("the default FlueClient is wired in the orchestrator slice; inject a client via agentRunActorWith");
+    throw new Error("the default AgentRunPort is wired by the instance host; inject a port via agentRunActorWith");
   },
   async cancel(): Promise<void> {
     // No-op: flue exposes no cancel primitive (ADR-0002 / PoC #4); durability reaps the run.
   },
 };
 
-/** Default actor logic over the orchestrator-wired FlueClient. */
-export const agentRunActor = agentRunActorWith(defaultFlueClient);
+/** Default actor logic over the host-wired AgentRunPort. */
+export const agentRunActor = agentRunActorWith(defaultAgentRunPort);

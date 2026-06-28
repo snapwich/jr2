@@ -9,13 +9,19 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { DEFAULT_CODER_MENU } from "@j2/agent-protocol";
 import type { ControlEvent } from "@j2/agent-protocol";
 import { agentRunActorWith } from "../src/actor.ts";
-import type { AgentRunInput, AgentRunReceiveEvent, AgentToolCall, FlueClient, OffsetTelemetry } from "../src/actor.ts";
+import type {
+  AgentRunInput,
+  AgentRunPort,
+  AgentRunReceiveEvent,
+  AgentToolCall,
+  OffsetTelemetry,
+} from "../src/actor.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { RunHost, WorkflowDef } from "../src/run-host.ts";
 
-/** A FlueClient the test drives by hand: capture admission, push synthetic stream tool calls. */
-export class MockFlueClient implements FlueClient {
+/** An AgentRunPort the test drives by hand: capture admission, push synthetic stream tool calls. */
+export class MockFlueClient implements AgentRunPort {
   admitted: AgentRunInput | undefined;
   push: ((call: AgentToolCall) => void) | undefined;
   cancelled: string[] = [];
@@ -31,7 +37,7 @@ export class MockFlueClient implements FlueClient {
   }
 }
 
-export type Ctx = { instanceId: string; offsets: Record<string, number>; summary?: string; action?: string };
+export type Ctx = { instanceId: string; offsets: Record<string, string>; summary?: string; action?: string };
 
 /** A minimal real template standing in for a coding workflow. `agentRun` is a noop slot the host fills. */
 export const codingTemplate = setup({

@@ -249,8 +249,8 @@ export class RunHost {
 }
 
 /** Read `context.offsets` (the durable handle map) out of a persisted machine snapshot. */
-function offsetsOf(snapshot: unknown): Record<string, number> {
-  const ctx = (snapshot as { context?: { offsets?: Record<string, number> } } | null)?.context;
+function offsetsOf(snapshot: unknown): Record<string, string> {
+  const ctx = (snapshot as { context?: { offsets?: Record<string, string> } } | null)?.context;
   return ctx?.offsets ?? {};
 }
 
