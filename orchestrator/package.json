@@ -5,15 +5,18 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
   },
   "dependencies": {
     "@flue/sdk": "1.0.0-beta.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "pg": "^8.13.0",
     "xstate": "^5.18.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.0.1"
+    "@types/node": "^26.0.1",
+    "@types/pg": "^8.11.0"
   }
 }

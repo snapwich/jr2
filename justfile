@@ -15,6 +15,10 @@ build:
 typecheck:
     pnpm -r typecheck
 
+# run unit tests (node --test; mocks only, no infra)
+test:
+    pnpm -r --if-present test
+
 # format the repo
 format:
     pnpm format

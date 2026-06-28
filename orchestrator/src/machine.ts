@@ -63,7 +63,13 @@ export const driveMachine = setup({
           agentName: context.agentName,
           instanceId: context.instanceId,
           prompt: context.prompt,
-          attachOffset: context.attachOffset,
+          // Re-attach crux (PoC #7): on a FRESH start both are undefined and `prompt`
+          // drives a POST; on RESTORE the Actor is re-spawned and only serializable
+          // context survives, so the persisted admission `offset` re-attaches the
+          // in-flight run instead of POSTing a second prompt (which flue would treat
+          // as a new turn — duplicate work). `attachOffset` (explicit input) still
+          // wins when provided.
+          attachOffset: context.attachOffset ?? context.offset,
         }),
       },
       // Persist the durable handle the moment the prompt is admitted.
