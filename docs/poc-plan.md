@@ -98,6 +98,19 @@ in-flight `(name, instance id) + offset` handles + the Work Source.
 
 **Validates:** the forever-running daemon survives crashes without losing or duplicating work. _xstate: yes._
 
+**Validated** ([poc/durability](../poc/durability/)). The real entrypoint (`orchestrator/src/index.ts`) was driven
+through a real OS-process `kill -9` and restarted against the same Postgres, against real flue + vLLM + a kind Sandbox
+CR (18/18 assertions). Proven: (A) a long non-gated run killed mid-flight **re-attaches by
+`(name, instanceId) + offset`** — the restarted process posts no second prompt, the same run completes, output is whole
+with no duplicated side effects; (B) an approval **held at the moment of the crash** is restored — the worker re-issues
+`request_approval` and the restarted Orchestrator answers it, the gated action occurring only post-restart; (C) restore
+**reconciles** against the operator's `Sandbox` CR — present → re-attach, absent → the defined failure path (mark
+`lost`, no re-attach). Two findings refined the mechanism (see the PoC README): re-attach is driven by the invoked
+actor's **persisted input** (xstate v5 restores child input rather than re-evaluating the parent invoke), and the live
+`ControlPlane` must be stripped from **both** parent context and that child input before persisting, then re-injected on
+restore. The crash-between-admit-and-persist window degrades safely via a live-run probe (replay from `-1`); the
+in-flight-POST sliver is the known at-most-once edge.
+
 ## 8. Thin end-to-end slice
 
 The coding template — top Machine (bounded worker pool) → Workspace child Machine → code/review inner loop — first with
@@ -105,3 +118,19 @@ The coding template — top Machine (bounded worker pool) → Workspace child Ma
 
 **Validates:** template/provider composition is real and unit-testable with mocks (no Kubernetes, no flue). _xstate:
 yes._
+
+**Validated** (`orchestrator/src/coding/`, `orchestrator/test/coding-machine.test.ts`). Both templates (top worker-pool,
+Workspace child) run end-to-end on in-memory mocks with no infra, wired through the **same** `assembleCodingMachine`
+factory a real run uses — the mock↔real swap is one substituted provider entry, never a template edit (proves ADR-0003).
+Asserted: claims in ready (dependency) order; bounded parallelism (saturates at `maxConcurrent`, never exceeds);
+sequential tasks within a feature (one Agent at a time); code→review→approve closes + loops; review-round cap escalates
+(no infinite loop); daemon idles on empty backlog and wakes on `WORK_READY`; an item added mid-run is picked up on the
+next claim with **no special Machine state** ("encode the pattern, never the queue"); the memory slot is an observable
+noop unfilled and active **in place** when filled; agents may only emit picks from the state's flat menu (ADR-0006). Two
+cross-cutting findings were promoted to [ADR-0007](adr/0007-durable-machine-state.md): the parent holds only counts +
+ids (children report UP via `sendParent`), and slots take **semantic** input while infra is bound in the assemble-time
+closure — the same serializable-context discipline #7 depends on.
+
+**Follow-up:** the reviewer's verdict menu (`approve` / `request_changes`) is currently modeled at the template layer
+because the reviewer is a mock here; it should fold into the shared Actor↔Harness contract registry ADR-0006 anticipates
+once the reviewer becomes a real Agent.
