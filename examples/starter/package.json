@@ -7,5 +7,8 @@
   "dependencies": {
     "@j2/orchestrator": "workspace:*",
     "xstate": "^5.18.0"
+  },
+  "devDependencies": {
+    "@j2/cli": "workspace:*"
   }
 }
