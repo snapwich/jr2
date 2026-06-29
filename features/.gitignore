@@ -1,0 +1,3 @@
+# Per-scenario temp instances scaffolded by the e2e harness (own .j2/ store + dev.json). Never checked in.
+.tmp/
+node_modules/

@@ -1,0 +1,6 @@
+{
+  "default": {
+    "paths": ["*.feature"],
+    "import": ["steps/**/*.ts"]
+  }
+}
