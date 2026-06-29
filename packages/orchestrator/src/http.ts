@@ -66,24 +66,49 @@ export function createApp(host: RunHost): Hono {
 
   app.get("/runs", (c) => c.json(host.list()));
 
-  app.get("/runs/:runId", (c) => {
-    const status = host.status(c.req.param("runId"));
-    return status ? c.json(status) : c.json({ error: `no active run "${c.req.param("runId")}"` }, 404);
+  // Read-through (ADR-0009): a completed run's final status lives in the store after the registry
+  // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404.
+  app.get("/runs/:runId", async (c) => {
+    const runId = c.req.param("runId");
+    const status = await host.read(runId);
+    return status ? c.json(status) : c.json({ error: `no run "${runId}"` }, 404);
   });
 
-  // SSE: stream the run's status after every transition; close on the terminal transition or abort.
-  app.get("/runs/:runId/events", (c) => {
+  // SSE: a live run streams its status deltas + author `emit`s (current status replayed on attach,
+  // then live until the terminal transition or client abort). A run that has already settled streams
+  // its final status once and closes (so `j2 logs -f` works on a finished run). Unknown run → 404.
+  app.get("/runs/:runId/events", async (c) => {
     const runId = c.req.param("runId");
-    if (host.status(runId) === undefined) return c.json({ error: `no active run "${runId}"` }, 404);
+    if (host.status(runId) === undefined) {
+      const finalStatus = await host.read(runId);
+      if (!finalStatus) return c.json({ error: `no run "${runId}"` }, 404);
+      return streamSSE(c, async (stream) => {
+        await stream.writeSSE({ event: "status", data: JSON.stringify(finalStatus) });
+      });
+    }
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
-        const unsubscribe = host.subscribe(runId, (s) => {
-          void stream.writeSSE({ event: "status", data: JSON.stringify(s) });
-          if (s.status !== "active") {
+        const unsubscribe = host.subscribe(runId, (ev) => {
+          if (ev.kind === "emit") {
+            void stream.writeSSE({ event: "emit", data: JSON.stringify(ev.event) });
+            return;
+          }
+          void stream.writeSSE({ event: "status", data: JSON.stringify(ev.status) });
+          if (ev.status.status !== "active") {
             unsubscribe();
             resolve(); // terminal status written → let the handler return and close the stream
           }
         });
+        // Race guard: the run may have settled between the liveness check above and this subscribe,
+        // which then attaches to nothing and never fires. Fall back to the terminal read-through.
+        if (host.status(runId) === undefined) {
+          unsubscribe();
+          void host.read(runId).then((s) => {
+            if (s) void stream.writeSSE({ event: "status", data: JSON.stringify(s) });
+            resolve();
+          });
+          return;
+        }
         stream.onAbort(() => {
           unsubscribe();
           resolve();

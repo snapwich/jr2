@@ -42,6 +42,15 @@ export type RunRecord = { runId: string; workflow: string; instanceId: string };
 /** A run's current observable state. */
 export type RunStatus = RunRecord & { status: string; value: unknown; context: unknown };
 
+/**
+ * One item on a run's observation feed (the `GET /runs/:id/events` SSE stream — ADR-0009). Two kinds:
+ * a `status` snapshot delta (emitted on every transition, and replayed once on attach), and an `emit`
+ * — a message the workflow author surfaced via xstate `emit({...})` for whoever is watching.
+ */
+export type RunFeedEvent =
+  | { kind: "status"; status: RunStatus }
+  | { kind: "emit"; event: { type: string } & Record<string, unknown> };
+
 export type RunHostOptions = {
   store: SnapshotStore;
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
@@ -57,8 +66,8 @@ type LiveRun = {
   record: RunRecord;
   actor: AnyActor;
   def: WorkflowDef;
-  /** Per-run observers fed by `persist()` after every transition (SSE/CLI watch). */
-  listeners: Set<(s: RunStatus) => void>;
+  /** Per-run observers fed by `persist()` (status) and the actor's `emit` (emit) — SSE/CLI watch. */
+  listeners: Set<(e: RunFeedEvent) => void>;
 };
 
 export class RunHost {
@@ -161,14 +170,22 @@ export class RunHost {
   }
 
   /**
-   * Observe a run's status after every transition (the `GET /runs/:id/events` SSE feed — ADR-0009).
-   * Returns an unsubscribe fn. The final status is emitted on the terminal transition right before
-   * the run is dropped from the registry. Subscribing to an unknown/settled run is a no-op.
+   * Observe a live run's feed (the `GET /runs/:id/events` SSE — ADR-0009): status deltas after every
+   * transition, plus the author's `emit`s. Returns an unsubscribe fn. The current status is **replayed
+   * immediately** on attach, so a freshly-attached watcher sees where the run is now (e.g. parked on an
+   * approval) rather than waiting for the next transition. The final status is emitted on the terminal
+   * transition right before the run is dropped from the registry. Attaching to an unknown/settled run
+   * is a no-op — read its terminal status via {@link read} instead.
    */
-  subscribe(runId: string, listener: (s: RunStatus) => void): () => void {
+  subscribe(runId: string, listener: (e: RunFeedEvent) => void): () => void {
     const run = this.runs.get(runId);
     if (!run) return () => {};
     run.listeners.add(listener);
+    const snap = run.actor.getSnapshot();
+    listener({
+      kind: "status",
+      status: { ...run.record, status: snap.status, value: snap.value, context: snap.context },
+    });
     return () => run.listeners.delete(listener);
   }
 
@@ -177,11 +194,35 @@ export class RunHost {
     return this.controlPlane.server(instanceId);
   }
 
+  /** A run's LIVE status — undefined once it settles and is dropped from the registry. Sync. */
   status(runId: string): RunStatus | undefined {
     const run = this.runs.get(runId);
     if (!run) return undefined;
     const snap = run.actor.getSnapshot();
     return { ...run.record, status: snap.status, value: snap.value, context: snap.context };
+  }
+
+  /**
+   * Read a run's status, **reading through to the store** when it is no longer live (ADR-0009). A
+   * completed run's final snapshot is persisted before `persist()` drops it from the registry, so a
+   * terminal run reports its `done`/`error` status + final context here rather than 404-ing. Returns
+   * undefined only for a genuinely unknown run (or one marked `lost`, whose snapshot was cleared).
+   */
+  async read(runId: string): Promise<RunStatus | undefined> {
+    const live = this.status(runId);
+    if (live) return live;
+    const stored = await this.store.load(runId);
+    const blob = stored?.snapshot as RunBlob | null | undefined;
+    if (!stored || !blob) return undefined;
+    const snap = (blob.snapshot ?? {}) as { status?: string; value?: unknown; context?: unknown };
+    return {
+      runId,
+      workflow: blob.workflow,
+      instanceId: blob.instanceId,
+      status: snap.status ?? stored.status,
+      value: snap.value,
+      context: snap.context,
+    };
   }
 
   list(): RunStatus[] {
@@ -216,6 +257,12 @@ export class RunHost {
     this.runs.set(record.runId, run);
     this.byInstance.set(record.instanceId, record.runId);
     actor.subscribe(() => this.persist(run));
+    // Forward the workflow author's `emit({...})` to observers as the SSE `emit` channel. These are
+    // human-facing progress/notice messages, distinct from the auto status deltas `persist()` feeds.
+    actor.on("*", (emitted) => {
+      const event = emitted as { type: string } & Record<string, unknown>;
+      for (const listener of run.listeners) listener({ kind: "emit", event });
+    });
   }
 
   private untrack(record: RunRecord): void {
@@ -239,7 +286,7 @@ export class RunHost {
     // BEFORE untrack drops the run from the registry, then drop the now-useless listener set.
     const snap = run.actor.getSnapshot();
     const runStatus: RunStatus = { ...run.record, status: snap.status, value: snap.value, context: snap.context };
-    for (const listener of run.listeners) listener(runStatus);
+    for (const listener of run.listeners) listener({ kind: "status", status: runStatus });
 
     if (status !== "live") {
       this.untrack(run.record);

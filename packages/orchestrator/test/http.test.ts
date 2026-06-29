@@ -110,10 +110,14 @@ test("SSE: GET /runs/:id/events streams a status delta on transition", async () 
       buf += decoder.decode(value, { stream: true });
     }
 
-    const data = buf.match(/data: (.*)/)?.[1];
-    assert.ok(data, "SSE chunk must carry a data line");
-    const payload = JSON.parse(data) as { value: unknown };
-    assert.ok(JSON.stringify(payload.value).includes("review"), "streamed status value must reflect the review state");
+    // The feed replays the current status on attach (value "running"), then pushes the review delta —
+    // so scan every `data:` line rather than the first, and assert one reflects the review state.
+    const values = [...buf.matchAll(/data: (.*)/g)].map((m) => (JSON.parse(m[1] ?? "{}") as { value: unknown }).value);
+    assert.ok(values.length >= 1, "SSE must carry status data lines");
+    assert.ok(
+      values.some((v) => JSON.stringify(v).includes("review")),
+      "a streamed status value must reflect the review state",
+    );
   } finally {
     await reader.cancel();
     await close();
