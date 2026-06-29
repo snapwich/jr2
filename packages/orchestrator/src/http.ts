@@ -93,11 +93,16 @@ export function createApp(host: RunHost): Hono {
             void stream.writeSSE({ event: "emit", data: JSON.stringify(ev.event) });
             return;
           }
-          void stream.writeSSE({ event: "status", data: JSON.stringify(ev.status) });
-          if (ev.status.status !== "active") {
-            unsubscribe();
-            resolve(); // terminal status written → let the handler return and close the stream
-          }
+          // Resolving lets the handler return, which CLOSES the stream — so on the terminal frame we
+          // must wait for the write to flush first, or a fire-and-forget write races the close and the
+          // final status is dropped (the very frame `j2 run` blocks on). Chain resolve off the write.
+          const terminal = ev.status.status !== "active";
+          void stream.writeSSE({ event: "status", data: JSON.stringify(ev.status) }).then(() => {
+            if (terminal) {
+              unsubscribe();
+              resolve();
+            }
+          });
         });
         // Race guard: the run may have settled between the liveness check above and this subscribe,
         // which then attaches to nothing and never fires. Fall back to the terminal read-through.
