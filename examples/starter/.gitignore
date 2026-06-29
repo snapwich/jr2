@@ -1,0 +1,4 @@
+# Runtime state the orchestrator writes under the instance root (ADR-0009): the sqlite snapshot store
+# and the dev server's live address. Never checked in.
+.j2/
+node_modules/

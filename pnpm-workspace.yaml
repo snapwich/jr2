@@ -1,3 +1,6 @@
 # operator/ is a Go module, not a pnpm package — intentionally excluded.
 packages:
   - packages/*
+  # Model instance folders (ADR-0009): npm packages that depend on @j2/* via workspace:* so
+  # `j2 dev` resolves the local engine. Not kit packages — they ship no build/test of their own.
+  - examples/*

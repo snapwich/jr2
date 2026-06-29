@@ -15,6 +15,15 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
 
+  examples/starter:
+    dependencies:
+      '@j2/orchestrator':
+        specifier: workspace:*
+        version: link:../../packages/orchestrator
+      xstate:
+        specifier: ^5.18.0
+        version: 5.32.2
+
   packages/agent-protocol:
     dependencies:
       zod:

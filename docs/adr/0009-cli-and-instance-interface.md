@@ -114,6 +114,40 @@ Orchestrator MCP callback) needs pod→orchestrator reachability. In-cluster tha
 orchestrator it is pod→host — trivial on kind (`host.docker.internal`), but **dev against a remote cluster requires a
 tunnel**. So `dev` targets kind by default; `deploy` is how the control plane runs in a remote cluster.
 
+## Settled CLI behavior (v1)
+
+The verbs above wrap the HTTP API; this fixes how the run-control loop _behaves_, shaped to mirror `flue run` and
+diverging only where j2's durable, human-gated runs require it. (Lifecycle `build`/`deploy` and the kubectl-style
+workspace verbs stay out of v1.)
+
+**Instance addressing.** The CLI finds its instance by walking up from cwd to the directory containing `j2.config.ts` —
+the root marker, mirroring `flue.config.ts`. Runtime state lives under `<root>/.j2/`: the sqlite store and `dev.json`,
+which `j2 dev` writes with its live `{ url, pid }` on boot and removes on exit. Run-control commands read `.j2/dev.json`
+for the orchestrator URL; `--url` / `J2_URL` overrides it (the deployed/remote case) and skips the folder walk entirely.
+
+**`j2 run` — blocking, attach-by-default.** Mirrors `flue run`: start the run, stream activity to **stderr**, print the
+terminal `RunStatus` (status/value/context) as JSON to **stdout**, exit — so `j2 run … | jq` yields just the result.
+Author-emitted messages and transition deltas are activity → stderr; only the terminal result is stdout. j2 diverges
+from flue in one way: with no `--url` it **attaches to the running orchestrator** (`.j2/dev.json`), not a temporary
+per-invocation runtime — because a j2 run is durable and may park on `request_approval` indefinitely, outliving the CLI
+call. `--detach` starts the run, prints its `runId`, returns.
+
+**Attach / detach / re-attach.** A run lives server-side (durable snapshot), so attaching = opening
+`GET /runs/:runId/events` and detaching = closing it (Ctrl-C); neither affects the run. `j2 logs <runId> -f` re-attaches
+to any running run. On attach, the SSE **replays the run's current status immediately** (so a parked run shows where it
+is) before streaming live deltas. The SSE carries two event kinds: `status` (auto, per transition) and `emit` (the
+workflow author's `emit({ … })`, forwarded by the host).
+
+**Terminal runs stay readable.** `persist()` writes the final snapshot to the store, then drops the run from the live
+registry. So `status` / `GET /runs/:runId` **read through to the store** when a run isn't live — a completed run reports
+its terminal status/context instead of `404`. (`GET /runs` stays live-only; history via `?all` is deferred.)
+
+**`j2 init` (v1).** Scaffolds the minimum runnable instance: `j2.config.ts` (root marker), `package.json` (deps on
+`@j2/*` + xstate), one starter `workflows/<name>.ts`, and `.gitignore` (`.j2/`, `node_modules/`). `[dir]` positional
+(default cwd); `--force` to overwrite an existing `j2.config.ts`. The `--target kind|cluster` flag is deferred alongside
+`manifests/`/`deploy`; `agents/`, `manifests/`, `repos/`, and `.env` are added by their later slices. No auto-install —
+it prints the `pnpm install && j2 dev` next step.
+
 ## Consequences
 
 - All `packages/*` publish to npm under `@j2/*`; instances depend on them. The CLI ships as the `j2` bin (`npx j2`,
