@@ -88,9 +88,15 @@ export class RunHost {
     this.controlPlane = new ControlPlane((e) => this.routeUp(e));
   }
 
-  /** Register a workflow so `start`/`restore` can run it. */
+  /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload). */
   register(def: WorkflowDef): void {
     this.workflowDefs.set(def.name, def);
+  }
+
+  /** Drop a workflow's registration (a `workflows/` file was deleted — `j2 dev` reload). In-flight
+   * runs keep their already-assembled definition; only future `start`s are affected. */
+  unregister(name: string): void {
+    this.workflowDefs.delete(name);
   }
 
   /** The names of every registered workflow (the `GET /workflows` listing — ADR-0009). */

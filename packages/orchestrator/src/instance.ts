@@ -48,12 +48,22 @@ export type InstanceOptions = {
   agentRun?: AgentRunFactory;
 };
 
+/** What changed on a `reload()` — the diff against the previously-registered set. */
+export type ReloadResult = { added: string[]; updated: string[]; removed: string[]; workflows: string[] };
+
 export type RunningInstance = {
   host: RunHost;
   /** The base URL the HTTP surface is reachable at (with the resolved port). */
   url: string;
   /** Names of the workflows discovered + registered from `<dir>/workflows`. */
   workflows: string[];
+  /**
+   * Re-discover `<dir>/workflows` and re-register every file, replacing changed definitions and
+   * dropping deleted ones. A DEV-ONLY affordance driven by `j2 dev`'s file watcher — a deployed
+   * orchestrator ships workflows baked into its image and never reloads. In-flight runs keep the
+   * definition they started on; only the next `start` sees new code (ADR-0009).
+   */
+  reload: () => Promise<ReloadResult>;
   /** Stop the HTTP server and close the store. */
   close: () => Promise<void>;
 };
@@ -73,10 +83,11 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   const host = new RunHost({ store, reconcile: opts.reconcile });
   const agentRun = opts.agentRun ?? (() => stubAgentRunClient());
 
-  // 2. Filename discovery: every `workflows/<name>.ts` default-exports an assembled Machine. The
-  //    host owns the standard `provide` that fills the template's `agentRun` slot from `agentRun`.
-  for (const { name, file } of await discoverWorkflows(opts.dir)) {
-    const mod: { default?: unknown } = await import(pathToFileURL(file).href);
+  // Bump per reload so `import()` re-reads a changed file rather than serving the ESM module cache.
+  let importGen = 0;
+  const registerFile = async (name: string, file: string): Promise<void> => {
+    const href = pathToFileURL(file).href + (importGen ? `?v=${importGen}` : "");
+    const mod: { default?: unknown } = await import(href);
     const machine = mod.default as AnyStateMachine | undefined;
     if (!machine) throw new Error(`workflow "${name}" (${file}) has no default export`);
     host.register({
@@ -84,7 +95,11 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       machine,
       provide: ({ instanceId }) => ({ actors: { agentRun: agentRunActorWith(agentRun({ instanceId })) } }),
     });
-  }
+  };
+
+  // 2. Filename discovery: every `workflows/<name>.ts` default-exports an assembled Machine. The
+  //    host owns the standard `provide` that fills the template's `agentRun` slot from `agentRun`.
+  for (const { name, file } of await discoverWorkflows(opts.dir)) await registerFile(name, file);
 
   // 3. Resume in-flight runs persisted by a prior process (ADR-0007).
   await host.restore();
@@ -100,6 +115,18 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     host,
     url: `http://${hostname}:${port}`,
     workflows: host.workflows(),
+    reload: async () => {
+      importGen++;
+      const before = new Set(host.workflows());
+      const found = await discoverWorkflows(opts.dir);
+      const foundNames = new Set(found.map((f) => f.name));
+      for (const { name, file } of found) await registerFile(name, file);
+      const removed: string[] = [];
+      for (const name of before) if (!foundNames.has(name)) (host.unregister(name), removed.push(name));
+      const added = [...foundNames].filter((n) => !before.has(n));
+      const updated = [...foundNames].filter((n) => before.has(n));
+      return { added, updated, removed, workflows: host.workflows() };
+    },
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await store.close();

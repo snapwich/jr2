@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,19 @@ import { startInstance } from "../src/instance.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
+// A workflow's parent package for module resolution; reload temp dirs live here (under the package so
+// generated files resolve `xstate`) but OUTSIDE tsconfig's `src`/`test` globs so `tsc` never sees them.
+const pkgDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Source for a throwaway single-state workflow whose `initial` state name is observable as `value`. */
+function machineSrc(id: string, initial: string): string {
+  return (
+    `import { setup } from "xstate";\n` +
+    `export default setup({ types: {} as { input: { instanceId: string } } })` +
+    `.createMachine({ id: ${JSON.stringify(id)}, initial: ${JSON.stringify(initial)}, ` +
+    `states: { ${JSON.stringify(initial)}: {} } });\n`
+  );
+}
 
 async function waitFor(pred: () => boolean | Promise<boolean>): Promise<void> {
   for (let i = 0; i < 100; i++) {
@@ -83,5 +96,42 @@ test("a fresh boot on the same store restores an in-flight run", async () => {
     assert.equal(instB.host.status(runId)?.workflow, "echo");
   } finally {
     await instB.close();
+  }
+});
+
+test("reload picks up added, changed, and removed workflow files (dev hot-reload)", async () => {
+  const dir = await mkdtemp(join(pkgDir, ".reload-"));
+  const wfDir = join(dir, "workflows");
+  await mkdir(wfDir, { recursive: true });
+  const write = (name: string, initial: string): Promise<void> =>
+    writeFile(join(wfDir, `${name}.ts`), machineSrc(name, initial));
+
+  await write("alpha", "one");
+  const inst = await startInstance({ dir, store: new SqliteSnapshotStore(":memory:") });
+  try {
+    assert.deepEqual(inst.workflows, ["alpha"]);
+
+    // Add a new file AND change an existing one, then reload once.
+    await write("beta", "ready");
+    await write("alpha", "two");
+    const added = await inst.reload();
+    assert.deepEqual(added.added, ["beta"]);
+    assert.deepEqual(added.updated, ["alpha"]);
+    assert.deepEqual(added.removed, []);
+    assert.deepEqual([...added.workflows].sort(), ["alpha", "beta"]);
+
+    // The changed code took effect: a fresh start of alpha lands in its NEW initial state (cache-bust).
+    const { runId } = await inst.host.start("alpha");
+    assert.equal(inst.host.status(runId)?.value, "two");
+
+    // Delete a file → reload drops it.
+    await rm(join(wfDir, "alpha.ts"));
+    const removed = await inst.reload();
+    assert.deepEqual(removed.removed, ["alpha"]);
+    assert.deepEqual(removed.workflows, ["beta"]);
+    await assert.rejects(inst.host.start("alpha"), /no workflow registered as "alpha"/);
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
   }
 });
