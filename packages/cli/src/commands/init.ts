@@ -88,13 +88,18 @@ node_modules/
 const PING_TS = `// The simplest j2 workflow: no Agent, no Workspace — a Machine that "just responds to the request"
 // with a plain actor. Runs end-to-end under \`j2 dev\` before any Sandbox/Harness exists. Filename
 // \`ping.ts\` → workflow "ping". Trim this down or expand it for your use case.
+//
+// Module contract (ADR-0011): named exports — \`machine\` plus an \`events\` manifest declaring the
+// events external callers may deliver to this workflow (defineEvent). Ping accepts none.
 
 import { setup, assign, fromPromise } from "xstate";
 
 type Input = { message?: string };
 type Ctx = { message: string; reply?: string };
 
-export default setup({
+export const events = [];
+
+export const machine = setup({
   types: {} as { context: Ctx; input: Input },
   actors: {
     respond: fromPromise<string, { message: string }>(async ({ input }) => \`pong: \${input.message}\`),

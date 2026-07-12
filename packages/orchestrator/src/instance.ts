@@ -3,8 +3,9 @@
 // slice-1/2/3 pieces into one process:
 //
 //   1. open the durable snapshot store (sqlite at `<dir>/.j2/state.db` by default — ADR-0009);
-//   2. filename-discover `workflows/*.ts` (each default-exports an assembled Machine → workflow name
-//      = filename, mirroring flue's `agents/<name>.ts`); register each on the RunHost;
+//   2. filename-discover `workflows/*.ts` (workflow name = filename, mirroring flue's
+//      `agents/<name>.ts`; module contract = all named exports, ADR-0011: `export const machine`
+//      + `export const events` — the manifest is a peer of the machine); register on the RunHost;
 //   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007);
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
@@ -21,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
+import type { EventDef } from "@j2/agent-protocol";
 import { agentRunActorWith } from "./actor.ts";
 import type { AgentRunPort } from "./actor.ts";
 import { stubAgentRunClient } from "./agent-run-stub.ts";
@@ -87,18 +89,27 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   let importGen = 0;
   const registerFile = async (name: string, file: string): Promise<void> => {
     const href = pathToFileURL(file).href + (importGen ? `?v=${importGen}` : "");
-    const mod: { default?: unknown } = await import(href);
-    const machine = mod.default as AnyStateMachine | undefined;
-    if (!machine) throw new Error(`workflow "${name}" (${file}) has no default export`);
+    const mod: { machine?: unknown; events?: unknown } = await import(href);
+    const machine = mod.machine as AnyStateMachine | undefined;
+    if (!machine) {
+      throw new Error(
+        `workflow "${name}" (${file}) has no \`machine\` named export ` +
+          `(module contract, ADR-0011: \`export const machine\` + \`export const events\`)`,
+      );
+    }
+    if (mod.events !== undefined && !Array.isArray(mod.events)) {
+      throw new Error(`workflow "${name}" (${file}): \`events\` export must be an array of defineEvent() defs`);
+    }
     host.register({
       name,
       machine,
+      events: mod.events as EventDef[] | undefined,
       provide: ({ instanceId }) => ({ actors: { agentRun: agentRunActorWith(agentRun({ instanceId })) } }),
     });
   };
 
-  // 2. Filename discovery: every `workflows/<name>.ts` default-exports an assembled Machine. The
-  //    host owns the standard `provide` that fills the template's `agentRun` slot from `agentRun`.
+  // 2. Filename discovery: every `workflows/<name>.ts` exports its Machine + event manifest by
+  //    name. The host owns the standard `provide` that fills the template's `agentRun` slot.
   for (const { name, file } of await discoverWorkflows(opts.dir)) await registerFile(name, file);
 
   // 3. Resume in-flight runs persisted by a prior process (ADR-0007).

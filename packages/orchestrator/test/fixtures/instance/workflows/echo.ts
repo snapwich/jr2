@@ -1,6 +1,7 @@
-// A fixture instance workflow for the bootstrap suite. By convention a `workflows/<name>.ts` file
-// default-exports an assembled Machine with an `agentRun` slot the instance host fills (here the
-// dev stub). Filename `echo.ts` → workflow name "echo". Minimal: invoke the agent, finish on `done`.
+// A fixture instance workflow for the bootstrap suite. A `workflows/<name>.ts` file exports its
+// assembled Machine by name (`export const machine` — ADR-0011), with an `agentRun` slot the
+// instance host fills (here the dev stub). Filename `echo.ts` → workflow name "echo". Minimal:
+// invoke the agent, finish on `done`. No `events` export: this fixture accepts no workflow events.
 
 import { setup, fromCallback } from "xstate";
 import { DEFAULT_CODER_MENU } from "@j2/agent-protocol";
@@ -9,7 +10,7 @@ import type { AgentRunInput, AgentRunReceiveEvent } from "../../../../src/actor.
 
 type Ctx = { instanceId: string };
 
-export default setup({
+export const machine = setup({
   types: {} as { context: Ctx; input: { instanceId: string }; events: ControlEvent },
   actors: { agentRun: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },
 }).createMachine({

@@ -7,11 +7,10 @@
 // exactly which tools exist and what they accept/return. No server, no transport here — just
 // the contract.
 //
-// Direction (ADR-0006): this fixed set is the *standard library* of control events. It will be
-// generalized into `defineAgentEvent({ name, input, output?, semantics })` so workflow authors
-// can declare custom events and bind them to Machine states — the agent drives the Machine
-// through a surface the workflow defines. The binding (tool→event→transition) is built in the
-// orchestrator slice; these tools are the first cut.
+// Direction (ADR-0011): the general mechanism is `defineEvent` (define-event.ts) — workflows
+// declare their own vocabularies; there is no j2-blessed event set. This fixed set is what the
+// current ControlPlane still consumes; it demotes to an example set built on `defineEvent` when
+// the registration-table rework lands (coding.ts GAP(2)/(4)).
 
 import { z } from "zod";
 

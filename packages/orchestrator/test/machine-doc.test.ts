@@ -127,7 +127,7 @@ test("the doc is pure JSON — a stringify round-trip is lossless", () => {
 });
 
 test("an un-provided template Machine (empty actor slot) serializes the same structure", () => {
-  // A workflow's default export references actors by name without providing them; structure must
+  // A workflow's exported `machine` references actors by name without providing them; structure must
   // still serialize (the visualizer never assembles providers).
   const template = createMachine({
     id: "tpl",

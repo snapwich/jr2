@@ -7,6 +7,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { z } from "zod";
+import { defineEvent } from "@j2/agent-protocol";
 import { RunHost } from "../src/run-host.ts";
 import { codingDef, connectMcp, mkStore, MockFlueClient, tick, waitFor } from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
@@ -31,6 +33,22 @@ test("MCP tool calls route into the owning run's Machine", async () => {
   } finally {
     await close();
   }
+});
+
+test("registration resolves the events manifest: empty scope by default, duplicates rejected", async () => {
+  const host = new RunHost({ store: await mkStore() });
+
+  host.register(codingDef(new Map()));
+  assert.equal(host.events("coding")?.size, 0); // no manifest → accepts no workflow events
+
+  const approve = defineEvent({ name: "approve", input: z.object({}) });
+  const dupe = defineEvent({ name: "approve", input: z.object({ notes: z.string() }) });
+  assert.throws(
+    () => host.register({ ...codingDef(new Map()), name: "gated", events: [approve, dupe] }),
+    /workflow "gated": duplicate event "approve"/,
+  );
+  host.register({ ...codingDef(new Map()), name: "gated", events: [approve] });
+  assert.equal(host.events("gated")?.get("approve"), approve);
 });
 
 test("offset telemetry from the flue stream is persisted into the snapshot", async () => {

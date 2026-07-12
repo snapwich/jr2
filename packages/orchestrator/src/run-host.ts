@@ -19,7 +19,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyStateMachine } from "xstate";
-import type { ControlEvent } from "@j2/agent-protocol";
+import { eventMap, type ControlEvent, type EventDef } from "@j2/agent-protocol";
 import { ControlPlane } from "./control-plane.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
@@ -33,6 +33,11 @@ export type WorkflowDef = {
   name: string;
   /** The template; slots (e.g. `agentRun`) are referenced by name and filled by `provide`. */
   machine: AnyStateMachine;
+  /**
+   * The workflow's declared event vocabulary (its `export const events` manifest — ADR-0011).
+   * Names resolve per-workflow against this set; absent means "accepts no workflow events".
+   */
+  events?: readonly EventDef[];
   /** Build this run's live providers. `controlPlane` lets a provider wire the run's MCP surface. */
   provide: (ctx: { instanceId: string; controlPlane: ControlPlane }) => RunProviders;
 };
@@ -79,6 +84,8 @@ export class RunHost {
   private readonly reconcile: (run: RunRecord) => boolean | Promise<boolean>;
   private readonly newId: () => string;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
+  /** Per-workflow name→def resolution scope, built (and validated) at registration. */
+  private readonly workflowEvents = new Map<string, Map<string, EventDef>>();
   private readonly runs = new Map<string, LiveRun>();
   private readonly byInstance = new Map<string, string>();
 
@@ -89,8 +96,11 @@ export class RunHost {
     this.controlPlane = new ControlPlane((e) => this.routeUp(e));
   }
 
-  /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload). */
+  /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
+   * The events manifest is resolved here so a malformed vocabulary (duplicate names, non-defs)
+   * fails at registration — naming the workflow — rather than at delivery. */
   register(def: WorkflowDef): void {
+    this.workflowEvents.set(def.name, eventMap(def.name, def.events ?? []));
     this.workflowDefs.set(def.name, def);
   }
 
@@ -98,6 +108,12 @@ export class RunHost {
    * runs keep their already-assembled definition; only future `start`s are affected. */
   unregister(name: string): void {
     this.workflowDefs.delete(name);
+    this.workflowEvents.delete(name);
+  }
+
+  /** A workflow's declared event vocabulary, resolved name→def (empty for an eventless workflow). */
+  events(name: string): Map<string, EventDef> | undefined {
+    return this.workflowEvents.get(name);
   }
 
   /** The names of every registered workflow (the `GET /workflows` listing — ADR-0009). */

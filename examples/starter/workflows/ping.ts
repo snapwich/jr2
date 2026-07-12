@@ -5,13 +5,18 @@
 //
 // Shape: take the run input, invoke a plain `fromPromise` actor, fold its result into context, finish.
 // `j2 run ping --input '{"message":"hi"}'` → the run reaches `done` and `j2 status` shows the reply.
+//
+// Module contract (ADR-0011): named exports — `machine` plus an `events` manifest declaring the
+// events external callers may deliver to this workflow (defineEvent). Ping accepts none.
 
 import { setup, assign, fromPromise } from "xstate";
 
 type Input = { message?: string };
 type Ctx = { message: string; reply?: string };
 
-export default setup({
+export const events = [];
+
+export const machine = setup({
   types: {} as { context: Ctx; input: Input },
   actors: {
     // A plain actor — no flue client, no Sandbox. Stands in for any non-Agent compute a workflow runs.
