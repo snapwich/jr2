@@ -1,0 +1,13 @@
+{
+  "name": "example-coding",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DESIGN ARTIFACT: the jr-parity coding workflow, written against the API j2 should have. Does not run; see README.",
+  "dependencies": {
+    "@j2/agent-protocol": "workspace:*",
+    "@j2/orchestrator": "workspace:*",
+    "xstate": "^5.18.0",
+    "zod": "^4.4.3"
+  }
+}
