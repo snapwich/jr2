@@ -18,9 +18,11 @@
 // persisted input (drop `prompt`, set `attachOffset`) rather than re-POSTing the prompt.
 
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyStateMachine } from "xstate";
 import { eventMap, type ControlEvent, type EventDef } from "@j2/agent-protocol";
 import { ControlPlane } from "./control-plane.ts";
+import { bindRun, EventValidationError, gateAddress, RegistrationTable, UnknownAddressError } from "./registration.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import { hydrateSnapshot, serializeSnapshot } from "./durability.ts";
@@ -45,8 +47,18 @@ export type WorkflowDef = {
 /** The serializable identity of a run — what reconcile sees and what restore rebuilds from. */
 export type RunRecord = { runId: string; workflow: string; instanceId: string };
 
-/** A run's current observable state. */
-export type RunStatus = RunRecord & { status: string; value: unknown; context: unknown };
+/** A run's current observable state. `fault` carries the error message when status is "error"
+ * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). */
+export type RunStatus = RunRecord & { status: string; value: unknown; context: unknown; fault?: string };
+
+/** One open gate as external callers discover it (`GET /runs/:id` — ADR-0011): the accepted
+ * events with their input schemas as JSON Schema (what drives a form or a `j2 send` prompt),
+ * plus the workflow-supplied `meta` (what a UI renders and a webhook translator matches on). */
+export type GateView = {
+  gate: string;
+  accepts: Array<{ name: string; description?: string; input: unknown }>;
+  meta?: Record<string, unknown>;
+};
 
 /**
  * One item on a run's observation feed (the `GET /runs/:id/events` SSE stream — ADR-0009). Two kinds:
@@ -66,12 +78,15 @@ export type RunHostOptions = {
 };
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs. */
-type RunBlob = { workflow: string; instanceId: string; snapshot: unknown };
+type RunBlob = { workflow: string; instanceId: string; snapshot: unknown; fault?: string };
 
 type LiveRun = {
   record: RunRecord;
   actor: AnyActor;
   def: WorkflowDef;
+  /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
+   * message is captured here at the observer and persisted onto the blob for `read`). */
+  fault?: string;
   /** Per-run observers fed by `persist()` (status) and the actor's `emit` (emit) — SSE/CLI watch. */
   listeners: Set<(e: RunFeedEvent) => void>;
 };
@@ -79,6 +94,9 @@ type LiveRun = {
 export class RunHost {
   /** The single MCP control plane; its events are routed by `instanceId` into the owning run. */
   readonly controlPlane: ControlPlane;
+  /** The internal registration table both delivery dialects share (ADR-0011). Callback actors
+   * (`gate`, and `agentRun` once the demux lands) reach it via the run binding, not this field. */
+  private readonly table = new RegistrationTable();
 
   private readonly store: SnapshotStore;
   private readonly reconcile: (run: RunRecord) => boolean | Promise<boolean>;
@@ -191,6 +209,43 @@ export class RunHost {
     this.controlPlane.resolveApproval(run.record.instanceId, decision);
   }
 
+  /** A run's open gates as callers discover them (`GET /runs/:id` — ADR-0011). Settled/unknown
+   * run → empty: a gate is a LIVE surface, it does not outlive its state. */
+  gates(runId: string): GateView[] {
+    return this.table
+      .byRun(runId)
+      .filter((reg) => reg.kind === "gate")
+      .map((reg) => ({
+        gate: reg.id,
+        accepts: [...reg.defs.values()].map((def) => ({
+          name: def.name,
+          description: def.description,
+          input: z.toJSONSchema(def.input),
+        })),
+        meta: reg.meta,
+      }));
+  }
+
+  /** Deliver one external event to a run's open gate (`POST /runs/:id/gates/:gate/events`).
+   * Validation and delivery are the table's — this only run-scopes the address. */
+  sendToGate(runId: string, gate: string, event: { type?: unknown } & Record<string, unknown>): void {
+    const { type, ...payload } = event;
+    if (typeof type !== "string" || !type) {
+      throw new EventValidationError(`event body must carry a string "type" (one of the gate's accepted names)`);
+    }
+    try {
+      this.table.deliver(gateAddress(runId, gate), type, payload);
+    } catch (err) {
+      if (err instanceof UnknownAddressError) {
+        const open = this.gates(runId).map((g) => g.gate);
+        throw new UnknownAddressError(
+          `no open gate "${gate}" on run "${runId}"${open.length ? ` (open: ${open.join(", ")})` : ""}`,
+        );
+      }
+      throw err;
+    }
+  }
+
   /** Steer a live run: queue a down-channel message the Agent pulls on `check_inbox` (ADR-0009). */
   steer(runId: string, msg: string): void {
     const run = this.runs.get(runId);
@@ -228,7 +283,7 @@ export class RunHost {
     const run = this.runs.get(runId);
     if (!run) return undefined;
     const snap = run.actor.getSnapshot();
-    return { ...run.record, status: snap.status, value: snap.value, context: snap.context };
+    return { ...run.record, status: snap.status, value: snap.value, context: snap.context, fault: run.fault };
   }
 
   /**
@@ -251,6 +306,7 @@ export class RunHost {
       status: snap.status ?? stored.status,
       value: snap.value,
       context: snap.context,
+      fault: blob.fault,
     };
   }
 
@@ -282,10 +338,28 @@ export class RunHost {
   }
 
   private track(record: RunRecord, actor: AnyActor, def: WorkflowDef): void {
+    // Bind the run's actor SYSTEM (shared by every actor in the tree, at any nesting depth) to
+    // its identity BEFORE start, so gate/agentRun registrations resolve their run mechanically —
+    // this is what run-scopes gate ids with zero workflow plumbing (ADR-0011).
+    bindRun(actor.system, {
+      runId: record.runId,
+      workflow: record.workflow,
+      events: this.workflowEvents.get(def.name) ?? new Map(),
+      table: this.table,
+    });
     const run: LiveRun = { record, actor, def, listeners: new Set() };
     this.runs.set(record.runId, run);
     this.byInstance.set(record.instanceId, record.runId);
-    actor.subscribe(() => this.persist(run));
+    actor.subscribe({
+      next: () => this.persist(run),
+      // An errored actor (an invoke threw — e.g. ADR-0011's invoke-time manifest check) reports
+      // here, not on next. Capture the message (xstate serializes the Error itself to `{}`),
+      // then persist: the snapshot's "error" status stores the run and drops it from the registry.
+      error: (err) => {
+        run.fault = err instanceof Error ? err.message : String(err);
+        this.persist(run);
+      },
+    });
     // Forward the workflow author's `emit({...})` to observers as the SSE `emit` channel. These are
     // human-facing progress/notice messages, distinct from the auto status deltas `persist()` feeds.
     actor.on("*", (emitted) => {
@@ -307,14 +381,25 @@ export class RunHost {
       stripContext: (ctx) => ctx, // see ADR-0007: live infra lives in `.provide` closures, not context
       stripChildInput: (input) => input,
     });
-    const blob: RunBlob = { workflow: run.record.workflow, instanceId: run.record.instanceId, snapshot: serialized };
+    const blob: RunBlob = {
+      workflow: run.record.workflow,
+      instanceId: run.record.instanceId,
+      snapshot: serialized,
+      fault: run.fault,
+    };
     const status = machineStatus === "active" ? "live" : machineStatus;
     void this.store.save(run.record.runId, blob, status);
 
     // Feed per-run observers (SSE/CLI watch). On the terminal transition emit the final status
     // BEFORE untrack drops the run from the registry, then drop the now-useless listener set.
     const snap = run.actor.getSnapshot();
-    const runStatus: RunStatus = { ...run.record, status: snap.status, value: snap.value, context: snap.context };
+    const runStatus: RunStatus = {
+      ...run.record,
+      status: snap.status,
+      value: snap.value,
+      context: snap.context,
+      fault: run.fault,
+    };
     for (const listener of run.listeners) listener({ kind: "status", status: runStatus });
 
     if (status !== "live") {

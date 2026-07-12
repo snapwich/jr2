@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
-import { codingDef, connectMcp, mkStore, waitFor } from "./_fixtures.ts";
+import { codingDef, connectMcp, gatedDef, mkStore, waitFor } from "./_fixtures.ts";
 
 /** A host + app pair with the `coding` workflow registered. */
 async function mkApp() {
@@ -122,4 +122,35 @@ test("SSE: GET /runs/:id/events streams a status delta on transition", async () 
     await reader.cancel();
     await close();
   }
+});
+
+test("gates over HTTP (ADR-0011): discovered on GET /runs/:id, delivered via POST, 404/400 mapped", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(gatedDef());
+  const app = createApp(host);
+  const { runId } = await host.start("gated");
+
+  // Discovery: the run status carries its open gates — names, schemas, meta.
+  const status = (await (await app.request(`/runs/${runId}`)).json()) as {
+    gates: Array<{ gate: string; accepts: Array<{ name: string }>; meta: unknown }>;
+  };
+  assert.equal(status.gates.length, 1);
+  assert.equal(status.gates[0]?.gate, "F-1");
+  assert.deepEqual(status.gates[0]?.meta, { prUrl: "https://forge/pr/1" });
+
+  // Bad payload → 400 (schema), unknown gate → 404 (with the open set named), unknown name → 400.
+  const badPayload = await app.request(`/runs/${runId}/gates/F-1/events`, jsonPost({ type: "request_changes" }));
+  assert.equal(badPayload.status, 400);
+  const unknownGate = await app.request(`/runs/${runId}/gates/F-9/events`, jsonPost({ type: "approve" }));
+  assert.equal(unknownGate.status, 404);
+  assert.match(((await unknownGate.json()) as { error: string }).error, /no open gate "F-9".*open: F-1/);
+  const unknownName = await app.request(`/runs/${runId}/gates/F-1/events`, jsonPost({ type: "merge" }));
+  assert.equal(unknownName.status, 400);
+
+  // Valid delivery transitions the gated state; the gate is destroyed with it.
+  const ok = await app.request(`/runs/${runId}/gates/F-1/events`, jsonPost({ type: "approve" }));
+  assert.equal(ok.status, 200);
+  await waitFor(() => host.status(runId)?.value === "approved");
+  const after = (await (await app.request(`/runs/${runId}`)).json()) as { gates: unknown[] };
+  assert.deepEqual(after.gates, []);
 });

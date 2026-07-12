@@ -4,10 +4,12 @@
 // Client over an in-memory transport), never bypassed.
 
 import { setup, fromCallback, assign } from "xstate";
+import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { DEFAULT_CODER_MENU } from "@j2/agent-protocol";
-import type { ControlEvent } from "@j2/agent-protocol";
+import { DEFAULT_CODER_MENU, defineEvent } from "@j2/agent-protocol";
+import type { ControlEvent, EventFrom } from "@j2/agent-protocol";
+import { gate } from "../src/gate.ts";
 import { agentRunActorWith } from "../src/actor.ts";
 import type {
   AgentRunInput,
@@ -102,6 +104,53 @@ export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
       clients.set(instanceId, client);
       return { actors: { agentRun: agentRunActorWith(client) } };
     },
+  };
+}
+
+// ---- Gate fixtures (ADR-0011): a workflow that parks on an addressable gate. -----------------
+
+export const approveDef = defineEvent({ name: "approve", input: z.object({}) });
+export const requestChangesDef = defineEvent({
+  name: "request_changes",
+  description: "Ask for changes before approving.",
+  input: z.object({ notes: z.string() }),
+});
+
+type GatedCtx = { notes?: string };
+
+/** Parks in `review` holding gate "F-1"; an external `approve`/`request_changes` moves it. The
+ * targets are non-final so the run STAYS LIVE after the gate closes (gate gone ≠ run gone). */
+export const gatedTemplate = setup({
+  types: {} as { context: GatedCtx; events: EventFrom<typeof approveDef | typeof requestChangesDef> },
+  actors: { gate },
+}).createMachine({
+  id: "gated",
+  context: {},
+  initial: "review",
+  states: {
+    review: {
+      invoke: {
+        src: "gate",
+        input: { gate: "F-1", accepts: ["approve", "request_changes"], meta: { prUrl: "https://forge/pr/1" } },
+      },
+      on: {
+        approve: "approved",
+        request_changes: { target: "changes", actions: assign({ notes: ({ event }) => event.notes }) },
+      },
+    },
+    approved: {},
+    changes: {},
+  },
+});
+
+/** The gated workflow def, with its `events` manifest (pass `events: []` to test unlisted names). */
+export function gatedDef(overrides: Partial<WorkflowDef> = {}): WorkflowDef {
+  return {
+    name: "gated",
+    machine: gatedTemplate,
+    events: [approveDef, requestChangesDef],
+    provide: () => ({}),
+    ...overrides,
   };
 }
 

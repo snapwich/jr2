@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { HttpBindings } from "@hono/node-server";
+import { EventValidationError, UnknownAddressError } from "./registration.ts";
 import type { RunHost } from "./run-host.ts";
 
 /** A `POST /runs/:id/events` body: the down-channel event plus its (type-specific) payload. */
@@ -113,11 +114,28 @@ export function createApp(host: RunHost): Hono {
   app.get("/runs", (c) => c.json(host.list()));
 
   // Read-through (ADR-0009): a completed run's final status lives in the store after the registry
-  // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404.
+  // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404. The status
+  // carries the run's OPEN GATES (ADR-0011) — the discovery listing external callers act on
+  // (`j2 send` menus, UI inbox cards, webhook translators matching on meta). Settled run → [].
   app.get("/runs/:runId", async (c) => {
     const runId = c.req.param("runId");
     const status = await host.read(runId);
-    return status ? c.json(status) : c.json({ error: `no run "${runId}"` }, 404);
+    return status ? c.json({ ...status, gates: host.gates(runId) }) : c.json({ error: `no run "${runId}"` }, 404);
+  });
+
+  // Gates delivery (ADR-0011): validate the body against the gate's named schema and deliver into
+  // the gated state. Unknown gate (never opened, state exited, run settled) → 404; a name the gate
+  // doesn't accept, or a payload failing its schema → 400 naming what IS accepted.
+  app.post("/runs/:runId/gates/:gate/events", async (c) => {
+    const body = await readJson(c.req.text());
+    try {
+      host.sendToGate(c.req.param("runId"), c.req.param("gate"), body);
+      return c.json({ ok: true });
+    } catch (err) {
+      if (err instanceof UnknownAddressError) return c.json({ error: errMessage(err) }, 404);
+      if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
+      throw err;
+    }
   });
 
   // SSE: a live run streams its status deltas + author `emit`s (current status replayed on attach,
