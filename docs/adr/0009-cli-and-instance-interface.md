@@ -9,15 +9,16 @@ shaped to mirror flue so both sides of the system speak one set of conventions.
 ```
 my-orchestrator/
   j2.config.ts     # instance config — minimal; convention over configuration (see below)
-  workflows/       # filename-discovered: workflows/coding.ts (default export = assembled Machine) → "coding"
+  workflows/       # filename-discovered: workflows/coding.ts (named exports: machine + events) → "coding"
   agents/          # filename-discovered flue createAgent personas; compose @j2/agents or define custom
   manifests/       # Deployment(replicas:1)+Service+operator RBAC+PVCs — same on kind & cluster
   .env             # local secrets; cluster uses Secret refs
   repos/           # source-of-truth: repos/<name>/default RO checkout (PoC #2); hostPath in dev, PVC deployed
 ```
 
-`workflows/<name>.ts` (default-exporting an assembled Machine) registers a workflow named `<name>`; `agents/<name>.ts`
-registers a persona — exactly mirroring flue's `agents/hello-world.ts → hello-world`. No central registry file.
+`workflows/<name>.ts` registers a workflow named `<name>` via **named exports** — `export const machine` (the assembled
+Machine) and `export const events` (its declared event vocabulary, ADR-0011); `agents/<name>.ts` registers a persona —
+exactly mirroring flue's `agents/hello-world.ts → hello-world`. No central registry file.
 
 ## Minimum config: `repos`, and the source volume
 
@@ -81,6 +82,14 @@ GET  /healthz   GET /readyz
 `POST {type:"APPROVE"}` becomes `actor.send` and releases the gate. The shape mirrors flue's "durable run addressed by
 id": `POST` to start/feed, `GET /…/:id` for status, SSE for events.
 
+**Refined by [ADR-0011](0011-workflow-defined-events.md):** the accepted event types are no longer hard-coded, and each
+`gate` invocation is an addressable **gate resource** serving _any_ external caller — humans (`j2 send`, a UI), webhook
+translators, CI. A gated state registers `{ gate, accepts: [workflow-defined events], meta }`; `GET /runs/:runId` lists
+the open gates (with schemas + `meta`), and `POST /runs/:runId/gates/:gate/events` validates the body against the named
+schema and delivers it into that state (`j2 send <runId> <gate> --event '{…}'`). Per-gate addressing exists because
+concurrent children park concurrently — a run-level events POST is ambiguous. `CANCEL` stays reserved as the run-level
+infra interrupt; `APPROVE` survives only as the answer path for a held `deferred` tool result.
+
 ## The `j2` CLI — a kubectl-like client over three resource classes
 
 `workflows` (registered Machines, static) · `runs` (durable executions, orchestrator-owned) · `workspaces` (the Sandbox
@@ -113,6 +122,15 @@ the target cluster** (kind or remote) — the data plane is never faked. Caveat:
 Orchestrator MCP callback) needs pod→orchestrator reachability. In-cluster that is the Service; with a local dev
 orchestrator it is pod→host — trivial on kind (`host.docker.internal`), but **dev against a remote cluster requires a
 tunnel**. So `dev` targets kind by default; `deploy` is how the control plane runs in a remote cluster.
+
+Second host↔cluster seam, same shape: the repos volume. A host-side orchestrator materializes `<instance>/repos/` on the
+host filesystem, but kind's `hostPath` resolves against the **node** (the kind Docker container), not the host — so the
+instance's `repos/` dir reaches Sandbox pods only if it was mapped in via `nodes[].extraMounts` **when the kind cluster
+was created** (it cannot be added later). j2 therefore owns kind cluster creation and bakes the mount in; a
+bring-your-own kind cluster must add the mount itself (documented, loud failure otherwise). Docker Desktop's default
+`/Users` sharing covers the macOS host→VM hop. There is **no stubbed workspace mode**: workflows that invoke
+`workspace()` always get real Sandboxes; the `j2 dev` localhost stub Harness (ADR-0011) serves only workspace-less test
+workflows that pass `endpoint` directly in run input.
 
 ## Settled CLI behavior (v1)
 

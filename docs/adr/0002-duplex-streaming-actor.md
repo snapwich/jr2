@@ -84,3 +84,11 @@ that wires the control plane, the Actor, and durable snapshots together:
   ([ADR-0003](0003-templates-with-injected-providers.md)/[ADR-0007](0007-durable-machine-state.md)), so the snapshot
   stays JSON-safe and restore re-attaches by rewriting the child's persisted input (drop `prompt`, set `attachOffset`)
   after reconciling against the live world.
+
+**Superseded in part by [ADR-0011](0011-workflow-defined-events.md):** the mux's _routing_ (tool call →
+`ControlPlane.onEvent` → look up the owning run by `instanceId` → `actor.send` into its **root**) is replaced by
+invoke-scoped registration — the agent actor registers its iid's toolset with handlers closing over its own `sendBack`,
+so calls land on the state that invoked the agent, at any nesting depth. The shared `/mcp/:instanceId` mount survives as
+pure transport demux (path → live closure); deferred approvals still resolve centrally; the `.provide()` injection above
+is likewise retired for the static-import doctrine (actor logic is code; live things are built per-invocation from
+serializable input such as `endpoint`).

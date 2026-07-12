@@ -72,6 +72,12 @@ execution (items can be reopened or created mid-run). Not a static FIFO queue; t
 materializing it into context. _Avoid_: queue, backlog (the backlog is the full set of items; the ready-set is the
 unblocked subset)
 
+**Gate**: A pending external input on a run — from a human or any outside system (webhook, CI) — created when a state
+invokes the `gate` actor and destroyed when the state exits. An addressable resource (`gate` id + accepted events +
+`meta` context), because concurrent children park concurrently and a caller acts on one specific decision. What
+`j2 send`, a UI inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller among many),
+approval (one possible event, not the resource)
+
 **Workspace**: A long-lived Sandbox bound to a unit of work, modeled as a child Machine. Entering the state creates the
 Sandbox and its worktree; the child Machine's states manage what happens inside (e.g. coding, review, merge); reaching
 its final state cleans up the Sandbox. Coder and reviewer Agents share one Workspace (per-feature isolation, not

@@ -98,5 +98,7 @@ redundant `default/` checkout is skipped.
   single-node kind. This is where the cloud/production-parity goal lands.
 - **`default/` refresh cadence + generation GC.** How often the canonical snapshot is rebuilt from upstream, and how old
   generations are reclaimed once their Sandboxes drain (the machinery invariant 1b requires).
-- **Branch/push-back flow.** This model covers _provisioning_ a private worktree; how a Sandbox's commits return to the
-  Work Source (push to a remote, PR, etc.) is out of scope here and is its own PoC.
+- **Branch/push-back flow.** ~~This model covers _provisioning_ a private worktree; how a Sandbox's commits return to
+  the Work Source (push to a remote, PR, etc.) is out of scope here and is its own PoC.~~ **Resolved by
+  [ADR-0012](0012-workspace-wrapper-machine.md):** commits leave via the _workflow_ (the body pushes / opens a PR before
+  its human gate), never via the workspace helper, which only attaches and destroys.

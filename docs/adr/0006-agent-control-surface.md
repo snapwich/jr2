@@ -81,6 +81,13 @@ events, what schemas, which state) is workflow configuration, not hardcoded prot
 against a real consumer, not speculatively. Today's `CALLBACK_TOOLS` and `Menu`/`assertInMenu` in `@j2/agent-protocol`
 are the first cut of the standard set and the binding guard; `defineAgentEvent` generalizes them.
 
+**Decided by [ADR-0011](0011-workflow-defined-events.md)**, with two changes of emphasis: there is no j2 "standard
+library" of events at all — `CALLBACK_TOOLS` demotes to an _example_ set built on `defineEvent`, and every event name is
+the workflow's own; and the binding is **invoke-scoped registration** (the agent actor registers its iid's toolset with
+handlers closing over its `sendBack`), which makes the state-scoped `tools/list` above fall out of the registration
+lifecycle and extends the same primitive to every external caller — humans, webhooks, CI — via addressable `gate`
+resources (`POST /runs/:runId/gates/:gate/events`). The `Menu`/`assertInMenu` guard retires with the fixed set.
+
 ## Consequences
 
 - The Actor↔Harness protocol crystallizes into a shared **contract package** (`@j2/agent-protocol`: named schemas +

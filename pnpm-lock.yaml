@@ -15,6 +15,21 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
 
+  examples/coding:
+    dependencies:
+      '@j2/agent-protocol':
+        specifier: workspace:*
+        version: link:../../packages/agent-protocol
+      '@j2/orchestrator':
+        specifier: workspace:*
+        version: link:../../packages/orchestrator
+      xstate:
+        specifier: ^5.18.0
+        version: 5.32.2
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+
   examples/starter:
     dependencies:
       '@j2/orchestrator':
@@ -852,6 +867,9 @@ packages:
     peerDependencies:
       zod: ^3.25.28 || ^4
 
+  zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -1613,5 +1631,7 @@ snapshots:
   zod-to-json-schema@3.25.2(zod@4.4.3):
     dependencies:
       zod: 4.4.3
+
+  zod@3.25.76: {}
 
   zod@4.4.3: {}
