@@ -1,6 +1,6 @@
 // The real, `@flue/sdk`-backed `AgentRunPort` (ADR-0002/0007) — the adapter that drives one Agent
-// run over flue's durable agent stream. This is the production fill for the `agentRun` slot the
-// instance host injects; `stubAgentRunClient` is its no-flue dev counterpart.
+// run over flue's durable agent stream — and the canonical `agentRun` actor built on it
+// (ADR-0011: workflows import it statically; the client is constructed from `input.endpoint`).
 //
 // This is the ONE module that imports `@flue/sdk`. Keeping it here (not in `actor.ts`) is what lets
 // the run-lifecycle actor and its unit tests stay flue-free (see actor.ts header). The adapter is
@@ -26,6 +26,7 @@
 
 import { createFlueClient } from "@flue/sdk";
 import type { AttachedAgentEvent, CreateFlueClientOptions, FlueClient as FlueSdkClient } from "@flue/sdk";
+import { agentRunActorWith } from "./actor.ts";
 import type { AgentRunPort, AgentRunInput, AgentToolCall } from "./actor.ts";
 
 /** The narrow slice of the flue SDK client this adapter depends on (the injectable seam). */
@@ -108,6 +109,15 @@ export function flueAgentRunPort(flue: FlueAgentRunDep): AgentRunPort {
 export function createFlueAgentRunClient(options: CreateFlueClientOptions): AgentRunPort {
   return flueAgentRunPort(createFlueClient(options));
 }
+
+/**
+ * THE `agentRun` actor (ADR-0011): workflows import this statically and list it in `setup`
+ * actors themselves — no host injection. Everything live is constructed per-invocation from
+ * serializable input: the flue client from `input.endpoint` (which Sandbox's Harness — or a
+ * wire-compatible dev stub; either way it's only a URL, one code path). Lives here, not in
+ * actor.ts, so the actor logic and its unit tests never load `@flue/sdk`.
+ */
+export const agentRun = agentRunActorWith((endpoint) => createFlueAgentRunClient({ baseUrl: endpoint }));
 
 /** Coerce a flue event's `args` (typed `unknown`) to the `AgentToolCall.args` record shape. */
 function asArgs(args: unknown): Record<string, unknown> | undefined {

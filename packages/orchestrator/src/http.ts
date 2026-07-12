@@ -210,21 +210,25 @@ export function createApp(host: RunHost): Hono {
     }
   });
 
-  // MCP control plane (ADR-0009 `/mcp/:instanceId`): the DOMAIN up-channel. The Agent's callback
-  // tool calls (request_review / request_approval / check_inbox / done / report_blocked) arrive here
-  // as JSON-RPC and are routed by the host's ControlPlane into the owning run's Machine.
+  // MCP control plane (ADR-0009/0011 `/mcp/:instanceId`): the DOMAIN up-channel. The Agent's tool
+  // calls arrive here as JSON-RPC; the server is built from the instance's LIVE registration in
+  // the shared table (the workflow-defined events its invoking state accepts), and delivery lands
+  // through the registration's closure — no routing.
   //
   // STATELESS PER REQUEST: every HTTP request builds a fresh transport (sessionIdGenerator: undefined
   // → no MCP session) and connects a fresh per-instance McpServer, torn down when the socket closes.
-  // This is safe — and the whole point of the host owning ONE ControlPlane — because pendingApprovals
+  // This is safe — and the whole point of the host owning ONE ControlPlane — because deferred holds
   // and inboxes live on that single ControlPlane keyed by instanceId, NOT on the per-request server.
-  // A held `request_approval` therefore survives on its own open POST stream (the SDK keeps the HTTP
-  // response open) until `host.answer → controlPlane.resolveApproval(instanceId)` writes the deferred
-  // tool result; a sibling request that drains the inbox sees the same shared queue.
+  // A held `deferred` call therefore survives on its own open POST stream (the SDK keeps the HTTP
+  // response open) until `host.answer → controlPlane.answerRun` writes the deferred tool result; a
+  // sibling request that drains the inbox sees the same shared queue.
   app.all("/mcp/:instanceId", async (c) => {
     const instanceId = c.req.param("instanceId");
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     const server = host.mcpServer(instanceId);
+    // The one catch point (ADR-0011): no live registration (settled run, exited state, unknown
+    // iid) → there is no surface to serve.
+    if (!server) return c.json({ error: `no live agent surface for instance "${instanceId}"` }, 404);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     await server.connect(transport);
 
     // Under @hono/node-server the raw Node objects ride on the context env (HttpBindings). The MCP

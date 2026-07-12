@@ -5,7 +5,6 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_CODER_MENU } from "@j2/agent-protocol";
 import { flueAgentRunPort } from "../src/flue-client.ts";
 import type { FlueAgentRunDep } from "../src/flue-client.ts";
 import type { AgentRunInput, AgentToolCall } from "../src/actor.ts";
@@ -73,8 +72,9 @@ function fakeFlue(script: Step[]): FlueAgentRunDep & {
 const baseInput: AgentRunInput = {
   agentName: "coder",
   instanceId: "inst-1",
+  endpoint: "http://harness.invalid", // the fake never dials; the real client is built from this
   prompt: "do the thing",
-  menu: DEFAULT_CODER_MENU,
+  tools: [],
 };
 
 const toolStart = (offset: string, toolName: string): Step => ({

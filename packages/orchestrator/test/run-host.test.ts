@@ -38,8 +38,8 @@ test("MCP tool calls route into the owning run's Machine", async () => {
 test("registration resolves the events manifest: empty scope by default, duplicates rejected", async () => {
   const host = new RunHost({ store: await mkStore() });
 
-  host.register(codingDef(new Map()));
-  assert.equal(host.events("coding")?.size, 0); // no manifest → accepts no workflow events
+  host.register({ ...codingDef(new Map()), name: "bare", events: undefined });
+  assert.equal(host.events("bare")?.size, 0); // no manifest → accepts no workflow events
 
   const approve = defineEvent({ name: "approve", input: z.object({}) });
   const dupe = defineEvent({ name: "approve", input: z.object({ notes: z.string() }) });

@@ -1,42 +1,50 @@
-// The run-lifecycle Actor (ADR-0002, refined for the multi-run instance): an xstate `fromCallback`
-// actor that drives one Agent run over an `AgentRunPort`. It admits (or re-attaches to) the run,
-// surfaces the durable stream's advancing offset as telemetry, accepts a down-channel CANCEL, and
-// abandons the run on stop.
+// The run-lifecycle Actor (ADR-0002/0011): an xstate `fromCallback` actor that drives one Agent
+// run. It does two things on start, and undoes both on stop:
 //
-// It does NOT translate the Agent's domain tool calls into events. Under the host-owned MCP mux
-// (ADR-0002 "Refined: multi-run instance wiring"), domain `ControlEvent`s come up the **MCP**
-// channel via the host's `ControlPlane` and are routed into the Machine by the host — not derived
-// from the flue stream here. So the channel split is concrete: this Actor owns **flue = lifecycle +
-// offset telemetry**; the ControlPlane owns **MCP = domain events**. The Actor therefore emits only
-// telemetry (`agent.offset`, `agent.fault`), never domain events.
+//   1. REGISTERS the invocation's event surface: `tools` names are resolved against the
+//      workflow's own `events` manifest (per-workflow scoping — an unlisted name fails at
+//      invoke time) and registered in the host's table under the instance's MCP address, with a
+//      deliver closure over THIS invocation's `sendBack`. The Agent's domain tool calls arrive
+//      over MCP (`/mcp/<iid>`), are validated by the table, and land on the state that invoked
+//      the agent — at any nesting depth, no routing, no `instanceId` on domain events (the
+//      closure IS the provenance). `tools/list` serves exactly this registration, so menus are
+//      state-scoped by lifecycle (ADR-0006's dynamic advertisement, for free).
 //
-// The port — `AgentRunPort`, not `@flue/sdk` — is the dependency, so the actor is unit-testable
-// without a live Harness/cluster: `agentRunActorWith(mockClient)` is the seam. `agentRunActor` binds
-// the same logic to a default port wired in the orchestrator slice — and because `@flue/sdk` is
-// never imported here, requiring this module (and the mock-driven tests) never pulls it in. (The
-// port is deliberately NOT named `FlueClient`: `@flue/sdk` exports its own, much wider, `FlueClient`,
-// which the real adapter consumes to *implement* this narrow port.)
+//   2. ADMITS the run over the Harness at `input.endpoint` — the port is constructed
+//      per-invocation from serializable input (ADR-0007/0011 doctrine), so restore re-attaches
+//      to the right Harness by rewriting the persisted child input, and a dev stub is just a
+//      different URL, never a different code path. The flue stream carries **lifecycle + offset
+//      telemetry only** (`agent.offset`, `agent.fault` — these keep `instanceId`: they are
+//      telemetry about a stream, not domain events); domain events never ride it.
+//
+// The port factory — `(endpoint) => AgentRunPort`, not `@flue/sdk` — is the dependency, so the
+// actor is unit-testable without a live Harness: `agentRunActorWith(() => mock)` is the seam,
+// and the canonical `agentRun` (bound to the real flue client) lives in flue-client.ts so this
+// module never pulls the SDK onto the test load path.
 //
 // Durable handle (ADR-0002/0007): the re-attach key is `(agentName, instanceId) + offset`. The
-// actor cannot persist anything itself (context lives in the parent Machine), so it *surfaces* the
-// advancing stream offset as an `agent.offset` telemetry event. The host folds that offset into
-// Machine context; on restore it rewrites the child's input (`attachOffset`) to resume the stream
-// instead of re-POSTing the prompt.
+// actor cannot persist anything itself (context lives in the parent Machine), so it *surfaces*
+// the advancing stream offset as `agent.offset`; the host folds it into Machine context and on
+// restore rewrites the child's input (`attachOffset`, drop `prompt`) to resume, not re-prompt.
 
 import { fromCallback } from "xstate";
-import type { Menu } from "@j2/agent-protocol";
+import { mcpAddress, resolveAccepts, runBindingOf } from "./registration.ts";
 
-/** What the actor is invoked with: the durable handle plus this turn's prompt and menu. */
+/** What the actor is invoked with: the durable handle, the Harness, and this turn's surface. */
 export type AgentRunInput = {
   agentName: string;
   instanceId: string;
+  /** The Harness base URL (which Sandbox). Rides the persisted child input so restore
+   * re-attaches to the right Harness; a dev stub is just a different URL (ADR-0011). */
+  endpoint: string;
   prompt?: string;
   /**
    * Resume the durable stream from this opaque offset (re-attach) instead of admitting a fresh
    * prompt. Set by the host on restore (which also drops `prompt`); see {@link AgentToolCall.offset}.
    */
   attachOffset?: string;
-  menu: Menu;
+  /** Event names (from the workflow's `events` manifest) this invocation accepts over MCP. */
+  tools: readonly string[];
 };
 
 /** One raw Agent stream tool call surfaced by the port, paired with its stream offset. */
@@ -68,7 +76,8 @@ export type FaultTelemetry = {
   reason: string;
 };
 
-/** Everything the actor sends up to the parent Machine — telemetry only, never domain events. */
+/** What the actor itself originates upward — telemetry. Domain events also flow through its
+ * `sendBack`, but they are the registration table's deliveries, typed by the workflow's defs. */
 export type AgentRunUpEvent = OffsetTelemetry | FaultTelemetry;
 
 /** The only event the parent sends down: an interrupt that abandons the run. */
@@ -76,37 +85,55 @@ export type AgentRunReceiveEvent = { type: "CANCEL" };
 
 /**
  * The port the Actor drives. Narrow by design — admit a run (handing it a sink for the run's
- * stream tool calls) and abandon it — so a test can supply a synthetic client and feed tool calls
- * by hand. The real, `@flue/sdk`-backed implementation is composed in the orchestrator slice and is
- * never needed at test time.
+ * stream tool calls) and abandon it — so a test can supply a synthetic client and feed tool
+ * calls by hand. The real, `@flue/sdk`-backed implementation lives in flue-client.ts.
  */
 export interface AgentRunPort {
   /**
    * Admit (or, when `input.attachOffset` is set, re-attach to) a run, invoking `onToolCall` for
-   * each stream tool call until the run settles. Resolving means the stream ended; rejecting means
-   * it faulted.
+   * each stream tool call until the run settles. Resolving means the stream ended; rejecting
+   * means it faulted.
    */
   admit(input: AgentRunInput, onToolCall: (call: AgentToolCall) => void): Promise<void>;
   /** Abandon the run (flue exposes no cancel primitive — drop and let durability reap it). */
   cancel(instanceId: string): Promise<void>;
 }
 
+/** Build a port for one invocation from its serializable input (ADR-0011 static-import doctrine). */
+export type AgentRunPortFactory = (endpoint: string) => AgentRunPort;
+
 /**
- * Build the run-lifecycle actor logic over an injected `AgentRunPort`.
+ * Build the run-lifecycle actor logic over an injected port factory.
  *
- * On start it admits the run, then for each stream tool call sends up an `agent.offset` telemetry
- * event carrying the new offset (so the host persists the durable handle). A `CANCEL` received from
- * the parent (or the actor being stopped) abandons the run via the port; a stream fault surfaces as
- * `agent.fault` so the Machine can react rather than hang on a dead stream.
+ * On start it registers the invocation's event surface, then admits the run; each stream tool
+ * call sends up an `agent.offset` telemetry event (so the host persists the durable handle). A
+ * `CANCEL` from the parent (or the actor being stopped) abandons the run and destroys the
+ * registration; a stream fault surfaces as `agent.fault` so the Machine can react rather than
+ * hang on a dead stream.
  */
-export function agentRunActorWith(client: AgentRunPort) {
-  return fromCallback<AgentRunReceiveEvent, AgentRunInput>(({ input, sendBack, receive }) => {
+export function agentRunActorWith(portFactory: AgentRunPortFactory) {
+  return fromCallback<AgentRunReceiveEvent, AgentRunInput>(({ input, system, sendBack, receive }) => {
     const { instanceId } = input;
+
+    // Register this invocation's event surface (throws on a name outside the manifest —
+    // ADR-0011's invoke-time check — which errors the run loudly at the invoking state).
+    const binding = runBindingOf(system);
+    const dispose = binding.table.register({
+      address: mcpAddress(instanceId),
+      runId: binding.runId,
+      kind: "agent",
+      id: instanceId,
+      defs: resolveAccepts(binding, input.tools),
+      deliver: (event) => sendBack(event),
+    });
+
+    const client = portFactory(input.endpoint);
     let stopped = false;
 
     const abandon = () => {
       if (stopped) return;
       stopped = true;
+      dispose();
       void client.cancel(instanceId).catch(() => {});
     };
 
@@ -115,8 +142,8 @@ export function agentRunActorWith(client: AgentRunPort) {
       if (event.type === "CANCEL") abandon();
     });
 
-    // Up-channel: the flue stream carries lifecycle + offset, not domain events. Every tool call
-    // advances the offset; the host persists it as the durable re-attach handle.
+    // Up-channel: the flue stream carries lifecycle + offset, not domain events. Every tool
+    // call advances the offset; the host persists it as the durable re-attach handle.
     const onToolCall = (call: AgentToolCall) => {
       if (stopped) return;
       sendBack({ type: "agent.offset", instanceId, offset: call.offset } satisfies OffsetTelemetry);
@@ -140,21 +167,3 @@ export function agentRunActorWith(client: AgentRunPort) {
     return abandon;
   });
 }
-
-/**
- * The default port. The real, durable-stream-backed adapter is composed in the orchestrator slice
- * with the full `(agentName, instanceId)` handle; binding it here would pull `@flue/sdk` onto the
- * module-load path and into every unit test. So the default throws, and any real run supplies its
- * port via `agentRunActorWith` (the instance host injects the flue adapter or a dev stub).
- */
-const defaultAgentRunPort: AgentRunPort = {
-  async admit(): Promise<void> {
-    throw new Error("the default AgentRunPort is wired by the instance host; inject a port via agentRunActorWith");
-  },
-  async cancel(): Promise<void> {
-    // No-op: flue exposes no cancel primitive (ADR-0002 / PoC #4); durability reaps the run.
-  },
-};
-
-/** Default actor logic over the host-wired AgentRunPort. */
-export const agentRunActor = agentRunActorWith(defaultAgentRunPort);

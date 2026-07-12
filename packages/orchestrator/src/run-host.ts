@@ -1,16 +1,20 @@
 // The Machine host: runs an xstate Machine as a durable run and wires the three slice-1 modules
 // together (ADR-0002/0003/0007). It is the integration seam the modules left open.
 //
-// Wiring (host-owned MCP mux — ADR-0002 "Refined: multi-run instance"):
-//   - The host owns ONE ControlPlane. Each run's tool server (`controlPlane.server(instanceId)`)
-//     is exposed via `mcpServer(instanceId)` for the hono slice to mount on `/mcp/:instanceId`.
-//   - Domain tool calls arrive over MCP → `ControlPlane.onEvent(event)` (carrying `instanceId`) →
-//     `routeUp` looks up the owning run → `actor.send(event)` into that Machine. (MCP = domain.)
+// Wiring (ADR-0011 registration table — no routing layer):
+//   - The host owns ONE RegistrationTable and binds each run's actor system to it at track time;
+//     `gate` and `agentRun` register their invocation's event surface there, with deliver
+//     closures over their own `sendBack` — so delivery lands on the invoking state at any
+//     nesting depth and the host routes nothing.
+//   - The ControlPlane is the MCP dialect adapter over the table: `mcpServer(instanceId)` builds
+//     a server from the iid's LIVE registration for the hono slice to mount on `/mcp/:iid` (no
+//     registration → no server → 404, the one catch point). The gates HTTP routes are the other
+//     adapter (`gates` / `sendToGate`).
 //   - The run's `agentRun` child surfaces `agent.offset` telemetry UP to its own parent Machine
 //     directly via `sendBack`; the Machine `assign`s it into context so the durable handle rides
-//     in the snapshot. (flue stream = offset/telemetry.)
-//   - Deferred approvals are answered centrally: `answer(runId, decision)` →
-//     `controlPlane.resolveApproval(instanceId, decision)` releases the Agent's blocked tool call.
+//     in the snapshot. (flue stream = offset/telemetry; MCP = domain events.)
+//   - A held `deferred` tool result is answered centrally: `answer(runId, decision)` →
+//     `controlPlane.answerRun` releases the Agent's blocked call.
 //
 // Durability (ADR-0007): a snapshot is persisted after every transition. Live infrastructure (the
 // FlueClient-backed `agentRun` actor) is injected via `.provide()` at start AND restore, never
@@ -20,7 +24,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyStateMachine } from "xstate";
-import { eventMap, type ControlEvent, type EventDef } from "@j2/agent-protocol";
+import { eventMap, type EventDef } from "@j2/agent-protocol";
 import { ControlPlane } from "./control-plane.ts";
 import { bindRun, EventValidationError, gateAddress, RegistrationTable, UnknownAddressError } from "./registration.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
@@ -92,10 +96,10 @@ type LiveRun = {
 };
 
 export class RunHost {
-  /** The single MCP control plane; its events are routed by `instanceId` into the owning run. */
+  /** The MCP dialect adapter over the registration table (deferred holds + inboxes live there). */
   readonly controlPlane: ControlPlane;
   /** The internal registration table both delivery dialects share (ADR-0011). Callback actors
-   * (`gate`, and `agentRun` once the demux lands) reach it via the run binding, not this field. */
+   * (`gate`, `agentRun`) reach it via the run binding, not this field. */
   private readonly table = new RegistrationTable();
 
   private readonly store: SnapshotStore;
@@ -105,13 +109,12 @@ export class RunHost {
   /** Per-workflow name→def resolution scope, built (and validated) at registration. */
   private readonly workflowEvents = new Map<string, Map<string, EventDef>>();
   private readonly runs = new Map<string, LiveRun>();
-  private readonly byInstance = new Map<string, string>();
 
   constructor(opts: RunHostOptions) {
     this.store = opts.store;
     this.reconcile = opts.reconcile ?? (() => true);
     this.newId = opts.newId ?? (() => randomUUID());
-    this.controlPlane = new ControlPlane((e) => this.routeUp(e));
+    this.controlPlane = new ControlPlane(this.table);
   }
 
   /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
@@ -202,11 +205,11 @@ export class RunHost {
     return { reattached, lost };
   }
 
-  /** Answer a run's outstanding `request_approval` (ADR-0009 human-in-the-loop down-channel). */
+  /** Answer a run's outstanding held `deferred` tool call (ADR-0009 APPROVE down-channel). */
   answer(runId: string, decision: string): void {
     const run = this.runs.get(runId);
     if (!run) throw new Error(`no active run "${runId}"`);
-    this.controlPlane.resolveApproval(run.record.instanceId, decision);
+    this.controlPlane.answerRun(runId, { decision });
   }
 
   /** A run's open gates as callers discover them (`GET /runs/:id` — ADR-0011). Settled/unknown
@@ -246,11 +249,11 @@ export class RunHost {
     }
   }
 
-  /** Steer a live run: queue a down-channel message the Agent pulls on `check_inbox` (ADR-0009). */
+  /** Steer a live run: queue a down-channel message its Agent pulls on its next poll (ADR-0009). */
   steer(runId: string, msg: string): void {
     const run = this.runs.get(runId);
     if (!run) throw new Error(`no active run "${runId}"`);
-    this.controlPlane.enqueueInbox(run.record.instanceId, msg);
+    this.controlPlane.steerRun(runId, msg);
   }
 
   /**
@@ -273,7 +276,8 @@ export class RunHost {
     return () => run.listeners.delete(listener);
   }
 
-  /** The MCP server for a run's instance — the hono slice mounts this on `/mcp/:instanceId`. */
+  /** The MCP server over an instance's LIVE registration — mounted on `/mcp/:instanceId`.
+   * Undefined when nothing is registered (settled run, exited state): the one catch point. */
   mcpServer(instanceId: string) {
     return this.controlPlane.server(instanceId);
   }
@@ -330,13 +334,6 @@ export class RunHost {
     return def.machine.provide(providers as Parameters<AnyStateMachine["provide"]>[0]);
   }
 
-  /** Route a domain ControlEvent from the MCP plane into the Machine that owns its instance. */
-  private routeUp(event: ControlEvent): void {
-    const runId = this.byInstance.get(event.instanceId);
-    if (!runId) return; // orphaned event (run already settled / unknown instance) — the catch point
-    this.runs.get(runId)?.actor.send(event);
-  }
-
   private track(record: RunRecord, actor: AnyActor, def: WorkflowDef): void {
     // Bind the run's actor SYSTEM (shared by every actor in the tree, at any nesting depth) to
     // its identity BEFORE start, so gate/agentRun registrations resolve their run mechanically —
@@ -349,7 +346,6 @@ export class RunHost {
     });
     const run: LiveRun = { record, actor, def, listeners: new Set() };
     this.runs.set(record.runId, run);
-    this.byInstance.set(record.instanceId, record.runId);
     actor.subscribe({
       next: () => this.persist(run),
       // An errored actor (an invoke threw — e.g. ADR-0011's invoke-time manifest check) reports
@@ -370,7 +366,6 @@ export class RunHost {
 
   private untrack(record: RunRecord): void {
     this.runs.delete(record.runId);
-    this.byInstance.delete(record.instanceId);
   }
 
   /** Persist the run's snapshot after a transition; drop it from the registry once final. */

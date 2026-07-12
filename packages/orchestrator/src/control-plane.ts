@@ -1,124 +1,111 @@
-// The control plane: builds a per-run MCP server from the shared callback toolset and turns
-// incoming tool calls into `ControlEvent`s (ADR-0002/0006). Holds `request_approval` calls
-// open until the Machine answers via `resolveApproval`, and serves `check_inbox` polls from
-// the per-instance inbox fed by `enqueueInbox`.
+// The MCP dialect adapter (ADR-0011): serves each agent instance's registered event surface as
+// an MCP toolset. This is one of the two adapters over the shared registration table — lookup,
+// schema validation, and delivery are the TABLE's; this module only translates them onto the
+// MCP wire and implements the per-semantics call behavior:
 //
-// One MCP endpoint per run (addressing.ts): each `server(instanceId)` builds a fresh McpServer
-// whose tool handlers are closed over that instance id, so every up-event carries the run it
-// came from. The callback toolset is the single source of truth — we register EVERY tool in
-// CALLBACK_TOOLS, using each tool's zod input object's `.shape` as the raw shape the SDK wants.
+//   - `ack`      deliver the event, acknowledge immediately;
+//   - `deferred` deliver the event, hold the tool result open until the Machine answers
+//                (`answerRun`) — the solicited down-channel;
+//   - `poll`     drain the instance's inbox (cooperative steer checkpoint); delivers nothing.
+//
+// `server(instanceId)` builds a FRESH McpServer from the table's LIVE registration, so
+// `tools/list` serves exactly what the current state accepts — a transition swaps registrations,
+// which swaps the served toolset (ADR-0006's dynamic advertisement, for free). A call for an
+// unregistered iid (settled run, exited state) finds no server: the one catch point.
+//
+// Deferred holds and inboxes live HERE (keyed by iid), not on per-request servers: the HTTP
+// layer builds a server per request (stateless), and a held `request_approval` must survive on
+// its own open POST stream while a sibling request drains the same inbox.
 
+import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { CALLBACK_TOOLS } from "@j2/agent-protocol";
-import type { ControlEvent } from "@j2/agent-protocol";
+import type { EventDef } from "@j2/agent-protocol";
+import { mcpAddress, type Registration, type RegistrationTable } from "./registration.ts";
 
 export class ControlPlane {
-  /** instanceId → the resolver of its single outstanding `request_approval` call. */
-  private readonly pendingApprovals = new Map<string, (decision: string) => void>();
-  /** instanceId → queued down-channel messages drained on the next `check_inbox` poll. */
+  private readonly table: RegistrationTable;
+  /** instanceId → the resolver of its single outstanding deferred call (+ its run, for answer-by-run). */
+  private readonly pending = new Map<string, { runId: string; resolve: (payload: Record<string, unknown>) => void }>();
+  /** instanceId → queued down-channel messages drained on the next `poll` call. */
   private readonly inboxes = new Map<string, string[]>();
-  /** Sink the mapped up-events are pushed to. */
-  private readonly onEvent: (e: ControlEvent) => void;
 
-  constructor(onEvent: (e: ControlEvent) => void) {
-    this.onEvent = onEvent;
+  constructor(table: RegistrationTable) {
+    this.table = table;
   }
 
-  /** Build the MCP server that hosts the callback toolset for one run's instance id. */
-  server(instanceId: string): McpServer {
-    const server = new McpServer({ name: "j2-control-plane", version: "0.0.0" });
+  /** Build an MCP server over the instance's LIVE registration; undefined when there is none. */
+  server(instanceId: string): McpServer | undefined {
+    const reg = this.table.lookup(mcpAddress(instanceId));
+    if (!reg) return undefined;
 
-    for (const tool of Object.values(CALLBACK_TOOLS)) {
+    const server = new McpServer({ name: "j2-control-plane", version: "0.0.0" });
+    for (const def of reg.defs.values()) {
       server.registerTool(
-        tool.name,
+        def.name,
         {
-          description: tool.description,
-          inputSchema: tool.input.shape,
-          outputSchema: tool.output.shape,
+          description: def.description,
+          inputSchema: def.input.shape,
+          ...(def.output instanceof z.ZodObject ? { outputSchema: def.output.shape } : {}),
         },
-        // The SDK has already validated `args` against `tool.input` by the time we run.
-        (args: Record<string, unknown>): CallToolResult | Promise<CallToolResult> =>
-          this.handle(instanceId, tool.name, args),
+        // The SDK has validated `args` against `def.input`; the table validates again on deliver
+        // (one shared behavior for both dialects — cheap, and the MCP path is not special).
+        (args: Record<string, unknown>): CallToolResult | Promise<CallToolResult> => this.handle(reg, def, args),
       );
     }
-
     return server;
   }
 
-  /** Answer a held `request_approval` call for the given instance with the Machine's decision. */
-  resolveApproval(instanceId: string, decision: string): void {
-    const resolve = this.pendingApprovals.get(instanceId);
-    if (!resolve) {
-      throw new Error(`no pending approval for instance "${instanceId}"`);
+  /** Answer the run's outstanding deferred call with the Machine's payload (ADR-0009 APPROVE). */
+  answerRun(runId: string, payload: Record<string, unknown>): void {
+    const held = [...this.pending.entries()].filter(([, p]) => p.runId === runId);
+    if (held.length === 0) throw new Error(`no pending deferred call on run "${runId}"`);
+    if (held.length > 1) {
+      throw new Error(`run "${runId}" holds ${held.length} pending deferred calls — answer by instance instead`);
     }
-    this.pendingApprovals.delete(instanceId);
-    resolve(decision);
+    const [instanceId, entry] = held[0] as [string, { runId: string; resolve: (p: Record<string, unknown>) => void }];
+    this.pending.delete(instanceId);
+    entry.resolve(payload);
   }
 
-  /** Queue a down-channel message the Agent will pull on its next `check_inbox` poll. */
-  enqueueInbox(instanceId: string, msg: string): void {
-    const queue = this.inboxes.get(instanceId);
-    if (queue) {
-      queue.push(msg);
-    } else {
-      this.inboxes.set(instanceId, [msg]);
+  /** Queue a down-channel message for the run's live agent; drained on its next `poll` call. */
+  steerRun(runId: string, msg: string): void {
+    const agents = this.table.byRun(runId).filter((r) => r.kind === "agent");
+    if (agents.length === 0) throw new Error(`no live agent surface on run "${runId}" to steer`);
+    if (agents.length > 1) {
+      throw new Error(`run "${runId}" has ${agents.length} live agent surfaces — steer by instance instead`);
     }
+    const id = (agents[0] as Registration).id;
+    const queue = this.inboxes.get(id);
+    if (queue) queue.push(msg);
+    else this.inboxes.set(id, [msg]);
   }
 
-  /** Translate one tool call into its up-event / deferred-result / poll-drain behavior. */
+  /** Per-semantics call behavior; the delivery itself is the shared table's. */
   private handle(
-    instanceId: string,
-    name: string,
+    reg: Registration,
+    def: EventDef,
     args: Record<string, unknown>,
   ): CallToolResult | Promise<CallToolResult> {
-    switch (name) {
-      case "done": {
-        this.onEvent({
-          type: "agent.done",
-          instanceId,
-          summary: args.summary as string | undefined,
-        });
-        return ack();
+    switch (def.semantics) {
+      case "ack": {
+        this.table.deliver(reg.address, def.name, args);
+        return structured({ ok: true });
       }
-      case "request_review": {
-        this.onEvent({
-          type: "agent.requestReview",
-          instanceId,
-          summary: args.summary as string,
-        });
-        return ack();
-      }
-      case "report_blocked": {
-        this.onEvent({
-          type: "agent.reportBlocked",
-          instanceId,
-          reason: args.reason as string,
-        });
-        return ack();
-      }
-      case "request_approval": {
-        this.onEvent({
-          type: "agent.requestApproval",
-          instanceId,
-          action: args.action as string,
-          reason: args.reason as string | undefined,
-        });
-        // Deferred: hold the tool result open until `resolveApproval` answers for this instance.
-        if (this.pendingApprovals.has(instanceId)) {
-          throw new Error(`approval already pending for instance "${instanceId}"`);
+      case "deferred": {
+        if (this.pending.has(reg.id)) {
+          throw new Error(`a deferred call is already pending for instance "${reg.id}"`);
         }
+        this.table.deliver(reg.address, def.name, args);
         return new Promise<CallToolResult>((resolve) => {
-          this.pendingApprovals.set(instanceId, (decision) => resolve(structured({ decision })));
+          this.pending.set(reg.id, { runId: reg.runId, resolve: (payload) => resolve(structured(payload)) });
         });
       }
-      case "check_inbox": {
-        const messages = this.inboxes.get(instanceId) ?? [];
-        this.inboxes.set(instanceId, []);
+      case "poll": {
+        const messages = this.inboxes.get(reg.id) ?? [];
+        this.inboxes.set(reg.id, []);
         return structured({ messages });
       }
-      default:
-        throw new Error(`unknown callback tool "${name}"`);
     }
   }
 }
@@ -129,9 +116,4 @@ function structured(payload: Record<string, unknown>): CallToolResult {
     content: [{ type: "text", text: JSON.stringify(payload) }],
     structuredContent: payload,
   };
-}
-
-/** The shared `{ ok: true }` acknowledgement result for fire-and-ack tools. */
-function ack(): CallToolResult {
-  return structured({ ok: true });
 }

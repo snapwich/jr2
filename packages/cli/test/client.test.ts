@@ -56,8 +56,11 @@ test("read() is undefined for an unknown run", async () => {
   assert.equal(await client.read("nope"), undefined);
 });
 
-test("send() feeds a down-channel event into a live run", async () => {
+test("send() surfaces the host's answer — a steer with no live agent surface is refused", async () => {
   const { client } = await mkHarness();
   const { runId } = await client.start("loop");
-  await client.send(runId, { type: "STEER", message: "hi" }); // resolves (queues inbox) — no throw
+  // `loop` invokes no agent, so there is no surface to steer: the host refuses (ADR-0011 — the
+  // inbox is an agent registration's, not a run-wide void). The positive path is covered by the
+  // orchestrator suite, where a real agent registration is live.
+  await assert.rejects(() => client.send(runId, { type: "STEER", message: "hi" }), /no live agent surface/);
 });

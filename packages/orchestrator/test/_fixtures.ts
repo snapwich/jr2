@@ -7,8 +7,8 @@ import { setup, fromCallback, assign } from "xstate";
 import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { DEFAULT_CODER_MENU, defineEvent } from "@j2/agent-protocol";
-import type { ControlEvent, EventFrom } from "@j2/agent-protocol";
+import { defineEvent, exampleEvents, doneEvent, requestReviewEvent, requestApprovalEvent } from "@j2/agent-protocol";
+import type { EventFrom } from "@j2/agent-protocol";
 import { gate } from "../src/gate.ts";
 import { agentRunActorWith } from "../src/actor.ts";
 import type {
@@ -16,6 +16,7 @@ import type {
   AgentRunPort,
   AgentRunReceiveEvent,
   AgentToolCall,
+  FaultTelemetry,
   OffsetTelemetry,
 } from "../src/actor.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
@@ -41,9 +42,18 @@ export class MockFlueClient implements AgentRunPort {
 
 export type Ctx = { instanceId: string; offsets: Record<string, string>; summary?: string; action?: string };
 
-/** A minimal real template standing in for a coding workflow. `agentRun` is a noop slot the host fills. */
+/** A minimal real template standing in for a coding workflow, on the example event set
+ * (ADR-0011: the events are the WORKFLOW's vocabulary — `request_review`, not a j2 name).
+ * `agentRun` is a noop slot; tests fill it with a MockFlueClient port via `provide`. */
 export const codingTemplate = setup({
-  types: {} as { context: Ctx; input: { instanceId: string }; events: ControlEvent | OffsetTelemetry },
+  types: {} as {
+    context: Ctx;
+    input: { instanceId: string };
+    events:
+      | EventFrom<typeof doneEvent | typeof requestReviewEvent | typeof requestApprovalEvent>
+      | OffsetTelemetry
+      | FaultTelemetry;
+  },
   actors: { agentRun: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },
 }).createMachine({
   id: "m",
@@ -57,8 +67,9 @@ export const codingTemplate = setup({
         input: ({ context }): AgentRunInput => ({
           agentName: "coder",
           instanceId: context.instanceId,
+          endpoint: "http://harness.invalid", // the mock port never dials it
           prompt: "do work",
-          menu: DEFAULT_CODER_MENU,
+          tools: ["done", "request_review", "request_approval", "check_inbox"],
         }),
       },
       initial: "running",
@@ -73,19 +84,19 @@ export const codingTemplate = setup({
       states: {
         running: {
           on: {
-            "agent.requestReview": { target: "review", actions: assign({ summary: ({ event }) => event.summary }) },
-            "agent.requestApproval": {
+            request_review: { target: "review", actions: assign({ summary: ({ event }) => event.summary }) },
+            request_approval: {
               target: "awaitingApproval",
               actions: assign({ action: ({ event }) => event.action }),
             },
-            "agent.done": "#m.done",
+            done: "#m.done",
           },
         },
-        review: { on: { "agent.done": "#m.done" } },
+        review: { on: { done: "#m.done" } },
         awaitingApproval: {
           on: {
-            "agent.requestReview": { target: "review", actions: assign({ summary: ({ event }) => event.summary }) },
-            "agent.done": "#m.done",
+            request_review: { target: "review", actions: assign({ summary: ({ event }) => event.summary }) },
+            done: "#m.done",
           },
         },
       },
@@ -99,10 +110,11 @@ export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
   return {
     name: "coding",
     machine: codingTemplate,
+    events: [...exampleEvents],
     provide: ({ instanceId }) => {
       const client = new MockFlueClient();
       clients.set(instanceId, client);
-      return { actors: { agentRun: agentRunActorWith(client) } };
+      return { actors: { agentRun: agentRunActorWith(() => client) } };
     },
   };
 }
@@ -160,10 +172,11 @@ export async function mkStore(): Promise<SnapshotStore> {
   return store;
 }
 
-/** Connect a real MCP Client to a run's control-plane server. */
+/** Connect a real MCP Client to a run's control-plane server (throws if nothing is registered). */
 export async function connectMcp(
   server: ReturnType<RunHost["mcpServer"]>,
 ): Promise<{ client: Client; close: () => Promise<void> }> {
+  if (!server) throw new Error("connectMcp: no live registration for that instance");
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test-agent", version: "0.0.0" });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);

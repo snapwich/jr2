@@ -9,12 +9,11 @@
 //   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007);
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
-// The one design point worth stating: a workflow file ships only a *template* Machine with an
-// `agentRun` slot (by convention). It does NOT know how that slot is filled. The instance host owns
-// the single, standard `provide` that injects the run-lifecycle actor built from the instance's
-// AgentRunPort — the real `@flue/sdk` adapter when deployed, or a dev stub (`stubAgentRunClient`)
-// so the orchestrator boots and serves without a live Harness. Workflows stay infra-agnostic; the
-// host owns the wiring (ADR-0003 provider injection).
+// The one design point worth stating (ADR-0011 static-import doctrine): a workflow module is
+// self-contained — it imports `agentRun`/`gate` itself and lists them in its own `setup` actors;
+// everything live is constructed per-invocation from serializable input (the flue client from
+// `input.endpoint`). The host injects NOTHING into workflow machines; `WorkflowDef.provide`
+// remains a seam for tests, not a wiring obligation.
 
 import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -23,17 +22,11 @@ import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
 import type { EventDef } from "@j2/agent-protocol";
-import { agentRunActorWith } from "./actor.ts";
-import type { AgentRunPort } from "./actor.ts";
-import { stubAgentRunClient } from "./agent-run-stub.ts";
 import { createApp } from "./http.ts";
 import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
-
-/** Build the AgentRunPort that fills a run's `agentRun` slot. Default: the no-flue dev stub. */
-export type AgentRunFactory = (ctx: { instanceId: string }) => AgentRunPort;
 
 export type InstanceOptions = {
   /** The instance folder (holds `workflows/`, and `.j2/state.db` unless `store` is supplied). */
@@ -46,8 +39,6 @@ export type InstanceOptions = {
   store?: SnapshotStore;
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
-  /** Fill each run's `agentRun` slot. Default: `stubAgentRunClient` (boots without a live flue). */
-  agentRun?: AgentRunFactory;
 };
 
 /** What changed on a `reload()` — the diff against the previously-registered set. */
@@ -83,7 +74,6 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   await store.init();
 
   const host = new RunHost({ store, reconcile: opts.reconcile });
-  const agentRun = opts.agentRun ?? (() => stubAgentRunClient());
 
   // Bump per reload so `import()` re-reads a changed file rather than serving the ESM module cache.
   let importGen = 0;
@@ -104,12 +94,13 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       name,
       machine,
       events: mod.events as EventDef[] | undefined,
-      provide: ({ instanceId }) => ({ actors: { agentRun: agentRunActorWith(agentRun({ instanceId })) } }),
+      // Nothing to inject (ADR-0011): the module imports its own actors; live clients are built
+      // per-invocation from input. `provide` stays a test seam on WorkflowDef, unused here.
+      provide: () => ({}),
     });
   };
 
-  // 2. Filename discovery: every `workflows/<name>.ts` exports its Machine + event manifest by
-  //    name. The host owns the standard `provide` that fills the template's `agentRun` slot.
+  // 2. Filename discovery: every `workflows/<name>.ts` exports its Machine + event manifest by name.
   for (const { name, file } of await discoverWorkflows(opts.dir)) await registerFile(name, file);
 
   // 3. Resume in-flight runs persisted by a prior process (ADR-0007).
