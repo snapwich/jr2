@@ -10,6 +10,8 @@
 // Agent do NOT come through here — they arrive over MCP on `/mcp/:instanceId` (mounted separately
 // onto this same app), routed by the host's ControlPlane.
 
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -43,6 +45,29 @@ function errMessage(err: unknown): string {
 // handler yields the response to the transport. (ADR-0009.)
 const MCP_ALREADY_SENT = new Response(null, { headers: { "x-hono-already-sent": "true" } });
 
+// ---- Visualizer assets (`/viz/*`) -----------------------------------------------------------
+// The browser page that renders a workflow's Machine. Plain .html/.js/.css shipped inside this
+// package (browsers don't type-strip TS) plus the vendored elkjs layout bundle, all read from
+// disk — no CDN, no build step. `serveStatic` is deliberately avoided: its root is cwd-relative,
+// and this package is a library that must serve its own files wherever the process starts.
+
+const VIZ_DIR = new URL("../viz/", import.meta.url);
+
+/** The vendored elkjs bundle, resolved through THIS package's dep edge (pnpm-safe), read once. */
+let elkBundle: Promise<Buffer> | undefined;
+function readElkBundle(): Promise<Buffer> {
+  // elkjs ships no `exports` map today, so the subpath resolves; if a future version adds one,
+  // switch to resolving "elkjs/package.json" and joining "lib/elk.bundled.js".
+  elkBundle ??= readFile(createRequire(import.meta.url).resolve("elkjs/lib/elk.bundled.js"));
+  return elkBundle;
+}
+
+/** Serve one file of the viz page with its content type. */
+async function vizAsset(rel: string, contentType: string): Promise<Response> {
+  const body = await readFile(new URL(rel, VIZ_DIR));
+  return new Response(new Uint8Array(body), { headers: { "content-type": contentType } });
+}
+
 /** Build the orchestrator HTTP app over a `RunHost` (ADR-0009 route table). */
 export function createApp(host: RunHost): Hono {
   const app = new Hono();
@@ -63,6 +88,27 @@ export function createApp(host: RunHost): Hono {
       return c.json({ error: errMessage(err) }, 404);
     }
   });
+
+  // The registered template Machine's structure — what the visualizer renders (structure is
+  // provider-independent, so the un-`provide()`d template is exactly right).
+  app.get("/workflows/:name/machine", (c) => {
+    const name = c.req.param("name");
+    const doc = host.machine(name);
+    return doc ? c.json(doc) : c.json({ error: `no workflow "${name}"` }, 404);
+  });
+
+  // The visualizer page. Assets are registered before `/viz/:name` so "assets" is never captured
+  // as a workflow name. The page itself is one static shell for any name (the browser reads the
+  // workflow from the path); an unknown workflow surfaces in-page via its 404'd /machine fetch.
+  app.get("/viz/assets/main.js", () => vizAsset("main.js", "text/javascript; charset=utf-8"));
+  app.get("/viz/assets/style.css", () => vizAsset("style.css", "text/css; charset=utf-8"));
+  app.get("/viz/assets/elk.js", async () => {
+    const body = await readElkBundle();
+    return new Response(new Uint8Array(body), {
+      headers: { "content-type": "text/javascript; charset=utf-8" },
+    });
+  });
+  app.get("/viz/:name", () => vizAsset("page.html", "text/html; charset=utf-8"));
 
   app.get("/runs", (c) => c.json(host.list()));
 

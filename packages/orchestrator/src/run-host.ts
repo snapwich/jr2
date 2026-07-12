@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyStateMachine } from "xstate";
 import type { ControlEvent } from "@j2/agent-protocol";
 import { ControlPlane } from "./control-plane.ts";
+import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import { hydrateSnapshot, serializeSnapshot } from "./durability.ts";
 
@@ -102,6 +103,12 @@ export class RunHost {
   /** The names of every registered workflow (the `GET /workflows` listing — ADR-0009). */
   workflows(): string[] {
     return [...this.workflowDefs.keys()];
+  }
+
+  /** The registered template Machine's serialized structure (`GET /workflows/:name/machine`). */
+  machine(name: string): MachineDoc | undefined {
+    const def = this.workflowDefs.get(name);
+    return def && serializeMachine(name, def.machine);
   }
 
   /** Start a fresh run of a registered workflow; returns its durable ids. */

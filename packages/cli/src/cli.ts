@@ -11,6 +11,7 @@ import { status } from "./commands/status.ts";
 import { logs } from "./commands/logs.ts";
 import { approve } from "./commands/approve.ts";
 import { send } from "./commands/send.ts";
+import { visualize } from "./commands/visualize.ts";
 
 const USAGE = `j2 — orchestrate agentic workflows (ADR-0009)
 
@@ -25,6 +26,7 @@ usage: j2 <command> [args]
   logs <runId> [-f]                 replay a run's status; -f to follow until it settles
   approve <runId> [--reject]        answer a parked request_approval
   send <runId> --event <E>          feed a down-channel event (APPROVE | CANCEL | STEER)
+  visualize <workflow> [--no-open]  open the workflow's Machine in the browser
 
 global: --url <u> / J2_URL attaches to a specific orchestrator (skips the folder walk)`;
 
@@ -48,6 +50,8 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await approve(rest, io);
       case "send":
         return await send(rest, io);
+      case "visualize":
+        return await visualize(rest, io);
       case "help":
       case "--help":
       case "-h":
