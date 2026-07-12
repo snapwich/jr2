@@ -17,7 +17,7 @@ import { watch } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { startInstance } from "@j2/orchestrator";
+import { startInstance, startStubHarness } from "@j2/orchestrator";
 import { resolveRoot } from "../instance.ts";
 import { activity, type Io } from "../output.ts";
 
@@ -36,13 +36,20 @@ export async function dev(args: string[], io: Io): Promise<number> {
     hostname: values.hostname as string | undefined,
   });
 
+  // The wire-compatible stub Harness (ADR-0011): workspace-less test workflows pass its URL as
+  // their run-input `endpoint` — agentRun admits against it and parks; e2e/humans then drive the
+  // Machine by playing the agent against `<url>/mcp/<iid>`. Workflows that provision Workspaces
+  // never use this: their Sandboxes are always real (kind — ADR-0009).
+  const stub = await startStubHarness();
+
   const devPath = join(root, ".j2", "dev.json");
   await mkdir(join(root, ".j2"), { recursive: true });
-  await writeFile(devPath, `${JSON.stringify({ url: inst.url, pid: process.pid }, null, 2)}\n`);
+  await writeFile(devPath, `${JSON.stringify({ url: inst.url, stubHarness: stub.url, pid: process.pid }, null, 2)}\n`);
 
   activity(io, `j2 dev — serving ${root}`);
-  activity(io, `  url:       ${inst.url}`);
-  activity(io, `  workflows: ${inst.workflows.join(", ") || "(none)"}`);
+  activity(io, `  url:          ${inst.url}`);
+  activity(io, `  stub harness: ${stub.url}`);
+  activity(io, `  workflows:    ${inst.workflows.join(", ") || "(none)"}`);
   activity(io, "  press Ctrl-C to stop");
 
   // Hot-reload: debounce a burst of fs events (an editor save fires several) into one `reload()`.
@@ -73,6 +80,7 @@ export async function dev(args: string[], io: Io): Promise<number> {
     closing = true;
     activity(io, "stopping…");
     await inst.close();
+    await stub.close();
     await rm(devPath, { force: true });
     process.exit(0);
   };

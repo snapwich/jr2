@@ -24,7 +24,7 @@ const LOOP_FIXTURE = fileURLToPath(new URL("../fixtures/loop.ts", import.meta.ur
 export type CliResult = { stdout: string; stderr: string; code: number };
 
 /** What `j2 dev` advertised in `.j2/dev.json`. */
-type DevInfo = { url: string; pid: number };
+type DevInfo = { url: string; stubHarness?: string; pid: number };
 
 export class E2EWorld {
   /** The temp instance folder (holds `j2.config.ts`, `workflows/`, and the runtime `.j2/`). */
@@ -72,8 +72,16 @@ export class E2EWorld {
 
   /** Copy the `loop` fixture into `workflows/` BEFORE serving, so `j2 dev` discovers it at boot. */
   async addLoopWorkflow(): Promise<void> {
+    await this.addFixtureWorkflow("loop");
+  }
+
+  /** Copy any `features/fixtures/<name>.ts` workflow into the instance BEFORE serving. */
+  async addFixtureWorkflow(name: string): Promise<void> {
     await mkdir(join(this.dir, "workflows"), { recursive: true });
-    await copyFile(LOOP_FIXTURE, join(this.dir, "workflows", "loop.ts"));
+    await copyFile(
+      fileURLToPath(new URL(`../fixtures/${name}.ts`, import.meta.url)),
+      join(this.dir, "workflows", `${name}.ts`),
+    );
   }
 
   /** Boot `j2 dev --port 0` and wait until it advertises `.j2/dev.json`. */

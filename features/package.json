@@ -12,9 +12,12 @@
   },
   "devDependencies": {
     "@cucumber/cucumber": "^13.0.0",
+    "@j2/agent-protocol": "workspace:*",
     "@j2/cli": "workspace:*",
     "@j2/orchestrator": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^26.0.1",
-    "xstate": "^5.18.0"
+    "xstate": "^5.18.0",
+    "zod": "^4.4.3"
   }
 }
