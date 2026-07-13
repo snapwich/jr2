@@ -5,6 +5,9 @@
 // `repos` is the one irreducible entry: the orchestrator materializes a read-only `default/` checkout
 // per repo as the source-of-truth volume every Workspace worktrees against. This starter has none yet
 // (its workflows don't touch a Workspace), so the list is empty.
+//
+// Workspaces (ADR-0012) are opt-in by adding `sandbox: { image: "<harness image>" }`: `j2 dev` then
+// reconciles `repos/` at boot and drives Sandbox CRs via kubectl (cluster from `j2 cluster up`).
 
 import { defineConfig } from "@j2/orchestrator";
 

@@ -17,7 +17,8 @@ import { watch } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { startInstance, startStubHarness } from "@j2/orchestrator";
+import { ensureRepos, kubectlSandbox, loadConfig, startInstance, startStubHarness } from "@j2/orchestrator";
+import type { SandboxPort } from "@j2/orchestrator";
 import { resolveRoot } from "../instance.ts";
 import { activity, type Io } from "../output.ts";
 
@@ -30,10 +31,30 @@ export async function dev(args: string[], io: Io): Promise<number> {
   });
 
   const root = resolveRoot(io.cwd);
+
+  // The Sandbox backend (ADR-0012): `config.sandbox` present = this instance has a cluster —
+  // reconcile the source volume (`repos/<name>/default`, ADR-0009 boot reconcile) BEFORE any
+  // restore can re-attach a Workspace, then wire the kubectl port. Absent = workspace-less
+  // instance; workspace() invocations fault pointedly, everything else runs as before.
+  const config = await loadConfig(root);
+  let sandbox: SandboxPort | undefined;
+  if (config?.sandbox) {
+    for (const repo of await ensureRepos(config, join(root, "repos"))) {
+      activity(io, `  repos/${repo.name}: ${repo.action}`);
+    }
+    sandbox = kubectlSandbox({
+      image: config.sandbox.image,
+      namespace: config.sandbox.namespace,
+      context: config.sandbox.context,
+      idleTimeout: config.sandbox.idleTimeout,
+    });
+  }
+
   const inst = await startInstance({
     dir: root,
     port: values.port ? Number(values.port) : undefined,
     hostname: values.hostname as string | undefined,
+    sandbox,
   });
 
   // The wire-compatible stub Harness (ADR-0011): workspace-less test workflows pass its URL as
@@ -49,6 +70,10 @@ export async function dev(args: string[], io: Io): Promise<number> {
   activity(io, `j2 dev — serving ${root}`);
   activity(io, `  url:          ${inst.url}`);
   activity(io, `  stub harness: ${stub.url}`);
+  activity(
+    io,
+    `  sandboxes:    ${config?.sandbox ? `kubectl (${config.sandbox.image})` : "(none — workspace() workflows will fault)"}`,
+  );
   activity(io, `  workflows:    ${inst.workflows.join(", ") || "(none)"}`);
   activity(io, "  press Ctrl-C to stop");
 

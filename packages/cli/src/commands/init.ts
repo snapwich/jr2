@@ -70,7 +70,8 @@ function packageJson(name: string): string {
 
 const CONFIG_TS = `// Instance config (ADR-0009): its presence marks this folder as a j2 instance — the \`j2\` CLI walks up
 // from cwd to find it. \`repos\` lists the source repos the orchestrator materializes a read-only
-// \`default/\` checkout of per Workspace; empty until a workflow needs a Workspace.
+// \`default/\` checkout of per Workspace; empty until a workflow needs a Workspace. Workspaces are
+// opt-in via \`sandbox: { image: "<harness image>" }\` (+ a cluster from \`j2 cluster up\`).
 
 import { defineConfig } from "@j2/orchestrator";
 

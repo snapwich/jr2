@@ -12,6 +12,7 @@ import { logs } from "./commands/logs.ts";
 import { approve } from "./commands/approve.ts";
 import { send } from "./commands/send.ts";
 import { visualize } from "./commands/visualize.ts";
+import { cluster } from "./commands/cluster.ts";
 
 const USAGE = `j2 — orchestrate agentic workflows (ADR-0009)
 
@@ -27,6 +28,7 @@ usage: j2 <command> [args]
   approve <runId> [--reject]        answer a parked request_approval
   send <runId> --event <E>          feed a down-channel event (APPROVE | CANCEL | STEER)
   visualize <workflow> [--no-open]  open the workflow's Machine in the browser
+  cluster up|down [--name <n>]      create/delete the kind cluster (repos/ baked in via extraMounts)
 
 global: --url <u> / J2_URL attaches to a specific orchestrator (skips the folder walk)`;
 
@@ -52,6 +54,8 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await send(rest, io);
       case "visualize":
         return await visualize(rest, io);
+      case "cluster":
+        return await cluster(rest, io);
       case "help":
       case "--help":
       case "-h":

@@ -27,6 +27,7 @@ import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
+import type { SandboxPort } from "./workspace.ts";
 
 export type InstanceOptions = {
   /** The instance folder (holds `workflows/`, and `.j2/state.db` unless `store` is supplied). */
@@ -39,6 +40,9 @@ export type InstanceOptions = {
   store?: SnapshotStore;
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
+  /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller
+   * (`j2 dev` builds it from `config.sandbox`); absent = a workspace-less instance. */
+  sandbox?: SandboxPort;
 };
 
 /** What changed on a `reload()` — the diff against the previously-registered set. */
@@ -73,7 +77,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   }
   await store.init();
 
-  const host = new RunHost({ store, reconcile: opts.reconcile });
+  const host = new RunHost({ store, reconcile: opts.reconcile, sandbox: opts.sandbox });
 
   // Bump per reload so `import()` re-reads a changed file rather than serving the ESM module cache.
   let importGen = 0;

@@ -423,6 +423,10 @@ export const featureBody = setup({
       output: ({ context }) => ({ status: "escalated" as const, feature: context.feature.id }),
     },
   },
+  // xstate v5: a machine's output is its ROOT `output` — a final state's own `output` only rides
+  // the done event. Forward whichever final state settled us; workspace() then passes it through
+  // verbatim, so the top machine's `xstate.done.actor.*` handler sees { status, feature }.
+  output: ({ event }) => (event as unknown as { output: { status: "done" | "escalated"; feature: string } }).output,
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -562,10 +566,13 @@ function architectPrompt(c: BodyCtx): string {
 }
 
 // =============================================================================================
-// GAP LEGEND — what j2 must build for this file to run (the build plan this artifact produces).
-// The model is now decided: ADR-0011 (defineEvent, closure-bound delivery, gate, static
-// imports) covers GAP(1)/(2)/(4); ADR-0012 (workspace wrapper) covers GAP(3); GAP(5) extends
-// ADR-0007. The gaps below are implementation work, no longer open design questions.
+// GAP LEGEND — what j2 had to build for this file to run (the build plan this artifact
+// produced). STATUS 2026-07-12: ALL GAPS LANDED — GAP(1) e86d04c, GAP(4) 98b80ae, GAP(2)
+// b656b40+3892959, GAP(3)+(5) the workspace/durability commits following them. The legend is
+// kept as the map of what each mechanism is and where its edges are; remaining work is listed
+// per-gap as "landed with" notes. The model: ADR-0011 (defineEvent, closure-bound delivery,
+// gate, static imports) covers GAP(1)/(2)/(4); ADR-0012 (workspace wrapper) covers GAP(3);
+// GAP(5) extends ADR-0007.
 //
 // GAP(1) `defineEvent` — pure def factory: name + zod input (+ semantics tag: ack | deferred |
 //        poll) + EventFrom<def> type helper (setup unions derive from defs — no drift). NO
@@ -591,6 +598,13 @@ function architectPrompt(c: BodyCtx): string {
 //        ALWAYS real (kind/cluster) — no stub mode, the data plane is never faked; dev needs the
 //        j2-created kind cluster (repos/ via extraMounts, ADR-0009). e2e for workspace flows =
 //        the kind tier.
+//        Landed with: SandboxPort as HOST infrastructure on the run binding (one cluster per
+//        instance — RunHostOptions.sandbox; workflows keep static imports); the canonical port
+//        shells kubectl (labels j2.dev/run + j2.dev/workflow; port-forward reach for host-side
+//        dev on a name-deterministic local port, healed by the reconcile probe); `j2 cluster up`
+//        bakes repos/→/repos extraMounts + installs the CRD; `j2 dev` reconciles repos/ and
+//        wires the port when j2.config.ts has `sandbox: { image }`. The kind e2e tier itself is
+//        still pending a machine with kind.
 // GAP(4) `gate` — same primitive over HTTP for ANY external caller (humans, webhooks, CI); each
 //        invocation is an addressable GATE resource: input { gate, accepts: [names], meta? },
 //        registration scoped to the state. Shares one registration table with GAP(2)'s demux
@@ -604,7 +618,13 @@ function architectPrompt(c: BodyCtx): string {
 //        must fold child offsets + rewrite grandchild agentRun inputs recursively, and reconcile
 //        each feature's Sandbox CR (present → re-attach; absent → `workspace.lost` delivered
 //        into the restored body — this workflow routes it to escalated, ADR-0012).
-//        Spawned-child snapshot restore is untested today.
+//        Landed with: persistence rides the actor system's INSPECTION stream (a grandchild
+//        agent.offset assigned into body context never notifies root subscribers — probed);
+//        restore rewrites agentRun inputs recursively, each level's context.offsets scoping the
+//        children below it; spawnChild'd machine children proven to restore; the wrapper's
+//        reconcile probe re-runs on every restore (callback actors restart), delivering
+//        workspace.lost when the CR is gone. One empirical trap this file now reflects: machine
+//        output MUST be declared at the ROOT (final-state `output` only rides the done event).
 //
 // Open note, deliberately deferred (2026-07-12; not blocking GAP(1)-(4)): the tk store. The real
 // question is a CONSISTENCY LOOP, not storage: the orchestrator's tk actors and the architect's

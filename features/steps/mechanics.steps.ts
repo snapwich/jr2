@@ -135,6 +135,11 @@ Then("gate {string} is gone", async function (this: E2EWorld, gateId: string): P
   assert.ok(!open.some((g) => g.gate === gateId), `gate "${gateId}" must be destroyed with its state`);
 });
 
+Then("the run faults mentioning {string}", async function (this: E2EWorld, needle: string): Promise<void> {
+  const s = (await waitForValue(this, "error")) as Status & { fault?: string };
+  assert.match(s.fault ?? "", new RegExp(needle));
+});
+
 Then("the delivery is refused naming the accepted events", function (this: E2EWorld): void {
   assert.equal(this.last?.code, 400);
   assert.match(this.last?.stdout ?? "", /accepts: approve/);
