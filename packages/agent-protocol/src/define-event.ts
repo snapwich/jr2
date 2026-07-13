@@ -88,6 +88,14 @@ export function isEventDef(value: unknown): value is EventDef {
  * Resolve a manifest (`export const events`) into a name→def map, rejecting duplicates and
  * non-defs. Discovery calls this once per workflow; the error names the workflow so an unlisted
  * or double-listed name fails loudly at registration, not at delivery.
+ *
+ * `deferred` and `poll` are RESERVED, not implemented (ADR-0013): the wire leaves room for them —
+ * a surface listing ships each def's `semantics`, a delivery returns an addressable receipt — but
+ * nothing answers a held call today, and how a Machine should is deliberately undesigned (there is
+ * no consumer to design it against, and flue's 60s MCP timeout means the answer will be
+ * poll-with-progress rather than a held socket). Registering one therefore FAILS here. Quietly
+ * downgrading it to `ack` would be worse than useless: the Agent would be handed a tool whose
+ * contract — "this call returns the Machine's answer" — is a lie.
  */
 export function eventMap(workflow: string, events: readonly unknown[]): Map<string, EventDef> {
   const map = new Map<string, EventDef>();
@@ -99,6 +107,13 @@ export function eventMap(workflow: string, events: readonly unknown[]): Map<stri
     }
     if (map.has(def.name))
       throw new Error(`workflow "${workflow}": duplicate event "${def.name}" in \`events\` manifest`);
+    if (def.semantics !== "ack") {
+      throw new Error(
+        `workflow "${workflow}": event "${def.name}" is \`${def.semantics}\`, which is reserved but ` +
+          `NOT IMPLEMENTED (ADR-0013). Only \`ack\` events can be delivered today; there is nothing to ` +
+          `answer a held call with, and degrading it to \`ack\` would hand the Agent a lying tool contract.`,
+      );
+    }
     map.set(def.name, def);
   }
   return map;

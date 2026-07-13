@@ -70,6 +70,19 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  packages/adapter:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^26.0.1
+        version: 26.0.1
+
   packages/agent-protocol:
     dependencies:
       zod:

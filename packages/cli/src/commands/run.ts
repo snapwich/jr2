@@ -9,7 +9,7 @@
 
 import { parseArgs } from "node:util";
 import { J2Client } from "../client.ts";
-import { resolveBaseUrl } from "../instance.ts";
+import { resolveTarget } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 
 export async function run(args: string[], io: Io): Promise<number> {
@@ -30,7 +30,8 @@ export async function run(args: string[], io: Io): Promise<number> {
     return 2;
   }
   const input = values.input ? (JSON.parse(String(values.input)) as Record<string, unknown>) : {};
-  const client = new J2Client(resolveBaseUrl(io, { url: values.url as string | undefined }), io.fetch);
+  const target = resolveTarget(io, { url: values.url as string | undefined });
+  const client = new J2Client(target.url, io.fetch, target.token);
 
   const { runId } = await client.start(workflow, input);
   if (values.detach) {

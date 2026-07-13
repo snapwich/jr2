@@ -4,6 +4,10 @@ dist/
 tmp/
 *.tsbuildinfo
 
+# instance runtime state: the sqlite store, the dev address, and the token signing key (ADR-0013).
+# Never checked in — .j2/secret is a credential, and dev.json points at a transient local server.
+.j2/
+
 # go
 operator/bin/
 operator/testbin/

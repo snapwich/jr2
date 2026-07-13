@@ -1,8 +1,15 @@
 // The internal registration table (ADR-0011): one structure behind both delivery dialects.
 // `agentRun` and `gate` register `address → { accepted event defs, deliver closure, meta }`;
-// the MCP demux and the gates HTTP API are adapters over it — lookup, schema validation,
-// delivery, discovery, and lifecycle are implemented ONCE. The table is implementation
-// structure, not vocabulary: workflows speak only `defineEvent` / `agentRun` / `gate`.
+// the two HTTP surfaces (`/agents/:iid/*` for the Adapter, `/runs/:id/gates/*` for humans and
+// webhooks) are adapters over it — lookup, schema validation, delivery, discovery, and lifecycle
+// are implemented ONCE. The table is implementation structure, not vocabulary: workflows speak
+// only `defineEvent` / `agentRun` / `gate`.
+//
+// The dialects are also the AUTHORIZATION boundary (ADR-0013), which is why an agent registration
+// records its `sandbox`: a Sandbox token may deliver to `kind: "agent"` registrations whose Sandbox
+// is its own, and to nothing else. Never a Gate — a compromised Agent must not be able to approve
+// its own review — and never another Sandbox: `coding.ts`'s iids are derivable, so a run-scoped
+// credential would let one feature's coder inject a verdict into another feature's reviewer.
 //
 // Run identity reaches every registration mechanically through the xstate actor `system`: the
 // host binds each run's root system to a RunBinding at createActor time, and callback actors
@@ -24,7 +31,7 @@ export type DeliveredEvent = { type: string } & Record<string, unknown>;
 
 /** One live registration: a state's declared surface, addressable by one external caller. */
 export type Registration = {
-  /** Table-wide unique address (see {@link gateAddress} / {@link mcpAddress}). */
+  /** Table-wide unique address (see {@link gateAddress} / {@link agentAddress}). */
   address: string;
   runId: string;
   /** Which dialect registered it — what `GET /runs/:id` lists as gates vs agent surfaces. */
@@ -35,6 +42,12 @@ export type Registration = {
   defs: Map<string, EventDef>;
   /** Serializable caller/integration context (PR URL, title …) — rides the discovery listing. */
   meta?: Record<string, unknown>;
+  /**
+   * The Sandbox this agent runs in — the scope of the Sandbox token that may deliver here
+   * (ADR-0013). Absent on gates, and on a workspace-less `agentRun` (the mechanics tier's stub
+   * Harness runs on the host, in no Sandbox at all): those are the Instance token's business.
+   */
+  sandbox?: string;
   /** Close over the invoking state's `sendBack`; delivery lands where the actor was invoked. */
   deliver: (event: DeliveredEvent) => void;
 };
@@ -49,9 +62,9 @@ export function gateAddress(runId: string, gate: string): string {
   return `gate/${runId}/${gate}`;
 }
 
-/** The address of an agent instance's MCP surface: iids are globally unique already. */
-export function mcpAddress(instanceId: string): string {
-  return `mcp/${instanceId}`;
+/** The address of an agent instance's surface (`/agents/:iid/*`): iids are globally unique. */
+export function agentAddress(instanceId: string): string {
+  return `agent/${instanceId}`;
 }
 
 export class RegistrationTable {

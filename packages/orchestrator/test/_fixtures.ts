@@ -1,13 +1,13 @@
-// Shared test harness for the Machine-host suites (run-host + http). Extracted verbatim from the
-// original inline copy in run-host.test.ts so both test files drive ONE real template, ONE mock
-// FlueClient, and ONE in-memory MCP wiring — the up-channel is exercised the real way (a real MCP
-// Client over an in-memory transport), never bypassed.
+// Shared test harness for the Machine-host suites (run-host + http + auth): ONE real template and
+// ONE mock FlueClient, so every suite drives the same wiring.
+//
+// The Agent's up-channel is exercised the real way — through the registration table, via the same
+// `sendToAgent` / `POST /agents/:iid/events` path the Adapter uses (ADR-0013). There is no MCP here
+// because there is no MCP in the Orchestrator: that surface lives in the Sandbox now.
 
 import { setup, fromCallback, assign } from "xstate";
 import { z } from "zod";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { defineEvent, exampleEvents, doneEvent, requestReviewEvent, requestApprovalEvent } from "@j2/agent-protocol";
+import { defineEvent, exampleEvents, doneEvent, requestReviewEvent } from "@j2/agent-protocol";
 import type { EventFrom } from "@j2/agent-protocol";
 import { gate } from "../src/gate.ts";
 import { agentRunActorWith } from "../src/actor.ts";
@@ -21,7 +21,7 @@ import type {
 } from "../src/actor.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
-import type { RunHost, WorkflowDef } from "../src/run-host.ts";
+import type { WorkflowDef } from "../src/run-host.ts";
 
 /** An AgentRunPort the test drives by hand: capture admission, push synthetic stream tool calls. */
 export class MockFlueClient implements AgentRunPort {
@@ -40,24 +40,27 @@ export class MockFlueClient implements AgentRunPort {
   }
 }
 
-export type Ctx = { instanceId: string; offsets: Record<string, string>; summary?: string; action?: string };
+export type Ctx = { instanceId: string; sandbox?: string; offsets: Record<string, string>; summary?: string };
 
-/** A minimal real template standing in for a coding workflow, on the example event set
- * (ADR-0011: the events are the WORKFLOW's vocabulary — `request_review`, not a j2 name).
- * `agentRun` is a noop slot; tests fill it with a MockFlueClient port via `provide`. */
+/**
+ * A minimal real template standing in for a coding workflow, on the example event set (ADR-0011:
+ * the events are the WORKFLOW's vocabulary — `request_review`, not a j2 name). `agentRun` is a
+ * noop slot; tests fill it with a MockFlueClient port via `provide`.
+ *
+ * `sandbox` rides the run input into the `agentRun` invocation, so a test can register an agent
+ * surface that BELONGS to a Sandbox (what a Sandbox token is scoped against — ADR-0013) or, by
+ * omitting it, one that belongs to no pod at all (a workspace-less run against the stub Harness).
+ */
 export const codingTemplate = setup({
   types: {} as {
     context: Ctx;
-    input: { instanceId: string };
-    events:
-      | EventFrom<typeof doneEvent | typeof requestReviewEvent | typeof requestApprovalEvent>
-      | OffsetTelemetry
-      | FaultTelemetry;
+    input: { instanceId: string; sandbox?: string };
+    events: EventFrom<typeof doneEvent | typeof requestReviewEvent> | OffsetTelemetry | FaultTelemetry;
   },
   actors: { agentRun: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },
 }).createMachine({
   id: "m",
-  context: ({ input }) => ({ instanceId: input.instanceId, offsets: {} }),
+  context: ({ input }) => ({ instanceId: input.instanceId, sandbox: input.sandbox, offsets: {} }),
   initial: "active",
   states: {
     active: {
@@ -68,8 +71,9 @@ export const codingTemplate = setup({
           agentName: "coder",
           instanceId: context.instanceId,
           endpoint: "http://harness.invalid", // the mock port never dials it
+          sandbox: context.sandbox,
           prompt: "do work",
-          tools: ["done", "request_review", "request_approval", "check_inbox"],
+          tools: ["done", "request_review"],
         }),
       },
       initial: "running",
@@ -85,20 +89,10 @@ export const codingTemplate = setup({
         running: {
           on: {
             request_review: { target: "review", actions: assign({ summary: ({ event }) => event.summary }) },
-            request_approval: {
-              target: "awaitingApproval",
-              actions: assign({ action: ({ event }) => event.action }),
-            },
             done: "#m.done",
           },
         },
         review: { on: { done: "#m.done" } },
-        awaitingApproval: {
-          on: {
-            request_review: { target: "review", actions: assign({ summary: ({ event }) => event.summary }) },
-            done: "#m.done",
-          },
-        },
       },
     },
     done: { type: "final" },
@@ -170,17 +164,6 @@ export async function mkStore(): Promise<SnapshotStore> {
   const store = new SqliteSnapshotStore(":memory:");
   await store.init();
   return store;
-}
-
-/** Connect a real MCP Client to a run's control-plane server (throws if nothing is registered). */
-export async function connectMcp(
-  server: ReturnType<RunHost["mcpServer"]>,
-): Promise<{ client: Client; close: () => Promise<void> }> {
-  if (!server) throw new Error("connectMcp: no live registration for that instance");
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "test-agent", version: "0.0.0" });
-  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-  return { client, close: async () => void (await Promise.all([client.close(), server.close()])) };
 }
 
 export const tick = () => new Promise((r) => setTimeout(r, 10));

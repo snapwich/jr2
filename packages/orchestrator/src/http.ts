@@ -1,26 +1,36 @@
-// The orchestrator HTTP surface (ADR-0009): a thin, run-addressed-by-id REST + SSE facade over a
-// `RunHost`. This is the machine-to-machine control channel — push work, control a run, observe it
-// — the `j2` CLI and any external caller sit on top of it. It carries NO domain logic of its own:
-// every handler delegates to a single `RunHost` method, so the wire shape and the in-process API
-// stay one behavior.
+// The orchestrator HTTP surface (ADR-0009/0013): a thin REST + SSE facade over a `RunHost`. It
+// carries NO domain logic of its own: every handler delegates to a single `RunHost` method, so the
+// wire shape and the in-process API stay one behavior.
 //
-// Channel split (ADR-0002/0006): this surface is the human-in-the-loop DOWN-channel and the
-// observation up-feed. `POST /runs/:id/events` is the down-channel seam (APPROVE / STEER / CANCEL);
-// `GET /runs/:id/events` streams the run's status as it transitions. Domain tool calls from the
-// Agent do NOT come through here — they arrive over MCP on `/mcp/:instanceId` (mounted separately
-// onto this same app), routed by the host's ControlPlane.
+// TWO dialects, one primitive (ADR-0013). The Orchestrator does not speak MCP — that moved into the
+// Sandbox, where the Adapter serves it to the Agent over localhost. What is left here are two thin
+// adapters over the same registration table:
+//
+//   # human / webhook / CI — the Gate resource of ADR-0011
+//   GET  /runs/:id                     open gates: accepts + schemas + meta      [Instance token]
+//   POST /runs/:id/gates/:gate/events  validate + deliver                        [Instance token]
+//
+//   # the Agent's Adapter, and nothing else
+//   GET  /agents/:iid/surface          accepts + schemas + semantics             [Sandbox token]
+//   POST /agents/:iid/events           validate + deliver → { deliveryId }       [Sandbox token]
+//
+// The token is not decoration: an Agent has code execution in its Harness container and shares the
+// pod's network namespace, so it can reach these routes. A Sandbox token may deliver ONLY to an
+// agent surface recorded against its own Sandbox — never to a Gate. That is what stops an Agent
+// from approving its own review. `GET /runs/:id/events` (SSE) and the visualizer are observation.
 
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Hono } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { streamSSE } from "hono/streaming";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { HttpBindings } from "@hono/node-server";
 import { EventValidationError, UnknownAddressError } from "./registration.ts";
+import { mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
 import type { RunHost } from "./run-host.ts";
 
-/** A `POST /runs/:id/events` body: the down-channel event plus its (type-specific) payload. */
-type RunEventBody = { type?: string; reject?: boolean; decision?: string; message?: string };
+/** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
+ * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery, which is reserved, not built. */
+type RunEventBody = { type?: string };
 
 /** Read a request body as JSON, tolerating an empty body (→ {}) and malformed JSON (→ {}). */
 async function readJson(text: Promise<string>): Promise<Record<string, unknown>> {
@@ -39,12 +49,15 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// The MCP transport writes its JSON-RPC reply straight to the raw Node `ServerResponse`, so the hono
-// handler must NOT also produce a body. @hono/node-server v2 dropped the exported RETURN_ALREADY_SENT
-// sentinel, but the listener still honors a null-body Response carrying `x-hono-already-sent` by
-// leaving the socket untouched (dist: `responseViaResponseObject`). Returning this from the /mcp
-// handler yields the response to the transport. (ADR-0009.)
-const MCP_ALREADY_SENT = new Response(null, { headers: { "x-hono-already-sent": "true" } });
+/** The app's context: `authenticated` resolves the bearer to a `principal` the routes read back. */
+type J2Env = { Variables: { principal: Principal } };
+
+/** The bearer token on a request, if it carries one. */
+function bearerOf(c: Context<J2Env>): string | undefined {
+  const header = c.req.header("authorization") ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match?.[1]?.trim() || undefined;
+}
 
 // ---- Visualizer assets (`/viz/*`) -----------------------------------------------------------
 // The browser page that renders a workflow's Machine. Plain .html/.js/.css shipped inside this
@@ -69,17 +82,38 @@ async function vizAsset(rel: string, contentType: string): Promise<Response> {
   return new Response(new Uint8Array(body), { headers: { "content-type": contentType } });
 }
 
-/** Build the orchestrator HTTP app over a `RunHost` (ADR-0009 route table). */
-export function createApp(host: RunHost): Hono {
-  const app = new Hono();
+/**
+ * Build the orchestrator HTTP app over a `RunHost` (ADR-0009/0013 route table).
+ *
+ * `auth` is how a bearer token becomes a principal. Omitting it leaves the surface OPEN, which is
+ * only ever right for an in-process test that reaches `app.request` directly — `startInstance`
+ * (the one production path, and `j2 dev`) always supplies one.
+ */
+export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
+  const app = new Hono<J2Env>();
+
+  /** Authenticate, or refuse. There is no anonymous principal (ADR-0013) — an open surface would
+   * hand every Agent in the cluster a delivery API, which is the hole this ADR exists to close. */
+  const authenticated: MiddlewareHandler<J2Env> = async (c, next) => {
+    if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
+    const principal = auth(bearerOf(c));
+    if (!principal) return c.json({ error: "unauthorized" }, 401);
+    c.set("principal", principal);
+    return next();
+  };
+  /** The principal `authenticated` resolved. An unconfigured `auth` means full trust. */
+  const principalOf = (c: Context<J2Env>): Principal => c.get("principal") ?? { kind: "instance" };
 
   app.get("/healthz", (c) => c.json({ ok: true }));
   app.get("/readyz", (c) => c.json({ ready: true }));
 
+  // Structure, not state: the workflow listing, a template's Machine, and the visualizer page are
+  // unauthenticated. They expose no run, drive nothing, and the viz page is a BROWSER — it has no
+  // token to send. Everything that reads or moves a run is guarded below.
   app.get("/workflows", (c) => c.json(host.workflows()));
 
   // Push work: start a run of a registered workflow. Unknown workflow → host.start throws → 404.
-  app.post("/workflows/:name/runs", async (c) => {
+  app.post("/workflows/:name/runs", authenticated, async (c) => {
     const name = c.req.param("name");
     const input = await readJson(c.req.text());
     try {
@@ -111,13 +145,13 @@ export function createApp(host: RunHost): Hono {
   });
   app.get("/viz/:name", () => vizAsset("page.html", "text/html; charset=utf-8"));
 
-  app.get("/runs", (c) => c.json(host.list()));
+  app.get("/runs", authenticated, (c) => c.json(host.list()));
 
   // Read-through (ADR-0009): a completed run's final status lives in the store after the registry
   // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404. The status
   // carries the run's OPEN GATES (ADR-0011) — the discovery listing external callers act on
   // (`j2 send` menus, UI inbox cards, webhook translators matching on meta). Settled run → [].
-  app.get("/runs/:runId", async (c) => {
+  app.get("/runs/:runId", authenticated, async (c) => {
     const runId = c.req.param("runId");
     const status = await host.read(runId);
     return status ? c.json({ ...status, gates: host.gates(runId) }) : c.json({ error: `no run "${runId}"` }, 404);
@@ -126,7 +160,14 @@ export function createApp(host: RunHost): Hono {
   // Gates delivery (ADR-0011): validate the body against the gate's named schema and deliver into
   // the gated state. Unknown gate (never opened, state exited, run settled) → 404; a name the gate
   // doesn't accept, or a payload failing its schema → 400 naming what IS accepted.
-  app.post("/runs/:runId/gates/:gate/events", async (c) => {
+  //
+  // A Gate is a HUMAN's decision (or a webhook's, or CI's). An Agent holding a Sandbox token is
+  // refused here unconditionally — this is the exact line between "the Agent reports an outcome"
+  // and "the Agent approves its own PR" (ADR-0013).
+  app.post("/runs/:runId/gates/:gate/events", authenticated, async (c) => {
+    if (principalOf(c).kind === "sandbox") {
+      return c.json({ error: "a Sandbox token cannot deliver to a gate — gates are not on the Agent's surface" }, 403);
+    }
     const body = await readJson(c.req.text());
     try {
       host.sendToGate(c.req.param("runId"), c.req.param("gate"), body);
@@ -141,7 +182,7 @@ export function createApp(host: RunHost): Hono {
   // SSE: a live run streams its status deltas + author `emit`s (current status replayed on attach,
   // then live until the terminal transition or client abort). A run that has already settled streams
   // its final status once and closes (so `j2 logs -f` works on a finished run). Unknown run → 404.
-  app.get("/runs/:runId/events", async (c) => {
+  app.get("/runs/:runId/events", authenticated, async (c) => {
     const runId = c.req.param("runId");
     if (host.status(runId) === undefined) {
       const finalStatus = await host.read(runId);
@@ -186,66 +227,69 @@ export function createApp(host: RunHost): Hono {
     });
   });
 
-  // Down-channel: feed one event into a live run (ADR-0002). Host method throws (no run) → 404.
-  app.post("/runs/:runId/events", async (c) => {
+  // Run control (ADR-0002). CANCEL is the only event left on this seam: APPROVE and STEER answered
+  // held `deferred` calls and drained `poll` inboxes, and ADR-0013 reserves both semantics without
+  // building them. Workflow-defined events reach a run through its GATES, not through here.
+  app.post("/runs/:runId/events", authenticated, async (c) => {
     const runId = c.req.param("runId");
     const body = (await readJson(c.req.text())) as RunEventBody;
+    if (body.type !== "CANCEL") {
+      return c.json({ error: `unknown event type "${body.type ?? ""}" (accepts: CANCEL)` }, 400);
+    }
     try {
-      switch (body.type) {
-        case "APPROVE":
-          host.answer(runId, body.reject ? "rejected" : (body.decision ?? "approved"));
-          break;
-        case "CANCEL":
-          await host.stop(runId);
-          break;
-        case "STEER":
-          host.steer(runId, body.message ?? "");
-          break;
-        default:
-          return c.json({ error: "unknown event type" }, 400);
-      }
+      await host.stop(runId);
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: errMessage(err) }, 404);
     }
   });
 
-  // MCP control plane (ADR-0009/0011 `/mcp/:instanceId`): the DOMAIN up-channel. The Agent's tool
-  // calls arrive here as JSON-RPC; the server is built from the instance's LIVE registration in
-  // the shared table (the workflow-defined events its invoking state accepts), and delivery lands
-  // through the registration's closure — no routing.
+  // ---- The Agent's surface (`/agents/:iid/*` — ADR-0013) --------------------------------------
+  // Served to ONE caller: the Adapter in the Agent's Sandbox. It renders `surface` as `tools/list`
+  // and turns a `tools/call` into an `events` POST. The Orchestrator therefore keeps no MCP
+  // dependency, no transport, no session handling — and the Agent keeps no route to this API
+  // except through a process whose credential it cannot read.
   //
-  // STATELESS PER REQUEST: every HTTP request builds a fresh transport (sessionIdGenerator: undefined
-  // → no MCP session) and connects a fresh per-instance McpServer, torn down when the socket closes.
-  // This is safe — and the whole point of the host owning ONE ControlPlane — because deferred holds
-  // and inboxes live on that single ControlPlane keyed by instanceId, NOT on the per-request server.
-  // A held `deferred` call therefore survives on its own open POST stream (the SDK keeps the HTTP
-  // response open) until `host.answer → controlPlane.answerRun` writes the deferred tool result; a
-  // sibling request that drains the inbox sees the same shared queue.
-  app.all("/mcp/:instanceId", async (c) => {
+  // Both routes are adapters over the SAME registration table the gates ride: lookup, validation
+  // and delivery are implemented once, in `registration.ts`.
+
+  /** Guard: the surface must exist, and this principal must be allowed to speak for it. */
+  const agentRegistration = (c: Context<J2Env, "/agents/:instanceId/surface" | "/agents/:instanceId/events">) => {
     const instanceId = c.req.param("instanceId");
-    const server = host.mcpServer(instanceId);
+    const surface = host.agentSurface(instanceId);
     // The one catch point (ADR-0011): no live registration (settled run, exited state, unknown
-    // iid) → there is no surface to serve.
-    if (!server) return c.json({ error: `no live agent surface for instance "${instanceId}"` }, 404);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    await server.connect(transport);
+    // iid) → there is no surface to serve. 404 BEFORE the scope check — a caller with a valid
+    // token learns nothing from it that it did not already know.
+    if (!surface) return { error: c.json({ error: `no live agent surface for instance "${instanceId}"` }, 404) };
+    if (!mayDeliverToAgent(principalOf(c), surface.sandbox)) {
+      // A Sandbox token for a DIFFERENT Sandbox (or for a workspace-less run, which no Sandbox
+      // owns). This is the check that keeps one feature's coder out of another's reviewer.
+      return { error: c.json({ error: `this token cannot speak for instance "${instanceId}"` }, 403) };
+    }
+    return { surface };
+  };
 
-    // Under @hono/node-server the raw Node objects ride on the context env (HttpBindings). The MCP
-    // transport needs them directly — it does not go through hono's Response abstraction.
-    const { incoming, outgoing } = c.env as unknown as HttpBindings;
-    outgoing.on("close", () => {
-      void transport.close();
-      void server.close();
-    });
+  // This turn's menu: the events the invoking state accepts, their input schemas, their semantics.
+  // A transition swaps the registration, which swaps this — so the Adapter gets a state-scoped
+  // toolset for free, and needs no `list_changed` to know it (flue re-lists on every submission).
+  app.get("/agents/:instanceId/surface", authenticated, (c) => {
+    const { surface, error } = agentRegistration(c);
+    return error ?? c.json(surface);
+  });
 
-    // POST carries a JSON-RPC body (single object or batch array) the transport must see — parse it
-    // here and pass it as the 3rd arg rather than routing it through `readJson` (which would coerce a
-    // batch array to `{}`). GET (SSE) and DELETE carry no body.
-    const raw = c.req.method === "POST" ? await c.req.text() : "";
-    const body = raw ? JSON.parse(raw) : undefined;
-    await transport.handleRequest(incoming, outgoing, body);
-    return MCP_ALREADY_SENT;
+  // The Agent's pick, delivered into the state that invoked it. The receipt's `deliveryId` makes an
+  // outcome addressable after the fact — the room a deferred result will need when it lands.
+  app.post("/agents/:instanceId/events", authenticated, async (c) => {
+    const { error } = agentRegistration(c);
+    if (error) return error;
+    const body = await readJson(c.req.text());
+    try {
+      return c.json(host.sendToAgent(c.req.param("instanceId"), body));
+    } catch (err) {
+      if (err instanceof UnknownAddressError) return c.json({ error: errMessage(err) }, 404);
+      if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
+      throw err;
+    }
   });
 
   return app;

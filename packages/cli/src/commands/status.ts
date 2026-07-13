@@ -3,7 +3,7 @@
 
 import { parseArgs } from "node:util";
 import { J2Client } from "../client.ts";
-import { resolveBaseUrl } from "../instance.ts";
+import { resolveTarget } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 
 export async function status(args: string[], io: Io): Promise<number> {
@@ -18,7 +18,8 @@ export async function status(args: string[], io: Io): Promise<number> {
     activity(io, "usage: j2 status <runId>");
     return 2;
   }
-  const client = new J2Client(resolveBaseUrl(io, { url: values.url as string | undefined }), io.fetch);
+  const target = resolveTarget(io, { url: values.url as string | undefined });
+  const client = new J2Client(target.url, io.fetch, target.token);
   const s = await client.read(runId);
   if (!s) {
     activity(io, `no run "${runId}"`);

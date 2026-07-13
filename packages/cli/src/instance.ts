@@ -3,10 +3,13 @@
 //
 //   - `resolveRoot` walks up from cwd to the dir holding `j2.config.ts` — the root marker (mirrors
 //     flue's `flue.config.ts`). That dir owns `.j2/` (sqlite store + the dev server's address).
-//   - `j2 dev` writes `.j2/dev.json` = { url, pid } on boot and removes it on exit; run-control verbs
-//     read it to find the orchestrator to attach to.
+//   - `j2 dev` writes `.j2/dev.json` = { url, token, pid } on boot and removes it on exit; run-control
+//     verbs read it to find the orchestrator to attach to, and to authenticate against it.
 //   - `resolveBaseUrl` precedence: explicit `--url` > `J2_URL` env > `.j2/dev.json`. The first two
 //     SKIP the folder walk entirely, so `j2 --url … runs` works from anywhere (e.g. against a cluster).
+//   - `resolveTarget` adds the credential (ADR-0013): the run and gate surfaces are authenticated, so
+//     a verb needs `{ url, token }`, not a url. `J2_TOKEN` overrides — that is how `--url` reaches an
+//     orchestrator whose `.j2/` this shell cannot see.
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,9 +26,9 @@ export function resolveRoot(cwd: string): string {
   }
 }
 
-export type DevInfo = { url: string; pid: number };
+export type DevInfo = { url: string; token?: string; pid: number };
 
-/** Read `<root>/.j2/dev.json` (the live `j2 dev` address); undefined if absent or unreadable. */
+/** Read `<root>/.j2/dev.json` (the live `j2 dev` address + token); undefined if absent/unreadable. */
 export function readDevJson(root: string): DevInfo | undefined {
   try {
     return JSON.parse(readFileSync(join(root, ".j2", "dev.json"), "utf8")) as DevInfo;
@@ -36,10 +39,16 @@ export function readDevJson(root: string): DevInfo | undefined {
 
 /** Resolve the orchestrator base URL a run-control verb should talk to (see precedence above). */
 export function resolveBaseUrl(io: Io, opts: { url?: string }): string {
-  if (opts.url) return opts.url;
-  if (io.env.J2_URL) return io.env.J2_URL;
+  return resolveTarget(io, opts).url;
+}
+
+/** Where to talk, and as whom (ADR-0013). The Instance token is the operator's credential: it
+ * opens gates and run control, and an Agent never holds it — it lives here, on the host. */
+export function resolveTarget(io: Io, opts: { url?: string }): { url: string; token?: string } {
+  const explicit = opts.url ?? io.env.J2_URL;
+  if (explicit) return { url: explicit, token: io.env.J2_TOKEN };
   const root = resolveRoot(io.cwd);
   const dev = readDevJson(root);
   if (!dev) throw new Error("no running orchestrator — run `j2 dev` (or pass --url / set J2_URL)");
-  return dev.url;
+  return { url: dev.url, token: io.env.J2_TOKEN ?? dev.token };
 }

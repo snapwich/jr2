@@ -6,15 +6,13 @@
 //     `gate` and `agentRun` register their invocation's event surface there, with deliver
 //     closures over their own `sendBack` — so delivery lands on the invoking state at any
 //     nesting depth and the host routes nothing.
-//   - The ControlPlane is the MCP dialect adapter over the table: `mcpServer(instanceId)` builds
-//     a server from the iid's LIVE registration for the hono slice to mount on `/mcp/:iid` (no
-//     registration → no server → 404, the one catch point). The gates HTTP routes are the other
-//     adapter (`gates` / `sendToGate`).
+//   - Two thin surfaces sit on that table, and NEITHER is MCP (ADR-0013 — the Orchestrator does
+//     not speak it): `agentSurface` / `sendToAgent` serve the Agent's Adapter (`/agents/:iid/*`),
+//     `gates` / `sendToGate` serve humans, webhooks and CI (`/runs/:id/gates/*`). Lookup,
+//     validation, delivery and lifecycle stay implemented once, in the table.
 //   - The run's `agentRun` child surfaces `agent.offset` telemetry UP to its own parent Machine
 //     directly via `sendBack`; the Machine `assign`s it into context so the durable handle rides
-//     in the snapshot. (flue stream = offset/telemetry; MCP = domain events.)
-//   - A held `deferred` tool result is answered centrally: `answer(runId, decision)` →
-//     `controlPlane.answerRun` releases the Agent's blocked call.
+//     in the snapshot. (flue stream = offset/telemetry; the agent surface = domain events.)
 //
 // Durability (ADR-0007): a snapshot is persisted after every transition. Live infrastructure (the
 // FlueClient-backed `agentRun` actor) is injected via `.provide()` at start AND restore, never
@@ -24,9 +22,15 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyStateMachine } from "xstate";
-import { eventMap, type EventDef } from "@j2/agent-protocol";
-import { ControlPlane } from "./control-plane.ts";
-import { bindRun, EventValidationError, gateAddress, RegistrationTable, UnknownAddressError } from "./registration.ts";
+import { eventMap, type EventDef, type EventSemantics } from "@j2/agent-protocol";
+import {
+  agentAddress,
+  bindRun,
+  EventValidationError,
+  gateAddress,
+  RegistrationTable,
+  UnknownAddressError,
+} from "./registration.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
@@ -45,8 +49,8 @@ export type WorkflowDef = {
    * Names resolve per-workflow against this set; absent means "accepts no workflow events".
    */
   events?: readonly EventDef[];
-  /** Build this run's live providers. `controlPlane` lets a provider wire the run's MCP surface. */
-  provide: (ctx: { instanceId: string; controlPlane: ControlPlane }) => RunProviders;
+  /** Build this run's live providers (ADR-0003). A test seam: discovery injects nothing. */
+  provide: (ctx: { instanceId: string }) => RunProviders;
 };
 
 /** The serializable identity of a run — what reconcile sees and what restore rebuilds from. */
@@ -63,6 +67,22 @@ export type GateView = {
   gate: string;
   accepts: Array<{ name: string; description?: string; input: unknown }>;
   meta?: Record<string, unknown>;
+};
+
+/**
+ * One live agent surface, as its Adapter reads it (`GET /agents/:iid/surface` — ADR-0013). The
+ * Adapter renders this as `tools/list`: each accepted event becomes a tool, its `input` schema the
+ * tool's input schema. `semantics` rides along so the Adapter can tell an awaiting tool from a
+ * fire-and-forget one — the room ADR-0006's deferred results will land in, unbuilt today.
+ *
+ * `sandbox` is the Sandbox that may deliver here. It is not a secret from the Adapter (that pod IS
+ * the sandbox), and serving it lets the Adapter fail loudly on a surface that is not its own.
+ */
+export type AgentSurfaceView = {
+  instanceId: string;
+  runId: string;
+  sandbox?: string;
+  accepts: Array<{ name: string; description?: string; input: unknown; semantics: EventSemantics }>;
 };
 
 /**
@@ -100,9 +120,7 @@ type LiveRun = {
 };
 
 export class RunHost {
-  /** The MCP dialect adapter over the registration table (deferred holds + inboxes live there). */
-  readonly controlPlane: ControlPlane;
-  /** The internal registration table both delivery dialects share (ADR-0011). Callback actors
+  /** The internal registration table both delivery surfaces share (ADR-0011). Callback actors
    * (`gate`, `agentRun`) reach it via the run binding, not this field. */
   private readonly table = new RegistrationTable();
 
@@ -120,7 +138,6 @@ export class RunHost {
     this.reconcile = opts.reconcile ?? (() => true);
     this.newId = opts.newId ?? (() => randomUUID());
     this.sandbox = opts.sandbox;
-    this.controlPlane = new ControlPlane(this.table);
   }
 
   /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
@@ -206,11 +223,43 @@ export class RunHost {
     return { reattached, lost };
   }
 
-  /** Answer a run's outstanding held `deferred` tool call (ADR-0009 APPROVE down-channel). */
-  answer(runId: string, decision: string): void {
-    const run = this.runs.get(runId);
-    if (!run) throw new Error(`no active run "${runId}"`);
-    this.controlPlane.answerRun(runId, { decision });
+  /**
+   * An agent instance's LIVE surface (`GET /agents/:iid/surface` — ADR-0013): what the state that
+   * invoked this Agent accepts, right now. Undefined once nothing is registered (the state exited,
+   * the run settled, the iid is unknown) — the one catch point, and the reason the Adapter never
+   * has to learn which turn is live: it asks, per turn, and the answer IS the turn.
+   */
+  agentSurface(instanceId: string): AgentSurfaceView | undefined {
+    const reg = this.table.lookup(agentAddress(instanceId));
+    if (!reg) return undefined;
+    return {
+      instanceId,
+      runId: reg.runId,
+      sandbox: reg.sandbox,
+      accepts: [...reg.defs.values()].map((def) => ({
+        name: def.name,
+        description: def.description,
+        input: z.toJSONSchema(def.input),
+        semantics: def.semantics,
+      })),
+    };
+  }
+
+  /**
+   * Deliver one event from an Agent's Adapter (`POST /agents/:iid/events` — ADR-0013). Validation
+   * and delivery are the table's; this only agent-scopes the address and mints the receipt.
+   *
+   * The `deliveryId` is that receipt: an outcome stays ADDRESSABLE after the fact, which is the
+   * room a deferred result needs when it lands (flue's 60s MCP timeout means the answer will be
+   * poll-with-progress, not a held socket). Nothing polls it today, deliberately.
+   */
+  sendToAgent(instanceId: string, event: { type?: unknown } & Record<string, unknown>): { deliveryId: string } {
+    const { type, ...payload } = event;
+    if (typeof type !== "string" || !type) {
+      throw new EventValidationError(`event body must carry a string "type" (one of the surface's accepted names)`);
+    }
+    this.table.deliver(agentAddress(instanceId), type, payload);
+    return { deliveryId: this.newId() };
   }
 
   /** A run's open gates as callers discover them (`GET /runs/:id` — ADR-0011). Settled/unknown
@@ -250,13 +299,6 @@ export class RunHost {
     }
   }
 
-  /** Steer a live run: queue a down-channel message its Agent pulls on its next poll (ADR-0009). */
-  steer(runId: string, msg: string): void {
-    const run = this.runs.get(runId);
-    if (!run) throw new Error(`no active run "${runId}"`);
-    this.controlPlane.steerRun(runId, msg);
-  }
-
   /**
    * Observe a live run's feed (the `GET /runs/:id/events` SSE — ADR-0009): status deltas after every
    * transition, plus the author's `emit`s. Returns an unsubscribe fn. The current status is **replayed
@@ -275,12 +317,6 @@ export class RunHost {
       status: { ...run.record, status: snap.status, value: snap.value, context: snap.context },
     });
     return () => run.listeners.delete(listener);
-  }
-
-  /** The MCP server over an instance's LIVE registration — mounted on `/mcp/:instanceId`.
-   * Undefined when nothing is registered (settled run, exited state): the one catch point. */
-  mcpServer(instanceId: string) {
-    return this.controlPlane.server(instanceId);
   }
 
   /** A run's LIVE status — undefined once it settles and is dropped from the registry. Sync. */
@@ -331,7 +367,7 @@ export class RunHost {
 
   /** Fill the template's live slots for one run (ADR-0003 provider injection). */
   private assemble(def: WorkflowDef, instanceId: string): AnyStateMachine {
-    const providers = def.provide({ instanceId, controlPlane: this.controlPlane });
+    const providers = def.provide({ instanceId });
     return def.machine.provide(providers as Parameters<AnyStateMachine["provide"]>[0]);
   }
 

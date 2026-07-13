@@ -19,7 +19,7 @@ import { agentRun, workspace } from "@j2/orchestrator";
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 export const events = [finish];
 
-type Ws = { endpoint: string; workdir: string; repos: Record<string, string>; branch: string };
+type Ws = { endpoint: string; sandbox: string; workdir: string; repos: Record<string, string>; branch: string };
 type BodyInput = { instanceId: string; workspace: Ws };
 
 const body = setup({
@@ -48,8 +48,14 @@ const body = setup({
           agentName: "coder",
           instanceId: context.instanceId,
           endpoint: context.workspace.endpoint,
+          // WHICH Sandbox (ADR-0013): recorded on the registration, so only THIS pod's Adapter —
+          // bearing the token minted for this Sandbox — can deliver into this turn.
+          sandbox: context.workspace.sandbox,
           workdir: context.workspace.workdir,
           tools: [finish.name],
+          // An inert prompt: the persona in the dev Harness image parks unless the message scripts
+          // it (`call <tool> <json>`), so the Machine waits here exactly as it would on a real Agent
+          // that is still thinking. The scenario gives it its instructions in a later submission.
           prompt: "implement the thing",
         }),
       },

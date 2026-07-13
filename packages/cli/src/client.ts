@@ -23,8 +23,8 @@ export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
   | { kind: "emit"; event: { type: string } & Record<string, unknown> };
 
-/** A down-channel event posted to a live run (ADR-0002): APPROVE / CANCEL / STEER + its payload. */
-export type RunEvent = { type: string; reject?: boolean; decision?: string; message?: string };
+/** A run-control event posted to a live run (ADR-0013): CANCEL is the vocabulary that is left. */
+export type RunEvent = { type: string };
 
 /** The subset of `fetch` the client uses. `globalThis.fetch` and hono's `app.request` both satisfy it. */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -34,10 +34,19 @@ const JSON_HEADERS = { "content-type": "application/json" };
 export class J2Client {
   readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
+  /** The Instance token (ADR-0013). The run and gate surfaces are authenticated; without it every
+   * call below is a 401. Absent only for an unauthenticated surface (a test's in-process app). */
+  private readonly token?: string;
 
-  constructor(baseUrl: string, fetchImpl: FetchLike = globalThis.fetch) {
+  constructor(baseUrl: string, fetchImpl: FetchLike = globalThis.fetch, token?: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.fetchImpl = fetchImpl;
+    this.token = token;
+  }
+
+  /** Request headers: the bearer, plus whatever the call adds. */
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    return this.token ? { ...extra, authorization: `Bearer ${this.token}` } : extra;
   }
 
   /** `GET /workflows` — names of the registered workflows. */
@@ -49,7 +58,7 @@ export class J2Client {
   async start(workflow: string, input: Record<string, unknown> = {}): Promise<{ runId: string; instanceId: string }> {
     const res = await this.fetchImpl(`${this.baseUrl}/workflows/${encodeURIComponent(workflow)}/runs`, {
       method: "POST",
-      headers: JSON_HEADERS,
+      headers: this.headers(JSON_HEADERS),
       body: JSON.stringify(input),
     });
     return (await this.json(res)) as { runId: string; instanceId: string };
@@ -57,21 +66,23 @@ export class J2Client {
 
   /** `GET /runs` — every live run's status. */
   async list(): Promise<RunStatus[]> {
-    return (await this.json(await this.fetchImpl(`${this.baseUrl}/runs`))) as RunStatus[];
+    return (await this.json(await this.fetchImpl(`${this.baseUrl}/runs`, { headers: this.headers() }))) as RunStatus[];
   }
 
   /** `GET /runs/:runId` (read-through) — terminal runs included; a genuinely unknown run → undefined. */
   async read(runId: string): Promise<RunStatus | undefined> {
-    const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}`);
+    const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}`, {
+      headers: this.headers(),
+    });
     if (res.status === 404) return undefined;
     return (await this.json(res)) as RunStatus;
   }
 
-  /** `POST /runs/:runId/events` — feed one down-channel event into a live run. */
+  /** `POST /runs/:runId/events` — feed one run-control event into a live run. */
   async send(runId: string, event: RunEvent): Promise<void> {
     const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
       method: "POST",
-      headers: JSON_HEADERS,
+      headers: this.headers(JSON_HEADERS),
       body: JSON.stringify(event),
     });
     await this.json(res); // surface { error } as a throw; ignore the { ok:true } body
@@ -84,7 +95,7 @@ export class J2Client {
    */
   async *events(runId: string): AsyncGenerator<RunFeedEvent> {
     const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
-      headers: { accept: "text/event-stream" },
+      headers: this.headers({ accept: "text/event-stream" }),
     });
     if (res.status === 404) throw new Error(`no run "${runId}"`);
     if (!res.body) return;

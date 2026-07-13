@@ -11,7 +11,7 @@ import { z } from "zod";
 import { defineEvent, eventMap } from "@j2/agent-protocol";
 import { agentRunActorWith } from "../src/actor.ts";
 import type { AgentRunInput, AgentToolCall, AgentRunPort } from "../src/actor.ts";
-import { bindRun, mcpAddress, RegistrationTable } from "../src/registration.ts";
+import { bindRun, agentAddress, RegistrationTable } from "../src/registration.ts";
 
 /** An AgentRunPort the test drives by hand: capture the admission + push synthetic tool calls. */
 class MockFlueClient implements AgentRunPort {
@@ -99,11 +99,11 @@ test("registers its event surface on start; delivery lands on the invoking state
   const mock = new MockFlueClient();
   const { received, table } = harness(mock, baseInput);
 
-  const reg = table.lookup(mcpAddress("inst-42"));
+  const reg = table.lookup(agentAddress("inst-42"));
   assert.equal(reg?.kind, "agent");
   assert.deepEqual([...(reg?.defs.keys() ?? [])], ["ping"]);
 
-  table.deliver(mcpAddress("inst-42"), "ping", {});
+  table.deliver(agentAddress("inst-42"), "ping", {});
   await tick();
   assert.ok(received.some((e) => e.type === "ping"));
 });
@@ -157,11 +157,11 @@ test("surfaces a stream fault as agent.fault telemetry", async () => {
 test("a CANCEL sent to the actor abandons the run and destroys the registration", async () => {
   const mock = new MockFlueClient();
   const { actor, table } = harness(mock, baseInput);
-  assert.ok(table.lookup(mcpAddress("inst-42")));
+  assert.ok(table.lookup(agentAddress("inst-42")));
 
   actor.send({ type: "CANCEL_RUN" });
   await tick();
 
   assert.deepEqual(mock.cancelled, ["inst-42"]);
-  assert.equal(table.lookup(mcpAddress("inst-42")), undefined);
+  assert.equal(table.lookup(agentAddress("inst-42")), undefined);
 });

@@ -27,6 +27,7 @@ import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
+import { createAuthenticator, loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 
 export type InstanceOptions = {
@@ -43,6 +44,10 @@ export type InstanceOptions = {
   /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller
    * (`j2 dev` builds it from `config.sandbox`); absent = a workspace-less instance. */
   sandbox?: SandboxPort;
+  /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.j2/secret`, minted on
+   * first boot. Supply it when the instance folder must stay untouched (tests), or when the same
+   * key must reach a `kubectlSandbox` built before this call (`j2 dev` — it mints the tokens). */
+  signingKey?: Buffer;
 };
 
 /** What changed on a `reload()` — the diff against the previously-registered set. */
@@ -52,6 +57,13 @@ export type RunningInstance = {
   host: RunHost;
   /** The base URL the HTTP surface is reachable at (with the resolved port). */
   url: string;
+  /**
+   * The Instance token this boot minted (ADR-0013): the credential for gates and run control.
+   * `j2 dev` advertises it in `.j2/dev.json` (0600) beside the url, which is where the CLI reads
+   * both. Rotating per boot is fine — a caller re-reads dev.json — but the SIGNING KEY behind the
+   * Sandbox tokens must not (see `loadSigningKey`).
+   */
+  instanceToken: string;
   /** Names of the workflows discovered + registered from `<dir>/workflows`. */
   workflows: string[];
   /**
@@ -110,8 +122,13 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // 3. Resume in-flight runs persisted by a prior process (ADR-0007).
   await host.restore();
 
-  // 4. Serve. `serve` binds asynchronously; resolve once listening so `url` carries the real port.
-  const app = createApp(host);
+  // 4. Serve, authenticated (ADR-0013). The signing key is loaded from (or minted into) the
+  // instance folder, NOT generated per process: live Sandboxes outlive a restart, and their
+  // Adapters still bear tokens this key signed. The Instance token is per-boot; the key is not.
+  const instanceToken = mintInstanceToken();
+  const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));
+  const auth = createAuthenticator({ instanceToken, signingKey });
+  const app = createApp(host, auth);
   const server = serve({ fetch: app.fetch, port: opts.port ?? 0, hostname });
   const port = await new Promise<number>((resolve) => {
     server.once("listening", () => resolve((server.address() as AddressInfo).port));
@@ -120,6 +137,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   return {
     host,
     url: `http://${hostname}:${port}`,
+    instanceToken,
     workflows: host.workflows(),
     reload: async () => {
       importGen++;

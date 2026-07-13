@@ -3,12 +3,17 @@ Feature: a workspace() run drives a real Sandbox on kind
   ADR-0012: a Workspace is ALWAYS a real Sandbox — there is no stubbed workspace mode — so this is
   the one tier where the data plane is real: the operator's Sandbox CR, a pod running the Harness
   image, the instance's read-only repos volume, a git worktree inside the pod, and the Harness
-  endpoint the body's agent is admitted against. What is NOT real is the LLM: the Sandbox runs the
-  dev Harness image (the wire-compatible stub), and the scenarios play the agent themselves over
-  its MCP surface — exactly as the mechanics tier does.
+  endpoint the body's agent is admitted against.
+
+  It is also the only tier where the AGENT is real in the way that matters (ADR-0013): the pod
+  originates its own tool calls. The dev Harness image carries a scripted persona which, on every
+  submission, connects an MCP client to the Adapter on `localhost` and calls a tool from the menu
+  the Machine registered for that turn. Nothing here plays the agent from the host. What is still
+  faked is the LLM — the prompt names the tool instead of a model choosing it; the wire, the
+  container boundary, and the tool call are real.
 
   This tier is opt-in (`@kind`, excluded from the default suite) because it needs infrastructure:
-    just e2e-kind-up      # dev Harness image + the cluster whose repos/ mount is baked at creation
+    just e2e-kind-up      # dev Harness + Adapter images, and the cluster whose repos/ mount is baked at creation
     just operator-run     # the Sandbox operator, in another shell (until a deployable image lands)
     just e2e-kind
 
@@ -19,8 +24,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
-      And the agent's MCP surface offers exactly "finish"
-      When the agent calls "finish" with summary "ok"
+      When the Agent in the Sandbox calls "finish" with summary "ok"
       Then the run's status shows "done"
       And the run's body settled as "finished"
       And the run's Sandbox is destroyed
@@ -35,8 +39,9 @@ Feature: a workspace() run drives a real Sandbox on kind
       # Same CR (never re-provisioned) at the same endpoint: the port-forward is derived from the
       # Sandbox name, so the endpoint persisted in the snapshot is still the one that works.
       Then the run's Sandbox is the same one, at the same endpoint
-      And the agent's MCP surface offers exactly "finish"
-      When the agent calls "finish" with summary "ok"
+      # And the Agent still reaches its Machine: its Adapter's token outlives the process that
+      # minted it, so a turn played after the restart still lands (ADR-0013).
+      When the Agent in the Sandbox calls "finish" with summary "ok"
       Then the run's status shows "done"
       And the run's Sandbox is destroyed
 
@@ -53,3 +58,30 @@ Feature: a workspace() run drives a real Sandbox on kind
       # policy settled it. The unpushed commits are gone; resuming would have been a lie.
       Then the run's body settled as "lost"
       And no Sandbox was re-provisioned for the run
+
+  Rule: the Agent's only control-plane peer is the Adapter on localhost
+    ADR-0013. The Agent reaches its Machine through a process it can talk to but whose credential
+    it cannot read. Nothing else in the pod can deliver — which is what makes "the Agent never
+    steers the workflow" enforced rather than advertised.
+
+    Scenario: the tool call originates inside the pod and drives the Machine
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox runs the Adapter beside the Harness
+      # The pod dials out; the host dials nothing. The persona connected to the Adapter on
+      # localhost, was served this state's menu, and called from it — and the Machine moved.
+      When the Agent in the Sandbox calls "finish" with summary "ok"
+      Then the run's status shows "done"
+      And the run's body settled as "finished"
+
+    Scenario: the Harness container cannot deliver to the Orchestrator itself
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      # `local()` tools give the Agent code execution in the Harness container, which shares the
+      # pod's network namespace — so it CAN reach the Orchestrator, address and all. It simply has
+      # no credential: the Sandbox token is delivered into the Adapter container only.
+      When the Harness container posts "finish" straight to the Orchestrator
+      Then the delivery is refused as unauthorized
+      And the run has not settled

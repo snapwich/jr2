@@ -15,8 +15,21 @@
 //
 // All four operations are idempotent (SandboxPort contract): apply is create-or-update, attach
 // guards every clone/worktree, delete ignores absent.
+//
+// This is also where the ADAPTER is injected (ADR-0013). The operator needs no change to carry it:
+// ADR-0001 made `Sidecars` generic container fragments it schedules WITHOUT understanding, so the
+// Adapter is exactly that — a container with an image, an env, and a Secret. What this module
+// builds is the pod's asymmetry:
+//
+//   harness container   J2_ADAPTER_URL=http://127.0.0.1:8081     (an address, no credential)
+//   adapter container   J2_ORCHESTRATOR_URL + J2_SANDBOX_TOKEN   (the credential, via envFrom)
+//
+// The Agent has code execution in the first and none in the second. The token is minted here — a
+// signed Sandbox name (see tokens.ts), so re-provisioning after a restart yields the SAME token and
+// the Secret re-applies as a no-op.
 
 import { execFile, spawn as nodeSpawn } from "node:child_process";
+import { sandboxToken } from "./tokens.ts";
 import type { WorkspaceSpec, SandboxPort } from "./workspace.ts";
 
 /** Run one kubectl invocation to completion. `input` is piped to stdin (`apply -f -`). */
@@ -33,6 +46,21 @@ export type KubectlSpawn = (args: string[]) => KubectlProc;
 export type KubectlSandboxOptions = {
   /** The Harness image every Sandbox runs (one image, many personas — ADR-0001). */
   image: string;
+  /** The Adapter image (ADR-0013) — the Agent's MCP surface, and the pod's only credential holder.
+   * Absent = no Adapter is injected, so the Agent has no route to its Machine. */
+  adapterImage?: string;
+  /**
+   * Where the Adapter reaches the Orchestrator FROM INSIDE THE CLUSTER: the pod→host address
+   * `j2 cluster up` recorded (kind), or Service DNS (deployed). The Agent is never told it.
+   *
+   * A thunk, because `j2 dev` builds this port BEFORE it knows its own address (`--port 0` resolves
+   * only once the socket is listening) and every use of it is at provision time, long after.
+   */
+  orchestratorUrl?: string | (() => string | undefined);
+  /** The key Sandbox tokens are signed with — the instance's `.j2/secret` (ADR-0013). */
+  signingKey?: Buffer;
+  /** The Adapter's port on the pod's loopback. Default 8081. */
+  adapterPort?: number;
   /** Kube namespace for Sandbox CRs. Default `default`. */
   namespace?: string;
   /** kubectl `--context` override. Default: the current context (ADR-0009). */
@@ -72,9 +100,32 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
   const exec = opts.exec ?? defaultExec;
   const spawn = opts.spawn ?? defaultSpawn;
 
+  const adapterPort = opts.adapterPort ?? 8081;
   const base = ["--namespace", ns, ...(opts.context ? ["--context", opts.context] : [])];
   /** name → its live port-forward child, so destroy/re-ensure manage exactly one per Sandbox. */
   const forwards = new Map<string, { proc: KubectlProc; ready: Promise<void> }>();
+
+  /** The Sandbox's token Secret — read by the Adapter container, and by nothing else in the pod. */
+  const secretName = (name: string) => `${name}-token`;
+
+  /** Resolved at provision time (see the option's doc): the Orchestrator's in-cluster address. */
+  const orchestratorUrl = (): string | undefined =>
+    typeof opts.orchestratorUrl === "function" ? opts.orchestratorUrl() : opts.orchestratorUrl;
+
+  /** The Adapter, as the operator sees it: an opaque container fragment (ADR-0001). */
+  const adapterSidecar = (name: string) => ({
+    name: "adapter",
+    image: opts.adapterImage,
+    env: [
+      { name: "J2_ORCHESTRATOR_URL", value: orchestratorUrl() },
+      { name: "J2_SANDBOX", value: name },
+      { name: "J2_ADAPTER_PORT", value: String(adapterPort) },
+    ],
+    // The credential, and the reason this is a separate container: `local()` tools give the Agent
+    // code execution in the HARNESS container, so anything mounted there is the Agent's. Here, it
+    // is out of reach — different container, no shared process namespace.
+    envFrom: [{ secretRef: { name: secretName(name) } }],
+  });
 
   const crFor = (req: { name: string; runId: string; workflow: string }) => ({
     apiVersion: "core.j2.dev/v1alpha1",
@@ -88,6 +139,14 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     spec: {
       image: opts.image,
       idleTimeout: opts.idleTimeout ?? "30m",
+      // What the AGENT gets: an address on its own loopback, and no credential anywhere. This is
+      // the only thing in the pod that tells it how to reach its Machine (ADR-0013).
+      ...(opts.adapterImage
+        ? {
+            env: [{ name: "J2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` }],
+            sidecars: [adapterSidecar(req.name)],
+          }
+        : {}),
       volumes: [
         { name: "repos", hostPath: { path: reposMount, type: "Directory" } },
         // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
@@ -107,15 +166,70 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     },
   });
 
-  const getSandbox = async (name: string): Promise<{ phase?: string; endpoint?: string } | undefined> => {
+  const getSandbox = async (name: string): Promise<{ phase?: string; endpoint?: string; uid?: string } | undefined> => {
     try {
       const { stdout } = await exec(["get", "sandbox", name, ...base, "-o", "json"]);
-      const parsed = JSON.parse(stdout) as { status?: { phase?: string; endpoint?: string } };
-      return parsed.status ?? {};
+      const parsed = JSON.parse(stdout) as {
+        metadata?: { uid?: string };
+        status?: { phase?: string; endpoint?: string };
+      };
+      return { ...(parsed.status ?? {}), uid: parsed.metadata?.uid };
     } catch (err) {
       if (isNotFound(err)) return undefined;
       throw err;
     }
+  };
+
+  /**
+   * Mint this Sandbox's token into a Secret, BEFORE the CR exists — the operator creates the pod
+   * the moment it sees the CR, and a pod whose `envFrom` names an absent Secret sits in
+   * CreateContainerConfigError. Idempotent by construction: the token is the Sandbox's name, signed
+   * (tokens.ts), so a re-provision after an orchestrator restart re-applies the SAME value, and the
+   * Adapter that has been holding it all along stays valid.
+   */
+  const applyTokenSecret = async (name: string): Promise<void> => {
+    if (!opts.adapterImage) return;
+    if (!opts.signingKey) throw new Error("kubectlSandbox: an Adapter needs a signingKey to mint its Sandbox token");
+    // Fail the provision rather than ship an Adapter that cannot reach the Orchestrator. A mute
+    // Adapter is the worst possible outcome: the pod comes up Ready, the Agent is admitted, its
+    // tool call dies on `localhost`, and the Machine simply parks forever — a hang with no error.
+    if (!orchestratorUrl()) {
+      throw new Error(
+        "kubectlSandbox: the Adapter has no route to the Orchestrator (no `podToHost` in .j2/cluster.json — " +
+          "run `j2 cluster up`). An Agent with no Adapter cannot drive its Machine at all (ADR-0013).",
+      );
+    }
+    const secret = {
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: { name: secretName(name), namespace: ns, labels: { "j2.dev/sandbox": name } },
+      type: "Opaque",
+      stringData: { J2_SANDBOX_TOKEN: sandboxToken(opts.signingKey, name) },
+    };
+    await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(secret) });
+  };
+
+  /**
+   * Make the Secret a child of the Sandbox CR, so Kubernetes reaps it whenever the CR goes — including
+   * the paths no j2 code observes (the operator's idle-timeout GC, a `kubectl delete sandbox` by hand).
+   * Needs the CR's uid, so it can only happen after the apply; a failure here leaks a Secret, never a
+   * pod, so it is not worth failing the provision over.
+   */
+  const ownSecret = async (name: string, uid: string | undefined): Promise<void> => {
+    if (!opts.adapterImage || !uid) return;
+    const ownerRef = [
+      { apiVersion: "core.j2.dev/v1alpha1", kind: "Sandbox", name, uid, controller: true, blockOwnerDeletion: false },
+    ];
+    await exec([
+      "patch",
+      "secret",
+      secretName(name),
+      ...base,
+      "--type",
+      "merge",
+      "-p",
+      JSON.stringify({ metadata: { ownerReferences: ownerRef } }),
+    ]).catch(() => {});
   };
 
   /** Ensure the deterministic port-forward for `name` is up; resolve once it is listening. */
@@ -146,11 +260,14 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
 
   return {
     async provision(req) {
+      await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start
       await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(crFor(req)) });
 
       const deadline = Date.now() + readyTimeoutMs;
+      let owned = false;
       for (;;) {
         const status = await getSandbox(req.name);
+        if (!owned && status?.uid) ((owned = true), await ownSecret(req.name, status.uid));
         if (status?.phase === "Ready") {
           // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
           if (reach === "endpoint") {
@@ -184,7 +301,10 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
 
     async destroy(name) {
       dropForward(name);
+      // The Secret is an owned child of the CR, so deleting the CR reaps it — this is belt and
+      // braces for the case where the ownerRef patch didn't land.
       await exec(["delete", "sandbox", name, ...base, "--ignore-not-found"]);
+      await exec(["delete", "secret", secretName(name), ...base, "--ignore-not-found"]).catch(() => {});
     },
   };
 }

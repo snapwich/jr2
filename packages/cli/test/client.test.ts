@@ -56,11 +56,13 @@ test("read() is undefined for an unknown run", async () => {
   assert.equal(await client.read("nope"), undefined);
 });
 
-test("send() surfaces the host's answer — a steer with no live agent surface is refused", async () => {
+test("send() carries CANCEL, and surfaces the host's refusal of anything else", async () => {
   const { client } = await mkHarness();
   const { runId } = await client.start("loop");
-  // `loop` invokes no agent, so there is no surface to steer: the host refuses (ADR-0011 — the
-  // inbox is an agent registration's, not a run-wide void). The positive path is covered by the
-  // orchestrator suite, where a real agent registration is live.
-  await assert.rejects(() => client.send(runId, { type: "STEER", message: "hi" }), /no live agent surface/);
+  // APPROVE and STEER were sugar over the `deferred` and `poll` semantics, which ADR-0013 reserves
+  // without building — so the run-control seam accepts CANCEL and nothing else, loudly.
+  await assert.rejects(() => client.send(runId, { type: "STEER" }), /accepts: CANCEL/);
+
+  await client.send(runId, { type: "CANCEL" });
+  assert.ok(!(await client.list()).some((r) => r.runId === runId), "CANCEL abandons the run — it is no longer live");
 });

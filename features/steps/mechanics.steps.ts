@@ -1,16 +1,24 @@
-// Steps for the ADR-0011 mechanics tier: play the AGENT over its MCP surface (`/mcp/<iid>`,
-// with the real MCP SDK client — the same wire a Harness-hosted agent speaks) and the HUMAN
-// over the gates HTTP API. The run itself is observed black-box via `j2 status`.
+// Steps for the ADR-0011 mechanics tier: drive the two delivery surfaces the Orchestrator serves —
+// `/agents/<iid>/*` (the AGENT's, as its Adapter speaks it) and `/runs/:id/gates/*` (the HUMAN's).
+// The run itself is observed black-box via `j2 status`.
+//
+// These steps used to open an MCP client to `/mcp/<iid>`. That surface is gone from the Orchestrator
+// (ADR-0013): MCP now lives in the Adapter, inside the Sandbox. So what these steps play is the
+// ADAPTER, not an Agent — which is what they were always really doing, since there was never a pod
+// here (this tier is workspace-less: `agentRun` admits against the host's stub Harness). The tier
+// that makes a real Agent originate a real MCP call is `@kind`, where there is a real pod to do it.
+//
+// They carry the INSTANCE token, not a Sandbox token: these registrations belong to no Sandbox, and
+// a Sandbox token is scoped to one. The credential comes from `.j2/dev.json`, as the CLI's does.
 
 import { Given, When, Then } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { E2EWorld } from "./world.ts";
 
 type Status = { runId: string; instanceId: string; status: string; value: unknown };
 type Gate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
+type Surface = { accepts: Array<{ name: string }> };
 
 /** `j2 status <runId>` → the machine-readable RunStatus (black-box observation path). */
 async function status(world: E2EWorld): Promise<Status> {
@@ -33,18 +41,15 @@ async function waitForValue(world: E2EWorld, value: string): Promise<Status> {
 
 /** The run's open gates, from the HTTP discovery listing (`GET /runs/:id` — ADR-0011). */
 async function gates(world: E2EWorld): Promise<Gate[]> {
-  const res = await fetch(`${world.dev?.url}/runs/${world.runId}`);
+  const res = await fetch(`${world.dev?.url}/runs/${world.runId}`, { headers: world.authHeaders() });
   assert.equal(res.status, 200);
   return ((await res.json()) as { gates?: Gate[] }).gates ?? [];
 }
 
-/** Connect the real MCP client to the run's agent surface. */
-async function connectAgent(world: E2EWorld): Promise<{ client: Client; close: () => Promise<void> }> {
+/** `GET /agents/:iid/surface` — what the Adapter would render as this turn's `tools/list`. */
+async function agentSurface(world: E2EWorld): Promise<Response> {
   const s = await status(world);
-  const transport = new StreamableHTTPClientTransport(new URL(`${world.dev?.url}/mcp/${s.instanceId}`));
-  const client = new Client({ name: "e2e-agent", version: "0.0.0" });
-  await client.connect(transport);
-  return { client, close: () => client.close() };
+  return fetch(`${world.dev?.url}/agents/${s.instanceId}/surface`, { headers: world.authHeaders() });
 }
 
 Given("the instance also has the {string} workflow", async function (this: E2EWorld, name: string): Promise<void> {
@@ -61,46 +66,50 @@ Given(
   },
 );
 
+// What a `tools/call` becomes once the Adapter has translated it: one delivery, into the state that
+// invoked the Agent.
 When(
   "the agent calls {string} with summary {string}",
   async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
-    const { client, close } = await connectAgent(this);
-    try {
-      await client.callTool({ name: tool, arguments: { summary } });
-    } finally {
-      await close();
-    }
+    const s = await status(this);
+    const res = await fetch(`${this.dev?.url}/agents/${s.instanceId}/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...this.authHeaders() },
+      body: JSON.stringify({ type: tool, summary }),
+    });
+    const body = (await res.json()) as { deliveryId?: string; error?: string };
+    assert.equal(res.status, 200, `the delivery was accepted (got: ${body.error})`);
+    // Every delivery answers with an addressable receipt (ADR-0013).
+    assert.ok(body.deliveryId, "a delivery answers with a receipt");
   },
 );
 
 When("I deliver {string} to gate {string}", async function (this: E2EWorld, type: string, gate: string) {
   const res = await fetch(`${this.dev?.url}/runs/${this.runId}/gates/${gate}/events`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...this.authHeaders() },
     body: JSON.stringify({ type }),
   });
   this.last = { stdout: JSON.stringify(await res.json()), stderr: "", code: res.status };
 });
 
-Then("the agent's MCP surface offers exactly {string}", async function (this: E2EWorld, tools: string) {
-  const { client, close } = await connectAgent(this);
-  try {
-    const listed = (await client.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(
-      listed,
-      tools
-        .split(",")
-        .map((t) => t.trim())
-        .sort(),
-    );
-  } finally {
-    await close();
-  }
+Then("the agent's surface offers exactly {string}", async function (this: E2EWorld, tools: string) {
+  const res = await agentSurface(this);
+  assert.equal(res.status, 200);
+  const listed = ((await res.json()) as Surface).accepts.map((a) => a.name).sort();
+  assert.deepEqual(
+    listed,
+    tools
+      .split(",")
+      .map((t) => t.trim())
+      .sort(),
+  );
 });
 
-Then("the agent's MCP surface is gone", async function (this: E2EWorld): Promise<void> {
-  // The invoking state exited, so the registration — and with it the endpoint — is gone.
-  await assert.rejects(() => connectAgent(this), /404|no live agent surface|HTTP/i);
+Then("the agent's surface is gone", async function (this: E2EWorld): Promise<void> {
+  // The invoking state exited, so the registration — and with it the whole surface — is gone. This
+  // is what the Adapter sees when a turn is over: not an empty menu, but no menu.
+  assert.equal((await agentSurface(this)).status, 404);
 });
 
 Then("the run's status shows state {string}", async function (this: E2EWorld, value: string) {

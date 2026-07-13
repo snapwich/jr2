@@ -16,6 +16,11 @@ import { startInstance } from "../src/instance.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
+// The surface is authenticated (ADR-0013), so these tests must present the Instance token the boot
+// minted — exactly as the CLI does after reading `.j2/dev.json`. The signing key is supplied rather
+// than loaded, so a test never writes `.j2/secret` into the fixture folder it shares.
+const KEY = Buffer.alloc(32, 3);
+const auth = (inst: { instanceToken: string }) => ({ headers: { authorization: `Bearer ${inst.instanceToken}` } });
 // A workflow's parent package for module resolution; reload temp dirs live here (under the package so
 // generated files resolve `xstate`) but OUTSIDE tsconfig's `src`/`test` globs so `tsc` never sees them.
 const pkgDir = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,27 +45,27 @@ async function waitFor(pred: () => boolean | Promise<boolean>): Promise<void> {
 
 test("discovers workflows and serves the HTTP surface", async () => {
   const store = new SqliteSnapshotStore(":memory:");
-  const inst = await startInstance({ dir: fixtureDir, store });
+  const inst = await startInstance({ dir: fixtureDir, store, signingKey: KEY });
   try {
     assert.deepEqual(inst.workflows, ["echo"]);
 
-    const health = await fetch(`${inst.url}/healthz`);
+    const health = await fetch(`${inst.url}/healthz`, auth(inst));
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), { ok: true });
 
-    const workflows = await (await fetch(`${inst.url}/workflows`)).json();
+    const workflows = await (await fetch(`${inst.url}/workflows`, auth(inst))).json();
     assert.deepEqual(workflows, ["echo"]);
 
     // Push work over HTTP → a run is minted and observable.
-    const started = await fetch(`${inst.url}/workflows/echo/runs`, { method: "POST", body: "{}" });
+    const started = await fetch(`${inst.url}/workflows/echo/runs`, { method: "POST", body: "{}", ...auth(inst) });
     assert.equal(started.status, 201);
     const { runId } = (await started.json()) as { runId: string };
     assert.ok(runId);
 
-    const runs = (await (await fetch(`${inst.url}/runs`)).json()) as Array<{ runId: string; workflow: string }>;
+    const runs = (await (await fetch(`${inst.url}/runs`, auth(inst))).json()) as Array<{ runId: string; workflow: string }>;
     assert.ok(runs.some((r) => r.runId === runId && r.workflow === "echo"));
 
-    const status = (await (await fetch(`${inst.url}/runs/${runId}`)).json()) as { workflow: string; status: string };
+    const status = (await (await fetch(`${inst.url}/runs/${runId}`, auth(inst))).json()) as { workflow: string; status: string };
     assert.equal(status.workflow, "echo");
   } finally {
     await inst.close();
@@ -68,9 +73,9 @@ test("discovers workflows and serves the HTTP surface", async () => {
 });
 
 test("an unknown workflow start is a 404", async () => {
-  const inst = await startInstance({ dir: fixtureDir, store: new SqliteSnapshotStore(":memory:") });
+  const inst = await startInstance({ dir: fixtureDir, store: new SqliteSnapshotStore(":memory:"), signingKey: KEY });
   try {
-    const res = await fetch(`${inst.url}/workflows/nope/runs`, { method: "POST", body: "{}" });
+    const res = await fetch(`${inst.url}/workflows/nope/runs`, { method: "POST", body: "{}", ...auth(inst) });
     assert.equal(res.status, 404);
   } finally {
     await inst.close();
@@ -83,14 +88,14 @@ test("a fresh boot on the same store restores an in-flight run", async () => {
 
   // Boot A: start a run (the stub keeps it live), let it persist, then shut down.
   const storeA = new SqliteSnapshotStore(dbPath);
-  const instA = await startInstance({ dir: fixtureDir, store: storeA });
+  const instA = await startInstance({ dir: fixtureDir, store: storeA, signingKey: KEY });
   const { runId } = await instA.host.start("echo");
   await waitFor(async () => (await storeA.load(runId)) !== undefined);
   await instA.close();
 
   // Boot B: a brand-new process on the SAME db file → restore re-attaches the run.
   const storeB = new SqliteSnapshotStore(dbPath);
-  const instB = await startInstance({ dir: fixtureDir, store: storeB, reconcile: () => true });
+  const instB = await startInstance({ dir: fixtureDir, store: storeB, reconcile: () => true, signingKey: KEY });
   try {
     assert.ok(instB.host.status(runId), "run must be re-attached after a fresh boot");
     assert.equal(instB.host.status(runId)?.workflow, "echo");
@@ -109,7 +114,7 @@ test("module contract (ADR-0011): no `machine` named export fails discovery with
   );
   try {
     await assert.rejects(
-      startInstance({ dir, store: new SqliteSnapshotStore(":memory:") }),
+      startInstance({ dir, store: new SqliteSnapshotStore(":memory:"), signingKey: KEY }),
       /workflow "legacy" .* has no `machine` named export .*export const machine/,
     );
   } finally {
@@ -130,7 +135,7 @@ test("the `events` manifest is collected per workflow and resolvable on the host
       `export const events = [approve];\n` +
       `export const machine = setup({}).createMachine({ id: "gated", initial: "a", states: { a: {} } });\n`,
   );
-  const inst = await startInstance({ dir, store: new SqliteSnapshotStore(":memory:") });
+  const inst = await startInstance({ dir, store: new SqliteSnapshotStore(":memory:"), signingKey: KEY });
   try {
     const vocab = inst.host.events("gated");
     assert.ok(vocab?.has("approve"), "manifest must be collected at discovery");
@@ -150,7 +155,7 @@ test("reload picks up added, changed, and removed workflow files (dev hot-reload
     writeFile(join(wfDir, `${name}.ts`), machineSrc(name, initial));
 
   await write("alpha", "one");
-  const inst = await startInstance({ dir, store: new SqliteSnapshotStore(":memory:") });
+  const inst = await startInstance({ dir, store: new SqliteSnapshotStore(":memory:"), signingKey: KEY });
   try {
     assert.deepEqual(inst.workflows, ["alpha"]);
 

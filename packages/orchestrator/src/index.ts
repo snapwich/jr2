@@ -1,9 +1,12 @@
-// @j2/orchestrator — the deployed app that runs Machines: workflow config, the MCP control
-// plane, the duplex Actor over flue, and durable snapshot persistence (ADR-0002/0006/0007).
-// Builds on the `@j2/agent-protocol` wire contract.
+// @j2/orchestrator — the deployed app that runs Machines: workflow config, the agent + gate
+// delivery surfaces, the duplex Actor over flue, and durable snapshot persistence
+// (ADR-0002/0006/0007). Builds on the `@j2/agent-protocol` wire contract.
+//
+// It does NOT speak MCP (ADR-0013): the Agent's MCP surface is hosted by the Adapter, in the
+// Sandbox. What lives here is the registration table and two thin HTTP adapters over it.
 
 export * from "./config.ts";
-export * from "./control-plane.ts";
+export * from "./tokens.ts";
 export * from "./durability.ts";
 export * from "./snapshot-store.ts";
 export * from "./actor.ts";

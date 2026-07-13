@@ -6,6 +6,7 @@
 // (the one machine-readable result), stderr (human activity), and the process exit code. Nothing is
 // imported from `@j2/cli` internals; the binary is spawned exactly as `pnpm exec j2` would run it.
 
+import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, copyFile, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -30,8 +31,10 @@ const KIND_DIR = fileURLToPath(new URL("../.tmp/kind/", import.meta.url));
 /** The captured outcome of one `j2 …` invocation. */
 export type CliResult = { stdout: string; stderr: string; code: number };
 
-/** What `j2 dev` advertised in `.j2/dev.json`. */
-type DevInfo = { url: string; stubHarness?: string; pid: number };
+/** What `j2 dev` advertised in `.j2/dev.json` — including the Instance token (ADR-0013), which is
+ * the credential every run/gate/agent call needs. A step that fetches the orchestrator directly is
+ * standing in for the CLI (or for an Adapter), so it must present it too. */
+type DevInfo = { url: string; token?: string; stubHarness?: string; pid: number };
 
 export class E2EWorld {
   /** The temp instance folder (holds `j2.config.ts`, `workflows/`, and the runtime `.j2/`). */
@@ -48,6 +51,8 @@ export class E2EWorld {
   sandboxBefore?: string;
   /** @kind: the workspace endpoint before a restart — restore must land on the same one. */
   endpointBefore?: string;
+  /** @kind: stdout of the last command run INSIDE a Sandbox container (ADR-0013 boundary probes). */
+  podSays?: string;
 
   /** True when this scenario runs against the shared kind instance (so cleanup must not delete it). */
   private kind = false;
@@ -61,10 +66,14 @@ export class E2EWorld {
   /**
    * Adopt the shared kind instance (@kind scenarios). Fails pointedly rather than scaffolding it:
    * the folder must EXIST before its cluster is created (the mount is baked then), so creating it
-   * here would hand the scenario an instance no pod can see. Run state is reset so each scenario
-   * starts with an empty store — a leftover in-flight run would otherwise be restored at boot and
-   * re-provision Sandboxes underneath us. `repos/` is never touched: deleting the bind-mounted
-   * directory would sever the node's view of it for the life of the cluster.
+   * here would hand the scenario an instance no pod can see.
+   *
+   * Only the run STORE is reset — a leftover in-flight run would otherwise be restored at boot and
+   * re-provision Sandboxes underneath us. The rest of `.j2/` is left alone, because two of its
+   * files are the cluster's, not the run's: `cluster.json` (the pod→host address `j2 cluster up`
+   * recorded — wiping it leaves every Adapter with no route home) and `secret` (the key Sandbox
+   * tokens are signed with). `repos/` is never touched either: deleting the bind-mounted directory
+   * would sever the node's view of it for the life of the cluster.
    */
   async setupKind(): Promise<void> {
     this.kind = true;
@@ -74,7 +83,7 @@ export class E2EWorld {
     } catch {
       throw new Error(`the kind e2e instance is not set up — run \`just e2e-kind-up\` (expected ${this.dir})`);
     }
-    await rm(join(this.dir, ".j2"), { recursive: true, force: true });
+    await rm(join(this.dir, ".j2", "state.db"), { force: true });
   }
 
   /** Tear the scenario down: stop the orchestrator (if any) and delete the instance folder. */
@@ -88,6 +97,13 @@ export class E2EWorld {
   async restartDev(): Promise<void> {
     await this.stopDev();
     await this.startDev();
+  }
+
+  /** The Instance token as a bearer header — what the CLI sends after reading `.j2/dev.json`. */
+  authHeaders(): Record<string, string> {
+    const token = this.dev?.token;
+    assert.ok(token, "j2 dev advertised an Instance token in dev.json (ADR-0013)");
+    return { authorization: `Bearer ${token}` };
   }
 
   /** Run `j2 <args>` against this instance, capturing stdout/stderr/exit code into `last`. */
@@ -124,9 +140,17 @@ export class E2EWorld {
     );
   }
 
-  /** Boot `j2 dev --port 0` and wait until it advertises `.j2/dev.json`. */
+  /**
+   * Boot `j2 dev` and wait until it advertises `.j2/dev.json`.
+   *
+   * Ephemeral port everywhere but @kind, where the port must be STABLE across the restart a
+   * scenario performs: a live Sandbox's Adapter holds the orchestrator's address in its pod env
+   * (baked at provision, and pods are immutable), so a restart onto a fresh port would strand it
+   * (ADR-0013). There, `j2 dev` derives its own port from the instance path — so we pass none.
+   */
   async startDev(): Promise<void> {
-    this.devProc = spawn(process.execPath, [BIN, "dev", "--port", "0"], { cwd: this.dir });
+    const port = this.kind ? [] : ["--port", "0"];
+    this.devProc = spawn(process.execPath, [BIN, "dev", ...port], { cwd: this.dir });
     this.devProc.stderr?.on("data", () => {}); // drain so the pipe never blocks
     this.dev = await this.waitForDevJson();
   }

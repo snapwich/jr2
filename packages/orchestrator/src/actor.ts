@@ -3,12 +3,13 @@
 //
 //   1. REGISTERS the invocation's event surface: `tools` names are resolved against the
 //      workflow's own `events` manifest (per-workflow scoping — an unlisted name fails at
-//      invoke time) and registered in the host's table under the instance's MCP address, with a
+//      invoke time) and registered in the host's table under the instance's agent address, with a
 //      deliver closure over THIS invocation's `sendBack`. The Agent's domain tool calls arrive
-//      over MCP (`/mcp/<iid>`), are validated by the table, and land on the state that invoked
-//      the agent — at any nesting depth, no routing, no `instanceId` on domain events (the
-//      closure IS the provenance). `tools/list` serves exactly this registration, so menus are
-//      state-scoped by lifecycle (ADR-0006's dynamic advertisement, for free).
+//      from its Adapter (`/agents/<iid>/events` — ADR-0013), are validated by the table, and land
+//      on the state that invoked the agent — at any nesting depth, no routing, no `instanceId` on
+//      domain events (the closure IS the provenance). `/agents/<iid>/surface` serves exactly this
+//      registration, so menus are state-scoped by lifecycle (ADR-0006's dynamic advertisement, for
+//      free — and, per ADR-0013, with no `list_changed` needed: flue re-lists per submission).
 //
 //   2. ADMITS the run over the Harness at `input.endpoint` — the port is constructed
 //      per-invocation from serializable input (ADR-0007/0011 doctrine), so restore re-attaches
@@ -28,7 +29,7 @@
 // restore rewrites the child's input (`attachOffset`, drop `prompt`) to resume, not re-prompt.
 
 import { fromCallback } from "xstate";
-import { mcpAddress, resolveAccepts, runBindingOf } from "./registration.ts";
+import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
 
 /** What the actor is invoked with: the durable handle, the Harness, and this turn's surface. */
 export type AgentRunInput = {
@@ -37,6 +38,12 @@ export type AgentRunInput = {
   /** The Harness base URL (which Sandbox). Rides the persisted child input so restore
    * re-attaches to the right Harness; a dev stub is just a different URL (ADR-0011). */
   endpoint: string;
+  /**
+   * The Sandbox this Agent runs in (`workspace.sandbox` — ADR-0013). Recorded on the registration,
+   * where it becomes the scope of the Sandbox token allowed to deliver here: only THIS pod's
+   * Adapter can drive this turn. Absent for a workspace-less run (the stub Harness on the host).
+   */
+  sandbox?: string;
   prompt?: string;
   /**
    * Resume the durable stream from this opaque offset (re-attach) instead of admitting a fresh
@@ -119,11 +126,12 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory) {
     // ADR-0011's invoke-time check — which errors the run loudly at the invoking state).
     const binding = runBindingOf(system);
     const dispose = binding.table.register({
-      address: mcpAddress(instanceId),
+      address: agentAddress(instanceId),
       runId: binding.runId,
       kind: "agent",
       id: instanceId,
       defs: resolveAccepts(binding, input.tools),
+      sandbox: input.sandbox,
       deliver: (event) => sendBack(event),
     });
 

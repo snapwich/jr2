@@ -21,6 +21,10 @@ export type RepoConfig = {
 export type SandboxConfig = {
   /** The Harness image every Sandbox runs (one image, many personas — ADR-0001). */
   image: string;
+  /** The Adapter image (ADR-0013): the sidecar that serves the Agent its MCP surface on localhost
+   * and is the only thing in the pod holding an Orchestrator credential. Without it an Agent has
+   * no route to its Machine at all — so a `workspace()` workflow whose Agent must ACT needs it. */
+  adapterImage?: string;
   /** Kube namespace for Sandbox CRs. Default `default`. */
   namespace?: string;
   /** kubectl `--context` override. Default: the current context (ADR-0009). */

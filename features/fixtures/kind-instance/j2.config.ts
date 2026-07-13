@@ -13,5 +13,7 @@ import { defineConfig } from "@j2/orchestrator";
 
 export default defineConfig({
   repos: [{ name: "app", url: new URL("./src/app", import.meta.url).pathname }],
-  sandbox: { image: "j2-harness-dev:local" },
+  // Both images are load-bearing (ADR-0013): the Harness runs the Agent, the Adapter is the only
+  // way that Agent can reach its Machine. Without the second, the pod is mute.
+  sandbox: { image: "j2-harness-dev:local", adapterImage: "j2-adapter:local" },
 });

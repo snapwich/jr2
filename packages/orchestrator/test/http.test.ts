@@ -1,13 +1,16 @@
-// HTTP-surface tests (ADR-0009): drive `createApp(host)` with `app.request(...)` (no socket) and
-// prove each route delegates to the RunHost. The interesting paths — approval round-trip and the
-// SSE status feed — are exercised end-to-end: a real in-memory MCP Client drives the up-channel
-// (request_approval / request_review) while the HTTP surface drives the down-channel and observes.
+// HTTP-surface tests (ADR-0009/0013): drive `createApp(host)` with `app.request(...)` (no socket)
+// and prove each route delegates to the RunHost. Both delivery surfaces are exercised over the
+// wire — `/agents/:iid/*` (what a Sandbox's Adapter calls) and `/runs/:id/gates/*` (what a human,
+// a webhook or CI calls) — plus the SSE feed that observes what they do.
+//
+// These apps are built WITHOUT an authenticator, which leaves the surface open: that is the seam
+// under test here. Who may call what is auth.test.ts's subject.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
-import { codingDef, connectMcp, gatedDef, mkStore, waitFor } from "./_fixtures.ts";
+import { codingDef, gatedDef, mkStore, waitFor } from "./_fixtures.ts";
 
 /** A host + app pair with the `coding` workflow registered. */
 async function mkApp() {
@@ -67,26 +70,54 @@ test("unknown run and unknown workflow are 404", async () => {
   assert.equal(start.status, 404);
 });
 
-test("approval round-trip: POST APPROVE releases a parked request_approval", async () => {
+test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, then both are gone", async () => {
   const { host, app } = await mkApp();
-  const { runId, instanceId } = await host.start("coding");
+  const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
 
-  const { client, close } = await connectMcp(host.mcpServer(instanceId));
-  try {
-    // Up-channel: park the run on an approval gate (do NOT await — it blocks until answered).
-    const callP = client.callTool({ name: "request_approval", arguments: { action: "deploy" } });
-    await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("awaitingApproval"));
+  // What the Adapter reads to build `tools/list`: names, input schemas (JSON Schema), semantics.
+  const surface = await app.request(`/agents/${instanceId}/surface`);
+  assert.equal(surface.status, 200);
+  const menu = (await surface.json()) as {
+    sandbox: string;
+    accepts: Array<{ name: string; semantics: string; input: { properties?: Record<string, unknown> } }>;
+  };
+  assert.equal(menu.sandbox, "ws-1");
+  assert.deepEqual(menu.accepts.map((a) => a.name).sort(), ["done", "request_review"]);
+  const review = menu.accepts.find((a) => a.name === "request_review");
+  assert.equal(review?.semantics, "ack");
+  assert.ok(review?.input.properties?.summary, "the input schema is what the Adapter renders as the tool's");
 
-    // Down-channel: APPROVE over HTTP releases the gate.
-    const res = await app.request(`/runs/${runId}/events`, jsonPost({ type: "APPROVE" }));
-    assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { ok: true });
+  // What a `tools/call` becomes: a delivery, answered with an addressable receipt.
+  const call = await app.request(
+    `/agents/${instanceId}/events`,
+    jsonPost({ type: "request_review", summary: "PR up" }),
+  );
+  assert.equal(call.status, 200);
+  assert.ok(((await call.json()) as { deliveryId: string }).deliveryId);
+  await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
 
-    const settled = await callP;
-    assert.deepEqual(settled.structuredContent, { decision: "approved" });
-  } finally {
-    await close();
-  }
+  // A name this turn does not accept → 400 naming what it does. (Validation is the table's.)
+  const bad = await app.request(`/agents/${instanceId}/events`, jsonPost({ type: "merge" }));
+  assert.equal(bad.status, 400);
+
+  // The run settles → the registration goes → the surface 404s. The one catch point.
+  await app.request(`/agents/${instanceId}/events`, jsonPost({ type: "done" }));
+  await waitFor(() => host.status(runId) === undefined);
+  assert.equal((await app.request(`/agents/${instanceId}/surface`)).status, 404);
+});
+
+test("POST /runs/:id/events takes CANCEL, and nothing else", async () => {
+  const { host, app } = await mkApp();
+  const { runId } = await host.start("coding");
+
+  // APPROVE and STEER rode the deferred/poll machinery, which ADR-0013 reserves without building.
+  const approve = await app.request(`/runs/${runId}/events`, jsonPost({ type: "APPROVE" }));
+  assert.equal(approve.status, 400);
+  assert.match(((await approve.json()) as { error: string }).error, /accepts: CANCEL/);
+
+  const cancel = await app.request(`/runs/${runId}/events`, jsonPost({ type: "CANCEL" }));
+  assert.equal(cancel.status, 200);
+  assert.equal(host.status(runId), undefined, "CANCEL abandons the run");
 });
 
 test("SSE: GET /runs/:id/events streams a status delta on transition", async () => {
@@ -98,10 +129,9 @@ test("SSE: GET /runs/:id/events streams a status delta on transition", async () 
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
 
-  const { client, close } = await connectMcp(host.mcpServer(instanceId));
   try {
     // Drive a transition (running → review); the SSE feed should push its new status.
-    await client.callTool({ name: "request_review", arguments: { summary: "PR up" } });
+    await app.request(`/agents/${instanceId}/events`, jsonPost({ type: "request_review", summary: "PR up" }));
 
     let buf = "";
     while (!buf.includes("review")) {
@@ -120,7 +150,6 @@ test("SSE: GET /runs/:id/events streams a status delta on transition", async () 
     );
   } finally {
     await reader.cancel();
-    await close();
   }
 });
 

@@ -7,6 +7,11 @@
 # `j2 dev` hosts in-process. What that fakes is the LLM, not the data plane: the pod, the RO repos
 # volume, the worktrees, the port-forward and the CR lifecycle are all real.
 #
+# It also carries an AGENT (agent.ts — ADR-0013), which the in-process stub does not. That is what
+# makes the pod originate its own tool calls, over MCP, to the Adapter on localhost. So this image
+# needs one real dependency (the MCP client): the wire it speaks is the thing under test, and a
+# hand-rolled JSON-RPC forgery would prove nothing about it.
+#
 # Build context is the REPO ROOT so the stub is copied from its one source of truth:
 #   docker build -f deploy/harness-dev/Dockerfile -t j2-harness-dev:local .   (`just harness-image`)
 #
@@ -23,8 +28,14 @@ FROM node:24-alpine
 RUN apk add --no-cache git
 
 WORKDIR /harness
+# The Agent's MCP client (the stub Harness itself still has zero deps). Its own manifest, resolved
+# here rather than in the pnpm workspace: this is an image, not a package.
+COPY deploy/harness-dev/package.json ./package.json
+RUN npm install --omit=dev --no-audit --no-fund
+
 # Node 24 strips the types natively — the stub ships as source, no build step (zero-build, ADR-0010).
 COPY packages/orchestrator/src/stub-harness.ts ./stub-harness.ts
+COPY deploy/harness-dev/agent.ts ./agent.ts
 COPY deploy/harness-dev/main.ts ./main.ts
 
 USER 1000

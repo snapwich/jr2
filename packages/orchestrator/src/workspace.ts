@@ -35,6 +35,13 @@ export type WorkspaceSpec = {
 export type WorkspaceHandles = {
   /** The Sandbox Harness base URL — what the body feeds `agentRun`'s `endpoint`. */
   endpoint: string;
+  /**
+   * WHICH Sandbox — the CR name. The body feeds it to `agentRun` beside `endpoint`, which records
+   * it on the registration, which is what scopes the Sandbox token authorized to deliver there
+   * (ADR-0013). Without it a token would be run-scoped, and one feature's coder could inject a
+   * verdict into another feature's reviewer.
+   */
+  sandbox: string;
   /** The primary working directory: the FIRST spec repo's branch worktree. */
   workdir: string;
   /** Every attached repo's branch-worktree path, by repo name. */
@@ -166,14 +173,26 @@ export function workspace(body: AnyStateMachine, spec: (args: { input: any }) =>
       attaching: {
         invoke: {
           src: attach,
-          input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId, spec: (context as unknown as WsContext).spec }),
+          input: ({ context }) => ({
+            wsId: (context as unknown as WsContext).wsId,
+            spec: (context as unknown as WsContext).spec,
+          }),
           onDone: {
             target: "running",
             actions: assign({
-              handles: ({ context, event }): WorkspaceHandles => {
+              handles: ({ context, event, system }): WorkspaceHandles => {
                 const ctx = context as WsContext;
                 const out = (event as unknown as { output: { workdir: string; repos: Record<string, string> } }).output;
-                return { endpoint: ctx.endpoint!, workdir: out.workdir, repos: out.repos, branch: ctx.spec.branch };
+                return {
+                  endpoint: ctx.endpoint!,
+                  // Derived, not remembered: the same function every port operation names the CR
+                  // with, so the handle the body hands `agentRun` is the Sandbox the Adapter's
+                  // token is scoped to, by construction (ADR-0013).
+                  sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),
+                  workdir: out.workdir,
+                  repos: out.repos,
+                  branch: ctx.spec.branch,
+                };
               },
             }),
           },

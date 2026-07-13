@@ -9,7 +9,6 @@ import { run } from "./commands/run.ts";
 import { runs } from "./commands/runs.ts";
 import { status } from "./commands/status.ts";
 import { logs } from "./commands/logs.ts";
-import { approve } from "./commands/approve.ts";
 import { send } from "./commands/send.ts";
 import { visualize } from "./commands/visualize.ts";
 import { cluster } from "./commands/cluster.ts";
@@ -25,8 +24,7 @@ usage: j2 <command> [args]
   runs                              list live runs
   status <runId>                    print a run's current status (read-through)
   logs <runId> [-f]                 replay a run's status; -f to follow until it settles
-  approve <runId> [--reject]        answer a parked request_approval
-  send <runId> --event <E>          feed a down-channel event (APPROVE | CANCEL | STEER)
+  send <runId> --event CANCEL       abandon a live run
   visualize <workflow> [--no-open]  open the workflow's Machine in the browser
   cluster up|down [--name <n>]      create/delete the kind cluster (repos/ baked in via extraMounts)
 
@@ -48,8 +46,6 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await status(rest, io);
       case "logs":
         return await logs(rest, io);
-      case "approve":
-        return await approve(rest, io);
       case "send":
         return await send(rest, io);
       case "visualize":

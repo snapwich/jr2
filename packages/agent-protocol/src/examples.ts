@@ -3,10 +3,9 @@
 // a workflow's own `events` manifest. ADR-0006's "standard library" framing is retired: nothing
 // in j2 consumes these by name.
 //
-// One of each semantics, for reference:
-//   - `ack` outcomes an agent reports and moves on from,
-//   - `deferred` a request whose tool result is held open until the Machine answers,
-//   - `poll` a checkpoint that drains queued down-channel messages (cooperative steer).
+// All `ack` — outcomes an Agent reports and moves on from. The other two semantics (`deferred`,
+// `poll`) are reserved and NOT implemented (ADR-0013), so `eventMap` refuses to register one; an
+// example that could not be put in a manifest would be a trap, not a starting point.
 
 import { z } from "zod";
 import { defineEvent } from "./define-event.ts";
@@ -29,27 +28,5 @@ export const reportBlockedEvent = defineEvent({
   input: z.object({ reason: z.string() }),
 });
 
-export const requestApprovalEvent = defineEvent({
-  name: "request_approval",
-  semantics: "deferred",
-  description: "Request approval for an action; the call blocks until the Machine answers.",
-  input: z.object({ action: z.string(), reason: z.string().optional() }),
-  output: z.object({ decision: z.string() }),
-});
-
-export const checkInboxEvent = defineEvent({
-  name: "check_inbox",
-  semantics: "poll",
-  description: "Pull any queued messages from the Machine (cooperative steer checkpoint).",
-  input: z.object({}),
-  output: z.object({ messages: z.array(z.string()) }),
-});
-
 /** The example set, manifest-shaped (drop into `export const events = [...exampleEvents]`). */
-export const exampleEvents = [
-  doneEvent,
-  requestReviewEvent,
-  reportBlockedEvent,
-  requestApprovalEvent,
-  checkInboxEvent,
-] as const;
+export const exampleEvents = [doneEvent, requestReviewEvent, reportBlockedEvent] as const;

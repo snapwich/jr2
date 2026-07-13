@@ -7,16 +7,34 @@
 // stale — recreating is the only fix, and that is the user's call). The operator itself still
 // runs out-of-band (`just operator-run`) until a deployable operator image lands.
 //
+// `up` also records the POD→HOST address into `.j2/cluster.json` (ADR-0013). Only it can: a pod
+// reaches a host-side `j2 dev` through the gateway of the docker network kind put the node on, and
+// this command is what put it there. `j2 dev` reads it back, appends its own port, and hands the
+// result to the Adapter as env — the address the Agent never sees and its Adapter always uses.
+//
 // The process seam is injectable (like the orchestrator's kubectl port) so the command logic is
 // unit-testable without kind/docker; the real path is the kind e2e tier's job.
 
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { resolveRoot } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
+
+/** What `j2 cluster up` recorded about the live cluster, for `j2 dev` to read back. */
+export type ClusterInfo = { cluster: string; context: string; podToHost?: string };
+
+/** Read `<root>/.j2/cluster.json`; undefined when this instance has no cluster of ours. */
+export function readClusterJson(root: string): ClusterInfo | undefined {
+  try {
+    return JSON.parse(readFileSync(join(root, ".j2", "cluster.json"), "utf8")) as ClusterInfo;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Run one external command to completion (kind / kubectl). Injectable for tests. */
 export type CmdExec = (cmd: string, args: string[]) => Promise<{ stdout: string }>;
@@ -66,11 +84,37 @@ async function up(name: string, io: Io, exec: CmdExec): Promise<number> {
   activity(io, "installing the Sandbox CRD…");
   await exec("kubectl", ["apply", "--context", `kind-${name}`, "-f", CRD_PATH]);
 
+  // The pod→host address (ADR-0013). Recorded now because only `up` can know it: a Sandbox's Adapter
+  // dials the orchestrator running on the HOST, and the route out of the pod is the gateway of the
+  // docker network kind attached the node to. `j2 dev` reads this back and appends its port.
+  const podToHost = await dockerGateway(exec);
+  const info: ClusterInfo = { cluster: name, context: `kind-${name}`, podToHost };
+  await writeFile(join(root, ".j2", "cluster.json"), `${JSON.stringify(info, null, 2)}\n`);
+  if (podToHost) activity(io, `pods reach this host at ${podToHost} (recorded in .j2/cluster.json)`);
+  else activity(io, "WARNING: could not read the kind network's gateway — Sandboxes will not reach `j2 dev`.");
+
   activity(io, "cluster ready. next steps:");
   activity(io, "  1. run the Sandbox operator against it (repo dev: `just operator-run`)");
-  activity(io, "  2. set `sandbox: { image: … }` in j2.config.ts, then `j2 dev`");
-  result(io, { cluster: name, context: `kind-${name}`, repos: reposDir, crd: "sandboxes.core.j2.dev" });
+  activity(io, "  2. set `sandbox: { image: …, adapterImage: … }` in j2.config.ts, then `j2 dev`");
+  result(io, { ...info, repos: reposDir, crd: "sandboxes.core.j2.dev" });
   return 0;
+}
+
+/**
+ * The address a pod on the `kind` docker network reaches this host at: that network's IPv4 gateway.
+ *
+ * Pick the gateway by ADDRESS FAMILY, never by position — the IPAM config commonly lists IPv6 first
+ * (this box: `[{Subnet: fc00:…::/64}, {Subnet: 172.19.0.0/16, Gateway: 172.19.0.1}]`), so the
+ * customary `index .IPAM.Config 0` yields an empty string and every Adapter silently gets no route.
+ */
+async function dockerGateway(exec: CmdExec): Promise<string | undefined> {
+  try {
+    const { stdout } = await exec("docker", ["network", "inspect", "kind", "--format", "{{json .IPAM.Config}}"]);
+    const configs = JSON.parse(stdout.trim()) as Array<{ Subnet?: string; Gateway?: string }>;
+    return configs.find((c) => c.Gateway?.includes("."))?.Gateway;
+  } catch {
+    return undefined; // no docker, or a cluster that is not kind's — the warning above says so
+  }
 }
 
 /** The generated kind config: the ONE thing that must exist at creation time (see header). */

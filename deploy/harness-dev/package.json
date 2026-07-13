@@ -1,0 +1,10 @@
+{
+  "name": "j2-harness-dev",
+  "private": true,
+  "type": "module",
+  "description": "Deps for the dev Harness IMAGE only (not a workspace package — see Dockerfile). The stub Harness itself has none; the Agent persona needs a real MCP client, because the wire it speaks to the Adapter is the thing under test.",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "4.4.3"
+  }
+}
