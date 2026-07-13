@@ -59,7 +59,18 @@ test("provision applies the labeled CR with the RO repos mount, gates on Ready",
   assert.equal(applied.metadata.name, "sb-1");
   assert.deepEqual(applied.metadata.labels, { "j2.dev/run": "run-9", "j2.dev/workflow": "coding" });
   assert.equal(applied.spec.image, "j2/harness:dev");
-  assert.deepEqual(applied.spec.volumeMounts, [{ name: "repos", mountPath: "/repos", readOnly: true }]);
+  // The repos volume is RO; the worktree root is a writable POD volume. Proven necessary on kind:
+  // the operator runs the Harness as an unprivileged uid, so a work dir owned by the image (or
+  // absent) makes every `attach` fail with "mkdir /work: permission denied" — and ADR-0005 has the
+  // User Container sharing these worktrees, which only a pod volume can do.
+  assert.deepEqual(applied.spec.volumeMounts, [
+    { name: "repos", mountPath: "/repos", readOnly: true },
+    { name: "work", mountPath: "/work" },
+  ]);
+  assert.deepEqual(applied.spec.volumes, [
+    { name: "repos", hostPath: { path: "/repos", type: "Directory" } },
+    { name: "work", emptyDir: {} },
+  ]);
 });
 
 test("port-forward reach: deterministic local endpoint, healed by exists(), dropped by destroy()", async () => {

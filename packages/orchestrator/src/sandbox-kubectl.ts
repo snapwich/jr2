@@ -88,10 +88,22 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     spec: {
       image: opts.image,
       idleTimeout: opts.idleTimeout ?? "30m",
-      volumes: [{ name: "repos", hostPath: { path: reposMount, type: "Directory" } }],
+      volumes: [
+        { name: "repos", hostPath: { path: reposMount, type: "Directory" } },
+        // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
+        // both load-bearing: the operator runs every Sandbox container as an unprivileged uid
+        // (ADR-0001), which cannot mkdir under `/` — so an image-owned `/work` would make every
+        // attach fail — and ADR-0005 has the User Container sharing the worktrees with the
+        // Harness, which only a pod volume can do. An emptyDir lands 0777, so it is writable
+        // whatever uid the Harness image happens to run as: no image contract beyond `git`.
+        { name: "work", emptyDir: {} },
+      ],
       // Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in a
       // Sandbox can `gc` the object store its `--shared` clones borrow from.
-      volumeMounts: [{ name: "repos", mountPath: "/repos", readOnly: true }],
+      volumeMounts: [
+        { name: "repos", mountPath: "/repos", readOnly: true },
+        { name: "work", mountPath: workRoot },
+      ],
     },
   });
 
