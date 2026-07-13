@@ -72,8 +72,60 @@ test("a Sandbox token drives its own agent surface", async () => {
   assert.equal(call.status, 200);
 
   // ...and nothing else on the run. Observation and control are the operator's, not the Agent's.
-  assert.equal((await app.request(`/runs/${runId}`, get(token))).status, 200); // read-only: allowed
-  assert.equal((await app.request(`/runs/${runId}/events`, post({ type: "CANCEL" }, token))).status, 200);
+  assert.equal((await app.request(`/runs/${runId}`, get(token))).status, 403);
+  assert.equal((await app.request(`/runs/${runId}/events`, post({ type: "CANCEL" }, token))).status, 403);
+  assert.equal(host.status(runId)?.status, "active", "and the run did not stop");
+});
+
+test("a Sandbox token cannot read run state, or cancel a run", async () => {
+  const { host, app } = await mkApp();
+  const mine = await host.start("coding", { sandbox: "ws-mine" });
+  const theirs = await host.start("coding", { sandbox: "ws-theirs" });
+  const token = sandboxToken(KEY, "ws-mine");
+
+  // `/runs` hands back every live run's CONTEXT (branches, tickets, verdicts — `RunStatus.context`),
+  // and `/runs/:id` adds its open GATES. A Sandbox token authenticates (we minted it), so without a
+  // principal check it would read all of that — including other features' runs — and then cancel
+  // them. Neither is on the Agent's surface, no more than a gate is.
+  assert.equal((await app.request("/runs", get(token))).status, 403);
+  assert.equal((await app.request(`/runs/${theirs.runId}`, get(token))).status, 403);
+  assert.equal((await app.request(`/runs/${theirs.runId}/events`, get(token))).status, 403);
+
+  const kill = await app.request(`/runs/${theirs.runId}/events`, post({ type: "CANCEL" }, token));
+  assert.equal(kill.status, 403);
+  assert.equal(host.status(theirs.runId)?.status, "active", "the other run is still running");
+  assert.equal(host.status(mine.runId)?.status, "active", "and so is its own");
+
+  // The operator's token reads and steers, as it always did.
+  assert.equal((await app.request("/runs", get(INSTANCE_TOKEN))).status, 200);
+  assert.equal((await app.request(`/runs/${theirs.runId}`, get(INSTANCE_TOKEN))).status, 200);
+});
+
+test("the run surface takes no anonymous caller", async () => {
+  const { host, app } = await mkApp();
+  const { runId } = await host.start("coding", { sandbox: "ws-1" });
+
+  assert.equal((await app.request("/runs")).status, 401);
+  assert.equal((await app.request(`/runs/${runId}/events`)).status, 401);
+  assert.equal((await app.request(`/runs/${runId}/events`, post({ type: "CANCEL" }))).status, 401);
+});
+
+test("observation is open, and carries no context — the visualizer's whole diet", async () => {
+  const { host, app } = await mkApp();
+  const { runId } = await host.start("coding", { sandbox: "ws-1" });
+
+  // The page is a browser with no token. It gets identity + where the run IS, and not one field
+  // more: `context` is what the guarded surface exists to protect (ADR-0013).
+  const res = await app.request(`/workflows/coding/runs`);
+  assert.equal(res.status, 200, "no token needed");
+  const [observed] = (await res.json()) as Array<Record<string, unknown>>;
+  assert.deepEqual(observed, { runId, workflow: "coding", status: "active", value: { active: "running" } });
+  assert.ok(observed && !("context" in observed), "context never crosses this line");
+  assert.ok(observed && !("instanceId" in observed), "nor the live iid");
+
+  // ...and the guarded listing still says everything, to the operator alone.
+  const [full] = (await (await app.request("/runs", get(INSTANCE_TOKEN))).json()) as Array<Record<string, unknown>>;
+  assert.ok(full && "context" in full, "the operator's view is unchanged");
 });
 
 test("a Sandbox token cannot deliver to a gate — an Agent does not approve its own review", async () => {

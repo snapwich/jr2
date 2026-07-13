@@ -1,7 +1,11 @@
 // j2 Machine visualizer. Fetches the workflow's serialized Machine (GET /workflows/:name/machine),
 // lays it out with elkjs (loaded as a UMD script -> window.ELK), renders it as nested SVG, and
-// live-highlights the active states of a selected run via the SSE run feed
-// (GET /runs/:id/events — `status` frames carry the xstate state value).
+// live-highlights the active states of a selected run via the SSE observation feed
+// (GET /workflows/:name/runs/:id/events — `status` frames carry the xstate state value).
+//
+// Every route this page touches is an OPEN one: structure (the Machine) and observation (runs
+// projected without context). It holds NO token and must not — the guarded `/runs*` surface carries
+// gates, cancel, and every run's context, and this page is served to a browser (ADR-0013).
 
 /* global ELK */
 
@@ -289,7 +293,7 @@ function followRun(doc, run, listItem) {
   selectedRunId = run.runId;
   for (const li of $("run-list").children) li.classList.toggle("selected", li === listItem);
 
-  feed = new EventSource(`/runs/${encodeURIComponent(run.runId)}/events`);
+  feed = new EventSource(`/workflows/${encodeURIComponent(workflow)}/runs/${encodeURIComponent(run.runId)}/events`);
   feed.addEventListener("status", (e) => {
     const status = JSON.parse(e.data);
     highlight(doc, status.value);
@@ -310,8 +314,12 @@ function followRun(doc, run, listItem) {
   feed.onerror = () => feed.close(); // the feed closes itself after the terminal frame
 }
 
+// The OBSERVATION routes, not `/runs*`: this page holds no token, and the run surface is the
+// operator's (context, gates, cancel). What comes back is already scoped to this workflow and
+// already context-free, so there is nothing to filter and nothing to redact here.
 async function loadRuns(doc) {
-  const runs = (await (await fetch("/runs")).json()).filter((r) => r.workflow === workflow);
+  const res = await fetch(`/workflows/${encodeURIComponent(workflow)}/runs`);
+  const runs = res.ok ? await res.json() : [];
   const list = $("run-list");
   list.textContent = "";
   if (!runs.length) {

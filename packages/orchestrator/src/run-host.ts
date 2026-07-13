@@ -60,6 +60,25 @@ export type RunRecord = { runId: string; workflow: string; instanceId: string };
  * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). */
 export type RunStatus = RunRecord & { status: string; value: unknown; context: unknown; fault?: string };
 
+/**
+ * A run as an UNAUTHENTICATED observer may see it: which run, of what workflow, and where in the
+ * Machine it is. That is the whole set — enough to light up a state in the visualizer, and nothing
+ * more.
+ *
+ * What is absent is the point. `context` is the workflow's working data (branch names, ticket
+ * bodies, review verdicts, flue endpoints) and `instanceId`/`fault` name live infrastructure and
+ * leak error text; all of it is STATE, which ADR-0013 guards behind the Instance token. `value` is
+ * a tree of state KEYS — it is structure, and structure is already public (`/workflows/:name/machine`
+ * serves the whole Machine). So an observer learns nothing here it could not read from the Machine
+ * doc, except which states are lit.
+ */
+export type RunObservation = { runId: string; workflow: string; status: string; value: unknown };
+
+/** Project a full status down to what an observer may see. The one place the line is drawn. */
+export function observe(status: RunStatus): RunObservation {
+  return { runId: status.runId, workflow: status.workflow, status: status.status, value: status.value };
+}
+
 /** One open gate as external callers discover it (`GET /runs/:id` — ADR-0011): the accepted
  * events with their input schemas as JSON Schema (what drives a form or a `j2 send` prompt),
  * plus the workflow-supplied `meta` (what a UI renders and a webhook translator matches on). */
@@ -353,6 +372,15 @@ export class RunHost {
 
   list(): RunStatus[] {
     return [...this.runs.keys()].map((id) => this.status(id)).filter((s): s is RunStatus => s !== undefined);
+  }
+
+  /** The live runs of ONE workflow, projected for observers (the visualizer's run list). Scoped
+   * server-side: an observer asks about a workflow it can already name, and gets back only runs of
+   * it — never a listing of everything this orchestrator happens to be running. */
+  observations(workflow: string): RunObservation[] {
+    return this.list()
+      .filter((s) => s.workflow === workflow)
+      .map(observe);
   }
 
   /** Stop a run in-process (abandons its Agent via the actor's stop path). Does not delete state. */
