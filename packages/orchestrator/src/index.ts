@@ -9,6 +9,8 @@ export * from "./snapshot-store.ts";
 export * from "./actor.ts";
 export * from "./gate.ts";
 export * from "./workspace.ts";
+export * from "./sandbox-kubectl.ts";
+export * from "./repos.ts";
 // Type-only: what a workflow event delivery looks like (the registration TABLE stays internal —
 // ADR-0011: workflows speak only defineEvent/agentRun/gate).
 export type { DeliveredEvent } from "./registration.ts";
