@@ -18,6 +18,15 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
 - **`Scenario` is the isolation unit.** Each scenario gets its own scaffolded temp instance (via the real `j2 init`),
   its own `j2 dev` + sqlite store, torn down in an `After` hook. Nothing is shared across scenarios, so the suite is
   safe under `cucumber-js --parallel`.
+- **An opt-in `@kind` tier for the data plane** (added once the `workspace()` slice landed — ADR-0012). Workspaces are
+  always real Sandboxes, so the only way to test them is against a real cluster: the `@kind` scenarios drive the
+  operator's Sandbox CR, a pod, the instance's read-only repos volume, an in-pod git worktree, and the Harness endpoint
+  — faking only the LLM (the Sandbox runs the **dev Harness image**: the same wire-compatible stub `j2 dev` hosts, in a
+  container with `git`). They are tagged `@kind` and **excluded from the default profile**, so the everyday suite needs
+  no docker: `just e2e-kind-up` + `just operator-run` + `just e2e-kind` runs them. Two concessions this tier makes, both
+  forced by kind and both scoped to it: it shares **one fixed instance folder** (a cluster's `repos/` mount is baked
+  into `nodes[].extraMounts` at creation, so one cluster serves exactly one instance path — isolation moves from the
+  folder to the run), and it runs **serially** (no `--parallel`).
 - **A workspace package, not a bare folder.** `./features/` is `@j2/e2e` so it owns its own `xstate` (+ cucumber)
   dependency: a scaffolded instance's `workflows/*.ts` `import "xstate"`, resolved by walking up from the temp dir, and
   the repo root has no `xstate`. The package's `node_modules` satisfies it. It is top-level (not under `packages/cli/`)

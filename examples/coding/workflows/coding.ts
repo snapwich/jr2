@@ -603,8 +603,13 @@ function architectPrompt(c: BodyCtx): string {
 //        shells kubectl (labels j2.dev/run + j2.dev/workflow; port-forward reach for host-side
 //        dev on a name-deterministic local port, healed by the reconcile probe); `j2 cluster up`
 //        bakes repos/→/repos extraMounts + installs the CRD; `j2 dev` reconciles repos/ and
-//        wires the port when j2.config.ts has `sandbox: { image }`. The kind e2e tier itself is
-//        still pending a machine with kind.
+//        wires the port when j2.config.ts has `sandbox: { image }`.
+//        VERIFIED on kind (2026-07-12, `@kind` e2e tier): provision → attach → agent admitted
+//        against the in-pod Harness → MCP tool → body final → CR destroyed. One bug the cluster
+//        found that no unit test could: the Sandbox CR must carry a WRITABLE work volume — the
+//        operator runs the Harness as an unprivileged uid, so cloning into an image-owned /work
+//        failed with "permission denied" on every attach (fixed: an emptyDir at workRoot, which
+//        is also the volume ADR-0005's User Container shares).
 // GAP(4) `gate` — same primitive over HTTP for ANY external caller (humans, webhooks, CI); each
 //        invocation is an addressable GATE resource: input { gate, accepts: [names], meta? },
 //        registration scoped to the state. Shares one registration table with GAP(2)'s demux
@@ -625,6 +630,11 @@ function architectPrompt(c: BodyCtx): string {
 //        reconcile probe re-runs on every restore (callback actors restart), delivering
 //        workspace.lost when the CR is gone. One empirical trap this file now reflects: machine
 //        output MUST be declared at the ROOT (final-state `output` only rides the done event).
+//        VERIFIED on kind: an orchestrator killed mid-run restores onto the SAME Sandbox at the
+//        SAME endpoint (the port-forward is re-derived from the CR name and healed by the probe)
+//        and the agent's MCP surface comes back; a Sandbox reaped while the orchestrator was down
+//        delivers workspace.lost into the restored body, which settles it — never a silent
+//        re-provision. Both are `@kind` scenarios now.
 //
 // Open note, deliberately deferred (2026-07-12; not blocking GAP(1)-(4)): the tk store. The real
 // question is a CONSISTENCY LOOP, not storage: the orchestrator's tk actors and the architect's

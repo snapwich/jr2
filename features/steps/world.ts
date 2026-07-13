@@ -19,6 +19,13 @@ const BIN = fileURLToPath(new URL("../../packages/cli/bin/j2.ts", import.meta.ur
 const TMP_BASE = fileURLToPath(new URL("../.tmp/", import.meta.url));
 /** The `loop` fixture workflow source, copied into an instance when a live run is needed. */
 const LOOP_FIXTURE = fileURLToPath(new URL("../fixtures/loop.ts", import.meta.url));
+/**
+ * The kind tier's instance (@kind): ONE fixed folder, not a per-scenario mkdtemp. kind bakes the
+ * `repos/` → node mount at cluster creation (ADR-0009), so a cluster serves exactly one instance
+ * path — `just e2e-kind-up` scaffolds this folder and creates the cluster around it. Scenarios
+ * still isolate: each boots its own `j2 dev` and owns its own runs and Sandboxes.
+ */
+const KIND_DIR = fileURLToPath(new URL("../.tmp/kind/", import.meta.url));
 
 /** The captured outcome of one `j2 …` invocation. */
 export type CliResult = { stdout: string; stderr: string; code: number };
@@ -37,6 +44,13 @@ export class E2EWorld {
   last?: CliResult;
   /** A runId carried between steps (the last run started or settled). */
   runId?: string;
+  /** @kind: the run's Sandbox CR name, captured before an orchestrator restart / reap. */
+  sandboxBefore?: string;
+  /** @kind: the workspace endpoint before a restart — restore must land on the same one. */
+  endpointBefore?: string;
+
+  /** True when this scenario runs against the shared kind instance (so cleanup must not delete it). */
+  private kind = false;
 
   /** Allocate a fresh, isolated instance folder. Called from the `Before` hook. */
   async setup(): Promise<void> {
@@ -44,10 +58,36 @@ export class E2EWorld {
     this.dir = await mkdtemp(join(TMP_BASE, "inst-"));
   }
 
+  /**
+   * Adopt the shared kind instance (@kind scenarios). Fails pointedly rather than scaffolding it:
+   * the folder must EXIST before its cluster is created (the mount is baked then), so creating it
+   * here would hand the scenario an instance no pod can see. Run state is reset so each scenario
+   * starts with an empty store — a leftover in-flight run would otherwise be restored at boot and
+   * re-provision Sandboxes underneath us. `repos/` is never touched: deleting the bind-mounted
+   * directory would sever the node's view of it for the life of the cluster.
+   */
+  async setupKind(): Promise<void> {
+    this.kind = true;
+    this.dir = KIND_DIR;
+    try {
+      await readFile(join(this.dir, "j2.config.ts"), "utf8");
+    } catch {
+      throw new Error(`the kind e2e instance is not set up — run \`just e2e-kind-up\` (expected ${this.dir})`);
+    }
+    await rm(join(this.dir, ".j2"), { recursive: true, force: true });
+  }
+
   /** Tear the scenario down: stop the orchestrator (if any) and delete the instance folder. */
   async cleanup(): Promise<void> {
     await this.stopDev();
+    if (this.kind) return; // shared instance: its cluster's repos mount is baked to this path
     if (this.dir) await rm(this.dir, { recursive: true, force: true });
+  }
+
+  /** Restart the orchestrator against the same instance — the restore path (ADR-0007/0012). */
+  async restartDev(): Promise<void> {
+    await this.stopDev();
+    await this.startDev();
   }
 
   /** Run `j2 <args>` against this instance, capturing stdout/stderr/exit code into `last`. */

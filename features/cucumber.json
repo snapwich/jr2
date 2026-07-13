@@ -1,6 +1,12 @@
 {
   "default": {
     "paths": ["*.feature"],
-    "import": ["steps/**/*.ts"]
+    "import": ["steps/**/*.ts"],
+    "tags": "not @kind"
+  },
+  "kind": {
+    "paths": ["*.feature"],
+    "import": ["steps/**/*.ts"],
+    "tags": "@kind"
   }
 }
