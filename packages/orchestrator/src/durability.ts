@@ -79,3 +79,62 @@ export function hydrateSnapshot(
 ): unknown {
   return mapSnapshot(stored, opts.injectContext, opts.rewriteChildInput);
 }
+
+/** A persisted `agentRun` child input: the durable handle is `instanceId`, the Harness is
+ * `endpoint` — both strings by construction (machine children carry neither at top level). */
+function isAgentRunInput(input: unknown): input is { instanceId: string; endpoint: string } {
+  return (
+    !!input &&
+    typeof input === "object" &&
+    typeof (input as { instanceId?: unknown }).instanceId === "string" &&
+    typeof (input as { endpoint?: unknown }).endpoint === "string"
+  );
+}
+
+/** Read a machine context's `offsets` map (the durable re-attach handles), if it keeps one. */
+function offsetsIn(context: unknown): Record<string, string> | undefined {
+  const offsets = (context as { offsets?: unknown } | null | undefined)?.offsets;
+  return offsets && typeof offsets === "object" ? (offsets as Record<string, string>) : undefined;
+}
+
+/**
+ * Rewrite every persisted `agentRun` child input in a snapshot TREE so restore re-attaches
+ * (drop `prompt`, set `attachOffset`) instead of re-prompting — at any nesting depth (GAP(5)):
+ * bodies own their durable handles, so each machine level's `context.offsets` scopes the
+ * rewrites of the children BELOW it (an inner map extends and shadows the outer one — nearest
+ * enclosing wins). An instanceId with no recorded offset re-attaches from the stream start
+ * (`attachOffset` undefined would re-prompt, so those keep re-attach semantics only when an
+ * offset exists; a run that never advanced simply re-admits its prompt — first-turn at-most-once
+ * is the same ADR-0007 edge as before).
+ */
+export function reattachAgentRuns(snapshot: unknown): unknown {
+  const walk = (node: unknown, scope: Record<string, string>): unknown => {
+    if (!node || typeof node !== "object") return node;
+    const src = node as AnySnapshot & { input?: unknown };
+    const out: typeof src = { ...src };
+
+    // This node's own input was invoked by its PARENT — the caller's `scope` governs it.
+    const offset = isAgentRunInput(src.input) ? scope[src.input.instanceId] : undefined;
+    if (isAgentRunInput(src.input) && offset !== undefined) {
+      out.input = { ...src.input, prompt: undefined, attachOffset: offset };
+    }
+
+    // This node's context scopes its children; deeper maps extend/shadow the inherited one.
+    const own = offsetsIn(src.context);
+    const childScope = own ? { ...scope, ...own } : scope;
+    const children = src.children;
+    if (children && typeof children === "object") {
+      const nextChildren: Record<string, ChildEntry | undefined> = {};
+      for (const id of Object.keys(children)) {
+        const child = children[id];
+        nextChildren[id] =
+          child && child.snapshot
+            ? { ...child, snapshot: walk(child.snapshot, childScope) as ChildEntry["snapshot"] }
+            : child;
+      }
+      out.children = nextChildren;
+    }
+    return out;
+  };
+  return walk(snapshot, {});
+}

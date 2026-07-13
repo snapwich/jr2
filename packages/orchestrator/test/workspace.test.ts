@@ -1,0 +1,169 @@
+// workspace(body, spec) — ADR-0012. Driven through a REAL RunHost (store + binding + restore)
+// against a fake SandboxPort at the seam, so lifecycle, input passthrough, parked-body
+// retention, and the restore-reconcile `workspace.lost` path are exercised the way a run
+// experiences them. The kind-backed port has its own suite; the cluster itself is e2e-tier.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { setup, assign } from "xstate";
+import { gate } from "../src/gate.ts";
+import { workspace, workspaceName, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
+import { RunHost, type WorkflowDef } from "../src/run-host.ts";
+import { approveDef, mkStore, waitFor } from "./_fixtures.ts";
+
+class FakeSandbox implements SandboxPort {
+  calls: string[] = [];
+  provisioned = new Map<string, { runId: string; workflow: string }>();
+  /** What `exists()` answers — flip to false to simulate a reaped Sandbox before a restore. */
+  present = true;
+
+  async provision(req: { name: string; runId: string; workflow: string }): Promise<{ endpoint: string }> {
+    this.calls.push(`provision:${req.name}`);
+    this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
+    return { endpoint: "http://sandbox.test" };
+  }
+  async attach(req: {
+    name: string;
+    spec: WorkspaceSpec;
+  }): Promise<{ workdir: string; repos: Record<string, string> }> {
+    this.calls.push(`attach:${req.name}`);
+    const repos = Object.fromEntries(req.spec.repos.map((r) => [r.name, `/work/${r.name}/${req.spec.branch}`]));
+    return { workdir: repos[req.spec.repos[0]!.name]!, repos };
+  }
+  async exists(name: string): Promise<boolean> {
+    this.calls.push(`exists:${name}`);
+    return this.present;
+  }
+  async destroy(name: string): Promise<void> {
+    this.calls.push(`destroy:${name}`);
+  }
+}
+
+/** A body that parks on a gate inside its Sandbox; `workspace.lost` routes to its own policy
+ * (final `lost`) exactly as ADR-0012's "the wrapper emits, the body decides". */
+const body = setup({
+  types: {} as {
+    context: { handles?: { endpoint: string; workdir: string; branch: string } };
+    input: { workspace: { endpoint: string; workdir: string; repos: Record<string, string>; branch: string } };
+    events: { type: "approve" } | { type: "workspace.lost" };
+  },
+  actors: { gate },
+}).createMachine({
+  id: "body",
+  context: ({ input }) => ({ handles: input.workspace }),
+  initial: "working",
+  states: {
+    working: {
+      invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } },
+      on: { approve: "done", "workspace.lost": "lost" },
+    },
+    done: {
+      type: "final",
+      output: ({ context }) => ({ status: "done", workdir: context.handles?.workdir }),
+    },
+    lost: { type: "final", output: () => ({ status: "lost" }) },
+  },
+  // xstate v5: a machine's output is its ROOT `output`; final-state outputs ride the done event.
+  output: ({ event }) => (event as { output?: unknown }).output,
+});
+
+const wrapped = workspace(body, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }));
+
+function wsDef(): WorkflowDef {
+  return { name: "ws", machine: wrapped, events: [approveDef], provide: () => ({}) };
+}
+
+test("workspaceName is deterministic, DNS-1123, and distinct per (run, wsId)", () => {
+  const a = workspaceName("run-A", "feature/42");
+  assert.equal(a, workspaceName("run-A", "feature/42"));
+  assert.notEqual(a, workspaceName("run-B", "feature/42"));
+  assert.notEqual(a, workspaceName("run-A", "feature/43"));
+  for (const name of [a, workspaceName("x".repeat(80), "Y".repeat(80))]) {
+    assert.match(name, /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, name);
+    assert.ok(name.length <= 63, name);
+  }
+});
+
+test("lifecycle: provision → attach → body(input+handles) → body final → destroy; output = body output", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.gates(runId).length === 1); // body parked in its Sandbox
+
+  const name = [...sandbox.provisioned.keys()][0]!;
+  assert.deepEqual(sandbox.provisioned.get(name), { runId, workflow: "ws" });
+  // Parking IS retention (ADR-0012): the body is holding its gate, the Sandbox must be alive.
+  assert.ok(!sandbox.calls.some((c) => c.startsWith("destroy:")));
+
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined); // run settled + dropped from registry
+
+  assert.deepEqual(
+    sandbox.calls.map((c) => c.split(":")[0]),
+    ["provision", "attach", "exists", "destroy"], // exists = the fresh-start reconcile probe
+  );
+  const final = await host.read(runId);
+  assert.equal(final?.status, "done");
+  const ctx = final?.context as { output?: { status: string; workdir?: string } };
+  assert.deepEqual(ctx.output, { status: "done", workdir: "/work/app/feat-1" });
+});
+
+test("restore-reconcile: Sandbox CR gone → workspace.lost lands in the restored body's policy", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const first = new RunHost({ store, sandbox });
+  first.register(wsDef());
+  const { runId } = await first.start("ws");
+  await waitFor(() => first.gates(runId).length === 1);
+  await first.stop(runId); // orchestrator "dies" mid-park; store keeps the live snapshot
+
+  sandbox.present = false; // idle-timeout reaped the Sandbox while we were down
+  const second = new RunHost({ store, sandbox });
+  second.register(wsDef());
+  const { reattached } = await second.restore();
+  assert.deepEqual(reattached, [runId]);
+
+  // The re-invoked probe found the CR absent → the body decided (its `lost` final state),
+  // and the wrapper still tore down through its normal path (destroy is idempotent-absent).
+  await waitFor(() => second.status(runId) === undefined);
+  const final = await second.read(runId);
+  assert.equal(final?.status, "done");
+  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost" });
+  assert.ok(sandbox.calls.filter((c) => c.startsWith("provision:")).length === 1, "never silently re-provisioned");
+});
+
+test("restore-reconcile: Sandbox present → the body resumes parked, nothing is delivered", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const first = new RunHost({ store, sandbox });
+  first.register(wsDef());
+  const { runId } = await first.start("ws");
+  await waitFor(() => first.gates(runId).length === 1);
+  await first.stop(runId);
+
+  const second = new RunHost({ store, sandbox });
+  second.register(wsDef());
+  await second.restore();
+  await waitFor(() => second.gates(runId).length === 1); // gate re-registered, still parked
+  assert.equal(second.status(runId)?.status, "active");
+
+  // Same Sandbox, same name: the probe and any re-run provision address ONE CR.
+  const names = new Set(sandbox.calls.map((c) => c.split(":")[1]));
+  assert.equal(names.size, 1);
+
+  second.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => second.status(runId) === undefined);
+  assert.equal((await second.read(runId))?.status, "done");
+});
+
+test("a host without a Sandbox backend faults a workspace() run pointedly", async () => {
+  const host = new RunHost({ store: await mkStore() }); // no sandbox option
+  host.register(wsDef());
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.equal(final?.status, "error");
+  assert.match(final?.fault ?? "", /no Sandbox backend/);
+});

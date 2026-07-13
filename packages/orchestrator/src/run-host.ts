@@ -27,9 +27,10 @@ import { createActor, type AnyActor, type AnyActorLogic, type AnyStateMachine } 
 import { eventMap, type EventDef } from "@j2/agent-protocol";
 import { ControlPlane } from "./control-plane.ts";
 import { bindRun, EventValidationError, gateAddress, RegistrationTable, UnknownAddressError } from "./registration.ts";
+import type { SandboxPort } from "./workspace.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
-import { hydrateSnapshot, serializeSnapshot } from "./durability.ts";
+import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
 
 /** The live providers a run is assembled with (ADR-0003). Built fresh at start and at restore. */
 export type RunProviders = { actors?: Record<string, AnyActorLogic> };
@@ -79,6 +80,9 @@ export type RunHostOptions = {
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
   /** Injectable id generator (deterministic ids in tests). Default: `crypto.randomUUID`. */
   newId?: () => string;
+  /** The Sandbox backend `workspace()` provisions through (ADR-0012). Absent = no cluster:
+   * workspace-less workflows run fine; a `workspace()` invocation faults its run pointedly. */
+  sandbox?: SandboxPort;
 };
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs. */
@@ -105,6 +109,7 @@ export class RunHost {
   private readonly store: SnapshotStore;
   private readonly reconcile: (run: RunRecord) => boolean | Promise<boolean>;
   private readonly newId: () => string;
+  private readonly sandbox?: SandboxPort;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
   /** Per-workflow name→def resolution scope, built (and validated) at registration. */
   private readonly workflowEvents = new Map<string, Map<string, EventDef>>();
@@ -114,6 +119,7 @@ export class RunHost {
     this.store = opts.store;
     this.reconcile = opts.reconcile ?? (() => true);
     this.newId = opts.newId ?? (() => randomUUID());
+    this.sandbox = opts.sandbox;
     this.controlPlane = new ControlPlane(this.table);
   }
 
@@ -158,8 +164,7 @@ export class RunHost {
     const record: RunRecord = { runId, workflow, instanceId };
 
     const machine = this.assemble(def, instanceId);
-    const actor = createActor(machine, { input: { ...input, instanceId } });
-    this.track(record, actor, def);
+    const actor = this.spawn(machine, { input: { ...input, instanceId } }, record, def);
     actor.start();
     return { runId, instanceId };
   }
@@ -189,15 +194,11 @@ export class RunHost {
         continue;
       }
 
-      const offsets = offsetsOf(blob.snapshot);
-      const hydrated = hydrateSnapshot(blob.snapshot, {
-        injectContext: (ctx) => ctx, // providers are re-supplied via `.provide`, so context is data-only
-        rewriteChildInput: (input) =>
-          isChildInput(input) ? { ...input, prompt: undefined, attachOffset: offsets[input.instanceId] } : input,
-      });
+      // Re-attach every persisted agentRun input in the TREE (GAP(5)): bodies own their durable
+      // handles, so each machine level's `context.offsets` scopes the rewrites below it.
+      const hydrated = reattachAgentRuns(blob.snapshot);
 
-      const actor = createActor(this.assemble(def, blob.instanceId), { snapshot: hydrated as never });
-      this.track(record, actor, def);
+      const actor = this.spawn(this.assemble(def, blob.instanceId), { snapshot: hydrated as never }, record, def);
       actor.start();
       reattached.push(stored.runId);
     }
@@ -334,7 +335,41 @@ export class RunHost {
     return def.machine.provide(providers as Parameters<AnyStateMachine["provide"]>[0]);
   }
 
-  private track(record: RunRecord, actor: AnyActor, def: WorkflowDef): void {
+  /**
+   * Create + track a run's root actor. Persistence is driven by the actor system's INSPECTION
+   * stream, not the root subscription: a nested body's transition (e.g. a grandchild
+   * `agent.offset` assigned into the body's context — GAP(5)) never notifies root subscribers,
+   * but it must hit the store, or a crash would restore stale offsets. Snapshot events within
+   * one macrostep are coalesced per microtask, and a persist scheduled around stop/untrack is
+   * dropped by the tracked-run guard (so `stop()` keeps the stored status "live" for restore).
+   */
+  private spawn(
+    machine: AnyStateMachine,
+    options: { input?: Record<string, unknown>; snapshot?: never },
+    record: RunRecord,
+    def: WorkflowDef,
+  ): AnyActor {
+    let live: LiveRun | undefined;
+    let scheduled = false;
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => {
+        scheduled = false;
+        if (live && this.runs.get(record.runId) === live) this.persist(live);
+      });
+    };
+    const actor = createActor(machine, {
+      ...options,
+      inspect: (ev) => {
+        if (ev.type === "@xstate.snapshot") schedule();
+      },
+    });
+    live = this.track(record, actor, def);
+    return actor;
+  }
+
+  private track(record: RunRecord, actor: AnyActor, def: WorkflowDef): LiveRun {
     // Bind the run's actor SYSTEM (shared by every actor in the tree, at any nesting depth) to
     // its identity BEFORE start, so gate/agentRun registrations resolve their run mechanically —
     // this is what run-scopes gate ids with zero workflow plumbing (ADR-0011).
@@ -343,14 +378,15 @@ export class RunHost {
       workflow: record.workflow,
       events: this.workflowEvents.get(def.name) ?? new Map(),
       table: this.table,
+      sandbox: this.sandbox,
     });
     const run: LiveRun = { record, actor, def, listeners: new Set() };
     this.runs.set(record.runId, run);
+    // Ordinary persistence rides the inspection stream (see `spawn`); the subscription exists
+    // for the ERROR channel: an errored actor (an invoke threw — e.g. ADR-0011's invoke-time
+    // manifest check) reports here. Capture the message (xstate serializes the Error itself to
+    // `{}`), then persist: the snapshot's "error" status stores the run and untracks it.
     actor.subscribe({
-      next: () => this.persist(run),
-      // An errored actor (an invoke threw — e.g. ADR-0011's invoke-time manifest check) reports
-      // here, not on next. Capture the message (xstate serializes the Error itself to `{}`),
-      // then persist: the snapshot's "error" status stores the run and drops it from the registry.
       error: (err) => {
         run.fault = err instanceof Error ? err.message : String(err);
         this.persist(run);
@@ -362,6 +398,7 @@ export class RunHost {
       const event = emitted as { type: string } & Record<string, unknown>;
       for (const listener of run.listeners) listener({ kind: "emit", event });
     });
+    return run;
   }
 
   private untrack(record: RunRecord): void {
@@ -402,15 +439,4 @@ export class RunHost {
       run.listeners.clear();
     }
   }
-}
-
-/** Read `context.offsets` (the durable handle map) out of a persisted machine snapshot. */
-function offsetsOf(snapshot: unknown): Record<string, string> {
-  const ctx = (snapshot as { context?: { offsets?: Record<string, string> } } | null)?.context;
-  return ctx?.offsets ?? {};
-}
-
-/** A persisted `agentRun` child input carries an `instanceId`; that's how we key its offset. */
-function isChildInput(input: unknown): input is { instanceId: string; [k: string]: unknown } {
-  return !!input && typeof input === "object" && typeof (input as { instanceId?: unknown }).instanceId === "string";
 }

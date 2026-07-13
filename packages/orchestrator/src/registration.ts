@@ -13,6 +13,7 @@
 
 import type { ActorSystem } from "xstate";
 import type { EventDef } from "@j2/agent-protocol";
+import type { SandboxPort } from "./workspace.ts";
 
 /** xstate doesn't export its internal AnyActorSystem; this matches what actors receive. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -110,6 +111,9 @@ export type RunBinding = {
   /** The workflow's declared vocabulary (its `events` manifest, resolved name→def). */
   events: Map<string, EventDef>;
   table: RegistrationTable;
+  /** The host's Sandbox backend, when it has a cluster (`workspace()` resolves it here —
+   * one cluster per orchestrator instance, so it is host infrastructure like the table). */
+  sandbox?: SandboxPort;
 };
 
 const bindings = new WeakMap<AnyActorSystem, RunBinding>();
