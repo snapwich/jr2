@@ -9,6 +9,13 @@ the Machine set.
 
 ## Two call kinds: per-turn vs final
 
+> **Two corrections from [ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)** (verified against flue's source): the
+> per-turn menu is **not** Orchestrator-hosted — the MCP server runs in the Sandbox's **Adapter**, and the Orchestrator
+> speaks no MCP at all; and `list_changed` is **unnecessary**, because flue re-runs a `defineAgent` initializer (and so
+> re-lists its MCP tools) on **every submission**, while a j2 menu only changes at turn boundaries. The decision below —
+> a Machine-defined, state-scoped, schema-backed menu — is unchanged, and is now _enforced_ rather than advertised: the
+> Agent's only control-plane peer is the Adapter, and it holds no credential the Agent can read.
+
 - **per-turn calls** — MCP tools the Agent may call _during_ a turn. Dynamic and Orchestrator-owned: the Actor
   advertises only the current state's tools (`tools/list`, refreshed with `list_changed` on transition). A call is a
   **command** (no return the Agent consumes → non-blocking) or a **query** (returns a value the Agent uses → either an

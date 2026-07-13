@@ -52,6 +52,13 @@ worker pod, container
 HTTP. Runs in its own container (the j2-owned Harness container) alongside the user container, carrying the agent's own
 toolchain since `local()` tools execute there. _Avoid_: flue agent, server
 
+**Adapter**: The j2-owned sidecar container in a Sandbox that serves the current turn's tool menu to the Agent over MCP
+and forwards the Agent's picks to the Orchestrator as Gate deliveries. The Agent's only control-plane peer is this
+process on `localhost`; it never speaks to the Orchestrator. A separate container from the Harness _because_ `local()`
+tools give the Agent code execution there — so the Orchestrator credential lives where the Agent cannot read it. In
+Orchestrator terms it is the MCP dialect adapter, relocated into the Sandbox. _Avoid_: shim, proxy, sidecar (that's its
+deployment shape, not what it is), MCP server
+
 **User Container**: The user-owned container in a Sandbox pod — a customizable image (nvim, dotfiles, extra CLIs) that
 the human `exec`/SSH-es into to work alongside the agent. Shares the worktree volume with the Harness container, so
 human and agent see identical files. A peer of the Harness container; the pod (not the container) is the isolation unit

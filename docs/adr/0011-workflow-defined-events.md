@@ -51,6 +51,13 @@ per-invocation ports are impractical (Service/NetworkPolicy churn), so each regi
 on the one listener, and the demux table maps path → live closure. A module-level demux is safe despite in-process
 multi-instance use (the unit tests boot several hosts per process) because iids embed the run's UUID and cannot collide.
 
+> **Superseded in transport by [ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md).** The registration table, the
+> closure binding, and the `/…/<iid>` addressing all stand — but the listener that speaks MCP is **not** the
+> Orchestrator's. An Agent that can reach the Orchestrator's delivery surface can deliver to any registration in its run
+> (including its own human-review Gate), so the MCP server moves into the Sandbox's **Adapter** sidecar: the Agent's
+> only control-plane peer is `localhost`, and the Orchestrator serves `/agents/:iid/surface` + `/agents/:iid/events`
+> under a Sandbox-scoped bearer token instead of hosting MCP itself.
+
 ## External side: the same primitive over HTTP (`gate`), and each gate is a resource
 
 `gate` is the symmetric actor for **every non-agent caller** — humans (`j2 send`, a UI), webhook translators, CI, other
