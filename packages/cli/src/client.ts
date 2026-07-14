@@ -6,6 +6,7 @@
 // `fetchImpl` is injectable so tests drive it with a hono `app.request` (no socket) the same way the
 // orchestrator's own http tests do; in production it defaults to the global `fetch`.
 
+import type { MachineDoc } from "@j2/orchestrator";
 import { parseSSE } from "./sse.ts";
 
 /** A run's current observable state — mirrors the orchestrator's `RunStatus` (run-host.ts). */
@@ -52,6 +53,12 @@ export class J2Client {
   /** `GET /workflows` — names of the registered workflows. */
   async workflows(): Promise<string[]> {
     return (await this.json(await this.fetchImpl(`${this.baseUrl}/workflows`))) as string[];
+  }
+
+  /** `GET /workflows/:name/machine` — the workflow's Machine as the visualizer DTO. */
+  async machine(workflow: string): Promise<MachineDoc> {
+    const res = await this.fetchImpl(`${this.baseUrl}/workflows/${encodeURIComponent(workflow)}/machine`);
+    return (await this.json(res)) as MachineDoc;
   }
 
   /** `POST /workflows/:name/runs` — start a run; unknown workflow → 404 → throws. */

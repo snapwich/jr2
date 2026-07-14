@@ -44,6 +44,18 @@ export type MachineStateDoc = {
    * complete invocation list) plus spawned ones (which appear nowhere else). See
    * {@link ChildMachineDoc}. A promise/callback actor has no state tree, so it is never here. */
   children: ChildMachineDoc[];
+  /**
+   * This state runs an `enqueueActions` closure, so THIS STATE'S `children` MAY BE INCOMPLETE.
+   *
+   * Spawning is an action, and `spawnChild` is the only static trace it leaves (see
+   * {@link spawnedSrcs}). A spawn issued as `enqueue.spawnChild(...)` inside a closure resolves at
+   * runtime — it can be conditional, looped, or have a computed `src` — so no amount of static
+   * analysis recovers it, and the subgraph beneath it would simply be absent from the diagram while
+   * the machine ran correctly. That silence is the hazard, not the omission: it once erased the
+   * whole feature pipeline from `examples/coding` with no signal at all. So the doc carries the
+   * fact it cannot see, and callers (`j2 visualize`) say so out loud.
+   */
+  opaqueActions?: boolean;
 };
 
 /**
@@ -158,19 +170,42 @@ function invokedMachine(node: StateNode<any, any>, index: number, scope: Scope):
   return asMachine(config?.src);
 }
 
-/** Every actor name this state `spawnChild`s — from its entry actions or any of its transitions'.
- * A spawned child is an ACTION, so it appears nowhere in the state tree; this is its only trace. */
-function spawnedSrcs(node: StateNode<any, any>): string[] {
-  const srcs = new Set<string>();
+/** Walk every action list a state can carry: its entry, and all of its transitions'. */
+function eachAction(node: StateNode<any, any>, visit: (action: { type?: unknown; src?: unknown }) => void): void {
   const scan = (actions: readonly unknown[] | undefined) => {
-    for (const action of actions ?? []) {
-      const a = action as { type?: unknown; src?: unknown };
-      if (a?.type === "xstate.spawnChild" && typeof a.src === "string") srcs.add(a.src);
-    }
+    for (const action of actions ?? []) visit(action as { type?: unknown; src?: unknown });
   };
   scan(node.entry);
   for (const defs of node.transitions.values()) for (const t of defs) scan(t.actions);
   for (const t of node.always ?? []) scan(t.actions);
+}
+
+/**
+ * Does this state run an `enqueueActions` closure? If so its {@link MachineStateDoc.children} may be
+ * incomplete — the closure is opaque, and a spawn inside it leaves no static trace at all.
+ *
+ * We cannot see through it (the body resolves at runtime against a live context and event), so the
+ * honest move is to REPORT that we cannot, rather than emit a confidently wrong diagram. xstate
+ * gives us exactly enough to do that: the action's `type` is `"xstate.enqueueActions"`, visible even
+ * though its contents are not.
+ */
+function hasOpaqueActions(node: StateNode<any, any>): boolean {
+  let opaque = false;
+  eachAction(node, (a) => {
+    if (a?.type === "xstate.enqueueActions") opaque = true;
+  });
+  return opaque;
+}
+
+/** Every actor name this state `spawnChild`s — from its entry actions or any of its transitions'.
+ * A spawned child is an ACTION, so it appears nowhere in the state tree; this is its only trace.
+ * Only a TOP-LEVEL `spawnChild` is visible; one issued inside an `enqueueActions` closure is not,
+ * which is what {@link hasOpaqueActions} exists to flag. */
+function spawnedSrcs(node: StateNode<any, any>): string[] {
+  const srcs = new Set<string>();
+  eachAction(node, (a) => {
+    if (a?.type === "xstate.spawnChild" && typeof a.src === "string") srcs.add(a.src);
+  });
   return [...srcs];
 }
 
@@ -227,7 +262,21 @@ function serializeState(node: StateNode<any, any>, into: MachineTransitionDoc[],
   };
   if (node.type === "compound") doc.initial = node.initial.target[0]?.id;
   if (node.description !== undefined) doc.description = node.description;
+  if (hasOpaqueActions(node)) doc.opaqueActions = true;
   return doc;
+}
+
+/** Every state whose `children` may be incomplete, by id — what a caller warns about. Walks the
+ * whole doc, child machines included, since an opaque spawn hides just as well one level down. */
+export function opaqueStates(doc: MachineDoc): string[] {
+  const ids: string[] = [];
+  const walk = (state: MachineStateDoc): void => {
+    if (state.opaqueActions) ids.push(state.id);
+    for (const child of state.children) if (child.machine) walk(child.machine.root);
+    for (const nested of state.states) walk(nested);
+  };
+  walk(doc.root);
+  return ids;
 }
 
 /** Serialize one Machine — its own state tree and its own transitions. Each level carries its own

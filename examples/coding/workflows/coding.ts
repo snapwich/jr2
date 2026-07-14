@@ -40,7 +40,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { assign, emit, enqueueActions, fromPromise, setup, stopChild } from "xstate";
+import { assign, emit, fromPromise, setup, spawnChild, stopChild } from "xstate";
 import { z } from "zod";
 // GAP(1): the event primitive — pure def factory + typed delivery (EventFrom derives unions).
 import { defineEvent, type EventFrom } from "@j2/agent-protocol";
@@ -474,6 +474,11 @@ type CodingCtx = {
   completed: string[];
 };
 
+/** The claimed feature off a `claimNextFeature` done event. A cast, because xstate types an action's
+ * `event` as the machine's whole event union — the same hole the `stopChild` handler below casts
+ * through. Guarded by the transition's own `event.output !== null`. */
+const claimedFeature = (event: unknown) => (event as { output: Ticket }).output;
+
 export const machine = setup({
   types: {} as {
     context: CodingCtx;
@@ -508,23 +513,24 @@ export const machine = setup({
             guard: ({ event }) => event.output !== null,
             target: "discover",
             reenter: true, // claim again until saturated or dry
-            // One enqueue closure, not [assign(...), spawnChild(...)]: spawnChild's own `id`/`input`
-            // callbacks are typed against the machine's whole event union, so they cannot see this
-            // onDone event's `output`. Enqueueing narrows it once and both actions read the feature.
-            actions: enqueueActions(({ context, event, enqueue }) => {
-              const feature = event.output!;
-              enqueue.assign({ active: [...context.active, feature.id] });
-              enqueue.spawnChild("featureWorkspace", {
-                id: feature.id,
-                input: {
+            // `spawnChild` stays a TOP-LEVEL action. It is the only static trace a spawned child
+            // leaves — the child is an action, so it appears nowhere in the state tree — and
+            // `j2 visualize` reads exactly that trace. Move it inside an `enqueueActions` closure
+            // and the whole feature pipeline silently vanishes from the diagram while the machine
+            // still runs; that regressed once already.
+            actions: [
+              assign({ active: ({ context, event }) => [...context.active, event.output!.id] }),
+              spawnChild("featureWorkspace", {
+                id: ({ event }) => claimedFeature(event).id,
+                input: ({ context, event }) => ({
                   runIid: context.runIid,
-                  feature,
+                  feature: claimedFeature(event),
                   reviewRounds: context.reviewRounds,
                   retryBudget: context.retryBudget,
                   // + workspace: {...} appended by workspace() before the body sees it
-                },
-              });
-            }),
+                }),
+              }),
+            ],
           },
           { target: "settling" },
         ],

@@ -4,8 +4,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createMachine, fromPromise, setup, spawnChild, type AnyStateMachine } from "xstate";
-import { serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
+import { createMachine, enqueueActions, fromPromise, setup, spawnChild, type AnyStateMachine } from "xstate";
+import { opaqueStates, serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
 
 /** A fixture exercising every serialization path. */
 const fixture = setup({
@@ -186,6 +186,34 @@ test("a spawnChild'd machine is attached to the state that spawns it", () => {
   assert.equal(child.src, "feature", "the join key is the actor NAME — what the live child reports");
   assert.equal(child.label, "feature");
   assert.equal(child.machine?.id, "wrapper");
+});
+
+// The regression that motivated `opaqueActions`: `examples/coding` moved its `spawnChild` inside an
+// `enqueueActions` closure to dodge an xstate typing wall, and its entire feature pipeline vanished
+// from `j2 visualize` — silently, while the machine still ran correctly. We cannot see into the
+// closure (it resolves at runtime, and may spawn conditionally or with a computed src), so the
+// contract is: report the blind spot rather than emit a confidently incomplete diagram.
+test("a spawn hidden in an enqueueActions closure is invisible — so the state is flagged opaque", () => {
+  const kid = createMachine({ id: "kid", initial: "a", states: { a: {} } });
+  const hiding = setup({ actors: { kid } }).createMachine({
+    id: "hiding",
+    initial: "s",
+    states: { s: { entry: [enqueueActions(({ enqueue }) => enqueue.spawnChild("kid"))] } },
+  });
+
+  const doc = serializeMachine("hiding", hiding);
+  const s = findState(doc.root, "hiding.s")!;
+
+  assert.equal(s.children.length, 0, "the spawn leaves no static trace — this is the limit, not a bug");
+  assert.equal(s.opaqueActions, true, "so the doc must SAY its children may be incomplete");
+  assert.deepEqual(opaqueStates(doc), ["hiding.s"]);
+});
+
+test("a top-level spawnChild is not opaque — the flag marks a blind spot, not any action", () => {
+  const discover = findState(parentDoc.root, "parent.discover");
+  assert.equal(discover?.children.length, 1, "the spawn IS visible here");
+  assert.equal(discover?.opaqueActions, undefined);
+  assert.deepEqual(opaqueStates(parentDoc), [], "nothing to warn about");
 });
 
 test("an inline invoked machine nests inside it, keyed by xstate's generated src", () => {

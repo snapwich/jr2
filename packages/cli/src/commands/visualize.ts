@@ -13,7 +13,7 @@
 
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
-import { startInstance } from "@j2/orchestrator";
+import { opaqueStates, startInstance } from "@j2/orchestrator";
 import { J2Client } from "../client.ts";
 import { readDevJson, resolveRoot } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
@@ -40,6 +40,30 @@ function openInBrowser(url: string, io: Io): void {
 const vizUrl = (baseUrl: string, workflow: string): string =>
   `${baseUrl.replace(/\/+$/, "")}/viz/${encodeURIComponent(workflow)}`;
 
+/**
+ * Say so when the diagram cannot be trusted to be complete. A state that runs an `enqueueActions`
+ * closure may spawn children the doc has no way to see, so the subgraph beneath them is simply
+ * absent — the page cannot tell you that, because it never knew. Without this the failure is
+ * silent, which is how `examples/coding` once lost its whole feature pipeline from the picture.
+ *
+ * Advisory only: it never changes the exit code, and a doc it cannot fetch is not worth failing a
+ * visualize over.
+ */
+async function warnOpaque(baseUrl: string, workflow: string, io: Io): Promise<void> {
+  try {
+    const states = opaqueStates(await new J2Client(baseUrl, io.fetch).machine(workflow));
+    if (!states.length) return;
+    activity(
+      io,
+      `notice: ${states.map((s) => `\`${s}\``).join(", ")} ${states.length > 1 ? "run" : "runs"} an ` +
+        "enqueueActions closure — any child machine spawned inside one is NOT shown in this diagram " +
+        "(keep `spawnChild` a top-level action to see it).",
+    );
+  } catch {
+    // The doc is a nicety here; the page is the product. Never fail a visualize over the warning.
+  }
+}
+
 export async function visualize(args: string[], io: Io): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
@@ -62,6 +86,7 @@ export async function visualize(args: string[], io: Io): Promise<number> {
     }
     const url = vizUrl(baseUrl, workflow);
     activity(io, `visualizing "${workflow}" — ${url}`);
+    await warnOpaque(baseUrl, workflow, io);
     result(io, { url, workflow });
     if (!values["no-open"]) openInBrowser(url, io);
     return 0;
@@ -91,6 +116,7 @@ export async function visualize(args: string[], io: Io): Promise<number> {
   const url = vizUrl(inst.url, workflow);
   activity(io, `visualizing "${workflow}" — ${url}`);
   activity(io, "  serving an ephemeral orchestrator; press Ctrl-C to stop");
+  await warnOpaque(inst.url, workflow, io);
   result(io, { url, workflow }); // before blocking, so `--no-open | jq` yields data immediately
   if (!values["no-open"]) openInBrowser(url, io);
 
