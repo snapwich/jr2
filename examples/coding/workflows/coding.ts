@@ -40,7 +40,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { assign, emit, fromPromise, setup, spawnChild, stopChild } from "xstate";
+import { assign, emit, enqueueActions, fromPromise, setup, stopChild } from "xstate";
 import { z } from "zod";
 // GAP(1): the event primitive — pure def factory + typed delivery (EventFrom derives unions).
 import { defineEvent, type EventFrom } from "@j2/agent-protocol";
@@ -167,19 +167,15 @@ const turn = (c: BodyCtx, role: string, scope: string, tools: string[], prompt: 
   };
 };
 
-const retryOrEscalate = (self: string) =>
-  [
-    // jr handle_no_signal: budgeted resume. Re-entering re-invokes; attachOffset re-attaches the
-    // stream instead of re-prompting. (v1 skips jr's investigator triage — a blind retry; a
-    // triage turn can slot into this path later without changing the shape.)
-    {
-      guard: "hasRetryBudget" as const,
-      target: self,
-      reenter: true,
-      actions: assign({ retriesLeft: ({ context }: { context: BodyCtx }) => context.retriesLeft - 1 }),
-    },
-    { target: "#body.escalated" },
-  ] as const;
+const retryOrEscalate = (self: string) => [
+  // jr handle_no_signal: budgeted resume. Re-entering re-invokes; attachOffset re-attaches the
+  // stream instead of re-prompting. (v1 skips jr's investigator triage — a blind retry; a
+  // triage turn can slot into this path later without changing the shape.)
+  // `guard`/`actions` are NAMES, resolved against setup()'s registries — an inline `assign` here
+  // would be typed outside the machine's event union and never fit a transition.
+  { guard: "hasRetryBudget" as const, target: self, reenter: true, actions: "spendRetry" as const },
+  { target: "#body.escalated" },
+];
 
 export const featureBody = setup({
   types: {} as {
@@ -203,6 +199,9 @@ export const featureBody = setup({
       // the workspace). THIS is how commits leave the pod — workflow's decision, not workspace's.
       throw new Error("sketch: push branch + open PR");
     }),
+  },
+  actions: {
+    spendRetry: assign({ retriesLeft: ({ context }) => context.retriesLeft - 1 }),
   },
   guards: {
     hasRetryBudget: ({ context }) => context.retriesLeft > 0,
@@ -489,19 +488,23 @@ export const machine = setup({
             guard: ({ event }) => event.output !== null,
             target: "discover",
             reenter: true, // claim again until saturated or dry
-            actions: [
-              assign({ active: ({ context, event }) => [...context.active, event.output!.id] }),
-              spawnChild("featureWorkspace", {
-                id: ({ event }) => event.output!.id,
-                input: ({ context, event }) => ({
+            // One enqueue closure, not [assign(...), spawnChild(...)]: spawnChild's own `id`/`input`
+            // callbacks are typed against the machine's whole event union, so they cannot see this
+            // onDone event's `output`. Enqueueing narrows it once and both actions read the feature.
+            actions: enqueueActions(({ context, event, enqueue }) => {
+              const feature = event.output!;
+              enqueue.assign({ active: [...context.active, feature.id] });
+              enqueue.spawnChild("featureWorkspace", {
+                id: feature.id,
+                input: {
                   runIid: context.runIid,
-                  feature: event.output!,
+                  feature,
                   reviewRounds: context.reviewRounds,
                   retryBudget: context.retryBudget,
                   // + workspace: {...} appended by workspace() before the body sees it
-                }),
-              }),
-            ],
+                },
+              });
+            }),
           },
           { target: "settling" },
         ],

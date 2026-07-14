@@ -1,0 +1,26 @@
+{
+  // The tsconfig a j2 INSTANCE extends (`j2 init` scaffolds one that does; `examples/*` are the
+  // model). It ships inside @j2/orchestrator rather than extending the repo's tsconfig.base.json
+  // because an instance scaffolded outside this repo resolves it from node_modules — a relative
+  // extends would dangle. Kit packages keep tsconfig.base.json; this is the contract with users.
+  //
+  // The three load-bearing options are the zero-build model, not style: @j2/orchestrator's exports
+  // point at `./src/index.ts` and its own imports carry `.ts` extensions, so an instance's program
+  // includes that source and must accept the same syntax Node 24 type-strips at load. `tsc` here is
+  // a checker, never an emitter.
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true,
+    "noUncheckedIndexedAccess": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  }
+}

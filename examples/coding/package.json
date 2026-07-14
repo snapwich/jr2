@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "The jr-parity coding workflow: a real j2 instance whose Machine is complete and whose tk/openPr actors are still sketches. See README.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@j2/agent-protocol": "workspace:*",
     "@j2/orchestrator": "workspace:*",
@@ -11,6 +14,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@j2/cli": "workspace:*"
+    "@j2/cli": "workspace:*",
+    "@types/node": "^26.0.1"
   }
 }

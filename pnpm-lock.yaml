@@ -33,6 +33,9 @@ importers:
       '@j2/cli':
         specifier: workspace:*
         version: link:../../packages/cli
+      '@types/node':
+        specifier: ^26.0.1
+        version: 26.0.1
 
   examples/starter:
     dependencies:
@@ -46,6 +49,9 @@ importers:
       '@j2/cli':
         specifier: workspace:*
         version: link:../../packages/cli
+      '@types/node':
+        specifier: ^26.0.1
+        version: 26.0.1
 
   features:
     devDependencies:
