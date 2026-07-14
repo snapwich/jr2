@@ -45,7 +45,7 @@ import { z } from "zod";
 // GAP(1): the event primitive — pure def factory + typed delivery (EventFrom derives unions).
 import { defineEvent, type EventFrom } from "@j2/agent-protocol";
 // GAP(2,3,4): agent actor v2 (endpoint+tools input), workspace factory, external gate actor.
-import { agentRun, gate, workspace } from "@j2/orchestrator";
+import { agentRun, gate, workspace, type AgentRunInput, type WorkspaceHandles } from "@j2/orchestrator";
 
 const exec = promisify(execFile);
 
@@ -126,16 +126,21 @@ const backlogCount = fromPromise<{ open: number }, void>(async () => ({ open: 0 
 
 // ---------------------------------------------------------------------------------------------
 // The feature body: jr's per-ticket loop. Runs INSIDE a workspace (which passes our input
-// through and adds `workspace: { endpoint, workdir, repos, branch }`). Sequential by
+// through and adds `workspace: { endpoint, sandbox, workdir, repos, branch }`). Sequential by
 // construction — the one-agent-per-worktree lock, as machine structure.
 
-type WsHandles = { endpoint: string; workdir: string; repos: Record<string, string>; branch: string };
+// The handles are `WorkspaceHandles` itself, not a hand-copy of its shape. A local mirror is exactly
+// how this file fell behind ADR-0013: workspace() gained `sandbox`, the copy did not, and the field
+// was then not merely unpassed but unreachable — `c.workspace.sandbox` did not exist to pass. The
+// alias cannot force a field to be USED, but it does guarantee the shape here is the real one.
+// `endpoint` is WHERE the Harness is (a URL, re-derived across restarts); `sandbox` is WHICH Sandbox
+// this is (the CR name, stable across restore) — see `turn` below.
 type BodyInput = {
   runIid: string;
   feature: Ticket;
   reviewRounds: number; // JR_REVIEW_ROUNDS (5)
   retryBudget: number; // JR_RESUME_BUDGET (3)
-  workspace: WsHandles; // appended by workspace() — GAP(3)
+  workspace: WorkspaceHandles; // appended by workspace() — GAP(3)
 };
 type BodyCtx = BodyInput & {
   task?: Ticket;
@@ -151,16 +156,31 @@ type BodyCtx = BodyInput & {
 // Same iid across rounds = flue continues the conversation (jr's resume-prompt machinery, free).
 const iid = (c: BodyCtx, scope: string, role: string) => `${c.runIid}/${c.feature.id}/${scope}/${role}`;
 
-/** GAP(2): agentRun v2 input — endpoint (which Sandbox), tools BY NAME (defs resolve from this
- * workflow's `events` manifest; schemas can't ride serializable input), prompt xor attachOffset. */
-const turn = (c: BodyCtx, role: string, scope: string, tools: string[], prompt: string) => {
+/** GAP(2): agentRun v2 input — endpoint (where the Harness is), tools BY NAME (defs resolve from
+ * this workflow's `events` manifest; schemas can't ride serializable input), prompt xor
+ * attachOffset.
+ *
+ * `sandbox` is what makes the turn's MCP surface addressable by exactly one pod (ADR-0013): the
+ * registration records it, and the Sandbox token — minted per Sandbox, mounted into that pod's
+ * Adapter alone — may only deliver to registrations carrying its own name. Omit it and delivery
+ * fails CLOSED (`mayDeliverToAgent`), so every tool call 403s. A run-scoped token instead would be
+ * worse than useless here: these iids are derivable and feature ids are readable from tk, so one
+ * feature's coder could inject a `review_verdict` into another feature's reviewer.
+ *
+ * Note `sandbox` is OPTIONAL on `AgentRunInput` (a workspace-less run — the dev stub Harness on the
+ * host — genuinely has no Sandbox), so the typechecker cannot demand it here. What keeps it honest
+ * is the handles type above being `WorkspaceHandles` itself: the field is required THERE, so it
+ * exists to be passed. The explicit return type below still earns its keep — it rejects a field
+ * agentRun does not take (this helper used to pass a `workdir` that was silently dropped; the
+ * agent learns its workdir from the prompt). */
+const turn = (c: BodyCtx, role: string, scope: string, tools: string[], prompt: string): AgentRunInput => {
   const id = iid(c, scope, role);
   const attachOffset = c.offsets[id];
   return {
     agentName: role,
     instanceId: id,
     endpoint: c.workspace.endpoint,
-    workdir: c.workspace.workdir,
+    sandbox: c.workspace.sandbox,
     tools,
     attachOffset,
     prompt: attachOffset ? undefined : prompt,
@@ -585,8 +605,9 @@ function architectPrompt(c: BodyCtx): string {
 //        `system`, host-mapped to the run). Same name may differ across workflows; unlisted
 //        name = invoke-time error naming the workflow and its declared set. CALLBACK_TOOLS
 //        demotes to an example set built on this.
-// GAP(2) agentRun v2 — input gains `endpoint` (which Sandbox; rides the persisted child input,
-//        so restore re-attaches to the right Harness) and `tools` (event names). On invoke it
+// GAP(2) agentRun v2 — input gains `endpoint` (where the Harness is; rides the persisted child
+//        input, so restore re-attaches to the right one), `sandbox` (WHICH Sandbox — the scope of
+//        the token allowed to deliver here, ADR-0013), and `tools` (event names). On invoke it
 //        registers its iid's MCP toolset with the process demux — handlers close over THIS
 //        invocation's sendBack, so calls land in the invoking state; tools/list serves exactly
 //        the registered set (state-scoped menus, ADR-0006, for free); deregister on stop.
