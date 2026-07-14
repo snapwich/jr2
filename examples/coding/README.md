@@ -1,9 +1,21 @@
-# example-coding — the jr-parity workflow (design artifact)
+# example-coding — the jr-parity workflow
 
-**Status: does not run.** `workflows/coding.ts` models [jr](https://github.com/snapwich/jr)'s `start-work` orchestration
-as a j2 Machine, written against the API j2 _should_ have. This is a **validation exercise**: can j2 express an existing
-user workflow (jr's) faithfully — not a redesign of that workflow. Every `GAP(n)` marker is a missing j2 mechanism; the
-legend at the bottom of the file is the build plan. Closing each gap subtracts a comment, not rewrites the Machine.
+`workflows/coding.ts` models [jr](https://github.com/snapwich/jr)'s `start-work` orchestration as a j2 Machine. It began
+as a **validation exercise** — can j2 express an existing user workflow faithfully, not a redesign of it — written
+against the API j2 _should_ have, with every `GAP(n)` marker naming a mechanism j2 lacked.
+
+**Status: the j2 side is done; the workflow-owned side is sketched.**
+
+- **The Machine is real.** All five gaps landed (the legend at the bottom of the file records which commit closed each),
+  so it imports, typechecks, and registers against a live orchestrator. `j2 visualize coding` renders it — including
+  `featureWorkspace` and its body, the child machines where the pipeline actually lives.
+- **It does not do the work yet.** What is still a sketch is _the workflow's own_ code, not j2's: the tk actors
+  (`claimNextFeature`, `claimNextTask`, `backlogCount`) return empty results rather than parsing `tk ready`, and
+  `openPr` throws. It also needs a Sandbox backend to run at all (`workspace()` faults without one — `j2 cluster up`).
+  The blocker behind the tk actors is a **consistency loop**, not code volume: the orchestrator's tk actors and the
+  architect's in-Sandbox tk edits must see each other's writes. That open note is at the bottom of `coding.ts`.
+
+So: read it as the reference for how a real workflow is shaped, run it as far as the sketches allow.
 
 ## The settled model (grill session, 2026-07-11)
 
