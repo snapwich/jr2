@@ -4,6 +4,11 @@
 // pure data: the nested state tree drives the renderer's containment, the flat transition list its
 // edges. Structure is provider-independent, so the registered template Machine (before
 // `.provide()`) is the right thing to serialize (ADR-0003).
+//
+// A workflow's real work usually happens in CHILD machines (`coding`'s whole feature pipeline is a
+// `spawnChild`), so the walk descends into them too — one `MachineBodyDoc` per child, attached to
+// the state that runs it. Each carries the `src` a live child actor reports, which is how the page
+// hangs run state under the right subgraph.
 
 import type { AnyStateMachine, StateNode, TransitionDefinition } from "xstate";
 
@@ -35,16 +40,45 @@ export type MachineStateDoc = {
   tags: string[];
   description?: string;
   states: MachineStateDoc[];
+  /** The child MACHINES this state runs — invoked ones (a subset of `invoke`, which stays the
+   * complete invocation list) plus spawned ones (which appear nowhere else). See
+   * {@link ChildMachineDoc}. A promise/callback actor has no state tree, so it is never here. */
+  children: ChildMachineDoc[];
 };
 
-/** The serialized structure of a workflow's Machine. */
-export type MachineDoc = {
-  workflow: string;
-  /** Root machine id. */
+/**
+ * A child Machine reached from a state — the pipeline a workflow delegates to, which is most of
+ * what it DOES. Attached to the state that runs it, so the renderer nests it where it belongs.
+ *
+ * `src` is the JOIN KEY: it is exactly the `src` a live child actor reports (`RunChild.src`), for
+ * both kinds — a named actor keeps its name (`"featureWorkspace"`), an inline machine object gets
+ * xstate's generated key (`"xstate.invoke.0.workspace.running"`) on both sides. That is what lets
+ * the page hang a run's live child state under the right subgraph without the two halves agreeing
+ * on anything but this string.
+ */
+export type ChildMachineDoc = {
+  /** The join key — matches a live `RunChild.src` exactly. */
+  src: string;
+  /** Display name: the invoke id (`"body"`) or the spawned actor's name (`"featureWorkspace"`). */
+  label: string;
+  /** How the state reaches it: `invoke` binds it to the state's lifetime, `spawn` outlives it. */
+  via: "invoke" | "spawn";
+  /** The child's own structure. Absent iff `recursive`. */
+  machine?: MachineBodyDoc;
+  /** The machine is already an ancestor of this point — the body is up there, not repeated here. */
+  recursive?: true;
+};
+
+/** One Machine's structure, independent of what NAMES it (a `workflow` at the root, a `src` below). */
+export type MachineBodyDoc = {
+  /** Machine id. */
   id: string;
   root: MachineStateDoc;
   transitions: MachineTransitionDoc[];
 };
+
+/** The serialized structure of a workflow's Machine. */
+export type MachineDoc = MachineBodyDoc & { workflow: string };
 
 /** Normalize a guard to a display name: setup() name, parameterized type, or `"inline"`. */
 function guardName(guard: unknown): string | undefined {
@@ -88,7 +122,72 @@ function serializeTransition(t: TransitionDefinition<any, any>): MachineTransiti
   return doc;
 }
 
-function serializeState(node: StateNode<any, any>, into: MachineTransitionDoc[]): MachineStateDoc {
+/** The registry a `src` name resolves against, plus the cycle guard. One per machine level. */
+type Scope = {
+  /** The machine's `setup({ actors })` registry — where a named `src` is bound. */
+  actors: Record<string, unknown>;
+  /** The machines on the path from the root down to here. A machine already on it does not recurse. */
+  path: Set<AnyStateMachine>;
+};
+
+/** A machine actor, told apart from a promise/callback/observable one by having a state tree. */
+function asMachine(logic: unknown): AnyStateMachine | undefined {
+  return (logic as AnyStateMachine | undefined)?.root ? (logic as AnyStateMachine) : undefined;
+}
+
+/** The machine behind `node.invoke[index]`, if it is one. Named actors resolve through the registry;
+ * an INLINE machine object survives only on the raw config node — xstate rewrites
+ * `StateNode.invoke[].src` to a generated key (which is exactly the key the live child reports, so
+ * the doc keeps it as the join `src` and looks the logic up here instead). */
+function invokedMachine(node: StateNode<any, any>, index: number, scope: Scope): AnyStateMachine | undefined {
+  const src = node.invoke[index]?.src;
+  if (typeof src === "string") {
+    const named = asMachine(scope.actors[src]);
+    if (named) return named;
+  }
+  const config = [node.config.invoke ?? []].flat()[index] as { src?: unknown } | undefined;
+  return asMachine(config?.src);
+}
+
+/** Every actor name this state `spawnChild`s — from its entry actions or any of its transitions'.
+ * A spawned child is an ACTION, so it appears nowhere in the state tree; this is its only trace. */
+function spawnedSrcs(node: StateNode<any, any>): string[] {
+  const srcs = new Set<string>();
+  const scan = (actions: readonly unknown[] | undefined) => {
+    for (const action of actions ?? []) {
+      const a = action as { type?: unknown; src?: unknown };
+      if (a?.type === "xstate.spawnChild" && typeof a.src === "string") srcs.add(a.src);
+    }
+  };
+  scan(node.entry);
+  for (const defs of node.transitions.values()) for (const t of defs) scan(t.actions);
+  for (const t of node.always ?? []) scan(t.actions);
+  return [...srcs];
+}
+
+/** The child machines a state runs, invoked and spawned. */
+function childMachines(node: StateNode<any, any>, scope: Scope): ChildMachineDoc[] {
+  const docs: ChildMachineDoc[] = [];
+  const attach = (src: string, label: string, via: ChildMachineDoc["via"], machine: AnyStateMachine) => {
+    // Recursion is legal (a machine that spawns itself); serializing it is not. Name it and stop.
+    if (scope.path.has(machine)) docs.push({ src, label, via, recursive: true });
+    // A fresh path per branch, not a shared visited-set: two SIBLINGS may run the same machine, and
+    // both should carry its body — only an ANCESTOR is a cycle.
+    else docs.push({ src, label, via, machine: serializeBody(machine, new Set(scope.path)) });
+  };
+
+  node.invoke.forEach((inv, i) => {
+    const machine = invokedMachine(node, i, scope);
+    if (machine) attach(srcName(inv.src), inv.id, "invoke", machine);
+  });
+  for (const src of spawnedSrcs(node)) {
+    const machine = asMachine(scope.actors[src]);
+    if (machine) attach(src, src, "spawn", machine);
+  }
+  return docs;
+}
+
+function serializeState(node: StateNode<any, any>, into: MachineTransitionDoc[], scope: Scope): MachineStateDoc {
   // `node.always` entries are already in the transitions map under the eventless descriptor, so the
   // map alone is the complete edge set; a reference-set dedupe guards against either representation.
   const seen = new Set<TransitionDefinition<any, any>>();
@@ -114,16 +213,25 @@ function serializeState(node: StateNode<any, any>, into: MachineTransitionDoc[])
     type: node.type,
     invoke: node.invoke.map((inv) => ({ id: inv.id, src: srcName(inv.src) })),
     tags: [...node.tags],
-    states: children.map((child) => serializeState(child, into)),
+    states: children.map((child) => serializeState(child, into, scope)),
+    children: childMachines(node, scope),
   };
   if (node.type === "compound") doc.initial = node.initial.target[0]?.id;
   if (node.description !== undefined) doc.description = node.description;
   return doc;
 }
 
-/** Serialize a workflow's template Machine into the visualizer DTO. */
-export function serializeMachine(workflow: string, machine: AnyStateMachine): MachineDoc {
+/** Serialize one Machine — its own state tree and its own transitions. Each level carries its own
+ * actor registry (a child machine resolves `src` names against ITS `setup`, not its parent's). */
+function serializeBody(machine: AnyStateMachine, path: Set<AnyStateMachine>): MachineBodyDoc {
+  path.add(machine);
   const transitions: MachineTransitionDoc[] = [];
-  const root = serializeState(machine.root, transitions);
-  return { workflow, id: machine.id, root, transitions };
+  const scope: Scope = { actors: machine.implementations.actors as Record<string, unknown>, path };
+  const root = serializeState(machine.root, transitions, scope);
+  return { id: machine.id, root, transitions };
+}
+
+/** Serialize a workflow's template Machine into the visualizer DTO, child machines and all. */
+export function serializeMachine(workflow: string, machine: AnyStateMachine): MachineDoc {
+  return { workflow, ...serializeBody(machine, new Set()) };
 }

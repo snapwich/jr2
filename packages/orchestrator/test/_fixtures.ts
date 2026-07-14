@@ -5,7 +5,7 @@
 // `sendToAgent` / `POST /agents/:iid/events` path the Adapter uses (ADR-0013). There is no MCP here
 // because there is no MCP in the Orchestrator: that surface lives in the Sandbox now.
 
-import { setup, fromCallback, assign } from "xstate";
+import { setup, fromCallback, assign, createMachine, sendTo, spawnChild, type AnyActorRef } from "xstate";
 import { z } from "zod";
 import { defineEvent, exampleEvents, doneEvent, requestReviewEvent } from "@j2/agent-protocol";
 import type { EventFrom } from "@j2/agent-protocol";
@@ -173,4 +173,68 @@ export async function waitFor(pred: () => boolean): Promise<void> {
     await new Promise((r) => setTimeout(r, 5));
   }
   throw new Error("waitFor: predicate never became true");
+}
+
+// ---- Child-machine fixtures ---------------------------------------------------------------------
+// `coding`'s actual shape, in miniature: the root is a coordinator that `spawnChild`s a wrapper per
+// feature, and the wrapper invokes its body as an INLINE machine. So the run's real state is two
+// levels below the root's `value`, which is what `RunStatus.children` exists to carry — and each
+// level holds a secret in context, which is what the observation projection must never carry.
+
+type FeatureInput = { feature: string; secret: string };
+
+/** Level 2: the body. Where the work — and a secret — actually is. It parks on its own GATE, named
+ * for its feature, which is how a test moves a GRANDCHILD through the real delivery seam (a gate
+ * registers from wherever it is invoked, at any depth — ADR-0011). */
+const featureBody = setup({
+  types: {} as { context: FeatureInput; input: FeatureInput; events: EventFrom<typeof approveDef> },
+  actors: { gate },
+}).createMachine({
+  id: "body",
+  context: ({ input }) => input,
+  initial: "coding",
+  states: {
+    coding: {
+      invoke: { src: "gate", input: ({ context }) => ({ gate: context.feature, accepts: ["approve"] }) },
+      on: { approve: "shipped" },
+    },
+    shipped: { type: "final" },
+  },
+});
+
+/** Level 1: the per-feature wrapper, reached by `spawnChild`. `createMachine`, not `setup`, so `src`
+ * can be the body MACHINE OBJECT — the INLINE shape, whose `src` xstate rewrites to a generated key
+ * (`workspace()` invokes its body exactly this way, and the visualizer joins on that key). */
+const featureWorkspace = createMachine({
+  types: {} as { context: FeatureInput; input: FeatureInput },
+  id: "ws",
+  context: ({ input }) => input,
+  initial: "provisioning",
+  states: {
+    provisioning: { after: { 5: "running" } },
+    running: { invoke: { id: "body", src: featureBody, input: ({ context }) => context } },
+  },
+});
+
+/** The root: a coordinator that spawns a wrapper per feature and then just sits there — which is
+ * the whole problem the child diagrams solve. Its `value` stays "discover" while the run works. */
+export const pipelineTemplate = setup({
+  types: {} as { context: Record<string, never> },
+  actors: { feature: featureWorkspace },
+}).createMachine({
+  id: "pipeline",
+  context: {},
+  initial: "discover",
+  states: {
+    discover: {
+      entry: [
+        spawnChild("feature", { id: "F-1", input: { feature: "F-1", secret: "SECRET-1" } }),
+        spawnChild("feature", { id: "F-2", input: { feature: "F-2", secret: "SECRET-2" } }),
+      ],
+    },
+  },
+});
+
+export function pipelineDef(): WorkflowDef {
+  return { name: "pipeline", machine: pipelineTemplate, events: [approveDef], provide: () => ({}) };
 }

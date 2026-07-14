@@ -56,9 +56,56 @@ export type WorkflowDef = {
 /** The serializable identity of a run — what reconcile sees and what restore rebuilds from. */
 export type RunRecord = { runId: string; workflow: string; instanceId: string };
 
+/**
+ * One live child MACHINE of a run, and its own children below it. A workflow's root machine is
+ * usually a coordinator — `coding` spawns a `featureWorkspace` per feature and the real work happens
+ * in there — so the root's `value` alone says almost nothing about where a run IS. This is the rest.
+ *
+ * Context-free BY CONSTRUCTION: there is no context field to forget to redact, which is what lets
+ * `observe()` pass the whole tree through to unauthenticated observers untouched. `src` is the join
+ * key ({@link ChildMachineDoc}); `id` is the spawn id (`"F-1"`), which is how two live instances of
+ * the same child machine are told apart.
+ */
+export type RunChild = { id: string; src: string; status: string; value: unknown; children: RunChild[] };
+
+/**
+ * The child-machine tree under a snapshot, in the TWO shapes it arrives in: a live actor's
+ * `children` are actorRefs (`status()`), a persisted snapshot's are `{src, snapshot}` records
+ * (`read()`, off the store). Both carry `src`, so one walk serves both.
+ *
+ * Machine actors only — a promise/callback/observable child has no state `value`, so there is
+ * nothing to light up and nothing to nest.
+ */
+function runChildren(snapshot: unknown): RunChild[] {
+  const children = (snapshot as { children?: Record<string, unknown> } | undefined)?.children ?? {};
+  const out: RunChild[] = [];
+  for (const [id, entry] of Object.entries(children)) {
+    const child = entry as { src?: unknown; snapshot?: unknown; getSnapshot?: () => unknown };
+    const snap = (typeof child.getSnapshot === "function" ? child.getSnapshot() : child.snapshot) as
+      | { status?: string; value?: unknown }
+      | undefined;
+    if (snap?.value === undefined) continue;
+    out.push({
+      id,
+      src: typeof child.src === "string" ? child.src : "",
+      status: snap.status ?? "active",
+      value: snap.value,
+      children: runChildren(snap),
+    });
+  }
+  return out;
+}
+
 /** A run's current observable state. `fault` carries the error message when status is "error"
  * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). */
-export type RunStatus = RunRecord & { status: string; value: unknown; context: unknown; fault?: string };
+export type RunStatus = RunRecord & {
+  status: string;
+  value: unknown;
+  context: unknown;
+  /** The live child machines beneath the root — where most of a run actually is. */
+  children: RunChild[];
+  fault?: string;
+};
 
 /**
  * A run as an UNAUTHENTICATED observer may see it: which run, of what workflow, and where in the
@@ -71,12 +118,29 @@ export type RunStatus = RunRecord & { status: string; value: unknown; context: u
  * a tree of state KEYS — it is structure, and structure is already public (`/workflows/:name/machine`
  * serves the whole Machine). So an observer learns nothing here it could not read from the Machine
  * doc, except which states are lit.
+ *
+ * `children` extends that to the child machines (which is where a run mostly lives), and it does NOT
+ * widen the line: a {@link RunChild} is keys and ids by construction, with no context field at any
+ * depth. The one thing it adds is the spawn ids, which are the workflow's own labels for its
+ * parallel work (`"F-1"`) — the same class of thing as a state key.
  */
-export type RunObservation = { runId: string; workflow: string; status: string; value: unknown };
+export type RunObservation = {
+  runId: string;
+  workflow: string;
+  status: string;
+  value: unknown;
+  children: RunChild[];
+};
 
 /** Project a full status down to what an observer may see. The one place the line is drawn. */
 export function observe(status: RunStatus): RunObservation {
-  return { runId: status.runId, workflow: status.workflow, status: status.status, value: status.value };
+  return {
+    runId: status.runId,
+    workflow: status.workflow,
+    status: status.status,
+    value: status.value,
+    children: status.children,
+  };
 }
 
 /** One open gate as external callers discover it (`GET /runs/:id` — ADR-0011): the accepted
@@ -330,20 +394,14 @@ export class RunHost {
     const run = this.runs.get(runId);
     if (!run) return () => {};
     run.listeners.add(listener);
-    const snap = run.actor.getSnapshot();
-    listener({
-      kind: "status",
-      status: { ...run.record, status: snap.status, value: snap.value, context: snap.context },
-    });
+    listener({ kind: "status", status: this.liveStatus(run) });
     return () => run.listeners.delete(listener);
   }
 
   /** A run's LIVE status — undefined once it settles and is dropped from the registry. Sync. */
   status(runId: string): RunStatus | undefined {
     const run = this.runs.get(runId);
-    if (!run) return undefined;
-    const snap = run.actor.getSnapshot();
-    return { ...run.record, status: snap.status, value: snap.value, context: snap.context, fault: run.fault };
+    return run && this.liveStatus(run);
   }
 
   /**
@@ -366,6 +424,7 @@ export class RunHost {
       status: snap.status ?? stored.status,
       value: snap.value,
       context: snap.context,
+      children: runChildren(snap), // the persisted `children` map — same tree, off the store
       fault: blob.fault,
     };
   }
@@ -392,6 +451,19 @@ export class RunHost {
   }
 
   // --- internals ---
+
+  /** A live run's status, read off its actor — the one place the shape is built. */
+  private liveStatus(run: LiveRun): RunStatus {
+    const snap = run.actor.getSnapshot();
+    return {
+      ...run.record,
+      status: snap.status,
+      value: snap.value,
+      context: snap.context,
+      children: runChildren(snap),
+      fault: run.fault,
+    };
+  }
 
   /** Fill the template's live slots for one run (ADR-0003 provider injection). */
   private assemble(def: WorkflowDef, instanceId: string): AnyStateMachine {
@@ -488,14 +560,11 @@ export class RunHost {
 
     // Feed per-run observers (SSE/CLI watch). On the terminal transition emit the final status
     // BEFORE untrack drops the run from the registry, then drop the now-useless listener set.
-    const snap = run.actor.getSnapshot();
-    const runStatus: RunStatus = {
-      ...run.record,
-      status: snap.status,
-      value: snap.value,
-      context: snap.context,
-      fault: run.fault,
-    };
+    //
+    // Persistence rides the INSPECTION stream (see `spawn`), which fires on a child's transitions
+    // too — so this frame lands on child movement, and its `children` tree carries the new state.
+    // That is the entire live half of the visualizer's child diagrams: no extra subscription.
+    const runStatus = this.liveStatus(run);
     for (const listener of run.listeners) listener({ kind: "status", status: runStatus });
 
     if (status !== "live") {

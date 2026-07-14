@@ -117,6 +117,22 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .state.active > .state-title { fill: var(--phosphor); }
 
+/* ---- Child machines: one subgraph per live instance, or a dimmed template when none ---- */
+
+.child-machine { cursor: pointer; }
+.child-machine > rect {
+  fill: rgba(106, 167, 240, 0.04);
+  stroke: var(--blue);
+  stroke-width: 1.2;
+  stroke-dasharray: 2 3;
+}
+.child-machine > .state-title { fill: var(--blue); }
+.child-machine:hover > rect { stroke-width: 1.8; }
+.child-machine--template { opacity: 0.55; }
+.child-machine--collapsed > rect { stroke-dasharray: none; }
+.child-machine.active > rect:first-of-type { fill: rgba(78, 240, 167, 0.05); }
+.state-row--dim { fill: var(--text-dim); }
+
 .initial-dot { fill: var(--text-dim); }
 
 .edge path { fill: none; stroke: var(--text-dim); stroke-width: 1.2; }

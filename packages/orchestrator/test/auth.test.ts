@@ -119,7 +119,13 @@ test("observation is open, and carries no context — the visualizer's whole die
   const res = await app.request(`/workflows/coding/runs`);
   assert.equal(res.status, 200, "no token needed");
   const [observed] = (await res.json()) as Array<Record<string, unknown>>;
-  assert.deepEqual(observed, { runId, workflow: "coding", status: "active", value: { active: "running" } });
+  assert.deepEqual(observed, {
+    runId,
+    workflow: "coding",
+    status: "active",
+    value: { active: "running" },
+    children: [],
+  });
   assert.ok(observed && !("context" in observed), "context never crosses this line");
   assert.ok(observed && !("instanceId" in observed), "nor the live iid");
 

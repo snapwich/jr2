@@ -10,8 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import { defineEvent } from "@j2/agent-protocol";
-import { RunHost } from "../src/run-host.ts";
-import { codingDef, mkStore, MockFlueClient, tick, waitFor } from "./_fixtures.ts";
+import { RunHost, type RunStatus } from "../src/run-host.ts";
+import { codingDef, mkStore, MockFlueClient, pipelineDef, tick, waitFor } from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
 
 test("an Agent's delivery routes into the owning run's Machine", async () => {
@@ -160,4 +160,60 @@ test("restore marks a run lost when the live world is absent", async () => {
   assert.deepEqual(reattached, []);
   assert.deepEqual(lost, [runId]);
   assert.equal((await store.load(runId))!.status, "lost");
+});
+
+// ---- Child machines (the visualizer's live half) ------------------------------------------------
+// A run's root `value` is not where the run IS: `pipeline` (like `coding`) sits in `discover` while
+// every feature it spawned works two levels down. `RunStatus.children` is that tree — and it rides
+// the SAME feed frame the root's status does, because persistence is driven by the actor system's
+// inspection stream, so a GRANDCHILD's transition already pushes one.
+
+/** A pipeline run with both features spawned and both bodies invoked (the wrapper's 5ms provision). */
+async function mkPipeline() {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(pipelineDef());
+  const { runId } = await host.start("pipeline");
+  await waitFor(() => (host.status(runId)?.children[1]?.children.length ?? 0) > 0);
+  return { host, runId };
+}
+
+test("status().children: the live child machines, their values, and their children's", async () => {
+  const { host, runId } = await mkPipeline();
+  const status = host.status(runId)!;
+
+  assert.equal(status.value, "discover", "the root has not moved — and says nothing about F-1 or F-2");
+  assert.deepEqual(
+    status.children.map((c) => ({ id: c.id, src: c.src, value: c.value })),
+    [
+      { id: "F-1", src: "feature", value: "running" },
+      { id: "F-2", src: "feature", value: "running" },
+    ],
+    "one entry per live instance — this is what makes F-1 and F-2 two boxes, not one",
+  );
+
+  // The grandchild: each wrapper invokes its body as an INLINE machine, so its `src` is xstate's
+  // generated key — the same string `serializeMachine` records. That string IS the join.
+  assert.deepEqual(status.children[0]!.children, [
+    { id: "body", src: "xstate.invoke.0.ws.running", status: "active", value: "coding", children: [] },
+  ]);
+});
+
+test("a GRANDCHILD transition pushes a feed frame carrying its new value", async () => {
+  const { host, runId } = await mkPipeline();
+
+  const frames: RunStatus[] = [];
+  const off = host.subscribe(runId, (e) => {
+    if (e.kind === "status") frames.push(e.status);
+  });
+  frames.length = 0; // drop the replay-on-attach frame
+
+  // Through the real seam: F-1's gate is registered by the BODY, two levels down (ADR-0011).
+  host.sendToGate(runId, "F-1", { type: "approve" });
+  await waitFor(() => frames.some((f) => f.children[0]?.children[0]?.value === "shipped"));
+  off();
+
+  const last = frames.at(-1)!;
+  assert.equal(last.value, "discover", "the root never moved; only the depth did");
+  assert.equal(last.children[0]?.children[0]?.status, "done", "F-1's body reached its final state");
+  assert.equal(last.children[1]?.children[0]?.value, "coding", "and F-2 is untouched — instances are independent");
 });

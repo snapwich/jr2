@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createMachine, fromPromise, setup } from "xstate";
+import { createMachine, fromPromise, setup, spawnChild, type AnyStateMachine } from "xstate";
 import { serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
 
 /** A fixture exercising every serialization path. */
@@ -137,4 +137,104 @@ test("an un-provided template Machine (empty actor slot) serializes the same str
   const tplDoc = serializeMachine("tpl-wf", template);
   assert.equal(findState(tplDoc.root, "tpl.working")?.invoke[0]?.src, "agentRun");
   assert.deepEqual(JSON.parse(JSON.stringify(tplDoc)), tplDoc);
+});
+
+// ---- Child machines -----------------------------------------------------------------------------
+// The shape `coding` actually has, and the reason the visualizer needed this: the whole feature
+// pipeline hangs off a `spawnChild` (an ACTION — it is nowhere in the state tree), and the machine
+// it spawns invokes its body as an INLINE machine object. Two different resolutions, one join key.
+
+const body = createMachine({
+  id: "body",
+  initial: "coding",
+  states: { coding: { on: { DONE: "shipped" } }, shipped: { type: "final" } },
+});
+
+const wrapper = createMachine({
+  id: "wrapper",
+  initial: "running",
+  states: {
+    running: {
+      invoke: [
+        { id: "body", src: body }, // inline machine object → generated src key
+        { id: "reconcile", src: fromPromise(async () => "ok") }, // a promise actor → NOT a child machine
+      ],
+    },
+  },
+});
+
+const parent = setup({ actors: { feature: wrapper } }).createMachine({
+  id: "parent",
+  initial: "discover",
+  states: {
+    discover: {
+      on: { CLAIM: { actions: spawnChild("feature", { id: "F-1" }) } },
+    },
+  },
+});
+
+const parentDoc = serializeMachine("parent-wf", parent);
+
+/** The wrapper's body doc, as the page reaches it: down through the state that spawns it. */
+const wrapperDoc = () => findState(parentDoc.root, "parent.discover")!.children[0]!.machine!;
+
+test("a spawnChild'd machine is attached to the state that spawns it", () => {
+  const discover = findState(parentDoc.root, "parent.discover");
+  assert.equal(discover?.children.length, 1);
+  const child = discover!.children[0]!;
+  assert.equal(child.via, "spawn");
+  assert.equal(child.src, "feature", "the join key is the actor NAME — what the live child reports");
+  assert.equal(child.label, "feature");
+  assert.equal(child.machine?.id, "wrapper");
+});
+
+test("an inline invoked machine nests inside it, keyed by xstate's generated src", () => {
+  const running = findState(wrapperDoc().root, "wrapper.running");
+  assert.equal(running?.children.length, 1, "the promise actor is not a child machine");
+  const inline = running!.children[0]!;
+  assert.equal(inline.via, "invoke");
+  assert.equal(inline.label, "body");
+  // The generated key: this exact string is what `actorRef.src` reports for an inline invoke, which
+  // is the ONLY thing the page joins structure and live state on.
+  assert.equal(inline.src, "xstate.invoke.0.wrapper.running");
+  assert.equal(inline.machine?.id, "body");
+  assert.deepEqual(
+    inline.machine?.root.states.map((s) => s.key),
+    ["coding", "shipped"],
+  );
+});
+
+test("a child machine carries its OWN transitions, not the parent's", () => {
+  const bodyDoc = findState(wrapperDoc().root, "wrapper.running")!.children[0]!.machine!;
+  const done = bodyDoc.transitions.find((t) => t.label === "DONE");
+  assert.deepEqual(done?.targets, ["body.shipped"]);
+  assert.equal(
+    parentDoc.transitions.some((t) => t.label === "DONE"),
+    false,
+  );
+});
+
+test("the complete invoke list is untouched — `children` adds to it, never replaces it", () => {
+  const running = findState(wrapperDoc().root, "wrapper.running");
+  assert.deepEqual(
+    running?.invoke.map((i) => i.id),
+    ["body", "reconcile"],
+  );
+});
+
+test("a recursive machine is named, not unrolled", () => {
+  // A machine that spawns ITSELF. Legal to run, impossible to serialize by recursion — so the doc
+  // names the child and stops. (The registry is patched after construction because the reference
+  // cannot exist before the machine does.)
+  const recursive = createMachine({
+    id: "rec",
+    initial: "go",
+    states: { go: { entry: spawnChild("self" as never) } },
+  }) as AnyStateMachine;
+  (recursive.implementations.actors as Record<string, unknown>).self = recursive;
+
+  const doc = serializeMachine("rec-wf", recursive);
+  const go = findState(doc.root, "rec.go");
+  assert.deepEqual(go?.children, [{ src: "self", label: "self", via: "spawn", recursive: true }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(doc)), doc);
 });
