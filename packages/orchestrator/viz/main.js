@@ -27,16 +27,25 @@ const CHAR_W = 7.5;
 const ROW_H = 16;
 const textW = (s) => s.length * CHAR_W;
 
+/** A guard's suffix. An anonymous guard has no name to show (the doc reports it as "inline"), and
+ * nine characters of nothing is real width — an edge label's width is layer spacing. Mark it. */
+const guardSuffix = (guard) => (guard ? (guard === "inline" ? " [?]" : ` [${guard}]`) : "");
+
+/** An invoke's display name. A `src` is the JOIN KEY, not a name: an anonymous actor gets xstate's
+ * generated key (`xstate.invoke.0.workspace.provisioning`), which names the STATE — which is the box
+ * the row is already sitting in. Only a setup() actor has a name of its own. */
+const actorName = (src) => (src.startsWith("xstate.invoke.") ? "inline" : src);
+
 /** The display rows inside a state box: invokes, targetless self-transitions, tags. A child MACHINE
  * renders as a nested subgraph, so its invoke row would only say the same thing twice. */
 function stateRows(state, selfTransitions) {
   const nested = new Set(state.children.map((c) => c.src));
   const rows = [];
   for (const inv of state.invoke) {
-    if (!nested.has(inv.src)) rows.push({ text: `⚙ ${inv.src}`, cls: "state-row--invoke" });
+    if (!nested.has(inv.src)) rows.push({ text: `⚙ ${actorName(inv.src)}`, cls: "state-row--invoke" });
   }
   for (const t of selfTransitions) {
-    rows.push({ text: `↺ ${t.label}${t.guard ? ` [${t.guard}]` : ""}`, cls: "state-row--self" });
+    rows.push({ text: `↺ ${t.label}${guardSuffix(t.guard)}`, cls: "state-row--self" });
   }
   if (state.tags.length) {
     rows.push({ text: state.tags.map((t) => `#${t}`).join(" "), cls: "state-row--tags" });
@@ -73,7 +82,7 @@ function buildElkGraph(doc, live) {
       // edge would lie. At the root they render as a strip above the Machine; in a child, as rows.
       if (t.source === body.root.id) return;
       t.targets.forEach((target, j) => {
-        const label = `${t.label}${t.guard ? ` [${t.guard}]` : ""}`;
+        const label = `${t.label}${guardSuffix(t.guard)}`;
         edges.push({
           id: `${scope}t${i}.${j}`,
           sources: [scope + t.source],
@@ -96,7 +105,11 @@ function buildElkGraph(doc, live) {
     return { id: `${scope}${node.id}::initial`, width: 12, height: 12 };
   };
 
-  /** A container box: header rows on top, laid-out children below. */
+  /** A container box: header rows on top, laid-out children below.
+   *
+   * `nodeSize.minimum` is honoured for a LEAF but not for a compound node — elk sizes those from
+   * their children, so a box can come back narrower than its own header asked for. The renderer
+   * clips the text to the box it lands in ({@link fitText}) rather than let it hang over the edge. */
   const container = (id, title, rows, children) => {
     const headerW = Math.max(textW(title) + 28, ...rows.map((r) => textW(r.text) + 28), 76);
     const headerH = 26 + rows.length * ROW_H;
@@ -124,7 +137,20 @@ function buildElkGraph(doc, live) {
     }
     const instances = live.filter((c) => c.src === cm.src);
     if (!instances.length) return [childMachineNode(cm, `~${cm.src}/`, scope, null)];
-    return instances.map((inst) => childMachineNode(cm, `${inst.id}/`, scope, inst));
+    const nodes = instances.map((inst) => childMachineNode(cm, `${inst.id}/`, scope, inst));
+    // Instances of one child machine have no edges between them, and edgeless peers land in the
+    // SAME layer — which a DOWN layout spreads across the width. Six features would be six columns.
+    // A layout-only edge (never drawn) puts each instance in the layer below the last, so fan-out
+    // grows the axis the page scrolls and the diagram's width does not depend on how many are live.
+    for (let i = 1; i < nodes.length; i++) {
+      edges.push({
+        id: `${scope}~stack.${cm.src}.${i}`,
+        sources: [nodes[i - 1].id],
+        targets: [nodes[i].id],
+        kind: "stack",
+      });
+    }
+    return nodes;
   };
 
   const childMachineNode = (cm, segment, parentScope, inst) => {
@@ -174,7 +200,11 @@ function buildElkGraph(doc, live) {
       id: "::root",
       layoutOptions: {
         "elk.algorithm": "layered",
-        "elk.direction": "RIGHT",
+        // DOWN, because a Machine's chains are its long axis and nesting stacks them: `discover` ⊃
+        // `featureWorkspace` ⊃ `running` ⊃ `body` ⊃ its whole pipeline, all pointing one way under
+        // INCLUDE_CHILDREN's single layering. RIGHT spent that on width (7000px for `coding`, in a
+        // 950px-tall page); DOWN spends it on the axis a browser scrolls.
+        "elk.direction": "DOWN",
         "elk.hierarchyHandling": "INCLUDE_CHILDREN",
         // Report every edge's coordinates root-relative; the default (CONTAINER) is relative to the
         // edge's deepest common ancestor, which the flat edge pass below doesn't track.
@@ -194,16 +224,24 @@ function buildElkGraph(doc, live) {
 
 const stateEls = new Map(); // elk node id (scope + state id) -> <g>
 
+/** Write text into a box, cut to the width the box actually got (elk sizes a compound node from its
+ * children, so the header it asked for is not always the header it gets). The whole string stays
+ * reachable on hover. */
+function fitText(el, text, boxWidth) {
+  const max = Math.max(3, Math.floor((boxWidth - 20) / CHAR_W));
+  el.textContent = text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  if (text.length > max) svgEl("title", {}, el).textContent = text;
+}
+
 /** The header + rows shared by a state box and a child-machine subgraph. */
 function renderBox(node, title, rows, parent, cls) {
   const g = svgEl("g", { class: cls, transform: `translate(${node.x},${node.y})` }, parent);
   stateEls.set(node.id, g);
   svgEl("rect", { width: node.width, height: node.height, rx: 6 }, g);
-  const t = svgEl("text", { class: "state-title", x: 12, y: 18 }, g);
-  t.textContent = title;
+  fitText(svgEl("text", { class: "state-title", x: 12, y: 18 }, g), title, node.width);
   rows.forEach((row, i) => {
     const r = svgEl("text", { class: `state-row ${row.cls}`, x: 12, y: 18 + (i + 1) * ROW_H }, g);
-    r.textContent = row.text;
+    fitText(r, row.text, node.width);
   });
   return g;
 }
@@ -244,6 +282,7 @@ function renderState(node, meta, parent) {
 
 function renderEdges(layout, parent) {
   for (const edge of layout.edges ?? []) {
+    if (edge.kind === "stack") continue; // layout-only: it stacks sibling instances, it is not a transition
     const kind = edge.kind ?? "event";
     const g = svgEl("g", { class: `edge edge--${kind}` }, parent);
     for (const s of edge.sections ?? []) {
@@ -281,11 +320,28 @@ function renderArrowDefs(svg) {
 
 let layoutSize = { width: 0, height: 0 };
 let scale = 1;
+/** Fit the Machine's width to the canvas, and keep fitting it as the diagram grows — until the
+ * reader takes the zoom into their own hands, after which it is theirs. */
+let fitting = true;
 
 function applyScale() {
   const svg = $("machine-svg");
   svg.setAttribute("width", layoutSize.width * scale);
   svg.setAttribute("height", layoutSize.height * scale);
+}
+
+/** Scale so the whole width lands in the canvas. Never magnifies — a small Machine stays 1:1. */
+function fitToWidth() {
+  const avail = $("canvas").clientWidth - 56; // #canvas padding, both sides
+  if (!layoutSize.width || avail <= 0) return applyScale();
+  scale = Math.min(1, Math.max(0.2, avail / layoutSize.width));
+  applyScale();
+}
+
+function setScale(next) {
+  fitting = false;
+  scale = Math.min(4, Math.max(0.25, next));
+  applyScale();
 }
 
 /** Render machine-level transitions ("from any state") as a strip above the Machine. */
@@ -319,7 +375,7 @@ async function renderMachine(doc, live) {
   svg.textContent = "";
   layoutSize = { width: layout.width + 4, height: layout.height + 4 };
   svg.setAttribute("viewBox", `-2 -2 ${layoutSize.width} ${layoutSize.height}`);
-  applyScale();
+  fitting ? fitToWidth() : applyScale();
   renderArrowDefs(svg);
   const rootG = svgEl("g", {}, svg);
   stateEls.clear();
@@ -488,18 +544,14 @@ async function boot() {
   await loadRuns(doc);
   $("refresh-runs").addEventListener("click", () => loadRuns(doc));
 
-  $("zoom-in").addEventListener("click", () => {
-    scale = Math.min(scale * 1.2, 4);
-    applyScale();
+  $("zoom-in").addEventListener("click", () => setScale(scale * 1.2));
+  $("zoom-out").addEventListener("click", () => setScale(scale / 1.2));
+  $("zoom-reset").addEventListener("click", () => setScale(1));
+  $("zoom-fit").addEventListener("click", () => {
+    fitting = true;
+    fitToWidth();
   });
-  $("zoom-out").addEventListener("click", () => {
-    scale = Math.max(scale / 1.2, 0.25);
-    applyScale();
-  });
-  $("zoom-reset").addEventListener("click", () => {
-    scale = 1;
-    applyScale();
-  });
+  addEventListener("resize", () => fitting && fitToWidth());
 }
 
 boot().catch((err) => {

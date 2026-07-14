@@ -96,13 +96,22 @@ function srcName(src: unknown): string {
   return ((src as { id?: string })?.id ?? "inline") as string;
 }
 
+/**
+ * The tail of a done/error descriptor's id. xstate names an ANONYMOUS invoke after its own position
+ * (`0.body.working.claimTask`), so the raw descriptor spells out the whole path down to the state
+ * the edge already leaves from. Only the last segment says anything new — and a label is not free:
+ * in a layered graph an edge label's WIDTH becomes spacing between layers, so the path is paid for
+ * in diagram width. The full descriptor stays on `event`, so nothing is lost.
+ */
+const shortId = (id = "") => id.slice(id.lastIndexOf(".") + 1);
+
 /** Classify an event descriptor and derive its display label. */
 function eventLabel(eventType: string): { kind: MachineTransitionDoc["kind"]; label: string } {
   if (eventType === "") return { kind: "always", label: "always" };
   const done = /^xstate\.done\.(?:actor|state)\.(.*)$/.exec(eventType);
-  if (done) return { kind: "done", label: `done: ${done[1]}` };
+  if (done) return { kind: "done", label: `done: ${shortId(done[1])}` };
   const error = /^xstate\.error\.actor\.(.*)$/.exec(eventType);
-  if (error) return { kind: "error", label: `error: ${error[1]}` };
+  if (error) return { kind: "error", label: `error: ${shortId(error[1])}` };
   const after = /^xstate\.after\.([^.]+)\./.exec(eventType);
   if (after) return { kind: "after", label: `after ${after[1]}` };
   return { kind: "event", label: eventType };
