@@ -32,6 +32,11 @@ long-poll, no `sandbox → active turn` index, no second inbound port on the pod
 "`tools/list`, refreshed with `list_changed` on transition". They don't need to: flue re-initializes (and so re-lists)
 per submission, and a j2 menu only ever changes at turn boundaries. `list_changed` is unnecessary.
 
+**[ADR-0014](0014-observation-is-open-run-state-is-not.md) finishes this one.** The tokens below are scoped for
+**delivery** and say nothing about who may READ a run or CANCEL one; the code took "any token we minted", which handed a
+Sandbox token every run's context and a kill switch. ADR-0014 splits the surface into three bands (open / any principal
+/ Instance token) and adds the unauthenticated observation projection the visualizer reads.
+
 ## Decision
 
 - **The Adapter is a j2-owned container in the Sandbox pod** (CONTEXT.md). It hosts the MCP server the Agent's Harness

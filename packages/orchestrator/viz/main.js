@@ -431,7 +431,7 @@ function followRun(doc, run, listItem) {
 }
 
 // The OBSERVATION routes, not `/runs*`: this page holds no token, and the run surface is the
-// operator's (context, gates, cancel). What comes back is already scoped to this workflow and
+// Instance token's (context, gates, cancel). What comes back is already scoped to this workflow
 // already context-free, so there is nothing to filter and nothing to redact here.
 async function loadRuns(doc) {
   const res = await fetch(`/workflows/${encodeURIComponent(workflow)}/runs`);

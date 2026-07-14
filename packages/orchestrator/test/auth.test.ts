@@ -71,7 +71,7 @@ test("a Sandbox token drives its own agent surface", async () => {
   );
   assert.equal(call.status, 200);
 
-  // ...and nothing else on the run. Observation and control are the operator's, not the Agent's.
+  // ...and nothing else on the run. Run state and control need the Instance token (ADR-0014).
   assert.equal((await app.request(`/runs/${runId}`, get(token))).status, 403);
   assert.equal((await app.request(`/runs/${runId}/events`, post({ type: "CANCEL" }, token))).status, 403);
   assert.equal(host.status(runId)?.status, "active", "and the run did not stop");
@@ -96,7 +96,7 @@ test("a Sandbox token cannot read run state, or cancel a run", async () => {
   assert.equal(host.status(theirs.runId)?.status, "active", "the other run is still running");
   assert.equal(host.status(mine.runId)?.status, "active", "and so is its own");
 
-  // The operator's token reads and steers, as it always did.
+  // The Instance token reads and steers, as it always did.
   assert.equal((await app.request("/runs", get(INSTANCE_TOKEN))).status, 200);
   assert.equal((await app.request(`/runs/${theirs.runId}`, get(INSTANCE_TOKEN))).status, 200);
 });
@@ -129,9 +129,9 @@ test("observation is open, and carries no context — the visualizer's whole die
   assert.ok(observed && !("context" in observed), "context never crosses this line");
   assert.ok(observed && !("instanceId" in observed), "nor the live iid");
 
-  // ...and the guarded listing still says everything, to the operator alone.
+  // ...and the guarded listing still says everything, to the Instance token alone.
   const [full] = (await (await app.request("/runs", get(INSTANCE_TOKEN))).json()) as Array<Record<string, unknown>>;
-  assert.ok(full && "context" in full, "the operator's view is unchanged");
+  assert.ok(full && "context" in full, "the Instance token's view is unchanged");
 });
 
 test("a Sandbox token cannot deliver to a gate — an Agent does not approve its own review", async () => {

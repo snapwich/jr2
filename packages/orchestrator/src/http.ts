@@ -19,15 +19,15 @@
 // agent surface recorded against its own Sandbox — never to a Gate. That is what stops an Agent
 // from approving its own review.
 //
-// THREE bands of access, not two — the middleware is what says which:
+// THREE bands of access, not two (ADR-0014) — the middleware is what says which:
 //
-//   open         structure + observation. `/workflows`, a template's Machine, the viz page, and the
-//                run PROJECTIONS below (`GET /workflows/:name/runs*`). No context, no control.
+//   open          structure + observation. `/workflows`, a template's Machine, the viz page, and
+//                 the run PROJECTIONS below (`GET /workflows/:name/runs*`). No context, no control.
 //   authenticated any principal we minted a token for. The Agent's surface lives here, scoped
-//                further per-registration by `mayDeliverToAgent`.
-//   operator     the Instance token ALONE. Run control and full run state (`/runs*`): a Sandbox
-//                token authenticates but is refused, because reading another feature's context or
-//                cancelling a run is not on the Agent's surface any more than a Gate is.
+//                 further per-registration by `mayDeliverToAgent`.
+//   instanceOnly  the Instance token ALONE. Run control and full run state (`/runs*`): a Sandbox
+//                 token authenticates but is refused, because reading another feature's context or
+//                 cancelling a run is not on the Agent's surface any more than a Gate is.
 
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -115,18 +115,19 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
   const principalOf = (c: Context<J2Env>): Principal => c.get("principal") ?? { kind: "instance" };
 
   /**
-   * Authenticate, AND require the operator. A Sandbox token is a token we minted, so `authenticated`
-   * alone lets it through — which on the run surface is too much: it would let an Adapter's
-   * credential read every run's context (other features' branches, tickets, verdicts) and CANCEL any
-   * run. Neither is on the Agent's surface. Its scope is delivering to agent registrations recorded
-   * against its OWN Sandbox (ADR-0013), and the gate route already says so in the other direction.
+   * Authenticate, AND require the INSTANCE token (ADR-0014). A Sandbox token is a token we minted,
+   * so `authenticated` alone lets it through — which on the run surface is too much: it would let an
+   * Adapter's credential read every run's context (other features' branches, tickets, verdicts) and
+   * CANCEL any run. Neither is on the Agent's surface. Its scope is delivering to agent
+   * registrations recorded against its OWN Sandbox (ADR-0013), and the gate route already says so in
+   * the other direction.
    */
-  const operator: MiddlewareHandler<J2Env> = async (c, next) => {
+  const instanceOnly: MiddlewareHandler<J2Env> = async (c, next) => {
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
     const principal = auth(bearerOf(c));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
     if (principal.kind !== "instance") {
-      return c.json({ error: "run control is the operator's — a Sandbox token cannot read or steer runs" }, 403);
+      return c.json({ error: "run state and control need the Instance token — a Sandbox token has neither" }, 403);
     }
     c.set("principal", principal);
     return next();
@@ -178,7 +179,7 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
     const runId = c.req.param("runId");
     const live = host.status(runId);
     // LIVE runs only, and only through the workflow that owns them. A settled run's terminal status
-    // is a read-through into the store (`host.read`) — that is the operator's feed, not this one.
+    // is a read-through into the store (`host.read`) — that is the Instance's feed, not this one.
     if (!live || live.workflow !== name) return c.json({ error: `no live run "${runId}" of "${name}"` }, 404);
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
@@ -189,7 +190,7 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
             return;
           }
           // Terminal frame must flush before the handler returns and closes the stream (see the
-          // operator feed below for why the resolve is chained off the write).
+          // guarded feed below for why the resolve is chained off the write).
           const terminal = ev.status.status !== "active";
           void stream.writeSSE({ event: "status", data: JSON.stringify(observe(ev.status)) }).then(() => {
             if (terminal) {
@@ -226,13 +227,13 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
   });
   app.get("/viz/:name", () => vizAsset("page.html", "text/html; charset=utf-8"));
 
-  app.get("/runs", operator, (c) => c.json(host.list()));
+  app.get("/runs", instanceOnly, (c) => c.json(host.list()));
 
   // Read-through (ADR-0009): a completed run's final status lives in the store after the registry
   // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404. The status
   // carries the run's OPEN GATES (ADR-0011) — the discovery listing external callers act on
   // (`j2 send` menus, UI inbox cards, webhook translators matching on meta). Settled run → [].
-  app.get("/runs/:runId", operator, async (c) => {
+  app.get("/runs/:runId", instanceOnly, async (c) => {
     const runId = c.req.param("runId");
     const status = await host.read(runId);
     return status ? c.json({ ...status, gates: host.gates(runId) }) : c.json({ error: `no run "${runId}"` }, 404);
@@ -263,7 +264,7 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
   // SSE: a live run streams its status deltas + author `emit`s (current status replayed on attach,
   // then live until the terminal transition or client abort). A run that has already settled streams
   // its final status once and closes (so `j2 logs -f` works on a finished run). Unknown run → 404.
-  app.get("/runs/:runId/events", operator, async (c) => {
+  app.get("/runs/:runId/events", instanceOnly, async (c) => {
     const runId = c.req.param("runId");
     if (host.status(runId) === undefined) {
       const finalStatus = await host.read(runId);
@@ -311,7 +312,7 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
   // Run control (ADR-0002). CANCEL is the only event left on this seam: APPROVE and STEER answered
   // held `deferred` calls and drained `poll` inboxes, and ADR-0013 reserves both semantics without
   // building them. Workflow-defined events reach a run through its GATES, not through here.
-  app.post("/runs/:runId/events", operator, async (c) => {
+  app.post("/runs/:runId/events", instanceOnly, async (c) => {
     const runId = c.req.param("runId");
     const body = (await readJson(c.req.text())) as RunEventBody;
     if (body.type !== "CANCEL") {

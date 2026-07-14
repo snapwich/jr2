@@ -42,7 +42,7 @@ export function resolveBaseUrl(io: Io, opts: { url?: string }): string {
   return resolveTarget(io, opts).url;
 }
 
-/** Where to talk, and as whom (ADR-0013). The Instance token is the operator's credential: it
+/** Where to talk, and as whom (ADR-0013). The Instance token is the human/CLI credential: it
  * opens gates and run control, and an Agent never holds it — it lives here, on the host. */
 export function resolveTarget(io: Io, opts: { url?: string }): { url: string; token?: string } {
   const explicit = opts.url ?? io.env.J2_URL;
