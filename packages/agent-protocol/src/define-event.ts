@@ -1,10 +1,10 @@
 // `defineEvent` — the event mechanism, and zero events (ADR-0011). A workflow defines its own
 // control vocabulary as pure-data defs; j2 owns only definition, transport, validation, and
 // delivery. This is a PURE factory: no import-time side effects, no global registry. Scoping is
-// per-workflow — each workflow module declares its vocabulary in a manifest export
-// (`export const events = [...]`, a peer of `export const machine`), discovery collects it, and
-// actors resolve event *names* (which is all a serializable input can carry — ADR-0007) against
-// their own workflow's set. Two workflows' `approve` may legitimately differ.
+// per-workflow — a workflow hands its defs to `j2Setup({ events: [...] })` (ADR-0015), which
+// attaches the vocabulary to the machine, and actors resolve event *names* (which is all a
+// serializable input can carry — ADR-0007) against their own workflow's set. Two workflows'
+// `approve` may legitimately differ.
 
 import { z } from "zod";
 
@@ -17,6 +17,14 @@ import { z } from "zod";
 export type EventSemantics = "ack" | "deferred" | "poll";
 
 /**
+ * Who may deliver the event (ADR-0015). The invoking actor kind is the primary router — an
+ * `agentRun` menu draws audience ∈ {agent, any}, a `gate` draws {external, any} — so this tag
+ * exists to RESTRICT: tag the security-sensitive events (`approve: "external"` guarantees no
+ * agent state can ever offer it) and leave the rest at the `"any"` default.
+ */
+export type EventAudience = "agent" | "external" | "any";
+
+/**
  * A workflow-defined control event: pure data (plus zod schemas), safe to import anywhere.
  * `name` doubles as the MCP tool name (agent side) and the xstate event `type` (Machine side).
  */
@@ -26,6 +34,7 @@ export type EventDef<Name extends string = string, Input extends z.ZodObject = z
   /** Input schema — a flat tagged object, never a `oneOf` (ADR-0006 encoding rule). */
   readonly input: Input;
   readonly semantics: EventSemantics;
+  readonly audience: EventAudience;
   /** Result schema for `deferred` events (the held tool result the Machine answers with). */
   readonly output?: z.ZodType;
 };
@@ -56,6 +65,8 @@ export function defineEvent<const Name extends string, Input extends z.ZodObject
   input: Input;
   /** Default: `ack`. */
   semantics?: EventSemantics;
+  /** Default: `any` — restrict only the security-sensitive events (ADR-0015). */
+  audience?: EventAudience;
   output?: z.ZodType;
 }): EventDef<Name, Input> {
   if (!NAME_RE.test(def.name)) {
@@ -69,7 +80,7 @@ export function defineEvent<const Name extends string, Input extends z.ZodObject
       `defineEvent: "${def.name}" is deferred but has no output schema — a deferred event's result IS its output`,
     );
   }
-  return Object.freeze({ semantics: "ack" as const, ...def });
+  return Object.freeze({ semantics: "ack" as const, audience: "any" as const, ...def });
 }
 
 /** Duck-type guard for manifest validation (defs are plain data, not branded). */
@@ -85,9 +96,9 @@ export function isEventDef(value: unknown): value is EventDef {
 }
 
 /**
- * Resolve a manifest (`export const events`) into a name→def map, rejecting duplicates and
- * non-defs. Discovery calls this once per workflow; the error names the workflow so an unlisted
- * or double-listed name fails loudly at registration, not at delivery.
+ * Resolve a defs list into a name→def map, rejecting duplicates and non-defs. `j2Setup` calls
+ * this once per machine (ADR-0015); the error names the workflow so an unlisted or double-listed
+ * name fails loudly at machine-build time, not at delivery.
  *
  * `deferred` and `poll` are RESERVED, not implemented (ADR-0013): the wire leaves room for them —
  * a surface listing ships each def's `semantics`, a delivery returns an addressable receipt — but
@@ -101,12 +112,9 @@ export function eventMap(workflow: string, events: readonly unknown[]): Map<stri
   const map = new Map<string, EventDef>();
   for (const def of events) {
     if (!isEventDef(def)) {
-      throw new Error(
-        `workflow "${workflow}": \`events\` manifest entry is not a defineEvent() def: ${JSON.stringify(def)}`,
-      );
+      throw new Error(`workflow "${workflow}": \`events\` entry is not a defineEvent() def: ${JSON.stringify(def)}`);
     }
-    if (map.has(def.name))
-      throw new Error(`workflow "${workflow}": duplicate event "${def.name}" in \`events\` manifest`);
+    if (map.has(def.name)) throw new Error(`workflow "${workflow}": duplicate event "${def.name}" in \`events\``);
     if (def.semantics !== "ack") {
       throw new Error(
         `workflow "${workflow}": event "${def.name}" is \`${def.semantics}\`, which is reserved but ` +

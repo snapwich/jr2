@@ -11,28 +11,17 @@
 // the body: that is what lets a scenario assert which path was taken (finished vs lost) rather
 // than infer it from the run merely being done.
 
-import { setup } from "xstate";
 import { z } from "zod";
-import { defineEvent, type EventFrom } from "@j2/agent-protocol";
-import { agentRun, workspace } from "@j2/orchestrator";
+import { defineEvent, j2Setup, workspace } from "@j2/orchestrator";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
-export const events = [finish];
 
 type Ws = { endpoint: string; sandbox: string; workdir: string; repos: Record<string, string>; branch: string };
 type BodyInput = { instanceId: string; workspace: Ws };
 
-const body = setup({
-  types: {} as {
-    context: BodyInput;
-    input: BodyInput;
-    events:
-      | EventFrom<typeof finish>
-      | { type: "agent.offset"; instanceId: string; offset: string }
-      | { type: "agent.fault"; instanceId: string; reason: string }
-      | { type: "workspace.lost" };
-  },
-  actors: { agentRun },
+const body = j2Setup({
+  types: {} as { context: BodyInput; input: BodyInput },
+  events: [finish],
 }).createMachine({
   id: "body",
   context: ({ input }) => input,

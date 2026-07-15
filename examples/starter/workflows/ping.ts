@@ -6,15 +6,14 @@
 // Shape: take the run input, invoke a plain `fromPromise` actor, fold its result into context, finish.
 // `j2 run ping --input '{"message":"hi"}'` → the run reaches `done` and `j2 status` shows the reply.
 //
-// Module contract (ADR-0011): named exports — `machine` plus an `events` manifest declaring the
-// events external callers may deliver to this workflow (defineEvent). Ping accepts none.
+// Module contract (ADR-0011/0015): one named export — `machine`. A workflow that accepts
+// external events authors with `j2Setup({ events: [...] })`; ping accepts none, so plain
+// xstate `setup()` is all it needs.
 
 import { setup, assign, fromPromise } from "xstate";
 
 type Input = { message?: string };
 type Ctx = { message: string; reply?: string };
-
-export const events = [];
 
 export const machine = setup({
   types: {} as { context: Ctx; input: Input },

@@ -4,8 +4,8 @@
 //
 //   1. open the durable snapshot store (sqlite at `<dir>/.j2/state.db` by default — ADR-0009);
 //   2. filename-discover `workflows/*.ts` (workflow name = filename, mirroring flue's
-//      `agents/<name>.ts`; module contract = all named exports, ADR-0011: `export const machine`
-//      + `export const events` — the manifest is a peer of the machine); register on the RunHost;
+//      `agents/<name>.ts`; module contract, ADR-0011 revised by ADR-0015: `export const machine`
+//      — the vocabulary rides the machine object via j2Setup); register on the RunHost;
 //   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007);
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
@@ -21,7 +21,6 @@ import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
-import type { EventDef } from "@j2/agent-protocol";
 import { createApp } from "./http.ts";
 import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
@@ -95,21 +94,17 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   let importGen = 0;
   const registerFile = async (name: string, file: string): Promise<void> => {
     const href = pathToFileURL(file).href + (importGen ? `?v=${importGen}` : "");
-    const mod: { machine?: unknown; events?: unknown } = await import(href);
+    const mod: { machine?: unknown } = await import(href);
     const machine = mod.machine as AnyStateMachine | undefined;
     if (!machine) {
       throw new Error(
         `workflow "${name}" (${file}) has no \`machine\` named export ` +
-          `(module contract, ADR-0011: \`export const machine\` + \`export const events\`)`,
+          `(module contract, ADR-0011/0015: \`export const machine\`)`,
       );
-    }
-    if (mod.events !== undefined && !Array.isArray(mod.events)) {
-      throw new Error(`workflow "${name}" (${file}): \`events\` export must be an array of defineEvent() defs`);
     }
     host.register({
       name,
       machine,
-      events: mod.events as EventDef[] | undefined,
       // Nothing to inject (ADR-0011): the module imports its own actors; live clients are built
       // per-invocation from input. `provide` stays a test seam on WorkflowDef, unused here.
       provide: () => ({}),

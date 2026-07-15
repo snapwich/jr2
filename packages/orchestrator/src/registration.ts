@@ -121,7 +121,7 @@ export class RegistrationTable {
 export type RunBinding = {
   runId: string;
   workflow: string;
-  /** The workflow's declared vocabulary (its `events` manifest, resolved name→def). */
+  /** The workflow's declared vocabulary (the machine's j2Setup defs, resolved name→def). */
   events: Map<string, EventDef>;
   table: RegistrationTable;
   /** The host's Sandbox backend, when it has a cluster (`workspace()` resolves it here —
@@ -159,7 +159,7 @@ export function resolveAccepts(binding: RunBinding, accepts: readonly string[]):
     if (!def) {
       throw new Error(
         `workflow "${binding.workflow}" does not declare event "${name}" ` +
-          `(declared: ${[...binding.events.keys()].join(", ") || "none — add an \`export const events\` manifest"})`,
+          `(declared: ${[...binding.events.keys()].join(", ") || "none — pass its def to j2Setup({ events })"})`,
       );
     }
     defs.set(name, def);

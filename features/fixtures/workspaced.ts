@@ -12,6 +12,4 @@ const body = setup({}).createMachine({
   states: { done: { type: "final" } },
 });
 
-export const events = [];
-
 export const machine = workspace(body, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-e2e" }));

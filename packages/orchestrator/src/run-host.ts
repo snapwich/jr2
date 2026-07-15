@@ -22,7 +22,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyStateMachine } from "xstate";
-import { eventMap, type EventDef, type EventSemantics } from "@j2/agent-protocol";
+import type { EventDef, EventSemantics } from "@j2/agent-protocol";
+import { vocabularyOf } from "./vocabulary.ts";
 import {
   agentAddress,
   bindRun,
@@ -44,12 +45,7 @@ export type WorkflowDef = {
   name: string;
   /** The template; slots (e.g. `agentRun`) are referenced by name and filled by `provide`. */
   machine: AnyStateMachine;
-  /**
-   * The workflow's declared event vocabulary (its `export const events` manifest — ADR-0011).
-   * Names resolve per-workflow against this set; absent means "accepts no workflow events".
-   */
-  events?: readonly EventDef[];
-  /** Build this run's live providers (ADR-0003). A test seam: discovery injects nothing. */
+  /** Build this run's live providers. A test seam (ADR-0015): discovery injects nothing. */
   provide: (ctx: { instanceId: string }) => RunProviders;
 };
 
@@ -224,10 +220,10 @@ export class RunHost {
   }
 
   /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
-   * The events manifest is resolved here so a malformed vocabulary (duplicate names, non-defs)
-   * fails at registration — naming the workflow — rather than at delivery. */
+   * The vocabulary rides the machine object (ADR-0015): `j2Setup.createMachine` attached it,
+   * already validated. A machine not built by j2Setup accepts no workflow events. */
   register(def: WorkflowDef): void {
-    this.workflowEvents.set(def.name, eventMap(def.name, def.events ?? []));
+    this.workflowEvents.set(def.name, vocabularyOf(def.machine) ?? new Map());
     this.workflowDefs.set(def.name, def);
   }
 

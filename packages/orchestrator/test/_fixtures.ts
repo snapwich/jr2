@@ -5,20 +5,12 @@
 // `sendToAgent` / `POST /agents/:iid/events` path the Adapter uses (ADR-0013). There is no MCP here
 // because there is no MCP in the Orchestrator: that surface lives in the Sandbox now.
 
-import { setup, fromCallback, assign, createMachine, sendTo, spawnChild, type AnyActorRef } from "xstate";
+import { fromCallback, assign, createMachine, spawnChild } from "xstate";
 import { z } from "zod";
-import { defineEvent, exampleEvents, doneEvent, requestReviewEvent } from "@j2/agent-protocol";
-import type { EventFrom } from "@j2/agent-protocol";
-import { gate } from "../src/gate.ts";
+import { defineEvent, doneEvent, requestReviewEvent } from "@j2/agent-protocol";
+import { j2Setup } from "../src/setup.ts";
 import { agentRunActorWith } from "../src/actor.ts";
-import type {
-  AgentRunInput,
-  AgentRunPort,
-  AgentRunReceiveEvent,
-  AgentToolCall,
-  FaultTelemetry,
-  OffsetTelemetry,
-} from "../src/actor.ts";
+import type { AgentRunInput, AgentRunPort, AgentRunReceiveEvent, AgentToolCall } from "../src/actor.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
@@ -44,19 +36,17 @@ export type Ctx = { instanceId: string; sandbox?: string; offsets: Record<string
 
 /**
  * A minimal real template standing in for a coding workflow, on the example event set (ADR-0011:
- * the events are the WORKFLOW's vocabulary — `request_review`, not a j2 name). `agentRun` is a
- * noop slot; tests fill it with a MockFlueClient port via `provide`.
+ * the events are the WORKFLOW's vocabulary — `request_review`, not a j2 name), authored via
+ * j2Setup (ADR-0015: vocabulary rides the machine; the mechanism events are injected into the
+ * union). `agentRun` is overridden with a noop; tests fill it with a MockFlueClient via `provide`.
  *
  * `sandbox` rides the run input into the `agentRun` invocation, so a test can register an agent
  * surface that BELONGS to a Sandbox (what a Sandbox token is scoped against — ADR-0013) or, by
  * omitting it, one that belongs to no pod at all (a workspace-less run against the stub Harness).
  */
-export const codingTemplate = setup({
-  types: {} as {
-    context: Ctx;
-    input: { instanceId: string; sandbox?: string };
-    events: EventFrom<typeof doneEvent | typeof requestReviewEvent> | OffsetTelemetry | FaultTelemetry;
-  },
+export const codingTemplate = j2Setup({
+  types: {} as { context: Ctx; input: { instanceId: string; sandbox?: string } },
+  events: [doneEvent, requestReviewEvent],
   actors: { agentRun: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },
 }).createMachine({
   id: "m",
@@ -104,7 +94,6 @@ export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
   return {
     name: "coding",
     machine: codingTemplate,
-    events: [...exampleEvents],
     provide: ({ instanceId }) => {
       const client = new MockFlueClient();
       clients.set(instanceId, client);
@@ -125,10 +114,11 @@ export const requestChangesDef = defineEvent({
 type GatedCtx = { notes?: string };
 
 /** Parks in `review` holding gate "F-1"; an external `approve`/`request_changes` moves it. The
- * targets are non-final so the run STAYS LIVE after the gate closes (gate gone ≠ run gone). */
-export const gatedTemplate = setup({
-  types: {} as { context: GatedCtx; events: EventFrom<typeof approveDef | typeof requestChangesDef> },
-  actors: { gate },
+ * targets are non-final so the run STAYS LIVE after the gate closes (gate gone ≠ run gone).
+ * `gate` is pre-registered by j2Setup — nothing to list (ADR-0015). */
+export const gatedTemplate = j2Setup({
+  types: {} as { context: GatedCtx },
+  events: [approveDef, requestChangesDef],
 }).createMachine({
   id: "gated",
   context: {},
@@ -149,12 +139,30 @@ export const gatedTemplate = setup({
   },
 });
 
-/** The gated workflow def, with its `events` manifest (pass `events: []` to test unlisted names). */
+/** Invokes its gate with an accepts name the workflow does NOT declare. createMachine's typo
+ * check cannot see invoke-input strings, so this builds fine and fails at INVOKE time via
+ * `resolveAccepts` (ADR-0011's check, unchanged by ADR-0015). */
+export const gatedOverreachTemplate = j2Setup({
+  types: {} as { context: GatedCtx },
+  events: [approveDef], // request_changes deliberately missing
+}).createMachine({
+  id: "gated",
+  context: {},
+  initial: "review",
+  states: {
+    review: {
+      invoke: { src: "gate", input: { gate: "F-1", accepts: ["approve", "request_changes"] } },
+      on: { approve: "approved" },
+    },
+    approved: {},
+  },
+});
+
+/** The gated workflow def; vocabulary rides the machine (ADR-0015). */
 export function gatedDef(overrides: Partial<WorkflowDef> = {}): WorkflowDef {
   return {
     name: "gated",
     machine: gatedTemplate,
-    events: [approveDef, requestChangesDef],
     provide: () => ({}),
     ...overrides,
   };
@@ -186,9 +194,9 @@ type FeatureInput = { feature: string; secret: string };
 /** Level 2: the body. Where the work — and a secret — actually is. It parks on its own GATE, named
  * for its feature, which is how a test moves a GRANDCHILD through the real delivery seam (a gate
  * registers from wherever it is invoked, at any depth — ADR-0011). */
-const featureBody = setup({
-  types: {} as { context: FeatureInput; input: FeatureInput; events: EventFrom<typeof approveDef> },
-  actors: { gate },
+const featureBody = j2Setup({
+  types: {} as { context: FeatureInput; input: FeatureInput },
+  events: [approveDef],
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
@@ -217,9 +225,12 @@ const featureWorkspace = createMachine({
 });
 
 /** The root: a coordinator that spawns a wrapper per feature and then just sits there — which is
- * the whole problem the child diagrams solve. Its `value` stays "discover" while the run works. */
-export const pipelineTemplate = setup({
+ * the whole problem the child diagrams solve. Its `value` stays "discover" while the run works.
+ * The root carries the workflow's vocabulary (ADR-0015: discovery reads the EXPORTED machine),
+ * even though the gate that uses `approve` is invoked two levels down. */
+export const pipelineTemplate = j2Setup({
   types: {} as { context: Record<string, never> },
+  events: [approveDef],
   actors: { feature: featureWorkspace },
 }).createMachine({
   id: "pipeline",
@@ -236,5 +247,5 @@ export const pipelineTemplate = setup({
 });
 
 export function pipelineDef(): WorkflowDef {
-  return { name: "pipeline", machine: pipelineTemplate, events: [approveDef], provide: () => ({}) };
+  return { name: "pipeline", machine: pipelineTemplate, provide: () => ({}) };
 }

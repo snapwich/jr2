@@ -4,12 +4,12 @@
 // outside — the AGENT played over MCP (`/mcp/<iid>`), the HUMAN played over the gates API
 // (`POST /runs/:id/gates/review-1/events`). Filename `review.ts` → workflow "review".
 //
-// Module contract (ADR-0011): all named exports — `machine` + the `events` manifest.
+// Module contract (ADR-0011/0015): `export const machine`, authored via j2Setup — the vocabulary
+// rides the machine, `agentRun`/`gate` are pre-registered, mechanism events are in the union.
 
-import { setup, assign } from "xstate";
+import { assign } from "xstate";
 import { z } from "zod";
-import { defineEvent, type EventFrom } from "@j2/agent-protocol";
-import { agentRun, gate } from "@j2/orchestrator";
+import { defineEvent, j2Setup } from "@j2/orchestrator";
 
 const requestReview = defineEvent({
   name: "request_review",
@@ -18,21 +18,12 @@ const requestReview = defineEvent({
 });
 const approve = defineEvent({ name: "approve", input: z.object({}) });
 
-export const events = [requestReview, approve];
-
 type Input = { instanceId: string; endpoint: string };
 type Ctx = { instanceId: string; endpoint: string; offsets: Record<string, string>; summary?: string };
 
-export const machine = setup({
-  types: {} as {
-    context: Ctx;
-    input: Input;
-    events:
-      | EventFrom<typeof requestReview | typeof approve>
-      | { type: "agent.offset"; instanceId: string; offset: string }
-      | { type: "agent.fault"; instanceId: string; reason: string };
-  },
-  actors: { agentRun, gate },
+export const machine = j2Setup({
+  types: {} as { context: Ctx; input: Input },
+  events: [requestReview, approve],
 }).createMachine({
   id: "review",
   context: ({ input }) => ({ instanceId: input.instanceId, endpoint: input.endpoint, offsets: {} }),

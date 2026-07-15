@@ -5,7 +5,12 @@
 // It does NOT speak MCP (ADR-0013): the Agent's MCP surface is hosted by the Adapter, in the
 // Sandbox. What lives here is the registration table and two thin HTTP adapters over it.
 
+// The wire contract, re-exported: a workflow authors against ONE package (`defineEvent`,
+// `j2Setup`, `workspace`, … all import from "@j2/orchestrator" — ADR-0015).
+export * from "@j2/agent-protocol";
 export * from "./config.ts";
+export * from "./setup.ts";
+export * from "./vocabulary.ts";
 export * from "./tokens.ts";
 export * from "./durability.ts";
 export * from "./snapshot-store.ts";

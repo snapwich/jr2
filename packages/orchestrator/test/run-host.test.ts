@@ -8,8 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { z } from "zod";
-import { defineEvent } from "@j2/agent-protocol";
+import { setup } from "xstate";
 import { RunHost, type RunStatus } from "../src/run-host.ts";
 import { codingDef, mkStore, MockFlueClient, pipelineDef, tick, waitFor } from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
@@ -69,37 +68,17 @@ test("a delivery outside the turn's surface is refused, naming what IS accepted"
   assert.throws(() => host.sendToAgent("no-such-iid", { type: "done" }), /no live registration/);
 });
 
-test("registration resolves the events manifest: empty scope by default, duplicates rejected", async () => {
+test("registration reads the vocabulary off the machine (ADR-0015); a plain machine has none", async () => {
   const host = new RunHost({ store: await mkStore() });
 
-  host.register({ ...codingDef(new Map()), name: "bare", events: undefined });
-  assert.equal(host.events("bare")?.size, 0); // no manifest → accepts no workflow events
+  // A j2Setup machine carries its defs; registering under any name resolves them.
+  host.register(codingDef(new Map()));
+  assert.deepEqual([...host.events("coding")!.keys()].sort(), ["done", "request_review"]);
 
-  const approve = defineEvent({ name: "approve", input: z.object({}) });
-  const dupe = defineEvent({ name: "approve", input: z.object({ notes: z.string() }) });
-  assert.throws(
-    () => host.register({ ...codingDef(new Map()), name: "gated", events: [approve, dupe] }),
-    /workflow "gated": duplicate event "approve"/,
-  );
-  host.register({ ...codingDef(new Map()), name: "gated", events: [approve] });
-  assert.equal(host.events("gated")?.get("approve"), approve);
-});
-
-test("a deferred event fails loudly at registration rather than degrading to ack", async () => {
-  const host = new RunHost({ store: await mkStore() });
-  // ADR-0013 reserves `deferred`/`poll` in the model and leaves room for them on the wire, but
-  // nothing answers a held call today. Serving it as `ack` would hand the Agent a tool whose
-  // contract ("this returns the Machine's answer") is a lie — so the workflow refuses to load.
-  const requestApproval = defineEvent({
-    name: "request_approval",
-    semantics: "deferred",
-    input: z.object({ action: z.string() }),
-    output: z.object({ decision: z.string() }),
-  });
-  assert.throws(
-    () => host.register({ ...codingDef(new Map()), name: "risky", events: [requestApproval] }),
-    /"request_approval" is `deferred`.*NOT IMPLEMENTED/s,
-  );
+  // A machine NOT built by j2Setup (no vocabulary attached) accepts no workflow events.
+  const bare = setup({}).createMachine({ id: "bare", initial: "a", states: { a: {} } });
+  host.register({ name: "bare", machine: bare, provide: () => ({}) });
+  assert.equal(host.events("bare")?.size, 0);
 });
 
 test("offset telemetry from the flue stream is persisted into the snapshot", async () => {

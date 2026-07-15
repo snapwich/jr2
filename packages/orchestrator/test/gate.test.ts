@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { EventValidationError, UnknownAddressError } from "../src/registration.ts";
-import { approveDef, gatedDef, mkStore, waitFor } from "./_fixtures.ts";
+import { gatedDef, gatedOverreachTemplate, mkStore, waitFor } from "./_fixtures.ts";
 
 test("a gated state registers a discoverable gate; delivery transitions; exit destroys it", async () => {
   const host = new RunHost({ store: await mkStore() });
@@ -82,9 +82,9 @@ test("an unknown gate 404s with the run's open gates named", async () => {
   );
 });
 
-test("an accepts name outside the workflow's manifest fails at invoke time, naming both", async () => {
+test("an accepts name outside the workflow's vocabulary fails at invoke time, naming both", async () => {
   const host = new RunHost({ store: await mkStore() });
-  host.register(gatedDef({ events: [approveDef] })); // manifest missing request_changes
+  host.register(gatedDef({ machine: gatedOverreachTemplate })); // defs missing request_changes
 
   // The gate actor throws on start → the run errors immediately (xstate reports invoke errors
   // to the observer, not out of start). The fault names the workflow and its declared set, is

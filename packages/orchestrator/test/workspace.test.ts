@@ -5,8 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setup, assign } from "xstate";
-import { gate } from "../src/gate.ts";
+import { assign } from "xstate";
+import { j2Setup } from "../src/setup.ts";
 import { workspace, workspaceName, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { approveDef, mkStore, waitFor } from "./_fixtures.ts";
@@ -40,14 +40,14 @@ class FakeSandbox implements SandboxPort {
 }
 
 /** A body that parks on a gate inside its Sandbox; `workspace.lost` routes to its own policy
- * (final `lost`) exactly as ADR-0012's "the wrapper emits, the body decides". */
-const body = setup({
+ * (final `lost`) exactly as ADR-0012's "the wrapper emits, the body decides". j2Setup-authored:
+ * the wrapper PROPAGATES this vocabulary onto the exported machine (ADR-0015). */
+const body = j2Setup({
   types: {} as {
     context: { handles?: { endpoint: string; workdir: string; branch: string } };
     input: { workspace: { endpoint: string; workdir: string; repos: Record<string, string>; branch: string } };
-    events: { type: "approve" } | { type: "workspace.lost" };
   },
-  actors: { gate },
+  events: [approveDef],
 }).createMachine({
   id: "body",
   context: ({ input }) => ({ handles: input.workspace }),
@@ -70,7 +70,7 @@ const body = setup({
 const wrapped = workspace(body, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }));
 
 function wsDef(): WorkflowDef {
-  return { name: "ws", machine: wrapped, events: [approveDef], provide: () => ({}) };
+  return { name: "ws", machine: wrapped, provide: () => ({}) };
 }
 
 test("workspaceName is deterministic, DNS-1123, and distinct per (run, wsId)", () => {

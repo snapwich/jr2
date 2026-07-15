@@ -62,10 +62,16 @@ test("discovers workflows and serves the HTTP surface", async () => {
     const { runId } = (await started.json()) as { runId: string };
     assert.ok(runId);
 
-    const runs = (await (await fetch(`${inst.url}/runs`, auth(inst))).json()) as Array<{ runId: string; workflow: string }>;
+    const runs = (await (await fetch(`${inst.url}/runs`, auth(inst))).json()) as Array<{
+      runId: string;
+      workflow: string;
+    }>;
     assert.ok(runs.some((r) => r.runId === runId && r.workflow === "echo"));
 
-    const status = (await (await fetch(`${inst.url}/runs/${runId}`, auth(inst))).json()) as { workflow: string; status: string };
+    const status = (await (await fetch(`${inst.url}/runs/${runId}`, auth(inst))).json()) as {
+      workflow: string;
+      status: string;
+    };
     assert.equal(status.workflow, "echo");
   } finally {
     await inst.close();
@@ -122,25 +128,26 @@ test("module contract (ADR-0011): no `machine` named export fails discovery with
   }
 });
 
-test("the `events` manifest is collected per workflow and resolvable on the host", async () => {
+test("the vocabulary rides the machine (ADR-0015) and is resolvable on the host after discovery", async () => {
   const dir = await mkdtemp(join(pkgDir, ".events-"));
   const wfDir = join(dir, "workflows");
   await mkdir(wfDir, { recursive: true });
   await writeFile(
     join(wfDir, "gated.ts"),
-    `import { setup } from "xstate";\n` +
-      `import { z } from "zod";\n` +
+    `import { z } from "zod";\n` +
       `import { defineEvent } from "@j2/agent-protocol";\n` +
+      `import { j2Setup } from "@j2/orchestrator";\n` +
       `const approve = defineEvent({ name: "approve", input: z.object({}) });\n` +
-      `export const events = [approve];\n` +
-      `export const machine = setup({}).createMachine({ id: "gated", initial: "a", states: { a: {} } });\n`,
+      `export const machine = j2Setup({ events: [approve] })` +
+      `.createMachine({ id: "gated", initial: "a", states: { a: { on: { approve: "b" } }, b: {} } });\n`,
   );
   const inst = await startInstance({ dir, store: new SqliteSnapshotStore(":memory:"), signingKey: KEY });
   try {
     const vocab = inst.host.events("gated");
-    assert.ok(vocab?.has("approve"), "manifest must be collected at discovery");
+    assert.ok(vocab?.has("approve"), "the machine's vocabulary must be readable after discovery");
     assert.equal(vocab?.get("approve")?.semantics, "ack");
-    // An eventless workflow resolves to an empty scope, not undefined (echo has no manifest).
+    // A workflow not built by j2Setup resolves to an empty scope, not undefined (echo overrides
+    // nothing here — it IS j2Setup-authored; see the fixture).
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });

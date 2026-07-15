@@ -92,7 +92,7 @@ test("invoke'd body: grandchild offset persists and restore re-attaches it", asy
         },
       },
     });
-    return { name: "nested", machine: outer, events: [], provide: () => ({}) };
+    return { name: "nested", machine: outer, provide: () => ({}) };
   };
 
   const store = await mkStore();
@@ -137,7 +137,7 @@ test("spawnChild'd body: the spawned machine restores and its agent re-attaches"
       initial: "running",
       states: { running: {} },
     });
-    return { name: "spawned", machine: outer, events: [], provide: () => ({}) };
+    return { name: "spawned", machine: outer, provide: () => ({}) };
   };
 
   const store = await mkStore();

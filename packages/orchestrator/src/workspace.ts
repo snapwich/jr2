@@ -23,6 +23,7 @@
 
 import { assign, createMachine, fromCallback, fromPromise, sendTo, type AnyStateMachine } from "xstate";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
+import { attachVocabulary, vocabularyOf } from "./vocabulary.ts";
 
 /** What to attach, in workspace vocabulary only (ADR-0012 boundary): which repos on what base
  * ref, and the one branch the body works on. Workflow configuration never enters the spec. */
@@ -116,6 +117,15 @@ type WsContext = {
  * the trail stays inspectable, and silent cleanup would destroy the evidence.
  */
 export function workspace(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
+  const wrapper = buildWorkspaceMachine(body, spec);
+  // Propagate the body's vocabulary onto the wrapper (ADR-0015): a workflow whose ROOT is this
+  // wrapper still registers its defs — discovery reads the vocabulary off the exported machine.
+  const vocab = vocabularyOf(body);
+  if (vocab) attachVocabulary(wrapper, vocab);
+  return wrapper;
+}
+
+function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
   const provision = fromPromise<{ endpoint: string }, { wsId: string }>(async ({ input, system }) => {
     const binding = runBindingOf(system);
     return sandboxOf(system).provision({
