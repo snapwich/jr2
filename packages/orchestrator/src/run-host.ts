@@ -31,6 +31,7 @@ import {
   gateAddress,
   RegistrationTable,
   UnknownAddressError,
+  type RetryTelemetry,
 } from "./registration.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
@@ -172,7 +173,10 @@ export type AgentSurfaceView = {
  */
 export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
-  | { kind: "emit"; event: { type: string } & Record<string, unknown> };
+  | { kind: "emit"; event: { type: string } & Record<string, unknown> }
+  // Absorbed-retry telemetry (ADR-0016): `{ child, attempt }` is state-key-class data — no iids
+  // ride the feed (ADR-0014). `reason` is mechanism text, guarded like `fault`.
+  | RetryTelemetry;
 
 export type RunHostOptions = {
   store: SnapshotStore;
@@ -538,6 +542,11 @@ export class RunHost {
       recordAdmission: (instanceId, admission) => {
         run.agents[instanceId] = admission;
         if (this.runs.get(record.runId) === run) this.persist(run);
+      },
+      // Absorbed-retry attempts go straight to the run's observers (SSE/CLI watch) — they are
+      // feed events, not machine events (ADR-0016: the workflow sees only the terminal fault).
+      telemetry: (event) => {
+        for (const listener of run.listeners) listener(event);
       },
     });
     this.runs.set(record.runId, run);

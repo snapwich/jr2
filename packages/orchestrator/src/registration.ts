@@ -135,7 +135,16 @@ export type RunBinding = {
    * durable.
    */
   recordAdmission?: (instanceId: string, admission: AgentAdmission) => void;
+  /**
+   * Surface absorbed-retry telemetry on the run feed (ADR-0016): attempts are observable, but
+   * as `{ child, attempt }` — state-key-class data, never iids (ADR-0014's line holds on the
+   * open feed).
+   */
+  telemetry?: (event: RetryTelemetry) => void;
 };
+
+/** One absorbed-retry attempt (a no-signal nudge), as the run feed carries it. */
+export type RetryTelemetry = { kind: "retry"; child: string; attempt: number; reason: string };
 
 const bindings = new WeakMap<AnyActorSystem, RunBinding>();
 

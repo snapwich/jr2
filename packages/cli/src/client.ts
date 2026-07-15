@@ -22,7 +22,8 @@ export type RunStatus = {
 /** One item on a run's observation feed — mirrors the orchestrator's `RunFeedEvent`. */
 export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
-  | { kind: "emit"; event: { type: string } & Record<string, unknown> };
+  | { kind: "emit"; event: { type: string } & Record<string, unknown> }
+  | { kind: "retry"; child: string; attempt: number; reason: string };
 
 /** A run-control event posted to a live run (ADR-0013): CANCEL is the vocabulary that is left. */
 export type RunEvent = { type: string };
@@ -109,6 +110,8 @@ export class J2Client {
     for await (const frame of parseSSE(res.body)) {
       if (frame.event === "emit") {
         yield { kind: "emit", event: JSON.parse(frame.data) as { type: string } & Record<string, unknown> };
+      } else if (frame.event === "retry") {
+        yield { kind: "retry", ...(JSON.parse(frame.data) as { child: string; attempt: number; reason: string }) };
       } else {
         yield { kind: "status", status: JSON.parse(frame.data) as RunStatus };
       }

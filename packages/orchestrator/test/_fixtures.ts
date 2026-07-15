@@ -17,19 +17,24 @@ import type { WorkflowDef } from "../src/run-host.ts";
 
 /** An AgentRunPort the test drives by hand: capture admissions/attaches, settle or fault them. */
 export class MockFlueClient implements AgentRunPort {
-  /** The fresh admit this port served, if any (undefined on a pure re-attach). */
-  admitted: AgentRunInput | undefined;
-  /** The admission this port minted on admit. Distinct per instance so ledgers are assertable. */
+  /** Every fresh admit this port served, in order (a nudge is a later admit on the same iid). */
+  admits: AgentRunInput[] = [];
+  /** The admission minted on the LATEST admit. Distinct per admit so ledgers are assertable. */
   minted: AgentAdmission | undefined;
   /** Every admission `settle()` was asked to follow (fresh AND re-attached). */
   settled: AgentAdmission[] = [];
-  /** Signals of in-flight settles — aborted when the actor abandons (stop/CANCEL). */
+  /** Set when the actor abandons an in-flight settle (stop/CANCEL). */
   abandoned = false;
-  private rejectSettle: ((err: unknown) => void) | undefined;
+  private pending: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
   private seq = 0;
 
+  /** The one fresh admit, in the single-turn suites (undefined on a pure re-attach). */
+  get admitted(): AgentRunInput | undefined {
+    return this.admits[0];
+  }
+
   admit(input: AgentRunInput): Promise<AgentAdmission> {
-    this.admitted = input;
+    this.admits.push(input);
     this.minted = {
       streamUrl: `http://mock/agents/${input.agentName}/${input.instanceId}`,
       offset: `adm-${++this.seq}`,
@@ -40,16 +45,23 @@ export class MockFlueClient implements AgentRunPort {
 
   settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void> {
     this.settled.push(admission);
-    // Stays live until abandoned or faulted (the mechanics-tier "admitted, never settles").
-    return new Promise<void>((_resolve, reject) => {
-      this.rejectSettle = reject;
+    // Stays live until completed, faulted, or abandoned (the mechanics-tier default is "admitted,
+    // never settles").
+    return new Promise<void>((resolve, reject) => {
+      this.pending.push({ resolve, reject });
       opts?.signal?.addEventListener("abort", () => (this.abandoned = true), { once: true });
     });
   }
 
-  /** Simulate the submission settling failed (infra fault). */
+  /** Simulate the current submission settling COMPLETED (the no-signal case, unless a domain
+   * event was delivered first). */
+  complete(): void {
+    this.pending.pop()?.resolve();
+  }
+
+  /** Simulate the current submission settling failed (infra fault, post flue-side retries). */
   fault(reason: string): void {
-    this.rejectSettle?.(new Error(reason));
+    this.pending.pop()?.reject(new Error(reason));
   }
 }
 

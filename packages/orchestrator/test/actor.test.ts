@@ -9,9 +9,9 @@ import assert from "node:assert/strict";
 import { createActor, setup, sendTo } from "xstate";
 import { z } from "zod";
 import { defineEvent, eventMap } from "@j2/agent-protocol";
-import { agentRunActorWith } from "../src/actor.ts";
+import { agentRunActorWith, type AgentRunOptions } from "../src/actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
-import { bindRun, agentAddress, RegistrationTable } from "../src/registration.ts";
+import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry } from "../src/registration.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
 const pingEvent = defineEvent({ name: "ping", input: z.object({}) });
@@ -22,15 +22,16 @@ const pingEvent = defineEvent({ name: "ping", input: z.object({}) });
  * binding from the actor system, so the test binds one before start (what RunHost.track does) —
  * including the admission-ledger write half, captured into `ledger`.
  */
-function harness(client: AgentRunPort, input: AgentRunInput) {
+function harness(client: AgentRunPort, input: AgentRunInput, options?: AgentRunOptions) {
   const received: Array<{ type: string; [k: string]: unknown }> = [];
   const errors: unknown[] = [];
   const ledger: Record<string, AgentAdmission> = {};
+  const telemetry: RetryTelemetry[] = [];
   const table = new RegistrationTable();
   const endpoints: string[] = [];
 
   const machine = setup({
-    actors: { run: agentRunActorWith((endpoint) => (endpoints.push(endpoint), client)) },
+    actors: { run: agentRunActorWith((endpoint) => (endpoints.push(endpoint), client), options) },
   }).createMachine({
     id: "parent",
     initial: "running",
@@ -52,10 +53,11 @@ function harness(client: AgentRunPort, input: AgentRunInput) {
     events: eventMap("test", [pingEvent]),
     table,
     recordAdmission: (iid, admission) => (ledger[iid] = admission),
+    telemetry: (event) => telemetry.push(event),
   });
   actor.subscribe({ error: (err) => errors.push(err) }); // xstate reports invoke errors here, not out of start()
   actor.start();
-  return { actor, received, table, errors, ledger, endpoints };
+  return { actor, received, table, errors, ledger, endpoints, telemetry };
 }
 
 const baseInput: AgentRunInput = {
@@ -138,6 +140,68 @@ test("a failed settlement surfaces as agent.fault telemetry", async () => {
 
   const fault = received.find((e) => e.type === "agent.fault");
   assert.deepEqual(fault, { type: "agent.fault", instanceId: "inst-42", reason: "stream reset by peer" });
+});
+
+test("no-signal: a completed turn with no menu call is re-prompted on the SAME iid (ADR-0016)", async () => {
+  const mock = new MockFlueClient();
+  const { received, ledger, telemetry } = harness(mock, baseInput);
+  await tick();
+
+  mock.complete(); // the turn settled COMPLETED, but no `ping` was ever delivered
+  await tick();
+
+  assert.equal(mock.admits.length, 2, "a nudge is a fresh admission");
+  assert.equal(mock.admits[1]!.instanceId, "inst-42", "same iid — the conversation continues");
+  assert.match(mock.admits[1]!.prompt ?? "", /calling exactly one of: ping/);
+  assert.deepEqual(ledger["inst-42"], mock.minted, "the nudge's admission is ledgered like any other");
+  // `child` is the invoking parent's actor id — meaningful in real trees ("F-1", "body"); the
+  // root harness here gets a generated one, so assert the shape, not the label.
+  assert.equal(telemetry.length, 1);
+  assert.equal(telemetry[0]!.kind, "retry");
+  assert.equal(telemetry[0]!.attempt, 1);
+  assert.equal(telemetry[0]!.reason, "no-signal nudge");
+  assert.equal(typeof telemetry[0]!.child, "string");
+  assert.ok(!received.some((e) => e.type === "agent.fault"), "budget not exhausted — no fault yet");
+});
+
+test("no-signal budget exhausted → ONE terminal agent.fault naming the menu", async () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, baseInput, { nudgeBudget: 0 });
+  await tick();
+
+  mock.complete();
+  await tick();
+
+  assert.equal(mock.admits.length, 1, "budget 0: no nudge");
+  const faults = received.filter((e) => e.type === "agent.fault");
+  assert.equal(faults.length, 1);
+  assert.match(String(faults[0]!.reason), /without calling any of: ping/);
+});
+
+test("a completed turn that DID signal is simply over — no nudge, no fault", async () => {
+  const mock = new MockFlueClient();
+  const { received, table } = harness(mock, baseInput);
+  await tick();
+
+  table.deliver(agentAddress("inst-42"), "ping", {});
+  mock.complete();
+  await tick();
+
+  assert.equal(mock.admits.length, 1, "no nudge after a delivered signal");
+  assert.ok(!received.some((e) => e.type === "agent.fault"));
+  assert.ok(received.some((e) => e.type === "ping"));
+});
+
+test("a menuless invocation (tools: []) never nudges — there is nothing to demand", async () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, { ...baseInput, tools: [] });
+  await tick();
+
+  mock.complete();
+  await tick();
+
+  assert.equal(mock.admits.length, 1);
+  assert.ok(!received.some((e) => e.type === "agent.fault"));
 });
 
 test("a CANCEL abandons the run locally and destroys the registration", async () => {

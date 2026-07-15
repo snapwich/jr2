@@ -189,6 +189,12 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
             void stream.writeSSE({ event: "emit", data: JSON.stringify({ type: ev.event.type }) });
             return;
           }
+          if (ev.kind === "retry") {
+            // `{ child, attempt }` only — `reason` is mechanism/error text, which stays behind
+            // the Instance token like `fault` (ADR-0014/0016).
+            void stream.writeSSE({ event: "retry", data: JSON.stringify({ child: ev.child, attempt: ev.attempt }) });
+            return;
+          }
           // Terminal frame must flush before the handler returns and closes the stream (see the
           // guarded feed below for why the resolve is chained off the write).
           const terminal = ev.status.status !== "active";
@@ -278,6 +284,12 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
         const unsubscribe = host.subscribe(runId, (ev) => {
           if (ev.kind === "emit") {
             void stream.writeSSE({ event: "emit", data: JSON.stringify(ev.event) });
+            return;
+          }
+          if (ev.kind === "retry") {
+            // The Instance's own feed: the full telemetry, reason included (same trust class as
+            // `fault`).
+            void stream.writeSSE({ event: "retry", data: JSON.stringify(ev) });
             return;
           }
           // Resolving lets the handler return, which CLOSES the stream — so on the terminal frame we

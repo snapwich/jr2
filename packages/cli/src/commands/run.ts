@@ -45,6 +45,10 @@ export async function run(args: string[], io: Io): Promise<number> {
       activity(io, `  emit ${JSON.stringify(ev.event)}`);
       continue;
     }
+    if (ev.kind === "retry") {
+      activity(io, `  retry ${ev.child} attempt ${ev.attempt} (${ev.reason})`);
+      continue;
+    }
     activity(io, `  → ${ev.status.status} ${JSON.stringify(ev.status.value)}`);
     if (ev.status.status !== "active") {
       result(io, ev.status);

@@ -28,6 +28,10 @@ export async function logs(args: string[], io: Io): Promise<number> {
       activity(io, `emit ${JSON.stringify(ev.event)}`);
       continue;
     }
+    if (ev.kind === "retry") {
+      activity(io, `retry ${ev.child} attempt ${ev.attempt} (${ev.reason})`);
+      continue;
+    }
     result(io, ev.status);
     if (!values.follow) break;
     if (ev.status.status !== "active") break;

@@ -80,8 +80,9 @@ export type AgentRunInput = {
   tools: readonly string[];
 };
 
-/** Telemetry sent up when the run's submission settles failed/aborted (infra fault, not an
- * Agent-reported block). */
+/** Telemetry sent up when the run is out of options: the submission settled failed/aborted
+ * (infra fault after flue's own durability retries), or the no-signal nudge budget ran dry.
+ * The ONE terminal event (ADR-0016) — where it routes is workflow policy. */
 export type FaultTelemetry = {
   type: "agent.fault";
   instanceId: string;
@@ -115,6 +116,27 @@ export interface AgentRunPort {
 /** Build a port for one invocation from its serializable input (ADR-0011 static-import doctrine). */
 export type AgentRunPortFactory = (endpoint: string) => AgentRunPort;
 
+/** Absorbed-turn-mechanics knobs (ADR-0016): defaulted, never Machine context. */
+export type AgentRunOptions = {
+  /**
+   * How many times a turn that settles COMPLETED without having called any menu tool is
+   * re-prompted ("you must call one of: …") before the terminal `agent.fault`. jr's dominant
+   * failure mode: flue considers a silent turn a normal completion, and its native `finish`
+   * nudge is structurally unavailable on the durable agent path (ADR-0006), so this loop is
+   * j2-owned. Default 2.
+   */
+  nudgeBudget?: number;
+};
+
+/** The forced-final-pick re-prompt (ADR-0006, absorbed here by ADR-0016). */
+function nudgePrompt(tools: readonly string[]): string {
+  return (
+    `Your previous turn ended without calling one of the required workflow tools. ` +
+    `You MUST end your turn by calling exactly one of: ${tools.join(", ")}. ` +
+    `Pick the one that matches the true state of your work and call it now.`
+  );
+}
+
 /**
  * Build the run-lifecycle actor logic over an injected port factory.
  *
@@ -124,7 +146,8 @@ export type AgentRunPortFactory = (endpoint: string) => AgentRunPort;
  * stopped) abandons local consumption and destroys the registration; a failed settlement
  * surfaces as `agent.fault` so the Machine can react rather than hang on a dead run.
  */
-export function agentRunActorWith(portFactory: AgentRunPortFactory) {
+export function agentRunActorWith(portFactory: AgentRunPortFactory, options: AgentRunOptions = {}) {
+  const nudgeBudget = options.nudgeBudget ?? 2;
   return fromCallback<AgentRunReceiveEvent, AgentRunInput>(({ input, system, self, sendBack, receive }) => {
     const { instanceId } = input;
 
@@ -143,6 +166,9 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory) {
 
     // Register this invocation's event surface (throws on a name outside the vocabulary —
     // ADR-0011's invoke-time check — which errors the run loudly at the invoking state).
+    // `signaled` is the no-signal detector: a delivered menu event means the Agent ended its
+    // turn the intended way, so a completed settlement needs no nudge.
+    let signaled = false;
     const binding = runBindingOf(system);
     const dispose = binding.table.register({
       address: agentAddress(instanceId),
@@ -151,7 +177,10 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory) {
       id: instanceId,
       defs: resolveAccepts(binding, input.tools),
       sandbox,
-      deliver: (event) => sendBack(event),
+      deliver: (event) => {
+        signaled = true;
+        sendBack(event);
+      },
     });
 
     const client = portFactory(endpoint);
@@ -174,24 +203,47 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory) {
     // Admit (or re-attach) kicked off async; the synchronous callback returns the cleanup fn
     // immediately. The admission is recorded in the host ledger BEFORE settlement is awaited,
     // so a crash right after admission still restores into re-attach, never a re-prompt.
+    //
+    // Two absorbed fault classes (ADR-0016), deliberately distinct:
+    //   - INFRA faults: flue's own submission durability retries them server-side, and the DS
+    //     client reconnects transparently — so a `settle` rejection means flue itself gave up.
+    //     Terminal, no j2 re-run.
+    //   - NO-SIGNAL: the submission settles COMPLETED but no menu tool was called. Flue calls
+    //     that a normal turn, so j2 owns a budgeted re-prompt on the SAME iid (the conversation
+    //     continues; each nudge is a fresh admission, ledgered like any other).
+    // Either budget exhausting emits the ONE terminal `agent.fault { reason }`.
     void (async () => {
+      const fault = (reason: string) => {
+        if (!stopped) sendBack({ type: "agent.fault", instanceId, reason } satisfies FaultTelemetry);
+      };
       try {
         let admission = input.attach;
         if (!admission) {
           admission = await client.admit(input, { signal: controller.signal });
           binding.recordAdmission?.(instanceId, admission);
         }
-        await client.settle(admission, { signal: controller.signal });
-        // Settled completed: the turn is over. Whether that is success (a domain event already
-        // landed over MCP) or silence (jr's no-signal case) is the Machine's — and, once
-        // absorbed, this actor's — concern; nothing to send today.
+        for (let attempt = 0; ; attempt++) {
+          await client.settle(admission, { signal: controller.signal });
+          if (stopped || signaled || input.tools.length === 0) return; // the turn ended as intended
+          if (attempt >= nudgeBudget) {
+            fault(`agent completed its turn without calling any of: ${input.tools.join(", ")}`);
+            return;
+          }
+          binding.telemetry?.({
+            kind: "retry",
+            child: self._parent?.id ?? self.id,
+            attempt: attempt + 1,
+            reason: "no-signal nudge",
+          });
+          admission = await client.admit(
+            { ...input, attach: undefined, prompt: nudgePrompt(input.tools) },
+            { signal: controller.signal },
+          );
+          binding.recordAdmission?.(instanceId, admission);
+        }
       } catch (err) {
         if (stopped) return;
-        sendBack({
-          type: "agent.fault",
-          instanceId,
-          reason: err instanceof Error ? err.message : String(err),
-        } satisfies FaultTelemetry);
+        fault(err instanceof Error ? err.message : String(err));
       }
     })();
 
