@@ -1,5 +1,11 @@
 # Workflows are templates of injected providers, with noop defaults
 
+> **Superseded by [ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md).** Injection never composed past one level
+> — xstate's `provide()` fills only the machine it is called on and cannot reach child machines — and the host has
+> injected nothing since ADR-0011's static-import doctrine. Workflows author machines against statically-imported
+> mechanisms via `j2Setup`. What survives: the kernel "everything pluggable is an xstate actor", and `.provide()` as the
+> unit-test seam. The mock-vs-real swap this ADR wanted lives at the wire instead (ADR-0011's stub Harness).
+
 A Machine is a **template**: it defines the control-flow shape and references its moving parts abstractly (as named
 xstate actors / actions / guards — "slots"). It does not hard-code how any step concretely works. Concrete behavior is
 supplied at deployment via xstate's `provide({ actors, actions, guards })`. j2 ships a library of **providers** (the

@@ -8,15 +8,12 @@ Kubernetes (kind locally).
 
 ## Language
 
-**Machine**: The xstate state machine that defines a workflow's control flow. The unit a user authors or picks from
-provided templates. _Avoid_: workflow, graph
+**Machine**: The xstate state machine that defines a workflow's control flow. The unit a user authors. _Avoid_:
+workflow, graph
 
-**Workflow**: A concrete, deployable assembly — a Machine (often a built-in template) wired to chosen providers and
-config — that an Orchestrator instance registers and runs. Lives as a code module in the instance's `workflows/`
-directory; **not** declarative config, and **not** shipped by the kit. _Avoid_: app, pipeline
-
-**Template**: A reusable, slot-based Machine the kit ships (e.g. the coding template). A Workflow is a Template with its
-slots filled via `provide()` (ADR-0003). _Avoid_: preset
+**Workflow**: A concrete, deployable assembly — a Machine wired to its Agents and config — that an Orchestrator instance
+registers and runs. Lives as a code module in the instance's `workflows/` directory (contract: `export const machine`);
+**not** declarative config, and **not** shipped by the kit. _Avoid_: app, pipeline
 
 **Orchestrator**: The runtime that executes Machines. Deployed as a single-writer Kubernetes app (`replicas: 1`,
 Postgres-backed). `replicas: 1` means single _writer_ (no split-brain on the snapshot), not one workflow per process —
@@ -39,11 +36,6 @@ Orchestrator; the compute is remote. _Avoid_: agent actor
 **Agent**: A configured worker persona — model + instructions + tools (e.g. coder, reviewer). What a user customizes.
 Maps to a flue `createAgent` definition. _Avoid_: role, persona
 
-**Provider**: A concrete, injectable implementation of a template slot — an xstate actor (or action/guard) supplied via
-`provide()`. j2's "pieces" are providers: the Agent Actor, work-source readiness actor, Sandbox lifecycle, worktree
-setup, memory injection, etc. Unfilled slots default to noop providers that already sit in the right place in the flow.
-_Avoid_: plugin, piece (use "provider" when speaking precisely)
-
 **Sandbox**: The isolated pod that gives an Agent a host-level sandbox plus its own filesystem. The primary motivation
 for the Kubernetes architecture — agents must not share host resources (ports, filesystem, process space). _Avoid_:
 worker pod, container
@@ -65,14 +57,23 @@ human and agent see identical files. A peer of the Harness container; the pod (n
 — ADR-0005. _Avoid_: workbench, workspace container (collides with Workspace), dev container
 
 **Instance ID**: Flue's identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id`. Successive
-prompts to the same `(Agent name, instance id)` continue one durable, replayable conversation; an Actor persists
-`(name, instance id)` + stream offset to re-attach after an Orchestrator restart. Borrowed verbatim from flue rather
-than renamed, to keep j2 and flue speaking the same language. _Avoid_: conversation id, session id
+prompts to the same `(Agent name, instance id)` continue one durable, replayable conversation; j2 computes ids and
+persists `(name, instance id)` + stream offset host-side to re-attach after an Orchestrator restart. New agent
+invocations get fresh ids by default (the lossy handoff); continuing a conversation is opt-in. Borrowed verbatim from
+flue rather than renamed, to keep j2 and flue speaking the same language. _Avoid_: conversation id, session id
 
-**Work Source**: A pluggable adapter the Orchestrator pulls work from — `tk`, a task queue, GitHub issues, Jira, etc.
-Modeled as a behavior port (verbs like `claimNext`, `updateStatus`, `comment`) gated by advertised capabilities, not a
-canonical data schema. Owns the dependency graph and emits the dependency-ordered, currently-unblocked items; the
-Machine never encodes dependency edges itself. _Avoid_: ticket system, backend
+**Source**: The generalized port a Pool draws work items from — "next item, excluding these", plus an optional wake
+signal and a re-query cadence. A queue, a generator, or a re-queried set; a Work Source is one Source adapter. _Avoid_:
+queue (one possible backing, and Sources are not FIFO), feed
+
+**Pool**: The kit-provided Machine that runs one worker Machine per Source item under a concurrency cap, collecting
+completions and triaging the run's end: drained (all work done), deadlocked (items exist but none can start), or waiting
+(children parked on Gates). The top of a jr-shaped workflow is a Pool. _Avoid_: scheduler, work loop
+
+**Work Source**: The ticket-flavored Source adapter — `tk`, GitHub issues, Jira, a task queue. Modeled as a behavior
+port (verbs like `claimNext`, `updateStatus`, `comment`) gated by advertised capabilities, not a canonical data schema.
+Owns the dependency graph and emits the dependency-ordered, currently-unblocked items; the Machine never encodes
+dependency edges itself. _Avoid_: ticket system, backend
 
 **Ready-set**: The currently-unblocked work items a Work Source will hand out — dependency-ordered and mutating during
 execution (items can be reopened or created mid-run). Not a static FIFO queue; the Machine re-queries it rather than

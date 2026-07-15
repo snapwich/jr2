@@ -106,3 +106,10 @@ resources (`POST /runs/:runId/gates/:gate/events`). The `Menu`/`assertInMenu` gu
 
 Evidence (on disk; `poc/` is gitignored, conclusions live here): `poc/actor/POC-5B-FINDINGS.md`,
 `poc/actor/POC-5C-FINDINGS.md`.
+
+> **Amended by [ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md) /
+> [ADR-0016](0016-agent-turn-mechanics-are-internal.md):** the state's menu is no longer authored — it derives from the
+> invoking state's transitions (audience-filtered), so "the Machine defines the menu" becomes literal machine structure;
+> and the "forced final pick = Machine-level re-prompt" lands _inside_ `agentRun` as the j2-owned, budgeted no-signal
+> nudge — invisible to the workflow, one terminal `agent.fault` on exhaustion. The disjoint-session wall documented
+> above was re-verified against current flue source (2026-07-13) and stands.

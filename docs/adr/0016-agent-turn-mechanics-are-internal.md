@@ -1,0 +1,57 @@
+# Agent-turn mechanics are j2-internal: ambient coordinates, host-side offsets, absorbed retries, fresh sessions
+
+Second of the workflow-API redesign trio ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md) has the context;
+full record in [docs/design/workflow-api/](../design/workflow-api/proposal.md)). `agentRun`'s consumer input shrinks to
+workflow vocabulary — `{ agent, prompt }` plus opt-ins below — because everything else it used to take was j2 handing
+the consumer values j2 already had. Each absorption follows, with what it deletes from `examples/coding/`.
+
+## Ambient endpoint and sandbox (deletes the `turn()` helper and all handle threading)
+
+`workspace()`'s `running` state co-invokes a registrar actor that records its handles in a `WeakMap<ActorRef, Handles>`;
+`agentRun` walks `self._parent` to the nearest registered ancestor. Invoked-actor registration (not an entry action) is
+what makes this restore-safe: invoked actors restart on snapshot restore, entry actions do not. Not under a workspace →
+fail loudly, unless input carries an explicit `endpoint` (the dev-stub, workspace-less path). Body-facing workspace
+handles shrink to `{ workdir, repos, branch }` (amends [ADR-0012](0012-workspace-wrapper-machine.md)).
+
+**[ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)'s token scoping survives and strengthens**: the registration
+records the Sandbox resolved from the enclosing wrapper — the same deterministic `workspaceName()` the token was minted
+for — so the consumer can no longer forget to pass it (the baba71f incident: `sandbox` omitted, every tool call 403'd,
+fail-closed but silent). The parent chain resolves the _enclosing_ wrapper structurally, never a sibling's;
+cross-feature event injection stays impossible.
+
+## Offsets live in a host ledger (deletes `context.offsets` and the `agent.offset` event)
+
+`agentRun` reports `iid → offset` through the run binding into a ledger persisted beside the snapshot in the same
+`RunBlob` save. Iids are globally unique, so restore's recursive nested-context offset folding dies with the context
+leg; restore still rewrites the child's persisted input ([ADR-0007](0007-durable-machine-state.md)'s invariant stands
+verbatim — only the offset's location moved). Implementation note: flue ≥ 1.0.0-beta.8 ships
+`agents.observe()/history()` (reconnect-from-offset, materialized snapshots) and `agents.abort()` — bump the SDK pin
+(beta.5) before hand-rolling more; the abort also retires ADR-0002's "flue exposes no cancel primitive".
+
+## Retries and nudges are absorbed; the workflow sees one terminal `agent.fault` (deletes the retry bookkeeping)
+
+Two fault classes, deliberately not one knob:
+
+- **Infra faults** (stream drop, pod restart, provider error): delegated to flue's own
+  `durability: { maxAttempts, timeoutMs }` submission reconciliation, re-attaching from the offset ledger.
+- **No-signal** (the agent ends its turn without calling a menu tool — jr's dominant failure mode): flue treats that as
+  a normal completed turn, and flue's native `finish` nudge is structurally unavailable on the durable agent path
+  (ADR-0006's disjoint-session wall, re-verified in source), so this stays a j2-owned budgeted re-prompt inside
+  `agentRun` — absorbing ADR-0006's "forced final pick is a Machine-level re-prompt" into the actor.
+
+Budgets are defaulted knobs, not Machine context. Exhaustion emits the single terminal `agent.fault { reason }`; where
+it routes (escalation, a triage/investigator state) is workflow policy. Attempts surface as run-feed/visualize telemetry
+projected to `{ child, attempt }` — no iids on the open observation feed
+([ADR-0014](0014-observation-is-open-run-state-is-not.md) unchanged).
+
+## Sessions are fresh by default; continuation is opt-in
+
+jr's most deliberate design decision is the **lossy handoff** — every relaunch is a fresh session; revision coders read
+the notes and the code, never the prior agent's conversation. That is the default: each `agentRun` invocation is a new
+conversation. `session: "continue"` + `scope` opts into flue same-instance-id continuation: the iid derives from
+`(run, enclosing child id, agent, scope)`; the per-invocation prompt lands as the next user turn; the tool menu still
+re-derives from the invoking state (one conversation can travel across states); invoking a `continue` iid that is
+already live fails loudly (flue lease-fences per iid). Mid-turn restore re-attaches the in-flight turn in both modes —
+`session` governs only what a _new invocation_ means. `scope` is the one place conversation identity legitimately needs
+a consumer word; it is not conventioned away. (This corrects `examples/coding/`'s "same iid = jr's resume machinery,
+free" — an inversion of jr's actual semantics.)

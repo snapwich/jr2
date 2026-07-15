@@ -3,6 +3,10 @@
 // exercise: can j2 express an existing user workflow (jr's) faithfully? It is not a redesign of
 // that workflow. `GAP(n)` markers flag surface j2 does not have today; legend at the bottom.
 //
+// SUPERSEDED DESIGN (2026-07-14): the API this file validates is being replaced — see
+// docs/design/workflow-api/ (proposal + coding-rewrite.ts, this file on the new surface) and
+// ADR-0015..0017. This file stays as the record of the API that produced the redesign.
+//
 // The settled model (grill session 2026-07-11):
 //
 //   * j2 ships MECHANISMS, zero policy. No built-in events: `defineEvent` lets the workflow

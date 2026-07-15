@@ -127,3 +127,11 @@ Sandbox token every run's context and a kill switch. ADR-0014 splits the surface
 Evidence: flue's per-submission initializer (`agent-submissions.ts:150,178,842`, `agent-definition.ts:90`,
 `types.ts:103`) and `connectMcpServer` (`packages/runtime/src/mcp.ts`); the kind validation that found the missing leg
 (`features/kind.feature`, ADR-0012's `@kind` tier).
+
+> **Two amendments (2026-07-14).** (1) By [ADR-0016](0016-agent-turn-mechanics-are-internal.md): an agent registration
+> records its Sandbox **ambiently** — `agentRun` resolves the enclosing `workspace()` and records the same deterministic
+> `workspaceName()` the token was minted for, so `WorkspaceHandles.sandbox` and the input field retire and forgetting to
+> pass it (the baba71f 403 footgun) becomes unrepresentable. The token scoping and its rationale are unchanged. (2) The
+> persona sample above under-calls `connectMcpServer`: the real signature is `connectMcpServer(name, { url })` (verified
+> against flue source), and the chosen `name` is visible to the model as `mcp__<name>__<tool>` — fix here and in
+> `deploy/harness-dev/agent.ts` when wiring a real Harness.

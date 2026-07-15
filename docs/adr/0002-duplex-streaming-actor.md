@@ -85,6 +85,11 @@ that wires the control plane, the Actor, and durable snapshots together:
   stays JSON-safe and restore re-attaches by rewriting the child's persisted input (drop `prompt`, set `attachOffset`)
   after reconciling against the live world.
 
+**Amended by [ADR-0016](0016-agent-turn-mechanics-are-internal.md):** the `agent.offset` context leg is retired —
+offsets persist in a host-side `iid → offset` ledger beside the snapshot, never in Machine context. And "flue exposes no
+cancel primitive" is stale: flue ≥ 1.0.0-beta.8 ships `client.agents.abort()` (`POST /agents/:name/:id/abort`) as a
+first-class terminal outcome; the abandon-and-reap cancel retires once the SDK pin moves past beta.5.
+
 **Superseded in part by [ADR-0011](0011-workflow-defined-events.md):** the mux's _routing_ (tool call →
 `ControlPlane.onEvent` → look up the owning run by `instanceId` → `actor.send` into its **root**) is replaced by
 invoke-scoped registration — the agent actor registers its iid's toolset with handlers closing over its own `sendBack`,

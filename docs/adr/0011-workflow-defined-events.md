@@ -6,6 +6,16 @@ exercise (`examples/coding/` — modeling an existing user workflow as a j2 Mach
 Two decisions: **j2 ships the event mechanism and zero events**, and **an event binds to a Machine state through the
 actor that exposes it** — delivery is a closure created at invoke time, so no routing layer exists anywhere.
 
+> **Amended by [ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md) /
+> [ADR-0016](0016-agent-turn-mechanics-are-internal.md).** The `export const events` manifest and explicit
+> `tools: [names]` retire: vocabulary rides the machine object (`j2Setup` attaches it; module contract shrinks to
+> `export const machine`) and menus/accepts derive from the invoking state's transitions, audience-filtered. "Reusing an
+> iid across turns continues the flue conversation" stays true as _mechanism_ but is no longer the default policy — new
+> invocations are **fresh sessions** unless `session: "continue"` (jr's lossy handoff is the deliberate default), and
+> iids are computed by j2, not the workflow. Offsets accumulate in a host ledger, not nested contexts. Everything else
+> here stands: closure delivery, the registration table, gate-as-resource, per-workflow scoping, static imports,
+> invoke-time failure.
+
 ## `defineEvent`: mechanism, not policy
 
 `defineEvent({ name, input, semantics? })` produces a pure-data definition: a name, a zod input schema (flat tagged

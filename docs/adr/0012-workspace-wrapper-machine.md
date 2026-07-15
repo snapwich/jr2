@@ -59,3 +59,10 @@ by design — the same contract as a temp directory.
   (tickets closed, commits vanished); instead the wrapper delivers a **`workspace.lost`** event into the restored body —
   same channel as `agent.fault` — and the body's policy decides (the coding body routes it to `escalated`: human gets
   the ticket + trail, siblings keep running; another workflow may choose to re-provision and restart).
+
+> **Amended by [ADR-0016](0016-agent-turn-mechanics-are-internal.md):** the body-facing handles shrink to
+> `{ workdir, repos, branch }` — `endpoint` and `sandbox` are mechanism-facing, resolved ambiently by `agentRun` from
+> the enclosing wrapper (a registrar actor co-invoked in `running`, beside the reconcile probe). The wrapper decision
+> itself was re-validated in the API redesign and stands, for a reason this ADR understated: the persisted `teardown`
+> state is **durable intent** — a crash mid-teardown restores into it and re-runs the idempotent destroy, which
+> host-side lifecycle could only replicate by rebuilding the same ledger the state machine already is.

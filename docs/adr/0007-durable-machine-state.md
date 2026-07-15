@@ -35,3 +35,9 @@ snapshot/restore possible.
 - The known durability edge stands: a crash between "run admitted" and "offset persisted" degrades to an at-most-once
   re-POST (a live-run probe replays from `-1`; a genuinely-absent run re-POSTs), and an in-flight POST at the instant of
   the kill is the irreducible at-most-once sliver.
+
+> **Amended by [ADR-0016](0016-agent-turn-mechanics-are-internal.md):** durable agent handles no longer ride Machine
+> context — the host persists an `iid → offset` ledger beside the snapshot in the same save. The invariant above stands
+> verbatim (serializable-only context; restore rewrites the child's **persisted input**; reconcile before re-attach);
+> only the offset's location moved, which also deletes the recursive nested-context offset folding ADR-0011 had noted as
+> open work.
