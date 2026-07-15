@@ -10,6 +10,7 @@
 export * from "@j2/agent-protocol";
 export * from "./ambient.ts";
 export * from "./config.ts";
+export * from "./pool.ts";
 export * from "./setup.ts";
 export * from "./vocabulary.ts";
 export * from "./tokens.ts";

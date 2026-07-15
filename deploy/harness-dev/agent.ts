@@ -6,8 +6,12 @@
 //
 //   export default defineAgent(async ({ id, env }) => ({
 //     model, instructions,
-//     tools: [await connectMcpServer({ url: `${env.J2_ADAPTER_URL}/mcp/${id}` })],
+//     tools: [await connectMcpServer("j2", { url: `${env.J2_ADAPTER_URL}/mcp/${id}` })],
 //   }));
+//
+// (`connectMcpServer(name, options)` — the name is REQUIRED and visible to the model: adapted
+// tools are named `mcp__<name>__<tool>`, so the server key j2 picks is part of the Agent's
+// vocabulary. Verified against flue source — the ADR-0013 sample used to omit it.)
 //
 // `defineAgent` is an INITIALIZER, re-run on every submission, and its context carries the agent
 // instance id — so the Agent names its own iid and the Adapter never has to learn which turn is

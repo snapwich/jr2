@@ -85,10 +85,14 @@ that wires the control plane, the Actor, and durable snapshots together:
   stays JSON-safe and restore re-attaches by rewriting the child's persisted input (drop `prompt`, set `attachOffset`)
   after reconciling against the live world.
 
-**Amended by [ADR-0016](0016-agent-turn-mechanics-are-internal.md):** the `agent.offset` context leg is retired —
-offsets persist in a host-side `iid → offset` ledger beside the snapshot, never in Machine context. And "flue exposes no
-cancel primitive" is stale: flue ≥ 1.0.0-beta.8 ships `client.agents.abort()` (`POST /agents/:name/:id/abort`) as a
-first-class terminal outcome; the abandon-and-reap cancel retires once the SDK pin moves past beta.5.
+**Amended by [ADR-0016](0016-agent-turn-mechanics-are-internal.md):** the `agent.offset` context leg is retired — the
+durable handle is the flue **admission** (`{ streamUrl, offset, submissionId }`, beta.9's `send()` result), persisted in
+a host-side `iid → admission` ledger beside the snapshot, never in Machine context; `agents.wait(admission)` is the
+reconnect-from-offset machinery j2 used to hand-roll. And "flue exposes no cancel primitive" is stale: flue ≥
+1.0.0-beta.8 ships `client.agents.abort()` (`POST /agents/:name/:id/abort`) as a first-class terminal outcome. Note the
+implementation (post-bump, beta.9) deliberately keeps actor STOP a local abandon anyway: a host shutdown stops every
+actor, and those runs must stay alive server-side for restore to re-attach — remote abort is reserved for a deliberate
+terminal act, not a stop side effect.
 
 **Superseded in part by [ADR-0011](0011-workflow-defined-events.md):** the mux's _routing_ (tool call →
 `ControlPlane.onEvent` → look up the owning run by `instanceId` → `actor.send` into its **root**) is replaced by

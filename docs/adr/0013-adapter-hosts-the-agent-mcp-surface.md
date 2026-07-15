@@ -13,7 +13,8 @@ Orchestrator, which stops speaking MCP entirely and keeps one HTTP surface over 
 `defineAgent(initialize)` is an **initializer, not a constructor**: `openAgentSubmissionSession()` calls
 `ctx.initializeRootHarness(agent)` on **every submission** (`packages/runtime/src/runtime/agent-submissions.ts`), and
 the initializer context carries `{ id, env }` — where `id` **is** the agent instance id (j2's Instance ID). Meanwhile
-`connectMcpServer({ url })` lists an MCP server's tools at connect and adapts them into flue tool definitions.
+`connectMcpServer(name, { url })` lists an MCP server's tools at connect and adapts them into flue tool definitions
+(named `mcp__<name>__<tool>`, so the server key is visible to the model).
 
 So one static persona template, identical for every Agent, gets a state-scoped menu for free:
 
@@ -21,7 +22,7 @@ So one static persona template, identical for every Agent, gets a state-scoped m
 export default defineAgent(async ({ id, env }) => ({
   model,
   instructions,
-  tools: [await connectMcpServer({ url: `${env.J2_ADAPTER_URL}/mcp/${id}` })],
+  tools: [await connectMcpServer("j2", { url: `${env.J2_ADAPTER_URL}/mcp/${id}` })],
 }));
 ```
 
