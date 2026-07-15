@@ -5,11 +5,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign } from "xstate";
 import { j2Setup } from "../src/setup.ts";
+import { agentRunActorWith } from "../src/actor.ts";
 import { workspace, workspaceName, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
-import { approveDef, mkStore, waitFor } from "./_fixtures.ts";
+import { approveDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 class FakeSandbox implements SandboxPort {
   calls: string[] = [];
@@ -44,8 +44,9 @@ class FakeSandbox implements SandboxPort {
  * the wrapper PROPAGATES this vocabulary onto the exported machine (ADR-0015). */
 const body = j2Setup({
   types: {} as {
-    context: { handles?: { endpoint: string; workdir: string; branch: string } };
-    input: { workspace: { endpoint: string; workdir: string; repos: Record<string, string>; branch: string } };
+    context: { handles?: { workdir: string; branch: string } };
+    // Body-facing handles only (ADR-0016): endpoint/sandbox never reach workflow code.
+    input: { workspace: { workdir: string; repos: Record<string, string>; branch: string } };
   },
   events: [approveDef],
 }).createMachine({
@@ -166,4 +167,49 @@ test("a host without a Sandbox backend faults a workspace() run pointedly", asyn
   const final = await host.read(runId);
   assert.equal(final?.status, "error");
   assert.match(final?.fault ?? "", /no Sandbox backend/);
+});
+
+test("ambient resolution (ADR-0016): agentRun inside a workspace finds endpoint + sandbox itself", async () => {
+  // The body invokes agentRun with NO endpoint and NO sandbox: both must resolve from the
+  // enclosing wrapper via the parent chain — and the registration must record the wrapper's
+  // Sandbox (the ADR-0013 token scope) with zero workflow plumbing.
+  const endpoints: string[] = [];
+  const ambientBody = j2Setup({
+    types: {} as { context: Record<string, never>; input: { workspace: { workdir: string } } },
+    events: [approveDef],
+    actors: {
+      agentRun: agentRunActorWith((endpoint) => {
+        endpoints.push(endpoint);
+        return new MockFlueClient();
+      }),
+    },
+  }).createMachine({
+    id: "ambient",
+    context: {},
+    initial: "coding",
+    states: {
+      coding: {
+        invoke: {
+          src: "agentRun",
+          input: { agentName: "coder", instanceId: "amb-1", prompt: "go", tools: [] },
+        },
+        on: { approve: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+  const wrappedAmbient = workspace(ambientBody, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "amb" }));
+
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({ name: "amb", machine: wrappedAmbient, provide: () => ({}) });
+  const { runId } = await host.start("amb");
+
+  await waitFor(() => endpoints.length === 1);
+  assert.deepEqual(endpoints, ["http://sandbox.test"], "the wrapper's endpoint, never threaded by the workflow");
+
+  const surface = host.agentSurface("amb-1");
+  const crName = [...sandbox.provisioned.keys()][0]!;
+  assert.equal(surface?.sandbox, crName, "the registration records the ENCLOSING wrapper's Sandbox (ADR-0013)");
+  assert.ok(host.status(runId), "run parked on the mock agent, alive");
 });

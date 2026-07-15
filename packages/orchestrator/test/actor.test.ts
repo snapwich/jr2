@@ -110,6 +110,14 @@ test("registers its event surface on start; delivery lands on the invoking state
   assert.ok(received.some((e) => e.type === "ping"));
 });
 
+test("no endpoint and no enclosing workspace → the invoke errors loudly at start (ADR-0016)", () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, { ...baseInput, endpoint: undefined });
+  const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
+  assert.ok(errEvent, "the invoke must error at start");
+  assert.match(String(errEvent?.error?.message), /no Harness to admit against/);
+});
+
 test("a tools name outside the workflow's vocabulary errors the invoke at start", () => {
   const mock = new MockFlueClient();
   // The harness machine's "*" catches the xstate error event (a real workflow without a handler

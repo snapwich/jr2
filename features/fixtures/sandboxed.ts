@@ -16,7 +16,7 @@ import { defineEvent, j2Setup, workspace } from "@j2/orchestrator";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 
-type Ws = { endpoint: string; sandbox: string; workdir: string; repos: Record<string, string>; branch: string };
+type Ws = { workdir: string; repos: Record<string, string>; branch: string };
 type BodyInput = { instanceId: string; workspace: Ws };
 
 const body = j2Setup({
@@ -33,14 +33,12 @@ const body = j2Setup({
     coding: {
       invoke: {
         src: "agentRun",
+        // No endpoint, no sandbox: both resolve AMBIENTLY from the enclosing workspace()
+        // (ADR-0016) — and the registration records that Sandbox as its ADR-0013 token scope,
+        // so only this pod's Adapter can deliver into this turn. Unforgettable by construction.
         input: ({ context }) => ({
           agentName: "coder",
           instanceId: context.instanceId,
-          endpoint: context.workspace.endpoint,
-          // WHICH Sandbox (ADR-0013): recorded on the registration, so only THIS pod's Adapter —
-          // bearing the token minted for this Sandbox — can deliver into this turn.
-          sandbox: context.workspace.sandbox,
-          workdir: context.workspace.workdir,
           tools: [finish.name],
           // An inert prompt: the persona in the dev Harness image parks unless the message scripts
           // it (`call <tool> <json>`), so the Machine waits here exactly as it would on a real Agent

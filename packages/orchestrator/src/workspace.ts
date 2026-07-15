@@ -1,7 +1,8 @@
 // `workspace(body, spec)` (ADR-0012): the j2-owned wrapper Machine that owns ONLY Sandbox
 // lifecycle — provision the Sandbox + attach repos/worktrees, run the author's body Machine
-// inside it with `{ workspace: { endpoint, workdir, repos, branch } }` appended to its input,
-// and destroy the Sandbox when the body reaches a final state. Teardown lives INSIDE the
+// inside it with `{ workspace: { workdir, repos, branch } }` appended to its input (the
+// mechanism-facing endpoint/sandbox are published ambiently — ADR-0016, ambient.ts), and
+// destroy the Sandbox when the body reaches a final state. Teardown lives INSIDE the
 // wrapper's own states because an xstate stop is synchronous — multi-step async cleanup must be
 // states the machine transitions through itself, which forces the thing that provisions to also
 // observe the body's completion (the ADR's load-bearing argument). There is no retain policy: a
@@ -22,6 +23,7 @@
 // `agent.fault`) and the body's policy decides. Never silently re-provision.
 
 import { assign, createMachine, fromCallback, fromPromise, sendTo, type AnyStateMachine } from "xstate";
+import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { attachVocabulary, vocabularyOf } from "./vocabulary.ts";
 
@@ -32,17 +34,13 @@ export type WorkspaceSpec = {
   branch: string;
 };
 
-/** What the workspace hands the body: where to reach the Harness and where the worktrees are. */
+/**
+ * What the workspace hands the BODY (ADR-0012, amended by ADR-0016): worktree geography only.
+ * `endpoint` and `sandbox` are mechanism-internal now — `agentRun` resolves them ambiently from
+ * the enclosing wrapper (ambient.ts), so a workflow can no longer forget to thread them (the
+ * baba71f incident: `sandbox` omitted, every tool call 403'd, fail-closed but silent).
+ */
 export type WorkspaceHandles = {
-  /** The Sandbox Harness base URL — what the body feeds `agentRun`'s `endpoint`. */
-  endpoint: string;
-  /**
-   * WHICH Sandbox — the CR name. The body feeds it to `agentRun` beside `endpoint`, which records
-   * it on the registration, which is what scopes the Sandbox token authorized to deliver there
-   * (ADR-0013). Without it a token would be run-scoped, and one feature's coder could inject a
-   * verdict into another feature's reviewer.
-   */
-  sandbox: string;
   /** The primary working directory: the FIRST spec repo's branch worktree. */
   workdir: string;
   /** Every attached repo's branch-worktree path, by repo name. */
@@ -97,6 +95,10 @@ export function workspaceName(runId: string, wsId: string): string {
   return `${base}-${(h >>> 0).toString(36)}`;
 }
 
+/** The full mechanism-facing handles: what the registrar publishes for ambient resolution
+ * (ambient.ts). The body sees only the {@link WorkspaceHandles} subset. */
+type MechanismHandles = AmbientHandles;
+
 type WsContext = {
   /** The wrapper's own input, passed through to the body untouched (plus `workspace`). */
   runInput: Record<string, unknown>;
@@ -105,7 +107,8 @@ type WsContext = {
   /** The resolved spec — computed once from input and persisted, like any other context data. */
   spec: WorkspaceSpec;
   endpoint?: string;
-  handles?: WorkspaceHandles;
+  /** Persisted in context so the registrar can re-publish them on restore. */
+  handles?: MechanismHandles;
   output?: unknown;
 };
 
@@ -139,6 +142,17 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     async ({ input, system }) =>
       sandboxOf(system).attach({ name: workspaceName(runBindingOf(system).runId, input.wsId), spec: input.spec }),
   );
+
+  // The ambient registrar (ADR-0016): publishes this wrapper's handles for the parent-chain
+  // walk `agentRun` does. An INVOKED actor, co-invoked in `running` beside the body — invoked
+  // actors restart on snapshot restore (entry actions do not), so the publication is
+  // restore-safe by construction; and it is listed FIRST, so the handles are readable before
+  // the body's first agentRun starts.
+  const registrar = fromCallback<{ type: string }, { handles: MechanismHandles }>(({ input, self }) => {
+    const wrapperRef = self._parent;
+    if (!wrapperRef) return;
+    return registerAmbientHandles(wrapperRef, input.handles);
+  });
 
   // The restore-reconcile probe: runs on every entry into `running` — fresh start (one cheap
   // existence check on the CR just created) and snapshot restore (the check that matters).
@@ -190,14 +204,15 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
           onDone: {
             target: "running",
             actions: assign({
-              handles: ({ context, event, system }): WorkspaceHandles => {
+              handles: ({ context, event, system }): MechanismHandles => {
                 const ctx = context as WsContext;
                 const out = (event as unknown as { output: { workdir: string; repos: Record<string, string> } }).output;
                 return {
                   endpoint: ctx.endpoint!,
                   // Derived, not remembered: the same function every port operation names the CR
-                  // with, so the handle the body hands `agentRun` is the Sandbox the Adapter's
-                  // token is scoped to, by construction (ADR-0013).
+                  // with, so the Sandbox the registrar publishes — and agentRun records on its
+                  // registration — is the one the Adapter's token is scoped to, by construction
+                  // (ADR-0013).
                   sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),
                   workdir: out.workdir,
                   repos: out.repos,
@@ -210,13 +225,21 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
       },
       running: {
         invoke: [
+          // Registrar FIRST: the ambient handles must be readable before the body starts.
+          {
+            id: "registrar",
+            src: registrar,
+            input: ({ context }) => ({ handles: (context as unknown as WsContext).handles! }),
+          },
           {
             id: "body",
             src: body,
-            input: ({ context }) => ({
-              ...(context as unknown as WsContext).runInput,
-              workspace: (context as unknown as WsContext).handles,
-            }),
+            input: ({ context }) => {
+              const ctx = context as unknown as WsContext;
+              const { workdir, repos, branch } = ctx.handles!;
+              // Body-facing subset only (ADR-0016): endpoint/sandbox are mechanism-internal.
+              return { ...ctx.runInput, workspace: { workdir, repos, branch } satisfies WorkspaceHandles };
+            },
             onDone: {
               target: "teardown",
               actions: assign({ output: ({ event }) => (event as unknown as { output: unknown }).output }),

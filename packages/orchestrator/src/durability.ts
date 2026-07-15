@@ -84,14 +84,15 @@ export function hydrateSnapshot(
  * twin of `AgentAdmission` — kept import-free so this codec module stays a pure leaf. */
 type Admission = { streamUrl: string; offset: string; submissionId: string };
 
-/** A persisted `agentRun` child input: the durable handle is `instanceId`, the Harness is
- * `endpoint` — both strings by construction (machine children carry neither at top level). */
-function isAgentRunInput(input: unknown): input is { instanceId: string; endpoint: string } {
+/** A persisted `agentRun` child input: `instanceId` (the durable handle) beside `agentName` —
+ * both strings by construction (machine children carry neither at top level; `endpoint` can no
+ * longer identify it, being ambient-optional since ADR-0016). */
+function isAgentRunInput(input: unknown): input is { instanceId: string; agentName: string } {
   return (
     !!input &&
     typeof input === "object" &&
     typeof (input as { instanceId?: unknown }).instanceId === "string" &&
-    typeof (input as { endpoint?: unknown }).endpoint === "string"
+    typeof (input as { agentName?: unknown }).agentName === "string"
   );
 }
 

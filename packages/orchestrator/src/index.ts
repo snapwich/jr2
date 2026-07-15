@@ -8,6 +8,7 @@
 // The wire contract, re-exported: a workflow authors against ONE package (`defineEvent`,
 // `j2Setup`, `workspace`, … all import from "@j2/orchestrator" — ADR-0015).
 export * from "@j2/agent-protocol";
+export * from "./ambient.ts";
 export * from "./config.ts";
 export * from "./setup.ts";
 export * from "./vocabulary.ts";

@@ -33,6 +33,7 @@
 // distinct, deliberate act (flue ≥ beta.8 has it), not a stop side effect.
 
 import { fromCallback } from "xstate";
+import { ambientHandlesFor } from "./ambient.ts";
 import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
 
 /**
@@ -51,17 +52,22 @@ export type AgentAdmission = {
   submissionId: string;
 };
 
-/** What the actor is invoked with: the durable handle, the Harness, and this turn's surface. */
+/** What the actor is invoked with: the durable handle, this turn's surface, and — only outside
+ * a workspace — an explicit Harness. */
 export type AgentRunInput = {
   agentName: string;
   instanceId: string;
-  /** The Harness base URL (which Sandbox). Rides the persisted child input so restore
-   * re-attaches to the right Harness; a dev stub is just a different URL (ADR-0011). */
-  endpoint: string;
   /**
-   * The Sandbox this Agent runs in (`workspace.sandbox` — ADR-0013). Recorded on the registration,
-   * where it becomes the scope of the Sandbox token allowed to deliver here: only THIS pod's
-   * Adapter can drive this turn. Absent for a workspace-less run (the stub Harness on the host).
+   * The Harness base URL, EXPLICIT (ADR-0016): only for a workspace-less run (the mechanics
+   * tier's stub Harness, a dev endpoint — just a URL, ADR-0011). Inside a `workspace()` leave it
+   * unset: the actor resolves endpoint AND sandbox ambiently from the enclosing wrapper via the
+   * actor parent chain, and the registration records that wrapper's Sandbox — the ADR-0013 token
+   * scope — with no way for the workflow to forget it. Explicit `endpoint` wins when both exist.
+   */
+  endpoint?: string;
+  /**
+   * The Sandbox to scope delivery to (ADR-0013), EXPLICIT — normally ambient (above). An
+   * explicit workspace-less run has none: no Sandbox token can claim its surface.
    */
   sandbox?: string;
   prompt?: string;
@@ -119,8 +125,21 @@ export type AgentRunPortFactory = (endpoint: string) => AgentRunPort;
  * surfaces as `agent.fault` so the Machine can react rather than hang on a dead run.
  */
 export function agentRunActorWith(portFactory: AgentRunPortFactory) {
-  return fromCallback<AgentRunReceiveEvent, AgentRunInput>(({ input, system, sendBack, receive }) => {
+  return fromCallback<AgentRunReceiveEvent, AgentRunInput>(({ input, system, self, sendBack, receive }) => {
     const { instanceId } = input;
+
+    // Resolve the Harness coordinates (ADR-0016): explicit input wins (the workspace-less dev
+    // path); otherwise the nearest enclosing workspace() published them — walked structurally
+    // via the actor parent chain, so a sibling workspace's handles are unreachable (ADR-0013).
+    const ambient = ambientHandlesFor(self);
+    const endpoint = input.endpoint ?? ambient?.endpoint;
+    if (!endpoint) {
+      throw new Error(
+        `agentRun "${instanceId}": no Harness to admit against — invoke it inside a workspace() ` +
+          `(ambient resolution), or pass an explicit \`endpoint\` (workspace-less dev/stub path)`,
+      );
+    }
+    const sandbox = input.endpoint ? input.sandbox : (input.sandbox ?? ambient?.sandbox);
 
     // Register this invocation's event surface (throws on a name outside the vocabulary —
     // ADR-0011's invoke-time check — which errors the run loudly at the invoking state).
@@ -131,11 +150,11 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory) {
       kind: "agent",
       id: instanceId,
       defs: resolveAccepts(binding, input.tools),
-      sandbox: input.sandbox,
+      sandbox,
       deliver: (event) => sendBack(event),
     });
 
-    const client = portFactory(input.endpoint);
+    const client = portFactory(endpoint);
     const controller = new AbortController();
     let stopped = false;
 

@@ -162,8 +162,8 @@ test("spawnChild'd body: the spawned machine restores and its agent re-attaches"
 
 test("reattachAgentRuns: ledgered iids re-attach at any depth; unledgered inputs keep their prompt", () => {
   const agent = (iid: string) => ({
+    agentName: "coder",
     instanceId: iid,
-    endpoint: "http://h",
     prompt: "go",
     tools: [],
   });

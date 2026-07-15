@@ -160,30 +160,13 @@ type BodyCtx = BodyInput & {
 // Same iid across rounds = flue continues the conversation (jr's resume-prompt machinery, free).
 const iid = (c: BodyCtx, scope: string, role: string) => `${c.runIid}/${c.feature.id}/${scope}/${role}`;
 
-/** GAP(2): agentRun v2 input — endpoint (where the Harness is), tools BY NAME (defs resolve from
- * this workflow's `events` manifest; schemas can't ride serializable input), prompt xor
- * attachOffset.
- *
- * `sandbox` is what makes the turn's MCP surface addressable by exactly one pod (ADR-0013): the
- * registration records it, and the Sandbox token — minted per Sandbox, mounted into that pod's
- * Adapter alone — may only deliver to registrations carrying its own name. Omit it and delivery
- * fails CLOSED (`mayDeliverToAgent`), so every tool call 403s. A run-scoped token instead would be
- * worse than useless here: these iids are derivable and feature ids are readable from tk, so one
- * feature's coder could inject a `review_verdict` into another feature's reviewer.
- *
- * Note `sandbox` is OPTIONAL on `AgentRunInput` (a workspace-less run — the dev stub Harness on the
- * host — genuinely has no Sandbox), so the typechecker cannot demand it here. What keeps it honest
- * is the handles type above being `WorkspaceHandles` itself: the field is required THERE, so it
- * exists to be passed. The explicit return type below still earns its keep — it rejects a field
- * agentRun does not take (this helper used to pass a `workdir` that was silently dropped; the
- * agent learns its workdir from the prompt). */
+/** GAP(2): agentRun input — tools BY NAME (schemas can't ride serializable input) + the prompt.
+ * Endpoint and sandbox no longer appear: they resolve AMBIENTLY from the enclosing workspace()
+ * (ADR-0016), which is also what records the ADR-0013 token scope on the registration. Re-attach
+ * rides the host ledger, not this input. The step-6 rewrite deletes this helper entirely. */
 const turn = (c: BodyCtx, role: string, scope: string, tools: string[], prompt: string): AgentRunInput => ({
-  // Re-attach no longer rides this input: the host ledger holds the admission and restore sets
-  // `attach` itself (ADR-0016). The step-6 rewrite deletes this helper entirely.
   agentName: role,
   instanceId: iid(c, scope, role),
-  endpoint: c.workspace.endpoint,
-  sandbox: c.workspace.sandbox,
   tools,
   prompt,
 });
