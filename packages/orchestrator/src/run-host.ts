@@ -21,7 +21,7 @@
 
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { createActor, type AnyActor, type AnyActorLogic, type AnyStateMachine } from "xstate";
+import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
 import type { EventDef, EventSemantics } from "@j2/agent-protocol";
 import { vocabularyOf } from "./vocabulary.ts";
 import {
@@ -32,6 +32,7 @@ import {
   RegistrationTable,
   UnknownAddressError,
   type RetryTelemetry,
+  type RunBinding,
 } from "./registration.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
@@ -514,9 +515,40 @@ export class RunHost {
         if (live && this.runs.get(record.runId) === live) this.persist(live);
       });
     };
+    const binding: RunBinding = {
+      runId: record.runId,
+      workflow: record.workflow,
+      events: this.workflowEvents.get(def.name) ?? new Map(),
+      table: this.table,
+      sandbox: this.sandbox,
+      // The admission ledger's write half (ADR-0016): `agentRun` reports the durable handle the
+      // moment flue admits it, and the ledger hits the store in the same RunBlob save. An
+      // admission arriving around stop/untrack still lands in `agents` but skips the save,
+      // exactly like the persist scheduler's tracked-run guard.
+      recordAdmission: (instanceId, admission) => {
+        agents[instanceId] = admission;
+        const run = this.runs.get(record.runId);
+        if (run && run.agents === agents) this.persist(run);
+      },
+      // Absorbed-retry attempts go straight to the run's observers (SSE/CLI watch) — they are
+      // feed events, not machine events (ADR-0016: the workflow sees only the terminal fault).
+      telemetry: (event) => {
+        for (const listener of this.runs.get(record.runId)?.listeners ?? []) listener(event);
+      },
+    };
+    let bound = false;
     const actor = createActor(machine, {
       ...options,
       inspect: (ev) => {
+        // Bind the run's actor SYSTEM on the ROOT's creation event — the first inspection event,
+        // fired inside createActor BEFORE any child of the initial state is constructed. That
+        // ordering matters: j2Setup's wrapped invoke inputs (iid minting — ADR-0016) run at child
+        // construction and must already see the run identity. The system is shared by every actor
+        // in the tree, which is what run-scopes gate ids with zero workflow plumbing (ADR-0011).
+        if (!bound && ev.type === "@xstate.actor") {
+          bound = true;
+          bindRun((ev.actorRef as AnyActorRef).system, binding);
+        }
         if (ev.type === "@xstate.snapshot") schedule();
       },
     });
@@ -526,29 +558,6 @@ export class RunHost {
 
   private track(record: RunRecord, actor: AnyActor, def: WorkflowDef, agents: Record<string, AgentAdmission>): LiveRun {
     const run: LiveRun = { record, actor, def, agents, listeners: new Set() };
-    // Bind the run's actor SYSTEM (shared by every actor in the tree, at any nesting depth) to
-    // its identity BEFORE start, so gate/agentRun registrations resolve their run mechanically —
-    // this is what run-scopes gate ids with zero workflow plumbing (ADR-0011).
-    bindRun(actor.system, {
-      runId: record.runId,
-      workflow: record.workflow,
-      events: this.workflowEvents.get(def.name) ?? new Map(),
-      table: this.table,
-      sandbox: this.sandbox,
-      // The admission ledger's write half (ADR-0016): `agentRun` reports the durable handle the
-      // moment flue admits it, and the ledger hits the store in the same RunBlob save. An
-      // admission arriving around stop/untrack still lands in `run.agents` but skips the save,
-      // exactly like the persist scheduler's tracked-run guard.
-      recordAdmission: (instanceId, admission) => {
-        run.agents[instanceId] = admission;
-        if (this.runs.get(record.runId) === run) this.persist(run);
-      },
-      // Absorbed-retry attempts go straight to the run's observers (SSE/CLI watch) — they are
-      // feed events, not machine events (ADR-0016: the workflow sees only the terminal fault).
-      telemetry: (event) => {
-        for (const listener of run.listeners) listener(event);
-      },
-    });
     this.runs.set(record.runId, run);
     // Ordinary persistence rides the inspection stream (see `spawn`); the subscription exists
     // for the ERROR channel: an errored actor (an invoke threw — e.g. ADR-0011's invoke-time

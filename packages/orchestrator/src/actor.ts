@@ -52,8 +52,37 @@ export type AgentAdmission = {
   submissionId: string;
 };
 
-/** What the actor is invoked with: the durable handle, this turn's surface, and — only outside
- * a workspace — an explicit Harness. */
+/**
+ * What a WORKFLOW writes on an `agentRun` invoke (ADR-0015/0016): the agent and this turn's
+ * prompt — everything else is derived. `j2Setup.createMachine` wraps the invoke input to
+ * finalize it into {@link AgentRunInput}: the tool menu derives from the invoking state's
+ * transitions, the instance id is minted (fresh session by default; `session: "continue"`
+ * derives a deterministic id so re-invocations continue one conversation), and endpoint/sandbox
+ * resolve ambiently from the enclosing `workspace()`.
+ */
+export type AgentTurnInput = {
+  /** The flue agent (persona) to admit the turn against. */
+  agent: string;
+  /** This turn's task framing — lands as the conversation's next user message. */
+  prompt: string;
+  /**
+   * Session continuity (ADR-0016). Absent = FRESH: every invocation is a new conversation
+   * (jr's lossy handoff — revision agents read notes + code, never the prior conversation).
+   * `"continue"` = the same `(state path, agent, scope)` re-invocation continues ONE flue
+   * conversation; the prompt lands as its next user turn.
+   */
+  session?: "continue";
+  /** Distinguishes conversations that would otherwise share a `continue` identity (e.g. a
+   * reviewer fresh per task: `scope: task.id`). */
+  scope?: string;
+  /** Workspace-less runs only (dev/stub Harness): explicit endpoint, no ambient resolution. */
+  endpoint?: string;
+  /** Escape hatch: override the derived menu. */
+  tools?: readonly string[];
+};
+
+/** What the actor is invoked with AFTER j2Setup finalization: the durable handle, this turn's
+ * surface, and — only outside a workspace — an explicit Harness. */
 export type AgentRunInput = {
   agentName: string;
   instanceId: string;
@@ -148,8 +177,19 @@ function nudgePrompt(tools: readonly string[]): string {
  */
 export function agentRunActorWith(portFactory: AgentRunPortFactory, options: AgentRunOptions = {}) {
   const nudgeBudget = options.nudgeBudget ?? 2;
-  return fromCallback<AgentRunReceiveEvent, AgentRunInput>(({ input, system, self, sendBack, receive }) => {
+  // Typed as the union so BOTH shapes typecheck on an invoke: j2Setup machines write
+  // AgentTurnInput (and the config wrapper finalizes it before the actor ever runs); plain
+  // setup() machines must pass the finalized shape themselves — checked loudly below.
+  return fromCallback<AgentRunReceiveEvent, AgentTurnInput | AgentRunInput>((args) => {
+    const { system, self, sendBack, receive } = args;
+    const input = args.input as AgentRunInput;
     const { instanceId } = input;
+    if (!instanceId || !input.agentName) {
+      throw new Error(
+        `agentRun invoked with unfinalized input — author the machine with j2Setup(...) (which mints ` +
+          `the instance id and derives the menu), or pass \`agentName\`/\`instanceId\`/\`tools\` explicitly`,
+      );
+    }
 
     // Resolve the Harness coordinates (ADR-0016): explicit input wins (the workspace-less dev
     // path); otherwise the nearest enclosing workspace() published them — walked structurally

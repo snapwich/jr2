@@ -153,6 +153,12 @@ export function bindRun(system: AnyActorSystem, binding: RunBinding): void {
   bindings.set(system, binding);
 }
 
+/** The bound run's id, or undefined outside a j2 host — the SOFT read `j2Setup`'s iid minting
+ * uses, so a machine stays constructible and provide()-testable with no host at all. */
+export function boundRunId(system: AnyActorSystem): string | undefined {
+  return bindings.get(system)?.runId;
+}
+
 /** Actor-side: resolve the run this actor tree belongs to. Throws outside a j2 host. */
 export function runBindingOf(system: AnyActorSystem): RunBinding {
   const binding = bindings.get(system);

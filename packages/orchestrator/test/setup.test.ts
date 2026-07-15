@@ -4,11 +4,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createActor, fromCallback } from "xstate";
+import { createActor, fromCallback, type AnyActorRef } from "xstate";
 import { z } from "zod";
-import { defineEvent } from "@j2/agent-protocol";
+import { defineEvent, eventMap } from "@j2/agent-protocol";
+import { agentRunActorWith } from "../src/actor.ts";
+import { bindRun, RegistrationTable } from "../src/registration.ts";
 import { j2Setup } from "../src/setup.ts";
 import { vocabularyOf } from "../src/vocabulary.ts";
+import { MockFlueClient } from "./_fixtures.ts";
 
 const approve = defineEvent({ name: "approve", input: z.object({}) });
 const requestChanges = defineEvent({ name: "request_changes", input: z.object({ notes: z.string() }) });
@@ -144,4 +147,147 @@ test("the returned machine is a plain StateMachine: provide() still works as the
   assert.ok(provided);
   // Discovery registers the PRE-provide machine, which is the one carrying the vocabulary.
   assert.ok(vocabularyOf(machine));
+});
+
+// --- Menu derivation (ADR-0015) -------------------------------------------------------------
+
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+/** Run a j2Setup machine under a bare binding (no RunHost): table + run identity only. Binds on
+ * the root's creation inspection event — before initial children construct — exactly as RunHost
+ * does, so iid minting sees the run identity. */
+function hostless(machine: Parameters<typeof createActor>[0], defs: Parameters<typeof eventMap>[1]) {
+  const table = new RegistrationTable();
+  let bound = false;
+  const actor = createActor(machine, {
+    inspect: (ev) => {
+      if (!bound && ev.type === "@xstate.actor") {
+        bound = true;
+        bindRun((ev.actorRef as AnyActorRef).system, { runId: "run-1", workflow: "wf", events: eventMap("wf", defs), table });
+      }
+    },
+  });
+  actor.start();
+  return { actor, table };
+}
+
+test("agent menus and gate accepts derive from transitions, routed by audience", async () => {
+  const requestReview = defineEvent({ name: "request_review", input: z.object({}) }); // any
+  const reportBlocked = defineEvent({ name: "report_blocked", audience: "agent", input: z.object({}) });
+  const humanApprove = defineEvent({ name: "human_approve", audience: "external", input: z.object({}) });
+  const requestChanges = defineEvent({ name: "request_changes", input: z.object({}) }); // any
+  const defs = [requestReview, reportBlocked, humanApprove, requestChanges];
+
+  const mock = new MockFlueClient();
+  const machine = j2Setup({
+    types: {} as { context: Record<string, never> },
+    events: defs,
+    actors: { agentRun: agentRunActorWith(() => mock) },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    initial: "coding",
+    // Shared-ancestor handlers: report_blocked bubbles into the AGENT menu (audience: agent),
+    // human_approve bubbles into the GATE set (audience: external) — and never vice versa.
+    on: { report_blocked: { target: ".done" }, human_approve: { target: ".done" } },
+    states: {
+      coding: {
+        invoke: { src: "agentRun", input: { agent: "coder", prompt: "go", endpoint: "http://x" } },
+        on: { request_review: "review" },
+      },
+      review: {
+        invoke: { src: "gate", input: { gate: "g1" } },
+        on: { request_changes: "coding" },
+      },
+      done: { type: "final" },
+    },
+  });
+
+  const { actor, table } = hostless(machine, defs);
+  await tick();
+
+  // The agent's menu: own request_review + bubbled report_blocked; human_approve is excluded
+  // by its audience even though it bubbles here too.
+  assert.deepEqual([...(mock.admitted?.tools ?? [])].sort(), ["report_blocked", "request_review"]);
+  // The minted iid is run-scoped and readable; fresh sessions get a random suffix.
+  assert.match(mock.admitted?.instanceId ?? "", /^run-1\/.+\/coder\/[0-9a-f]{8}$/);
+
+  // Move to the gate state through the real seam and read the derived accepted set.
+  table.deliver(`agent/${mock.admitted!.instanceId}`, "request_review", {});
+  await tick();
+  const gateReg = table.byRun("run-1").find((r) => r.kind === "gate");
+  assert.deepEqual([...(gateReg?.defs.keys() ?? [])].sort(), ["human_approve", "request_changes"]);
+
+  actor.stop();
+});
+
+test("session continue derives ONE deterministic iid; the fresh default mints a new one per turn", async () => {
+  const go = defineEvent({ name: "go", input: z.object({}) });
+  const iidsFor = async (session?: "continue") => {
+    const mock = new MockFlueClient();
+    const machine = j2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [go],
+      actors: { agentRun: agentRunActorWith(() => mock) },
+    }).createMachine({
+      id: "wf",
+      context: {},
+      initial: "a",
+      states: {
+        a: {
+          invoke: {
+            src: "agentRun",
+            input: { agent: "coder", prompt: "one", session, scope: "F-1", endpoint: "http://x" },
+          },
+          on: { go: "b" },
+        },
+        b: {
+          invoke: {
+            src: "agentRun",
+            input: { agent: "coder", prompt: "two", session, scope: "F-1", endpoint: "http://x" },
+          },
+        },
+      },
+    });
+    const { actor } = hostless(machine, [go]);
+    await tick();
+    actor.send({ type: "go" });
+    await tick();
+    actor.stop();
+    return mock.admits.map((a) => a.instanceId);
+  };
+
+  const continued = await iidsFor("continue");
+  assert.equal(continued.length, 2);
+  assert.equal(continued[0], continued[1], "continue: one conversation travels across states");
+
+  const fresh = await iidsFor(undefined);
+  assert.equal(fresh.length, 2);
+  assert.notEqual(fresh[0], fresh[1], "fresh (default): every invocation is a new conversation");
+});
+
+test("explicit tools remain the escape hatch over the derived menu", async () => {
+  const ping = defineEvent({ name: "ping", input: z.object({}) });
+  const pong = defineEvent({ name: "pong", input: z.object({}) });
+  const mock = new MockFlueClient();
+  const machine = j2Setup({
+    types: {} as { context: Record<string, never> },
+    events: [ping, pong],
+    actors: { agentRun: agentRunActorWith(() => mock) },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    initial: "a",
+    states: {
+      a: {
+        invoke: { src: "agentRun", input: { agent: "coder", prompt: "go", tools: ["pong"], endpoint: "http://x" } },
+        on: { ping: "b", pong: "b" },
+      },
+      b: {},
+    },
+  });
+  const { actor } = hostless(machine, [ping, pong]);
+  await tick();
+  assert.deepEqual(mock.admitted?.tools, ["pong"]);
+  actor.stop();
 });

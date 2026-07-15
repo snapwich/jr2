@@ -17,9 +17,11 @@
 // signature is precise, the implementation is loosely typed with ONE j2-internal cast at the
 // return. The consumer surface has none.
 
+import { randomUUID } from "node:crypto";
 import {
   setup,
   type ActionFunction,
+  type AnyActorRef,
   type AnyStateMachine,
   type DelayConfig,
   type EventObject,
@@ -32,9 +34,10 @@ import {
   type UnknownActorLogic,
 } from "xstate";
 import { eventMap, type EventDef, type EventFrom } from "@j2/agent-protocol";
-import type { FaultTelemetry } from "./actor.ts";
+import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { agentRun } from "./flue-client.ts";
 import { gate } from "./gate.ts";
+import { boundRunId } from "./registration.ts";
 import { attachVocabulary } from "./vocabulary.ts";
 
 /**
@@ -139,11 +142,17 @@ export function j2Setup<
   } as never);
 
   const createMachine = (config: never): AnyStateMachine => {
-    const machine = (inner.createMachine as unknown as (c: never) => AnyStateMachine)(config);
+    // Resolve the defs first (duplicates and reserved semantics fail HERE, naming the machine —
+    // the same loud failure `eventMap` gave the manifest, moved to machine-build time)…
+    const defs = eventMap((config as { id?: string }).id ?? "(machine)", def.events);
 
-    // Resolve the defs (duplicates and reserved semantics fail HERE, naming the machine — the
-    // same loud failure `eventMap` gave the manifest, moved to machine-build time).
-    const defs = eventMap(machine.id, def.events);
+    // …then rewrite the config (ADR-0015): every `agentRun`/`gate` invoke's input is wrapped to
+    // append its DERIVED menu and finalize the mechanism fields. Static — the walk sees the same
+    // config `j2 visualize` will — and the derived names still ride serializable input, so the
+    // ADR-0007 restore path and invoke-time `resolveAccepts` validation are unchanged.
+    const machine = (inner.createMachine as unknown as (c: never) => AnyStateMachine)(
+      deriveMenus(config, defs) as never,
+    );
 
     // Close the nested-`on` typo hole (ADR-0015): with the manifest dead, a typo'd key would
     // silently become vocabulary — so every non-dotted key the machine handles anywhere must map
@@ -185,4 +194,105 @@ export function j2Setup<
     TEmitted,
     TMeta
   >;
+}
+
+// --- Menu derivation (ADR-0015) ------------------------------------------------------------------
+// A state that invokes `agentRun` gets, as its Agent's tool menu, the workflow events its
+// transitions handle — own + bubbled ancestors, per statechart semantics — filtered to audience
+// ∈ {agent, any}; a `gate` gets the same set filtered to {external, any}. The invoking actor
+// kind is the primary router; `audience` on the def exists to RESTRICT (tag the security-
+// sensitive events). Explicit `tools:`/`accepts:` on the invoke input remain as escape hatches.
+
+type LooseInvoke = { src?: unknown; input?: unknown; [k: string]: unknown };
+type LooseState = {
+  on?: Record<string, unknown>;
+  invoke?: LooseInvoke | LooseInvoke[];
+  states?: Record<string, LooseState>;
+  [k: string]: unknown;
+};
+type InputArgs = { context: unknown; event: unknown; self: AnyActorRef };
+
+/** Rewrite a machine config, wrapping every `agentRun`/`gate` invoke input (immutably). */
+function deriveMenus(config: unknown, defs: Map<string, EventDef>): unknown {
+  const pick = (names: Set<string>, kind: "agent" | "external"): string[] =>
+    [...names].filter((name) => {
+      const d = defs.get(name);
+      return !!d && (d.audience === kind || d.audience === "any");
+    });
+
+  const walk = (node: LooseState, inherited: Set<string>): LooseState => {
+    const names = new Set(inherited);
+    for (const key of Object.keys(node.on ?? {})) {
+      if (!key.includes(".") && key !== "*") names.add(key);
+    }
+
+    let out = node;
+    if (node.invoke) {
+      const wrapOne = (inv: LooseInvoke): LooseInvoke => {
+        if (inv?.src === "agentRun") return { ...inv, input: wrapAgentInput(inv.input, pick(names, "agent")) };
+        if (inv?.src === "gate") return { ...inv, input: wrapGateInput(inv.input, pick(names, "external")) };
+        return inv;
+      };
+      out = { ...node, invoke: Array.isArray(node.invoke) ? node.invoke.map(wrapOne) : wrapOne(node.invoke) };
+    }
+    if (node.states) {
+      const states: Record<string, LooseState> = {};
+      for (const [key, child] of Object.entries(node.states)) states[key] = walk(child, names);
+      out = { ...(out === node ? node : out), states };
+    }
+    return out;
+  };
+
+  return walk(config as LooseState, new Set());
+}
+
+const resolveInput = (orig: unknown, args: InputArgs): Record<string, unknown> =>
+  (typeof orig === "function" ? (orig as (a: InputArgs) => unknown)(args) : (orig ?? {})) as Record<string, unknown>;
+
+/** Wrap an agentRun invoke input: append the derived menu and finalize the mechanism fields. */
+function wrapAgentInput(orig: unknown, derived: string[]) {
+  return (args: InputArgs): AgentRunInput => {
+    const consumer = resolveInput(orig, args) as Partial<AgentTurnInput & AgentRunInput>;
+    const agentName = consumer.agentName ?? consumer.agent;
+    if (!agentName) throw new Error(`agentRun input needs \`agent\` (the flue agent to admit)`);
+    return {
+      agentName,
+      instanceId: consumer.instanceId ?? mintIid(consumer, agentName, args.self),
+      endpoint: consumer.endpoint,
+      sandbox: consumer.sandbox,
+      prompt: consumer.prompt,
+      tools: consumer.tools ?? derived,
+    };
+  };
+}
+
+/** Wrap a gate invoke input: append the derived accepted set. */
+function wrapGateInput(orig: unknown, derived: string[]) {
+  return (args: InputArgs): Record<string, unknown> => {
+    const consumer = resolveInput(orig, args);
+    return { ...consumer, accepts: (consumer.accepts as readonly string[] | undefined) ?? derived };
+  };
+}
+
+/**
+ * Mint the instance id (ADR-0016). It is minted in the INPUT MAPPER — not the actor — because
+ * the input is the persistence vehicle: restore re-spawns from the persisted input without
+ * re-running the mapper (same conversation), while a fresh transition re-runs it (new one).
+ *
+ * - Default (fresh session, jr's lossy handoff): a new conversation per invocation — a random
+ *   suffix under a readable `<runId>/<actor-path>/<agent>` prefix.
+ * - `session: "continue"` (+ optional `scope`): the iid derives deterministically from
+ *   `(run, actor path, agent, scope)`, so re-invocations continue ONE flue conversation. The
+ *   actor path excludes the root actor (its id is generated per process — everything below it
+ *   is author-named and stable across restore). Invoking a continue iid that is already live
+ *   fails loudly at the registration table (one live surface per address).
+ */
+function mintIid(consumer: { session?: "continue"; scope?: string }, agentName: string, self: AnyActorRef): string {
+  const runId = boundRunId(self.system) ?? "local";
+  const segments: string[] = [];
+  for (let ref: AnyActorRef | undefined = self; ref?._parent; ref = ref._parent) segments.unshift(ref.id);
+  const path = segments.join(".") || "root";
+  const scope = consumer.scope ? `/${consumer.scope}` : "";
+  if (consumer.session === "continue") return `${runId}/${path}/${agentName}${scope}`;
+  return `${runId}/${path}/${agentName}${scope}/${randomUUID().slice(0, 8)}`;
 }
