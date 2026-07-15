@@ -1,5 +1,5 @@
-// The real, `@flue/sdk`-backed `AgentRunPort` (ADR-0002/0007) — the adapter that drives one Agent
-// run over flue's durable agent stream — and the canonical `agentRun` actor built on it
+// The real, `@flue/sdk`-backed `AgentRunPort` (ADR-0002/0007/0016) — the adapter that drives one
+// Agent run over flue's durable agent surface — and the canonical `agentRun` actor built on it
 // (ADR-0011: workflows import it statically; the client is constructed from `input.endpoint`).
 //
 // This is the ONE module that imports `@flue/sdk`. Keeping it here (not in `actor.ts`) is what lets
@@ -7,32 +7,28 @@
 // built over an INJECTED flue client (`flueAgentRunPort(flue)`) so its mapping logic is unit-testable
 // against a fake; `createFlueAgentRunClient(opts)` is the convenience that builds the real client.
 //
-// Channel split (ADR-0002, refined): the flue stream carries **lifecycle + offset telemetry**, not
-// domain events — those go up the MCP channel via the ControlPlane. So the adapter's whole job on the
-// up-side is to surface the durable stream's advancing **offset** (the `(agentName, instanceId)+offset`
-// re-attach handle) and to detect terminal/fault. It does NOT translate stream events into domain
-// `ControlEvent`s.
+// Channel split (ADR-0002, refined by ADR-0016): the flue surface carries **lifecycle only** —
+// domain events go up the MCP channel via the Adapter. Since flue ≥ beta.8 the SDK's own
+// `send`/`wait` pair is exactly that lifecycle surface: `send` answers with a serializable
+// admission (`{ streamUrl, offset, submissionId }` — j2's durable re-attach handle, stored in the
+// host ledger), and `wait(admission)` replays the conversation stream from the admission offset to
+// the submission's settlement — flue's reconnect-from-offset machinery, so j2 no longer hand-rolls
+// `tool_start`-cadence offset checkpointing. Re-attach after a restart is `wait` with the SAME
+// persisted admission; replay cost is bounded by one submission's chunks.
 //
-// Two correctness points worth stating:
-//   - Offset cadence. flue streams are chatty (per-token `text_delta`s). Checkpointing the offset on
-//     every event would make the Machine `assign` + persist on every token. So we surface the offset
-//     only at sane checkpoints: a BASELINE right after admission, and each `tool_start` (a real tool
-//     call — and the natural `AgentToolCall`). flue's offset is a resume checkpoint with at-least-once
-//     semantics, so a coarse cadence only means a little replay on restore, never a skip.
-//   - Baseline guarantee. The baseline checkpoint fires the instant a run is admitted, so
-//     `context.offsets[instanceId]` is persisted immediately. Without it, a run that crashes before its
-//     first tool call would restore with `attachOffset === undefined` and be wrongly re-`send`'d (a
-//     duplicate prompt). With it, re-attach always has a real offset to resume from.
+// `agents.abort()` exists as of beta.8 (ADR-0002's "flue exposes no cancel primitive" is stale) —
+// but it is deliberately NOT wired into actor stop: stop must abandon locally so restore can
+// re-attach (see actor.ts header). Abort is reserved for a deliberate terminal act.
 
-import { createFlueClient } from "@flue/sdk";
-import type { AttachedAgentEvent, CreateFlueClientOptions, FlueClient as FlueSdkClient } from "@flue/sdk";
+import { createFlueClient, FlueExecutionError } from "@flue/sdk";
+import type { CreateFlueClientOptions, FlueClient as FlueSdkClient } from "@flue/sdk";
 import { agentRunActorWith } from "./actor.ts";
-import type { AgentRunPort, AgentRunInput, AgentToolCall } from "./actor.ts";
+import type { AgentRunPort, AgentRunInput, AgentAdmission } from "./actor.ts";
 
 /** The narrow slice of the flue SDK client this adapter depends on (the injectable seam). */
-export type FlueAgentRunDep = { agents: Pick<FlueSdkClient["agents"], "send" | "stream"> };
+export type FlueAgentRunDep = { agents: Pick<FlueSdkClient["agents"], "send" | "wait"> };
 
-/** A submission that flue settled as `failed` — surfaced to the actor as an `agent.fault`. */
+/** A submission that flue settled failed/aborted — surfaced to the actor as an `agent.fault`. */
 export class FlueRunFault extends Error {
   readonly cause: unknown;
   constructor(cause: unknown) {
@@ -42,65 +38,28 @@ export class FlueRunFault extends Error {
   }
 }
 
-/**
- * Build an `AgentRunPort` over an injected flue client. The returned port is shareable across runs:
- * it keys each run's live stream by `instanceId` so `cancel(instanceId)` abandons exactly one run.
- */
+/** Build an `AgentRunPort` over an injected flue client. Stateless — the admission IS the handle. */
 export function flueAgentRunPort(flue: FlueAgentRunDep): AgentRunPort {
-  // instanceId → the controller abandoning that run's admission + stream.
-  const live = new Map<string, AbortController>();
-
   return {
-    async admit(input: AgentRunInput, onToolCall: (call: AgentToolCall) => void): Promise<void> {
-      const { agentName, instanceId, prompt, attachOffset } = input;
-
-      const controller = new AbortController();
-      live.set(instanceId, controller);
-      try {
-        // Fresh run → admit the prompt and stream from the admission offset. Re-attach (host dropped
-        // `prompt`, set `attachOffset` on restore) → resume the existing stream, no re-POST.
-        let startOffset = attachOffset;
-        if (startOffset === undefined) {
-          if (prompt === undefined) {
-            throw new Error("flue admit needs a prompt (fresh run) or attachOffset (re-attach)");
-          }
-          const admission = await flue.agents.send(agentName, instanceId, {
-            message: prompt,
-            signal: controller.signal,
-          });
-          startOffset = admission.offset;
-        }
-
-        const stream = flue.agents.stream(agentName, instanceId, {
-          offset: startOffset,
-          signal: controller.signal,
-        });
-
-        // Baseline checkpoint: persist the durable handle the moment the run is (re-)admitted.
-        onToolCall({ name: "agent.stream", offset: startOffset });
-
-        for await (const event of stream) {
-          if (event.type === "tool_start") {
-            // A real tool call — the natural `AgentToolCall`. `stream.offset` is the resume point.
-            onToolCall({ name: event.toolName, args: asArgs(event.args), offset: stream.offset });
-          } else if (event.type === "submission_settled") {
-            if (event.outcome === "failed") throw new FlueRunFault(event.error);
-            return; // completed → the run settled; resolve.
-          }
-        }
-        // Stream ended without an explicit settle event — treat as a clean settle.
-      } finally {
-        live.delete(instanceId);
+    async admit(input: AgentRunInput, opts?: { signal?: AbortSignal }): Promise<AgentAdmission> {
+      if (input.prompt === undefined) {
+        throw new Error("flue admit needs a prompt (a re-attach rides input.attach, set by the host on restore)");
       }
+      return await flue.agents.send(input.agentName, input.instanceId, {
+        message: input.prompt,
+        signal: opts?.signal,
+      });
     },
 
-    async cancel(instanceId: string): Promise<void> {
-      // flue exposes no cancel primitive (ADR-0002 / PoC #4): abandon by aborting our consumption and
-      // let durability reap the durable run. Aborting the controller cancels an in-flight `send` and
-      // the stream alike; the actor swallows the resulting admit rejection because it set `stopped`.
-      const controller = live.get(instanceId);
-      live.delete(instanceId);
-      controller?.abort();
+    async settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void> {
+      try {
+        await flue.agents.wait(admission, { signal: opts?.signal });
+      } catch (err) {
+        // A local abort is the actor abandoning consumption — let it propagate untranslated
+        // (the stopped actor swallows it). Only flue's own settlement failures become faults.
+        if (err instanceof FlueExecutionError) throw new FlueRunFault(err.error ?? err.message);
+        throw err;
+      }
     },
   };
 }
@@ -111,26 +70,19 @@ export function createFlueAgentRunClient(options: CreateFlueClientOptions): Agen
 }
 
 /**
- * THE `agentRun` actor (ADR-0011): workflows import this statically and list it in `setup`
- * actors themselves — no host injection. Everything live is constructed per-invocation from
- * serializable input: the flue client from `input.endpoint` (which Sandbox's Harness — or a
- * wire-compatible dev stub; either way it's only a URL, one code path). Lives here, not in
- * actor.ts, so the actor logic and its unit tests never load `@flue/sdk`.
+ * THE `agentRun` actor (ADR-0011): pre-registered by `j2Setup` (ADR-0015), importable statically.
+ * Everything live is constructed per-invocation from serializable input: the flue client from
+ * `input.endpoint` (which Sandbox's Harness — or a wire-compatible dev stub; either way it's only
+ * a URL, one code path). Lives here, not in actor.ts, so the actor logic and its unit tests never
+ * load `@flue/sdk`.
  */
 export const agentRun = agentRunActorWith((endpoint) => createFlueAgentRunClient({ baseUrl: endpoint }));
 
-/** Coerce a flue event's `args` (typed `unknown`) to the `AgentToolCall.args` record shape. */
-function asArgs(args: unknown): Record<string, unknown> | undefined {
-  return args && typeof args === "object" ? (args as Record<string, unknown>) : undefined;
-}
-
-/** A readable fault message from a settled-failed event's error payload. */
+/** A readable fault message from a settled-failed error payload. */
 function faultMessage(cause: unknown): string {
   if (cause && typeof cause === "object" && typeof (cause as { message?: unknown }).message === "string") {
     return `flue submission failed: ${(cause as { message: string }).message}`;
   }
+  if (typeof cause === "string") return `flue submission failed: ${cause}`;
   return cause === undefined ? "flue submission failed" : `flue submission failed: ${String(cause)}`;
 }
-
-// Reference the type so a stream's element type is pinned to the SDK's even as it evolves.
-export type FlueAgentStreamEvent = AttachedAgentEvent;

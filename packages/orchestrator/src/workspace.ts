@@ -17,7 +17,7 @@
 // Restore-reconcile (ADR-0012): the `running` state co-invokes a reconcile probe beside the
 // body. Invoked callback actors restart on every (re)entry — including snapshot restore — so
 // after an orchestrator restart the probe re-checks the Sandbox CR mechanically: present →
-// nothing (agent offsets re-attach streams); absent → the pod-local clone and any unpushed
+// nothing (agent admissions re-attach — ADR-0016); absent → the pod-local clone and any unpushed
 // commits are gone, so it delivers `workspace.lost` INTO the restored body (same channel as
 // `agent.fault`) and the body's policy decides. Never silently re-provision.
 

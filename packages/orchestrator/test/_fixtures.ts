@@ -10,29 +10,50 @@ import { z } from "zod";
 import { defineEvent, doneEvent, requestReviewEvent } from "@j2/agent-protocol";
 import { j2Setup } from "../src/setup.ts";
 import { agentRunActorWith } from "../src/actor.ts";
-import type { AgentRunInput, AgentRunPort, AgentRunReceiveEvent, AgentToolCall } from "../src/actor.ts";
+import type { AgentAdmission, AgentRunInput, AgentRunPort, AgentRunReceiveEvent } from "../src/actor.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
 
-/** An AgentRunPort the test drives by hand: capture admission, push synthetic stream tool calls. */
+/** An AgentRunPort the test drives by hand: capture admissions/attaches, settle or fault them. */
 export class MockFlueClient implements AgentRunPort {
+  /** The fresh admit this port served, if any (undefined on a pure re-attach). */
   admitted: AgentRunInput | undefined;
-  push: ((call: AgentToolCall) => void) | undefined;
-  cancelled: string[] = [];
+  /** The admission this port minted on admit. Distinct per instance so ledgers are assertable. */
+  minted: AgentAdmission | undefined;
+  /** Every admission `settle()` was asked to follow (fresh AND re-attached). */
+  settled: AgentAdmission[] = [];
+  /** Signals of in-flight settles — aborted when the actor abandons (stop/CANCEL). */
+  abandoned = false;
+  private rejectSettle: ((err: unknown) => void) | undefined;
+  private seq = 0;
 
-  admit(input: AgentRunInput, onToolCall: (call: AgentToolCall) => void): Promise<void> {
+  admit(input: AgentRunInput): Promise<AgentAdmission> {
     this.admitted = input;
-    this.push = onToolCall;
-    return new Promise<void>(() => {}); // stays live until abandoned
+    this.minted = {
+      streamUrl: `http://mock/agents/${input.agentName}/${input.instanceId}`,
+      offset: `adm-${++this.seq}`,
+      submissionId: `sub-${this.seq}`,
+    };
+    return Promise.resolve(this.minted);
   }
-  cancel(instanceId: string): Promise<void> {
-    this.cancelled.push(instanceId);
-    return Promise.resolve();
+
+  settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void> {
+    this.settled.push(admission);
+    // Stays live until abandoned or faulted (the mechanics-tier "admitted, never settles").
+    return new Promise<void>((_resolve, reject) => {
+      this.rejectSettle = reject;
+      opts?.signal?.addEventListener("abort", () => (this.abandoned = true), { once: true });
+    });
+  }
+
+  /** Simulate the submission settling failed (infra fault). */
+  fault(reason: string): void {
+    this.rejectSettle?.(new Error(reason));
   }
 }
 
-export type Ctx = { instanceId: string; sandbox?: string; offsets: Record<string, string>; summary?: string };
+export type Ctx = { instanceId: string; sandbox?: string; summary?: string };
 
 /**
  * A minimal real template standing in for a coding workflow, on the example event set (ADR-0011:
@@ -50,7 +71,7 @@ export const codingTemplate = j2Setup({
   actors: { agentRun: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },
 }).createMachine({
   id: "m",
-  context: ({ input }) => ({ instanceId: input.instanceId, sandbox: input.sandbox, offsets: {} }),
+  context: ({ input }) => ({ instanceId: input.instanceId, sandbox: input.sandbox }),
   initial: "active",
   states: {
     active: {
@@ -67,14 +88,6 @@ export const codingTemplate = j2Setup({
         }),
       },
       initial: "running",
-      // Offset telemetry can arrive in any sub-state; record it without changing state.
-      on: {
-        "agent.offset": {
-          actions: assign({
-            offsets: ({ context, event }) => ({ ...context.offsets, [event.instanceId]: event.offset }),
-          }),
-        },
-      },
       states: {
         running: {
           on: {

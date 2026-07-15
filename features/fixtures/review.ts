@@ -19,14 +19,14 @@ const requestReview = defineEvent({
 const approve = defineEvent({ name: "approve", input: z.object({}) });
 
 type Input = { instanceId: string; endpoint: string };
-type Ctx = { instanceId: string; endpoint: string; offsets: Record<string, string>; summary?: string };
+type Ctx = { instanceId: string; endpoint: string; summary?: string };
 
 export const machine = j2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [requestReview, approve],
 }).createMachine({
   id: "review",
-  context: ({ input }) => ({ instanceId: input.instanceId, endpoint: input.endpoint, offsets: {} }),
+  context: ({ input }) => ({ instanceId: input.instanceId, endpoint: input.endpoint }),
   initial: "working",
   states: {
     working: {
@@ -41,11 +41,6 @@ export const machine = j2Setup({
         }),
       },
       on: {
-        "agent.offset": {
-          actions: assign({
-            offsets: ({ context, event }) => ({ ...context.offsets, [event.instanceId]: event.offset }),
-          }),
-        },
         request_review: { target: "humanReview", actions: assign({ summary: ({ event }) => event.summary }) },
       },
     },

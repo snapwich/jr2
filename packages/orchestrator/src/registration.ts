@@ -20,6 +20,7 @@
 
 import type { ActorSystem } from "xstate";
 import type { EventDef } from "@j2/agent-protocol";
+import type { AgentAdmission } from "./actor.ts";
 import type { SandboxPort } from "./workspace.ts";
 
 /** xstate doesn't export its internal AnyActorSystem; this matches what actors receive. */
@@ -127,6 +128,13 @@ export type RunBinding = {
   /** The host's Sandbox backend, when it has a cluster (`workspace()` resolves it here —
    * one cluster per orchestrator instance, so it is host infrastructure like the table). */
   sandbox?: SandboxPort;
+  /**
+   * Record an agent invocation's durable admission in the host ledger (ADR-0016): persisted
+   * beside the snapshot in the same RunBlob save, keyed by iid (globally unique, so the map is
+   * flat). Optional so a bare unit-test binding can omit it — then admissions simply are not
+   * durable.
+   */
+  recordAdmission?: (instanceId: string, admission: AgentAdmission) => void;
 };
 
 const bindings = new WeakMap<AnyActorSystem, RunBinding>();

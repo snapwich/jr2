@@ -3,8 +3,7 @@
 // The Agent's up-channel is driven the REAL way — `sendToAgent`, the same registration-table path
 // `POST /agents/:iid/events` takes when a Sandbox's Adapter forwards a tool call (ADR-0013) — so
 // resolve → validate → deliver-into-the-invoking-state is exercised, not bypassed. The flue side is
-// a mock FlueClient: it records the admission (so restore can be checked) and lets the test push
-// synthetic stream tool calls (which surface `agent.offset`).
+// a mock FlueClient: it records admissions and settles (so the ledger and restore can be checked).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -81,7 +80,7 @@ test("registration reads the vocabulary off the machine (ADR-0015); a plain mach
   assert.equal(host.events("bare")?.size, 0);
 });
 
-test("offset telemetry from the flue stream is persisted into the snapshot", async () => {
+test("the admission is ledgered host-side and persisted beside the snapshot (ADR-0016)", async () => {
   const store = await mkStore();
   const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store });
@@ -89,27 +88,33 @@ test("offset telemetry from the flue stream is persisted into the snapshot", asy
   const { runId, instanceId } = await host.start("coding");
   await tick();
 
-  // A stream tool call advances the durable offset; the call's NAME is informational (the domain
-  // event travels the agent surface, not the stream). Opaque DS offset string.
-  clients.get(instanceId)!.push!({ name: "read_file", args: {}, offset: "17" });
-  await waitFor(() => (host.status(runId)?.context as Ctx).offsets[instanceId] === "17");
-
-  const loaded = await store.load(runId);
-  const persisted = loaded!.snapshot as { snapshot: { context: Ctx } };
-  assert.equal(persisted.snapshot.context.offsets[instanceId], "17");
+  const minted = clients.get(instanceId)!.minted;
+  assert.ok(minted, "the run was admitted");
+  let agents: Record<string, unknown> | undefined;
+  await waitFor(() => {
+    void store.load(runId).then((l) => (agents = (l?.snapshot as { agents?: Record<string, unknown> })?.agents));
+    return agents?.[instanceId] !== undefined;
+  });
+  assert.deepEqual(agents?.[instanceId], minted, "the durable handle rides RunBlob.agents");
 });
 
-test("a second host restores an in-flight run and re-attaches by persisted offset", async () => {
+test("a second host restores an in-flight run and re-attaches by persisted admission", async () => {
   const store = await mkStore();
 
-  // Host A: start, advance the durable offset, then "crash" (we just stop driving it).
+  // Host A: start (the mock admits and parks), then "crash" (we just stop driving it).
   const clientsA = new Map<string, MockFlueClient>();
   const hostA = new RunHost({ store });
   hostA.register(codingDef(clientsA));
   const { runId, instanceId } = await hostA.start("coding");
   await tick();
-  clientsA.get(instanceId)!.push!({ name: "read_file", args: {}, offset: "23" });
-  await waitFor(() => (hostA.status(runId)?.context as Ctx).offsets[instanceId] === "23");
+  const minted = clientsA.get(instanceId)!.minted!;
+  let persisted = false;
+  await waitFor(() => {
+    void store
+      .load(runId)
+      .then((l) => (persisted = !!(l?.snapshot as { agents?: Record<string, unknown> })?.agents?.[instanceId]));
+    return persisted;
+  });
 
   // Host B: a brand-new host on the SAME store; reconcile present → re-attach.
   const clientsB = new Map<string, MockFlueClient>();
@@ -120,9 +125,9 @@ test("a second host restores an in-flight run and re-attaches by persisted offse
 
   assert.deepEqual(reattached, [runId]);
   const reattachedClient = clientsB.get(instanceId);
-  assert.ok(reattachedClient?.admitted, "re-attached run must re-admit via the AgentRunPort");
-  assert.equal(reattachedClient!.admitted!.attachOffset, "23", "re-attach must resume from the persisted offset");
-  assert.equal(reattachedClient!.admitted!.prompt, undefined, "re-attach must not re-POST the prompt");
+  assert.ok(reattachedClient, "the restored run rebuilt its port");
+  assert.equal(reattachedClient!.admitted, undefined, "re-attach must not re-POST the prompt");
+  assert.deepEqual(reattachedClient!.settled, [minted], "settlement follows the PERSISTED admission");
 });
 
 test("restore marks a run lost when the live world is absent", async () => {

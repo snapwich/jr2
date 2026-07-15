@@ -1,49 +1,53 @@
-// GAP(5): nested durability. Bodies own their durable agent handles (`context.offsets` lives in
-// the CHILD machine, not the run root), so two host behaviors carry restore at depth:
-//   1. persistence rides the actor system's INSPECTION stream — a grandchild `agent.offset`
-//      assigned into the body's context never notifies root subscribers, but must hit the store;
-//   2. `reattachAgentRuns` walks the snapshot TREE, each machine level's `context.offsets`
-//      scoping the agentRun child-input rewrites below it (drop `prompt`, set `attachOffset`).
+// Nested durability (ADR-0016): agent invocations live in CHILD machines (a body two levels
+// below the run root), but their durable handles live in the HOST ledger — one flat iid→admission
+// map per run — so restore at depth needs exactly two host behaviors:
+//   1. the admission is ledgered through the run binding the moment flue admits, from any
+//      nesting depth (the binding rides the actor SYSTEM, shared by the whole tree);
+//   2. `reattachAgentRuns` walks the snapshot TREE and rewrites every agentRun child input
+//      whose iid has a ledgered admission (drop `prompt`, set `attach`) — no per-level scoping.
 // Both the invoke'd-child and spawnChild'd-child shapes are proven end-to-end through a real
 // RunHost pair sharing one store — the exact orchestrator-restart sequence.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, setup, spawnChild } from "xstate";
+import { setup, spawnChild } from "xstate";
 import { agentRunActorWith } from "../src/actor.ts";
-import type { AgentRunInput, AgentRunPort, AgentToolCall } from "../src/actor.ts";
+import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
 import { reattachAgentRuns } from "../src/durability.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { mkStore, waitFor } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 
-type Log = { admissions: AgentRunInput[]; pushers: Array<(call: AgentToolCall) => void> };
+type Log = { admissions: AgentRunInput[]; settled: AgentAdmission[] };
 
-/** An agentRun bound to a port that records every admission and exposes its stream by hand. */
+/** An agentRun bound to a port that records admits + settles and parks forever (never settles). */
 function recordingAgentRun(log: Log) {
+  let seq = 0;
   const port: AgentRunPort = {
-    admit(input, onToolCall) {
+    admit(input) {
       log.admissions.push(input);
-      log.pushers.push(onToolCall);
+      return Promise.resolve({
+        streamUrl: `http://h/agents/${input.agentName}/${input.instanceId}`,
+        offset: `adm-${++seq}`,
+        submissionId: `sub-${seq}`,
+      });
+    },
+    settle(admission) {
+      log.settled.push(admission);
       return new Promise<void>(() => {}); // stays live until abandoned
     },
-    cancel: () => Promise.resolve(),
   };
   return agentRunActorWith(() => port);
 }
 
-/** The body: its own context folds its agent's offsets (the GAP(5) shape — handles live HERE). */
+/** The body: the agent invocation lives HERE, two levels below the run root. */
 function innerMachine(log: Log) {
   return setup({
-    types: {} as {
-      context: { iid: string; offsets: Record<string, string> };
-      input: { iid: string };
-      events: { type: "agent.offset"; instanceId: string; offset: string } | { type: "agent.fault" };
-    },
+    types: {} as { context: { iid: string }; input: { iid: string } },
     actors: { agentRun: recordingAgentRun(log) },
   }).createMachine({
     id: "inner",
-    context: ({ input }) => ({ iid: input.iid, offsets: {} }),
+    context: ({ input }) => ({ iid: input.iid }),
     initial: "coding",
     states: {
       coding: {
@@ -60,26 +64,16 @@ function innerMachine(log: Log) {
         },
       },
     },
-    on: {
-      "agent.offset": {
-        actions: assign({
-          offsets: ({ context, event }) => ({ ...context.offsets, [event.instanceId]: event.offset }),
-        }),
-      },
-    },
   });
 }
 
-/** Read the body's persisted offsets out of the stored blob (whatever the child id is). */
-async function storedOffsets(store: SnapshotStore, runId: string, childId: string) {
+/** Read the run's persisted admission ledger off the stored blob. */
+async function storedLedger(store: SnapshotStore, runId: string) {
   const stored = await store.load(runId);
-  const blob = stored?.snapshot as {
-    snapshot?: { children?: Record<string, { snapshot?: { context?: { offsets?: Record<string, string> } } }> };
-  } | null;
-  return blob?.snapshot?.children?.[childId]?.snapshot?.context?.offsets;
+  return (stored?.snapshot as { agents?: Record<string, AgentAdmission> } | null)?.agents;
 }
 
-test("invoke'd body: grandchild offset persists and restore re-attaches it", async () => {
+test("invoke'd body: a grandchild admission is ledgered and restore re-attaches it", async () => {
   const defFor = (log: Log): WorkflowDef => {
     const inner = innerMachine(log);
     const outer = setup({ actors: { body: inner } }).createMachine({
@@ -96,7 +90,7 @@ test("invoke'd body: grandchild offset persists and restore re-attaches it", asy
   };
 
   const store = await mkStore();
-  const log: Log = { admissions: [], pushers: [] };
+  const log: Log = { admissions: [], settled: [] };
   const def = defFor(log);
 
   const first = new RunHost({ store });
@@ -105,12 +99,13 @@ test("invoke'd body: grandchild offset persists and restore re-attaches it", asy
   await waitFor(() => log.admissions.length === 1);
   assert.equal(log.admissions[0]!.prompt, "go");
 
-  log.pushers[0]!({ name: "tool", offset: "5_2" });
-  let seen: Record<string, string> | undefined;
+  // The grandchild's admission lands in the run's FLAT host ledger (iids are globally unique).
+  let ledger: Record<string, AgentAdmission> | undefined;
   await waitFor(() => {
-    void storedOffsets(store, runId, "body").then((o) => (seen = o));
-    return seen?.[`${instanceId}/task`] === "5_2";
+    void storedLedger(store, runId).then((l) => (ledger = l));
+    return ledger?.[`${instanceId}/task`] !== undefined;
   });
+  const admission = ledger![`${instanceId}/task`]!;
 
   await first.stop(runId);
 
@@ -118,10 +113,9 @@ test("invoke'd body: grandchild offset persists and restore re-attaches it", asy
   second.register(def);
   const { reattached } = await second.restore();
   assert.deepEqual(reattached, [runId]);
-  await waitFor(() => log.admissions.length === 2);
-  assert.equal(log.admissions[1]!.instanceId, `${instanceId}/task`);
-  assert.equal(log.admissions[1]!.attachOffset, "5_2", "re-attached from the body's persisted offset");
-  assert.equal(log.admissions[1]!.prompt, undefined, "never re-prompted");
+  await waitFor(() => log.settled.length === 2);
+  assert.equal(log.admissions.length, 1, "never re-prompted");
+  assert.deepEqual(log.settled[1], admission, "re-attached from the persisted admission, at depth");
 });
 
 test("spawnChild'd body: the spawned machine restores and its agent re-attaches", async () => {
@@ -141,7 +135,7 @@ test("spawnChild'd body: the spawned machine restores and its agent re-attaches"
   };
 
   const store = await mkStore();
-  const log: Log = { admissions: [], pushers: [] };
+  const log: Log = { admissions: [], settled: [] };
   const def = defFor(log);
 
   const first = new RunHost({ store });
@@ -149,11 +143,10 @@ test("spawnChild'd body: the spawned machine restores and its agent re-attaches"
   const { runId, instanceId } = await first.start("spawned");
   await waitFor(() => log.admissions.length === 1);
 
-  log.pushers[0]!({ name: "tool", offset: "9_1" });
-  let seen: Record<string, string> | undefined;
+  let ledger: Record<string, AgentAdmission> | undefined;
   await waitFor(() => {
-    void storedOffsets(store, runId, "feature-1").then((o) => (seen = o));
-    return seen?.[`${instanceId}/task`] === "9_1";
+    void storedLedger(store, runId).then((l) => (ledger = l));
+    return ledger?.[`${instanceId}/task`] !== undefined;
   });
 
   await first.stop(runId);
@@ -162,48 +155,47 @@ test("spawnChild'd body: the spawned machine restores and its agent re-attaches"
   second.register(def);
   const { reattached } = await second.restore();
   assert.deepEqual(reattached, [runId]);
-  await waitFor(() => log.admissions.length === 2);
-  assert.equal(log.admissions[1]!.attachOffset, "9_1");
-  assert.equal(log.admissions[1]!.prompt, undefined);
+  await waitFor(() => log.settled.length === 2);
+  assert.equal(log.admissions.length, 1, "never re-prompted");
+  assert.deepEqual(log.settled[1], ledger![`${instanceId}/task`]);
 });
 
-test("reattachAgentRuns: nearest enclosing offsets win; offset-less inputs keep their prompt", () => {
+test("reattachAgentRuns: ledgered iids re-attach at any depth; unledgered inputs keep their prompt", () => {
   const agent = (iid: string) => ({
     instanceId: iid,
     endpoint: "http://h",
     prompt: "go",
     tools: [],
   });
+  const adm = (offset: string): AgentAdmission => ({ streamUrl: "http://h/s", offset, submissionId: `sub-${offset}` });
   const tree = {
-    context: { offsets: { "a/1": "outer", "b/1": "outer-b" } },
+    context: {},
     children: {
       topAgent: { snapshot: { input: agent("a/1") } },
       body: {
         snapshot: {
-          context: { offsets: { "a/1": "inner" } }, // shadows the outer map for its own subtree
+          context: {},
           children: {
-            deepAgent: { snapshot: { input: agent("a/1") } },
+            deepAgent: { snapshot: { input: agent("b/1") } },
             freshAgent: { snapshot: { input: agent("never-ran") } },
-            byOuterScope: { snapshot: { input: agent("b/1") } }, // inherited through the merge
           },
         },
       },
     },
   };
-  const out = reattachAgentRuns(tree) as typeof tree & {
-    children: Record<string, { snapshot: { input: { prompt?: string; attachOffset?: string } } }>;
+  const out = reattachAgentRuns(tree, { "a/1": adm("A"), "b/1": adm("B") }) as {
+    children: Record<string, { snapshot: { input: { prompt?: string; attach?: AgentAdmission }; children?: never } }>;
   };
-  const top = out.children.topAgent!.snapshot.input as { attachOffset?: string; prompt?: string };
-  assert.equal(top.attachOffset, "outer");
+  const top = out.children.topAgent!.snapshot.input;
+  assert.deepEqual(top.attach, adm("A"));
   assert.equal(top.prompt, undefined);
   const body = (
-    out.children.body!.snapshot as {
-      children: Record<string, { snapshot: { input: { attachOffset?: string; prompt?: string } } }>;
+    out.children.body!.snapshot as unknown as {
+      children: Record<string, { snapshot: { input: { attach?: AgentAdmission; prompt?: string } } }>;
     }
   ).children;
-  assert.equal(body.deepAgent!.snapshot.input.attachOffset, "inner");
-  assert.equal(body.byOuterScope!.snapshot.input.attachOffset, "outer-b");
-  // Never admitted (no offset anywhere): keep the prompt — restore re-admits the first turn.
-  assert.equal(body.freshAgent!.snapshot.input.attachOffset, undefined);
+  assert.deepEqual(body.deepAgent!.snapshot.input.attach, adm("B"), "the flat map reaches any depth");
+  // Never admitted (nothing ledgered): keep the prompt — restore re-admits the first turn.
+  assert.equal(body.freshAgent!.snapshot.input.attach, undefined);
   assert.equal(body.freshAgent!.snapshot.input.prompt, "go");
 });

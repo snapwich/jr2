@@ -32,7 +32,7 @@ import {
   type UnknownActorLogic,
 } from "xstate";
 import { eventMap, type EventDef, type EventFrom } from "@j2/agent-protocol";
-import type { FaultTelemetry, OffsetTelemetry } from "./actor.ts";
+import type { FaultTelemetry } from "./actor.ts";
 import { agentRun } from "./flue-client.ts";
 import { gate } from "./gate.ts";
 import { attachVocabulary } from "./vocabulary.ts";
@@ -40,10 +40,9 @@ import { attachVocabulary } from "./vocabulary.ts";
 /**
  * The events j2's own mechanism delivers into any workflow machine, injected into every j2Setup
  * union. Dotted names by construction (`NAME_RE` forbids dots in workflow event names), so they
- * can never collide with a def. `agent.offset` is transitional — it retires when offsets move to
- * the host ledger (ADR-0016).
+ * can never collide with a def.
  */
-export type MechanismEvent = OffsetTelemetry | FaultTelemetry | { type: "workspace.lost" };
+export type MechanismEvent = FaultTelemetry | { type: "workspace.lost" };
 
 /** The full event union a j2Setup machine sees: the defs' derived types plus the mechanism's. */
 export type WorkflowEvent<TDefs extends readonly EventDef[]> = EventFrom<TDefs[number]> | MechanismEvent;

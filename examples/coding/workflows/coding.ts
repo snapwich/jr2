@@ -177,19 +177,16 @@ const iid = (c: BodyCtx, scope: string, role: string) => `${c.runIid}/${c.featur
  * exists to be passed. The explicit return type below still earns its keep — it rejects a field
  * agentRun does not take (this helper used to pass a `workdir` that was silently dropped; the
  * agent learns its workdir from the prompt). */
-const turn = (c: BodyCtx, role: string, scope: string, tools: string[], prompt: string): AgentRunInput => {
-  const id = iid(c, scope, role);
-  const attachOffset = c.offsets[id];
-  return {
-    agentName: role,
-    instanceId: id,
-    endpoint: c.workspace.endpoint,
-    sandbox: c.workspace.sandbox,
-    tools,
-    attachOffset,
-    prompt: attachOffset ? undefined : prompt,
-  };
-};
+const turn = (c: BodyCtx, role: string, scope: string, tools: string[], prompt: string): AgentRunInput => ({
+  // Re-attach no longer rides this input: the host ledger holds the admission and restore sets
+  // `attach` itself (ADR-0016). The step-6 rewrite deletes this helper entirely.
+  agentName: role,
+  instanceId: iid(c, scope, role),
+  endpoint: c.workspace.endpoint,
+  sandbox: c.workspace.sandbox,
+  tools,
+  prompt,
+});
 
 const retryOrEscalate = (self: string) => [
   // jr handle_no_signal: budgeted resume. Re-entering re-invokes; attachOffset re-attaches the

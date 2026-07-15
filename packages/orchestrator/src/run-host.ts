@@ -10,14 +10,14 @@
 //     not speak it): `agentSurface` / `sendToAgent` serve the Agent's Adapter (`/agents/:iid/*`),
 //     `gates` / `sendToGate` serve humans, webhooks and CI (`/runs/:id/gates/*`). Lookup,
 //     validation, delivery and lifecycle stay implemented once, in the table.
-//   - The run's `agentRun` child surfaces `agent.offset` telemetry UP to its own parent Machine
-//     directly via `sendBack`; the Machine `assign`s it into context so the durable handle rides
-//     in the snapshot. (flue stream = offset/telemetry; the agent surface = domain events.)
+//   - The run's `agentRun` children report their durable admissions through the run binding into
+//     the host LEDGER (`RunBlob.agents` — ADR-0016), persisted in the same save as the snapshot.
+//     (flue surface = lifecycle; the agent surface = domain events.)
 //
 // Durability (ADR-0007): a snapshot is persisted after every transition. Live infrastructure (the
 // FlueClient-backed `agentRun` actor) is injected via `.provide()` at start AND restore, never
 // persisted — so the snapshot is JSON-safe and restore re-attaches by rewriting the child's
-// persisted input (drop `prompt`, set `attachOffset`) rather than re-POSTing the prompt.
+// persisted input (drop `prompt`, set `attach` from the ledger) rather than re-POSTing the prompt.
 
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -35,6 +35,7 @@ import {
 import type { SandboxPort } from "./workspace.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
+import type { AgentAdmission } from "./actor.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
 
 /** The live providers a run is assembled with (ADR-0003). Built fresh at start and at restore. */
@@ -184,13 +185,23 @@ export type RunHostOptions = {
   sandbox?: SandboxPort;
 };
 
-/** What we persist per run: the machine snapshot wrapped with the run metadata restore needs. */
-type RunBlob = { workflow: string; instanceId: string; snapshot: unknown; fault?: string };
+/** What we persist per run: the machine snapshot wrapped with the run metadata restore needs.
+ * `agents` is the admission LEDGER (ADR-0016) — iid → durable admission, reported by `agentRun`
+ * through the run binding and saved in the same blob (same store, same atomicity). */
+type RunBlob = {
+  workflow: string;
+  instanceId: string;
+  snapshot: unknown;
+  agents?: Record<string, AgentAdmission>;
+  fault?: string;
+};
 
 type LiveRun = {
   record: RunRecord;
   actor: AnyActor;
   def: WorkflowDef;
+  /** The live admission ledger (ADR-0016): persisted as `RunBlob.agents`, seeded on restore. */
+  agents: Record<string, AgentAdmission>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
@@ -290,11 +301,18 @@ export class RunHost {
         continue;
       }
 
-      // Re-attach every persisted agentRun input in the TREE (GAP(5)): bodies own their durable
-      // handles, so each machine level's `context.offsets` scopes the rewrites below it.
-      const hydrated = reattachAgentRuns(blob.snapshot);
+      // Re-attach every persisted agentRun input in the TREE from the admission ledger
+      // (ADR-0016): iids are globally unique, so one flat map covers every nesting depth.
+      const agents = blob.agents ?? {};
+      const hydrated = reattachAgentRuns(blob.snapshot, agents);
 
-      const actor = this.spawn(this.assemble(def, blob.instanceId), { snapshot: hydrated as never }, record, def);
+      const actor = this.spawn(
+        this.assemble(def, blob.instanceId),
+        { snapshot: hydrated as never },
+        record,
+        def,
+        agents,
+      );
       actor.start();
       reattached.push(stored.runId);
     }
@@ -469,17 +487,18 @@ export class RunHost {
 
   /**
    * Create + track a run's root actor. Persistence is driven by the actor system's INSPECTION
-   * stream, not the root subscription: a nested body's transition (e.g. a grandchild
-   * `agent.offset` assigned into the body's context — GAP(5)) never notifies root subscribers,
-   * but it must hit the store, or a crash would restore stale offsets. Snapshot events within
-   * one macrostep are coalesced per microtask, and a persist scheduled around stop/untrack is
-   * dropped by the tracked-run guard (so `stop()` keeps the stored status "live" for restore).
+   * stream, not the root subscription: a nested body's transition never notifies root
+   * subscribers, but it must hit the store, or a crash would restore a stale tree. Snapshot
+   * events within one macrostep are coalesced per microtask, and a persist scheduled around
+   * stop/untrack is dropped by the tracked-run guard (so `stop()` keeps the stored status
+   * "live" for restore).
    */
   private spawn(
     machine: AnyStateMachine,
     options: { input?: Record<string, unknown>; snapshot?: never },
     record: RunRecord,
     def: WorkflowDef,
+    agents: Record<string, AgentAdmission> = {},
   ): AnyActor {
     let live: LiveRun | undefined;
     let scheduled = false;
@@ -497,11 +516,12 @@ export class RunHost {
         if (ev.type === "@xstate.snapshot") schedule();
       },
     });
-    live = this.track(record, actor, def);
+    live = this.track(record, actor, def, agents);
     return actor;
   }
 
-  private track(record: RunRecord, actor: AnyActor, def: WorkflowDef): LiveRun {
+  private track(record: RunRecord, actor: AnyActor, def: WorkflowDef, agents: Record<string, AgentAdmission>): LiveRun {
+    const run: LiveRun = { record, actor, def, agents, listeners: new Set() };
     // Bind the run's actor SYSTEM (shared by every actor in the tree, at any nesting depth) to
     // its identity BEFORE start, so gate/agentRun registrations resolve their run mechanically —
     // this is what run-scopes gate ids with zero workflow plumbing (ADR-0011).
@@ -511,8 +531,15 @@ export class RunHost {
       events: this.workflowEvents.get(def.name) ?? new Map(),
       table: this.table,
       sandbox: this.sandbox,
+      // The admission ledger's write half (ADR-0016): `agentRun` reports the durable handle the
+      // moment flue admits it, and the ledger hits the store in the same RunBlob save. An
+      // admission arriving around stop/untrack still lands in `run.agents` but skips the save,
+      // exactly like the persist scheduler's tracked-run guard.
+      recordAdmission: (instanceId, admission) => {
+        run.agents[instanceId] = admission;
+        if (this.runs.get(record.runId) === run) this.persist(run);
+      },
     });
-    const run: LiveRun = { record, actor, def, listeners: new Set() };
     this.runs.set(record.runId, run);
     // Ordinary persistence rides the inspection stream (see `spawn`); the subscription exists
     // for the ERROR channel: an errored actor (an invoke threw — e.g. ADR-0011's invoke-time
@@ -549,6 +576,7 @@ export class RunHost {
       workflow: run.record.workflow,
       instanceId: run.record.instanceId,
       snapshot: serialized,
+      agents: run.agents,
       fault: run.fault,
     };
     const status = machineStatus === "active" ? "live" : machineStatus;

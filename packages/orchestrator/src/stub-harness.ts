@@ -5,10 +5,12 @@
 // the durable stream open, and never act — the Machine parks exactly as it would against a
 // silent real Harness, and e2e drives it by playing the agent against `/mcp/<iid>` instead.
 //
-// Wire (verified against the real `@flue/sdk` client):
+// Wire (verified against the real `@flue/sdk` client, beta.9):
 //   POST /agents/:name/:id  {message}  → 200 { streamUrl, offset, submissionId }
-//   GET  /agents/:name/:id?offset=…            → 200 `[]` + Stream-Next-Offset/Up-To-Date
-//   GET  /agents/:name/:id?…&live=long-poll    → parked; 204 + same headers on timeout
+//   GET  /agents/:name/:id?offset=…[&view=updates] → 200 `[]` + Stream-Next-Offset/Up-To-Date
+//   GET  /agents/:name/:id?…&live=long-poll        → parked; 204 + same headers on timeout
+// (`agents.wait(admission)` reads `streamUrl?view=updates` from the admission offset; an empty
+// stream parks it — exactly the "admitted, never settles" semantics the mechanics tier needs.)
 // The client then re-polls calmly at the long-poll cadence. `close()` severs parked polls.
 //
 // This can later grow scriptable behavior or be swapped for a real local Harness without
