@@ -38,9 +38,9 @@ than coupling to coding-shaped ones.
 Teardown fires **only when the body reaches a final state**. A body that needs its Sandbox kept alive — escalation, a
 human inspecting the worktree, a human-review gate — simply parks in a non-final state (typically holding a `gate`,
 ADR-0011). We considered and rejected an `onSettled → retain | destroy` policy knob: parking expresses retention with no
-new API, and keeps the run visibly "waiting" in `j2 runs`. A parked run's Sandbox stays alive as long as its
-Orchestrator does — the Orchestrator heartbeats every CR it owns, and the operator reaps only Sandboxes whose lease has
-lapsed (abandonment, not parking — ADR-0001).
+new API, and keeps the run visibly "waiting" in `j2 runs`. A parked run's Sandbox stays alive as long as the run does —
+each live workspace renews its own lease, and the operator reaps only Sandboxes whose lease has lapsed (abandonment, not
+parking — ADR-0001).
 
 ## Commits leave via the workflow, never the workspace
 
@@ -55,9 +55,11 @@ the same contract as a temp directory.
   machinery.
 - The workspace labels the CR with its run (`j2.dev/run`, `j2.dev/workflow`), which is what `j2 ls` groups by
   (ADR-0009).
-- **Restore-reconcile, absent CR: the workspace emits, the body decides.** On restore the wrapper reconciles its Sandbox
-  CR. Present → re-attach (same endpoint — deterministic per Sandbox name; in-flight turns re-attach from the host
-  ledger, ADR-0016). Absent (lease-lapse reap, node loss) → the pod-local clone and any unpushed commits are gone, so
-  silently re-provisioning would resume into an inconsistent world (tickets closed, commits vanished); instead the
-  wrapper delivers a **`workspace.lost`** event into the restored body — same channel as `agent.fault` — and the body's
-  policy decides (route it to escalation, settle as lost, or choose to re-provision and restart).
+- **Lost workspace: the wrapper emits, the body decides.** While the body runs, a lease actor beside it renews the
+  Sandbox's keepalive and reads back whether the workspace it attached to is still there (ADR-0021) — continuously, and
+  on snapshot restore as the first tick of that same loop rather than a separate restore-time path. Intact → carry on
+  (same endpoint — deterministic per Sandbox name; in-flight turns re-attach from the host ledger, ADR-0016). Lost —
+  reaped, deleted, or a replacement pod after an eviction or node loss — → the pod-local clone and any unpushed commits
+  are gone, so silently re-provisioning would resume into an inconsistent world (tickets closed, commits vanished);
+  instead the wrapper delivers a **`workspace.lost`** event into the body — same channel as `agent.fault` — and the
+  body's policy decides (route it to escalation, settle as lost, or choose to re-provision and restart).

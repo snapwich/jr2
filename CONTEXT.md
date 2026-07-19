@@ -95,6 +95,17 @@ Sandbox and its worktree; the child Machine's states manage what happens inside 
 its final state cleans up the Sandbox. Coder and reviewer Agents share one Workspace (per-feature isolation, not
 per-Agent-run). _Avoid_: workspace pod
 
+**Lease**: The assertion that a Workspace is still wanted — an annotation one actor renews for as long as its Workspace
+runs. Nothing in the cluster represents a run, so liveness is asserted, not referenced: a lapsed lease is what lets the
+operator reap (ADR-0001). The renewal answers back, which is how the run learns about Continuity. _Avoid_: heartbeat
+(one-directional, and it named a process-global timer this replaced), keepalive (the annotation, not the concept)
+
+**Continuity**: Whether a Workspace is still the one its body attached to — the question a Lease renewal answers.
+Distinct from existence: addresses are deterministic, so a replacement pod after an eviction or node loss keeps the CR,
+the name, and the endpoint while taking the clones, worktrees, and unpushed commits with it. Broken Continuity — reaped
+or replaced — is one `workspace.lost` event, and the body's policy decides (ADR-0021). _Avoid_: liveness (that is what
+the Lease asserts outward), health (a probe concept, about serving)
+
 **Project layout**: The `<repo>/default/` + sibling-worktrees convention (gwtmux's), used in two places: the in-cluster
 source volume's `repos/<name>/default` read-only checkouts, and inside a Sandbox, where the pod-local clone is the
 `default/` and branch Worktrees sit beside it — so worktree tooling works unchanged when you exec in. _Avoid_: directory

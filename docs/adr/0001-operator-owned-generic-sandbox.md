@@ -28,17 +28,21 @@ without a rebuild, driven by the `defineAgent` initializer (keyed on instance `i
 worktree), never a per-Agent image build. The HTTP prompt body itself carries only `{message, images}`, so anything
 persona-shaping is set at provision time, not per request.
 
-## Idle GC: a heartbeat lease, not a TTL
+## Idle GC: a renewed lease, not a TTL
 
 The operator reaps **abandoned** Sandboxes — ones whose Orchestrator is gone — as the backstop behind the Orchestrator's
-own teardown (ADR-0012). "Abandoned" is defined by a lease: the owning Orchestrator periodically PATCHes a keepalive
-annotation (`j2.dev/keepalive: <timestamp>`) onto every CR it owns, and the operator deletes a Sandbox only once
-`spec.idleTimeout` (default `30m`) has elapsed since **max(creation, last keepalive)**. A run parked on a Gate for hours
-keeps its Sandbox — its Orchestrator is alive and heartbeating — while a `kill -9`'d Orchestrator's Sandboxes reap one
-idle-timeout later. An Orchestrator that restarts within the timeout re-attaches (ADR-0012's restore-reconcile) and
-resumes heartbeating; one that stays down longer finds the CR gone and delivers `workspace.lost` to the restored body.
-There are no ownerReferences in this scheme — nothing in the cluster represents a run (the Orchestrator may not even be
-a cluster resident in dev), so liveness has to be asserted, not referenced.
+own teardown (ADR-0012). "Abandoned" is defined by a lease: each live workspace renews a keepalive annotation
+(`j2.dev/keepalive: <timestamp>`) on its CR, and the operator deletes a Sandbox only once `spec.idleTimeout` (default
+`30m`) has elapsed since **max(creation, last keepalive)**. A run parked on a Gate for hours keeps its Sandbox — its
+lease is still renewing — while a `kill -9`'d Orchestrator's Sandboxes reap one idle-timeout later. An Orchestrator that
+restarts within the timeout re-attaches and resumes renewing; one that stays down longer finds the CR gone and delivers
+`workspace.lost` to the restored body. Creation counts as the initial lease, so a CR whose run faults before it ever
+reaches `running` is still reaped on schedule, unleased from birth.
+
+There are no ownerReferences in this scheme — nothing in the cluster represents a run, so liveness has to be asserted,
+not referenced. Because the Orchestrator must hold that conversation open anyway, it is also where it _learns_: the
+renewal returns the patched CR, so the same call that asserts liveness reports whether the workspace is still there and
+still the same pod (ADR-0021). One exchange, both directions.
 
 ## Known limitations
 
