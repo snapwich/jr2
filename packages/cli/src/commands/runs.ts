@@ -3,13 +3,17 @@
 
 import { parseArgs } from "node:util";
 import { J2Client } from "../client.ts";
-import { resolveTarget } from "../instance.ts";
+import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { result, type Io } from "../output.ts";
 
 export async function runs(args: string[], io: Io): Promise<number> {
-  const { values } = parseArgs({ args, allowPositionals: true, strict: false, options: { url: { type: "string" } } });
-  const target = resolveTarget(io, { url: values.url as string | undefined });
-  const client = new J2Client(target.url, io.fetch, target.token);
-  result(io, await client.list());
-  return 0;
+  const { values } = parseArgs({ args, allowPositionals: true, strict: false, options: { ...TARGET_ARGS } });
+  const target = await resolveTarget(io, targetOptions(values));
+  try {
+    const client = new J2Client(target.url, io.fetch, target.token);
+    result(io, await client.list());
+    return 0;
+  } finally {
+    target.close?.();
+  }
 }

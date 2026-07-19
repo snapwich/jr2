@@ -1,24 +1,26 @@
-// `j2 visualize <workflow> [--no-open] [--url <u>] [--port <p>]`: open the workflow's Machine in
-// the browser. The page itself is served by the orchestrator (`/viz/:name` — every orchestrator
-// carries its own visualizer), so this verb's job is only to find one to attach to, or boot one:
+// `j2 visualize <workflow> [--no-open] [-n ns] [--context c] [--url <u>] [--port <p>]`: open the
+// workflow's Machine in the browser. The page itself is served by the orchestrator (`/viz/:name` —
+// every orchestrator carries its own visualizer), so this verb's job is only to find one to attach
+// to, or boot one:
 //
-//   - an explicit address (`--url` / `J2_URL`) or a live `j2 dev` (`.j2/dev.json`) → attach, print
-//     the page URL, open the browser, exit — the server's lifecycle is not ours;
-//   - otherwise → boot an ephemeral in-process instance (same `startInstance` seam as `j2 dev`,
-//     but WITHOUT writing `.j2/dev.json` — this server is private to the visualizer) and serve
-//     until Ctrl-C. Like `dev`, the signal/blocking half is exercised e2e, not unit-tested.
-//
-// A stale `.j2/dev.json` (dev died without cleanup) fails its probe and falls through to the
-// ephemeral boot; an explicit address that doesn't answer stays a hard error.
+//   - an explicit address (`--url` / `J2_URL`) → attach, print the page URL, open the browser,
+//     exit — the server's lifecycle is not ours;
+//   - otherwise → the DEPLOYED orchestrator, resolved exactly like every run-verb (ADR-0019:
+//     current kube context + instance namespace). The page rides the port-forward, so the verb
+//     serves the tunnel until Ctrl-C — exiting would kill the page mid-look. This is also where
+//     live runs are: an ephemeral instance can only ever show an empty diagram.
+//   - not deployed → fall back to an ephemeral in-process instance, private to the visualizer
+//     (the machine structure is in this folder's code; no cluster needed to look at a diagram),
+//     and say so — the fallback shows NO live runs by construction.
 
 import { spawn } from "node:child_process";
 import { parseArgs } from "node:util";
 import { opaqueStates, startInstance } from "@j2/orchestrator";
 import { J2Client } from "../client.ts";
-import { readDevJson, resolveRoot } from "../instance.ts";
+import { resolveRoot, resolveTarget, TARGET_ARGS, targetOptions, type Target } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 
-const USAGE = "usage: j2 visualize <workflow> [--no-open] [--url <u>] [--port <p>]";
+const USAGE = "usage: j2 visualize <workflow> [--no-open] [-n ns] [--context c] [--url <u>] [--port <p>]";
 
 /** Fire-and-forget the platform opener; failure is a notice, never an exit code. */
 function openInBrowser(url: string, io: Io): void {
@@ -49,9 +51,9 @@ const vizUrl = (baseUrl: string, workflow: string): string =>
  * Advisory only: it never changes the exit code, and a doc it cannot fetch is not worth failing a
  * visualize over.
  */
-async function warnOpaque(baseUrl: string, workflow: string, io: Io): Promise<void> {
+async function warnOpaque(baseUrl: string, workflow: string, io: Io, token?: string): Promise<void> {
   try {
-    const states = opaqueStates(await new J2Client(baseUrl, io.fetch).machine(workflow));
+    const states = opaqueStates(await new J2Client(baseUrl, io.fetch, token).machine(workflow));
     if (!states.length) return;
     activity(
       io,
@@ -64,12 +66,27 @@ async function warnOpaque(baseUrl: string, workflow: string, io: Io): Promise<vo
   }
 }
 
+/** Block until SIGINT/SIGTERM, then run `close` and exit 0. */
+async function serveUntilSignal(io: Io, close: () => Promise<void> | void): Promise<never> {
+  let closing = false;
+  const shutdown = async (): Promise<void> => {
+    if (closing) return;
+    closing = true;
+    activity(io, "stopping…");
+    await close();
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+  return new Promise<never>(() => {}); // serve until a signal triggers shutdown
+}
+
 export async function visualize(args: string[], io: Io): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
     strict: false,
-    options: { url: { type: "string" }, "no-open": { type: "boolean" }, port: { type: "string" } },
+    options: { ...TARGET_ARGS, "no-open": { type: "boolean" }, port: { type: "string" } },
   });
   const workflow = positionals[0];
   if (!workflow) {
@@ -78,15 +95,15 @@ export async function visualize(args: string[], io: Io): Promise<number> {
   }
 
   /** Attach to a serving orchestrator: validate the workflow, print, open, done. */
-  const attach = async (baseUrl: string): Promise<number> => {
-    const workflows = await new J2Client(baseUrl, io.fetch).workflows();
+  const attach = async (baseUrl: string, token?: string): Promise<number> => {
+    const workflows = await new J2Client(baseUrl, io.fetch, token).workflows();
     if (!workflows.includes(workflow)) {
       activity(io, `no workflow "${workflow}" — available: ${workflows.join(", ") || "(none)"}`);
       return 1;
     }
     const url = vizUrl(baseUrl, workflow);
     activity(io, `visualizing "${workflow}" — ${url}`);
-    await warnOpaque(baseUrl, workflow, io);
+    await warnOpaque(baseUrl, workflow, io, token);
     result(io, { url, workflow });
     if (!values["no-open"]) openInBrowser(url, io);
     return 0;
@@ -94,19 +111,36 @@ export async function visualize(args: string[], io: Io): Promise<number> {
 
   // An explicit address is trusted: if it doesn't answer, that's a hard error (main → exit 1).
   const explicit = (values.url as string | undefined) ?? io.env.J2_URL;
-  if (explicit) return attach(explicit);
+  if (explicit) return attach(explicit, io.env.J2_TOKEN);
 
-  const root = resolveRoot(io.cwd);
-  const dev = readDevJson(root);
-  if (dev) {
-    try {
-      return await attach(dev.url);
-    } catch {
-      activity(io, `stale .j2/dev.json (no orchestrator at ${dev.url}) — booting one just for the visualizer`);
+  // The deployed instance first (ADR-0019: same resolution as every run-verb) — that is where
+  // live runs are. Resolution failing (not deployed / no kube context) falls through to the
+  // ephemeral instance, loudly.
+  let target: Target | undefined;
+  try {
+    target = await resolveTarget(io, targetOptions(values));
+  } catch (err) {
+    activity(
+      io,
+      `${err instanceof Error ? err.message : String(err)}\n` +
+        "  → serving an ephemeral orchestrator instead — the diagram works, but it has NO live runs",
+    );
+  }
+  if (target) {
+    const t = target;
+    const code = await attach(t.url, t.token);
+    if (code !== 0 || !t.close) {
+      t.close?.();
+      return code;
     }
+    // The page's transport IS this process's port-forward: hold it open until Ctrl-C.
+    activity(io, "  port-forwarding the deployed orchestrator; press Ctrl-C to stop");
+    return serveUntilSignal(io, () => t.close?.());
   }
 
-  // No server to attach to: serve this instance ourselves until Ctrl-C.
+  const root = resolveRoot(io.cwd);
+
+  // No deployed instance: serve this folder's machine structure ourselves until Ctrl-C.
   const inst = await startInstance({ dir: root, port: values.port ? Number(values.port) : undefined });
   if (!inst.workflows.includes(workflow)) {
     activity(io, `no workflow "${workflow}" — available: ${inst.workflows.join(", ") || "(none)"}`);
@@ -119,18 +153,5 @@ export async function visualize(args: string[], io: Io): Promise<number> {
   await warnOpaque(inst.url, workflow, io);
   result(io, { url, workflow }); // before blocking, so `--no-open | jq` yields data immediately
   if (!values["no-open"]) openInBrowser(url, io);
-
-  let closing = false;
-  const shutdown = async (): Promise<void> => {
-    if (closing) return;
-    closing = true;
-    activity(io, "stopping…");
-    await inst.close();
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
-
-  await new Promise<void>(() => {}); // serve until a signal triggers shutdown
-  return 0; // unreachable
+  return serveUntilSignal(io, () => inst.close());
 }

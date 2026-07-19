@@ -1,0 +1,347 @@
+// `j2 up` (ADR-0019): the one converging command. These tests drive the LAYER DECISIONS — ownership
+// guardrails, operator never-downgrade, image staleness/delivery, Secret idempotence, preflights —
+// through injected kube/build/confirm fakes; the real subprocess ports stay thin and are exercised
+// by the @kind tier. Manifest shapes are asserted incidentally via what the fake kube captures.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { up } from "../src/commands/up.ts";
+import type { KubeAdmin, KubeObject } from "../src/kube.ts";
+import type { BuildPort } from "../src/build.ts";
+import type { Io } from "../src/output.ts";
+
+/** A scriptable cluster: `objects` keyed "namespace/kind/name" ("" namespace for cluster-scoped). */
+class FakeCluster implements KubeAdmin {
+  objects = new Map<string, KubeObject>();
+  applied: string[] = [];
+  labeled: Array<Record<string, unknown>> = [];
+  deleted: string[] = [];
+  rollouts: string[] = [];
+  ctx = "kind-test";
+
+  set(namespace: string, kind: string, name: string, obj: Partial<KubeObject>): void {
+    this.objects.set(`${namespace}/${kind.toLowerCase()}/${name}`, {
+      metadata: { name, ...(obj.metadata ?? {}) },
+      ...obj,
+    } as KubeObject);
+  }
+
+  async context(): Promise<string | undefined> {
+    return this.ctx;
+  }
+  async getJson<T = KubeObject>(opts: { kind: string; name: string; namespace?: string }): Promise<T | undefined> {
+    return this.objects.get(`${opts.namespace ?? ""}/${opts.kind.toLowerCase()}/${opts.name}`) as T | undefined;
+  }
+  async apply(opts: { manifest: string }): Promise<void> {
+    this.applied.push(opts.manifest);
+  }
+  async label(opts: Record<string, unknown>): Promise<void> {
+    this.labeled.push(opts);
+  }
+  async deleteObject(opts: { kind: string; name: string; namespace?: string }): Promise<void> {
+    this.deleted.push(`${opts.namespace ?? ""}/${opts.kind}/${opts.name}`);
+  }
+  async deleteManifest(): Promise<void> {
+    this.deleted.push("(manifest)");
+  }
+  async waitRollout(opts: { deployment: string; namespace: string }): Promise<void> {
+    this.rollouts.push(`${opts.namespace}/${opts.deployment}`);
+  }
+  probes: string[] = [];
+  probeCaPems: Array<string | undefined> = [];
+  probeFails = false;
+  async runOneShot(opts: { script: string; caPem?: string }): Promise<string> {
+    this.probes.push(opts.script);
+    this.probeCaPems.push(opts.caPem);
+    if (this.probeFails) throw new Error("no tool_calls in the completion");
+    return "PROVIDER OK";
+  }
+}
+
+/** A build port that records instead of building; `hashOf` is what docker would have produced. */
+function fakeBuild(record: string[]): BuildPort {
+  return {
+    bundle: async (_dir, out) => void record.push(`bundle→${out ? "out" : ""}`),
+    build: async (tag) => void record.push(`build ${tag}`),
+    push: async (tag) => void record.push(`push ${tag}`),
+    kindLoad: async (tag, cluster) => void record.push(`kind-load ${tag} → ${cluster}`),
+  };
+}
+
+async function mkInstance(config: string, name = "myinst"): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), `j2-up-${name}-`));
+  await writeFile(join(root, "j2.config.ts"), config);
+  await writeFile(join(root, "package.json"), JSON.stringify({ name: `inst-${name}`, version: "0.0.0" }));
+  await mkdir(join(root, "workflows"), { recursive: true });
+  return root;
+}
+
+type World = { io: Io; kube: FakeCluster; built: string[]; err: string[]; confirms: string[] };
+
+function mkWorld(root: string, over: { confirm?: boolean; env?: Record<string, string> } = {}): World {
+  const kube = new FakeCluster();
+  const built: string[] = [];
+  const err: string[] = [];
+  const confirms: string[] = [];
+  const io: Io = {
+    stdout: () => {},
+    stderr: (s) => err.push(s),
+    env: over.env ?? {},
+    cwd: root,
+    kubeAdmin: kube,
+    build: fakeBuild(built),
+    confirm: async (q) => {
+      confirms.push(q);
+      return over.confirm ?? true;
+    },
+  };
+  return { io, kube, built, err, confirms };
+}
+
+test("up refuses a namespace labeled for another instance", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "other" } } });
+
+  assert.equal(await up([], w.io), 1);
+  assert.match(w.err.join("\n"), /another instance.*other/s);
+  assert.deepEqual(w.kube.applied, [], "nothing may be applied to someone else's namespace");
+});
+
+test("first contact asks; declining bails before anything is applied; --yes skips the ask", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+
+  const declined = mkWorld(root, { confirm: false });
+  assert.equal(await up([], declined.io), 1);
+  assert.equal(declined.confirms.length, 1);
+  assert.match(declined.confirms[0]!, /myinst/);
+  assert.match(declined.confirms[0]!, /kind-test/, "the ask names the context it would touch");
+  assert.deepEqual(declined.kube.applied, []);
+
+  const yes = mkWorld(root, { confirm: false }); // confirm would say no — but --yes must never ask
+  assert.equal(await up(["--yes"], yes.io), 0);
+  assert.equal(yes.confirms.length, 0);
+  assert.ok(yes.kube.applied.length > 0, "converged without prompting");
+});
+
+test("operator: never downgraded — a newer deployed operator is left, with a warning", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  w.kube.set("j2-system", "deployment", "j2-controller-manager", {
+    metadata: { name: "j2-controller-manager", labels: { "j2.dev/version": "99.0.0" } },
+  });
+
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join("\n"), /never downgraded/);
+  assert.ok(
+    !w.kube.applied.some((m) => m.includes("controller-manager")),
+    "the operator manifest must not be applied over a newer one",
+  );
+});
+
+test("operator: manage:false skips the layer; operator.image overrides the ref", async () => {
+  const skipRoot = await mkInstance(`export default { name: "a", operator: { manage: false } };\n`, "a");
+  const w1 = mkWorld(skipRoot);
+  assert.equal(await up(["--yes"], w1.io), 0);
+  assert.ok(!w1.kube.applied.some((m) => m.includes("controller-manager")));
+
+  const overrideRoot = await mkInstance(
+    `export default { name: "b", operator: { image: "j2-operator:local" } };\n`,
+    "b",
+  );
+  const w2 = mkWorld(overrideRoot);
+  assert.equal(await up(["--yes"], w2.io), 0);
+  const operatorApply = w2.kube.applied.find((m) => m.includes("controller-manager"));
+  assert.ok(operatorApply, "the operator install was applied");
+  assert.match(operatorApply, /image: j2-operator:local/);
+  assert.ok(!operatorApply.includes("controller:latest"), "the placeholder image ref was substituted");
+});
+
+test("image: fresh hash skips the build; stale hash builds and kind-loads (no registry, kind context)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const stale = mkWorld(root);
+  assert.equal(await up(["--yes"], stale.io), 0);
+  assert.ok(stale.built.some((b) => b.startsWith("build j2-instance-myinst:")));
+  assert.ok(
+    stale.built.some((b) => b.includes("kind-load") && b.includes("→ test")),
+    `delivered by kind load onto the context's cluster (got: ${stale.built.join(", ")})`,
+  );
+
+  // Second run against a Deployment already stamped with the same hash: the whole layer skips.
+  const tag = stale.built.find((b) => b.startsWith("build "))!.slice("build ".length);
+  const hash = tag.split(":")[1]!;
+  const fresh = mkWorld(root);
+  fresh.kube.set("myinst", "deployment", "j2-orchestrator", {
+    metadata: { name: "j2-orchestrator", labels: { "j2.dev/content-hash": hash } },
+  });
+  fresh.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  assert.equal(await up([], fresh.io), 0);
+  assert.deepEqual(fresh.built, [], "no build, no load");
+});
+
+test("image: a registry pushes instead of kind-loading; a non-kind context without one fails loudly", async () => {
+  const pushRoot = await mkInstance(`export default { name: "p", registry: "reg.example.com/j2" };\n`, "p");
+  const w = mkWorld(pushRoot);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.ok(w.built.some((b) => b.startsWith("push reg.example.com/j2/j2-instance-p:")));
+  assert.ok(!w.built.some((b) => b.includes("kind-load")));
+
+  const bareRoot = await mkInstance(`export default { name: "q" };\n`, "q");
+  const w2 = mkWorld(bareRoot);
+  w2.kube.ctx = "gke-prod";
+  await assert.rejects(() => up(["--yes"], w2.io), /not a kind cluster and no `registry`/);
+});
+
+test("secret: token + signing key persist across re-runs; harness.env literals materialize", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", harness: { env: [{ name: "API_KEY", value: "k123" }] } };\n`,
+  );
+  const w = mkWorld(root);
+  w.kube.set("myinst", "secret", "j2-instance", {
+    metadata: { name: "j2-instance" },
+    data: { J2_INSTANCE_TOKEN: Buffer.from("tok-old").toString("base64") },
+  });
+
+  assert.equal(await up(["--yes"], w.io), 0);
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-instance")!;
+  assert.equal(instance.stringData.J2_INSTANCE_TOKEN, "tok-old", "an existing token is kept (Sandboxes hold it)");
+  assert.ok(instance.stringData.J2_SIGNING_KEY, "a missing signing key is minted");
+
+  // The ADR-0013 boundary: harness env lands in its OWN Secret — the Harness container envFroms
+  // j2-harness-env, and the Instance token/signing key must be unreachable from Agent code.
+  const harnessEnv = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-harness-env")!;
+  assert.ok(harnessEnv, "a separate j2-harness-env Secret is applied");
+  assert.equal(harnessEnv.stringData.API_KEY, "k123", "config env values materialize there");
+  assert.equal(instance.stringData.API_KEY, undefined, "…and not beside the Instance token");
+  assert.equal(harnessEnv.stringData.J2_INSTANCE_TOKEN, undefined, "the token never rides the harness Secret");
+});
+
+test("provider apiKey rides the Secret (J2_PROVIDER_API_KEY), never the agents ConfigMap", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1", apiKey: "sk-secret", contextWindow: 131072, maxTokens: 32768, models: { "qwen-x": { contextWindow: 40960 } } } } };\n`,
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const secret = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-harness-env")!;
+  assert.equal(secret.stringData.J2_PROVIDER_API_KEY, "sk-secret");
+
+  const cm = items.find((i) => i.kind === "ConfigMap")!;
+  assert.ok(!cm.data["agents.json"].includes("sk-secret"), "the key never lands in a ConfigMap");
+  assert.match(cm.data["agents.json"], /baseUrl/, "the rest of the provider config does ride the ConfigMap");
+  // Token limits are model properties, not credentials — they DO ride the ConfigMap.
+  const spec = JSON.parse(cm.data["agents.json"]) as { harness: { provider: Record<string, unknown> } };
+  assert.equal(spec.harness.provider.contextWindow, 131072);
+  assert.equal(spec.harness.provider.maxTokens, 32768);
+  assert.deepEqual(spec.harness.provider.models, { "qwen-x": { contextWindow: 40960 } });
+});
+
+test("caBundle: the PEM rides a j2-ca ConfigMap and the provider preflight; a missing file fails loudly", async () => {
+  const config =
+    `export default { name: "myinst", harness: { caBundle: "ca.crt", ` +
+    `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.internal/v1" } } };\n`;
+  const pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
+
+  const root = await mkInstance(config);
+  await writeFile(join(root, "ca.crt"), pem);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  // A ConfigMap, not a Secret — CA certs are public data (ADR-0020).
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-ca")!;
+  assert.equal(cm.data["ca.crt"], pem);
+  // The preflight pod trusts the same bundle the Harness will — else it fails where pods succeed.
+  assert.deepEqual(w.kube.probeCaPems, [pem]);
+
+  const missing = mkWorld(await mkInstance(config, "missing"));
+  await assert.rejects(() => up(["--yes"], missing.io), /caBundle.*relative to the instance folder/s);
+});
+
+test("no caBundle → no j2-ca ConfigMap", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  assert.ok(!items.some((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-ca"));
+});
+
+test("a referenced-but-missing Secret fails the converge naming it, with the creation hint", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", harness: { envFrom: [{ secretRef: { name: "anthropic" } }] } };\n`,
+  );
+  const w = mkWorld(root);
+  await assert.rejects(() => up(["--yes"], w.io), /Secret "anthropic".*create secret generic anthropic/s);
+});
+
+test("converge applies the instance objects and waits for the rollout", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const kinds = (JSON.parse(list) as { items: Array<{ kind: string }> }).items.map((i) => i.kind);
+  for (const k of ["PersistentVolumeClaim", "ServiceAccount", "ConfigMap", "Secret", "Deployment", "Service"]) {
+    assert.ok(kinds.includes(k), `applies a ${k}`);
+  }
+  assert.deepEqual(w.kube.rollouts, ["myinst/j2-orchestrator"]);
+});
+
+test("provider preflight: probed from inside the cluster; a failing probe fails the converge", async () => {
+  const config =
+    `export default { name: "myinst", harness: { model: "vllm/qwen-x", ` +
+    `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } } };\n`;
+
+  const ok = mkWorld(await mkInstance(config));
+  assert.equal(await up(["--yes"], ok.io), 0);
+  assert.equal(ok.kube.probes.length, 1, "one in-cluster probe ran");
+  assert.match(ok.kube.probes[0]!, /10\.0\.0\.5:8000/, "the probe targets the configured baseUrl");
+  assert.match(ok.kube.probes[0]!, /qwen-x/, "…with the configured model (provider prefix stripped)");
+  assert.match(ok.kube.probes[0]!, /tool_calls/, "…and demands a tool-call completion (ADR-0019)");
+
+  const bad = mkWorld(await mkInstance(config, "bad"));
+  bad.kube.probeFails = true;
+  await assert.rejects(() => up(["--yes"], bad.io), /provider.*enable-auto-tool-choice/s);
+});
+
+test("ssh repo urls with no j2-git-ssh Secret: offer a deploy key — accept creates it, decline bails", async () => {
+  const config = `export default { name: "myinst", repos: [{ name: "app", url: "git@github.com:o/app" }] };\n`;
+
+  const accept = mkWorld(await mkInstance(config));
+  accept.io.confirm = async () => true;
+  accept.io.sshKeygen = async () => ({ privateKey: "PRIV", publicKey: "ssh-ed25519 AAAA j2-git-ssh" });
+  assert.equal(await up([], accept.io), 0);
+  const secretApply = accept.kube.applied.find((m) => m.includes("j2-git-ssh"))!;
+  assert.ok(secretApply, "the deploy-key Secret is applied");
+  assert.match(secretApply, /PRIV/);
+  assert.match(accept.err.join("\n"), /ssh-ed25519 AAAA/, "the PUBLIC key is printed for registration");
+
+  const decline = mkWorld(await mkInstance(config, "decl"));
+  decline.io.confirm = async (q) => !/deploy keypair/.test(q); // yes to first-contact, no to the key
+  decline.io.sshKeygen = async () => assert.fail("declined — no key may be generated");
+  await assert.rejects(() => up([], decline.io), /j2-git-ssh/);
+
+  // An existing Secret means no offer at all.
+  const has = mkWorld(await mkInstance(config, "has"));
+  has.kube.set("myinst", "secret", "j2-git-ssh", { metadata: { name: "j2-git-ssh" } });
+  has.io.sshKeygen = async () => assert.fail("Secret exists — no key may be generated");
+  assert.equal(await up(["--yes"], has.io), 0);
+});
+
+test("re-running against the instance's own namespace converges silently (no prompt)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root, { confirm: false }); // any prompt would fail the run
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+
+  assert.equal(await up([], w.io), 0);
+  assert.equal(w.confirms.length, 0, "it's home — no prompt");
+});

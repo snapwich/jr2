@@ -5,7 +5,7 @@
 
 import { parseArgs } from "node:util";
 import { J2Client } from "../client.ts";
-import { resolveTarget } from "../instance.ts";
+import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 
 export async function logs(args: string[], io: Io): Promise<number> {
@@ -13,28 +13,32 @@ export async function logs(args: string[], io: Io): Promise<number> {
     args,
     allowPositionals: true,
     strict: false,
-    options: { follow: { type: "boolean", short: "f" }, url: { type: "string" } },
+    options: { follow: { type: "boolean", short: "f" }, ...TARGET_ARGS },
   });
   const runId = positionals[0];
   if (!runId) {
     activity(io, "usage: j2 logs <runId> [-f]");
     return 2;
   }
-  const target = resolveTarget(io, { url: values.url as string | undefined });
-  const client = new J2Client(target.url, io.fetch, target.token);
+  const target = await resolveTarget(io, targetOptions(values));
+  try {
+    const client = new J2Client(target.url, io.fetch, target.token);
 
-  for await (const ev of client.events(runId)) {
-    if (ev.kind === "emit") {
-      activity(io, `emit ${JSON.stringify(ev.event)}`);
-      continue;
+    for await (const ev of client.events(runId)) {
+      if (ev.kind === "emit") {
+        activity(io, `emit ${JSON.stringify(ev.event)}`);
+        continue;
+      }
+      if (ev.kind === "retry") {
+        activity(io, `retry ${ev.child} attempt ${ev.attempt} (${ev.reason})`);
+        continue;
+      }
+      result(io, ev.status);
+      if (!values.follow) break;
+      if (ev.status.status !== "active") break;
     }
-    if (ev.kind === "retry") {
-      activity(io, `retry ${ev.child} attempt ${ev.attempt} (${ev.reason})`);
-      continue;
-    }
-    result(io, ev.status);
-    if (!values.follow) break;
-    if (ev.status.status !== "active") break;
+    return 0;
+  } finally {
+    target.close?.();
   }
-  return 0;
 }

@@ -44,7 +44,7 @@ export async function init(args: string[], io: Io): Promise<number> {
     await writeFile(full, file.content);
     activity(io, `  create ${file.path}`);
   }
-  activity(io, "done — `j2 dev` to boot it, then `j2 run ping`");
+  activity(io, "done — `pnpm install && j2 up` to deploy it, then `j2 run ping`");
   return 0;
 }
 
@@ -103,6 +103,10 @@ const GITIGNORE = `# Runtime state the orchestrator writes under the instance ro
 # and the dev server's live address. Never checked in.
 .j2/
 node_modules/
+
+# Deployment-varying values + creds this instance's j2.config.ts reads from the environment; the
+# \`j2\` CLI loads this file automatically (ADR-0019). Never checked in.
+.env
 `;
 
 const PING_TS = `// The simplest j2 workflow: no Agent, no Workspace, no data plane at all. A Machine is free to "just

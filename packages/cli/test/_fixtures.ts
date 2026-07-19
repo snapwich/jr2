@@ -4,9 +4,11 @@
 //
 //   feed: working ─(emit "note")▶ notify ▶ done   (exercises replay + a mid-flight emit + terminal)
 //   loop: working {}                              (stays active — exercises list / down-channel)
+//   gated: review holds gate "review-1"           (exercises the gate-delivery down-channel)
 
 import { emit, setup } from "xstate";
-import { RunHost, SqliteSnapshotStore, createApp } from "@j2/orchestrator";
+import { z } from "zod";
+import { RunHost, SqliteSnapshotStore, createApp, defineEvent, j2Setup } from "@j2/orchestrator";
 import { J2Client } from "../src/client.ts";
 
 function feedMachine() {
@@ -39,6 +41,31 @@ function loopMachine() {
   });
 }
 
+function gatedMachine() {
+  const approve = defineEvent({ name: "approve", audience: "external", input: z.object({}) });
+  const requestChanges = defineEvent({
+    name: "request_changes",
+    audience: "external",
+    input: z.object({ notes: z.string() }),
+  });
+  return j2Setup({
+    types: {} as { context: Record<string, never>; input: { instanceId: string } },
+    events: [approve, requestChanges],
+  }).createMachine({
+    id: "gated",
+    context: {},
+    initial: "review",
+    states: {
+      review: {
+        invoke: { src: "gate", input: { gate: "review-1", meta: { title: "t" } } },
+        on: { approve: "approved", request_changes: "changes" },
+      },
+      approved: { type: "final" },
+      changes: {},
+    },
+  });
+}
+
 export type Harness = { host: RunHost; app: ReturnType<typeof createApp>; client: J2Client };
 
 /** A fresh host (in-memory store) with `feed` + `loop` registered, plus a socket-free J2Client. */
@@ -48,6 +75,7 @@ export async function mkHarness(): Promise<Harness> {
   const host = new RunHost({ store });
   host.register({ name: "feed", machine: feedMachine(), provide: () => ({}) });
   host.register({ name: "loop", machine: loopMachine(), provide: () => ({}) });
+  host.register({ name: "gated", machine: gatedMachine(), provide: () => ({}) });
   const app = createApp(host);
   const client = new J2Client("http://test", (url, init) => Promise.resolve(app.request(url, init)));
   return { host, app, client };

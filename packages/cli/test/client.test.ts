@@ -9,7 +9,7 @@ import { mkHarness } from "./_fixtures.ts";
 
 test("workflows() and list() report registered + live runs", async () => {
   const { client } = await mkHarness();
-  assert.deepEqual((await client.workflows()).sort(), ["feed", "loop"]);
+  assert.deepEqual((await client.workflows()).sort(), ["feed", "gated", "loop"]);
 
   const { runId } = await client.start("loop");
   const list = await client.list();
@@ -54,6 +54,24 @@ test("events() replays current status, forwards emits, ends on terminal; read() 
 test("read() is undefined for an unknown run", async () => {
   const { client } = await mkHarness();
   assert.equal(await client.read("nope"), undefined);
+});
+
+test("sendToGate() delivers a workflow event with input, surfaces refusals as throws", async () => {
+  const { client } = await mkHarness();
+  const { runId } = await client.start("gated");
+
+  // The open gate is discoverable on the run status (what `j2 status` shows).
+  const status = (await client.read(runId)) as unknown as { gates?: Array<{ gate: string }> };
+  assert.equal(status?.gates?.[0]?.gate, "review-1");
+
+  // Bad payload (schema) and unknown gate are thrown, not swallowed.
+  await assert.rejects(() => client.sendToGate(runId, "review-1", { type: "request_changes" }), /notes/);
+  await assert.rejects(() => client.sendToGate(runId, "nope", { type: "approve" }), /no open gate/);
+
+  // A valid delivery transitions the gated state to its final state — the run settles.
+  await client.sendToGate(runId, "review-1", { type: "approve" });
+  const after = await client.read(runId);
+  assert.equal(after?.status, "done");
 });
 
 test("send() carries CANCEL, and surfaces the host's refusal of anything else", async () => {

@@ -22,6 +22,12 @@
   },
   "devDependencies": {
     "@types/node": "^26.0.1",
-    "xstate": "^5.18.0"
-  }
+    "xstate": "^5.18.0",
+    "zod": "^4.4.3"
+  },
+  "files": [
+    "bin",
+    "src",
+    "manifests"
+  ]
 }

@@ -86,6 +86,17 @@ export class J2Client {
     return (await this.json(res)) as RunStatus;
   }
 
+  /** `POST /runs/:runId/gates/:gate/events` — deliver a workflow-defined event to an open gate
+   * (ADR-0011). The body is `{ type, ...input }`, validated against the event's schema host-side;
+   * an unknown gate (404) or rejected payload (400) surfaces as a throw. */
+  async sendToGate(runId: string, gate: string, event: { type: string } & Record<string, unknown>): Promise<void> {
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/runs/${encodeURIComponent(runId)}/gates/${encodeURIComponent(gate)}/events`,
+      { method: "POST", headers: this.headers(JSON_HEADERS), body: JSON.stringify(event) },
+    );
+    await this.json(res); // surface { error } as a throw; ignore the { ok:true } body
+  }
+
   /** `POST /runs/:runId/events` — feed one run-control event into a live run. */
   async send(runId: string, event: RunEvent): Promise<void> {
     const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
