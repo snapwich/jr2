@@ -15,17 +15,20 @@ workflow, graph
 registers and runs. Lives as a code module in the instance's `workflows/` directory (contract: `export const machine`);
 **not** declarative config, and **not** shipped by the kit. _Avoid_: app, pipeline
 
-**Orchestrator**: The runtime that executes Machines. Deployed as a single-writer Kubernetes app (`replicas: 1`,
-Postgres-backed). `replicas: 1` means single _writer_ (no split-brain on the snapshot), not one workflow per process —
-one Orchestrator hosts **many** Workflows and many runs, fed by both the Work Source (pull) and the HTTP API (push).
-_Avoid_: runner, engine
+**Orchestrator**: The runtime that executes Machines. A single-writer daemon (`replicas: 1`, always in-cluster —
+ADR-0019) persisting run snapshots to its store (sqlite by default, Postgres opt-in). `replicas: 1` means single
+_writer_ (no split-brain on the snapshot), not one workflow per process — one Orchestrator hosts **many** Workflows and
+many runs, fed by both Sources (pull) and the HTTP API (push). _Avoid_: runner, engine
 
-**Instance**: A user-owned folder scaffolded by `j2 init` — `j2.config.ts` + a discovered `workflows/` directory +
-manifests (mirroring flue's `flue.config.ts` + `agents/`). `j2 build` bakes the engine + the instance's workflows into
-one image; this folder is the deployed Orchestrator. _Avoid_: workspace (collides), project
+**Instance**: A user-owned folder scaffolded by `j2 init` — `j2.config.ts` + discovered `workflows/` and `agents/`
+directories + manifests (mirroring flue's `flue.config.ts` + `agents/`). `j2 up` bakes the engine + the instance's
+workflows into one image and converges the target cluster; this folder is the deployed Orchestrator. A deployment
+assembly, not a sharing unit — reusable workflows/agents travel as npm packages (ADR-0019). _Avoid_: workspace
+(collides), project
 
-**j2 CLI**: The `j2` binary — the primary interface to an Instance (`init`, `build`, `deploy`, `run`, status). Users
-reach for the CLI far more than the raw HTTP API; the CLI sits on top of that API. _Avoid_: cli tool
+**j2 CLI**: The `j2` binary — the primary interface to an Instance (`init`, `up`, `run`, status). Operates on the
+current `kubectl` context, argo/cilium-style; users reach for the CLI far more than the raw HTTP API; the CLI sits on
+top of that API. _Avoid_: cli tool
 
 **j2 Application**: An Instance under GitOps — its manifests deploy the Orchestrator plus config and secrets. The same
 folder runs on kind locally and on a real cluster. _Avoid_: deployment
@@ -33,8 +36,9 @@ folder runs on kind locally and on a real cluster. _Avoid_: deployment
 **Actor**: An xstate actor inside a Machine that drives a remote worker via a flue client. The local handle in the
 Orchestrator; the compute is remote. _Avoid_: agent actor
 
-**Agent**: A configured worker persona — model + instructions + tools (e.g. coder, reviewer). What a user customizes.
-Maps to a flue `createAgent` definition. _Avoid_: role, persona
+**Agent**: A configured worker persona — model + instructions + tools (e.g. coder, reviewer). What a user customizes: a
+plain-data definition in the instance's `agents/<name>.ts` (filename = Agent name, mirroring `workflows/`); j2 maps it
+onto a flue agent definition when it assembles the Harness image (ADR-0018). _Avoid_: role, persona
 
 **Sandbox**: The isolated pod that gives an Agent a host-level sandbox plus its own filesystem. The primary motivation
 for the Kubernetes architecture — agents must not share host resources (ports, filesystem, process space). _Avoid_:
@@ -91,12 +95,11 @@ Sandbox and its worktree; the child Machine's states manage what happens inside 
 its final state cleans up the Sandbox. Coder and reviewer Agents share one Workspace (per-feature isolation, not
 per-Agent-run). _Avoid_: workspace pod
 
-**Project layout**: How a project's repos sit on disk. Each repo has a `default/` main checkout with feature Worktrees
-as siblings. _Single-repo mode_: `default/` and worktrees live at the project root. _Multi-repo mode_: repos are named
-`<repo>/` subdirectories, each with its own `default/` and sibling worktrees. Inherited from jr; humans and the
-Orchestrator share this layout. _Avoid_: directory structure, repo tree
+**Project layout**: The `<repo>/default/` + sibling-worktrees convention (gwtmux's), used in two places: the in-cluster
+source volume's `repos/<name>/default` read-only checkouts, and inside a Sandbox, where the pod-local clone is the
+`default/` and branch Worktrees sit beside it — so worktree tooling works unchanged when you exec in. _Avoid_: directory
+structure, repo tree
 
-**Worktree**: A git worktree aligned to a **feature** — one feature = one worktree = one branch = one PR. Sibling to
-`default/`, named from the feature ticket (`<external-ref>-<title>`, else `<ticket-id>-<title>`). Tasks within a feature
-are sequential commits on the worktree's branch, not separate worktrees. Stacked features branch off the upstream
-feature's branch, not `origin/HEAD`. _Avoid_: per-task worktree, task branch
+**Worktree**: A git worktree for the one branch a Workspace works on — sibling to the Sandbox's `default/` clone; work
+is sequential commits on that branch, not separate worktrees. The branch's name and granularity (per feature, per task,
+from a ticket, from run input) are the Workflow's policy, not j2's. _Avoid_: per-task worktree, task branch

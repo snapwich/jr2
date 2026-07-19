@@ -11,7 +11,7 @@ the consumer values j2 already had. Each absorption follows, with what it delete
 `agentRun` walks `self._parent` to the nearest registered ancestor. Invoked-actor registration (not an entry action) is
 what makes this restore-safe: invoked actors restart on snapshot restore, entry actions do not. Not under a workspace →
 fail loudly, unless input carries an explicit `endpoint` (the dev-stub, workspace-less path). Body-facing workspace
-handles shrink to `{ workdir, repos, branch }` (amends [ADR-0012](0012-workspace-wrapper-machine.md)).
+handles are `{ workdir, repos, branch }` ([ADR-0012](0012-workspace-wrapper-machine.md)).
 
 **[ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)'s token scoping survives and strengthens**: the registration
 records the Sandbox resolved from the enclosing wrapper — the same deterministic `workspaceName()` the token was minted
@@ -24,9 +24,9 @@ cross-feature event injection stays impossible.
 `agentRun` reports `iid → offset` through the run binding into a ledger persisted beside the snapshot in the same
 `RunBlob` save. Iids are globally unique, so restore's recursive nested-context offset folding dies with the context
 leg; restore still rewrites the child's persisted input ([ADR-0007](0007-durable-machine-state.md)'s invariant stands
-verbatim — only the offset's location moved). Implementation note: flue ≥ 1.0.0-beta.8 ships
-`agents.observe()/history()` (reconnect-from-offset, materialized snapshots) and `agents.abort()` — bump the SDK pin
-(beta.5) before hand-rolling more; the abort also retires ADR-0002's "flue exposes no cancel primitive".
+verbatim — only the offset's location moved). flue's own machinery does the heavy lifting (SDK pinned at 1.0.0-beta.9):
+`agents.wait(admission)` reconnects from the offset, and `agents.abort()` is the deliberate terminal cancel
+([ADR-0002](0002-duplex-streaming-actor.md)).
 
 ## Retries and nudges are absorbed; the workflow sees one terminal `agent.fault` (deletes the retry bookkeeping)
 

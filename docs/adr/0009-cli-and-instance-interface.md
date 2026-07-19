@@ -2,176 +2,152 @@
 
 ADR-0008 fixed that j2 is a library + CLI and that an Orchestrator instance is a user-owned folder hosting many
 workflows. This ADR fixes the **instance folder convention**, the **orchestrator HTTP API**, and the **`j2` CLI** — all
-shaped to mirror flue so both sides of the system speak one set of conventions.
+shaped to mirror flue so both sides of the system speak one set of conventions. Operational mechanics (how `j2 up`
+converges a cluster, addressing, secrets) live in ADR-0019.
 
 ## Instance folder convention (flue-shaped, filename discovery)
 
 ```
 my-orchestrator/
   j2.config.ts     # instance config — minimal; convention over configuration (see below)
-  workflows/       # filename-discovered: workflows/coding.ts (named exports: machine + events) → "coding"
-  agents/          # filename-discovered flue createAgent personas; compose @j2/agents or define custom
-  manifests/       # Deployment(replicas:1)+Service+operator RBAC+PVCs — same on kind & cluster
-  .env             # local secrets; cluster uses Secret refs
-  repos/           # source-of-truth: repos/<name>/default RO checkout (PoC #2); hostPath in dev, PVC deployed
+  workflows/       # filename-discovered: workflows/review.ts (contract: export const machine) → "review"
+  agents/          # filename-discovered plain-data Agent definitions (ADR-0018); j2 assembles the Harness
+  manifests/       # user-supplied objects applied by `j2 up` (e.g. SealedSecrets); optional
+  .env             # local secrets + deployment-varying env; uncommitted
+  .j2/             # scratch; nothing durable lives on the host (state is in-cluster, ADR-0019)
 ```
 
-`workflows/<name>.ts` registers a workflow named `<name>` via **named exports** — `export const machine` (the assembled
-Machine) and `export const events` (its declared event vocabulary, ADR-0011); `agents/<name>.ts` registers a persona —
-exactly mirroring flue's `agents/hello-world.ts → hello-world`. No central registry file.
+`workflows/<name>.ts` registers a workflow named `<name>` via `export const machine` — the one-export module contract
+(ADR-0015; vocabulary rides the machine object, so there is no manifest export). `agents/<name>.ts` registers an Agent
+definition the same way (`export default defineAgent({…})`, ADR-0018) — exactly mirroring flue's
+`agents/hello-world.ts → hello-world`. No central registry file.
 
-## Minimum config: `repos`, and the source volume
+**The instance repo is a deployment assembly, not a sharing unit** (ADR-0019): reusable workflows/agents are published
+as npm packages and re-exported here; `j2.config.ts` holds only what is specific to this deployment's repos, models, and
+cluster — committed, because the instance repo is the GitOps unit (ADR-0008), with deployment-varying values resolved
+from env.
 
-`j2.config.ts` favors convention over configuration. The **only** irreducible entry is `repos` — the orchestrator cannot
-guess what repositories make up the project:
+## Minimum config, and the source volume
+
+`j2.config.ts` favors convention over configuration — a sandbox-ful instance can be as small as:
 
 ```ts
 import { defineConfig } from "@j2/orchestrator";
 
-export default defineConfig({
-  repos: [
-    { name: "app", url: "git@github.com:me/app.git" }, // ref defaults to default branch
-    { name: "infra", url: "../infra" }, // local path → dev uses your working copy, no clone
-  ],
-});
+export default defineConfig({ name: "my-orchestrator", sandbox: {} });
 ```
 
-Everything else resolves without a config-file entry: the snapshot store defaults to **sqlite** at
-`<instance>/.j2/state.db` (zero setup), and an optional **Postgres** is opt-in via `DATABASE_URL` — j2 points at a
-database you provide, it never deploys or operates one (the single-table, single-writer snapshot fits sqlite, and
-`replicas: 1` keeps it single-writer even deployed on a PVC; the ADR-0007 at-most-once edge is identical either way).
-Model backend resolves via `.env` (and the agent persona); kube target via the current `kubectl` context (`--context` to
-override); git creds via the host **ssh-agent** in dev and a Secret (convention name `j2-git-ssh`) when deployed.
-
-`repos` exists so the orchestrator can **materialize the source-of-truth volume itself**: a read-only `default/`
-checkout per repo (`repos/<name>/default`) that every Workspace `git worktree --reference`s against (PoC #2). One model,
-two backings — only the backing differs, never the config:
-
-- **`j2 dev`** — clone into `<instance>/repos/<name>/default` on the host; mounted RO into kind workspace pods via
-  **hostPath**.
-- **Deployed** — clone into a **PVC** (`default/` as ROX/RWX); workspace pods mount that PVC RO.
-
-This adds one orchestrator **boot-time reconcile** — "ensure `default/` matches `config.repos`" (clone/fetch each) — the
-same reconcile discipline used for Sandbox CRs on restart (ADR-0007). It is orchestrator infrastructure, **not** a
-machine slot: the source volume must exist before any Workspace runs, across all workflows. The hostPath↔PVC choice
-lives in `manifests/` (+ a storage provider), so `j2.config.ts` is byte-identical dev vs deployed. (Note: the directory
-is `repos/`, not `workspace/` — **Workspace** is the reserved term for the Sandbox-bound child Machine.)
+- **`name` is the instance's identity**; its namespace defaults to it (`-n` overrides — ADR-0019).
+- **`repos[]` is the source catalog.** Each `{ name, url, ref? }` entry is cloned into the in-cluster source volume by
+  the boot reconcile (ADR-0004); Sandboxes clone `--shared` against it. There is no host-side catalog directory — a repo
+  pods should see must be fetchable from the cluster.
+- **`sandbox` presence is the data-plane switch**: with it, the instance gets the kubectl Sandbox backend; without it,
+  the instance is workspace-less. `adapterImage` defaults to the published `j2-adapter:<kitversion>` (every Sandbox gets
+  an Adapter — an Agent without one cannot act, ADR-0013); `userImage` opts into the User Container (ADR-0005).
+  `sandbox` holds **pod-shaped config only** (images, resources, transport) — agent-runtime concerns live in `harness`
+  (ADR-0018).
+- **`harness` is the agent-runtime section** (ADR-0018): default model, custom provider (`api`, `baseUrl`), and the
+  env/creds the Agents need (e.g. an Anthropic key, read from `process.env`/`.env` and materialized as a Secret by
+  `j2 up`, or `envFrom` refs to Secrets you manage).
+- **`registry`** (deployment-varying, resolve from env): absent → images are `kind load`-ed; present → pushed
+  (ADR-0019).
+- **The snapshot store defaults to sqlite** on a PVC in the instance's namespace (zero setup); **Postgres** is opt-in
+  via `DATABASE_URL` — j2 points at a database you provide, it never deploys or operates one (the single-table,
+  single-writer snapshot fits sqlite, and `replicas: 1` keeps it single-writer).
+- Git credentials for private repos: an HTTPS token from `.env`, or a `j2-git-ssh` deploy-key Secret `j2 up` offers to
+  generate (ADR-0019). Kube target: the current `kubectl` context (`--context` to override).
 
 ## Agents ship as npm; instances compose or override
 
-The kit publishes to npm under `@j2/*`. Built-in personas ship in **`@j2/agents`** (general-purpose, coder, reviewer…).
-An instance runs `npm i @j2/agents` and either references built-ins by name or drops a custom `agents/<name>.ts` (which
-may re-export/extend a built-in). The Harness image loads the instance's resolved persona set; workflows reference
-personas by name when wiring the agent-actor provider.
+The kit publishes to npm under `@j2/*`; stock Agent definitions ship in **`@j2/agents`** (coder, reviewer, …). Because a
+definition is plain data (ADR-0018), composition needs no API: an instance file re-exports a stock one
+(`export { coder as default } from "@j2/agents"` — filename-discovery stays the single registration mechanism) or
+extends it by spread (`export default defineAgent({ ...coder, model: "…" })`). Adding tools/skills waits on the
+definition contract growing that seat (ADR-0018).
 
 ## Orchestrator HTTP API (hono, flue-shaped, run-addressed-by-id)
 
-Push + control + observe only — the **pull** work-source path needs no HTTP (the Orchestrator pulls).
+Push + control + observe only — the **pull** path needs no HTTP (the Orchestrator's Source pulls, ADR-0017). Auth bands
+per ADR-0014: structure + observation open; the Agent surface takes the Sandbox token; run state, control, and gates
+take the Instance token.
 
 ```
-GET  /workflows                 # list registered workflows
-POST /workflows/:name/runs      # start a run (push work); body = input → { runId }
-GET  /runs                      # list active runs
-GET  /runs/:runId               # durable run status (snapshot read)
-GET  /runs/:runId/events        # SSE: run event stream (progress/telemetry)
-POST /runs/:runId/events        # feed an event in: APPROVE / steer / CANCEL (ADR-0002 down-channel)
+GET  /workflows                        # list registered workflows                       [open]
+GET  /workflows/:name/machine  /viz/*  # machine structure + visualizer                  [open]
+GET  /workflows/:name/runs[, /:runId/events]  # observation projection (ADR-0014)        [open]
+POST /workflows/:name/runs             # start a run (push work); body = input → { runId } [instance]
+GET  /runs   GET /runs/:runId          # live list; durable run status (read-through)    [instance]
+GET  /runs/:runId/events               # SSE: status replay + live deltas                [instance]
+POST /runs/:runId/events               # run-level infra interrupt: CANCEL               [instance]
+POST /runs/:runId/gates/:gate/events   # deliver a workflow event to an open gate        [instance]
+GET  /agents/:iid/surface   POST /agents/:iid/events   # the Adapter's surface           [sandbox]
 GET  /healthz   GET /readyz
 ```
 
-`POST /runs/:runId/events` is the human-in-the-loop seam: an Agent's `request_approval` parks the run (ADR-0002/0007); a
-`POST {type:"APPROVE"}` becomes `actor.send` and releases the gate. The shape mirrors flue's "durable run addressed by
-id": `POST` to start/feed, `GET /…/:id` for status, SSE for events.
+Gates are the human/webhook/CI seam (ADR-0011): a gated state registers `{ gate, accepts, meta }`; `GET /runs/:runId`
+lists the open gates (with schemas + `meta`), and the gate POST validates the body against the named event schema and
+delivers it into that state. Per-gate addressing exists because concurrent children park concurrently — a run-level
+events POST is ambiguous. `CANCEL` is the one reserved run-level event; everything else is workflow vocabulary.
 
-**Refined by [ADR-0011](0011-workflow-defined-events.md):** the accepted event types are no longer hard-coded, and each
-`gate` invocation is an addressable **gate resource** serving _any_ external caller — humans (`j2 send`, a UI), webhook
-translators, CI. A gated state registers `{ gate, accepts: [workflow-defined events], meta }`; `GET /runs/:runId` lists
-the open gates (with schemas + `meta`), and `POST /runs/:runId/gates/:gate/events` validates the body against the named
-schema and delivers it into that state (`j2 send <runId> <gate> --event '{…}'`). Per-gate addressing exists because
-concurrent children park concurrently — a run-level events POST is ambiguous. `CANCEL` stays reserved as the run-level
-infra interrupt; `APPROVE` survives only as the answer path for a held `deferred` tool result.
-
-## The `j2` CLI — a kubectl-like client over three resource classes
-
-`workflows` (registered Machines, static) · `runs` (durable executions, orchestrator-owned) · `workspaces` (the Sandbox
-pods a run spawns, owner-ref/label-linked back to their run).
+## The `j2` CLI
 
 ```
 # lifecycle (instance)
-j2 init [--target kind|cluster]   j2 dev   j2 build   j2 deploy
+j2 init [dir] [--name <n>]        # scaffold the minimum runnable instance
+j2 up [--yes]                     # converge the current context to this instance (ADR-0019)
+j2 down [--all]                   # remove the instance from the cluster (--all: operator too)
 
-# runs / workflows  (wrap the HTTP API)
-j2 run <workflow> --input '{…}'   j2 runs   j2 status <runId>
-j2 logs <runId> -f                j2 approve <runId> [--reject]   j2 send <runId> --event '{…}'
+# runs / workflows (wrap the HTTP API)
+j2 run <workflow> [--input <json>] [--detach]
+j2 runs   j2 status <runId>   j2 logs <runId> [-f]
+j2 send <runId> --event CANCEL
+j2 send <runId> --gate <gate> --event <name> [--input <json>]
+j2 visualize <workflow> [--no-open]
 
-# workspaces / cluster  (kubectl-style)
-j2 ls                             # list workspaces (pods) + run + status + endpoint
-j2 ssh <workspace>                # exec into the User Container (CONTEXT.md)
-j2 logs <workspace>               j2 rm <workspace>
+# workspaces (kubectl-style, over the operator's Sandbox CRs)
+j2 ls                             # list workspaces + run + status + endpoint
+j2 ssh <workspace>                # exec into the User Container (ADR-0005)
+j2 logs <workspace>   j2 rm <workspace>
 ```
 
-The CLI is the everyday surface; HTTP is the machine-to-machine one. `run`/`runs`/`status`/`logs <runId>`/`approve`/
-`send` wrap the orchestrator API. `ls`/`ssh`/`logs <workspace>`/`rm` make the orchestrator feel like `kubectl` for
-agents: the orchestrator supplies the logical run↔workspace binding (it holds the ids, ADR-0007), kube handles
-`exec`/teardown. `build`/`deploy`/`dev` are the lifecycle the HTTP API does not cover. CLI and hono app sit on one
-shared API client.
+The CLI is the everyday surface; HTTP is the machine-to-machine one. The workspace verbs make the orchestrator feel like
+`kubectl` for agents: the run↔workspace link rides on the CR's labels (`j2.dev/run`, `j2.dev/workflow`), so `j2 ls` can
+group without the orchestrator being reachable. CLI and hono app sit on one shared API client.
 
-## `j2 dev` — local control plane, real data plane
-
-`j2 dev` runs the orchestrator **in-process** (hot reload) for fast iteration, but Workspaces are **real Sandboxes in
-the target cluster** (kind or remote) — the data plane is never faked. Caveat: PoC #5's reverse ingress (Agent→
-Orchestrator MCP callback) needs pod→orchestrator reachability. In-cluster that is the Service; with a local dev
-orchestrator it is pod→host — trivial on kind (`host.docker.internal`), but **dev against a remote cluster requires a
-tunnel**. So `dev` targets kind by default; `deploy` is how the control plane runs in a remote cluster.
-
-Second host↔cluster seam, same shape: the repos volume. A host-side orchestrator materializes `<instance>/repos/` on the
-host filesystem, but kind's `hostPath` resolves against the **node** (the kind Docker container), not the host — so the
-instance's `repos/` dir reaches Sandbox pods only if it was mapped in via `nodes[].extraMounts` **when the kind cluster
-was created** (it cannot be added later). j2 therefore owns kind cluster creation and bakes the mount in; a
-bring-your-own kind cluster must add the mount itself (documented, loud failure otherwise). Docker Desktop's default
-`/Users` sharing covers the macOS host→VM hop. There is **no stubbed workspace mode**: workflows that invoke
-`workspace()` always get real Sandboxes; the `j2 dev` localhost stub Harness (ADR-0011) serves only workspace-less test
-workflows that pass `endpoint` directly in run input.
+A planned `j2 build` (build + push + render manifests, no apply — the pure-GitOps CI verb) is deferred; `j2 up` in CI
+covers the interim (ADR-0019).
 
 ## Settled CLI behavior (v1)
 
-The verbs above wrap the HTTP API; this fixes how the run-control loop _behaves_, shaped to mirror `flue run` and
-diverging only where j2's durable, human-gated runs require it. (Lifecycle `build`/`deploy` and the kubectl-style
-workspace verbs stay out of v1.)
-
 **Instance addressing.** The CLI finds its instance by walking up from cwd to the directory containing `j2.config.ts` —
-the root marker, mirroring `flue.config.ts`. Runtime state lives under `<root>/.j2/`: the sqlite store and `dev.json`,
-which `j2 dev` writes with its live `{ url, pid }` on boot and removes on exit. Run-control commands read `.j2/dev.json`
-for the orchestrator URL; `--url` / `J2_URL` overrides it (the deployed/remote case) and skips the folder walk entirely.
+the root marker, mirroring `flue.config.ts`. The _deployment_ is addressed by the current kube context + the instance's
+namespace: run-verbs port-forward the Orchestrator Service for the duration of the command and read the Instance token
+from its in-cluster Secret (kube RBAC is the gate). `--url` / `J2_URL` (+ token env) overrides both — the
+ingress-exposed/remote-caller case — and skips the folder walk entirely. Every run-verb prints the context it targets on
+stderr, so ambient-context drift is visible (ADR-0019).
 
 **`j2 run` — blocking, attach-by-default.** Mirrors `flue run`: start the run, stream activity to **stderr**, print the
-terminal `RunStatus` (status/value/context) as JSON to **stdout**, exit — so `j2 run … | jq` yields just the result.
-Author-emitted messages and transition deltas are activity → stderr; only the terminal result is stdout. j2 diverges
-from flue in one way: with no `--url` it **attaches to the running orchestrator** (`.j2/dev.json`), not a temporary
-per-invocation runtime — because a j2 run is durable and may park on `request_approval` indefinitely, outliving the CLI
-call. `--detach` starts the run, prints its `runId`, returns.
+terminal `RunStatus` as JSON to **stdout**, exit — so `j2 run … | jq` yields just the result. j2 diverges from flue in
+one way: it **attaches to the running orchestrator**, not a temporary per-invocation runtime — a j2 run is durable and
+may park on a Gate indefinitely, outliving the CLI call. `--detach` starts the run, prints its `runId`, returns.
 
-**Attach / detach / re-attach.** A run lives server-side (durable snapshot), so attaching = opening
-`GET /runs/:runId/events` and detaching = closing it (Ctrl-C); neither affects the run. `j2 logs <runId> -f` re-attaches
-to any running run. On attach, the SSE **replays the run's current status immediately** (so a parked run shows where it
-is) before streaming live deltas. The SSE carries two event kinds: `status` (auto, per transition) and `emit` (the
-workflow author's `emit({ … })`, forwarded by the host).
+**Attach / detach / re-attach.** A run lives server-side, so attaching = opening `GET /runs/:runId/events` and detaching
+= closing it (Ctrl-C); neither affects the run. `j2 logs <runId> -f` re-attaches to any running run. On attach, the SSE
+**replays the run's current status immediately** (so a parked run shows where it is) before streaming live deltas; it
+carries `status` events (auto, per transition) and `emit` events (the workflow author's `emit({…})`).
 
-**Terminal runs stay readable.** `persist()` writes the final snapshot to the store, then drops the run from the live
-registry. So `status` / `GET /runs/:runId` **read through to the store** when a run isn't live — a completed run reports
-its terminal status/context instead of `404`. (`GET /runs` stays live-only; history via `?all` is deferred.)
+**Terminal runs stay readable.** The final snapshot persists to the store before the run drops from the live registry,
+so `status` / `GET /runs/:runId` **read through to the store** — a completed run reports its terminal status/context
+instead of `404`. (`GET /runs` stays live-only; history via `?all` is deferred.)
 
 **`j2 init` (v1).** Scaffolds the minimum runnable instance: `j2.config.ts` (root marker), `package.json` (deps on
-`@j2/*` + xstate), one starter `workflows/<name>.ts`, and `.gitignore` (`.j2/`, `node_modules/`). `[dir]` positional
-(default cwd); `--force` to overwrite an existing `j2.config.ts`. The `--target kind|cluster` flag is deferred alongside
-`manifests/`/`deploy`; `agents/`, `manifests/`, `repos/`, and `.env` are added by their later slices. No auto-install —
-it prints the `pnpm install && j2 dev` next step.
+`@j2/*` + xstate), one starter `workflows/<name>.ts`, and `.gitignore` (`.j2/`, `.env`, `node_modules/`). `[dir]`
+positional (default cwd); `--force` to overwrite an existing `j2.config.ts`. `agents/`, `manifests/`, and `.env` are
+added by their later slices. No auto-install — it prints the `pnpm install && j2 up` next step.
 
 ## Consequences
 
 - All `packages/*` publish to npm under `@j2/*`; instances depend on them. The CLI ships as the `j2` bin (`npx j2`,
   mirroring `npx flue`).
-- Workspaces are a first-class CLI resource backed by the operator's `Sandbox` CRs; the run→workspace link rides on
-  owner-refs/labels so `j2 ls` can group workspaces by run without the orchestrator being reachable.
-- `j2 ssh` targets the **User Container** (ADR-0005), the human's peer to the Harness container in the Sandbox pod.
-- Dynamic third-party provider/workflow plugin loading stays deferred (ADR-0008); discovery is build-time over the
-  instance's own code.
+- Workspaces are a first-class CLI resource backed by the operator's `Sandbox` CRs, label-linked to their runs.
+- Dynamic third-party workflow/plugin loading stays deferred (ADR-0008); discovery is over the instance's own code.

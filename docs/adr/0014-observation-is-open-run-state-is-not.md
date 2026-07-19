@@ -54,18 +54,19 @@ instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + c
   handler remembering to redact. The band is a middleware precisely so the default is refusal.
 - **A fourth "observer" token.** Rejected: it buys nothing today (the observation surface carries no secret) and costs a
   minting, distribution, and revocation story. If observation ever needs to be _private_ — a deployed j2 Application on
-  a shared network — that is the ADR to write, and it is the same open question ADR-0013 left about human authn beyond
-  dev.
+  a shared network — that is the ADR to write, and it is the same open question ADR-0013 left about authn for non-kube
+  callers.
 
 ## Consequences
 
 - **`auth.test.ts` changed its mind.** Its prose already said "Observation and control are the operator's, not the
   Agent's" directly above assertions that a Sandbox token gets **200** on a run read and **200** on CANCEL. Those are
   now **403**. The test pinned the hole.
-- **`j2 dev` binds `0.0.0.0` once an instance has a Sandbox backend** (ADR-0013's reachability item), so "open" means
-  open to that network — deliberately, since what is open is structure plus lit states. Anything that would embarrass a
-  user if seen belongs behind `instanceOnly`, and that is where it is.
-- **The CLI is unaffected.** It holds the Instance token from `.j2/dev.json` and reads the guarded routes, as before.
+- **The API is a cluster Service** (ADR-0019), so "open" means open to whoever can reach it — in-cluster peers, a
+  port-forward, or an ingress — deliberately, since what is open is structure plus lit states. Anything that would
+  embarrass a user if seen belongs behind `instanceOnly`, and that is where it is.
+- **The CLI is unaffected.** It holds the Instance token from the in-cluster Secret (ADR-0019) and reads the guarded
+  routes, as before.
 - **Open, inherited from ADR-0013:** what a deployed j2 Application uses for human callers. Whatever it is, the band
   split survives it — only the credential in the `instanceOnly` band changes.
 

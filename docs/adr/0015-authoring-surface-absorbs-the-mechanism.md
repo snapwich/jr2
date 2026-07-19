@@ -48,10 +48,14 @@ Considered and rejected: per-transition demarcation (xstate transitions have no 
 inventing j2-only config inside the transition table — a DSL by the back door) and purely structural
 own-transitions-only derivation (breaks ADR-0011's blessed handle-`report_blocked`-once-at-an-ancestor idiom).
 
-## ADR-0003 is superseded
+## Why there is no injection model (the retired ADR-0003)
 
-Templates-with-injected-providers never composed: xstate's `provide()` fills only the machine it is called on and cannot
-reach child machines, and the host has injected nothing since ADR-0011's static-import doctrine (`instance.ts` —
-"Nothing to inject"). Workflows author machines against statically-imported mechanisms. What survives of ADR-0003: the
-kernel "everything pluggable is an xstate actor", and `.provide()` as the unit-test seam. CONTEXT.md's **Template** and
-**Provider** entries retire with it.
+j2's first composability story — "workflows are templates of injected providers": Machines reference their moving parts
+as named xstate slots, filled at deployment via `provide({ actors, actions, guards })`, with noop defaults — was tried
+and retired (its ADR, 0003, is deleted; this section is its record). It never composed: xstate's `provide()` fills only
+the machine it is called on and **cannot reach actors inside child machines**, so host-side injection cannot compose
+past one level — and the host has injected nothing since ADR-0011's static-import doctrine ("actor logic is code; live
+things are built per-invocation from serializable input"). Workflows author machines against statically-imported
+mechanisms. What survives of the idea: the kernel "everything pluggable is an xstate actor", and `.provide()` as the
+unit-test seam. The mock-vs-real swap it wanted lives at the wire instead (ADR-0011's stub Harness). CONTEXT.md's
+**Template** and **Provider** entries retired with it.
