@@ -116,6 +116,7 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
 			Expect(sandbox.Status.Endpoint).To(Equal("http://test-sandbox.default.svc:8080"))
 			Expect(sandbox.Status.PodRef.Name).To(Equal(resourceName))
+			Expect(sandbox.Status.PodUID).To(Equal(pod.UID))
 			Expect(sandbox.Status.ServiceRef.Name).To(Equal(resourceName))
 
 			By("transitioning to Ready once the pod reports the Ready condition")
@@ -128,6 +129,38 @@ var _ = Describe("Sandbox Controller", func() {
 
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
+		})
+
+		It("republishes a new podUID when the Pod is replaced under the same Sandbox", func() {
+			// The divergence this field exists for: an eviction or node loss takes the Pod
+			// but not the CR, and the replacement comes up with an empty `work` volume — so
+			// the Orchestrator's clones and unpushed commits are gone while every name it
+			// holds still resolves. Only the identity changes (ADR-0021).
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			original := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, original)).To(Succeed())
+
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.PodUID).To(Equal(original.UID))
+
+			By("losing the Pod out from under the Sandbox")
+			Expect(k8sClient.Delete(ctx, original)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("recreating it under the same name, with a new identity")
+			replacement := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, replacement)).To(Succeed())
+			Expect(replacement.Name).To(Equal(original.Name))
+			Expect(replacement.UID).NotTo(Equal(original.UID))
+
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.PodUID).To(Equal(replacement.UID))
+			Expect(sandbox.Status.PodRef.Name).To(Equal(original.Name), "the name cannot reveal the swap — only the UID can")
 		})
 	})
 })

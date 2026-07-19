@@ -303,6 +303,10 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	sandbox.Status.Phase = phase
 	sandbox.Status.Endpoint = fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
 	sandbox.Status.PodRef = &corev1.LocalObjectReference{Name: pod.Name}
+	// Identity, not just address: a replacement Pod reuses the name but never the
+	// UID, and it comes up with an empty `work` volume. Publishing the UID is what
+	// lets the owning Orchestrator notice its workspace was replaced (ADR-0021).
+	sandbox.Status.PodUID = pod.UID
 	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
 
 	cond := metav1.Condition{

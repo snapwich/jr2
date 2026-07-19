@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // SandboxSpec is the desired state of a Sandbox: pure infrastructure.
@@ -116,6 +117,15 @@ type SandboxStatus struct {
 	// PodRef references the Pod backing this Sandbox.
 	// +optional
 	PodRef *corev1.LocalObjectReference `json:"podRef,omitempty"`
+
+	// PodUID is the identity of the Pod backing this Sandbox. Pod names are
+	// deterministic, so a name alone cannot distinguish the Pod a client
+	// attached to from a replacement scheduled after an eviction or node loss —
+	// and a replacement comes up with an empty `work` volume, so every clone,
+	// worktree, and unpushed commit is gone. The UID changes exactly when that
+	// happens, which is what lets a client detect it (ADR-0021).
+	// +optional
+	PodUID types.UID `json:"podUID,omitempty"`
 
 	// ServiceRef references the Service fronting this Sandbox.
 	// +optional
