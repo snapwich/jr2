@@ -1,5 +1,5 @@
 // The instance bootstrap (ADR-0008/0009): turn an instance folder into a *running* orchestrator.
-// This is the core of `j2 dev` and of the deployed app's entrypoint — the seam that assembles the
+// This is the core of the deployed app's entrypoint (`serverMain`) — the seam that assembles the
 // slice-1/2/3 pieces into one process:
 //
 //   1. open the durable snapshot store (sqlite at `<dir>/.j2/state.db` by default — ADR-0009);
@@ -41,12 +41,16 @@ export type InstanceOptions = {
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
   /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller
-   * (`j2 dev` builds it from `config.sandbox`); absent = a workspace-less instance. */
+   * (built from `config.sandbox`); absent = a workspace-less instance. */
   sandbox?: SandboxPort;
   /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.j2/secret`, minted on
    * first boot. Supply it when the instance folder must stay untouched (tests), or when the same
-   * key must reach a `kubectlSandbox` built before this call (`j2 dev` — it mints the tokens). */
+   * key must reach a `kubectlSandbox` built before this call (it mints the tokens). */
   signingKey?: Buffer;
+  /** The Instance token to authenticate with (ADR-0013/0019). Deployed, `j2 up` materializes it in
+   * the instance's Secret and the entrypoint passes it here, so a pod restart keeps the credential
+   * the CLI reads from that Secret. Default: minted per boot. */
+  instanceToken?: string;
 };
 
 /** What changed on a `reload()` — the diff against the previously-registered set. */
@@ -57,18 +61,18 @@ export type RunningInstance = {
   /** The base URL the HTTP surface is reachable at (with the resolved port). */
   url: string;
   /**
-   * The Instance token this boot minted (ADR-0013): the credential for gates and run control.
-   * `j2 dev` advertises it in `.j2/dev.json` (0600) beside the url, which is where the CLI reads
-   * both. Rotating per boot is fine — a caller re-reads dev.json — but the SIGNING KEY behind the
-   * Sandbox tokens must not (see `loadSigningKey`).
+   * The Instance token this boot serves under (ADR-0013): the credential for gates and run
+   * control. Deployed it is supplied from the instance's Secret (ADR-0019) so it survives pod
+   * restarts; when minted per boot instead, only this handle knows it. The SIGNING KEY behind the
+   * Sandbox tokens must never rotate per boot either way (see `loadSigningKey`).
    */
   instanceToken: string;
   /** Names of the workflows discovered + registered from `<dir>/workflows`. */
   workflows: string[];
   /**
    * Re-discover `<dir>/workflows` and re-register every file, replacing changed definitions and
-   * dropping deleted ones. A DEV-ONLY affordance driven by `j2 dev`'s file watcher — a deployed
-   * orchestrator ships workflows baked into its image and never reloads. In-flight runs keep the
+   * dropping deleted ones. A dev/test-only affordance — the deployed entrypoint ships workflows
+   * baked into its image and never reloads. In-flight runs keep the
    * definition they started on; only the next `start` sees new code (ADR-0009).
    */
   reload: () => Promise<ReloadResult>;
@@ -120,7 +124,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // 4. Serve, authenticated (ADR-0013). The signing key is loaded from (or minted into) the
   // instance folder, NOT generated per process: live Sandboxes outlive a restart, and their
   // Adapters still bear tokens this key signed. The Instance token is per-boot; the key is not.
-  const instanceToken = mintInstanceToken();
+  const instanceToken = opts.instanceToken ?? mintInstanceToken();
   const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));
   const auth = createAuthenticator({ instanceToken, signingKey });
   const app = createApp(host, auth);
@@ -155,15 +159,26 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
 
 /** List `<dir>/workflows/*.ts` (ignoring `_`-prefixed helpers + `.d.ts`); name = filename stem. */
 async function discoverWorkflows(dir: string): Promise<Array<{ name: string; file: string }>> {
-  const wfDir = join(dir, "workflows");
+  // An absent workflows/ dir → an instance with no workflows yet (still boots + serves).
+  return discoverModules(join(dir, "workflows"));
+}
+
+/**
+ * The instance module-discovery convention, shared by `workflows/` and `agents/` (they must never
+ * drift): every `<moduleDir>/<name>.ts` except `_`-prefixed helpers and `.d.ts`, sorted, name =
+ * filename stem. An ABSENT dir is empty; any other readdir failure (EACCES, ENOTDIR, …) throws —
+ * a directory that exists but cannot be read must be loud, never "no modules".
+ */
+export async function discoverModules(moduleDir: string): Promise<Array<{ name: string; file: string }>> {
   let entries: string[];
   try {
-    entries = await readdir(wfDir);
-  } catch {
-    return []; // no workflows/ dir → an instance with no workflows yet (still boots + serves)
+    entries = await readdir(moduleDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
   }
   return entries
     .filter((f) => f.endsWith(".ts") && !f.endsWith(".d.ts") && !f.startsWith("_"))
     .sort()
-    .map((f) => ({ name: f.slice(0, -3), file: join(wfDir, f) }));
+    .map((f) => ({ name: f.slice(0, -3), file: join(moduleDir, f) }));
 }

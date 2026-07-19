@@ -64,6 +64,10 @@ export interface SandboxPort {
   exists(name: string): Promise<boolean>;
   /** Delete the Sandbox CR. Absent is success. */
   destroy(name: string): Promise<void>;
+  /** Stop this run's keepalive leases WITHOUT deleting its Sandboxes — the faulted-run terminal
+   * (see `workspace()`): the pod stays inspectable, but the lease must stop with the run or the
+   * operator's idle GC never reaps what the host abandoned. Optional: hosts without leases skip it. */
+  release?(runId: string): Promise<void>;
 }
 
 /** Resolve the host's Sandbox backend, failing with a pointed message on a host without one. */
@@ -128,15 +132,42 @@ export function workspace(body: AnyStateMachine, spec: (args: { input: any }) =>
   return wrapper;
 }
 
-function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
-  const provision = fromPromise<{ endpoint: string }, { wsId: string }>(async ({ input, system }) => {
-    const binding = runBindingOf(system);
-    return sandboxOf(system).provision({
-      name: workspaceName(binding.runId, input.wsId),
-      runId: binding.runId,
-      workflow: binding.workflow,
+/**
+ * Fail a malformed spec BEFORE any pod exists. The spec derives from run input via the workflow's
+ * mapping fn, so a `j2 run --input` missing a field the mapping reads arrives here as `undefined` —
+ * unchecked, it survives until the attach script's string ops and dies as "Cannot read properties
+ * of undefined", with a Sandbox already provisioned and nothing pointing back at the input.
+ */
+function assertSpec(spec: WorkspaceSpec): void {
+  const bad: string[] = [];
+  if (typeof spec?.branch !== "string" || !spec.branch) bad.push(`branch (got ${JSON.stringify(spec?.branch)})`);
+  if (!Array.isArray(spec?.repos) || spec.repos.length === 0) bad.push("repos (need at least one)");
+  else
+    spec.repos.forEach((r, i) => {
+      if (typeof r?.name !== "string" || !r.name) bad.push(`repos[${i}].name (got ${JSON.stringify(r?.name)})`);
+      if (typeof r?.baseRef !== "string" || !r.baseRef)
+        bad.push(`repos[${i}].baseRef (got ${JSON.stringify(r?.baseRef)})`);
     });
-  });
+  if (bad.length) {
+    throw new Error(
+      `workspace spec invalid: ${bad.join("; ")} — the spec derives from run input; does ` +
+        "`j2 run --input` carry every field this workflow's workspace() mapping reads?",
+    );
+  }
+}
+
+function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
+  const provision = fromPromise<{ endpoint: string }, { wsId: string; spec: WorkspaceSpec }>(
+    async ({ input, system }) => {
+      assertSpec(input.spec); // before the port: a bad spec must never cost a pod
+      const binding = runBindingOf(system);
+      return sandboxOf(system).provision({
+        name: workspaceName(binding.runId, input.wsId),
+        runId: binding.runId,
+        workflow: binding.workflow,
+      });
+    },
+  );
 
   const attach = fromPromise<{ workdir: string; repos: Record<string, string> }, { wsId: string; spec: WorkspaceSpec }>(
     async ({ input, system }) =>
@@ -185,7 +216,10 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
       provisioning: {
         invoke: {
           src: provision,
-          input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId }),
+          input: ({ context }) => ({
+            wsId: (context as unknown as WsContext).wsId,
+            spec: (context as unknown as WsContext).spec,
+          }),
           onDone: {
             target: "attaching",
             actions: assign({

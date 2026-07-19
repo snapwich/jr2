@@ -37,6 +37,9 @@ class FakeSandbox implements SandboxPort {
   async destroy(name: string): Promise<void> {
     this.calls.push(`destroy:${name}`);
   }
+  async release(runId: string): Promise<void> {
+    this.calls.push(`release:${runId}`);
+  }
 }
 
 /** A body that parks on a gate inside its Sandbox; `workspace.lost` routes to its own policy
@@ -157,6 +160,52 @@ test("restore-reconcile: Sandbox present → the body resumes parked, nothing is
   second.sendToGate(runId, "hold", { type: "approve" });
   await waitFor(() => second.status(runId) === undefined);
   assert.equal((await second.read(runId))?.status, "done");
+});
+
+test("a spec deriving undefined fields (missing run input) faults BEFORE any pod exists", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  // The task-with-review shape: the mapping reads input fields this `j2 run --input` never carried.
+  const sloppy = workspace(body, ({ input }: { input: { repo?: string; branch?: string } }) => ({
+    repos: [{ name: input.repo as string, baseRef: "main" }],
+    branch: input.branch as string,
+  }));
+  host.register({ name: "sloppy", machine: sloppy, provide: () => ({}) });
+
+  const { runId } = await host.start("sloppy", { prompt: "fix it" }); // no repo, no branch
+  await waitFor(() => host.status(runId) === undefined);
+
+  const final = await host.read(runId);
+  assert.equal(final?.status, "error");
+  assert.match(final?.fault ?? "", /workspace spec invalid: branch/);
+  assert.match(final?.fault ?? "", /repos\[0\]\.name/);
+  assert.match(final?.fault ?? "", /run input/, "the fault points back at `j2 run --input`");
+  assert.ok(
+    !sandbox.calls.some((c) => c.startsWith("provision:")),
+    "faulted before the port — a bad spec never costs a pod",
+  );
+});
+
+test("a terminal fault releases the run's keepalive leases (idle GC can reap what stays)", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.attach = async () => {
+    throw new Error("attach exploded");
+  };
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.status(runId) === undefined);
+
+  assert.equal((await host.read(runId))?.status, "error");
+  // Provisioned, then faulted: no destroy (the pod stays inspectable — ADR-0012), but the
+  // lease is released so the operator's idle GC eventually reaps it.
+  assert.ok(sandbox.calls.some((c) => c.startsWith("provision:")));
+  assert.ok(!sandbox.calls.some((c) => c.startsWith("destroy:")));
+  assert.deepEqual(
+    sandbox.calls.filter((c) => c.startsWith("release:")),
+    [`release:${runId}`],
+  );
 });
 
 test("a host without a Sandbox backend faults a workspace() run pointedly", async () => {

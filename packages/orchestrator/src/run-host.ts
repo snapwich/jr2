@@ -1,5 +1,5 @@
 // The Machine host: runs an xstate Machine as a durable run and wires the three slice-1 modules
-// together (ADR-0002/0003/0007). It is the integration seam the modules left open.
+// together (ADR-0002/0007/0011). It is the integration seam the modules left open.
 //
 // Wiring (ADR-0011 registration table — no routing layer):
 //   - The host owns ONE RegistrationTable and binds each run's actor system to it at track time;
@@ -40,7 +40,8 @@ import type { SnapshotStore } from "./snapshot-store.ts";
 import type { AgentAdmission } from "./actor.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
 
-/** The live providers a run is assembled with (ADR-0003). Built fresh at start and at restore. */
+/** The actors filled into a run's named slots — `.provide()` is the unit-test seam (ADR-0015);
+ * production instances inject nothing. Built fresh at start and at restore. */
 export type RunProviders = { actors?: Record<string, AnyActorLogic> };
 
 /** A registered workflow: a template Machine plus how to fill its live slots for one run. */
@@ -484,7 +485,7 @@ export class RunHost {
     };
   }
 
-  /** Fill the template's live slots for one run (ADR-0003 provider injection). */
+  /** Fill the machine's named actor slots for one run (`.provide()`, the ADR-0015 test seam). */
   private assemble(def: WorkflowDef, instanceId: string): AnyStateMachine {
     const providers = def.provide({ instanceId });
     return def.machine.provide(providers as Parameters<AnyStateMachine["provide"]>[0]);
@@ -567,6 +568,10 @@ export class RunHost {
       error: (err) => {
         run.fault = err instanceof Error ? err.message : String(err);
         this.persist(run);
+        // The destroy-less terminal (ADR-0012): a faulted run's Sandboxes stay up for inspection,
+        // but their keepalive leases must stop with the run — a lease this process keeps stamping
+        // is a pod the operator's idle GC can never reap.
+        void this.sandbox?.release?.(record.runId)?.catch(() => {});
       },
     });
     // Forward the workflow author's `emit({...})` to observers as the SSE `emit` channel. These are

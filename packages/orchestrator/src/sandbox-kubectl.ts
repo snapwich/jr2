@@ -2,16 +2,12 @@
 // `kubectl`, honoring the current kube context (ADR-0009: the kube target IS the kubectl
 // context; `--context` overrides). Shelling to kubectl instead of a client library keeps the
 // dependency surface at zero and the behavior identical to what a human debugging the cluster
-// would type; both process seams (`exec`, `spawn`) are injectable so the mapping logic is
-// unit-testable without a cluster. The kind e2e tier exercises the real thing.
+// would type; the `exec` process seam is injectable so the mapping logic is unit-testable
+// without a cluster. The kind e2e tier exercises the real thing.
 //
-// Reachability: a DEPLOYED orchestrator dials `status.endpoint` (`http://<name>.<ns>.svc:…`)
-// directly (`reach: "endpoint"`). A host-side `j2 dev` cannot resolve svc DNS, so the default
-// is `reach: "port-forward"`: a `kubectl port-forward` per Sandbox on a local port derived
-// DETERMINISTICALLY from the Sandbox name — the endpoint persisted into run snapshots must
-// survive an orchestrator restart (ADR-0012 re-attach: same endpoint), so the port cannot be
-// ephemeral. `exists()` re-ensures the forward, which is what heals endpoints after a restart:
-// the workspace wrapper's reconcile probe calls it on every restore, mechanically.
+// Reachability: the orchestrator always runs in-cluster (ADR-0019), so it dials
+// `status.endpoint` (`http://<name>.<ns>.svc:…`) directly — stable across orchestrator
+// restarts by nature, which is what ADR-0012's "same endpoint" re-attach promise rides on.
 //
 // All four operations are idempotent (SandboxPort contract): apply is create-or-update, attach
 // guards every clone/worktree, delete ignores absent.
@@ -28,20 +24,17 @@
 // signed Sandbox name (see tokens.ts), so re-provisioning after a restart yields the SAME token and
 // the Secret re-applies as a no-op.
 
-import { execFile, spawn as nodeSpawn } from "node:child_process";
+import { execFile } from "node:child_process";
+import { CA_CONFIGMAP, REPOS_PVC } from "./names.ts";
 import { sandboxToken } from "./tokens.ts";
+import type { HarnessEnvFromSource, HarnessEnvVar } from "./config.ts";
 import type { WorkspaceSpec, SandboxPort } from "./workspace.ts";
 
 /** Run one kubectl invocation to completion. `input` is piped to stdin (`apply -f -`). */
 export type KubectlExec = (args: string[], opts?: { input?: string }) => Promise<{ stdout: string; stderr: string }>;
 
-/** A long-lived kubectl child (port-forward): line-observed stdout, exit signal, kill. */
-export type KubectlProc = {
-  onLine: (cb: (line: string) => void) => void;
-  onExit: (cb: () => void) => void;
-  kill: () => void;
-};
-export type KubectlSpawn = (args: string[]) => KubectlProc;
+/** Where the Harness container sees the instance's CA bundle (ADR-0020). */
+const CA_MOUNT = "/etc/j2/ca";
 
 export type KubectlSandboxOptions = {
   /** The Harness image every Sandbox runs (one image, many personas — ADR-0001). */
@@ -49,15 +42,28 @@ export type KubectlSandboxOptions = {
   /** The Adapter image (ADR-0013) — the Agent's MCP surface, and the pod's only credential holder.
    * Absent = no Adapter is injected, so the Agent has no route to its Machine. */
   adapterImage?: string;
+  /** The User Container image (ADR-0005) — user-owned, rides the generic sidecar list sharing the
+   * worktrees. Must have a blocking entrypoint (j2 does not inject one). Absent = no third
+   * container. */
+  userImage?: string;
+  /** Extra env for the HARNESS container (`SandboxConfig.env`) — merged ahead of the
+   * mechanism-owned vars, which win on collision. */
+  env?: HarnessEnvVar[];
+  /** Whole-Secret/ConfigMap env for the Harness container (`SandboxConfig.envFrom`) — how a real
+   * Harness gets its model API key without the value ever touching j2 config. */
+  envFrom?: HarnessEnvFromSource[];
+  /** The instance ships a private-CA bundle (ADR-0020): mount the `j2-ca` ConfigMap into the
+   * HARNESS container and point NODE_EXTRA_CA_CERTS at it — never the Adapter (it speaks plain
+   * HTTP to the Orchestrator's Service) and never the User Container (user-owned image; the same
+   * asymmetry as env/envFrom above). */
+  caBundle?: boolean;
   /**
-   * Where the Adapter reaches the Orchestrator FROM INSIDE THE CLUSTER: the pod→host address
-   * `j2 cluster up` recorded (kind), or Service DNS (deployed). The Agent is never told it.
-   *
-   * A thunk, because `j2 dev` builds this port BEFORE it knows its own address (`--port 0` resolves
-   * only once the socket is listening) and every use of it is at provision time, long after.
+   * Where the Adapter reaches the Orchestrator FROM INSIDE THE CLUSTER — the orchestrator's own
+   * Service DNS (derived from J2_NAMESPACE by the entrypoint). The Agent is never told it.
+   * A thunk is still accepted for callers that resolve their address late.
    */
   orchestratorUrl?: string | (() => string | undefined);
-  /** The key Sandbox tokens are signed with — the instance's `.j2/secret` (ADR-0013). */
+  /** The key Sandbox tokens are signed with — from the instance Secret (ADR-0013/0019). */
   signingKey?: Buffer;
   /** The Adapter's port on the pod's loopback. Default 8081. */
   adapterPort?: number;
@@ -65,45 +71,63 @@ export type KubectlSandboxOptions = {
   namespace?: string;
   /** kubectl `--context` override. Default: the current context (ADR-0009). */
   context?: string;
-  /** NODE path of the read-only repos volume (kind: baked by `extraMounts`). Default `/repos`. */
-  reposMountPath?: string;
   /** In-pod root for the pod-local clones + worktrees (ADR-0004 layout). Default `/work`. */
   workRoot?: string;
-  /** CR `spec.idleTimeout` — the operator's orphan GC backstop. Default `30m`. */
+  /** CR `spec.idleTimeout` — the operator's abandoned-Sandbox GC backstop (ADR-0001). Default `30m`. */
   idleTimeout?: string;
-  /** How the orchestrator reaches the Harness. Default `port-forward` (host-side dev). */
-  reach?: "port-forward" | "endpoint";
+  /** Heartbeat interval for the keepalive lease (ADR-0001): how often each owned Sandbox's
+   * `j2.dev/keepalive` annotation is re-stamped. Must be ≪ idleTimeout. Default 5m. */
+  heartbeatMs?: number;
   /** Await-Ready budget. Default 120s, polled every second. */
   readyTimeoutMs?: number;
   pollMs?: number;
-  /** Process seams, injectable for tests. Defaults shell to the `kubectl` on PATH. */
+  /** Process seam, injectable for tests. Defaults shell to the `kubectl` on PATH. */
   exec?: KubectlExec;
-  spawn?: KubectlSpawn;
 };
-
-/** The local port a Sandbox's port-forward binds — deterministic so persisted endpoints
- * survive orchestrator restarts (re-ensured, same address). Collisions across names are made
- * unlikely by the range; a foreign process squatting the port surfaces as a loud forward error. */
-export function forwardPort(name: string): number {
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) | 0;
-  return 13000 + ((h >>> 0) % 20000);
-}
 
 export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
   const ns = opts.namespace ?? "default";
-  const reposMount = opts.reposMountPath ?? "/repos";
   const workRoot = opts.workRoot ?? "/work";
-  const reach = opts.reach ?? "port-forward";
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const pollMs = opts.pollMs ?? 1_000;
   const exec = opts.exec ?? defaultExec;
-  const spawn = opts.spawn ?? defaultSpawn;
 
   const adapterPort = opts.adapterPort ?? 8081;
+  const heartbeatMs = opts.heartbeatMs ?? 5 * 60_000;
   const base = ["--namespace", ns, ...(opts.context ? ["--context", opts.context] : [])];
-  /** name → its live port-forward child, so destroy/re-ensure manage exactly one per Sandbox. */
-  const forwards = new Map<string, { proc: KubectlProc; ready: Promise<void> }>();
+  /** name → its keepalive interval — one lease per owned Sandbox (ADR-0001). */
+  const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
+
+  /**
+   * The keepalive lease (ADR-0001): re-stamp `j2.dev/keepalive` so the operator's idle GC sees a
+   * live Orchestrator behind this Sandbox. A run parked on a Gate for hours keeps its Sandbox
+   * only because this loop is running — coverage must therefore be every Sandbox this
+   * orchestrator OWNS, not just the port-forwarded ones: provision() starts it, exists() (the
+   * restore-reconcile probe, ADR-0012) restarts it after an orchestrator restart, destroy()
+   * stops it. Best-effort: a failed PATCH is retried next tick; a Sandbox deleted out from
+   * under us stops its own loop.
+   */
+  const beatOnce = (name: string): Promise<void> =>
+    exec(["annotate", "sandbox", name, ...base, `j2.dev/keepalive=${new Date().toISOString()}`, "--overwrite"]).then(
+      () => {},
+      (err) => {
+        if (isNotFound(err)) stopHeartbeat(name);
+      },
+    );
+
+  const startHeartbeat = (name: string): void => {
+    if (heartbeats.has(name)) return;
+    const timer = setInterval(() => void beatOnce(name), heartbeatMs);
+    timer.unref?.(); // never holds the process open — the lease matters only while it runs
+    heartbeats.set(name, timer);
+    void beatOnce(name); // stamp immediately: a restored Sandbox may be near its deadline
+  };
+
+  const stopHeartbeat = (name: string): void => {
+    const timer = heartbeats.get(name);
+    heartbeats.delete(name);
+    if (timer) clearInterval(timer);
+  };
 
   /** The Sandbox's token Secret — read by the Adapter container, and by nothing else in the pod. */
   const secretName = (name: string) => `${name}-token`;
@@ -127,44 +151,82 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     envFrom: [{ secretRef: { name: secretName(name) } }],
   });
 
-  const crFor = (req: { name: string; runId: string; workflow: string }) => ({
-    apiVersion: "core.j2.dev/v1alpha1",
-    kind: "Sandbox",
-    metadata: {
-      name: req.name,
-      namespace: ns,
-      // The run↔workspace link `j2 ls` groups by (ADR-0009/0012) — readable without the host.
-      labels: { "j2.dev/run": req.runId, "j2.dev/workflow": req.workflow },
-    },
-    spec: {
-      image: opts.image,
-      idleTimeout: opts.idleTimeout ?? "30m",
-      // What the AGENT gets: an address on its own loopback, and no credential anywhere. This is
-      // the only thing in the pod that tells it how to reach its Machine (ADR-0013).
-      ...(opts.adapterImage
-        ? {
-            env: [{ name: "J2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` }],
-            sidecars: [adapterSidecar(req.name)],
-          }
-        : {}),
-      volumes: [
-        { name: "repos", hostPath: { path: reposMount, type: "Directory" } },
-        // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
-        // both load-bearing: the operator runs every Sandbox container as an unprivileged uid
-        // (ADR-0001), which cannot mkdir under `/` — so an image-owned `/work` would make every
-        // attach fail — and ADR-0005 has the User Container sharing the worktrees with the
-        // Harness, which only a pod volume can do. An emptyDir lands 0777, so it is writable
-        // whatever uid the Harness image happens to run as: no image contract beyond `git`.
-        { name: "work", emptyDir: {} },
-      ],
-      // Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in a
-      // Sandbox can `gc` the object store its `--shared` clones borrow from.
-      volumeMounts: [
-        { name: "repos", mountPath: "/repos", readOnly: true },
-        { name: "work", mountPath: workRoot },
-      ],
-    },
+  /** The User Container (ADR-0005): a user-owned image beside the Harness, sharing the worktrees.
+   * `/work` is the point; the RO `/repos` rides along because the worktrees' `--shared` clones
+   * borrow objects from it — a `git log` in the user's shell needs them. No command is injected
+   * (j2 does not own the image; its entrypoint must block) and no user env/envFrom lands here:
+   * that stays Harness-only, so a human shell does not inherit the agent's model keys. */
+  const userSidecar = () => ({
+    name: "user",
+    image: opts.userImage,
+    volumeMounts: [
+      { name: "work", mountPath: workRoot },
+      { name: "repos", mountPath: "/repos", readOnly: true },
+    ],
   });
+
+  /** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim). */
+  const sidecarsFor = (name: string) => [
+    ...(opts.adapterImage ? [adapterSidecar(name)] : []),
+    ...(opts.userImage ? [userSidecar()] : []),
+  ];
+
+  // The Harness container's env: the instance's passthrough (`SandboxConfig.env` — e.g. model
+  // config) first, then the mechanism-owned vars (the Adapter address, the CA trust path), which
+  // win on collision. Note the asymmetry stands (ADR-0013): user env/envFrom land on the HARNESS
+  // container only — never on the Adapter, whose env is minted here and carries the pod's only
+  // credential.
+  const harnessEnv = (): HarnessEnvVar[] => [
+    ...(opts.env ?? []),
+    ...(opts.adapterImage ? [{ name: "J2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` }] : []),
+    ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
+  ];
+
+  const crFor = (req: { name: string; runId: string; workflow: string }) => {
+    const sidecars = sidecarsFor(req.name);
+    return {
+      apiVersion: "core.j2.dev/v1alpha1",
+      kind: "Sandbox",
+      metadata: {
+        name: req.name,
+        namespace: ns,
+        // The run↔workspace link `j2 ls` groups by (ADR-0009/0012) — readable without the host.
+        labels: { "j2.dev/run": req.runId, "j2.dev/workflow": req.workflow },
+      },
+      spec: {
+        image: opts.image,
+        idleTimeout: opts.idleTimeout ?? "30m",
+        ...(harnessEnv().length ? { env: harnessEnv() } : {}),
+        ...(opts.envFrom?.length ? { envFrom: opts.envFrom } : {}),
+        // What the AGENT gets: an address on its own loopback, and no credential anywhere. This is
+        // the only thing in the pod that tells it how to reach its Machine (ADR-0013). The User
+        // Container (ADR-0005), when configured, rides the same opaque list.
+        ...(sidecars.length ? { sidecars } : {}),
+        volumes: [
+          // The in-cluster source volume (ADR-0004/0019): the same PVC the orchestrator's boot
+          // reconcile writes, mounted read-only here. No hostPath, nothing kind-special.
+          { name: "repos", persistentVolumeClaim: { claimName: REPOS_PVC, readOnly: true } },
+          // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
+          // both load-bearing: the operator runs every Sandbox container as an unprivileged uid
+          // (ADR-0001), which cannot mkdir under `/` — so an image-owned `/work` would make every
+          // attach fail — and ADR-0005 has the User Container sharing the worktrees with the
+          // Harness, which only a pod volume can do. An emptyDir lands 0777, so it is writable
+          // whatever uid the Harness image happens to run as: no image contract beyond `git`.
+          { name: "work", emptyDir: {} },
+          ...(opts.caBundle ? [{ name: "ca", configMap: { name: CA_CONFIGMAP } }] : []),
+        ],
+        // Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in a
+        // Sandbox can `gc` the object store its `--shared` clones borrow from.
+        // CR-level volumeMounts land on the HARNESS container only (the operator's contract) —
+        // exactly the CA-trust asymmetry ADR-0020 wants.
+        volumeMounts: [
+          { name: "repos", mountPath: "/repos", readOnly: true },
+          { name: "work", mountPath: workRoot },
+          ...(opts.caBundle ? [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] : []),
+        ],
+      },
+    };
+  };
 
   const getSandbox = async (name: string): Promise<{ phase?: string; endpoint?: string; uid?: string } | undefined> => {
     try {
@@ -195,8 +257,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     // tool call dies on `localhost`, and the Machine simply parks forever — a hang with no error.
     if (!orchestratorUrl()) {
       throw new Error(
-        "kubectlSandbox: the Adapter has no route to the Orchestrator (no `podToHost` in .j2/cluster.json — " +
-          "run `j2 cluster up`). An Agent with no Adapter cannot drive its Machine at all (ADR-0013).",
+        "kubectlSandbox: the Adapter has no route to the Orchestrator (no orchestratorUrl — deployed " +
+          "instances derive Service DNS from J2_NAMESPACE). An Agent with no Adapter cannot drive its " +
+          "Machine at all (ADR-0013).",
       );
     }
     const secret = {
@@ -232,32 +295,6 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     ]).catch(() => {});
   };
 
-  /** Ensure the deterministic port-forward for `name` is up; resolve once it is listening. */
-  const ensureForward = (name: string): Promise<void> => {
-    const existing = forwards.get(name);
-    if (existing) return existing.ready;
-    const local = forwardPort(name);
-    const proc = spawn(["port-forward", `pod/${name}`, ...base, `${local}:8080`]);
-    const ready = new Promise<void>((resolve, reject) => {
-      let settled = false;
-      proc.onLine((line) => {
-        if (!settled && /Forwarding from/.test(line)) ((settled = true), resolve());
-      });
-      proc.onExit(() => {
-        forwards.delete(name);
-        if (!settled) ((settled = true), reject(new Error(`kubectl port-forward for "${name}" exited before serving`)));
-      });
-    });
-    forwards.set(name, { proc, ready });
-    return ready;
-  };
-
-  const dropForward = (name: string): void => {
-    const fwd = forwards.get(name);
-    forwards.delete(name);
-    fwd?.proc.kill();
-  };
-
   return {
     async provision(req) {
       await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start
@@ -269,13 +306,10 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
         const status = await getSandbox(req.name);
         if (!owned && status?.uid) ((owned = true), await ownSecret(req.name, status.uid));
         if (status?.phase === "Ready") {
+          startHeartbeat(req.name);
           // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
-          if (reach === "endpoint") {
-            if (!status.endpoint) throw new Error(`Sandbox "${req.name}" is Ready but reports no endpoint`);
-            return { endpoint: status.endpoint };
-          }
-          await ensureForward(req.name);
-          return { endpoint: `http://127.0.0.1:${forwardPort(req.name)}` };
+          if (!status.endpoint) throw new Error(`Sandbox "${req.name}" is Ready but reports no endpoint`);
+          return { endpoint: status.endpoint };
         }
         if (Date.now() >= deadline) {
           throw new Error(`Sandbox "${req.name}" never reached Ready (last phase: ${status?.phase ?? "absent"})`);
@@ -293,18 +327,33 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     async exists(name) {
       const status = await getSandbox(name);
       if (status === undefined) return false;
-      // Present: heal the reach path too (a restart dropped this process's forwards; the
-      // workspace reconcile probe lands here on every restore — ADR-0012 "same endpoint").
-      if (reach === "port-forward") await ensureForward(name).catch(() => {});
+      // Present: resume the keepalive lease this process wasn't yet heartbeating (the workspace
+      // reconcile probe lands here on every restore — ADR-0012).
+      startHeartbeat(name);
       return true;
     },
 
     async destroy(name) {
-      dropForward(name);
+      stopHeartbeat(name);
       // The Secret is an owned child of the CR, so deleting the CR reaps it — this is belt and
       // braces for the case where the ownerRef patch didn't land.
       await exec(["delete", "sandbox", name, ...base, "--ignore-not-found"]);
       await exec(["delete", "secret", secretName(name), ...base, "--ignore-not-found"]).catch(() => {});
+    },
+
+    async release(runId) {
+      // Which leases are this run's: the `j2.dev/run` label the provision stamped — the in-process
+      // heartbeat map is name-keyed, and a lease resumed via exists() never learned its runId.
+      const { stdout } = await exec([
+        "get",
+        "sandbox",
+        "-l",
+        `j2.dev/run=${runId}`,
+        ...base,
+        "-o",
+        "jsonpath={.items[*].metadata.name}",
+      ]).catch(() => ({ stdout: "" }));
+      for (const name of stdout.split(/\s+/).filter(Boolean)) stopHeartbeat(name);
     },
   };
 }
@@ -320,7 +369,11 @@ export function attachScript(
   paths: { reposMount: string; workRoot: string },
 ): { script: string; workdir: string; repos: Record<string, string> } {
   const repos: Record<string, string> = {};
-  const lines: string[] = [];
+  // The RO repos volume is written by the ORCHESTRATOR's uid and read here as the Harness's
+  // unprivileged uid (ADR-0001/0004), so git's dubious-ownership guard would refuse the clone
+  // source. safe.directory is only honored from global/system config (never `-c`), and inside
+  // the pod every path is j2-owned — trusting them all is the honest scope.
+  const lines: string[] = [`git config --global safe.directory '*'`];
   const branchDir = spec.branch.replace(/\//g, "-");
   for (const repo of spec.repos) {
     const dflt = `${paths.workRoot}/${repo.name}/default`;
@@ -356,21 +409,3 @@ const defaultExec: KubectlExec = (args, opts) =>
     });
     if (opts?.input !== undefined) child.stdin?.end(opts.input);
   });
-
-const defaultSpawn: KubectlSpawn = (args) => {
-  const child = nodeSpawn("kubectl", args, { stdio: ["ignore", "pipe", "pipe"] });
-  return {
-    onLine: (cb) => {
-      let buf = "";
-      child.stdout.on("data", (d: Buffer) => {
-        buf += d.toString();
-        for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) {
-          cb(buf.slice(0, i));
-          buf = buf.slice(i + 1);
-        }
-      });
-    },
-    onExit: (cb) => child.on("close", cb),
-    kill: () => child.kill("SIGTERM"),
-  };
-};

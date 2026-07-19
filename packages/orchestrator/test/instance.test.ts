@@ -88,6 +88,24 @@ test("an unknown workflow start is a 404", async () => {
   }
 });
 
+test("a supplied Instance token is the accepted credential (deployed: it comes from the Secret)", async () => {
+  const inst = await startInstance({
+    dir: fixtureDir,
+    store: new SqliteSnapshotStore(":memory:"),
+    signingKey: KEY,
+    instanceToken: "tok-from-secret",
+  });
+  try {
+    assert.equal(inst.instanceToken, "tok-from-secret");
+    const ok = await fetch(`${inst.url}/runs`, { headers: { authorization: "Bearer tok-from-secret" } });
+    assert.equal(ok.status, 200);
+    const bad = await fetch(`${inst.url}/runs`, { headers: { authorization: "Bearer minted-elsewhere" } });
+    assert.equal(bad.status, 401);
+  } finally {
+    await inst.close();
+  }
+});
+
 test("a fresh boot on the same store restores an in-flight run", async () => {
   const dbDir = await mkdtemp(join(tmpdir(), "j2-instance-"));
   const dbPath = join(dbDir, "state.db");

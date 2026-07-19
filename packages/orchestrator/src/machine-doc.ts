@@ -2,8 +2,8 @@
 // live StateNode tree (`machine.root`) rather than `machine.definition`/`toJSON()` — those carry
 // entry/exit actions and output mappers as functions, which don't survive JSON. The DTO here is
 // pure data: the nested state tree drives the renderer's containment, the flat transition list its
-// edges. Structure is provider-independent, so the registered template Machine (before
-// `.provide()`) is the right thing to serialize (ADR-0003).
+// edges. Structure doesn't depend on which actors fill the named slots, so the registered Machine
+// (before any test-seam `.provide()` — ADR-0015) is the right thing to serialize.
 //
 // A workflow's real work usually happens in CHILD machines (`coding`'s whole feature pipeline is a
 // `spawnChild`), so the walk descends into them too — one `MachineBodyDoc` per child, attached to
