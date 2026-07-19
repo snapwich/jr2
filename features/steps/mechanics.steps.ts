@@ -9,7 +9,7 @@
 // that makes a real Agent originate a real MCP call is `@kind`, where there is a real pod to do it.
 //
 // They carry the INSTANCE token, not a Sandbox token: these registrations belong to no Sandbox, and
-// a Sandbox token is scoped to one. The credential comes from `.j2/dev.json`, as the CLI's does.
+// a Sandbox token is scoped to one. The credential is the fixture server's Instance token.
 
 import { Given, When, Then } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
@@ -41,7 +41,7 @@ async function waitForValue(world: E2EWorld, value: string): Promise<Status> {
 
 /** The run's open gates, from the HTTP discovery listing (`GET /runs/:id` — ADR-0011). */
 async function gates(world: E2EWorld): Promise<Gate[]> {
-  const res = await fetch(`${world.dev?.url}/runs/${world.runId}`, { headers: world.authHeaders() });
+  const res = await fetch(`${world.server?.url}/runs/${world.runId}`, { headers: world.authHeaders() });
   assert.equal(res.status, 200);
   return ((await res.json()) as { gates?: Gate[] }).gates ?? [];
 }
@@ -49,7 +49,7 @@ async function gates(world: E2EWorld): Promise<Gate[]> {
 /** `GET /agents/:iid/surface` — what the Adapter would render as this turn's `tools/list`. */
 async function agentSurface(world: E2EWorld): Promise<Response> {
   const s = await status(world);
-  return fetch(`${world.dev?.url}/agents/${s.instanceId}/surface`, { headers: world.authHeaders() });
+  return fetch(`${world.server?.url}/agents/${s.instanceId}/surface`, { headers: world.authHeaders() });
 }
 
 Given("the instance also has the {string} workflow", async function (this: E2EWorld, name: string): Promise<void> {
@@ -59,8 +59,8 @@ Given("the instance also has the {string} workflow", async function (this: E2EWo
 Given(
   "I start the {string} workflow against the stub harness",
   async function (this: E2EWorld, wf: string): Promise<void> {
-    assert.ok(this.dev?.stubHarness, "j2 dev advertised its stub harness in dev.json");
-    await this.runCli(["run", wf, "--detach", "--input", JSON.stringify({ endpoint: this.dev.stubHarness })]);
+    const endpoint = await this.stubHarnessUrl();
+    await this.runCli(["run", wf, "--detach", "--input", JSON.stringify({ endpoint })]);
     this.runId = this.resultJson<{ runId: string }>().runId;
     assert.ok(this.runId, "run --detach printed a runId");
   },
@@ -72,7 +72,7 @@ When(
   "the agent calls {string} with summary {string}",
   async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
     const s = await status(this);
-    const res = await fetch(`${this.dev?.url}/agents/${s.instanceId}/events`, {
+    const res = await fetch(`${this.server?.url}/agents/${s.instanceId}/events`, {
       method: "POST",
       headers: { "content-type": "application/json", ...this.authHeaders() },
       body: JSON.stringify({ type: tool, summary }),
@@ -85,7 +85,7 @@ When(
 );
 
 When("I deliver {string} to gate {string}", async function (this: E2EWorld, type: string, gate: string) {
-  const res = await fetch(`${this.dev?.url}/runs/${this.runId}/gates/${gate}/events`, {
+  const res = await fetch(`${this.server?.url}/runs/${this.runId}/gates/${gate}/events`, {
     method: "POST",
     headers: { "content-type": "application/json", ...this.authHeaders() },
     body: JSON.stringify({ type }),

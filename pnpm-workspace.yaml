@@ -7,3 +7,6 @@ packages:
   # System e2e acceptance suite (ADR-0010): black-box Cucumber.js specs that drive the real `j2`
   # binary. A package so it owns its own `xstate`/cucumber deps (scaffolded instances resolve them).
   - features
+  # The @kind tier's shared instance (ADR-0010): a workspace member so `j2 up`'s image build can
+  # `pnpm deploy` it; scenarios isolate by namespace, not by folder.
+  - features/kind-instance

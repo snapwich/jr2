@@ -1,5 +1,5 @@
 // An e2e fixture exercising the ADR-0011 mechanics tier end to end, with NO cluster: a
-// workspace-less workflow whose `agentRun` admits against the `j2 dev` stub Harness (the
+// workspace-less workflow whose `agentRun` admits against the e2e tier's stub Harness (the
 // endpoint arrives in run input — an endpoint is just a URL), parks, and is then driven from
 // outside — the AGENT played over MCP (`/mcp/<iid>`), the HUMAN played over the gates API
 // (`POST /runs/:id/gates/review-1/events`). Filename `review.ts` → workflow "review".

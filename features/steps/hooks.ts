@@ -1,5 +1,5 @@
 // Per-scenario lifecycle: allocate a fresh isolated instance before each scenario, and guarantee
-// teardown after — even on failure — so a crashed step never leaks a `j2 dev` process or temp folder.
+// teardown after — even on failure — so a crashed step never leaks a server process or temp folder.
 
 import { Before, After, setDefaultTimeout } from "@cucumber/cucumber";
 import { E2EWorld } from "./world.ts";

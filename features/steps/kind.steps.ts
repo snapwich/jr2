@@ -16,7 +16,7 @@
 
 import { After, Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import { E2EWorld } from "./world.ts";
@@ -25,16 +25,56 @@ const exec = promisify(execFile);
 
 type SandboxCR = { metadata: { name: string }; status?: { phase?: string } };
 
-/** Run kubectl and return stdout (the same command a human debugging the cluster would type). */
-async function kubectl(args: string[]): Promise<string> {
-  const { stdout } = await exec("kubectl", args, { maxBuffer: 8 * 1024 * 1024 });
+/** Run kubectl in the scenario's namespace (the isolation unit — ADR-0010/0019). */
+async function kubectl(world: E2EWorld, args: string[]): Promise<string> {
+  assert.ok(world.kindNamespace, "a @kind scenario has its namespace set in setupKind");
+  const { stdout } = await exec("kubectl", ["--namespace", world.kindNamespace, ...args], {
+    maxBuffer: 8 * 1024 * 1024,
+  });
   return stdout;
+}
+
+/** Port-forward a pod for the duration of one callback (the host's stand-in for pod-net access). */
+async function withPodForward(
+  world: E2EWorld,
+  pod: string,
+  port: number,
+  fn: (localUrl: string) => Promise<void>,
+): Promise<void> {
+  assert.ok(world.kindNamespace, "a @kind scenario has its namespace set");
+  const child = spawn("kubectl", ["--namespace", world.kindNamespace, "port-forward", `pod/${pod}`, `:${port}`]);
+  try {
+    const local = await new Promise<string>((resolve, reject) => {
+      let out = "";
+      child.stdout.on("data", (d: Buffer) => {
+        out += d.toString();
+        const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out);
+        if (m) resolve(m[1]!);
+      });
+      child.on("close", (code) => reject(new Error(`port-forward pod/${pod} exited (${code})`)));
+    });
+    await fn(`http://127.0.0.1:${local}`);
+  } finally {
+    child.kill();
+  }
+}
+
+/** Scale the in-cluster orchestrator (deployed by `j2 up`) — the @kind restart/stop lever. */
+async function scaleOrchestrator(world: E2EWorld, replicas: 0 | 1): Promise<void> {
+  await kubectl(world, ["scale", "deployment/j2-orchestrator", `--replicas=${replicas}`]);
+  if (replicas === 0) {
+    await kubectl(world, ["wait", "--for=delete", "pod", "-l", "app=j2-orchestrator", "--timeout=120s"]).catch(
+      () => {},
+    );
+  } else {
+    await kubectl(world, ["rollout", "status", "deployment/j2-orchestrator", "--timeout=120s"]);
+  }
 }
 
 /** Every Sandbox CR labeled with this run. */
 async function sandboxesFor(world: E2EWorld): Promise<SandboxCR[]> {
   assert.ok(world.runId, "a runId was carried from a prior step");
-  const out = await kubectl(["get", "sandbox", "-l", `j2.dev/run=${world.runId}`, "-o", "json"]);
+  const out = await kubectl(world, ["get", "sandbox", "-l", `j2.dev/run=${world.runId}`, "-o", "json"]);
   return (JSON.parse(out) as { items: SandboxCR[] }).items;
 }
 
@@ -46,8 +86,8 @@ async function waitForReadySandbox(world: E2EWorld): Promise<SandboxCR> {
     await sleep(1000);
   }
   throw new Error(
-    `no Sandbox for run ${world.runId} reached Ready. Is the operator running (\`just operator-run\`), ` +
-      `and was the image loaded (\`just e2e-kind-up\`)?`,
+    `no Sandbox for run ${world.runId} reached Ready — were the kit images built + loaded ` +
+      `(\`just e2e-kind-up\`)? Check the operator: kubectl -n j2-system get pods`,
   );
 }
 
@@ -94,9 +134,13 @@ async function waitSettled(world: E2EWorld): Promise<WsStatus> {
 
 // --- given ---------------------------------------------------------------------------------------
 
-Given("the kind instance is serving", async function (this: E2EWorld): Promise<void> {
-  await this.addFixtureWorkflow("sandboxed");
-  await this.startDev();
+// 10 min: the FIRST converge of a session builds the instance image (pnpm deploy + docker);
+// later scenarios hit the content-hash skip and the docker cache.
+Given("the kind instance is serving", { timeout: 600_000 }, async function (this: E2EWorld): Promise<void> {
+  // The product's own path (ADR-0010/0019): converge the scenario's fresh namespace with `j2 up`.
+  // The workflows (incl. `sandboxed`) are committed in the kind instance and baked into its image.
+  const r = await this.runCli(["up", "--yes"]);
+  assert.equal(r.code, 0, `j2 up failed: ${r.stderr}`);
 });
 
 // --- when ----------------------------------------------------------------------------------------
@@ -107,23 +151,24 @@ Given("the kind instance is serving", async function (this: E2EWorld): Promise<v
 When("the orchestrator restarts", async function (this: E2EWorld): Promise<void> {
   this.sandboxBefore = (await waitForReadySandbox(this)).metadata.name;
   this.endpointBefore = (await waitForAttached(this)).context.endpoint;
-  await this.restartDev();
+  await scaleOrchestrator(this, 0);
+  await scaleOrchestrator(this, 1);
 });
 
 When("the orchestrator stops", async function (this: E2EWorld): Promise<void> {
   this.sandboxBefore = (await waitForReadySandbox(this)).metadata.name;
   await waitForAttached(this);
-  await this.stopDev();
+  await scaleOrchestrator(this, 0);
 });
 
 When("the run's Sandbox is reaped behind its back", async function (this: E2EWorld): Promise<void> {
   assert.ok(this.sandboxBefore, "the Sandbox name was captured while the orchestrator was up");
   // What an idle-timeout GC or a lost node does, done deterministically.
-  await kubectl(["delete", "sandbox", this.sandboxBefore, "--wait=true"]);
+  await kubectl(this, ["delete", "sandbox", this.sandboxBefore, "--wait=true"]);
 });
 
 When("the orchestrator starts again", async function (this: E2EWorld): Promise<void> {
-  await this.startDev();
+  await scaleOrchestrator(this, 1);
 });
 
 /**
@@ -138,13 +183,18 @@ When(
   async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
     const ws = await waitForAttached(this);
     assert.ok(ws.context.endpoint, "the workspace reported its Harness endpoint");
-    // "coder" is the agent name the `sandboxed` fixture admits under (flue: /agents/:name/:id).
-    const res = await fetch(`${ws.context.endpoint}/agents/coder/${ws.instanceId}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: `call ${tool} ${JSON.stringify({ summary })}` }),
+    // The run's endpoint is in-cluster Service DNS (the orchestrator dials it from inside —
+    // ADR-0019); this host-side stand-in reaches the same Harness over a scoped port-forward.
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    await withPodForward(this, pod, 8080, async (localUrl) => {
+      // "coder" is the agent name the `sandboxed` fixture admits under (flue: /agents/:name/:id).
+      const res = await fetch(`${localUrl}/agents/coder/${ws.instanceId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: `call ${tool} ${JSON.stringify({ summary })}` }),
+      });
+      assert.equal(res.status, 200, "the Harness admitted the turn");
     });
-    assert.equal(res.status, 200, "the Harness admitted the turn");
   },
 );
 
@@ -162,7 +212,7 @@ When(
     const pod = (await waitForReadySandbox(this)).metadata.name;
     const iid = (await wsStatus(this)).instanceId;
     const url = (
-      await kubectl([
+      await kubectl(this, [
         "get",
         "pod",
         pod,
@@ -178,7 +228,7 @@ When(
       `headers:{"content-type":"application/json"},` +
       `body:${JSON.stringify(JSON.stringify({ type: tool, summary: "self-approved" }))}})` +
       `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message))`;
-    this.podSays = await kubectl(["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
+    this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
   },
 );
 
@@ -197,7 +247,7 @@ Then(
     const workdir = `/work/${repo}/${branch}`;
     // The attach contract (ADR-0004), read straight out of the pod: a worktree on the branch, whose
     // objects are BORROWED from the read-only repos volume rather than copied.
-    const current = await kubectl([
+    const current = await kubectl(this, [
       "exec",
       `pod/${pod}`,
       "-c",
@@ -210,7 +260,7 @@ Then(
       "--show-current",
     ]);
     assert.equal(current.trim(), branch);
-    const alternates = await kubectl([
+    const alternates = await kubectl(this, [
       "exec",
       `pod/${pod}`,
       "-c",
@@ -225,7 +275,7 @@ Then(
 
 Then("the run's Sandbox runs the Adapter beside the Harness", async function (this: E2EWorld): Promise<void> {
   const pod = (await waitForReadySandbox(this)).metadata.name;
-  const names = (await kubectl(["get", "pod", pod, "-o", "jsonpath={.spec.containers[*].name}"])).split(/\s+/);
+  const names = (await kubectl(this, ["get", "pod", pod, "-o", "jsonpath={.spec.containers[*].name}"])).split(/\s+/);
   // ADR-0005's "the pod, not the container, is the isolation unit" now has a third resident — and
   // the operator scheduled it without understanding it (ADR-0001: sidecars are opaque fragments).
   assert.ok(names.includes("harness"), `the Harness container is there (got: ${names.join(", ")})`);
@@ -269,9 +319,9 @@ Then("no Sandbox was re-provisioned for the run", async function (this: E2EWorld
   assert.deepEqual(await sandboxesFor(this), [], "a lost workspace is reported, never silently re-created");
 });
 
-// Belt and braces: a scenario that fails mid-run leaves a Sandbox behind (its body never reached
-// final), and the next scenario should not inherit it.
+// Namespace deletion (World.cleanup) is the real teardown; this only unsticks a Sandbox whose
+// finalizer might slow that deletion down after a failed scenario.
 After({ tags: "@kind" }, async function (this: E2EWorld): Promise<void> {
   if (!this.runId) return;
-  await kubectl(["delete", "sandbox", "-l", `j2.dev/run=${this.runId}`, "--ignore-not-found"]).catch(() => {});
+  await kubectl(this, ["delete", "sandbox", "-l", `j2.dev/run=${this.runId}`, "--ignore-not-found"]).catch(() => {});
 });

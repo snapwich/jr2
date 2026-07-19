@@ -1,6 +1,6 @@
 Feature: Agents and gates drive a run from outside
   The ADR-0011 mechanics tier, with no cluster: a workflow's agentRun admits against the
-  `j2 dev` stub Harness and parks; the run is then driven entirely from outside — the agent's
+  fixture stub Harness and parks; the run is then driven entirely from outside — the agent's
   surface played over `/agents/<iid>/*`, the human played over the gates API. Each event lands
   on the state that invoked its actor; leaving the state destroys the surface.
 

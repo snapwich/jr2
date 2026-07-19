@@ -13,9 +13,10 @@ Feature: a workspace() run drives a real Sandbox on kind
   container boundary, and the tool call are real.
 
   This tier is opt-in (`@kind`, excluded from the default suite) because it needs infrastructure:
-    just e2e-kind-up      # dev Harness + Adapter images, and the cluster whose repos/ mount is baked at creation
-    just operator-run     # the Sandbox operator, in another shell (until a deployable image lands)
+    just e2e-kind-up      # a vanilla kind cluster + locally built kit images (operator, adapter, dev Harness)
     just e2e-kind
+  Bring-up is the product's own path (ADR-0010/0019): each scenario runs `j2 up` into a fresh
+  namespace of the shared cluster — nothing is instance-bound to the cluster itself.
 
   Rule: the wrapper provisions a real Sandbox, attaches the worktree, and destroys it on final
 

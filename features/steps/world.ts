@@ -1,48 +1,51 @@
 // The Cucumber World for the j2 e2e suite: one per scenario (so scenarios are fully isolated and the
 // suite is `--parallel`-safe). It owns a fresh temp INSTANCE folder, drives the REAL `j2` binary as a
-// child process against it, and — when serving — a REAL `j2 dev` orchestrator on an ephemeral port.
+// child process against it, and — when serving — the REAL server entrypoint the instance image runs
+// (ADR-0010/0019: no host dev mode; the fixture boots exactly the deployed process, on the host).
 //
 // Black-box by design (ADR-0010): steps assert only on what a user's shell sees — captured stdout
-// (the one machine-readable result), stderr (human activity), and the process exit code. Nothing is
-// imported from `@j2/cli` internals; the binary is spawned exactly as `pnpm exec j2` would run it.
+// (the one machine-readable result), stderr (human activity), and the process exit code. The `j2`
+// binary is pointed at the fixture's server the supported way: `J2_URL` + `J2_TOKEN` env. The
+// wire-compatible stub Harness (ADR-0011) is a fixture owned by this tier, started in-process.
 
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, copyFile, readFile, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { mkdir, mkdtemp, copyFile, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { setWorldConstructor } from "@cucumber/cucumber";
+import { startStubHarness } from "@j2/orchestrator";
 
 /** The `j2` bin (a Node 24 type-stripped `.ts` shebang), resolved from this file's location. */
 const BIN = fileURLToPath(new URL("../../packages/cli/bin/j2.ts", import.meta.url));
+/** The instance image's server entrypoint (ADR-0019) — the per-scenario orchestrator fixture. */
+const SERVER_BIN = fileURLToPath(new URL("../../packages/orchestrator/bin/server.ts", import.meta.url));
 /** Base for per-scenario temp instances; gitignored. */
 const TMP_BASE = fileURLToPath(new URL("../.tmp/", import.meta.url));
-/** The `loop` fixture workflow source, copied into an instance when a live run is needed. */
-const LOOP_FIXTURE = fileURLToPath(new URL("../fixtures/loop.ts", import.meta.url));
 /**
- * The kind tier's instance (@kind): ONE fixed folder, not a per-scenario mkdtemp. kind bakes the
- * `repos/` → node mount at cluster creation (ADR-0009), so a cluster serves exactly one instance
- * path — `just e2e-kind-up` scaffolds this folder and creates the cluster around it. Scenarios
- * still isolate: each boots its own `j2 dev` and owns its own runs and Sandboxes.
+ * The kind tier's instance (@kind, ADR-0010): ONE shared workspace package (`j2 up`'s image build
+ * `pnpm deploy`s it, which needs workspace membership). Scenarios isolate by NAMESPACE: each `up`s
+ * into a fresh one (`-n`), and namespace deletion is the teardown.
  */
-const KIND_DIR = fileURLToPath(new URL("../.tmp/kind/", import.meta.url));
+const KIND_DIR = fileURLToPath(new URL("../kind-instance/", import.meta.url));
 
 /** The captured outcome of one `j2 …` invocation. */
 export type CliResult = { stdout: string; stderr: string; code: number };
 
-/** What `j2 dev` advertised in `.j2/dev.json` — including the Instance token (ADR-0013), which is
- * the credential every run/gate/agent call needs. A step that fetches the orchestrator directly is
- * standing in for the CLI (or for an Adapter), so it must present it too. */
-type DevInfo = { url: string; token?: string; stubHarness?: string; pid: number };
+/** The serving fixture's address + credential — what `J2_URL`/`J2_TOKEN` carry to the `j2` binary. */
+export type ServerInfo = { url: string; token: string };
 
 export class E2EWorld {
   /** The temp instance folder (holds `j2.config.ts`, `workflows/`, and the runtime `.j2/`). */
   dir = "";
-  /** The running `j2 dev` child, while serving. */
-  private devProc?: ChildProcess;
-  /** The address `j2 dev` advertised, once serving. */
-  dev?: DevInfo;
+  /** The running server-entrypoint child, while serving. */
+  private serverProc?: ChildProcess;
+  /** The serving orchestrator's address + Instance token, once serving. */
+  server?: ServerInfo;
+  /** The in-process stub Harness (ADR-0011), started on demand; its url is run input. */
+  private stub?: { url: string; close: () => Promise<void> };
   /** The most recent `j2 …` invocation's captured output + exit code. */
   last?: CliResult;
   /** A runId carried between steps (the last run started or settled). */
@@ -54,8 +57,10 @@ export class E2EWorld {
   /** @kind: stdout of the last command run INSIDE a Sandbox container (ADR-0013 boundary probes). */
   podSays?: string;
 
-  /** True when this scenario runs against the shared kind instance (so cleanup must not delete it). */
-  private kind = false;
+  /** @kind: the scenario's fresh namespace — set = kind mode (runCli appends `-n`, no J2_URL). */
+  kindNamespace?: string;
+  /** The Instance token this scenario's server boots with (the fixture plays `j2 up`'s Secret). */
+  private readonly token = randomBytes(16).toString("hex");
 
   /** Allocate a fresh, isolated instance folder. Called from the `Before` hook. */
   async setup(): Promise<void> {
@@ -64,51 +69,58 @@ export class E2EWorld {
   }
 
   /**
-   * Adopt the shared kind instance (@kind scenarios). Fails pointedly rather than scaffolding it:
-   * the folder must EXIST before its cluster is created (the mount is baked then), so creating it
-   * here would hand the scenario an instance no pod can see.
-   *
-   * Only the run STORE is reset — a leftover in-flight run would otherwise be restored at boot and
-   * re-provision Sandboxes underneath us. The rest of `.j2/` is left alone, because two of its
-   * files are the cluster's, not the run's: `cluster.json` (the pod→host address `j2 cluster up`
-   * recorded — wiping it leaves every Adapter with no route home) and `secret` (the key Sandbox
-   * tokens are signed with). `repos/` is never touched either: deleting the bind-mounted directory
-   * would sever the node's view of it for the life of the cluster.
+   * Adopt the shared kind instance (@kind scenarios) under a FRESH namespace, and make sure the
+   * seed git bundle the config's `repos[]` clones from exists (self-healing: generated once,
+   * then baked into the instance image by content hash).
    */
   async setupKind(): Promise<void> {
-    this.kind = true;
+    this.kindNamespace = `j2e2e-${randomBytes(3).toString("hex")}`;
     this.dir = KIND_DIR;
-    try {
-      await readFile(join(this.dir, "j2.config.ts"), "utf8");
-    } catch {
-      throw new Error(`the kind e2e instance is not set up — run \`just e2e-kind-up\` (expected ${this.dir})`);
-    }
-    await rm(join(this.dir, ".j2", "state.db"), { force: true });
+    await ensureSeedBundle(join(this.dir, "seed"));
   }
 
-  /** Tear the scenario down: stop the orchestrator (if any) and delete the instance folder. */
+  /** Tear the scenario down: stop the orchestrator (if any) and delete what the scenario owns —
+   * its temp folder, or (@kind) its whole namespace (runs, store, Sandboxes go with it). */
   async cleanup(): Promise<void> {
-    await this.stopDev();
-    if (this.kind) return; // shared instance: its cluster's repos mount is baked to this path
+    await this.stopServer();
+    await this.stub?.close();
+    this.stub = undefined;
+    if (this.kindNamespace) {
+      await execKubectl(["delete", "namespace", this.kindNamespace, "--ignore-not-found", "--wait=false"]).catch(
+        () => {},
+      );
+      return; // the shared instance folder itself is a workspace package — never deleted
+    }
     if (this.dir) await rm(this.dir, { recursive: true, force: true });
   }
 
   /** Restart the orchestrator against the same instance — the restore path (ADR-0007/0012). */
-  async restartDev(): Promise<void> {
-    await this.stopDev();
-    await this.startDev();
+  async restartServer(): Promise<void> {
+    await this.stopServer();
+    await this.startServer();
   }
 
-  /** The Instance token as a bearer header — what the CLI sends after reading `.j2/dev.json`. */
+  /** The Instance token as a bearer header — what the CLI sends after resolving its target. */
   authHeaders(): Record<string, string> {
-    const token = this.dev?.token;
-    assert.ok(token, "j2 dev advertised an Instance token in dev.json (ADR-0013)");
+    const token = this.server?.token;
+    assert.ok(token, "the fixture server was booted with an Instance token (ADR-0013)");
     return { authorization: `Bearer ${token}` };
   }
 
-  /** Run `j2 <args>` against this instance, capturing stdout/stderr/exit code into `last`. */
+  /** The stub Harness's url (started on first use) — passed as run-input `endpoint` (ADR-0011). */
+  async stubHarnessUrl(): Promise<string> {
+    this.stub ??= await startStubHarness();
+    return this.stub.url;
+  }
+
+  /** Run `j2 <args>` against this instance, capturing stdout/stderr/exit code into `last`.
+   * While serving on the host, the target rides `J2_URL`/`J2_TOKEN` — the supported "attach to a
+   * deployed orchestrator" path (ADR-0009). @kind sets neither: the verbs resolve the REAL way
+   * (current kube context + `-n <scenario namespace>` → Secret + port-forward, ADR-0019). */
   async runCli(args: string[]): Promise<CliResult> {
-    const child = spawn(process.execPath, [BIN, ...args], { cwd: this.dir });
+    const env = this.server ? { ...process.env, J2_URL: this.server.url, J2_TOKEN: this.server.token } : process.env;
+    const full = this.kindNamespace ? [...args, "-n", this.kindNamespace] : args;
+    const child = spawn(process.execPath, [BIN, ...full], { cwd: this.dir, env });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
@@ -126,7 +138,7 @@ export class E2EWorld {
     if (r.code !== 0) throw new Error(`j2 init failed (${r.code}): ${r.stderr}`);
   }
 
-  /** Copy the `loop` fixture into `workflows/` BEFORE serving, so `j2 dev` discovers it at boot. */
+  /** Copy the `loop` fixture into `workflows/` BEFORE serving, so boot discovery finds it. */
   async addLoopWorkflow(): Promise<void> {
     await this.addFixtureWorkflow("loop");
   }
@@ -140,48 +152,49 @@ export class E2EWorld {
     );
   }
 
-  /**
-   * Boot `j2 dev` and wait until it advertises `.j2/dev.json`.
-   *
-   * Ephemeral port everywhere but @kind, where the port must be STABLE across the restart a
-   * scenario performs: a live Sandbox's Adapter holds the orchestrator's address in its pod env
-   * (baked at provision, and pods are immutable), so a restart onto a fresh port would strand it
-   * (ADR-0013). There, `j2 dev` derives its own port from the instance path — so we pass none.
-   */
-  async startDev(): Promise<void> {
-    const port = this.kind ? [] : ["--port", "0"];
-    this.devProc = spawn(process.execPath, [BIN, "dev", ...port], { cwd: this.dir });
-    this.devProc.stderr?.on("data", () => {}); // drain so the pipe never blocks
-    this.dev = await this.waitForDevJson();
+  /** Boot the server entrypoint (the deployed process, ADR-0019) and wait for its announce line.
+   * Host-only — @kind never calls this; its orchestrator runs in-cluster, deployed by `j2 up`. */
+  async startServer(): Promise<void> {
+    const proc = spawn(process.execPath, [SERVER_BIN], {
+      cwd: this.dir,
+      env: {
+        ...process.env,
+        PORT: "0",
+        HOST: "127.0.0.1",
+        J2_INSTANCE_TOKEN: this.token,
+      },
+    });
+    this.serverProc = proc;
+    proc.stderr?.on("data", () => {}); // drain so the pipe never blocks
+    // The entrypoint announces one JSON object per line; the `{ url }` line is the address (repo
+    // reconcile lines may precede it on a sandbox-ful instance).
+    const url = await new Promise<string>((resolve, reject) => {
+      let buf = "";
+      proc.stdout!.on("data", (d: Buffer) => {
+        buf += d.toString();
+        for (const line of buf.split("\n").slice(0, -1)) {
+          try {
+            const parsed = JSON.parse(line) as { url?: string };
+            if (parsed.url) return resolve(parsed.url);
+          } catch {
+            // non-JSON noise on stdout is not the announcement
+          }
+        }
+      });
+      proc.on("close", (code) => reject(new Error(`server entrypoint exited (${code}) before announcing`)));
+    });
+    this.server = { url, token: this.token };
   }
 
   /** SIGINT the orchestrator and wait for it to exit (idempotent — safe to call again in cleanup). */
-  async stopDev(): Promise<void> {
-    const proc = this.devProc;
+  async stopServer(): Promise<void> {
+    const proc = this.serverProc;
     if (!proc) return;
-    this.devProc = undefined;
+    this.serverProc = undefined;
+    this.server = undefined;
     const exited = new Promise<void>((resolve) => proc.on("close", () => resolve()));
     proc.kill("SIGINT");
     await exited;
-  }
-
-  /** Read `<dir>/.j2/dev.json`, or undefined if it's not there. */
-  async readDevJson(): Promise<DevInfo | undefined> {
-    try {
-      return JSON.parse(await readFile(join(this.dir, ".j2", "dev.json"), "utf8")) as DevInfo;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** Poll for `dev.json` (the dev server binds asynchronously); fail loudly if it never appears. */
-  private async waitForDevJson(): Promise<DevInfo> {
-    for (let i = 0; i < 200; i++) {
-      const info = await this.readDevJson();
-      if (info?.url) return info;
-      await sleep(50);
-    }
-    throw new Error("j2 dev never wrote .j2/dev.json");
   }
 
   /** The terminal stdout line parsed as JSON (the one machine-readable result a verb prints). */
@@ -189,6 +202,42 @@ export class E2EWorld {
     const lines = (this.last?.stdout ?? "").trim().split("\n");
     return JSON.parse(lines[lines.length - 1] ?? "{}") as T;
   }
+}
+
+/** kubectl, for the World's own teardown (steps have their own namespace-aware helper). */
+function execKubectl(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile("kubectl", args, (err) => (err ? reject(err) : resolve()));
+  });
+}
+
+/**
+ * The seed repo the kind config's `repos[]` clones from, as a git BUNDLE (`seed/app.bundle`):
+ * a single file survives the instance image build (`pnpm deploy` strips nested `.git` dirs) and
+ * is clonable from inside the cluster. Generated once; the image content hash then keeps it.
+ */
+async function ensureSeedBundle(seedDir: string): Promise<void> {
+  const bundle = join(seedDir, "app.bundle");
+  try {
+    await readFile(bundle);
+    return;
+  } catch {
+    // absent → generate
+  }
+  await mkdir(seedDir, { recursive: true });
+  const work = await mkdtemp(join(tmpdir(), "j2-seed-"));
+  const git = (args: string[]): Promise<void> =>
+    new Promise((resolve, reject) => {
+      execFile("git", ["-C", work, ...args], (err, _o, stderr) =>
+        err ? reject(new Error(`git ${args.join(" ")}: ${stderr}`)) : resolve(),
+      );
+    });
+  await git(["init", "-q", "-b", "main"]);
+  await writeFile(join(work, "README.md"), "# app\n");
+  await git(["add", "-A"]);
+  await git(["-c", "user.email=e2e@j2", "-c", "user.name=e2e", "commit", "-qm", "init"]);
+  await git(["bundle", "create", bundle, "HEAD", "main"]);
+  await rm(work, { recursive: true, force: true });
 }
 
 setWorldConstructor(E2EWorld);

@@ -13,9 +13,9 @@ Given("the instance also has a long-running workflow", async function (this: E2E
   await this.addLoopWorkflow();
 });
 
-// Phrased as a When in the dev-lifecycle Rule and an And/Given elsewhere — Cucumber matches on text,
+// Phrased as a When or an And/Given depending on the Rule — Cucumber matches on text,
 // not keyword, so one definition serves every use.
 When("the orchestrator is serving", async function (this: E2EWorld): Promise<void> {
-  await this.startDev();
-  assert.ok(this.dev?.url, "j2 dev advertised a url");
+  await this.startServer();
+  assert.ok(this.server?.url, "the server entrypoint announced a url");
 });
