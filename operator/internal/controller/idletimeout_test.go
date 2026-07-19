@@ -48,13 +48,19 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func orphanSandbox(name string, owners []metav1.OwnerReference) *corev1alpha1.Sandbox {
+// leasedSandbox is a Sandbox created `age` ago with a 30m idleTimeout and the
+// given keepalive annotation value ("" = no annotation).
+func leasedSandbox(name string, age time.Duration, keepalive string) *corev1alpha1.Sandbox {
+	var annotations map[string]string
+	if keepalive != "" {
+		annotations = map[string]string{keepaliveAnnotation: keepalive}
+	}
 	return &corev1alpha1.Sandbox{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         nsDefault,
-			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
-			OwnerReferences:   owners,
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-age)),
+			Annotations:       annotations,
 		},
 		Spec: corev1alpha1.SandboxSpec{
 			Image:       "harness:latest",
@@ -63,43 +69,75 @@ func orphanSandbox(name string, owners []metav1.OwnerReference) *corev1alpha1.Sa
 	}
 }
 
-func TestIdleTimeoutDeletesOrphanedSandbox(t *testing.T) {
+// runIdleGC reconciles once and reports whether the Sandbox survived.
+func runIdleGC(t *testing.T, sandbox *corev1alpha1.Sandbox) (survived bool, res reconcile.Result) {
+	t.Helper()
 	s := newScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&corev1alpha1.Sandbox{}).
-		WithObjects(orphanSandbox("orphan", nil)).Build()
+		WithObjects(sandbox).Build()
 	r := &SandboxReconciler{Client: c, Scheme: s}
-
-	key := types.NamespacedName{Name: "orphan", Namespace: nsDefault}
-	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key}); err != nil {
+	key := types.NamespacedName{Name: sandbox.Name, Namespace: nsDefault}
+	res, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
+	err = c.Get(context.Background(), key, &corev1alpha1.Sandbox{})
+	if err == nil {
+		// Survivors must have been provisioned.
+		if podErr := c.Get(context.Background(), key, &corev1.Pod{}); podErr != nil {
+			t.Fatalf("surviving sandbox should have a Pod: %v", podErr)
+		}
+		return true, res
+	}
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("get sandbox: %v", err)
+	}
+	return false, res
+}
 
-	if err := c.Get(context.Background(), key, &corev1alpha1.Sandbox{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("expected orphaned sandbox to be deleted, got err=%v", err)
+func TestIdleTimeoutDeletesSandboxWithNoKeepalive(t *testing.T) {
+	survived, _ := runIdleGC(t, leasedSandbox("stale", time.Hour, ""))
+	if survived {
+		t.Fatal("expected sandbox with no keepalive past idleTimeout to be deleted")
 	}
 }
 
-func TestIdleTimeoutKeepsOwnedSandboxAndProvisions(t *testing.T) {
-	s := newScheme(t)
-	owners := []metav1.OwnerReference{{APIVersion: "example/v1", Kind: "Workspace", Name: "parent", UID: "abc"}}
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithStatusSubresource(&corev1alpha1.Sandbox{}).
-		WithObjects(orphanSandbox("owned", owners)).Build()
-	r := &SandboxReconciler{Client: c, Scheme: s}
+func TestIdleTimeoutKeepsFreshKeepalive(t *testing.T) {
+	// Created an hour ago, but its Orchestrator heartbeated a minute ago.
+	fresh := time.Now().Add(-time.Minute).Format(time.RFC3339)
+	survived, res := runIdleGC(t, leasedSandbox("parked", time.Hour, fresh))
+	if !survived {
+		t.Fatal("a heartbeated sandbox must survive idle GC (parking is retention — ADR-0012)")
+	}
+	if res.RequeueAfter <= 0 {
+		t.Fatalf("expected a requeue at the lease deadline, got %v", res.RequeueAfter)
+	}
+}
 
-	key := types.NamespacedName{Name: "owned", Namespace: nsDefault}
-	if _, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key}); err != nil {
-		t.Fatalf("reconcile: %v", err)
+func TestIdleTimeoutDeletesLapsedKeepalive(t *testing.T) {
+	// Last heartbeat an hour ago: the Orchestrator is gone; reap.
+	lapsed := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	survived, _ := runIdleGC(t, leasedSandbox("abandoned", 2*time.Hour, lapsed))
+	if survived {
+		t.Fatal("expected sandbox with a lapsed keepalive to be deleted")
 	}
+}
 
-	if err := c.Get(context.Background(), key, &corev1alpha1.Sandbox{}); err != nil {
-		t.Fatalf("owned sandbox should survive idle GC, got err=%v", err)
+func TestIdleTimeoutTreatsGarbageKeepaliveAsAbsent(t *testing.T) {
+	survived, _ := runIdleGC(t, leasedSandbox("garbled", time.Hour, "not-a-timestamp"))
+	if survived {
+		t.Fatal("expected sandbox with an unparseable keepalive and lapsed creation to be deleted")
 	}
-	if err := c.Get(context.Background(), key, &corev1.Pod{}); err != nil {
-		t.Fatalf("expected Pod to be provisioned: %v", err)
+}
+
+func TestIdleTimeoutKeepsYoungSandbox(t *testing.T) {
+	// No keepalive yet, but well within idleTimeout from creation.
+	survived, res := runIdleGC(t, leasedSandbox("young", time.Minute, ""))
+	if !survived {
+		t.Fatal("a young sandbox must get a full idleTimeout from birth")
 	}
-	if err := c.Get(context.Background(), key, &corev1.Service{}); err != nil {
-		t.Fatalf("expected Service to be provisioned: %v", err)
+	if res.RequeueAfter <= 0 {
+		t.Fatalf("expected a requeue at the creation-based deadline, got %v", res.RequeueAfter)
 	}
 }

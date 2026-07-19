@@ -41,6 +41,10 @@ const (
 	defaultPort = 8080
 	// conditionReady mirrors status.phase==Ready as a standard condition.
 	conditionReady = "Ready"
+	// keepaliveAnnotation carries the owning Orchestrator's heartbeat lease
+	// (ADR-0001): an RFC3339 timestamp it PATCHes periodically. Idle GC fires
+	// only once spec.idleTimeout has elapsed since max(creation, last keepalive).
+	keepaliveAnnotation = "j2.dev/keepalive"
 )
 
 // SandboxReconciler reconciles a Sandbox object
@@ -58,8 +62,8 @@ type SandboxReconciler struct {
 // Reconcile drives a Sandbox toward its desired state: a Pod (primary container
 // plus any sidecars) and a Service, with status.phase / status.endpoint
 // reported back. The Pod and Service are owned by the Sandbox so deleting the CR
-// garbage-collects them; an orphaned Sandbox past spec.idleTimeout deletes
-// itself.
+// garbage-collects them; a Sandbox whose keepalive lease has lapsed past
+// spec.idleTimeout deletes itself (ADR-0001).
 func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -80,7 +84,7 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// Idle GC: an orphaned Sandbox (no owners) past idleTimeout deletes itself.
+	// Idle GC: an abandoned Sandbox (lease lapsed — ADR-0001) deletes itself.
 	deleted, requeueAfter, err := r.reconcileIdleTimeout(ctx, &sandbox)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile idle timeout: %w", err)
@@ -108,24 +112,47 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-// reconcileIdleTimeout deletes an orphaned Sandbox (one with no owner
-// references) once spec.idleTimeout has elapsed since creation. It returns
+// reconcileIdleTimeout deletes an abandoned Sandbox — one whose heartbeat
+// lease (ADR-0001) has lapsed: spec.idleTimeout elapsed since
+// max(CreationTimestamp, last keepalive annotation). Nothing in the cluster
+// represents a run, so liveness is asserted by the owning Orchestrator's
+// periodic keepalive PATCH, not referenced via ownerReferences. It returns
 // deleted=true when it removed the Sandbox (the caller should stop), or a
-// non-zero requeueAfter when the Sandbox is orphaned but not yet expired so the
-// controller re-checks at the deadline.
+// non-zero requeueAfter so the controller re-checks at the deadline.
 func (r *SandboxReconciler) reconcileIdleTimeout(ctx context.Context, sandbox *corev1alpha1.Sandbox) (deleted bool, requeueAfter time.Duration, err error) {
-	if sandbox.Spec.IdleTimeout == nil || len(sandbox.OwnerReferences) > 0 {
+	if sandbox.Spec.IdleTimeout == nil {
 		return false, 0, nil
 	}
-	deadline := sandbox.CreationTimestamp.Add(sandbox.Spec.IdleTimeout.Duration)
+	deadline := lastKeepalive(ctx, sandbox).Add(sandbox.Spec.IdleTimeout.Duration)
 	if remaining := time.Until(deadline); remaining > 0 {
 		return false, remaining, nil
 	}
-	logf.FromContext(ctx).Info("idle timeout elapsed for orphaned sandbox; deleting", "idleTimeout", sandbox.Spec.IdleTimeout.Duration)
+	logf.FromContext(ctx).Info("keepalive lease lapsed; deleting abandoned sandbox", "idleTimeout", sandbox.Spec.IdleTimeout.Duration)
 	if err := r.Delete(ctx, sandbox); err != nil {
 		return false, 0, client.IgnoreNotFound(err)
 	}
 	return true, 0, nil
+}
+
+// lastKeepalive resolves the lease's reference instant: the keepalive
+// annotation when present and parseable (RFC3339), otherwise creation — a
+// Sandbox that has never been heartbeated still gets a full idleTimeout from
+// birth. A garbage value is treated as absent, loudly.
+func lastKeepalive(ctx context.Context, sandbox *corev1alpha1.Sandbox) time.Time {
+	created := sandbox.CreationTimestamp.Time
+	raw, ok := sandbox.Annotations[keepaliveAnnotation]
+	if !ok {
+		return created
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		logf.FromContext(ctx).Info("unparseable keepalive annotation; treating as absent", "value", raw, "error", err.Error())
+		return created
+	}
+	if ts.After(created) {
+		return ts
+	}
+	return created
 }
 
 // reconcileService ensures the headed Service fronting the Sandbox exists and
