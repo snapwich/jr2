@@ -568,10 +568,9 @@ export class RunHost {
       error: (err) => {
         run.fault = err instanceof Error ? err.message : String(err);
         this.persist(run);
-        // The destroy-less terminal (ADR-0012): a faulted run's Sandboxes stay up for inspection,
-        // but their keepalive leases must stop with the run — a lease this process keeps stamping
-        // is a pod the operator's idle GC can never reap.
-        void this.sandbox?.release?.(record.runId)?.catch(() => {});
+        // Nothing to release: a faulted run stops its actors, and each workspace's lease is one
+        // of them (ADR-0021). The pod stays up for inspection (ADR-0012's destroy-less terminal)
+        // and ages out of the operator's idle timeout on its own.
       },
     });
     // Forward the workflow author's `emit({...})` to observers as the SSE `emit` channel. These are

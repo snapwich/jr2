@@ -14,13 +14,24 @@ import { approveDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 class FakeSandbox implements SandboxPort {
   calls: string[] = [];
   provisioned = new Map<string, { runId: string; workflow: string }>();
-  /** What `exists()` answers — flip to false to simulate a reaped Sandbox before a restore. */
+  /** What `renew()` answers — flip to false to simulate a reaped Sandbox. */
   present = true;
+  /** The live pod's identity. Change it to simulate an eviction/node-loss replacement:
+   * same CR, same name, same endpoint — different pod, empty `work` volume. */
+  identity = "pod-1";
+  /** Make the next `renew()` throw — an API error is "unknown", never "lost". */
+  failRenew = false;
+  /** Fast enough that a test can observe several ticks without sleeping on wall clock. */
+  leaseIntervalMs = 5;
 
-  async provision(req: { name: string; runId: string; workflow: string }): Promise<{ endpoint: string }> {
+  async provision(req: {
+    name: string;
+    runId: string;
+    workflow: string;
+  }): Promise<{ endpoint: string; identity?: string }> {
     this.calls.push(`provision:${req.name}`);
     this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
-    return { endpoint: "http://sandbox.test" };
+    return { endpoint: "http://sandbox.test", identity: this.identity };
   }
   async attach(req: {
     name: string;
@@ -30,17 +41,21 @@ class FakeSandbox implements SandboxPort {
     const repos = Object.fromEntries(req.spec.repos.map((r) => [r.name, `/work/${r.name}/${req.spec.branch}`]));
     return { workdir: repos[req.spec.repos[0]!.name]!, repos };
   }
-  async exists(name: string): Promise<boolean> {
-    this.calls.push(`exists:${name}`);
-    return this.present;
+  async renew(name: string): Promise<{ present: false } | { present: true; identity?: string }> {
+    this.calls.push(`renew:${name}`);
+    if (this.failRenew) throw new Error("the API server is having a day");
+    return this.present ? { present: true, identity: this.identity } : { present: false };
   }
   async destroy(name: string): Promise<void> {
     this.calls.push(`destroy:${name}`);
   }
-  async release(runId: string): Promise<void> {
-    this.calls.push(`release:${runId}`);
-  }
 }
+
+/** Calls with the lease's periodic renews collapsed away — the lifecycle verbs, in order. */
+const lifecycle = (sandbox: FakeSandbox): string[] =>
+  sandbox.calls.filter((c) => !c.startsWith("renew:")).map((c) => c.split(":")[0]!);
+
+const renews = (sandbox: FakeSandbox): number => sandbox.calls.filter((c) => c.startsWith("renew:")).length;
 
 /** A body that parks on a gate inside its Sandbox; `workspace.lost` routes to its own policy
  * (final `lost`) exactly as ADR-0012's "the wrapper emits, the body decides". j2Setup-authored:
@@ -104,10 +119,8 @@ test("lifecycle: provision → attach → body(input+handles) → body final →
   host.sendToGate(runId, "hold", { type: "approve" });
   await waitFor(() => host.status(runId) === undefined); // run settled + dropped from registry
 
-  assert.deepEqual(
-    sandbox.calls.map((c) => c.split(":")[0]),
-    ["provision", "attach", "exists", "destroy"], // exists = the fresh-start reconcile probe
-  );
+  assert.deepEqual(lifecycle(sandbox), ["provision", "attach", "destroy"]);
+  assert.ok(renews(sandbox) > 0, "the lease stamped while the body held its gate");
   const final = await host.read(runId);
   assert.equal(final?.status, "done");
   const ctx = final?.context as { output?: { status: string; workdir?: string } };
@@ -186,7 +199,7 @@ test("a spec deriving undefined fields (missing run input) faults BEFORE any pod
   );
 });
 
-test("a terminal fault releases the run's keepalive leases (idle GC can reap what stays)", async () => {
+test("a terminal fault leaves the pod inspectable and stamps no lease (idle GC reaps it)", async () => {
   const sandbox = new FakeSandbox();
   sandbox.attach = async () => {
     throw new Error("attach exploded");
@@ -198,14 +211,91 @@ test("a terminal fault releases the run's keepalive leases (idle GC can reap wha
   await waitFor(() => host.status(runId) === undefined);
 
   assert.equal((await host.read(runId))?.status, "error");
-  // Provisioned, then faulted: no destroy (the pod stays inspectable — ADR-0012), but the
-  // lease is released so the operator's idle GC eventually reaps it.
+  // Provisioned, then faulted: no destroy (the pod stays inspectable — ADR-0012). Nothing
+  // releases anything, because the lease lives in `running` and this run never got there —
+  // so the CR is unleased from birth and the operator's idle GC reaps it on schedule.
   assert.ok(sandbox.calls.some((c) => c.startsWith("provision:")));
   assert.ok(!sandbox.calls.some((c) => c.startsWith("destroy:")));
-  assert.deepEqual(
-    sandbox.calls.filter((c) => c.startsWith("release:")),
-    [`release:${runId}`],
+  assert.equal(renews(sandbox), 0);
+});
+
+test("the lease stops with the run — no process-global timer outlives the actor", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.gates(runId).length === 1);
+  await waitFor(() => renews(sandbox) > 0);
+
+  await host.stop(runId);
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+
+  assert.equal(renews(sandbox), settled, "stopping the run stopped its lease");
+});
+
+test("live reap: the Sandbox goes while the run is UP → workspace.lost, no restart needed", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.gates(runId).length === 1); // parked on its gate, hours could pass
+
+  sandbox.present = false; // `kubectl delete sandbox`, a lapsed lease, a cleared namespace
+
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.equal(final?.status, "done"); // settled through the body's own policy, not a fault
+  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost" });
+  assert.ok(
+    sandbox.calls.some((c) => c.startsWith("destroy:")),
+    "tore down through the normal path",
   );
+});
+
+test("live replacement: same CR, new pod identity → workspace.lost (the emptyDir went with it)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.gates(runId).length === 1);
+
+  // Eviction or node loss: the operator recreates the Pod under the same name, so the CR is
+  // present and the endpoint still resolves — but `work` is a fresh emptyDir, so every clone,
+  // worktree, and unpushed commit is gone. Presence alone cannot see this; identity can.
+  sandbox.identity = "pod-2";
+
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost" });
+  assert.equal(
+    sandbox.calls.filter((c) => c.startsWith("provision:")).length,
+    1,
+    "never silently re-provisioned into an inconsistent world",
+  );
+});
+
+test("a failing renew is UNKNOWN, never lost — an API blip must not settle a live run", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.gates(runId).length === 1);
+
+  sandbox.failRenew = true;
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 8));
+
+  assert.equal(host.status(runId)?.status, "active", "still parked — loss is never fabricated");
+  assert.equal(host.gates(runId).length, 1);
+
+  sandbox.failRenew = false; // and it recovers without intervention
+  host.sendToGate(runId, "hold", { type: "approve" });
+  await waitFor(() => host.status(runId) === undefined);
+  assert.equal((await host.read(runId))?.status, "done");
 });
 
 test("a host without a Sandbox backend faults a workspace() run pointedly", async () => {

@@ -75,9 +75,10 @@ export type KubectlSandboxOptions = {
   workRoot?: string;
   /** CR `spec.idleTimeout` — the operator's abandoned-Sandbox GC backstop (ADR-0001). Default `30m`. */
   idleTimeout?: string;
-  /** Heartbeat interval for the keepalive lease (ADR-0001): how often each owned Sandbox's
-   * `j2.dev/keepalive` annotation is re-stamped. Must be ≪ idleTimeout. Default 5m. */
-  heartbeatMs?: number;
+  /** How often a workspace's lease actor renews (ADR-0001/0021): the cadence at which
+   * `j2.dev/keepalive` is re-stamped AND continuity is read back. Must be ≪ idleTimeout, since
+   * a lapsed lease is what lets the operator reap. Default 5m. */
+  leaseIntervalMs?: number;
   /** Await-Ready budget. Default 120s, polled every second. */
   readyTimeoutMs?: number;
   pollMs?: number;
@@ -93,41 +94,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
   const exec = opts.exec ?? defaultExec;
 
   const adapterPort = opts.adapterPort ?? 8081;
-  const heartbeatMs = opts.heartbeatMs ?? 5 * 60_000;
+  const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
   const base = ["--namespace", ns, ...(opts.context ? ["--context", opts.context] : [])];
-  /** name → its keepalive interval — one lease per owned Sandbox (ADR-0001). */
-  const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
-
-  /**
-   * The keepalive lease (ADR-0001): re-stamp `j2.dev/keepalive` so the operator's idle GC sees a
-   * live Orchestrator behind this Sandbox. A run parked on a Gate for hours keeps its Sandbox
-   * only because this loop is running — coverage must therefore be every Sandbox this
-   * orchestrator OWNS, not just the port-forwarded ones: provision() starts it, exists() (the
-   * restore-reconcile probe, ADR-0012) restarts it after an orchestrator restart, destroy()
-   * stops it. Best-effort: a failed PATCH is retried next tick; a Sandbox deleted out from
-   * under us stops its own loop.
-   */
-  const beatOnce = (name: string): Promise<void> =>
-    exec(["annotate", "sandbox", name, ...base, `j2.dev/keepalive=${new Date().toISOString()}`, "--overwrite"]).then(
-      () => {},
-      (err) => {
-        if (isNotFound(err)) stopHeartbeat(name);
-      },
-    );
-
-  const startHeartbeat = (name: string): void => {
-    if (heartbeats.has(name)) return;
-    const timer = setInterval(() => void beatOnce(name), heartbeatMs);
-    timer.unref?.(); // never holds the process open — the lease matters only while it runs
-    heartbeats.set(name, timer);
-    void beatOnce(name); // stamp immediately: a restored Sandbox may be near its deadline
-  };
-
-  const stopHeartbeat = (name: string): void => {
-    const timer = heartbeats.get(name);
-    heartbeats.delete(name);
-    if (timer) clearInterval(timer);
-  };
 
   /** The Sandbox's token Secret — read by the Adapter container, and by nothing else in the pod. */
   const secretName = (name: string) => `${name}-token`;
@@ -228,14 +196,22 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     };
   };
 
-  const getSandbox = async (name: string): Promise<{ phase?: string; endpoint?: string; uid?: string } | undefined> => {
+  type SandboxStatus = { phase?: string; endpoint?: string; podUID?: string; uid?: string };
+
+  /** Parse a Sandbox CR off any kubectl call that printed one (`get -o json`, and the lease's
+   * `annotate -o json` — which returns the object AFTER the patch, status included). */
+  const readSandbox = (stdout: string): SandboxStatus => {
+    const parsed = JSON.parse(stdout) as {
+      metadata?: { uid?: string };
+      status?: { phase?: string; endpoint?: string; podUID?: string };
+    };
+    return { ...(parsed.status ?? {}), uid: parsed.metadata?.uid };
+  };
+
+  const getSandbox = async (name: string): Promise<SandboxStatus | undefined> => {
     try {
       const { stdout } = await exec(["get", "sandbox", name, ...base, "-o", "json"]);
-      const parsed = JSON.parse(stdout) as {
-        metadata?: { uid?: string };
-        status?: { phase?: string; endpoint?: string };
-      };
-      return { ...(parsed.status ?? {}), uid: parsed.metadata?.uid };
+      return readSandbox(stdout);
     } catch (err) {
       if (isNotFound(err)) return undefined;
       throw err;
@@ -306,10 +282,12 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
         const status = await getSandbox(req.name);
         if (!owned && status?.uid) ((owned = true), await ownSecret(req.name, status.uid));
         if (status?.phase === "Ready") {
-          startHeartbeat(req.name);
           // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
           if (!status.endpoint) throw new Error(`Sandbox "${req.name}" is Ready but reports no endpoint`);
-          return { endpoint: status.endpoint };
+          // The identity the lease will hold this workspace to (ADR-0021). Ready means the pod
+          // is up, so the operator has published it; an operator too old to do so leaves it
+          // undefined and the lease falls back to presence.
+          return { endpoint: status.endpoint, identity: status.podUID };
         }
         if (Date.now() >= deadline) {
           throw new Error(`Sandbox "${req.name}" never reached Ready (last phase: ${status?.phase ?? "absent"})`);
@@ -324,36 +302,35 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
       return { workdir, repos };
     },
 
-    async exists(name) {
-      const status = await getSandbox(name);
-      if (status === undefined) return false;
-      // Present: resume the keepalive lease this process wasn't yet heartbeating (the workspace
-      // reconcile probe lands here on every restore — ADR-0012).
-      startHeartbeat(name);
-      return true;
+    leaseIntervalMs,
+
+    async renew(name) {
+      // ONE call, both directions: `annotate --overwrite -o json` writes the stamp and prints the
+      // object as it stands afterwards, status included. So asserting liveness and learning
+      // whether the workspace survived cost exactly one API round trip (ADR-0021).
+      try {
+        const { stdout } = await exec([
+          "annotate",
+          "sandbox",
+          name,
+          ...base,
+          `j2.dev/keepalive=${new Date().toISOString()}`,
+          "--overwrite",
+          "-o",
+          "json",
+        ]);
+        return { present: true, identity: readSandbox(stdout).podUID };
+      } catch (err) {
+        if (isNotFound(err)) return { present: false };
+        throw err; // anything else is UNKNOWN — the caller must not read it as loss
+      }
     },
 
     async destroy(name) {
-      stopHeartbeat(name);
       // The Secret is an owned child of the CR, so deleting the CR reaps it — this is belt and
       // braces for the case where the ownerRef patch didn't land.
       await exec(["delete", "sandbox", name, ...base, "--ignore-not-found"]);
       await exec(["delete", "secret", secretName(name), ...base, "--ignore-not-found"]).catch(() => {});
-    },
-
-    async release(runId) {
-      // Which leases are this run's: the `j2.dev/run` label the provision stamped — the in-process
-      // heartbeat map is name-keyed, and a lease resumed via exists() never learned its runId.
-      const { stdout } = await exec([
-        "get",
-        "sandbox",
-        "-l",
-        `j2.dev/run=${runId}`,
-        ...base,
-        "-o",
-        "jsonpath={.items[*].metadata.name}",
-      ]).catch(() => ({ stdout: "" }));
-      for (const name of stdout.split(/\s+/).filter(Boolean)) stopHeartbeat(name);
     },
   };
 }

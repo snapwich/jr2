@@ -27,6 +27,11 @@ import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { attachVocabulary, vocabularyOf } from "./vocabulary.ts";
 
+/** Lease cadence when the backend names none. Well inside the 30m default idle timeout, so a
+ * few missed renewals in a row are survivable; also the worst-case detection latency for a
+ * workspace that went away (ADR-0021). */
+const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
+
 /** What to attach, in workspace vocabulary only (ADR-0012 boundary): which repos on what base
  * ref, and the one branch the body works on. Workflow configuration never enters the spec. */
 export type WorkspaceSpec = {
@@ -49,25 +54,45 @@ export type WorkspaceHandles = {
 };
 
 /**
+ * What a renewal learned about the workspace it just stamped (ADR-0021).
+ *
+ * `identity` is the backing pod's identity, NOT its address. Addresses are deterministic — the
+ * CR name, the Service DNS, the worktree paths are all derived from the run — so every name a
+ * live run holds still resolves after an eviction or a node loss, while the pod behind them is
+ * a replacement with an empty `work` volume: clones, worktrees, and unpushed commits gone.
+ * Presence cannot see that; identity can. A backend with no such notion may omit it, and its
+ * workspaces are then reconciled on presence alone.
+ */
+export type Continuity = { present: false } | { present: true; identity?: string };
+
+/**
  * The Sandbox backend a host supplies (`RunHostOptions.sandbox`) — the seam between the
  * workspace Machine and the cluster. All four operations MUST be idempotent: the invoking
  * states re-run on snapshot restore (create-if-absent, attach-if-absent, delete-if-present).
  */
 export interface SandboxPort {
   /** Ensure the Sandbox CR exists (labeled with its run for `j2 ls`) and await `phase: Ready`;
-   * resolve with the Harness endpoint the orchestrator can reach. */
-  provision(req: { name: string; runId: string; workflow: string }): Promise<{ endpoint: string }>;
+   * resolve with the Harness endpoint the orchestrator can reach, and the identity the lease
+   * will hold this workspace to. */
+  provision(req: { name: string; runId: string; workflow: string }): Promise<{ endpoint: string; identity?: string }>;
   /** Post-Ready attach (ADR-0004): per repo, `git clone --shared --no-checkout` from the RO
    * `default/` volume, then a branch worktree sibling. Resolves with the worktree paths. */
   attach(req: { name: string; spec: WorkspaceSpec }): Promise<{ workdir: string; repos: Record<string, string> }>;
-  /** Is the Sandbox CR still there? (Restore-reconcile probe — a probe FAILURE is not "no".) */
-  exists(name: string): Promise<boolean>;
+  /**
+   * Renew this workspace's keepalive lease AND report what the renewal found — one exchange,
+   * because it is one question: is the thing I am keeping alive still the thing I attached to?
+   * Nothing in the cluster represents a run (ADR-0001), so the lease is how the Orchestrator
+   * asserts liveness; the answer is how it learns the truth. Idempotent, called on a timer.
+   *
+   * A renewal that FAILS must reject, not resolve `{present: false}` — an unreachable API server
+   * is "unknown", and fabricating loss would settle a live run holding real work.
+   */
+  renew(name: string): Promise<Continuity>;
   /** Delete the Sandbox CR. Absent is success. */
   destroy(name: string): Promise<void>;
-  /** Stop this run's keepalive leases WITHOUT deleting its Sandboxes — the faulted-run terminal
-   * (see `workspace()`): the pod stays inspectable, but the lease must stop with the run or the
-   * operator's idle GC never reaps what the host abandoned. Optional: hosts without leases skip it. */
-  release?(runId: string): Promise<void>;
+  /** How often to renew. Must be well inside the backend's idle-timeout, since a lapsed lease is
+   * what lets the operator reap. Also the detection latency for a lost workspace. */
+  readonly leaseIntervalMs?: number;
 }
 
 /** Resolve the host's Sandbox backend, failing with a pointed message on a host without one. */
@@ -111,6 +136,10 @@ type WsContext = {
   /** The resolved spec — computed once from input and persisted, like any other context data. */
   spec: WorkspaceSpec;
   endpoint?: string;
+  /** The pod identity this workspace attached to, captured at provision and persisted so the
+   * lease can hold the workspace to it across a restart (ADR-0021). Plain serializable data,
+   * exactly like `endpoint` — ADR-0007's rule about what may ride context. */
+  identity?: string;
   /** Persisted in context so the registrar can re-publish them on restore. */
   handles?: MechanismHandles;
   output?: unknown;
@@ -185,18 +214,52 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     return registerAmbientHandles(wrapperRef, input.handles);
   });
 
-  // The restore-reconcile probe: runs on every entry into `running` — fresh start (one cheap
-  // existence check on the CR just created) and snapshot restore (the check that matters).
-  const reconcile = fromCallback<{ type: string }, { wsId: string }>(({ input, system, sendBack }) => {
-    let stale = false;
-    void sandboxOf(system)
-      .exists(workspaceName(runBindingOf(system).runId, input.wsId))
-      .then((present) => {
-        if (!present && !stale) sendBack({ type: "workspace.lost" });
-      })
-      .catch(() => {}); // a failed probe is "unknown", never "lost" — do not fabricate loss
+  /**
+   * The lease (ADR-0021). One actor owns the whole exchange with the cluster for one workspace:
+   * it asserts liveness (nothing in the cluster represents a run, so the Orchestrator must keep
+   * saying "still mine" or the operator's idle GC reaps — ADR-0001) and, in the same call, reads
+   * back whether what it just stamped is still what the body attached to.
+   *
+   * Being an INVOKED actor is the whole design. Its lifetime IS `running`'s lifetime, which
+   * xstate already manages: it re-invokes on snapshot restore (so a restart reconciles for free,
+   * with no restore-specific code path), and it stops on every exit — body final, run stopped,
+   * run faulted. That last one is why there is no `release()`: a faulted run stops its actors,
+   * the lease stops with them, and the abandoned pod ages out of the idle timeout on its own.
+   *
+   * Level-triggered on purpose. The one-shot probe this replaces could only fire on entry, so a
+   * run parked on a gate for hours — the state most likely to outlive its Sandbox — never
+   * rechecked anything until the next restart.
+   */
+  const lease = fromCallback<{ type: string }, { wsId: string; identity?: string }>(({ input, system, sendBack }) => {
+    const port = sandboxOf(system);
+    const name = workspaceName(runBindingOf(system).runId, input.wsId);
+    let stopped = false;
+
+    const renew = async (): Promise<void> => {
+      let seen: Continuity;
+      try {
+        seen = await port.renew(name);
+      } catch {
+        return; // unknown, never lost: an API blip must not settle a run holding real work
+      }
+      if (stopped) return;
+      // Two ways to lose a workspace, one event. Gone: reaped, deleted, namespace cleared.
+      // Replaced: the CR survived an eviction or node loss but the pod behind it did not, so
+      // every name still resolves over an empty `work` volume. Re-provisioning either silently
+      // would resume into an inconsistent world — the body decides (ADR-0012).
+      const replaced =
+        seen.present && input.identity !== undefined && seen.identity !== undefined
+          ? seen.identity !== input.identity
+          : false;
+      if (!seen.present || replaced) sendBack({ type: "workspace.lost" });
+    };
+
+    void renew(); // immediately on entry: this is the restore-reconcile, no longer a special case
+    const timer = setInterval(() => void renew(), port.leaseIntervalMs ?? DEFAULT_LEASE_INTERVAL_MS);
+    timer.unref?.(); // a lease never holds the process open; it matters only while the run runs
     return () => {
-      stale = true;
+      stopped = true;
+      clearInterval(timer);
     };
   });
 
@@ -224,6 +287,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
             target: "attaching",
             actions: assign({
               endpoint: ({ event }) => (event as unknown as { output: { endpoint: string } }).output.endpoint,
+              identity: ({ event }) => (event as unknown as { output: { identity?: string } }).output.identity,
             }),
           },
         },
@@ -280,9 +344,12 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
             },
           },
           {
-            id: "reconcile",
-            src: reconcile,
-            input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId }),
+            id: "lease",
+            src: lease,
+            input: ({ context }) => ({
+              wsId: (context as unknown as WsContext).wsId,
+              identity: (context as unknown as WsContext).identity,
+            }),
           },
         ],
         // The wrapper emits, the body decides (ADR-0012): forward loss into the body's policy.

@@ -23,7 +23,9 @@ function fakeExec(handlers: Record<string, (call: Call) => string>) {
   return { exec, calls };
 }
 
-const readyStatus = JSON.stringify({ status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080" } });
+const readyStatus = JSON.stringify({
+  status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-1" },
+});
 
 test("provision applies the labeled CR with the RO repos mount, gates on Ready", async () => {
   let gets = 0;
@@ -204,99 +206,70 @@ test("userImage without an Adapter still lands as the only sidecar", async () =>
   );
 });
 
-test("keepalive lease: provision starts the annotate loop, exists() resumes it, destroy() stops it", async () => {
-  const { exec, calls } = fakeExec({
-    apply: () => "ok",
-    get: () => readyStatus,
-    delete: () => "deleted",
-    annotate: () => "annotated",
-  });
-  const port = kubectlSandbox({ image: "img", pollMs: 1, heartbeatMs: 5, exec });
+test("provision reports the pod identity the lease will hold the workspace to", async () => {
+  const { exec } = fakeExec({ apply: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({ image: "img", pollMs: 1, exec });
 
-  await port.provision({ name: "sb-hb", runId: "r", workflow: "w" });
-  const annotates = () => calls.filter((c) => c.args[0] === "annotate");
-  // The first stamp is immediate (a restored Sandbox may be near its deadline)…
-  assert.ok(annotates().length >= 1, "provision stamps a keepalive immediately");
-  const first = annotates()[0]!.args;
-  assert.deepEqual(first.slice(0, 3), ["annotate", "sandbox", "sb-hb"]);
-  const kv = first.find((a) => a.startsWith("j2.dev/keepalive="))!;
+  assert.deepEqual(await port.provision({ name: "sb-1", runId: "r", workflow: "w" }), {
+    endpoint: "http://sb-1.default.svc:8080",
+    identity: "pod-uid-1",
+  });
+});
+
+test("renew(): one call stamps the lease AND reads back continuity", async () => {
+  const { exec, calls } = fakeExec({ annotate: () => readyStatus });
+  const port = kubectlSandbox({ image: "img", exec });
+
+  assert.deepEqual(await port.renew("sb-1"), { present: true, identity: "pod-uid-1" });
+
+  // Exactly one round trip — the whole point of folding the read into the write.
+  assert.equal(calls.length, 1);
+  const args = calls[0]!.args;
+  assert.deepEqual(args.slice(0, 3), ["annotate", "sandbox", "sb-1"]);
+  const kv = args.find((a) => a.startsWith("j2.dev/keepalive="))!;
   assert.ok(!Number.isNaN(Date.parse(kv.slice("j2.dev/keepalive=".length))), "value is a parseable timestamp");
-  assert.ok(first.includes("--overwrite"), "re-stamps the existing annotation");
-  // …then the interval keeps beating.
-  await new Promise((r) => setTimeout(r, 25));
-  assert.ok(annotates().length >= 2, "heartbeat repeats on the interval");
-
-  await port.destroy("sb-hb");
-  const atDestroy = annotates().length;
-  await new Promise((r) => setTimeout(r, 25));
-  assert.equal(annotates().length, atDestroy, "destroy() stops the lease");
-
-  // A fresh process restoring this Sandbox resumes the lease from exists() (ADR-0012 probe).
-  const restored = fakeExec({ get: () => readyStatus, annotate: () => "annotated", delete: () => "deleted" });
-  const port2 = kubectlSandbox({ image: "img", heartbeatMs: 5, exec: restored.exec });
-  assert.equal(await port2.exists("sb-hb"), true);
-  await new Promise((r) => setTimeout(r, 1));
-  assert.ok(
-    restored.calls.some((c) => c.args[0] === "annotate"),
-    "exists() restarts heartbeating for a restored Sandbox",
-  );
-  await port2.destroy("sb-hb");
+  assert.ok(args.includes("--overwrite"), "re-stamps the existing annotation");
+  assert.deepEqual(args.slice(-2), ["-o", "json"], "prints the patched object, status included");
 });
 
-test("release(runId): stops that run's leases by label WITHOUT deleting — the faulted-run path", async () => {
-  const { exec, calls } = fakeExec({
-    apply: () => "ok",
-    annotate: () => "annotated",
-    get: (call) => (call.args.includes("-l") ? "sb-rel-1 sb-rel-2" : readyStatus),
-  });
-  const port = kubectlSandbox({ image: "img", pollMs: 1, heartbeatMs: 5, exec });
-  await port.provision({ name: "sb-rel-1", runId: "run-rel", workflow: "w" });
-  await port.provision({ name: "sb-rel-2", runId: "run-rel", workflow: "w" });
-
-  await port.release!("run-rel");
-  const label = calls.find((c) => c.args[0] === "get" && c.args.includes("-l"))!;
-  assert.ok(label.args.includes("j2.dev/run=run-rel"), "names come from the run label, not process memory");
-
-  const settled = calls.filter((c) => c.args[0] === "annotate").length;
-  await new Promise((r) => setTimeout(r, 25));
-  assert.equal(calls.filter((c) => c.args[0] === "annotate").length, settled, "no further beats after release");
-  assert.ok(!calls.some((c) => c.args[0] === "delete"), "release never deletes — the pod stays inspectable");
-});
-
-test("keepalive lease: a NotFound annotate stops that Sandbox's loop", async () => {
-  let annotateCalls = 0;
+test("renew(): a replacement pod is reported as a NEW identity under the same name", async () => {
+  // What an eviction looks like from here: the CR answers, the name is unchanged, the endpoint
+  // is unchanged — and the pod behind it is a different pod with an empty `work` volume.
   const { exec } = fakeExec({
-    apply: () => "ok",
-    get: () => readyStatus,
-    annotate: () => {
-      annotateCalls++;
-      throw new Error(`Error from server (NotFound): sandboxes.core.j2.dev "sb-gone" not found`);
-    },
+    annotate: () =>
+      JSON.stringify({ status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-2" } }),
   });
-  const port = kubectlSandbox({ image: "img", pollMs: 1, heartbeatMs: 5, exec });
-  await port.provision({ name: "sb-gone", runId: "r", workflow: "w" });
-  await new Promise((r) => setTimeout(r, 25));
-  const settled = annotateCalls;
-  await new Promise((r) => setTimeout(r, 25));
-  assert.equal(annotateCalls, settled, "no further beats once the Sandbox is gone");
+  const port = kubectlSandbox({ image: "img", exec });
+
+  assert.deepEqual(await port.renew("sb-1"), { present: true, identity: "pod-uid-2" });
 });
 
-test("exists(): NotFound is false; any other kubectl failure THROWS (probe failure is not 'no')", async () => {
+test("renew(): NotFound is absent; any other kubectl failure THROWS (unknown is never loss)", async () => {
   const notFound = fakeExec({
-    get: () => {
+    annotate: () => {
       throw new Error(`Error from server (NotFound): sandboxes.core.j2.dev "gone" not found`);
     },
   });
-  const port = kubectlSandbox({ image: "img", exec: notFound.exec });
-  assert.equal(await port.exists("gone"), false);
+  assert.deepEqual(await kubectlSandbox({ image: "img", exec: notFound.exec }).renew("gone"), { present: false });
 
   const down = fakeExec({
-    get: () => {
+    annotate: () => {
       throw new Error("The connection to the server localhost:6443 was refused");
     },
   });
-  const flaky = kubectlSandbox({ image: "img", exec: down.exec });
-  await assert.rejects(() => flaky.exists("sb"), /refused/);
+  // Rejecting is load-bearing: resolving `{present: false}` here would settle every live run
+  // in the namespace the first time the API server hiccuped.
+  await assert.rejects(() => kubectlSandbox({ image: "img", exec: down.exec }).renew("sb"), /refused/);
+});
+
+test("renew(): an operator that publishes no podUID degrades to presence-only continuity", async () => {
+  const { exec } = fakeExec({
+    annotate: () => JSON.stringify({ status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080" } }),
+  });
+  assert.deepEqual(await kubectlSandbox({ image: "img", exec }).renew("sb-1"), {
+    present: true,
+    identity: undefined,
+  });
 });
 
 test("attach execs the idempotent ADR-0004 script in the harness container", async () => {
