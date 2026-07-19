@@ -1,7 +1,6 @@
-# Local kind cluster for j2 — the bare, mount-less variant (`just kind-up`), fine for operator
-# development. For running workspace() workflows, prefer `j2 cluster up` from an instance folder:
-# it generates this config WITH the extraMounts exposing the instance's repos/ to the node
-# (kind cannot add mounts to a live cluster — ADR-0009).
+# Local kind cluster for j2 (`just kind-up` / `just e2e-kind-up`). Deliberately vanilla
+# (ADR-0019): nothing is baked for any instance — no mounts, no instance binding. Any cluster
+# `kubectl` can reach works the same way; `j2 up` converges everything an instance needs into it.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: j2

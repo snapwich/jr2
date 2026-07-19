@@ -80,6 +80,22 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  features/kind-instance:
+    dependencies:
+      '@j2/orchestrator':
+        specifier: workspace:*
+        version: link:../../packages/orchestrator
+      xstate:
+        specifier: ^5.18.0
+        version: 5.32.2
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^26.0.1
+        version: 26.0.1
+
   packages/adapter:
     dependencies:
       '@modelcontextprotocol/sdk':
@@ -115,6 +131,9 @@ importers:
       xstate:
         specifier: ^5.18.0
         version: 5.32.2
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   packages/orchestrator:
     dependencies:

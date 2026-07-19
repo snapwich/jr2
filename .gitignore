@@ -3,10 +3,17 @@ node_modules/
 dist/
 tmp/
 *.tsbuildinfo
+repos/
 
 # instance runtime state: the sqlite store, the dev address, and the token signing key (ADR-0013).
 # Never checked in — .j2/secret is a credential, and dev.json points at a transient local server.
 .j2/
+
+# instance secrets + deployment-varying values (ADR-0019): the CLI loads the `.env` beside an
+# instance's j2.config.ts into the environment its config reads. Never checked in.
+.env
+.env.*
+!.env.example
 
 # go
 operator/bin/
@@ -18,3 +25,4 @@ poc/
 # misc
 .DS_Store
 *.log
+features/kind-instance/seed/
