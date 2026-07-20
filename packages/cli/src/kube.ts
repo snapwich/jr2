@@ -46,6 +46,15 @@ export type KubeAdmin = {
     namespace?: string;
     context?: string;
   }): Promise<T | undefined>;
+  /** Objects matching a label selector. Unlike `getJson`, a failed query THROWS rather than
+   * reading as "absent" — this is what converge claims are checked against, and a check that
+   * silently passes when it could not look is the defect it exists to catch. */
+  listJson<T = KubeObject>(opts: {
+    kind: string;
+    selector?: string;
+    namespace?: string;
+    context?: string;
+  }): Promise<T[]>;
   /** `kubectl apply -f -` of a multi-doc YAML or JSON manifest string. */
   apply(opts: { manifest: string; context?: string }): Promise<void>;
   /** `kubectl label --overwrite`. */
@@ -108,6 +117,19 @@ export const kubectlAdmin: KubeAdmin = {
     } catch {
       return undefined;
     }
+  },
+
+  async listJson({ kind, selector, namespace, context }) {
+    const { stdout } = await exec("kubectl", [
+      ...ctxArgs(context),
+      ...nsArgs(namespace),
+      "get",
+      kind,
+      ...(selector ? ["-l", selector] : []),
+      "-o",
+      "json",
+    ]);
+    return (JSON.parse(stdout) as { items?: never[] }).items ?? [];
   },
 
   async apply({ manifest, context }) {

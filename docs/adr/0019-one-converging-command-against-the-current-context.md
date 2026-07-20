@@ -26,7 +26,11 @@ loudly narrated, safe to re-run:
   the image ref (locally built + `kind load`, justfile territory) or skips the layer (`operator.manage: false`) to run
   the controller loop in the foreground.
 - **Orchestrator** (per-instance): the one image an instance produces — engine + its `workflows/` baked (ADR-0008) —
-  built by `up`, staleness-checked by content hash. Delivery keys off config: no `registry` → `docker build` +
+  built by `up` and **content-addressed by its deploy bundle**: the tag is a hash of the materialized bundle, which is
+  the actual image input. The kit is in there as resolved source, so a kit edit in a workspace checkout and a kit
+  upgrade from the registry both move the tag, by one rule that knows nothing about which of the two it is looking at.
+  Hashing the instance _folder_ instead — where the kit appears only as a version range — is what let `up` skip builds
+  it needed. `--force` rebuilds against an unchanged hash. Delivery keys off config: no `registry` → `docker build` +
   `kind load`; `registry` set → build + push. Targeting a non-kind cluster without a registry fails loudly.
 - **Harness**: no per-instance image (ADR-0018). `up` publishes the instance's plain-data Agent definitions as a
   ConfigMap consumed by the stock `j2-harness:<kitversion>` image; the Adapter image ref is pinned the same way as the
@@ -53,6 +57,12 @@ loudly narrated, safe to re-run:
   instance repo must stay deployable anywhere.
 - **Namespace = identity**: set in `j2.config.ts` (default: the instance `name`), `-n` overrides. The same namespace on
   kind and prod is what makes switching painless.
+- **Convergence is claimed only of observed state.** Every layer `up` rolls out is checked against the pod actually
+  serving — the running image must be the intended one before `up` says `converged`. The staleness labels `up` stamps
+  decide whether to spend a build; they are never evidence that the cluster is correct, because a run that reports
+  success off its own bookkeeping can deploy nothing and still congratulate itself. Tag equality is the whole check, and
+  is only sound because the tag is a content address: on the `kind load` path a pod's `imageID` is containerd's manifest
+  digest under a rewritten repo name, comparable to nothing the host holds.
 - **No local target state.** Whether this cluster hosts the instance is derived from the cluster: `up` finds the
   instance's labeled objects → converge silently (it's home); finds nothing → confirm first-time setup interactively
   (`--yes` for CI); finds objects labeled as a _different_ instance → refuse. Run-verbs against a cluster with no

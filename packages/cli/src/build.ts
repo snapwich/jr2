@@ -25,17 +25,23 @@ export type BuildPort = {
   kindLoad(tag: string, cluster: string): Promise<void>;
 };
 
-/** Paths that never affect the deployed image (state, deps, VCS, secrets). */
-const HASH_EXCLUDE = new Set([".j2", "node_modules", ".git", ".env"]);
+/**
+ * Bundle entries that vary between two stagings of identical sources, and so cannot be part of a
+ * content address: `.modules.yaml` stamps `prunedAt`, and `.bin/*` shims embed the absolute staging
+ * path — a fresh temp dir every run. Neither is image content in any case; the shims' baked paths
+ * are already wrong inside the container, where the bundle lives at /instance.
+ */
+const HASH_EXCLUDE = new Set([".modules.yaml", ".bin"]);
 
 /**
- * A short content hash over every file in the instance folder (sorted walk, minus excluded paths)
- * plus the kit version — the staleness key `j2 up` stamps on the Deployment. Any source edit or a
- * kit upgrade changes it; a re-run with neither skips the whole build layer.
+ * A short content hash over every file under `dir` (sorted walk, minus the stager's bookkeeping),
+ * salted with `salt`. Symlinks are skipped rather than followed: in a pnpm bundle
+ * `node_modules/<pkg>` links into the virtual store, whose real files the walk already visits —
+ * following would hash the same bytes twice.
  */
-export async function contentHash(dir: string, kitVersion: string): Promise<string> {
+async function contentHash(dir: string, salt: string): Promise<string> {
   const h = createHash("sha256");
-  h.update(`kit:${kitVersion}\n`);
+  h.update(`salt:${salt}\n`);
   const walk = async (d: string): Promise<void> => {
     const entries = (await readdir(d, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
     for (const e of entries) {
@@ -94,14 +100,40 @@ export const pnpmDockerBuild: BuildPort = {
   },
 };
 
-/** Bundle + build under a scratch dir, cleaned up either way. Returns nothing: the image is the
- * side effect, addressed by its tag. */
-export async function buildInstanceImage(port: BuildPort, instanceDir: string, tag: string): Promise<void> {
-  const out = join(await mkdtemp(join(tmpdir(), "j2-image-")), "bundle");
+/** A materialized instance bundle: the exact bytes the image is built FROM, and their address. */
+export type StagedBundle = {
+  /** The bundle directory — `port.build`'s context. */
+  dir: string;
+  /** Content address of `dir` (+ the Dockerfile that bakes it): the image tag, and the staleness key. */
+  hash: string;
+  /** Remove the scratch dir. Always call it; the bundle is a few thousand files. */
+  dispose(): Promise<void>;
+};
+
+/**
+ * Materialize the bundle and address it by content (ADR-0019 — the deployed image must be derivable
+ * from what `up` can see). The bundle, not the instance folder, is the thing hashed: `pnpm deploy`
+ * resolves the kit into it, so a kit edit in a workspace checkout and a kit upgrade from the
+ * registry both move the hash, by the same rule and with no knowledge of which world it is in.
+ * Hashing the instance folder instead missed kit sources entirely, which is how `j2 up` came to
+ * skip builds it needed and report convergence on code it had not deployed.
+ *
+ * Staging precedes the staleness decision, so `pnpm deploy` (~1s) runs even on the skip path; the
+ * docker build it guards is the expensive half. The Dockerfile salts the hash — it is part of the
+ * image's content but is written into the bundle later, by `port.build`.
+ */
+export async function stageInstanceBundle(port: BuildPort, instanceDir: string): Promise<StagedBundle> {
+  const scratch = await mkdtemp(join(tmpdir(), "j2-image-"));
+  const dir = join(scratch, "bundle");
   try {
-    await port.bundle(instanceDir, out);
-    await port.build(tag, out);
-  } finally {
-    await rm(join(out, ".."), { recursive: true, force: true });
+    await port.bundle(instanceDir, dir);
+    return {
+      dir,
+      hash: await contentHash(dir, INSTANCE_DOCKERFILE),
+      dispose: () => rm(scratch, { recursive: true, force: true }),
+    };
+  } catch (err) {
+    await rm(scratch, { recursive: true, force: true });
+    throw err;
   }
 }

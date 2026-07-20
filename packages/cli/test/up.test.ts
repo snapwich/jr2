@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { BuildPort } from "../src/build.ts";
@@ -50,6 +50,32 @@ class FakeCluster implements KubeAdmin {
   async waitRollout(opts: { deployment: string; namespace: string }): Promise<void> {
     this.rollouts.push(`${opts.namespace}/${opts.deployment}`);
   }
+  /** Drift injection, per selector: the image that layer's pod carries when it must differ from
+   * the applied one. Unset → an HONEST cluster, reporting a pod running whatever was last applied. */
+  podImages: Record<string, string> = {};
+  async listJson<T>(opts: { kind: string; selector?: string; namespace?: string }): Promise<T[]> {
+    if (opts.kind !== "pod") return [];
+    const image = this.podImages[opts.selector ?? ""] ?? this.lastAppliedImage(opts.selector ?? "");
+    if (!image) return [];
+    return [{ metadata: { name: "pod-1" }, spec: { containers: [{ image }] } }] as T[];
+  }
+  /** What the last apply asked this selector's Deployment to run — the honest cluster's answer. */
+  private lastAppliedImage(selector: string): string | undefined {
+    const app = /app=(.+)$/.exec(selector)?.[1];
+    for (const manifest of [...this.applied].reverse()) {
+      const doc = manifest.trimStart().startsWith("{") ? JSON.parse(manifest) : undefined;
+      const items = doc?.kind === "List" ? doc.items : doc ? [doc] : [];
+      for (const i of items) {
+        if (i.kind !== "Deployment") continue;
+        if (app && i.spec?.selector?.matchLabels?.app !== app) continue;
+        return i.spec?.template?.spec?.containers?.[0]?.image;
+      }
+      // The operator install is YAML, not JSON — its image ref is substituted at apply time.
+      const yaml = /^\s*image:\s*(\S+)\s*$/m.exec(manifest);
+      if (!app && yaml) return yaml[1];
+    }
+    return undefined;
+  }
   probes: string[] = [];
   probeCaPems: Array<string | undefined> = [];
   probeFails = false;
@@ -61,10 +87,18 @@ class FakeCluster implements KubeAdmin {
   }
 }
 
-/** A build port that records instead of building; `hashOf` is what docker would have produced. */
-function fakeBuild(record: string[]): BuildPort {
+/** A build port that records instead of building. `files` is what `pnpm deploy` would have
+ * materialized into the bundle — including, in the real thing, the kit's own sources under
+ * `node_modules/.pnpm` (the resolved dependency, workspace-linked or registry-fetched alike). */
+function fakeBuild(record: string[], files: Record<string, string> = { "package.json": "{}" }): BuildPort {
   return {
-    bundle: async (_dir, out) => void record.push(`bundle→${out ? "out" : ""}`),
+    bundle: async (_dir, out) => {
+      record.push("bundle");
+      for (const [rel, content] of Object.entries(files)) {
+        await mkdir(join(out, dirname(rel)), { recursive: true });
+        await writeFile(join(out, rel), content);
+      }
+    },
     build: async (tag) => void record.push(`build ${tag}`),
     push: async (tag) => void record.push(`push ${tag}`),
     kindLoad: async (tag, cluster) => void record.push(`kind-load ${tag} → ${cluster}`),
@@ -81,7 +115,10 @@ async function mkInstance(config: string, name = "myinst"): Promise<string> {
 
 type World = { io: Io; kube: FakeCluster; built: string[]; err: string[]; confirms: string[] };
 
-function mkWorld(root: string, over: { confirm?: boolean; env?: Record<string, string> } = {}): World {
+function mkWorld(
+  root: string,
+  over: { confirm?: boolean; env?: Record<string, string>; bundleFiles?: Record<string, string> } = {},
+): World {
   const kube = new FakeCluster();
   const built: string[] = [];
   const err: string[] = [];
@@ -92,7 +129,7 @@ function mkWorld(root: string, over: { confirm?: boolean; env?: Record<string, s
     env: over.env ?? {},
     cwd: root,
     kubeAdmin: kube,
-    build: fakeBuild(built),
+    build: fakeBuild(built, over.bundleFiles),
     confirm: async (q) => {
       confirms.push(q);
       return over.confirm ?? true;
@@ -142,6 +179,22 @@ test("operator: never downgraded — a newer deployed operator is left, with a w
   );
 });
 
+test("operator: the applied version is waited for and verified, like every other layer", async () => {
+  // `up` narrated "applying vX" and moved on without ever waiting or looking — the same unverified
+  // claim the instance layer made, one layer up.
+  const root = await mkInstance(`export default { name: "myinst", operator: { image: "j2-operator:local" } };\n`);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.ok(
+    w.kube.rollouts.includes("j2-system/j2-controller-manager"),
+    `the operator rollout is waited for (got: ${w.kube.rollouts.join(", ")})`,
+  );
+
+  const drifted = mkWorld(root);
+  drifted.kube.podImages = { "control-plane=controller-manager": "j2-operator:ancient" };
+  await assert.rejects(() => up(["--yes"], drifted.io), /operator.*j2-operator:ancient.*expected j2-operator:local/s);
+});
+
 test("operator: manage:false skips the layer; operator.image overrides the ref", async () => {
   const skipRoot = await mkInstance(`export default { name: "a", operator: { manage: false } };\n`, "a");
   const w1 = mkWorld(skipRoot);
@@ -179,7 +232,39 @@ test("image: fresh hash skips the build; stale hash builds and kind-loads (no re
   });
   fresh.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
   assert.equal(await up([], fresh.io), 0);
-  assert.deepEqual(fresh.built, [], "no build, no load");
+  // The bundle is still staged — it is how the hash is computed at all — but the expensive half
+  // (docker build + delivery) is what the staleness check buys.
+  assert.deepEqual(fresh.built, ["bundle"], "staged to hash, but neither built nor loaded");
+
+  // --force spends the build anyway, against the very same hash.
+  const forced = mkWorld(root);
+  forced.kube.set("myinst", "deployment", "j2-orchestrator", {
+    metadata: { name: "j2-orchestrator", labels: { "j2.dev/content-hash": hash } },
+  });
+  forced.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  assert.equal(await up(["--force"], forced.io), 0);
+  assert.ok(forced.built.includes(`build ${tag}`), `--force rebuilds (got: ${forced.built.join(", ")})`);
+});
+
+test("the image tag addresses the BUNDLE — a kit change the instance folder never saw moves it", async () => {
+  // The staleness defect: the hash walked the instance folder, so kit sources (a resolved
+  // dependency, materialized into the bundle) were not inputs. Editing the orchestrator left the
+  // tag unmoved → identical pod template → no rollout → `up` deployed nothing and said converged.
+  // Hashing the bundle makes the tag a content address of what actually goes into the image,
+  // identically in a workspace checkout and against a published kit.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const kitFile = "node_modules/.pnpm/@j2+orchestrator/node_modules/@j2/orchestrator/src/lease.ts";
+
+  const tagWith = async (kit: string): Promise<string> => {
+    const w = mkWorld(root, { bundleFiles: { "package.json": "{}", [kitFile]: kit } });
+    assert.equal(await up(["--yes"], w.io), 0);
+    return w.built.find((b) => b.startsWith("build "))!.slice("build ".length);
+  };
+
+  const before = await tagWith("export const renew = () => 1;\n");
+  const after = await tagWith("export const renew = () => 2;\n");
+  assert.notEqual(after, before, "a kit source edit must move the tag");
+  assert.equal(await tagWith("export const renew = () => 1;\n"), before, "…and equal content must not");
 });
 
 test("image: a registry pushes instead of kind-loading; a non-kind context without one fails loudly", async () => {
@@ -293,7 +378,26 @@ test("converge applies the instance objects and waits for the rollout", async ()
   for (const k of ["PersistentVolumeClaim", "ServiceAccount", "ConfigMap", "Secret", "Deployment", "Service"]) {
     assert.ok(kinds.includes(k), `applies a ${k}`);
   }
-  assert.deepEqual(w.kube.rollouts, ["myinst/j2-orchestrator"]);
+  assert.deepEqual(w.kube.rollouts, ["j2-system/j2-controller-manager", "myinst/j2-orchestrator"]);
+});
+
+test("converged is claimed only of a pod observed carrying the intended image", async () => {
+  // The defect this closes: `up` reported convergence off the label it had just written, so a
+  // Deployment whose pod template never moved (stale image, no rollout) still printed `converged`.
+  // Convergence is now asserted against the running pod — observed state, not the CLI's own claim.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const drifted = mkWorld(root);
+  drifted.kube.podImages = { "app=j2-orchestrator": "j2-instance-myinst:0ldc0ntent" };
+
+  await assert.rejects(
+    () => up(["--yes"], drifted.io),
+    /running pod carries j2-instance-myinst:0ldc0ntent.*expected j2-instance-myinst:/s,
+    "the drift is named in both directions, so the fix is obvious",
+  );
+
+  const honest = mkWorld(root);
+  assert.equal(await up(["--yes"], honest.io), 0);
+  assert.match(honest.err.join("\n"), /converged/);
 });
 
 test("provider preflight: probed from inside the cluster; a failing probe fails the converge", async () => {

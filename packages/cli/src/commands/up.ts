@@ -1,4 +1,4 @@
-// `j2 up [--yes] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
+// `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
 // ownership → operator → instance image → agents ConfigMap → Secret (+ preflight of referenced
 // Secrets) → apply + rollout. Repos reconcile onto the in-cluster source volume at orchestrator
@@ -14,7 +14,7 @@ import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import { loadAgents, loadConfig, type J2Config } from "@j2/orchestrator";
-import { buildInstanceImage, contentHash, INSTANCE_DOCKERFILE, pnpmDockerBuild } from "../build.ts";
+import { pnpmDockerBuild, stageInstanceBundle } from "../build.ts";
 import {
   compareVersions,
   GIT_SSH_SECRET,
@@ -25,6 +25,7 @@ import {
   LABEL_VERSION,
   OPERATOR_DEPLOYMENT,
   OPERATOR_NAMESPACE,
+  OPERATOR_SELECTOR,
   operatorManifest,
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
@@ -38,6 +39,7 @@ export async function up(args: string[], io: Io): Promise<number> {
     strict: false,
     options: {
       yes: { type: "boolean" },
+      force: { type: "boolean" },
       namespace: { type: "string", short: "n" },
       context: { type: "string" },
     },
@@ -107,35 +109,53 @@ export async function up(args: string[], io: Io): Promise<number> {
         labels: { [LABEL_VERSION]: KIT_VERSION },
         ...ctx,
       });
+      await kube.waitRollout({ deployment: OPERATOR_DEPLOYMENT, namespace: OPERATOR_NAMESPACE, ...ctx });
+      // Kit dev pins a static tag (`j2-operator:local`), which this cannot catch — a same-tag
+      // rebuild leaves the pod template identical and nothing rolls. `just operator-image`
+      // restarts the Deployment for exactly that reason; here the tag is the released version.
+      await verifyRunningImage(io, kube, {
+        layer: "operator",
+        namespace: OPERATOR_NAMESPACE,
+        selector: OPERATOR_SELECTOR,
+        image,
+        ...ctx,
+      });
     }
   }
 
-  // --- instance image (staleness-checked by content hash) ----------------------------------------
-  // The Dockerfile template is part of the image's content, so it salts the hash too (kit-dev:
-  // the version alone wouldn't move when the template does).
-  const hash = await contentHash(root, KIT_VERSION + INSTANCE_DOCKERFILE);
+  // --- instance image (content-addressed by the bundle) ------------------------------------------
+  // Stage first, THEN decide: the hash is over the materialized bundle — the actual image inputs,
+  // kit included — so the tag is a content address rather than a guess about what changed.
+  const build = io.build ?? pnpmDockerBuild;
+  const staged = await stageInstanceBundle(build, root);
+  const hash = staged.hash;
   const registry = config.registry;
   const tag = registry ? `${registry}/j2-instance-${name}:${hash}` : `j2-instance-${name}:${hash}`;
-  const orch = await kube.getJson({ kind: "deployment", name: ORCHESTRATOR_SERVICE, namespace, ...ctx });
-  if (orch?.metadata.labels?.[LABEL_HASH] === hash) {
-    activity(io, `image: ${tag} (fresh — build skipped)`);
-  } else {
-    const build = io.build ?? pnpmDockerBuild;
-    activity(io, `image: building ${tag}`);
-    await buildInstanceImage(build, root, tag);
-    if (registry) {
-      activity(io, `image: pushing to ${registry}`);
-      await build.push(tag);
-    } else if (context.startsWith("kind-")) {
-      const cluster = context.slice("kind-".length);
-      activity(io, `image: no registry configured — \`kind load\` onto cluster "${cluster}"`);
-      await build.kindLoad(tag, cluster);
+  try {
+    const orch = await kube.getJson({ kind: "deployment", name: ORCHESTRATOR_SERVICE, namespace, ...ctx });
+    if (orch?.metadata.labels?.[LABEL_HASH] === hash && values.force !== true) {
+      // Safe to skip only because the rolled-out pod is verified against `tag` below: this decides
+      // whether to spend a docker build, not whether the cluster is already correct.
+      activity(io, `image: ${tag} (fresh — build skipped; --force to rebuild anyway)`);
     } else {
-      throw new Error(
-        `context ${context} is not a kind cluster and no \`registry\` is configured — ` +
-          `set \`registry\` in j2.config.ts (from env) so the image can be pushed (ADR-0019)`,
-      );
+      activity(io, `image: building ${tag}${values.force === true ? " (--force)" : ""}`);
+      await build.build(tag, staged.dir);
+      if (registry) {
+        activity(io, `image: pushing to ${registry}`);
+        await build.push(tag);
+      } else if (context.startsWith("kind-")) {
+        const cluster = context.slice("kind-".length);
+        activity(io, `image: no registry configured — \`kind load\` onto cluster "${cluster}"`);
+        await build.kindLoad(tag, cluster);
+      } else {
+        throw new Error(
+          `context ${context} is not a kind cluster and no \`registry\` is configured — ` +
+            `set \`registry\` in j2.config.ts (from env) so the image can be pushed (ADR-0019)`,
+        );
+      }
     }
+  } finally {
+    await staged.dispose();
   }
 
   // --- agents + secrets --------------------------------------------------------------------------
@@ -209,11 +229,59 @@ export async function up(args: string[], io: Io): Promise<number> {
   });
   activity(io, "orchestrator: waiting for rollout");
   await kube.waitRollout({ deployment: ORCHESTRATOR_SERVICE, namespace, ...ctx });
+  await verifyRunningImage(io, kube, {
+    layer: "orchestrator",
+    namespace,
+    selector: `app=${ORCHESTRATOR_SERVICE}`,
+    image: tag,
+    ...ctx,
+  });
 
   noteDeferred(io, config);
   activity(io, `converged — \`j2 run <workflow>\` when ready`);
   return 0;
 }
+
+/**
+ * Convergence is a claim about the CLUSTER, so it is checked against the cluster (ADR-0019): after
+ * a rollout, the pod actually serving must carry the image this run intended. Without this, `up`
+ * reported success off the content-hash label it had just written — and a Deployment whose pod
+ * template never moved (stale image, no rollout) printed `converged` while running old code.
+ *
+ * Tag equality is the whole check, which is only sound because the tag IS the content address (see
+ * `stageInstanceBundle`): on the `kind load` path a pod's `imageID` is containerd's manifest digest
+ * under a rewritten `import-<date>` repo, comparable to nothing the host holds.
+ */
+async function verifyRunningImage(
+  io: Io,
+  kube: KubeAdmin,
+  opts: { layer: string; namespace: string; selector: string; image: string; context?: string },
+): Promise<void> {
+  const { layer, image, ...q } = opts;
+  const pods = await kube.listJson<PodObject>({ kind: "pod", ...q });
+  // Mid-termination pods from the outgoing ReplicaSet still carry the old image and are not the
+  // thing serving — the question is what the cluster runs now, not what it is done running.
+  const live = pods.filter((p) => !p.metadata.deletionTimestamp);
+  const stale = live.filter((p) => p.spec.containers.some((c) => c.image !== image));
+  if (stale.length > 0) {
+    const carried = stale[0]!.spec.containers.map((c) => c.image).join(", ");
+    throw new Error(
+      `${layer}: rollout reported success, but the running pod carries ${carried} — expected ${image}. ` +
+        `The cluster is serving code this converge did not deploy; ` +
+        `\`kubectl -n ${opts.namespace} rollout restart deploy\` and re-run \`j2 up\` to resolve it.`,
+    );
+  }
+  if (live.length === 0) {
+    activity(io, `${layer}: WARNING — rollout succeeded but no pod matched ${opts.selector} (nothing verified)`);
+    return;
+  }
+  activity(io, `${layer}: verified — ${live.length} pod(s) running ${image}`);
+}
+
+type PodObject = {
+  metadata: { name: string; deletionTimestamp?: string };
+  spec: { containers: Array<{ image: string }> };
+};
 
 /**
  * ssh repo urls need a key the CLUSTER holds (ADR-0019): personal keys never enter a cluster, so

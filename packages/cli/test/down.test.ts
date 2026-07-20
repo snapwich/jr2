@@ -23,6 +23,7 @@ function mkKube(objects: Record<string, Partial<KubeObject>>): KubeAdmin & { del
       void fake.deleted.push(`${o.namespace ?? ""}/${o.kind}/${o.name}`),
     deleteManifest: async () => void fake.deleted.push("(operator manifest)"),
     waitRollout: async () => {},
+    listJson: async () => assert.fail("down verifies no rollout") as never,
     runOneShot: async () => assert.fail("down probes nothing") as never,
   };
   return fake;

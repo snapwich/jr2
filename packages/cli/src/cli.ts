@@ -19,7 +19,7 @@ const USAGE = `j2 — orchestrate agentic workflows (ADR-0009)
 usage: j2 <command> [args]
 
   init [dir] [--name <n>]            scaffold a new instance folder
-  up [--yes]                        converge the current kube context to this instance (ADR-0019)
+  up [--yes] [--force]              converge the current kube context to this instance (ADR-0019)
   down [--all]                      remove the instance from the cluster (--all: operator too)
   run <workflow> [--input <json>]   start a run; stream activity, print terminal result
        [--detach]                   ...or just print the runId and return

@@ -32,6 +32,8 @@ export const ORCHESTRATOR_SA = "j2-orchestrator";
 /** The operator's install location — per-cluster, shared by every instance (ADR-0019). */
 export const OPERATOR_NAMESPACE = "j2-system";
 export const OPERATOR_DEPLOYMENT = "j2-controller-manager";
+/** The operator Deployment's pod selector, as rendered into `manifests/operator.yaml`. */
+export const OPERATOR_SELECTOR = "control-plane=controller-manager";
 
 /** The rendered operator install manifest shipped inside this package (`just operator-manifest`
  * regenerates it from operator/config). The manager image ref is substituted at apply time. */

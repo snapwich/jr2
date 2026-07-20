@@ -76,6 +76,10 @@ operator-manifest:
 operator-image:
     docker build -t j2-operator:local operator
     kind load docker-image j2-operator:local --name {{ cluster }}
+    # Kit dev pins a STATIC tag, so a rebuild leaves the pod template identical and nothing rolls —
+    # `j2 up`'s image verification compares tags and cannot see it. Restarting here is what makes
+    # "rebuilt" mean "running" (ignored when the operator isn't deployed yet).
+    kubectl --context kind-{{ cluster }} -n j2-system rollout restart deploy/j2-controller-manager 2>/dev/null || true
 
 # --- operator (requires kubebuilder; see operator/README.md) ---
 
