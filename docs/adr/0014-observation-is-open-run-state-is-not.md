@@ -70,6 +70,18 @@ instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + c
 - **Open, inherited from ADR-0013:** what a deployed j2 Application uses for human callers. Whatever it is, the band
   split survives it — only the credential in the `instanceOnly` band changes.
 
+- **One scoped exception, and it does not live on this surface at all (ADR-0023).** The Harness prints each Agent's
+  conversation — prompts, assistant text, thinking, tool calls — to container stdout, which leaves the pod for the
+  cluster's log plane and lands in front of a reader this document never gets to check. That is a real exception to the
+  rule above, and it is stated rather than reasoned away. Two things bound it. It is **not a new band**: the HTTP
+  surface is untouched, nothing here is served, and a reader gets it from `kubectl logs`, holding cluster log access
+  instead of a j2 credential. And **tool results are excluded** — file contents, command output, API responses never
+  print, so the mechanical leak (an Agent `cat`s a config while debugging and its secrets ride a log shipper into 30-day
+  retention) is off the table, leaving only what an Agent reasons aloud. What remains, deliberately, is that on a shared
+  cluster the population who can read an Agent's reasoning is whoever can read pod logs. If that becomes unacceptable,
+  the fix is the read-through ADR-0023 declined to build — `instanceOnly`, on this surface, where the band already
+  works.
+
 Evidence: `packages/orchestrator/src/http.ts` (the three middlewares), `run-host.ts` (`observe` / `RunObservation` /
 `RunChild`), `test/auth.test.ts` (the boundary), `test/http-viz.test.ts` (a planted secret never reaches the feed, at
 any depth of the child tree).
