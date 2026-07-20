@@ -53,7 +53,7 @@ export type MachineStateDoc = {
    * analysis recovers it, and the subgraph beneath it would simply be absent from the diagram while
    * the machine ran correctly. That silence is the hazard, not the omission: it once erased the
    * whole feature pipeline from `examples/coding` with no signal at all. So the doc carries the
-   * fact it cannot see, and callers (`j2 visualize`) say so out loud.
+   * fact it cannot see, and callers say so out loud (`opaqueStates`, surfaced on the page).
    */
   opaqueActions?: boolean;
 };
@@ -90,7 +90,14 @@ export type MachineBodyDoc = {
 };
 
 /** The serialized structure of a workflow's Machine. */
-export type MachineDoc = MachineBodyDoc & { workflow: string };
+export type MachineDoc = MachineBodyDoc & {
+  workflow: string;
+  /** States whose child list may be incomplete — see {@link opaqueStates}. Computed once here, on
+   * the server, so the notice reaches whoever renders the doc without every consumer re-walking it
+   * to discover the diagram is lying. Absent on the nested `MachineBodyDoc`s: it is a whole-doc
+   * question, and the root's walk already covers them. */
+  opaqueStates?: string[];
+};
 
 /** Normalize a guard to a display name: setup() name, parameterized type, or `"inline"`. */
 function guardName(guard: unknown): string | undefined {
@@ -291,5 +298,6 @@ function serializeBody(machine: AnyStateMachine, path: Set<AnyStateMachine>): Ma
 
 /** Serialize a workflow's template Machine into the visualizer DTO, child machines and all. */
 export function serializeMachine(workflow: string, machine: AnyStateMachine): MachineDoc {
-  return { workflow, ...serializeBody(machine, new Set()) };
+  const doc: MachineDoc = { workflow, ...serializeBody(machine, new Set()) };
+  return { ...doc, opaqueStates: opaqueStates(doc) };
 }

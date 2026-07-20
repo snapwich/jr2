@@ -90,6 +90,12 @@ invokes the `gate` actor and destroyed when the state exits. An addressable reso
 `j2 send`, a UI inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller among many),
 approval (one possible event, not the resource)
 
+**Emit**: A message a workflow author surfaces from a Machine for whoever is watching (xstate `emit({...})`), carried on
+the observation feeds beside the automatic status deltas. Progress and notice — "review requested", "branch pushed" —
+never control: nothing consumes an Emit, and a Machine cannot be driven by one. Its PAYLOAD is author data of the same
+class as context, so the open band carries the type alone (ADR-0014/0022). _Avoid_: event (the down-channel thing a Gate
+or an Agent delivers, which does drive a Machine), log (an Emit is deliberate vocabulary, not a diagnostic)
+
 **Workspace**: A long-lived Sandbox bound to a unit of work, modeled as a child Machine. Entering the state creates the
 Sandbox and its worktree; the child Machine's states manage what happens inside (e.g. coding, review, merge); reaching
 its final state cleans up the Sandbox. Coder and reviewer Agents share one Workspace (per-feature isolation, not

@@ -82,6 +82,8 @@ main { flex: 1; display: flex; min-height: 0; }
   background: var(--ink-2);
 }
 #error .dim { display: block; margin-top: 8px; color: var(--text-dim); }
+/* A caveat about the diagram, not a failure to draw one — see `opaqueStates`. */
+#error.notice { border-color: var(--amber); color: var(--amber); }
 
 #root-transitions { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
 #root-transitions span {
@@ -194,6 +196,15 @@ ul { list-style: none; margin: 0; padding: 0 8px 8px; }
 #run-list .run-status.status--error { color: var(--red); }
 #run-list .run-status.status--done { color: var(--phosphor); }
 #run-list .empty { color: var(--text-dim); cursor: default; padding: 7px 9px; }
+/* Runs this page watched finish. Dimmed, but still selectable: where a run ENDED is worth reading,
+   and it is the client's own memory — a reload starts empty (ADR-0014/0022). */
+#run-list li.settled .run-id { color: var(--text-dim); }
+
+/* The feed's state. `retrying` is normal and self-healing (EventSource reconnects on its own), so it
+   is a caution and not an error — the page is not lying about anything while it says so. */
+.conn { font-size: 11px; letter-spacing: 0.04em; color: var(--text-dim); }
+.conn--live { color: var(--phosphor); }
+.conn--retrying { color: var(--amber); }
 
 #emit-log li {
   padding: 5px 9px;

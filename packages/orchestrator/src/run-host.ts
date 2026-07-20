@@ -169,16 +169,42 @@ export type AgentSurfaceView = {
 };
 
 /**
- * One item on a run's observation feed (the `GET /runs/:id/events` SSE stream — ADR-0009). Two kinds:
- * a `status` snapshot delta (emitted on every transition, and replayed once on attach), and an `emit`
- * — a message the workflow author surfaced via xstate `emit({...})` for whoever is watching.
+ * One item on a run's observation feed (the `GET /runs/:id/events` SSE stream — ADR-0009). A
+ * `status` snapshot delta (emitted on every transition, and replayed once on attach); an `emit` — a
+ * message the workflow author surfaced via xstate `emit({...})` for whoever is watching; absorbed-
+ * retry telemetry; and `closed`, the host going away underneath a feed that would never end.
  */
 export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
   | { kind: "emit"; event: { type: string } & Record<string, unknown> }
   // Absorbed-retry telemetry (ADR-0016): `{ child, attempt }` is state-key-class data — no iids
   // ride the feed (ADR-0014). `reason` is mechanism text, guarded like `fault`.
-  | RetryTelemetry;
+  | RetryTelemetry
+  | { kind: "closed" };
+
+/**
+ * One item on a WORKFLOW's observation feed (the `GET /workflows/:name/events` SSE — ADR-0022).
+ *
+ * The same vocabulary as {@link RunFeedEvent} at a coarser granularity, plus `gone`. Every run-
+ * scoped item carries `runId` even where the per-run route makes it redundant, so a consumer can
+ * parse both feeds with one reader.
+ *
+ * `gone` is its own fact rather than an inference from a terminal status, because a run can leave
+ * the live set WITHOUT one: `stop()` deliberately leaves the stored status "live" so a later
+ * `restore()` picks the run back up (see `spawn`). A watcher that inferred departure from
+ * `status === "done"` would show a stopped run as live forever.
+ *
+ * The opening `runs` snapshot is not an arm here: {@link RunHost.observeWorkflow} returns it, so it
+ * cannot be missed by a listener that attached a moment too late. The wire re-frames it as `runs`.
+ */
+export type WorkflowFeedEvent =
+  | { kind: "status"; status: RunStatus }
+  | { kind: "gone"; runId: string }
+  | { kind: "emit"; runId: string; event: { type: string } & Record<string, unknown> }
+  | ({ runId: string } & RetryTelemetry)
+  | { kind: "closed" };
+
+type WorkflowListener = (e: WorkflowFeedEvent) => void;
 
 export type RunHostOptions = {
   store: SnapshotStore;
@@ -228,6 +254,13 @@ export class RunHost {
   /** Per-workflow name→def resolution scope, built (and validated) at registration. */
   private readonly workflowEvents = new Map<string, Map<string, EventDef>>();
   private readonly runs = new Map<string, LiveRun>();
+  /**
+   * Workflow name → its observers. Deliberately on the HOST and not on `LiveRun`: a workflow's
+   * watcher outlives every individual run it watches, and `persist()` clears a settled run's own
+   * listener set. Keeping it here is what makes that structurally impossible to get wrong, rather
+   * than a comment asking the next reader not to clear the wrong Set.
+   */
+  private readonly workflowListeners = new Map<string, Set<WorkflowListener>>();
 
   constructor(opts: RunHostOptions) {
     this.store = opts.store;
@@ -245,7 +278,11 @@ export class RunHost {
   }
 
   /** Drop a workflow's registration (a `workflows/` file was deleted — `j2 dev` reload). In-flight
-   * runs keep their already-assembled definition; only future `start`s are affected. */
+   * runs keep their already-assembled definition; only future `start`s are affected.
+   *
+   * Observers stay ATTACHED, deliberately. Their runs are still running, so a feed that ended here
+   * would be reporting that the work stopped when it did not — and the file may well come back on
+   * the next reload, which the still-open feed then picks up with no reconnect. */
   unregister(name: string): void {
     this.workflowDefs.delete(name);
     this.workflowEvents.delete(name);
@@ -418,6 +455,47 @@ export class RunHost {
     return () => run.listeners.delete(listener);
   }
 
+  /**
+   * Observe a whole WORKFLOW (the `GET /workflows/:name/events` SSE — ADR-0022): every run of it
+   * appearing, moving, emitting and leaving, for as long as the caller stays attached.
+   *
+   * The current set is RETURNED rather than replayed through the listener, and the subscription is
+   * registered in the same synchronous call. That is the whole point of the signature: split into
+   * a list-then-subscribe pair, a run starting between the two calls appears in neither, and the
+   * watcher is quietly wrong until something else happens to move it.
+   *
+   * Subscribing to a NAME, not to a registration — an unknown workflow attaches to an empty set
+   * (a `j2 dev` reload may register it a moment later, and the feed should just start working).
+   */
+  observeWorkflow(workflow: string, listener: WorkflowListener): { runs: RunStatus[]; unsubscribe: () => void } {
+    let listeners = this.workflowListeners.get(workflow);
+    if (!listeners) this.workflowListeners.set(workflow, (listeners = new Set()));
+    listeners.add(listener);
+    return {
+      runs: this.list().filter((s) => s.workflow === workflow),
+      unsubscribe: () => {
+        listeners.delete(listener);
+        // Drop the empty Set, but ONLY if the map still holds this one. A stale unsubscribe (called
+        // twice, or after `close()`) would otherwise evict whatever Set replaced it under the same
+        // name — silently orphaning a watcher that has nothing to do with this one.
+        if (listeners.size === 0 && this.workflowListeners.get(workflow) === listeners) {
+          this.workflowListeners.delete(workflow);
+        }
+      },
+    };
+  }
+
+  /** How many observers a workflow's feed currently has. Exists so a test can prove that a client
+   * going away actually DETACHES — a leak here is invisible until the process runs out of memory. */
+  observerCount(workflow: string): number {
+    return this.workflowListeners.get(workflow)?.size ?? 0;
+  }
+
+  /** Feed one workflow's observers. The projection to the wire happens in http.ts, not here. */
+  private announce(workflow: string, event: WorkflowFeedEvent): void {
+    for (const listener of this.workflowListeners.get(workflow) ?? []) listener(event);
+  }
+
   /** A run's LIVE status — undefined once it settles and is dropped from the registry. Sync. */
   status(runId: string): RunStatus | undefined {
     const run = this.runs.get(runId);
@@ -475,12 +553,43 @@ export class RunHost {
       .map(observe);
   }
 
+  /**
+   * End every open feed because the host is going away — the shutdown counterpart to `subscribe`.
+   *
+   * A feed has no natural end: a run parked on a gate transitions for hours, and its watchers hold
+   * an in-flight HTTP request the whole time. `server.close()` (instance.ts) waits for in-flight
+   * requests, so without this a single attached `j2 run` wedges shutdown indefinitely. `closed` is
+   * the frame that lets those handlers exit. Runs themselves are untouched: this ends the
+   * OBSERVATION, not the work — the snapshots are already durable, and `restore()` picks them up.
+   */
+  async close(): Promise<void> {
+    for (const run of this.runs.values()) {
+      for (const listener of run.listeners) listener({ kind: "closed" });
+      run.listeners.clear();
+    }
+    for (const listeners of this.workflowListeners.values()) {
+      for (const listener of listeners) listener({ kind: "closed" });
+    }
+    this.workflowListeners.clear();
+  }
+
   /** Stop a run in-process (abandons its Agent via the actor's stop path). Does not delete state. */
   async stop(runId: string): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) return;
+    // Say so BEFORE the actor stops, while there is still a status to read. A stopped run is not a
+    // settled one — `persist()` never runs for it (the tracked-run guard drops the scheduled save,
+    // keeping the stored status "live" for restore — see `spawn`), so nothing else on this path
+    // would ever tell a watcher the run left. Without it the page shows it live forever.
+    this.announceGone(run);
     run.actor.stop();
     this.untrack(run.record);
+  }
+
+  /** Feed a run's final word to both granularities: where it ended, then that it is gone. */
+  private announceGone(run: LiveRun, status: RunStatus = this.liveStatus(run)): void {
+    this.announce(run.record.workflow, { kind: "status", status });
+    this.announce(run.record.workflow, { kind: "gone", runId: run.record.runId });
   }
 
   // --- internals ---
@@ -548,6 +657,7 @@ export class RunHost {
       // feed events, not machine events (ADR-0016: the workflow sees only the terminal fault).
       telemetry: (event) => {
         for (const listener of this.runs.get(record.runId)?.listeners ?? []) listener(event);
+        this.announce(record.workflow, { ...event, runId: record.runId });
       },
     };
     let bound = false;
@@ -591,7 +701,17 @@ export class RunHost {
     actor.on("*", (emitted) => {
       const event = emitted as { type: string } & Record<string, unknown>;
       for (const listener of run.listeners) listener({ kind: "emit", event });
+      this.announce(record.workflow, { kind: "emit", runId: record.runId, event });
     });
+    // The run has appeared. This is the convergence point of `start()` and `restore()` — both reach
+    // the live set through here, so one fan-out covers a fresh run and a resumed one alike.
+    //
+    // It runs BEFORE `actor.start()` (see the call in `spawn`), so this first frame is the pre-start
+    // snapshot, corrected on the next microtask by the first `persist()`. That is fine because the
+    // feed is level-triggered — every frame is a whole status, so a momentarily-early one is simply
+    // overwritten rather than accumulated. Do NOT "fix" this by moving the fan-out into `start()`:
+    // `restore()` does not go through it, and resumed runs would silently stop appearing.
+    this.announce(record.workflow, { kind: "status", status: this.liveStatus(run) });
     return run;
   }
 
@@ -627,8 +747,13 @@ export class RunHost {
     for (const listener of run.listeners) listener({ kind: "status", status: runStatus });
 
     if (status !== "live") {
+      // The workflow's watchers get the same final status, then `gone` — the run's last word on
+      // both feeds, still before untrack, while there is a status to read.
+      this.announceGone(run, runStatus);
       this.untrack(run.record);
       run.listeners.clear();
+    } else {
+      this.announce(run.record.workflow, { kind: "status", status: runStatus });
     }
   }
 }

@@ -75,6 +75,7 @@ take the Instance token.
 GET  /workflows                        # list registered workflows                       [open]
 GET  /workflows/:name/machine  /viz/*  # machine structure + visualizer                  [open]
 GET  /workflows/:name/runs[, /:runId/events]  # observation projection (ADR-0014)        [open]
+GET  /workflows/:name/events           # SSE: the whole workflow, level-triggered (ADR-0022) [open]
 POST /workflows/:name/runs             # start a run (push work); body = input → { runId } [instance]
 GET  /runs   GET /runs/:runId          # live list; durable run status (read-through)    [instance]
 GET  /runs/resolve?prefix=<p>          # run ids sharing a prefix, live + settled        [instance]
@@ -103,7 +104,6 @@ j2 run <workflow> [--input <json>] [--detach]
 j2 runs   j2 status <runId|abbrev>   j2 logs <runId|abbrev> [-f]
 j2 send <runId|abbrev> --event CANCEL
 j2 send <runId|abbrev> --gate <gate> --event <name> [--input <json>]
-j2 visualize <workflow> [--no-open]
 
 # workspaces (kubectl-style, over the operator's Sandbox CRs)
 j2 ls                             # list workspaces + run + status + endpoint

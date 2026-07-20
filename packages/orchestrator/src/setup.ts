@@ -148,7 +148,7 @@ export function j2Setup<
 
     // …then rewrite the config (ADR-0015): every `agentRun`/`gate` invoke's input is wrapped to
     // append its DERIVED menu and finalize the mechanism fields. Static — the walk sees the same
-    // config `j2 visualize` will — and the derived names still ride serializable input, so the
+    // config the visualizer will — and the derived names still ride serializable input, so the
     // ADR-0007 restore path and invoke-time `resolveAccepts` validation are unchanged.
     const machine = (inner.createMachine as unknown as (c: never) => AnyStateMachine)(
       deriveMenus(config, defs) as never,

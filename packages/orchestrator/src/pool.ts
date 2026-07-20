@@ -2,7 +2,7 @@
 // item, at most `cap` at once. It absorbs what every jr-shaped workflow used to hand-roll:
 // spawn-under-cap, stable child identity, `xstate.done.actor.*` completion collection,
 // `stopChild` bookkeeping, the wake gate, and the re-query timer. The one top-level `spawnChild`
-// lives HERE, once — which is what keeps `j2 visualize`'s static trace guaranteed by
+// lives HERE, once — which is what keeps the visualizer's static trace guaranteed by
 // construction (the comment-enforced "keep spawnChild top-level" footgun deletes), and the
 // worker is a registered string src, which is what makes spawned children persistable at all
 // (xstate cannot persist inline-src children).
@@ -60,7 +60,7 @@ export function source<T>(spec: SourceSpec<T>): SourceSpec<T> {
 export type PoolOutput = { status: "drained" | "deadlocked"; items: Record<string, unknown> };
 
 export type PoolSpec<T> = {
-  /** The machine id (the workflow's name in `j2 visualize`). Default "pool". */
+  /** The machine id (the workflow's name in the visualizer). Default "pool". */
   id?: string;
   source: SourceSpec<T>;
   /** Stable child identity: the spawn id, the active-set entry, the outcome key. */

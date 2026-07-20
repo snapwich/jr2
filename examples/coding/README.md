@@ -73,8 +73,14 @@ j2 up                 # converges the current context: operator → instance ima
                       # after any change. First contact asks; --yes for CI.
 
 j2 run task-with-review --input '{"prompt":"Fix the ...","repo":"obsidian-tasks.nvim","branch":"task/mvp-1"}'
-j2 visualize task-with-review             # the Machine + live runs panel (served by the orchestrator)
 j2 logs <runId> -f                        # re-attach to the status feed
+```
+
+The Machine + live-runs panel is served by the orchestrator itself. Reach it over your own forward:
+
+```sh
+kubectl port-forward -n coding svc/j2-orchestrator 8080:8080
+open http://localhost:8080/viz/task-with-review
 ```
 
 Every run-verb prints its target (`→ context kind-j2 / namespace coding`) on stderr — the cluster is always whatever

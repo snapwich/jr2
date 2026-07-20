@@ -190,7 +190,7 @@ test("a spawnChild'd machine is attached to the state that spawns it", () => {
 
 // The regression that motivated `opaqueActions`: `examples/coding` moved its `spawnChild` inside an
 // `enqueueActions` closure to dodge an xstate typing wall, and its entire feature pipeline vanished
-// from `j2 visualize` — silently, while the machine still ran correctly. We cannot see into the
+// from the diagram — silently, while the machine still ran correctly. We cannot see into the
 // closure (it resolves at runtime, and may spawn conditionally or with a computed src), so the
 // contract is: report the blind spot rather than emit a confidently incomplete diagram.
 test("a spawn hidden in an enqueueActions closure is invisible — so the state is flagged opaque", () => {

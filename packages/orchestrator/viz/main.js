@@ -1,13 +1,23 @@
 // j2 Machine visualizer. Fetches the workflow's serialized Machine (GET /workflows/:name/machine),
 // lays it out with elkjs (loaded as a UMD script -> window.ELK), renders it as nested SVG, and
-// live-highlights the active states of a selected run via the SSE observation feed
-// (GET /workflows/:name/runs/:id/events — `status` frames carry the xstate state value).
+// live-highlights the active states of the selected run.
+//
+// ONE connection, for the whole WORKFLOW (GET /workflows/:name/events — ADR-0022), held open for the
+// life of the page and never closed by this script. Selecting a run is a local act: it re-renders
+// from state already in hand and touches no socket. That is what lets `onerror` mean "retrying"
+// instead of "give up" — the page previously closed the feed there, which defeated EventSource's
+// own reconnect and froze the diagram while still looking healthy.
+//
+// The feed is level-triggered, so recovery needs nothing from this side: the server re-sends the
+// whole live set on attach, and store.js folds it in idempotently.
 //
 // Every route this page touches is an OPEN one: structure (the Machine) and observation (runs
 // projected without context). It holds NO token and must not — the guarded `/runs*` surface carries
 // gates, cancel, and every run's context, and this page is served to a browser (ADR-0013).
 
 /* global ELK */
+
+import { applyFrame, emptyStore, runList, selectedRun } from "/viz/assets/store.js";
 
 const workflow = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop());
 
@@ -437,8 +447,7 @@ function instanceKey(children) {
   return children.map((c) => `${c.src}#${c.id}(${instanceKey(c.children)})`).join(",");
 }
 
-let feed; // the one open EventSource
-let selectedRunId;
+let store = emptyStore();
 let shown = { doc: null, live: [], key: null, status: null };
 let queue = Promise.resolve(); // serializes re-layouts against a burst of status frames
 
@@ -460,48 +469,24 @@ function apply(doc, status) {
   return relayout ? refresh() : Promise.resolve(highlight(doc, status));
 }
 
-function followRun(doc, run, listItem) {
-  feed?.close();
-  selectedRunId = run.runId;
-  for (const li of $("run-list").children) li.classList.toggle("selected", li === listItem);
-
-  feed = new EventSource(`/workflows/${encodeURIComponent(workflow)}/runs/${encodeURIComponent(run.runId)}/events`);
-  feed.addEventListener("status", (e) => {
-    const status = JSON.parse(e.data);
-    void apply(doc, status);
-    const chip = listItem.querySelector(".run-status");
-    chip.textContent = status.status;
-    chip.className = `run-status status--${status.status}`;
-  });
-  feed.addEventListener("emit", (e) => {
-    const emitted = JSON.parse(e.data);
-    const li = document.createElement("li");
-    li.textContent = emitted.type;
-    const when = document.createElement("span");
-    when.className = "dim";
-    when.textContent = new Date().toLocaleTimeString();
-    li.appendChild(when);
-    $("emit-log").prepend(li);
-  });
-  feed.onerror = () => feed.close(); // the feed closes itself after the terminal frame
+/** Select a run. Purely local — the connection is the WORKFLOW's, and it does not move. */
+function followRun(doc, runId) {
+  store = { ...store, selectedRunId: runId };
+  drawRuns(doc);
 }
 
-// The OBSERVATION routes, not `/runs*`: this page holds no token, and the run surface is the
-// Instance token's (context, gates, cancel). What comes back is already scoped to this workflow
-// already context-free, so there is nothing to filter and nothing to redact here.
-async function loadRuns(doc) {
-  const res = await fetch(`/workflows/${encodeURIComponent(workflow)}/runs`);
-  const runs = res.ok ? await res.json() : [];
+/** Paint the run list from the store: live runs, then the ones this page watched leave. */
+function drawRuns(doc) {
   const list = $("run-list");
   list.textContent = "";
-  if (!runs.length) {
+  const rows = runList(store);
+  if (!rows.length) {
     const li = document.createElement("li");
     li.className = "empty";
     li.textContent = "no live runs — start one with `j2 run`";
     list.appendChild(li);
-    return;
   }
-  for (const run of runs) {
+  for (const { run, settled } of rows) {
     const li = document.createElement("li");
     const id = document.createElement("span");
     id.className = "run-id";
@@ -510,11 +495,71 @@ async function loadRuns(doc) {
     chip.className = `run-status status--${run.status}`;
     chip.textContent = run.status;
     li.append(id, chip);
-    li.addEventListener("click", () => followRun(doc, run, li));
+    li.classList.toggle("settled", settled);
+    li.classList.toggle("selected", run.runId === store.selectedRunId);
+    li.addEventListener("click", () => followRun(doc, run.runId));
     list.appendChild(li);
-    if (run.runId === selectedRunId) li.classList.add("selected");
   }
-  if (!selectedRunId) followRun(doc, runs[0], list.firstChild);
+  void apply(doc, selectedRun(store));
+}
+
+/** Paint the emit log, newest first. */
+function drawEmits() {
+  const log = $("emit-log");
+  log.textContent = "";
+  for (const emitted of store.emits) {
+    const li = document.createElement("li");
+    li.textContent = emitted.type;
+    const who = document.createElement("span");
+    who.className = "dim";
+    who.textContent = emitted.runId.slice(0, 8);
+    li.appendChild(who);
+    log.appendChild(li);
+  }
+}
+
+function setConnection(state) {
+  store = { ...store, connection: state };
+  const el = $("connection");
+  el.textContent = state;
+  el.className = `conn conn--${state}`;
+}
+
+/**
+ * The one connection. Opened at boot, never closed by this script.
+ *
+ * `onerror` only reports: EventSource reconnects on its own, and closing here (as this page used to)
+ * is what made a single blip permanent. There is nothing to re-sync afterwards — the reattached feed
+ * opens with the whole live set, which folds in idempotently.
+ */
+function connect(doc) {
+  const feed = new EventSource(`/workflows/${encodeURIComponent(workflow)}/events`);
+  const fold = (frame) => {
+    store = applyFrame(store, frame);
+    drawRuns(doc);
+  };
+  feed.addEventListener("runs", (e) => fold({ kind: "runs", runs: JSON.parse(e.data) }));
+  feed.addEventListener("status", (e) => fold({ kind: "status", status: JSON.parse(e.data) }));
+  feed.addEventListener("gone", (e) => fold({ kind: "gone", runId: JSON.parse(e.data).runId }));
+  feed.addEventListener("emit", (e) => {
+    const { runId, type } = JSON.parse(e.data);
+    store = applyFrame(store, { kind: "emit", runId, type });
+    drawEmits();
+  });
+  feed.onopen = () => setConnection("live");
+  feed.onerror = () => setConnection("retrying");
+}
+
+/** Say so when the diagram is knowingly incomplete: a child spawned inside an `enqueueActions`
+ *  closure cannot be found by the static walk, so those states may be missing children entirely.
+ *  Computed server-side (`MachineDoc.opaqueStates`) and surfaced HERE, where the reader is. */
+function showOpaqueNotice(doc) {
+  const opaque = doc.opaqueStates ?? [];
+  if (!opaque.length) return;
+  const el = $("error");
+  el.hidden = false;
+  el.classList.add("notice");
+  el.textContent = `${opaque.join(", ")} ${opaque.length === 1 ? "runs" : "run"} an enqueueActions closure — any child machine spawned inside one is NOT shown in this diagram (keep \`spawnChild\` a top-level action to see it).`;
 }
 
 // ---- Boot ---------------------------------------------------------------------------------------
@@ -541,8 +586,9 @@ async function boot() {
   // frame of a run with children swaps those for one subgraph per instance.
   shown = { doc, live: [], key: instanceKey([]), status: null };
   await renderMachine(doc, []);
-  await loadRuns(doc);
-  $("refresh-runs").addEventListener("click", () => loadRuns(doc));
+  showOpaqueNotice(doc);
+  drawRuns(doc);
+  connect(doc);
 
   $("zoom-in").addEventListener("click", () => setScale(scale * 1.2));
   $("zoom-out").addEventListener("click", () => setScale(scale / 1.2));

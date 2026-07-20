@@ -11,7 +11,6 @@ import { runs } from "./commands/runs.ts";
 import { status } from "./commands/status.ts";
 import { logs } from "./commands/logs.ts";
 import { send } from "./commands/send.ts";
-import { visualize } from "./commands/visualize.ts";
 import { up } from "./commands/up.ts";
 import { down } from "./commands/down.ts";
 
@@ -30,7 +29,6 @@ usage: j2 <command> [args]
   send <runId> --event CANCEL       abandon a live run
   send <runId> --gate <gate> --event <name> [--input <json>]
                                     deliver a workflow event to an open gate
-  visualize <workflow> [--no-open]  open the workflow's Machine in the browser
 
 run ids: any <runId> above may be abbreviated to a unique prefix (4+ chars, git-style);
          an ambiguous prefix lists the candidates and fails rather than guessing
@@ -76,8 +74,6 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await logs(rest, io);
       case "send":
         return await send(rest, io);
-      case "visualize":
-        return await visualize(rest, io);
       case "up":
         return await up(rest, io);
       case "down":

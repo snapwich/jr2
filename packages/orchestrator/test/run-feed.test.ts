@@ -71,3 +71,27 @@ test("read() is undefined for a genuinely unknown run", async () => {
   const host = new RunHost({ store: await mkStore() });
   assert.equal(await host.read("nope"), undefined);
 });
+
+/** parked: a run that never reaches a final state — an approval gate, in miniature. */
+function parkedDef(): WorkflowDef {
+  const machine = setup({
+    types: {} as { context: Record<string, never>; input: { instanceId: string } },
+  }).createMachine({ id: "parked", context: {}, initial: "waiting", states: { waiting: {} } });
+  return { name: "parked", machine, provide: () => ({}) };
+}
+
+test("close() ends every open feed — a parked run's watcher would otherwise never exit", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(parkedDef());
+  const { runId } = await host.start("parked");
+
+  const feed: RunFeedEvent[] = [];
+  host.subscribe(runId, (e) => feed.push(e));
+  assert.ok(!feed.some((e) => e.kind === "closed"), "an open feed is not closed while the host serves");
+
+  await host.close();
+
+  // The run never settles on its own, so `closed` is the ONLY exit its watcher will ever see.
+  // Without it `server.close()` waits on the in-flight request forever (instance.ts).
+  assert.equal(feed.at(-1)?.kind, "closed");
+});

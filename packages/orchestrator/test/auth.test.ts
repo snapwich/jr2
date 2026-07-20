@@ -129,6 +129,12 @@ test("observation is open, and carries no context — the visualizer's whole die
   assert.ok(observed && !("context" in observed), "context never crosses this line");
   assert.ok(observed && !("instanceId" in observed), "nor the live iid");
 
+  // The real-time half of the same band (ADR-0022): a feed the page can hold open without a token,
+  // carrying the same projection. Being open is what lets it be a browser's EventSource at all.
+  const feed = await app.request("/workflows/coding/events");
+  assert.equal(feed.status, 200, "no token needed to watch a workflow either");
+  await feed.body!.cancel();
+
   // ...and the guarded listing still says everything, to the Instance token alone.
   const [full] = (await (await app.request("/runs", get(INSTANCE_TOKEN))).json()) as Array<Record<string, unknown>>;
   assert.ok(full && "context" in full, "the Instance token's view is unchanged");

@@ -151,6 +151,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       return { added, updated, removed, workflows: host.workflows() };
     },
     close: async () => {
+      // Before `server.close()`, not after: it waits for in-flight requests, and an observation
+      // feed is in-flight until its watcher goes away. `host.close()` is what makes them go away.
+      await host.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await store.close();
     },

@@ -96,7 +96,7 @@ committed (the instance repo is the GitOps unit, ADR-0008); everything deploymen
 ## Consequences
 
 - The everyday story is two commands ever: `j2 init`, `j2 up`. The full CLI: `init`, `up`, `down`, `run`, `runs`,
-  `status`, `logs`, `send`, `ls`, `ssh`, `rm`, `visualize`.
+  `status`, `logs`, `send`, `ls`, `ssh`, `rm`.
 - **Simplification must not surprise**: `up` prompts exactly when meeting a cluster that isn't yet home, and run-verbs
   print the context they're talking to — the ambient-context magic stays visible.
 - The snapshot store (sqlite) moves onto a PVC in the instance's namespace; `.j2/` shrinks to scratch.

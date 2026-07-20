@@ -102,13 +102,82 @@ async function vizAsset(rel: string, contentType: string): Promise<Response> {
 }
 
 /**
+ * One SSE handler's single exit. Every feed can end four ways — terminal frame, race guard, client
+ * abort, host shutdown — and each must unsubscribe, clear the ping timer, and resolve EXACTLY once.
+ * Spelling that out per exit is how a timer gets leaked, so each handler builds one of these and
+ * every exit becomes `exit.done`.
+ *
+ * `onExit` is called AFTER subscribing, because `host.subscribe` replays synchronously and can
+ * therefore finish the feed before it returns — hence the already-finished check inside it.
+ */
+function closer(resolve: () => void) {
+  let cleanups: Array<() => void> = [];
+  let finished = false;
+  const release = () => {
+    for (const fn of cleanups) fn();
+    cleanups = [];
+  };
+  return {
+    done: () => {
+      if (finished) return;
+      finished = true;
+      release();
+      resolve();
+    },
+    /** Register cleanup (an unsubscribe, a timer clear) to run on whichever exit happens first. */
+    onExit: (fn: () => void) => (finished ? fn() : cleanups.push(fn)),
+    /** Run the cleanups WITHOUT ending the feed — the read-through race guard, which detaches from
+     *  a run that is already gone and then still has a final frame to write. */
+    release,
+  };
+}
+
+/** How often an otherwise-silent feed writes a ping. */
+const PING_MS = 15_000;
+
+/**
+ * Keep a quiet feed alive.
+ *
+ * A run parked on a gate transitions for hours, so its feed writes zero bytes and any idle
+ * intermediary drops the connection — the client sees a dead socket that still looks healthy (this
+ * is the `error: terminated` an attached `j2 run` hit). The frame is an SSE COMMENT (`:\n\n`):
+ * every client ignores it, so it needs no place in the wire vocabulary.
+ *
+ * It is deliberately a **ping**, not a heartbeat or keepalive — CONTEXT.md puts both on the Lease's
+ * Avoid list, and this asserts nothing and expects no answer.
+ *
+ * It is NOT a liveness probe, and must not be mistaken for one: `stream.write` swallows its own
+ * errors (hono's `StreamingApi`), so a failed write is indistinguishable from a good one. A peer
+ * that goes away is detected by `stream.onAbort`, which is what every handler here wires to its
+ * exit. The tick checks `aborted`/`closed` only so a ping that fires between the abort and the
+ * teardown does not write into a dead stream. Returns its own clear fn.
+ */
+function pinger(stream: SseStream, done: () => void, everyMs = PING_MS): () => void {
+  const timer = setInterval(() => {
+    if (stream.aborted || stream.closed) return done();
+    void stream.write(":\n\n");
+  }, everyMs);
+  return () => clearInterval(timer);
+}
+
+/** The slice of hono's `StreamingApi` the ping needs: the raw write (`writeSSE` cannot express a
+ *  comment frame) plus the two flags that say the peer is gone. */
+type SseStream = { write: (s: string) => Promise<unknown>; aborted: boolean; closed: boolean };
+
+export type CreateAppOptions = {
+  /** Ping interval for the SSE feeds. Tests shorten it; nothing in production sets it. */
+  pingMs?: number;
+};
+
+/**
  * Build the orchestrator HTTP app over a `RunHost` (ADR-0009/0013 route table).
  *
  * `auth` is how a bearer token becomes a principal. Omitting it leaves the surface OPEN, which is
  * only ever right for an in-process test that reaches `app.request` directly — `startInstance`
  * (the one production path, and `j2 dev`) always supplies one.
  */
-export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
+export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOptions = {}): Hono<J2Env> {
+  const pingMs = opts.pingMs ?? PING_MS;
   const app = new Hono<J2Env>();
 
   /** Authenticate, or refuse. There is no anonymous principal (ADR-0013) — an open surface would
@@ -189,6 +258,61 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
 
   app.get("/workflows/:name/runs", (c) => c.json(host.observations(c.req.param("name"))));
 
+  /**
+   * SSE: a whole WORKFLOW's activity (ADR-0022) — every run of it appearing, moving, emitting and
+   * leaving, on one connection that outlives all of them.
+   *
+   * The feed is LEVEL-TRIGGERED: `status` always carries a whole observation, never a patch, and the
+   * opening `runs` frame carries the entire current set. A reconnecting client therefore converges
+   * with no replay buffer, no Last-Event-ID and no per-client state on this side — re-delivery is
+   * idempotent by construction. Same reconciliation idiom as the Lease (ADR-0021) and ADR-0019.
+   *
+   * Unknown workflow is NOT a 404: it attaches and reports an empty set, matching
+   * `/workflows/:name/runs`. The page is opened by path, and a `j2 dev` reload may register the
+   * name a moment later — the already-open feed then just starts working.
+   *
+   * Same open band as the routes above (ADR-0014): `observe()` projects away context, instanceId and
+   * fault at every depth, and an emit contributes its TYPE alone.
+   */
+  app.get("/workflows/:name/events", async (c) => {
+    const name = c.req.param("name");
+    return streamSSE(c, async (stream) => {
+      await new Promise<void>((resolve) => {
+        const exit = closer(resolve);
+        // Subscribe and snapshot in one call, then write the snapshot in the same tick: nothing can
+        // start, move or finish in between, so the client's first frame is a complete picture.
+        const { runs, unsubscribe } = host.observeWorkflow(name, (ev) => {
+          if (ev.kind === "closed") return exit.done();
+          if (ev.kind === "gone") {
+            void stream.writeSSE({ event: "gone", data: JSON.stringify({ runId: ev.runId }) });
+            return;
+          }
+          if (ev.kind === "emit") {
+            // The TYPE alone: an emit's payload is author data, the same class of thing as context.
+            void stream.writeSSE({ event: "emit", data: JSON.stringify({ runId: ev.runId, type: ev.event.type }) });
+            return;
+          }
+          if (ev.kind === "retry") {
+            // `{ child, attempt }` only — `reason` is mechanism/error text, which stays behind the
+            // Instance token like `fault` (ADR-0014/0016).
+            void stream.writeSSE({
+              event: "retry",
+              data: JSON.stringify({ runId: ev.runId, child: ev.child, attempt: ev.attempt }),
+            });
+            return;
+          }
+          void stream.writeSSE({ event: "status", data: JSON.stringify(observe(ev.status)) });
+        });
+        exit.onExit(unsubscribe);
+        // `retry` steers the browser's own EventSource backoff. This feed never ends on its own, so
+        // every close is a fault worth reconnecting from — the client does not decide that.
+        void stream.writeSSE({ event: "runs", data: JSON.stringify(runs.map(observe)), retry: 2000 });
+        exit.onExit(pinger(stream, exit.done, pingMs));
+        stream.onAbort(exit.done);
+      });
+    });
+  });
+
   app.get("/workflows/:name/runs/:runId/events", async (c) => {
     const name = c.req.param("name");
     const runId = c.req.param("runId");
@@ -198,39 +322,35 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
     if (!live || live.workflow !== name) return c.json({ error: `no live run "${runId}" of "${name}"` }, 404);
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
-        const unsubscribe = host.subscribe(runId, (ev) => {
-          if (ev.kind === "emit") {
-            // The TYPE alone: an emit's payload is author data, the same class of thing as context.
-            void stream.writeSSE({ event: "emit", data: JSON.stringify({ type: ev.event.type }) });
-            return;
-          }
-          if (ev.kind === "retry") {
-            // `{ child, attempt }` only — `reason` is mechanism/error text, which stays behind
-            // the Instance token like `fault` (ADR-0014/0016).
-            void stream.writeSSE({ event: "retry", data: JSON.stringify({ child: ev.child, attempt: ev.attempt }) });
-            return;
-          }
-          // Terminal frame must flush before the handler returns and closes the stream (see the
-          // guarded feed below for why the resolve is chained off the write).
-          const terminal = ev.status.status !== "active";
-          void stream.writeSSE({ event: "status", data: JSON.stringify(observe(ev.status)) }).then(() => {
-            if (terminal) {
-              unsubscribe();
-              resolve();
+        const exit = closer(resolve);
+        exit.onExit(
+          host.subscribe(runId, (ev) => {
+            // The host is shutting down under a feed that has no end of its own.
+            if (ev.kind === "closed") return exit.done();
+            if (ev.kind === "emit") {
+              // The TYPE alone: an emit's payload is author data, the same class of thing as context.
+              void stream.writeSSE({ event: "emit", data: JSON.stringify({ type: ev.event.type }) });
+              return;
             }
-          });
-        });
+            if (ev.kind === "retry") {
+              // `{ child, attempt }` only — `reason` is mechanism/error text, which stays behind
+              // the Instance token like `fault` (ADR-0014/0016).
+              void stream.writeSSE({ event: "retry", data: JSON.stringify({ child: ev.child, attempt: ev.attempt }) });
+              return;
+            }
+            // Terminal frame must flush before the handler returns and closes the stream (see the
+            // guarded feed below for why the exit is chained off the write).
+            const terminal = ev.status.status !== "active";
+            void stream.writeSSE({ event: "status", data: JSON.stringify(observe(ev.status)) }).then(() => {
+              if (terminal) exit.done();
+            });
+          }),
+        );
         // Race guard: settled between the liveness check and the subscribe, which then attached to
         // nothing. No read-through on this route, so there is nothing to fall back to — just close.
-        if (host.status(runId) === undefined) {
-          unsubscribe();
-          resolve();
-          return;
-        }
-        stream.onAbort(() => {
-          unsubscribe();
-          resolve();
-        });
+        if (host.status(runId) === undefined) return exit.done();
+        exit.onExit(pinger(stream, exit.done, pingMs));
+        stream.onAbort(exit.done);
       });
     });
   });
@@ -239,6 +359,7 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
   // as a workflow name. The page itself is one static shell for any name (the browser reads the
   // workflow from the path); an unknown workflow surfaces in-page via its 404'd /machine fetch.
   app.get("/viz/assets/main.js", () => vizAsset("main.js", "text/javascript; charset=utf-8"));
+  app.get("/viz/assets/store.js", () => vizAsset("store.js", "text/javascript; charset=utf-8"));
   app.get("/viz/assets/style.css", () => vizAsset("style.css", "text/css; charset=utf-8"));
   app.get("/viz/assets/elk.js", async () => {
     const body = await readElkBundle();
@@ -320,42 +441,41 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
     }
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
-        const unsubscribe = host.subscribe(runId, (ev) => {
-          if (ev.kind === "emit") {
-            void stream.writeSSE({ event: "emit", data: JSON.stringify(ev.event) });
-            return;
-          }
-          if (ev.kind === "retry") {
-            // The Instance's own feed: the full telemetry, reason included (same trust class as
-            // `fault`).
-            void stream.writeSSE({ event: "retry", data: JSON.stringify(ev) });
-            return;
-          }
-          // Resolving lets the handler return, which CLOSES the stream — so on the terminal frame we
-          // must wait for the write to flush first, or a fire-and-forget write races the close and the
-          // final status is dropped (the very frame `j2 run` blocks on). Chain resolve off the write.
-          const terminal = ev.status.status !== "active";
-          void stream.writeSSE({ event: "status", data: JSON.stringify(ev.status) }).then(() => {
-            if (terminal) {
-              unsubscribe();
-              resolve();
+        const exit = closer(resolve);
+        exit.onExit(
+          host.subscribe(runId, (ev) => {
+            if (ev.kind === "closed") return exit.done();
+            if (ev.kind === "emit") {
+              void stream.writeSSE({ event: "emit", data: JSON.stringify(ev.event) });
+              return;
             }
-          });
-        });
+            if (ev.kind === "retry") {
+              // The Instance's own feed: the full telemetry, reason included (same trust class as
+              // `fault`).
+              void stream.writeSSE({ event: "retry", data: JSON.stringify(ev) });
+              return;
+            }
+            // Exiting lets the handler return, which CLOSES the stream — so on the terminal frame we
+            // must wait for the write to flush first, or a fire-and-forget write races the close and the
+            // final status is dropped (the very frame `j2 run` blocks on). Chain the exit off the write.
+            const terminal = ev.status.status !== "active";
+            void stream.writeSSE({ event: "status", data: JSON.stringify(ev.status) }).then(() => {
+              if (terminal) exit.done();
+            });
+          }),
+        );
         // Race guard: the run may have settled between the liveness check above and this subscribe,
         // which then attaches to nothing and never fires. Fall back to the terminal read-through.
         if (host.status(runId) === undefined) {
-          unsubscribe();
+          exit.release();
           void host.read(runId).then((s) => {
             if (s) void stream.writeSSE({ event: "status", data: JSON.stringify(s) });
-            resolve();
+            exit.done();
           });
           return;
         }
-        stream.onAbort(() => {
-          unsubscribe();
-          resolve();
-        });
+        exit.onExit(pinger(stream, exit.done, pingMs));
+        stream.onAbort(exit.done);
       });
     });
   });
