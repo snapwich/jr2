@@ -11,6 +11,13 @@ export interface SnapshotStore {
   load(runId: string): Promise<StoredSnapshot | null>;
   /** Every persisted run, in insertion order. The host filters by `status` on restore. */
   list(): Promise<StoredSnapshot[]>;
+  /**
+   * Persisted run ids sharing a prefix, sorted, capped at `limit` — the store half of abbreviated
+   * run ids (ADR-0009). Includes `lost` rows: the ambiguity set is the ids that EXIST, not the ones
+   * that are readable. Skipping a lost row would let a prefix it shares with a live run resolve
+   * silently to the live one, which makes resolution unsound.
+   */
+  findIdsByPrefix(prefix: string, limit: number): Promise<string[]>;
   save(runId: string, snapshot: unknown, status?: string): Promise<void>;
   markLost(runId: string, reason: string): Promise<void>;
   close(): Promise<void>;
@@ -71,6 +78,25 @@ export class SqliteSnapshotStore implements SnapshotStore {
       if (row.reason !== null) stored.reason = row.reason;
       return stored;
     });
+  }
+
+  /**
+   * A range scan rather than `LIKE`/`GLOB`. `run_id` is the BINARY-collated PRIMARY KEY, but
+   * SQLite's `LIKE` is ASCII-case-insensitive by default, so the planner declines the index range
+   * and falls back to a full scan. `GLOB` would seek correctly but obliges every caller to escape
+   * `*?[]` first — a store shouldn't have to trust that. The `CHAR(0x10FFFF)` sentinel as the upper
+   * bound also avoids incrementing the prefix's last character, which has edge cases. `>=`/`<`
+   * carries to Postgres unchanged, where `LIKE 'x%'` would need `text_pattern_ops` to use an index.
+   */
+  async findIdsByPrefix(prefix: string, limit: number): Promise<string[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT run_id FROM machine_snapshots
+         WHERE run_id >= ? AND run_id < ? || CHAR(0x10FFFF)
+         ORDER BY run_id LIMIT ?`,
+      )
+      .all(prefix, prefix, limit) as Array<{ run_id: string }>;
+    return rows.map((row) => row.run_id);
   }
 
   async save(runId: string, snapshot: unknown, status = "live"): Promise<void> {

@@ -31,6 +31,9 @@ usage: j2 <command> [args]
                                     deliver a workflow event to an open gate
   visualize <workflow> [--no-open]  open the workflow's Machine in the browser
 
+run ids: any <runId> above may be abbreviated to a unique prefix (4+ chars, git-style);
+         an ambiguous prefix lists the candidates and fails rather than guessing
+
 global (run verbs): -n/--namespace <ns>, --context <ctx> address the deployment (ADR-0019);
                     --url <u> / J2_URL attaches to a specific orchestrator (skips kube entirely)`;
 

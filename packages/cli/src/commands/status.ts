@@ -1,10 +1,11 @@
-// `j2 status <runId>` (ADR-0009): print a run's status as JSON on stdout, reading through to the store
-// so a completed run still reports its terminal status + final context. A genuinely unknown run → 1.
+// `j2 status <runId|abbrev>` (ADR-0009): print a run's status as JSON on stdout, reading through to the
+// store so a completed run still reports its terminal status + final context. A genuinely unknown run → 1.
 
 import { parseArgs } from "node:util";
 import { J2Client } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
+import { resolveRunId } from "../run-id.ts";
 
 export async function status(args: string[], io: Io): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -13,17 +14,22 @@ export async function status(args: string[], io: Io): Promise<number> {
     strict: false,
     options: { ...TARGET_ARGS },
   });
-  const runId = positionals[0];
-  if (!runId) {
-    activity(io, "usage: j2 status <runId>");
+  const given = positionals[0];
+  if (!given) {
+    activity(io, "usage: j2 status <runId|abbrev>");
     return 2;
   }
   const target = await resolveTarget(io, targetOptions(values));
   try {
     const client = new J2Client(target.url, io.fetch, target.token);
-    const s = await client.read(runId);
+    const ref = await resolveRunId(client, given);
+    if (!ref.ok) {
+      activity(io, ref.message);
+      return ref.code;
+    }
+    const s = await client.read(ref.runId);
     if (!s) {
-      activity(io, `no run "${runId}"`);
+      activity(io, `no run "${ref.runId}"`);
       return 1;
     }
     result(io, s);

@@ -183,3 +183,44 @@ test("gates over HTTP (ADR-0011): discovered on GET /runs/:id, delivered via POS
   const after = (await (await app.request(`/runs/${runId}`)).json()) as { gates: unknown[] };
   assert.deepEqual(after.gates, []);
 });
+
+// ---- GET /runs/resolve (ADR-0009) ---------------------------------------------------------------
+// The prefix→ids search the CLI's abbreviated run ids sit on. Ids only, never RunStatus: it keeps
+// the scan index-only and holds down what the route reveals. The addressed routes below it stay
+// full-id — resolution is a separate, read-only step precisely so no WRITE is prefix-sensitive.
+
+test("GET /runs/resolve answers the ids sharing a prefix — and nothing else about them", async () => {
+  const { host, app } = await mkApp();
+  const { runId } = await host.start("coding");
+
+  const res = await app.request(`/runs/resolve?prefix=${runId.slice(0, 8)}`);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { prefix: string; runIds: string[]; truncated: boolean };
+  assert.deepEqual(body.runIds, [runId]);
+  assert.equal(body.prefix, runId.slice(0, 8));
+  assert.equal(body.truncated, false);
+  assert.deepEqual(Object.keys(body).sort(), ["prefix", "runIds", "truncated"], "no status, no context, no gates");
+});
+
+test("GET /runs/resolve: a prefix under the floor is refused, an unmatched one is simply empty", async () => {
+  const { app } = await mkApp();
+
+  assert.equal((await app.request("/runs/resolve?prefix=ab")).status, 400, "a 2-char prefix is a scan, not a question");
+  assert.equal((await app.request("/runs/resolve")).status, 400, "and so is no prefix at all");
+
+  const none = await app.request("/runs/resolve?prefix=zzzzzzzz");
+  assert.equal(none.status, 200, "no match is an empty answer, not an error");
+  assert.deepEqual(((await none.json()) as { runIds: string[] }).runIds, []);
+});
+
+test("GET /runs/resolve truncates rather than dumping the table", async () => {
+  // 11 runs sharing a prefix: one past the cap, which is what flips `truncated`.
+  const store = await mkStore();
+  for (let i = 0; i < 11; i++) await store.save(`abcd${String(i).padStart(4, "0")}-0000-0000-0000-000000000000`, {});
+  const app = createApp(new RunHost({ store }));
+
+  const res = await app.request("/runs/resolve?prefix=abcd");
+  const body = (await res.json()) as { runIds: string[]; truncated: boolean };
+  assert.equal(body.runIds.length, 10);
+  assert.equal(body.truncated, true);
+});

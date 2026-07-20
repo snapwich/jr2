@@ -66,7 +66,13 @@ function gatedMachine() {
   });
 }
 
-export type Harness = { host: RunHost; app: ReturnType<typeof createApp>; client: J2Client };
+export type Harness = {
+  host: RunHost;
+  app: ReturnType<typeof createApp>;
+  client: J2Client;
+  /** Exposed so tests can seed ids directly — the only way to force a run-id prefix collision. */
+  store: SqliteSnapshotStore;
+};
 
 /** A fresh host (in-memory store) with `feed` + `loop` registered, plus a socket-free J2Client. */
 export async function mkHarness(): Promise<Harness> {
@@ -78,5 +84,5 @@ export async function mkHarness(): Promise<Harness> {
   host.register({ name: "gated", machine: gatedMachine(), provide: () => ({}) });
   const app = createApp(host);
   const client = new J2Client("http://test", (url, init) => Promise.resolve(app.request(url, init)));
-  return { host, app, client };
+  return { host, app, client, store };
 }

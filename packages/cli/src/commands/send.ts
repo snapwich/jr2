@@ -1,7 +1,7 @@
 // `j2 send` (ADR-0009/0011/0013): the two down-channels a human has into a live run.
 //
-//   j2 send <runId> --event CANCEL                                  run control (the only verb left)
-//   j2 send <runId> --gate <gate> --event <name> [--input '<json>'] deliver to an open Gate
+//   j2 send <runId|abbrev> --event CANCEL                           run control (the only verb left)
+//   j2 send <runId|abbrev> --gate <gate> --event <name> [--input '<json>'] deliver to an open Gate
 //
 // Run control used to carry APPROVE and STEER too. Those rode the `deferred` (held tool result)
 // and `poll` (steer inbox) semantics, which ADR-0013 reserves but does not build — so they are
@@ -9,13 +9,19 @@
 // (`POST /runs/:id/gates/:gate/events` — ADR-0011): the gate names the pending decision, the
 // event name must be in its derived accepts, and the input is validated against the event's
 // schema host-side. Discover a run's open gates (names + accepts + meta) with `j2 status <runId>`.
+//
+// The run id resolves BEFORE either branch: both are writes, and a write must never be
+// prefix-sensitive (ADR-0009). It also gives a bad id a real error — `host.stop()` returns silently
+// for an unknown run, so an unresolved CANCEL used to report success.
 
 import { parseArgs } from "node:util";
 import { J2Client } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, type Io } from "../output.ts";
+import { resolveRunId } from "../run-id.ts";
 
-const USAGE = "usage: j2 send <runId> --event CANCEL | j2 send <runId> --gate <gate> --event <name> [--input '<json>']";
+const USAGE =
+  "usage: j2 send <runId|abbrev> --event CANCEL | j2 send <runId|abbrev> --gate <gate> --event <name> [--input '<json>']";
 
 export async function send(args: string[], io: Io): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -29,16 +35,22 @@ export async function send(args: string[], io: Io): Promise<number> {
       ...TARGET_ARGS,
     },
   });
-  const runId = positionals[0];
+  const given = positionals[0];
   const gate = values.gate as string | undefined;
   const event = values.event as string | undefined;
-  if (!runId || !event) {
+  if (!given || !event) {
     activity(io, USAGE);
     return 2;
   }
   const target = await resolveTarget(io, targetOptions(values));
   try {
     const client = new J2Client(target.url, io.fetch, target.token);
+    const ref = await resolveRunId(client, given);
+    if (!ref.ok) {
+      activity(io, ref.message);
+      return ref.code;
+    }
+    const runId = ref.runId;
 
     // Gate delivery: the event name is the workflow's own vocabulary — case-preserved, never
     // normalized here (the host validates it against the gate's accepts).

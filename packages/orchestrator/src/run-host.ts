@@ -453,6 +453,19 @@ export class RunHost {
     return [...this.runs.keys()].map((id) => this.status(id)).filter((s): s is RunStatus => s !== undefined);
   }
 
+  /**
+   * Run ids sharing a prefix — the live registry unioned with the store — backing abbreviated run
+   * ids in the CLI (ADR-0009). The live half is not belt-and-braces: `persist()` is scheduled on a
+   * microtask, so a just-started run is in `runs` before it is anywhere in the store. The store
+   * half is what makes a settled run abbreviate-able. A run past its first transition sits in both,
+   * hence the `Set`.
+   */
+  async candidates(prefix: string, limit: number): Promise<string[]> {
+    const live = [...this.runs.keys()].filter((id) => id.startsWith(prefix));
+    const stored = await this.store.findIdsByPrefix(prefix, limit);
+    return [...new Set([...live, ...stored])].sort().slice(0, limit);
+  }
+
   /** The live runs of ONE workflow, projected for observers (the visualizer's run list). Scoped
    * server-side: an observer asks about a workflow it can already name, and gets back only runs of
    * it — never a listing of everything this orchestrator happens to be running. */

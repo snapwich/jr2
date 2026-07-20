@@ -74,3 +74,85 @@ test("runs lists live runs as JSON on stdout", async () => {
   const list = JSON.parse(out().trim()) as Array<{ runId: string }>;
   assert.ok(list.some((r) => r.runId === runId));
 });
+
+// ---- Abbreviated run ids (ADR-0009) -------------------------------------------------------------
+// Git's short-hash affordance on every verb that takes a run id. Prefix only; ambiguity FAILS rather
+// than guessing, which is what makes it safe to put in front of `send`'s writes.
+
+test("status resolves an abbreviated run id", async () => {
+  const { app, host } = await mkHarness();
+  const { runId } = await host.start("loop");
+  const { io, out } = mkIo({
+    env: { J2_URL: "http://test" },
+    fetch: (url, init) => Promise.resolve(app.request(url, init)),
+  });
+
+  assert.equal(await main(["status", runId.slice(0, 8)], io), 0);
+  assert.equal((JSON.parse(out()) as { runId: string }).runId, runId, "the full run, off a prefix");
+});
+
+test("a full run id is used as-is — no resolution round trip", async () => {
+  const { app, host } = await mkHarness();
+  const { runId } = await host.start("loop");
+  const seen: string[] = [];
+  const { io } = mkIo({
+    env: { J2_URL: "http://test" },
+    fetch: (url, init) => {
+      seen.push(String(url));
+      return Promise.resolve(app.request(url, init));
+    },
+  });
+
+  assert.equal(await main(["status", runId], io), 0);
+  assert.ok(
+    !seen.some((u) => u.includes("/runs/resolve")),
+    "the fast path keeps scripted pipelines on exactly the traffic they issue today",
+  );
+});
+
+test("an ambiguous prefix fails and lists the candidates", async () => {
+  const { app, store } = await mkHarness();
+  await store.save("beef1111-0000-0000-0000-000000000000", {});
+  await store.save("beef2222-0000-0000-0000-000000000000", {});
+  const { io, out, err } = mkIo({
+    env: { J2_URL: "http://test" },
+    fetch: (url, init) => Promise.resolve(app.request(url, init)),
+  });
+
+  assert.equal(await main(["status", "beef"], io), 1);
+  assert.match(err(), /ambiguous/);
+  assert.match(err(), /beef1111-0000-0000-0000-000000000000/);
+  assert.match(err(), /beef2222-0000-0000-0000-000000000000/);
+  assert.equal(out(), "", "an unresolved id prints no result");
+});
+
+test("a prefix under the floor is a usage error; an unmatched one is a runtime error", async () => {
+  const { app } = await mkHarness();
+  const mk = () =>
+    mkIo({ env: { J2_URL: "http://test" }, fetch: (url, init) => Promise.resolve(app.request(url, init)) });
+
+  const short = mk();
+  assert.equal(await main(["status", "ab"], short.io), 2, "a malformed argument is usage");
+  assert.match(short.err(), /too short/);
+
+  const missing = mk();
+  assert.equal(await main(["status", "abcdef12"], missing.io), 1, "a well-formed id that matches nothing is runtime");
+  assert.match(missing.err(), /no run/);
+});
+
+test("send resolves before it writes — an unresolvable id never reaches CANCEL", async () => {
+  const { app, host } = await mkHarness();
+  const { runId } = await host.start("loop");
+  const mk = () =>
+    mkIo({ env: { J2_URL: "http://test" }, fetch: (url, init) => Promise.resolve(app.request(url, init)) });
+
+  // `host.stop()` returns silently for an unknown run, so before resolution this reported success.
+  const bogus = mk();
+  assert.equal(await main(["send", "abcdef12", "--event", "CANCEL"], bogus.io), 1);
+  assert.match(bogus.err(), /no run/);
+  assert.equal(host.status(runId)?.status, "active", "and the real run is untouched");
+
+  const real = mk();
+  assert.equal(await main(["send", runId.slice(0, 8), "--event", "CANCEL"], real.io), 0);
+  assert.match(real.err(), new RegExp(`sent CANCEL to ${runId}`), "the message names the run it actually hit");
+});

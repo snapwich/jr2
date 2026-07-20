@@ -181,3 +181,16 @@ test("an unknown iid is 404 for a valid token — the scope check leaks nothing 
   const res = await app.request(`/agents/no-such-iid/surface`, get(sandboxToken(KEY, "ws-1")));
   assert.equal(res.status, 404);
 });
+
+test("/runs/resolve is Instance-only — a prefix search is a run-id enumeration oracle", async () => {
+  const { host, app } = await mkApp();
+  const { runId } = await host.start("coding", { sandbox: "ws-mine" });
+  const prefix = runId.slice(0, 8);
+
+  // Probing prefixes recovers run ids, and a run id is the address of everything else here. Left
+  // open (or reachable with a Sandbox token) this route would hand an Agent the ids of every OTHER
+  // run on the orchestrator — the enumeration `GET /runs`'s 403 above exists to prevent.
+  assert.equal((await app.request(`/runs/resolve?prefix=${prefix}`)).status, 401);
+  assert.equal((await app.request(`/runs/resolve?prefix=${prefix}`, get(sandboxToken(KEY, "ws-mine")))).status, 403);
+  assert.equal((await app.request(`/runs/resolve?prefix=${prefix}`, get(INSTANCE_TOKEN))).status, 200);
+});

@@ -11,6 +11,7 @@ import { setup } from "xstate";
 import { RunHost, type RunStatus } from "../src/run-host.ts";
 import { codingDef, mkStore, MockFlueClient, pipelineDef, tick, waitFor } from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
+import type { SnapshotStore } from "../src/snapshot-store.ts";
 
 test("an Agent's delivery routes into the owning run's Machine", async () => {
   const store = await mkStore();
@@ -200,4 +201,73 @@ test("a GRANDCHILD transition pushes a feed frame carrying its new value", async
   assert.equal(last.value, "discover", "the root never moved; only the depth did");
   assert.equal(last.children[0]?.children[0]?.status, "done", "F-1's body reached its final state");
   assert.equal(last.children[1]?.children[0]?.value, "coding", "and F-2 is untouched — instances are independent");
+});
+
+// ---- Abbreviated run ids (ADR-0009) -------------------------------------------------------------
+// `candidates` is the resolution primitive the CLI's prefix matching sits on. Two properties carry
+// the weight: it unions the live registry with the store (neither alone is complete), and its
+// answer is the set of ids that EXIST — including `lost` ones — because anything narrower resolves
+// an ambiguous prefix silently to the wrong run.
+
+test("candidates matches on prefix, sorted, and respects its limit", async () => {
+  const store = await mkStore();
+  await store.save("aaaa1111-0000-0000-0000-000000000000", {});
+  await store.save("aaaa2222-0000-0000-0000-000000000000", {});
+  await store.save("bbbb3333-0000-0000-0000-000000000000", {});
+  const host = new RunHost({ store });
+
+  assert.deepEqual(await host.candidates("bbbb", 10), ["bbbb3333-0000-0000-0000-000000000000"]);
+  assert.deepEqual(
+    await host.candidates("aaaa", 10),
+    ["aaaa1111-0000-0000-0000-000000000000", "aaaa2222-0000-0000-0000-000000000000"],
+    "an ambiguous prefix answers with every match, sorted",
+  );
+  assert.deepEqual(await host.candidates("zzzz", 10), [], "no match is not an error");
+  assert.equal((await host.candidates("aaaa", 1)).length, 1, "the limit caps the scan");
+});
+
+test("a prefix ending on a boundary character still scans (no last-char arithmetic)", async () => {
+  const store = await mkStore();
+  await store.save("ffff0000-0000-0000-0000-000000000000", {});
+  const host = new RunHost({ store });
+
+  // 'f' is the top of the hex alphabet — the case an increment-the-last-character upper bound trips on.
+  assert.deepEqual(await host.candidates("ffff", 10), ["ffff0000-0000-0000-0000-000000000000"]);
+});
+
+test("a LOST run stays in the candidate set — ambiguity is about ids that exist, not ones that read", async () => {
+  const store = await mkStore();
+  await store.save("cccc1111-0000-0000-0000-000000000000", {});
+  await store.markLost("cccc2222-0000-0000-0000-000000000000", "its flue handle is gone");
+  const host = new RunHost({ store });
+
+  assert.deepEqual(
+    await host.candidates("cccc", 10),
+    ["cccc1111-0000-0000-0000-000000000000", "cccc2222-0000-0000-0000-000000000000"],
+    "dropping the lost one would resolve this prefix silently to the readable run",
+  );
+});
+
+test("the live registry is consulted independently of the store", async () => {
+  // The store half is stubbed empty: `persist()` is microtask-scheduled, so a just-started run is in
+  // `runs` before it is anywhere in the store. Anyone who 'simplifies' the union away fails here.
+  const store = await mkStore();
+  const storeBlind: SnapshotStore = Object.assign(Object.create(store) as SnapshotStore, {
+    findIdsByPrefix: async () => [],
+  });
+  const host = new RunHost({ store: storeBlind, newId: () => "dddd4444-0000-0000-0000-000000000000" });
+  host.register(codingDef(new Map()));
+  const { runId } = await host.start("coding");
+
+  assert.deepEqual(await host.candidates("dddd", 10), [runId]);
+});
+
+test("a run in BOTH halves is reported once", async () => {
+  const store = await mkStore();
+  const host = new RunHost({ store, newId: () => "eeee5555-0000-0000-0000-000000000000" });
+  host.register(codingDef(new Map()));
+  const { runId } = await host.start("coding");
+  await tick(); // let persist() land it in the store too
+
+  assert.deepEqual(await host.candidates("eeee", 10), [runId], "the union dedupes");
 });

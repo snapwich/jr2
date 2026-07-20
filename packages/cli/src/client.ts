@@ -77,6 +77,16 @@ export class J2Client {
     return (await this.json(await this.fetchImpl(`${this.baseUrl}/runs`, { headers: this.headers() }))) as RunStatus[];
   }
 
+  /** `GET /runs/resolve?prefix=` — run ids sharing a prefix, live and settled. The wire half of
+   * abbreviated run ids; the policy (floor, uuid fast path, ambiguity) lives in `run-id.ts`. */
+  async candidates(prefix: string): Promise<{ runIds: string[]; truncated: boolean }> {
+    const res = await this.fetchImpl(`${this.baseUrl}/runs/resolve?prefix=${encodeURIComponent(prefix)}`, {
+      headers: this.headers(),
+    });
+    const body = (await this.json(res)) as { runIds: string[]; truncated: boolean };
+    return { runIds: body.runIds, truncated: body.truncated };
+  }
+
   /** `GET /runs/:runId` (read-through) — terminal runs included; a genuinely unknown run → undefined. */
   async read(runId: string): Promise<RunStatus | undefined> {
     const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}`, {

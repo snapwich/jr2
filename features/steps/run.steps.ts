@@ -32,6 +32,15 @@ When("I check the status of that run", async function (this: E2EWorld): Promise<
   await this.runCli(["status", this.runId]);
 });
 
+When("I check the status of that run by its first {int} characters", async function (this: E2EWorld, n: number) {
+  assert.ok(this.runId, "a runId was carried from a prior step");
+  await this.runCli(["status", this.runId.slice(0, n)]);
+});
+
+When("I check the status of run id {string}", async function (this: E2EWorld, runId: string): Promise<void> {
+  await this.runCli(["status", runId]);
+});
+
 When("I run an unknown command", async function (this: E2EWorld): Promise<void> {
   await this.runCli(["frobnicate"]);
 });
@@ -76,6 +85,12 @@ Then("the command exits {int}", function (this: E2EWorld, code: number): void {
 
 Then("stderr reports an error", function (this: E2EWorld): void {
   assert.match(this.last?.stderr ?? "", /error:/);
+});
+
+// A usage complaint, not a runtime `error:` — the argument itself is malformed, so nothing was asked
+// of the orchestrator. That split is what the 2-vs-1 exit code carries.
+Then("stderr says the run id is too short", function (this: E2EWorld): void {
+  assert.match(this.last?.stderr ?? "", /too short/);
 });
 
 Then("stderr reports an unknown command", function (this: E2EWorld): void {

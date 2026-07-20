@@ -77,6 +77,7 @@ GET  /workflows/:name/machine  /viz/*  # machine structure + visualizer         
 GET  /workflows/:name/runs[, /:runId/events]  # observation projection (ADR-0014)        [open]
 POST /workflows/:name/runs             # start a run (push work); body = input → { runId } [instance]
 GET  /runs   GET /runs/:runId          # live list; durable run status (read-through)    [instance]
+GET  /runs/resolve?prefix=<p>          # run ids sharing a prefix, live + settled        [instance]
 GET  /runs/:runId/events               # SSE: status replay + live deltas                [instance]
 POST /runs/:runId/events               # run-level infra interrupt: CANCEL               [instance]
 POST /runs/:runId/gates/:gate/events   # deliver a workflow event to an open gate        [instance]
@@ -99,9 +100,9 @@ j2 down [--all]                   # remove the instance from the cluster (--all:
 
 # runs / workflows (wrap the HTTP API)
 j2 run <workflow> [--input <json>] [--detach]
-j2 runs   j2 status <runId>   j2 logs <runId> [-f]
-j2 send <runId> --event CANCEL
-j2 send <runId> --gate <gate> --event <name> [--input <json>]
+j2 runs   j2 status <runId|abbrev>   j2 logs <runId|abbrev> [-f]
+j2 send <runId|abbrev> --event CANCEL
+j2 send <runId|abbrev> --gate <gate> --event <name> [--input <json>]
 j2 visualize <workflow> [--no-open]
 
 # workspaces (kubectl-style, over the operator's Sandbox CRs)
@@ -139,6 +140,28 @@ carries `status` events (auto, per transition) and `emit` events (the workflow a
 **Terminal runs stay readable.** The final snapshot persists to the store before the run drops from the live registry,
 so `status` / `GET /runs/:runId` **read through to the store** — a completed run reports its terminal status/context
 instead of `404`. (`GET /runs` stays live-only; history via `?all` is deferred.)
+
+**Run ids abbreviate to a unique prefix.** A run id is a bare uuid, so every id-taking verb takes a git-style short
+form: `j2 status 1a2b3c4d`. **Prefix only** — not fuzzy, not suffix — which keeps it an indexed range scan and keeps the
+mental model borrowed intact. Four characters is the floor, and that floor is about **noise, not safety**: a short
+prefix never resolves to the wrong run, it resolves to a list. Safety comes from ambiguity being an error — matching
+more than one id prints the candidates and fails (exit 1), never guesses. A malformed or too-short argument is a usage
+failure (exit 2); a full id short-circuits resolution entirely, so scripted pipelines issue unchanged traffic.
+
+**The CLI resolves; the addressed routes stay full-id.** Abbreviation is a human affordance and lives on the human
+surface — `GET /runs/resolve` answers prefix→ids, and the CLI then addresses the run by its full id. `/runs/:runId` and
+both event POSTs never accept a prefix, because **a prefix is not an identity**: one that resolves today goes ambiguous
+tomorrow when an unrelated run starts, and `j2 send <prefix> --event CANCEL` is a write. Resolving as a separate
+read-only step is what guarantees no write is ever prefix-sensitive. (It also gives a bad id a real error: `host.stop()`
+returns silently for an unknown run, so an unresolved CANCEL used to report success.)
+
+The candidate set is the ids that **exist**, not the ones that read: `lost` runs are included, because dropping them
+would let a prefix they share with a live run resolve silently to the live one. The set unions the live registry with
+the store — neither alone is complete, since `persist()` is microtask-scheduled (a just-started run is live before it is
+stored) and a settled run is stored but not live. Note the deliberate tension with `GET /runs`'s deferred `?all`: this
+route does reveal that settled run **ids** exist to an Instance-token holder. It answers ids only — no status, no
+context, no gates — to keep that widening as small as the feature allows, and it is Instance-only rather than open,
+since prefix probing on an open route would be a run-id enumeration oracle.
 
 **`j2 init` (v1).** Scaffolds the minimum runnable instance: `j2.config.ts` (root marker), `package.json` (deps on
 `@j2/*` + xstate), one starter `workflows/<name>.ts`, and `.gitignore` (`.j2/`, `.env`, `node_modules/`). `[dir]`

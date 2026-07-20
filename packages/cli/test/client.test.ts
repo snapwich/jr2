@@ -84,3 +84,17 @@ test("send() carries CANCEL, and surfaces the host's refusal of anything else", 
   await client.send(runId, { type: "CANCEL" });
   assert.ok(!(await client.list()).some((r) => r.runId === runId), "CANCEL abandons the run — it is no longer live");
 });
+
+test("candidates() returns the ids sharing a prefix, live and settled", async () => {
+  const { client, host, store } = await mkHarness();
+  const { runId } = await host.start("loop");
+  await store.save("cafe0001-0000-0000-0000-000000000000", {});
+  await store.save("cafe0002-0000-0000-0000-000000000000", {});
+
+  assert.deepEqual(await client.candidates(runId.slice(0, 8)), { runIds: [runId], truncated: false });
+  assert.deepEqual(await client.candidates("cafe"), {
+    runIds: ["cafe0001-0000-0000-0000-000000000000", "cafe0002-0000-0000-0000-000000000000"],
+    truncated: false,
+  });
+  assert.deepEqual((await client.candidates("zzzzzzzz")).runIds, []);
+});

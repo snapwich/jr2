@@ -42,6 +42,14 @@ import { observe, type RunHost } from "./run-host.ts";
  * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery, which is reserved, not built. */
 type RunEventBody = { type?: string };
 
+/** `GET /runs/resolve` floor — a 1-char prefix is a table scan, not a question. The CLI enforces
+ * the same floor on the argument; this one guards the scan regardless of who is calling. */
+const MIN_RUN_ID_PREFIX = 4;
+
+/** How many ambiguous candidates are worth showing. Proving ambiguity takes 2; letting the caller
+ * PICK is the point, so the listing goes deeper before it truncates. */
+const RESOLVE_LIMIT = 10;
+
 /** Read a request body as JSON, tolerating an empty body (→ {}) and malformed JSON (→ {}). */
 async function readJson(text: Promise<string>): Promise<Record<string, unknown>> {
   try {
@@ -234,6 +242,30 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
   app.get("/viz/:name", () => vizAsset("page.html", "text/html; charset=utf-8"));
 
   app.get("/runs", instanceOnly, (c) => c.json(host.list()));
+
+  // Abbreviated run ids (ADR-0009). Registered before `/runs/:runId` so "resolve" is never captured
+  // as a run id — the same guard the viz assets use above. The prefix rides in the query string
+  // because this is a search, not an address: `/runs/resolve/abc` would read like a run named
+  // "resolve". Resolution lives HERE and not on the addressed routes below, which stay full-id —
+  // a prefix that resolves today goes ambiguous tomorrow, and a write must never be prefix-sensitive.
+  //
+  // Ids ONLY, never RunStatus: it keeps the scan index-only, it matches what git prints for an
+  // ambiguous hash, and it holds down what this newly reveals — settled run ids are now visible to
+  // an Instance-token holder, which `GET /runs`'s deferred `?all` had withheld. Deliberately not on
+  // the open observation routes: prefix probing there would be a run-id enumeration oracle.
+  app.get("/runs/resolve", instanceOnly, async (c) => {
+    const prefix = c.req.query("prefix") ?? "";
+    if (prefix.length < MIN_RUN_ID_PREFIX) {
+      return c.json({ error: `prefix must be at least ${MIN_RUN_ID_PREFIX} characters` }, 400);
+    }
+    // Scan one past the cap so `truncated` is knowable without a second COUNT.
+    const found = await host.candidates(prefix, RESOLVE_LIMIT + 1);
+    return c.json({
+      prefix,
+      runIds: found.slice(0, RESOLVE_LIMIT),
+      truncated: found.length > RESOLVE_LIMIT,
+    });
+  });
 
   // Read-through (ADR-0009): a completed run's final status lives in the store after the registry
   // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404. The status
