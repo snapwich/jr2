@@ -33,6 +33,37 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
 const JSON_HEADERS = { "content-type": "application/json" };
 
+/** The prefix-resolution route. Named because `run-id.ts` matches on it to tell "no run by that
+ * prefix" apart from "this instance predates the route entirely" (ADR-0009). */
+export const RESOLVE_PATH = "/runs/resolve";
+
+/** What an orchestrator says it is (`GET /healthz`). Both fields are optional because an instance
+ * deployed before `/healthz` grew them answers a bare `{ ok: true }` — the absence is itself skew
+ * evidence, so it must not be an error. */
+export type InstanceIdentity = { version?: string; hash?: string };
+
+/**
+ * A non-2xx from the orchestrator, with the status code and path KEPT (ADR-0009). The bare `Error`
+ * this replaces flattened every failure to a message string, which made "unknown run" and "this
+ * instance has no such route" indistinguishable — the difference between a real 404 and version
+ * skew. Callers branch on `status`/`path`; `instance` is the best-effort identity probed at throw
+ * time, while the transport (a port-forward that the command's `finally` is about to close) is
+ * still open.
+ */
+export class J2HttpError extends Error {
+  readonly status: number;
+  readonly path: string;
+  readonly instance?: InstanceIdentity;
+
+  constructor(message: string, status: number, path: string, instance?: InstanceIdentity) {
+    super(message);
+    this.name = "J2HttpError";
+    this.status = status;
+    this.path = path;
+    this.instance = instance;
+  }
+}
+
 export class J2Client {
   readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
@@ -53,13 +84,13 @@ export class J2Client {
 
   /** `GET /workflows` — names of the registered workflows. */
   async workflows(): Promise<string[]> {
-    return (await this.json(await this.fetchImpl(`${this.baseUrl}/workflows`))) as string[];
+    return (await this.json(await this.fetchImpl(`${this.baseUrl}/workflows`), "/workflows")) as string[];
   }
 
   /** `GET /workflows/:name/machine` — the workflow's Machine as the visualizer DTO. */
   async machine(workflow: string): Promise<MachineDoc> {
     const res = await this.fetchImpl(`${this.baseUrl}/workflows/${encodeURIComponent(workflow)}/machine`);
-    return (await this.json(res)) as MachineDoc;
+    return (await this.json(res, "/workflows/:name/machine")) as MachineDoc;
   }
 
   /** `POST /workflows/:name/runs` — start a run; unknown workflow → 404 → throws. */
@@ -69,12 +100,13 @@ export class J2Client {
       headers: this.headers(JSON_HEADERS),
       body: JSON.stringify(input),
     });
-    return (await this.json(res)) as { runId: string; instanceId: string };
+    return (await this.json(res, "/workflows/:name/runs")) as { runId: string; instanceId: string };
   }
 
   /** `GET /runs` — every live run's status. */
   async list(): Promise<RunStatus[]> {
-    return (await this.json(await this.fetchImpl(`${this.baseUrl}/runs`, { headers: this.headers() }))) as RunStatus[];
+    const res = await this.fetchImpl(`${this.baseUrl}/runs`, { headers: this.headers() });
+    return (await this.json(res, "/runs")) as RunStatus[];
   }
 
   /** `GET /runs/resolve?prefix=` — run ids sharing a prefix, live and settled. The wire half of
@@ -83,7 +115,7 @@ export class J2Client {
     const res = await this.fetchImpl(`${this.baseUrl}/runs/resolve?prefix=${encodeURIComponent(prefix)}`, {
       headers: this.headers(),
     });
-    const body = (await this.json(res)) as { runIds: string[]; truncated: boolean };
+    const body = (await this.json(res, RESOLVE_PATH)) as { runIds: string[]; truncated: boolean };
     return { runIds: body.runIds, truncated: body.truncated };
   }
 
@@ -93,7 +125,7 @@ export class J2Client {
       headers: this.headers(),
     });
     if (res.status === 404) return undefined;
-    return (await this.json(res)) as RunStatus;
+    return (await this.json(res, "/runs/:runId")) as RunStatus;
   }
 
   /** `POST /runs/:runId/gates/:gate/events` — deliver a workflow-defined event to an open gate
@@ -104,7 +136,7 @@ export class J2Client {
       `${this.baseUrl}/runs/${encodeURIComponent(runId)}/gates/${encodeURIComponent(gate)}/events`,
       { method: "POST", headers: this.headers(JSON_HEADERS), body: JSON.stringify(event) },
     );
-    await this.json(res); // surface { error } as a throw; ignore the { ok:true } body
+    await this.json(res, "/runs/:runId/gates/:gate/events"); // surface { error }; ignore { ok:true }
   }
 
   /** `POST /runs/:runId/events` — feed one run-control event into a live run. */
@@ -114,7 +146,7 @@ export class J2Client {
       headers: this.headers(JSON_HEADERS),
       body: JSON.stringify(event),
     });
-    await this.json(res); // surface { error } as a throw; ignore the { ok:true } body
+    await this.json(res, "/runs/:runId/events"); // surface { error }; ignore { ok:true }
   }
 
   /**
@@ -126,7 +158,9 @@ export class J2Client {
     const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
       headers: this.headers({ accept: "text/event-stream" }),
     });
-    if (res.status === 404) throw new Error(`no run "${runId}"`);
+    if (res.status === 404) {
+      throw new J2HttpError(`no run "${runId}"`, 404, "/runs/:runId/events", await this.identify());
+    }
     if (!res.body) return;
     for await (const frame of parseSSE(res.body)) {
       if (frame.event === "emit") {
@@ -139,13 +173,31 @@ export class J2Client {
     }
   }
 
-  /** Parse a JSON response, turning a non-2xx `{ error }` body into a thrown Error. */
-  private async json(res: Response): Promise<unknown> {
+  /**
+   * `GET /healthz` — what this orchestrator says it is. Unauthenticated (it is the readiness probe),
+   * best-effort by contract: an unreachable or older instance answers `undefined`/`{}` rather than
+   * throwing, because this is only ever called to EXPLAIN another failure and must never replace it.
+   */
+  async identify(): Promise<InstanceIdentity | undefined> {
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/healthz`);
+      if (!res.ok) return undefined;
+      const body = (await res.json()) as InstanceIdentity;
+      return { version: body.version, hash: body.hash };
+    } catch {
+      return undefined; // the probe is a courtesy; its failure is not the user's error
+    }
+  }
+
+  /** Parse a JSON response, turning a non-2xx `{ error }` body into a thrown `J2HttpError`. */
+  private async json(res: Response, path: string): Promise<unknown> {
     const text = await res.text();
     const body = text ? JSON.parse(text) : undefined;
     if (!res.ok) {
       const message = (body as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`;
-      throw new Error(message);
+      // Probe HERE, not at the catch site: by the time the error reaches `cli.ts` the command's
+      // `finally` has closed the port-forward, and there is nothing left to ask.
+      throw new J2HttpError(message, res.status, path, await this.identify());
     }
     return body;
   }

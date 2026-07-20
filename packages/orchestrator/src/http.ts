@@ -37,6 +37,7 @@ import { streamSSE } from "hono/streaming";
 import { EventValidationError, UnknownAddressError } from "./registration.ts";
 import { mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
 import { observe, type RunHost } from "./run-host.ts";
+import { KIT_VERSION } from "./config.ts";
 
 /** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
  * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery, which is reserved, not built. */
@@ -141,7 +142,13 @@ export function createApp(host: RunHost, auth?: Authenticator): Hono<J2Env> {
     return next();
   };
 
-  app.get("/healthz", (c) => c.json({ ok: true }));
+  // Liveness, and the one place an instance says WHAT IT IS. Unauthenticated because it is the
+  // readiness probe's target and because identity is not run state — it is the same class of thing
+  // as the route table, which is public by being served. The CLI probes it to explain a failure it
+  // could otherwise only report as a bare status code (version skew reads as a nonsense 404).
+  // `hash` is the image's content address (ADR-0019), absent for a `j2 dev` process, which has no
+  // image to be addressed.
+  app.get("/healthz", (c) => c.json({ ok: true, version: KIT_VERSION, hash: process.env.J2_CONTENT_HASH }));
   app.get("/readyz", (c) => c.json({ ready: true }));
 
   // Structure, not state: the workflow listing, a template's Machine, and the visualizer page are

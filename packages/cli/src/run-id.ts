@@ -12,7 +12,7 @@
 // never resolves to the wrong run, only to a list. Four characters just keeps `j2 status a` from
 // printing the whole table.
 
-import type { J2Client } from "./client.ts";
+import { J2HttpError, RESOLVE_PATH, type InstanceIdentity, type J2Client } from "./client.ts";
 
 /** Below this, a prefix is a table scan rather than a question. Mirrors the orchestrator's guard. */
 const MIN_PREFIX = 4;
@@ -29,6 +29,22 @@ const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export type ResolvedRunId = { ok: true; runId: string } | { ok: false; code: 1 | 2; message: string };
 
 /**
+ * What to say when the deployed instance has no prefix-resolution route. Names the workaround
+ * (a full id short-circuits before any resolve traffic) AND the fix, in that order: the user is
+ * mid-task, and `j2 up` is a rollout they may not want this second.
+ */
+function skewMessage(given: string, instance?: InstanceIdentity): string {
+  const deployed = instance?.version
+    ? `deployed instance: ${instance.version}${instance.hash ? ` (${instance.hash})` : ""}`
+    : "the deployed instance predates it";
+  return [
+    `error: this instance does not support abbreviated run ids ("${given}")`,
+    `  ${deployed}`,
+    "  use the full run id, or run `j2 up` to converge the cluster to this kit",
+  ].join("\n");
+}
+
+/**
  * Turn a user-typed run id — full or abbreviated — into a full one. A full id short-circuits, so
  * scripted pipelines (`j2 run --detach | jq -r .runId` → `j2 status $id`) issue exactly the traffic
  * they issue today.
@@ -40,7 +56,21 @@ export async function resolveRunId(client: J2Client, given: string): Promise<Res
     return { ok: false, code: 2, message: `j2: run id "${given}" is too short (need ${MIN_PREFIX}+ characters)` };
   }
 
-  const { runIds, truncated } = await client.candidates(given);
+  let runIds: string[];
+  let truncated: boolean;
+  try {
+    ({ runIds, truncated } = await client.candidates(given));
+  } catch (err) {
+    // A 404 on `/runs/resolve` is unreachable on an instance that HAS the route — the route is
+    // static and answers `{ runIds: [] }` when nothing matches. So a 404 here means the request fell
+    // through to `/runs/:runId`, which captured the literal string "resolve" and 404'd naming it:
+    // this instance predates abbreviated run ids. Left uncaught, that reads as `no run "resolve"` —
+    // an error about a run the user never asked for.
+    if (err instanceof J2HttpError && err.status === 404 && err.path === RESOLVE_PATH) {
+      return { ok: false, code: 1, message: skewMessage(given, err.instance) };
+    }
+    throw err;
+  }
 
   if (runIds.length === 0) return { ok: false, code: 1, message: `no run "${given}"` };
   if (runIds.length === 1) return { ok: true, runId: runIds[0] as string };

@@ -216,6 +216,10 @@ export function instanceObjects(opts: {
                   // The entrypoint derives its own Service DNS + Sandbox namespace from these.
                   { name: "J2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
                   { name: "J2_REPOS_DIR", value: "/repos" },
+                  // What `/healthz` reports as this instance's identity. The same content address
+                  // the image tag carries (ADR-0019), in-process so a CLI can ask over HTTP
+                  // instead of needing kube access to read the Deployment's labels.
+                  { name: "J2_CONTENT_HASH", value: opts.hash },
                 ],
                 volumeMounts: [
                   { name: "state", mountPath: "/instance/.j2" },

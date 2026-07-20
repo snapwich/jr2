@@ -10,6 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
+import { KIT_VERSION } from "../src/config.ts";
 import { codingDef, gatedDef, mkStore, waitFor } from "./_fixtures.ts";
 
 /** A host + app pair with the `coding` workflow registered. */
@@ -25,11 +26,15 @@ const jsonPost = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-test("GET /healthz and /readyz report up", async () => {
+test("GET /healthz reports up AND what this instance is — the CLI's only skew signal", async () => {
   const { app } = await mkApp();
   const health = await app.request("/healthz");
   assert.equal(health.status, 200);
-  assert.deepEqual(await health.json(), { ok: true });
+  const body = (await health.json()) as { ok: boolean; version?: string; hash?: string };
+  assert.equal(body.ok, true);
+  assert.equal(body.version, KIT_VERSION);
+  // No image to be addressed by (this is the `j2 dev` shape), so no hash — and that is not an error.
+  assert.equal(body.hash, undefined);
 
   const ready = await app.request("/readyz");
   assert.equal(ready.status, 200);

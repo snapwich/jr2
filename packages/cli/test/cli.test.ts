@@ -126,6 +126,29 @@ test("an ambiguous prefix fails and lists the candidates", async () => {
   assert.equal(out(), "", "an unresolved id prints no result");
 });
 
+test("an instance predating /runs/resolve is reported as skew, not as a run named 'resolve'", async () => {
+  // The pre-a09b362 orchestrator: no static `/runs/resolve`, so the request falls through to
+  // `/runs/:runId`, which captures the literal "resolve" and 404s naming it. The CLI must not
+  // repeat that back — the user asked about "beef1234", not about a run called "resolve".
+  const { io, out, err } = mkIo({
+    env: { J2_URL: "http://test" },
+    fetch: (url) => {
+      if (String(url).includes("/healthz")) {
+        return Promise.resolve(Response.json({ ok: true, version: "0.0.9", hash: "c0ffee123456" }));
+      }
+      return Promise.resolve(Response.json({ error: 'no run "resolve"' }, { status: 404 }));
+    },
+  });
+
+  assert.equal(await main(["status", "beef1234"], io), 1);
+  assert.doesNotMatch(err(), /no run "resolve"/, "the old server's message must not be echoed verbatim");
+  assert.match(err(), /does not support abbreviated run ids/);
+  assert.match(err(), /beef1234/, "the id the user actually typed");
+  assert.match(err(), /0\.0\.9 \(c0ffee123456\)/, "what the deployed instance says it is");
+  assert.match(err(), /full run id|j2 up/, "a way out, before a rollout they may not want now");
+  assert.equal(out(), "", "an unresolved id prints no result");
+});
+
 test("a prefix under the floor is a usage error; an unmatched one is a runtime error", async () => {
   const { app } = await mkHarness();
   const mk = () =>

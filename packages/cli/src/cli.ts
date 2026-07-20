@@ -3,6 +3,7 @@
 // a command error becomes an `error: …` line on stderr + code 1. Codes: 0 ok, 1 runtime error, 2 usage.
 
 import { activity, defaultIo, type Io } from "./output.ts";
+import { J2HttpError } from "./client.ts";
 import { loadDotenv } from "./env.ts";
 import { init } from "./commands/init.ts";
 import { run } from "./commands/run.ts";
@@ -36,6 +37,25 @@ run ids: any <runId> above may be abbreviated to a unique prefix (4+ chars, git-
 
 global (run verbs): -n/--namespace <ns>, --context <ctx> address the deployment (ADR-0019);
                     --url <u> / J2_URL attaches to a specific orchestrator (skips kube entirely)`;
+
+/**
+ * The catch-all half of skew reporting: a route-shaped failure gets ONE extra line naming what the
+ * instance says it is. Deliberately not a diagnosis — `run-id.ts` diagnoses the one case we can
+ * prove, and this covers the routes nobody has thought to special-case yet.
+ *
+ * Scoped to 404/405 because those are the codes a MISSING route produces; a 400/401/403/409 is the
+ * instance understanding the request and refusing it, where naming the version would be noise. And
+ * it says nothing when the instance reports no version at all, since `j2 dev` — the common local
+ * case — legitimately has neither version nor hash to report.
+ */
+function skewNote(err: unknown): string | undefined {
+  if (!(err instanceof J2HttpError)) return undefined;
+  if (err.status !== 404 && err.status !== 405) return undefined;
+  const { version, hash } = err.instance ?? {};
+  if (!version) return undefined;
+  const id = hash ? `${version} (${hash})` : version;
+  return `  instance: ${id} — if it predates this CLI, \`j2 up\` converges the cluster to this kit`;
+}
 
 export async function main(argv: string[], io: Io = defaultIo): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -77,6 +97,8 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
     }
   } catch (err) {
     activity(io, `error: ${err instanceof Error ? err.message : String(err)}`);
+    const note = skewNote(err);
+    if (note) activity(io, note);
     return 1;
   }
 }

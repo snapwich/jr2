@@ -51,7 +51,7 @@ test("discovers workflows and serves the HTTP surface", async () => {
 
     const health = await fetch(`${inst.url}/healthz`, auth(inst));
     assert.equal(health.status, 200);
-    assert.deepEqual(await health.json(), { ok: true });
+    assert.equal(((await health.json()) as { ok: boolean }).ok, true);
 
     const workflows = await (await fetch(`${inst.url}/workflows`, auth(inst))).json();
     assert.deepEqual(workflows, ["echo"]);
