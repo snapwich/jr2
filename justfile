@@ -38,17 +38,19 @@ kind-down:
 harness_dev_image := "j2-harness-dev:local"
 adapter_image := "j2-adapter:local"
 
-# build the dev Harness image: the wire-compatible stub Harness + a scripted persona + git (@kind)
-harness-image:
+# Builds only — `e2e-kind-up` is what loads it onto the cluster, batched with the Adapter.
+# build the DEV stub Harness image (@kind): the wire-compatible stub + a scripted persona + git
+harness-image-dev:
     docker build -f deploy/harness-dev/Dockerfile -t {{ harness_dev_image }} .
 
 # build the Adapter image: the Agent's MCP surface, hosted in the Sandbox (ADR-0013)
 adapter-image:
     docker build -f deploy/adapter/Dockerfile -t {{ adapter_image }} .
 
-# build the STOCK Harness image (ADR-0018: definitions are injected at pod start — no
-# per-instance Harness image exists) and load it into kind (`sandbox.image` override territory)
-harness-image-stock:
+# ADR-0018: definitions are injected at pod start, so no per-instance Harness image exists;
+# `sandbox.image` override territory.
+# build the STOCK Harness image (what a real instance runs) and load it into kind
+harness-image:
     docker build -f deploy/harness/Dockerfile -t j2-harness:local .
     kind load docker-image j2-harness:local --name {{ cluster }}
 
@@ -56,7 +58,7 @@ harness-image-stock:
 
 # a VANILLA cluster + the locally built kit images. Nothing is instance-bound to the cluster
 # (ADR-0019): each @kind scenario `j2 up`s into a fresh namespace, operator included.
-e2e-kind-up: harness-image adapter-image
+e2e-kind-up: harness-image-dev adapter-image
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
     docker build -t j2-operator:local operator
     kind load docker-image {{ harness_dev_image }} --name {{ cluster }}

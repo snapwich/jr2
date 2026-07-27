@@ -13,7 +13,7 @@
 # hand-rolled JSON-RPC forgery would prove nothing about it.
 #
 # Build context is the REPO ROOT so the stub is copied from its one source of truth:
-#   docker build -f deploy/harness-dev/Dockerfile -t j2-harness-dev:local .   (`just harness-image`)
+#   docker build -f deploy/harness-dev/Dockerfile -t j2-harness-dev:local .   (`just harness-image-dev`)
 #
 # Two image-level contracts the operator's hardened pod imposes (ADR-0001):
 #   - runAsNonRoot with a NUMERIC uid — kubelet refuses a named USER ("cannot verify user is

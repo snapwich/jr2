@@ -17,7 +17,7 @@
 //     --from-literal=ANTHROPIC_API_KEY=...`) — `j2 up` preflights that it exists.
 //
 // The image overrides are kit-dev territory (nothing is published yet — ADR-0019): locally built
-// tags, `kind load`ed by `just harness-image-stock` / `just adapter-image` / `just e2e-kind-up`'s
+// tags, `kind load`ed by `just harness-image` / `just adapter-image` / `just e2e-kind-up`'s
 // operator build. Delete them once the published `<kitversion>` images exist.
 
 import { defineConfig } from "@j2/orchestrator";

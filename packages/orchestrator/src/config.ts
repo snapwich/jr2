@@ -40,7 +40,7 @@ export const KIT_VERSION = (
 
 /** The Harness image `sandbox.image` defaults to — the STOCK published image (ADR-0018): an
  * instance builds no Harness image; its definitions are injected at pod start. Kit dev overrides
- * with a locally built tag (`just harness-image`). */
+ * with a locally built tag (`just harness-image` — the @kind stub is `just harness-image-dev`). */
 export const DEFAULT_HARNESS_IMAGE = `j2-harness:${KIT_VERSION}`;
 
 /** The Adapter image `sandbox.adapterImage` defaults to — pinned the same way (ADR-0009/0019).

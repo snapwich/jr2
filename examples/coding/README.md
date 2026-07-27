@@ -43,7 +43,7 @@ just kind-up
 
 # 1. kit images (kit-dev only, until published <kitversion> images exist): the stock Harness
 #    (assembles agents/ at pod start — ADR-0018), the Adapter, and the operator.
-just harness-image-stock
+just harness-image
 just adapter-image
 kind load docker-image j2-adapter:local --name j2
 just operator-image
