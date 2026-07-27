@@ -4,6 +4,15 @@ Greenfield kit for agentic workflows as xstate machines. **Read [CONTEXT.md](./C
 [docs/adr/](./docs/adr/) before designing or naming anything** — terms in CONTEXT.md are deliberate and carry `Avoid:`
 lists; match them in code, comments, and commits.
 
+## Judging a change
+
+j2 is greenfield. Nothing currently runs in production. Therefore:
+
+- Do not argue from impact, adoption, or "blast radius". These are zero for every change, so they separate nothing.
+- Judge a change by the design: does it agree with [CONTEXT.md](./CONTEXT.md) and the [ADRs](./docs/adr/)? Does it make
+  the next decision easier or harder? Is the name correct?
+- A wrong design costs more here than in a mature codebase, because everything written later builds on it.
+
 ## Testing strategy (ADR-0010)
 
 Three tiers. **Unit/integration:** `node --test` per package, in-process + socket-free (`pnpm -r test`). **E2e:**
