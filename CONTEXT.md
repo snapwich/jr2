@@ -66,6 +66,12 @@ persists `(name, instance id)` + stream offset host-side to re-attach after an O
 invocations get fresh ids by default (the lossy handoff); continuing a conversation is opt-in. Borrowed verbatim from
 flue rather than renamed, to keep j2 and flue speaking the same language. _Avoid_: conversation id, session id
 
+**Turn**: One Agent's answer to the frame a Machine state set for it — the prompt, the work, and the single menu pick
+that ends it (ADR-0006). A turn belongs to the state that asked for it: when that state stops waiting, the turn is over,
+whatever made it stop (ADR-0024). It rides on one flue submission but is not the same thing — a submission is flue's
+durable unit, and an Agent whose turn has ended can still be generating, which is the failure ADR-0024 closes. _Avoid_:
+session (a conversation spans turns), generation, request
+
 **Source**: The generalized port a Pool draws work items from — "next item, excluding these", plus an optional wake
 signal and a re-query cadence. A queue, a generator, or a re-queried set; a Work Source is one Source adapter. _Avoid_:
 queue (one possible backing, and Sources are not FIFO), feed

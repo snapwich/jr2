@@ -50,8 +50,15 @@ jr's most deliberate design decision is the **lossy handoff** — every relaunch
 the notes and the code, never the prior agent's conversation. That is the default: each `agentRun` invocation is a new
 conversation. `session: "continue"` + `scope` opts into flue same-instance-id continuation: the iid derives from
 `(run, enclosing child id, agent, scope)`; the per-invocation prompt lands as the next user turn; the tool menu still
-re-derives from the invoking state (one conversation can travel across states); invoking a `continue` iid that is
-already live fails loudly (flue lease-fences per iid). Mid-turn restore re-attaches the in-flight turn in both modes —
-`session` governs only what a _new invocation_ means. `scope` is the one place conversation identity legitimately needs
-a consumer word; it is not conventioned away. (This corrects `examples/coding/`'s "same iid = jr's resume machinery,
-free" — an inversion of jr's actual semantics.)
+re-derives from the invoking state (one conversation can travel across states). Mid-turn restore re-attaches the
+in-flight turn in both modes — `session` governs only what a _new invocation_ means. `scope` is the one place
+conversation identity legitimately needs a consumer word; it is not conventioned away. (This corrects
+`examples/coding/`'s "same iid = jr's resume machinery, free" — an inversion of jr's actual semantics.)
+
+**Corrected 2026-07-27 ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)).** This section
+originally claimed that "invoking a `continue` iid that is already live fails loudly (flue lease-fences per iid)". It
+does not. flue **queues**: prompts for one instance enter one persisted per-instance queue processed in accepted order,
+and a submission is promoted only when it is the first unsettled one for that session. flue's lease governs process
+ownership for crash recovery, not admission. The consequence is the opposite of what was written — a `continue`
+invocation onto a live iid does not fail, it waits behind work that may never finish — which is why ADR-0024 both ends
+the turn and orders the abort ahead of the next `send`.
