@@ -5,6 +5,7 @@
   "description": "The stock Harness image's flue project skeleton (ADR-0018): deps + toolchain baked at image build; agents are injected at pod start by boot.mjs. The @flue pin MUST match the orchestrator's @flue/sdk — bumping the flue wire is a kit change, never an instance chore.",
   "dependencies": {
     "@flue/runtime": "1.0.0-beta.9",
+    "@flue/sdk": "1.0.0-beta.9",
     "hono": "^4.12.27"
   },
   "devDependencies": {

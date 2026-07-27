@@ -71,6 +71,7 @@ import {
   type McpServerConnection,
 } from "@flue/runtime";
 import { local } from "@flue/runtime/node";
+import { createFlueClient, type FlueConversationPart } from "@flue/sdk";
 ${description}
 // Expose over HTTP so the orchestrator can address this agent. The pod is the trust boundary
 // (only the orchestrator can reach the Harness port), so the route admits without extra auth.
@@ -91,9 +92,88 @@ function definition(): { model: string; instructions: string; cwd: string; think
   return { model, instructions: def.instructions ?? "", cwd: def.cwd ?? "/work", thinkingLevel: def.thinkingLevel };
 }
 
+// ADR-0023: the Harness prints the conversation, and \`kubectl logs\` reads it. Reasoning only —
+// prompts, assistant text, thinking, and tool calls with TRUNCATED inputs. A tool part's \`output\`
+// is never read: that is a boundary (ADR-0023, and the ADR-0014 exception it takes), not an
+// unfinished implementation. Truncation is load-bearing too — kubelet rotates at 10Mi and drops
+// the remainder, so an untruncated turn loses its own beginning.
+const AGENT = ${name};
+
+/** jr's filter, reproduced: a path for Write/Edit/Read, 100 chars of a command, 150 of anything. */
+function renderToolInput(toolName: string, input: unknown): string {
+  const arg = (input ?? {}) as Record<string, unknown>;
+  const bare = toolName.replace(/^mcp__[^_]*__/, "");
+  const path = arg.file_path ?? arg.path;
+  if (/^(write|edit|read)$/i.test(bare) && typeof path === "string") return path;
+  if (/^bash$/i.test(bare)) return String(arg.command ?? "").slice(0, 100);
+  return JSON.stringify(input ?? null).slice(0, 150);
+}
+
+/** One conversation part → one labelled line body, or undefined for what does not print. */
+function renderPart(role: string, part: FlueConversationPart): string | undefined {
+  if (part.type === "text") {
+    // Deltas are best-effort live progress; a completed part is authoritative, and a log line is
+    // atomic — so a part prints once, when it is done.
+    return part.state === "done" ? \`\${role === "user" ? "[prompt]" : "[text]"} \${part.text}\` : undefined;
+  }
+  if (part.type === "reasoning") return part.state === "done" ? \`[thinking] \${part.text}\` : undefined;
+  if (part.type === "dynamic-tool") return \`[\${part.toolName}] \${renderToolInput(part.toolName, part.input)}\`;
+  return undefined; // \`file\` parts are content, not reasoning.
+}
+
 // flue re-runs the initializer per submission and offers no disposal hook, so each new connection
 // retires the previous one — bounding the leak to ONE open connection instead of one per turn.
 let previous: McpServerConnection | undefined;
+// The same hazard, the same idiom — with one difference forced by the API: observe() replays the
+// conversation from the start, so re-subscribing per submission would re-print every earlier turn.
+// An unchanged iid therefore REUSES its watch, and only a new one retires the old.
+let watching: { id: string; close(): void } | undefined;
+
+function watchConversation(id: string): void {
+  if (watching?.id === id) return;
+  const conversation = createFlueClient({
+    baseUrl: \`http://127.0.0.1:\${process.env.PORT ?? "8080"}\`,
+  }).agents.observe(AGENT, id, { live: "sse" });
+  watching?.close();
+  watching = { id, close: () => conversation.close() };
+
+  // The watch is opened from the initializer, which runs BEFORE the submission it belongs to has
+  // created the conversation — so the first read 404s and the SDK parks on \`absent\`, terminally:
+  // it does not retry, and 404 is not an error, so an unrefreshed watch is silent forever. Refresh
+  // until the conversation materializes, then stop.
+  let attempts = 0;
+  const chase = () => {
+    if (watching?.id !== id) return; // retired
+    const { phase, error } = conversation.getSnapshot();
+    if (phase === "error") console.error(\`[\${AGENT}] [\${id}] conversation stream error: \${error?.message ?? error}\`);
+    if (phase !== "absent") return;
+    if (++attempts > 40) {
+      console.error(\`[\${AGENT}] [\${id}] conversation never materialized after \${attempts} refreshes — not watching\`);
+      return;
+    }
+    conversation.refresh();
+    setTimeout(chase, 500).unref?.();
+  };
+  setTimeout(chase, 250).unref?.();
+
+  const printed = new Set<string>();
+  conversation.subscribe(() => {
+    chase();
+    for (const message of conversation.getSnapshot().conversation?.messages ?? []) {
+      message.parts.forEach((part, i) => {
+        const key = \`\${message.id}#\${i}\`;
+        if (printed.has(key)) return;
+        const body = renderPart(message.role, part);
+        if (body === undefined) return; // still streaming — it will be offered again when done.
+        printed.add(key);
+        // The Agent name alone: a minted iid is \`<runId>/<actor path>/<agent>/<suffix>\` (ADR-0015),
+        // and the runId is constant for a pod while the rest mostly restates the name. The
+        // diagnostics below still carry it, since those are rare and need addressing.
+        for (const line of body.split("\\n")) console.log(\`[\${AGENT}] \${line}\`);
+      });
+    }
+  });
+}
 
 export default defineFlueAgent(async ({ id }) => {
   const adapter = process.env.J2_ADAPTER_URL;
@@ -105,6 +185,13 @@ export default defineFlueAgent(async ({ id }) => {
   const j2 = await connectMcpServer("j2", { url: \`\${adapter}/mcp/\${encodeURIComponent(id)}\` });
   void previous?.close().catch(() => {});
   previous = j2;
+  // Watching is observability, never a precondition for working: a failed subscription costs the
+  // pod log, not the turn.
+  try {
+    watchConversation(id);
+  } catch (err) {
+    console.error(\`[\${AGENT}] [\${id}] conversation not watchable: \${err instanceof Error ? err.message : err}\`);
+  }
   const def = definition();
   return {
     model: def.model,
