@@ -51,8 +51,16 @@ re-lists) per submission while a j2 menu only changes at turn boundaries, no `li
   POST /agents/:iid/events             → validate + deliver → { deliveryId }      [Sandbox token]
   ```
 
+  The receipt grew in [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md):
+  `{ delivered, event, turnComplete, deliveryId }`, rendered as prose by the Adapter. `deliveryId` is unchanged and
+  still the room a deferred result will need.
+
   The Adapter renders `/agents/:iid/surface` as `tools/list` and a `tools/call` as `POST …/events`. Lookup, validation,
   delivery, and lifecycle stay implemented once, in the table.
+
+  An iid with no live registration used to make the Adapter's `/mcp/:iid` answer 404. It now serves an **empty menu**
+  ([ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)) — the Harness re-connects after the turn ends, so the
+  refusal fired on every successful turn. The Orchestrator's own `GET /agents/:iid/surface` above is unchanged.
 
 - **Bearer tokens, because the boundary is otherwise theater.** The Harness container shares the pod's network
   namespace, so an Agent can `curl` the Orchestrator directly; a per-pod NetworkPolicy cannot distinguish it from the

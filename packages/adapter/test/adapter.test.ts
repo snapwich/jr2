@@ -4,7 +4,7 @@
 //
 //   - `tools/list` IS the turn's surface (nothing else can be called);
 //   - `tools/call` becomes one authenticated delivery, and the receipt comes back;
-//   - a settled turn has no menu, rather than a stale one;
+//   - a settled turn has an EMPTY menu rather than a stale one, and picking against it still fails;
 //   - the Sandbox token is on every request (the Agent's own container has no such thing);
 //   - a `deferred`/`poll` event is REFUSED, not degraded to a fire-and-forget tool.
 
@@ -129,18 +129,26 @@ test("the receipt reads as PROSE, because that is what a model acts on (ADR-0024
   }
 });
 
-test("a settled turn has no menu — the Agent is told its turn is over, not served a stale one", async () => {
-  const adapter = await startAdapter({ orchestrator: fakeOrchestrator(undefined).client, port: 0 });
+test("a settled turn has an EMPTY menu, not a stale one and not an error (ADR-0026)", async () => {
+  const { client, close } = await connect(fakeOrchestrator(undefined).client, "iid-gone");
   try {
-    const res = await fetch(`${adapter.url}/mcp/iid-gone`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    });
-    assert.equal(res.status, 404);
-    assert.match(((await res.json()) as { error: string }).error, /no live surface/);
+    // The turn is over, so there is nothing to call. That is a complete answer, and the Harness
+    // re-initializing after the turn (to write flue's abort advisory) gets it without an error —
+    // which is the whole point: a 404 here fired on every SUCCESSFUL turn.
+    assert.deepEqual((await client.listTools()).tools, []);
   } finally {
-    await adapter.close();
+    await close();
+  }
+});
+
+test("picking against a settled turn fails — an empty menu is not a permissive one", async () => {
+  const { client, close } = await connect(fakeOrchestrator(undefined).client, "iid-gone");
+  try {
+    // Acting is where the claim actually matters, and it is still refused. The surface path went
+    // quiet (ADR-0026); this one did not.
+    await assert.rejects(client.callTool({ name: "request_review", arguments: { summary: "late" } }));
+  } finally {
+    await close();
   }
 });
 

@@ -26,7 +26,7 @@
 
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 /** One event on an agent's live surface, as the Orchestrator serves it. */
 export type SurfaceEvent = {
@@ -52,7 +52,13 @@ export type DeliveryReceipt = {
   deliveryId: string;
 };
 
-/** No live registration for this iid: the state exited, or the run settled. Not a menu — an end. */
+/**
+ * No live registration for this iid: the state exited, or the run settled.
+ *
+ * On the DELIVERY path this is the whole point — an Agent that picks against a turn nobody is
+ * waiting on must be told so. On the SURFACE path it is not an error at all (ADR-0026): a turn
+ * that is over has an empty menu, and `serverForTurn` swallows this to serve one.
+ */
 export class NoSurfaceError extends Error {}
 
 export type OrchestratorOptions = {
@@ -112,10 +118,26 @@ export class OrchestratorClient {
  * that outlives the state. The Agent cannot call what the Machine did not offer, and the
  * Orchestrator re-validates the payload on delivery anyway (the registration table owns that; the
  * Adapter is a translator, not a gatekeeper).
+ *
+ * A turn that is OVER gets an empty server, not an error (ADR-0026). This used to be an HTTP 404,
+ * on the reasoning that "no menu" and "an empty menu" are different claims. They are — but the
+ * distinction was not worth what it cost: the Harness re-initializes after the turn ends (to write
+ * flue's own abort advisory), so the 404 fired on EVERY successful turn and logged an error every
+ * time. A signal that cries wolf on the happy path cannot also be the alarm. Nothing real is lost:
+ * with no tools registered, a `tools/call` is an unknown tool, and an Agent that picks against a
+ * dead turn still fails loudly on the delivery path, where the claim is actually about acting.
  */
 export async function serverForTurn(client: OrchestratorClient, instanceId: string): Promise<McpServer> {
-  const surface = await client.surface(instanceId);
-  const server = new McpServer({ name: "j2-adapter", version: "0.0.0" });
+  // `tools` is declared up front because the empty turn below has to answer `tools/list` without
+  // ever registering a tool, and the SDK gates that handler on the capability.
+  const server = new McpServer({ name: "j2-adapter", version: "0.0.0" }, { capabilities: { tools: {} } });
+  const surface = await liveSurface(client, instanceId);
+  if (!surface) {
+    // The SDK installs `tools/list` as a side effect of the first `registerTool`, and this turn
+    // has none — so answer it here. An empty list is the truth; "method not found" would not be.
+    server.server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: [] }));
+    return server;
+  }
 
   for (const event of surface.accepts) {
     if (event.semantics !== "ack") {
@@ -140,6 +162,16 @@ export async function serverForTurn(client: OrchestratorClient, instanceId: stri
     );
   }
   return server;
+}
+
+/** This turn's menu, or `undefined` when the turn is over — the empty-menu rule above. */
+async function liveSurface(client: OrchestratorClient, instanceId: string): Promise<Surface | undefined> {
+  try {
+    return await client.surface(instanceId);
+  } catch (err) {
+    if (err instanceof NoSurfaceError) return undefined;
+    throw err;
+  }
 }
 
 /**

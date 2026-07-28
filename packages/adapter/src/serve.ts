@@ -6,11 +6,17 @@
 // between turns: the menu belongs to the invoking state, and the Harness re-connects per submission
 // (flue's `defineAgent` initializer re-runs, and `connectMcpServer` lists at connect). So "which
 // turn is live" is answered by the Agent's own connection, every time.
+//
+// An iid with no live surface is answered, not refused (ADR-0026): `serverForTurn` serves an empty
+// menu. The only 404 left here is the one this file owns — an unrouted path. That matters on this
+// endpoint specifically, because 404 is not a free status code in Streamable HTTP: it is how a
+// server says "your session expired, reinitialize", so spending it on "your turn is over" was
+// overloading a transport signal with an application one.
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { NoSurfaceError, OrchestratorClient, serverForTurn } from "./adapter.ts";
+import { type OrchestratorClient, serverForTurn } from "./adapter.ts";
 
 export type AdapterOptions = {
   orchestrator: OrchestratorClient;
@@ -49,7 +55,7 @@ export async function startAdapter(opts: AdapterOptions): Promise<RunningAdapter
       void (async () => {
         try {
           // Build THIS turn's server from the Orchestrator's live registration. A settled run or an
-          // exited state has no surface — the Agent's turn is simply over, and it is told so.
+          // exited state has no surface, which serves as an empty menu — there is nothing to call.
           const mcp = await serverForTurn(opts.orchestrator, instanceId);
           const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
           res.on("close", () => {
@@ -60,8 +66,9 @@ export async function startAdapter(opts: AdapterOptions): Promise<RunningAdapter
           await transport.handleRequest(req, res, body ? (JSON.parse(body) as unknown) : undefined);
         } catch (err) {
           if (res.headersSent) return;
-          const status = err instanceof NoSurfaceError ? 404 : 500;
-          res.writeHead(status, { "content-type": "application/json" });
+          // Everything that reaches here is a genuine fault (the Orchestrator is unreachable, or
+          // the turn declared an event the Adapter refuses to serve). A turn being over is not one.
+          res.writeHead(500, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
         }
       })();
