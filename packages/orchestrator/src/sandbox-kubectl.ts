@@ -297,9 +297,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     },
 
     async attach(req) {
-      const { script, workdir, repos } = attachScript(req.spec, { reposMount: "/repos", workRoot });
+      const { script, workdir, repos, review } = attachScript(req.spec, { reposMount: "/repos", workRoot });
       await exec(["exec", `pod/${req.name}`, ...base, "-c", "harness", "--", "sh", "-ec", script]);
-      return { workdir, repos };
+      return { workdir, repos, ...(review ? { review } : {}) };
     },
 
     leaseIntervalMs,
@@ -339,13 +339,15 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
  * The post-Ready attach step as one idempotent in-pod script (ADR-0004): per repo, a pod-local
  * `git clone --shared --no-checkout` borrowing objects from the RO `default/` volume, then the
  * branch worktree as a sibling (gwtmux layout: `<repo>/default/` + `<repo>/<branch>/`).
+ * With a `reviewSha`, also the detached review worktree (ADR-0028) — another sibling.
  * Exported for the port's tests; the workflow never sees it.
  */
 export function attachScript(
   spec: WorkspaceSpec,
   paths: { reposMount: string; workRoot: string },
-): { script: string; workdir: string; repos: Record<string, string> } {
+): { script: string; workdir: string; repos: Record<string, string>; review?: Record<string, string> } {
   const repos: Record<string, string> = {};
+  const review: Record<string, string> = {};
   // The RO repos volume is written by the ORCHESTRATOR's uid and read here as the Harness's
   // unprivileged uid (ADR-0001/0004), so git's dubious-ownership guard would refuse the clone
   // source. safe.directory is only honored from global/system config (never `-c`), and inside
@@ -361,10 +363,29 @@ export function attachScript(
       `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared --no-checkout ${sq(`${paths.reposMount}/${repo.name}/default`)} ${sq(dflt)}`,
       `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.baseRef)}`,
     );
+    if (spec.reviewSha) {
+      // The reviewer's seat (ADR-0028): a DETACHED HEAD at the sha under review, so a rogue write
+      // cannot move the branch and a rogue commit evaporates with the checkout. Forced checkout
+      // AND clean on every attach: a previous round's rogue edits (tracked) and leftovers
+      // (untracked) must not survive into this round — the review worktree's contents are the
+      // sha under review, period.
+      const reviewDir = `${worktree}-review`;
+      review[repo.name] = reviewDir;
+      lines.push(
+        `[ -d ${sq(reviewDir)} ] || git -C ${sq(dflt)} worktree add --detach ${sq(reviewDir)} ${sq(spec.reviewSha)}`,
+        `git -C ${sq(reviewDir)} checkout --detach -f ${sq(spec.reviewSha)}`,
+        `git -C ${sq(reviewDir)} clean -fd`,
+      );
+    }
   }
   const first = spec.repos[0];
   if (!first) throw new Error("workspace spec has no repos — nothing to attach");
-  return { script: lines.join("\n"), workdir: repos[first.name]!, repos };
+  return {
+    script: lines.join("\n"),
+    workdir: repos[first.name]!,
+    repos,
+    ...(spec.reviewSha ? { review } : {}),
+  };
 }
 
 /** POSIX single-quote an argument for the in-pod `sh -ec` script. */

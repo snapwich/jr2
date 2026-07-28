@@ -23,19 +23,16 @@ import type { AgentDefinition } from "./spec.ts";
  * same cwd directly. */
 export type WorkingTool = AgentHarnessTool<ExecutionToolContext>;
 
-/** `AgentDefinition` + the ADR-0028 `access` field, typed locally until the field lands on the
- * Orchestrator's definition (a later phase — nothing outside this package changes). */
-export type WorkingToolsDefinition = AgentDefinition & { access?: "write" | "read" };
-
 /** Output bound for grep/glob — a search that would flood the context truncates, loudly. */
 const MAX_LINES = 200;
 
 /**
  * The Working tools for one definition, rooted at the resolved cwd. Full set (default
  * `access: "write"`): read, write, edit, bash, grep, glob. `access: "read"` withholds write and
- * edit (ADR-0028).
+ * edit (ADR-0028) — the field is the definition's own (`spec.ts`, mirroring the Orchestrator's
+ * `AgentDefinition`).
  */
-export function workingToolsFor(definition: WorkingToolsDefinition, cwd: string): WorkingTool[] {
+export function workingToolsFor(definition: AgentDefinition, cwd: string): WorkingTool[] {
   const search: WorkingTool[] = [grepTool(cwd), globTool(cwd)];
   if (definition.access === "read") return [createReadTool(), createBashTool(), ...search];
   return [createReadTool(), createWriteTool(), createEditTool(), createBashTool(), ...search];

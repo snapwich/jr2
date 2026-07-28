@@ -299,12 +299,55 @@ test("attach execs the idempotent ADR-0004 script in the harness container", asy
   assert.match(script, /^git config --global safe\.directory '\*'/, "trusts the pod's j2-owned paths first");
 });
 
+test("attachScript with a reviewSha adds the detached review worktree beside every branch worktree", () => {
+  // ADR-0028: the reviewer's seat — `<branchDir>-review`, DETACHED at the sha under review, so a
+  // rogue write cannot move the branch and a rogue commit evaporates with the checkout.
+  const { script, review } = attachScript(
+    {
+      repos: [
+        { name: "app", baseRef: "main" },
+        { name: "infra", baseRef: "v2" },
+      ],
+      branch: "feat/login",
+      reviewSha: "abc123",
+    },
+    { reposMount: "/repos", workRoot: "/work" },
+  );
+  assert.deepEqual(review, { app: "/work/app/feat-login-review", infra: "/work/infra/feat-login-review" });
+  assert.match(script, /worktree add --detach '\/work\/app\/feat-login-review' 'abc123'/);
+  assert.match(script, /worktree add --detach '\/work\/infra\/feat-login-review' 'abc123'/);
+  assert.match(
+    script,
+    /\[ -d '\/work\/app\/feat-login-review' \] \|\| git -C '\/work\/app\/default' worktree add --detach/,
+    "the add is guarded (idempotent re-run)",
+  );
+  // Forced checkout AND clean on EVERY attach: a previous round's rogue edits (tracked) and
+  // leftovers (untracked) must not survive into this round's review worktree.
+  assert.match(script, /git -C '\/work\/app\/feat-login-review' checkout --detach -f 'abc123'/);
+  assert.match(script, /git -C '\/work\/app\/feat-login-review' clean -fd/);
+});
+
+test("attachScript without a reviewSha emits no review worktree", () => {
+  const { script, review } = attachScript(
+    { repos: [{ name: "app", baseRef: "main" }], branch: "b" },
+    { reposMount: "/repos", workRoot: "/work" },
+  );
+  assert.equal(review, undefined);
+  assert.doesNotMatch(script, /--detach/);
+  assert.doesNotMatch(script, /-review/);
+});
+
 test("attachScript quotes hostile refs and rejects an empty repo list", () => {
   const { script } = attachScript(
     { repos: [{ name: "app", baseRef: "main; rm -rf /" }], branch: "b" },
     { reposMount: "/repos", workRoot: "/work" },
   );
   assert.match(script, /-b 'b' 'main; rm -rf \/'/, "ref rides inside single quotes, never bare");
+  const reviewed = attachScript(
+    { repos: [{ name: "app", baseRef: "main" }], branch: "b", reviewSha: "$(reboot)" },
+    { reposMount: "/repos", workRoot: "/work" },
+  );
+  assert.match(reviewed.script, /worktree add --detach '\/work\/app\/b-review' '\$\(reboot\)'/, "the sha too");
   assert.throws(
     () => attachScript({ repos: [], branch: "b" }, { reposMount: "/repos", workRoot: "/work" }),
     /no repos/,

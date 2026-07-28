@@ -24,6 +24,8 @@ export type AmbientHandles = {
   workdir: string;
   repos: Record<string, string>;
   branch: string;
+  /** Detached review-worktree paths, when the spec carried `reviewSha` (ADR-0028). */
+  review?: Record<string, string>;
 };
 
 const byRef = new WeakMap<AnyActorRef, AmbientHandles>();

@@ -260,7 +260,109 @@ When(
   },
 );
 
+/**
+ * The detached review worktree (ADR-0028), attached the way the attach step will: the same
+ * idempotent script lines `attachScript` emits with a `reviewSha`, exec'd in the Harness
+ * container. Played from here rather than through a workflow because the Workspace-port verb
+ * that requests it per review round is a later phase — what this tier pins is the containment
+ * property of the worktree itself, on a real pod with the real shared clone.
+ */
+When(
+  "a detached review worktree is attached for repo {string} at the head of branch {string}",
+  async function (this: E2EWorld, repo: string, branch: string): Promise<void> {
+    await waitForAttached(this); // attach is post-Ready — the branch worktree must exist first
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const dflt = `/work/${repo}/default`;
+    const review = `/work/${repo}/${branch}-review`;
+    this.branchHeadBefore = (
+      await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "git", "-C", dflt, "rev-parse", branch])
+    ).trim();
+    this.reviewDir = review;
+    const script = [
+      `[ -d '${review}' ] || git -C '${dflt}' worktree add --detach '${review}' '${this.branchHeadBefore}'`,
+      `[ "$(git -C '${review}' rev-parse HEAD)" = "$(git -C '${dflt}' rev-parse '${this.branchHeadBefore}^{commit}')" ]` +
+        ` || git -C '${review}' checkout --detach -f '${this.branchHeadBefore}'`,
+    ].join("\n");
+    await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script]);
+  },
+);
+
+/** The rogue reviewer, run for real (ADR-0028's incident): a write, then a commit — from the
+ * review worktree, where both must land on the detached HEAD and nowhere else. */
+When("the review worktree gets a write probe and a commit", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.reviewDir, "the review worktree was attached in a prior step");
+  const pod = (await waitForReadySandbox(this)).metadata.name;
+  const script = [
+    `cd '${this.reviewDir}'`,
+    `echo rogue > probe.txt`,
+    `git add probe.txt`,
+    `git -c user.email=probe@j2 -c user.name=probe commit -m 'rogue probe'`,
+  ].join("\n");
+  await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script]);
+});
+
 // --- then ----------------------------------------------------------------------------------------
+
+Then(
+  "the branch ref of repo {string} branch {string} is unmoved",
+  async function (this: E2EWorld, repo: string, branch: string): Promise<void> {
+    assert.ok(this.branchHeadBefore, "the branch head was captured when the review worktree was attached");
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const head = (
+      await kubectl(this, [
+        "exec",
+        `pod/${pod}`,
+        "-c",
+        "harness",
+        "--",
+        "git",
+        "-C",
+        `/work/${repo}/default`,
+        "rev-parse",
+        branch,
+      ])
+    ).trim();
+    assert.equal(
+      head,
+      this.branchHeadBefore,
+      "the rogue commit landed on a detached HEAD, never the branch (ADR-0028)",
+    );
+  },
+);
+
+Then(
+  "the coder's worktree for repo {string} branch {string} is untouched",
+  async function (this: E2EWorld, repo: string, branch: string): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const worktree = `/work/${repo}/${branch}`;
+    // Both halves of "untouched": nothing dirtied (status is empty) and the probe never appeared —
+    // the write stayed inside the review worktree's own checkout.
+    const status = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "git",
+      "-C",
+      worktree,
+      "status",
+      "--porcelain",
+    ]);
+    assert.equal(status.trim(), "", "the coder's worktree stayed clean (ADR-0028)");
+    const probe = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "sh",
+      "-ec",
+      `[ ! -e '${worktree}/probe.txt' ] && echo absent`,
+    ]);
+    assert.equal(probe.trim(), "absent", "the probe file never reached the coder's worktree");
+  },
+);
 
 Then("the run's Sandbox becomes Ready", async function (this: E2EWorld): Promise<void> {
   const sandbox = await waitForReadySandbox(this);

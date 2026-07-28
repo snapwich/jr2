@@ -110,3 +110,22 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's body is in "parked"
       And the Harness reports 4 of the Agent's turns settled as "aborted"
       And the run's Sandbox is still there
+
+  Rule: a write from the review worktree cannot reach the branch or the coder's worktree
+    ADR-0028. The tool layer (`access: "read"`) states intent and stops the honest path; the
+    detached review worktree is the containment. It sits beside the branch worktree at the sha
+    under review with a DETACHED HEAD, so a rogue write cannot move the branch and a rogue commit
+    lands on a detached HEAD — it evaporates with the checkout.
+
+    Scenario: a write probe and a commit from the review worktree leave the branch untouched
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
+      # The same idempotent lines attachScript emits (ADR-0028), played in the pod. The Workspace
+      # -port verb that requests this per review round is a later, workflow-driven change; what
+      # this scenario pins is the containment property those lines buy.
+      When a detached review worktree is attached for repo "app" at the head of branch "feat-e2e"
+      And the review worktree gets a write probe and a commit
+      Then the branch ref of repo "app" branch "feat-e2e" is unmoved
+      And the coder's worktree for repo "app" branch "feat-e2e" is untouched

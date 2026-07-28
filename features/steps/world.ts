@@ -56,6 +56,11 @@ export class E2EWorld {
   endpointBefore?: string;
   /** @kind: stdout of the last command run INSIDE a Sandbox container (ADR-0013 boundary probes). */
   podSays?: string;
+  /** @kind: the branch head sha captured when the review worktree was attached — the ref the
+   * ADR-0028 containment scenario asserts unmoved after the rogue commit. */
+  branchHeadBefore?: string;
+  /** @kind: the detached review worktree's in-pod path (ADR-0028), carried between steps. */
+  reviewDir?: string;
 
   /** @kind: the scenario's fresh namespace — set = kind mode (runCli appends `-n`, no J2_URL). */
   kindNamespace?: string;

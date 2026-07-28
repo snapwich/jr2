@@ -37,6 +37,11 @@ const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
 export type WorkspaceSpec = {
   repos: Array<{ name: string; baseRef: string }>;
   branch: string;
+  /** Attach the detached review worktree at this sha (ADR-0028): `<branchDir>-review`, a sibling
+   * of the branch worktree, forced to exactly this sha on every attach. Creation-time seat only;
+   * the per-round refresh verb (the sha moves between review rounds) is a later, workflow-driven
+   * change. */
+  reviewSha?: string;
 };
 
 /**
@@ -51,6 +56,9 @@ export type WorkspaceHandles = {
   /** Every attached repo's branch-worktree path, by repo name. */
   repos: Record<string, string>;
   branch: string;
+  /** Detached review-worktree paths by repo name (ADR-0028) — present only when the spec carried
+   * `reviewSha`. The reviewer's seat: hand one of these as its cwd/prompt frame. */
+  review?: Record<string, string>;
 };
 
 /**
@@ -76,8 +84,12 @@ export interface SandboxPort {
    * will hold this workspace to. */
   provision(req: { name: string; runId: string; workflow: string }): Promise<{ endpoint: string; identity?: string }>;
   /** Post-Ready attach (ADR-0004): per repo, `git clone --shared --no-checkout` from the RO
-   * `default/` volume, then a branch worktree sibling. Resolves with the worktree paths. */
-  attach(req: { name: string; spec: WorkspaceSpec }): Promise<{ workdir: string; repos: Record<string, string> }>;
+   * `default/` volume, then a branch worktree sibling — and, with `spec.reviewSha`, the detached
+   * review worktree (ADR-0028). Resolves with the worktree paths. */
+  attach(req: {
+    name: string;
+    spec: WorkspaceSpec;
+  }): Promise<{ workdir: string; repos: Record<string, string>; review?: Record<string, string> }>;
   /**
    * Renew this workspace's keepalive lease AND report what the renewal found — one exchange,
    * because it is one question: is the thing I am keeping alive still the thing I attached to?
@@ -177,6 +189,8 @@ function assertSpec(spec: WorkspaceSpec): void {
       if (typeof r?.baseRef !== "string" || !r.baseRef)
         bad.push(`repos[${i}].baseRef (got ${JSON.stringify(r?.baseRef)})`);
     });
+  if (spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
+    bad.push(`reviewSha (got ${JSON.stringify(spec?.reviewSha)})`);
   if (bad.length) {
     throw new Error(
       `workspace spec invalid: ${bad.join("; ")} — the spec derives from run input; does ` +
@@ -198,9 +212,11 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     },
   );
 
-  const attach = fromPromise<{ workdir: string; repos: Record<string, string> }, { wsId: string; spec: WorkspaceSpec }>(
-    async ({ input, system }) =>
-      sandboxOf(system).attach({ name: workspaceName(runBindingOf(system).runId, input.wsId), spec: input.spec }),
+  const attach = fromPromise<
+    { workdir: string; repos: Record<string, string>; review?: Record<string, string> },
+    { wsId: string; spec: WorkspaceSpec }
+  >(async ({ input, system }) =>
+    sandboxOf(system).attach({ name: workspaceName(runBindingOf(system).runId, input.wsId), spec: input.spec }),
   );
 
   // The ambient registrar (ADR-0016): publishes this wrapper's handles for the parent-chain
@@ -304,7 +320,11 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
             actions: assign({
               handles: ({ context, event, system }): MechanismHandles => {
                 const ctx = context as WsContext;
-                const out = (event as unknown as { output: { workdir: string; repos: Record<string, string> } }).output;
+                const out = (
+                  event as unknown as {
+                    output: { workdir: string; repos: Record<string, string>; review?: Record<string, string> };
+                  }
+                ).output;
                 return {
                   endpoint: ctx.endpoint!,
                   // Derived, not remembered: the same function every port operation names the CR
@@ -315,6 +335,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
                   workdir: out.workdir,
                   repos: out.repos,
                   branch: ctx.spec.branch,
+                  ...(out.review ? { review: out.review } : {}),
                 };
               },
             }),
@@ -334,9 +355,12 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
             src: body,
             input: ({ context }) => {
               const ctx = context as unknown as WsContext;
-              const { workdir, repos, branch } = ctx.handles!;
+              const { workdir, repos, branch, review } = ctx.handles!;
               // Body-facing subset only (ADR-0016): endpoint/sandbox are mechanism-internal.
-              return { ...ctx.runInput, workspace: { workdir, repos, branch } satisfies WorkspaceHandles };
+              return {
+                ...ctx.runInput,
+                workspace: { workdir, repos, branch, ...(review ? { review } : {}) } satisfies WorkspaceHandles,
+              };
             },
             onDone: {
               target: "teardown",

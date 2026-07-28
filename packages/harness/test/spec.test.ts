@@ -50,7 +50,7 @@ test("resolveDefinition: definition.model wins over harness.model; defaults appl
   const spec: AgentsSpec = {
     agents: [
       { name: "coder", definition: { instructions: "code", model: "anthropic/claude-x", thinkingLevel: "high" } },
-      { name: "reviewer", definition: { instructions: "review", cwd: "/elsewhere" } },
+      { name: "reviewer", definition: { instructions: "review", cwd: "/elsewhere", access: "read" } },
     ],
     harness: { model: "vllm/q" },
   };
@@ -58,12 +58,16 @@ test("resolveDefinition: definition.model wins over harness.model; defaults appl
     model: "anthropic/claude-x",
     instructions: "code",
     cwd: "/work",
+    access: "write",
     thinkingLevel: "high",
   });
+  // `access` carries through resolution (ADR-0028) — it is the field the Working-tool assembly
+  // filters by, so dropping it here would silently hand a reviewer the write/edit tools.
   assert.deepEqual(resolveDefinition(spec, "reviewer"), {
     model: "vllm/q",
     instructions: "review",
     cwd: "/elsewhere",
+    access: "read",
   });
 });
 

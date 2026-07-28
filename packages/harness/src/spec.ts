@@ -20,6 +20,9 @@ export type AgentDefinition = {
   cwd?: string;
   /** Reasoning effort. Omitted → the runtime's default. */
   thinkingLevel?: ThinkingLevel;
+  /** What the Agent may DO to the Workspace (ADR-0028): `"read"` withholds write/edit from the
+   * Working tools. Default `"write"`. */
+  access?: "write" | "read";
 };
 
 /** Token limits for one model — properties of the MODEL, not the endpoint. */
@@ -53,12 +56,14 @@ export type AgentsSpec = {
   harness?: HarnessSpec;
 };
 
-/** One definition with its per-Submission resolution applied: the model default and the `/work`
- * cwd default are resolved here, so a turn works from concrete values. */
+/** One definition with its per-Submission resolution applied: the model default, the `/work`
+ * cwd default, and the `"write"` access default (ADR-0028) are resolved here, so a turn works
+ * from concrete values. */
 export type ResolvedDefinition = {
   model: string;
   instructions: string;
   cwd: string;
+  access: "write" | "read";
   thinkingLevel?: ThinkingLevel;
 };
 
@@ -122,6 +127,7 @@ export function resolveDefinition(spec: AgentsSpec, name: string): ResolvedDefin
     model,
     instructions: def.instructions,
     cwd: def.cwd ?? "/work",
+    access: def.access ?? "write",
     ...(def.thinkingLevel ? { thinkingLevel: def.thinkingLevel } : {}),
   };
 }
