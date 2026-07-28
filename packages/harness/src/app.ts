@@ -1,0 +1,116 @@
+// The Harness wire, served (ADR-0027): the five endpoints, shaped byte-for-byte on the stub
+// Harness (`packages/orchestrator/src/stub-harness.ts`, the normative model) with the one
+// documented divergence — a GET (either view) on an unknown conversation is 404. POST creates
+// (that is admission), abort answers `{ aborted: false }`: the stub is inert by design, but a
+// real Harness that answered a lost conversation with silence would park a re-attached wait
+// forever. Turn execution is injected, so this module owns routing alone — wire tests drive it
+// socket-free via `app.request()` and never touch pi.
+
+import { Hono } from "hono";
+import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
+import type { AgentsSpec } from "./spec.ts";
+import {
+  LIVE_LONG_POLL,
+  STREAM_NEXT_OFFSET_HEADER,
+  STREAM_UP_TO_DATE_HEADER,
+  VIEW_HISTORY,
+  type HistoryMessage,
+} from "./wire.ts";
+
+/** One conversation's identity and stream seam, as the app hands it to the turn factory. */
+export type ConversationSeat = {
+  agentName: string;
+  instanceId: string;
+  /** The Conversation's `appendMessage` — how the turn puts completed messages on the stream. */
+  appendMessage: (message: HistoryMessage) => void;
+};
+
+export type HarnessAppDeps = {
+  spec: AgentsSpec;
+  /** Build the turn executor for one conversation — `turn.ts`'s `runSubmissionFor` in
+   * production (`main.ts` composes it), a stub in wire tests. */
+  runSubmissionFor: (seat: ConversationSeat) => RunSubmission;
+  /** How long a live long-poll parks before 204 "nothing yet". Default 25s (the stub's
+   * cadence); short in tests. */
+  longPollMs?: number;
+};
+
+/** The five wire routes over a map of Conversations, created on POST (admission creates). */
+export function harnessApp(deps: HarnessAppDeps): Hono {
+  const longPollMs = deps.longPollMs ?? 25_000;
+  // Keyed on encoded parts: iids are hierarchical (slashes — ADR-0015), so a raw `/` join
+  // could collide two conversations.
+  const conversations = new Map<string, Conversation>();
+  const key = (agentName: string, instanceId: string) =>
+    `${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
+
+  const app = new Hono();
+
+  app.post("/agents/:name/:id", async (c) => {
+    const agentName = c.req.param("name");
+    const instanceId = c.req.param("id");
+    let conversation = conversations.get(key(agentName, instanceId));
+    if (!conversation) {
+      if (!deps.spec.agents.some((a) => a.name === agentName)) {
+        return c.json(
+          { error: `agent "${agentName}" is not in the mounted spec — no definition to serve (ADR-0018)` },
+          404,
+        );
+      }
+      // The seam is circular by nature — the turn appends to the Conversation that pumps it —
+      // so the closure reads the binding the next statement fills.
+      let created: Conversation;
+      const run = deps.runSubmissionFor({
+        agentName,
+        instanceId,
+        appendMessage: (message) => created.appendMessage(message),
+      });
+      created = new Conversation(agentName, instanceId, run);
+      conversation = created;
+      conversations.set(key(agentName, instanceId), conversation);
+    }
+    const body = (await c.req.json().catch(() => undefined)) as { message?: unknown } | undefined;
+    const admission = conversation.admit(typeof body?.message === "string" ? body.message : "");
+    // The Conversation mints a relative streamUrl; the wire's is absolute (the stub's shape).
+    return c.json({ ...admission, streamUrl: `${new URL(c.req.url).origin}${admission.streamUrl}` });
+  });
+
+  app.get("/agents/:name/:id", async (c) => {
+    const conversation = conversations.get(key(c.req.param("name"), c.req.param("id")));
+    if (!conversation) {
+      return c.json(
+        { error: `no conversation "${c.req.param("id")}" for agent "${c.req.param("name")}" — POST admits (ADR-0027)` },
+        404,
+      );
+    }
+    if (c.req.query("view") === VIEW_HISTORY) return c.json(conversation.historyView());
+    const offset = c.req.query("offset") ?? "0";
+    if (c.req.query("live") === LIVE_LONG_POLL) {
+      const view = await conversation.waitForEvent(offset, longPollMs);
+      if (view.events.length === 0) return c.body(null, 204, streamHeaders(view));
+      return c.json(view.events, 200, streamHeaders(view));
+    }
+    const view = conversation.updatesView(offset);
+    return c.json(view.events, 200, streamHeaders(view));
+  });
+
+  app.post("/agents/:name/:id/abort", (c) => {
+    const conversation = conversations.get(key(c.req.param("name"), c.req.param("id")));
+    return c.json(conversation ? conversation.abort() : { aborted: false });
+  });
+
+  // Registered after the handlers, so only methods the wire does not speak land here (the
+  // stub's 405). Not on the abort path: the stub answers a GET there 404, and so does this.
+  app.all("/agents/:name/:id", (c) => c.json({ error: `harness: ${c.req.method} not supported` }, 405));
+
+  app.notFound((c) => c.json({ error: `harness: no route ${new URL(c.req.url).pathname}` }, 404));
+
+  return app;
+}
+
+function streamHeaders(view: UpdatesView): Record<string, string> {
+  return {
+    [STREAM_NEXT_OFFSET_HEADER]: view.nextOffset,
+    [STREAM_UP_TO_DATE_HEADER]: String(view.upToDate),
+  };
+}

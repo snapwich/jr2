@@ -1,0 +1,24 @@
+{
+  "name": "@j2/harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./wire": "./src/wire.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.82.1",
+    "@earendil-works/pi-ai": "0.82.1",
+    "@hono/node-server": "^2.0.6",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "hono": "^4.12.27"
+  },
+  "devDependencies": {
+    "@j2/adapter": "workspace:*",
+    "@types/node": "^26.0.1"
+  }
+}
