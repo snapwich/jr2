@@ -1,7 +1,7 @@
 # j2
 
 A kit for building agentic workflows modeled as [xstate](https://stately.ai/docs) state machines. Provides composable,
-xstate-compatible pieces (an Actor backed by a flue client, worktree creation, memory, etc.) that you assemble into a
+xstate-compatible pieces (an Actor backed by a Harness client, worktree creation, memory, etc.) that you assemble into a
 Machine for any workflow — coding or otherwise. The feature/task coding flow is one example Machine, not the
 architecture. Agents run in isolated pods (host-level sandbox), coordinated by an Orchestrator running a Machine, on
 Kubernetes (kind locally).
@@ -21,10 +21,9 @@ _writer_ (no split-brain on the snapshot), not one workflow per process — one 
 many runs, fed by both Sources (pull) and the HTTP API (push). _Avoid_: runner, engine
 
 **Instance**: A user-owned folder scaffolded by `j2 init` — `j2.config.ts` + discovered `workflows/` and `agents/`
-directories + manifests (mirroring flue's `flue.config.ts` + `agents/`). `j2 up` bakes the engine + the instance's
-workflows into one image and converges the target cluster; this folder is the deployed Orchestrator. A deployment
-assembly, not a sharing unit — reusable workflows/agents travel as npm packages (ADR-0019). _Avoid_: workspace
-(collides), project
+directories + manifests. `j2 up` bakes the engine + the instance's workflows into one image and converges the target
+cluster; this folder is the deployed Orchestrator. A deployment assembly, not a sharing unit — reusable workflows/agents
+travel as npm packages (ADR-0019). _Avoid_: workspace (collides), project
 
 **j2 CLI**: The `j2` binary — the primary interface to an Instance (`init`, `up`, `run`, status). Operates on the
 current `kubectl` context, argo/cilium-style; users reach for the CLI far more than the raw HTTP API; the CLI sits on
@@ -33,44 +32,62 @@ top of that API. _Avoid_: cli tool
 **j2 Application**: An Instance under GitOps — its manifests deploy the Orchestrator plus config and secrets. The same
 folder runs on kind locally and on a real cluster. _Avoid_: deployment
 
-**Actor**: An xstate actor inside a Machine that drives a remote worker via a flue client. The local handle in the
+**Actor**: An xstate actor inside a Machine that drives a remote worker via a Harness client. The local handle in the
 Orchestrator; the compute is remote. _Avoid_: agent actor
 
-**Agent**: A configured worker persona — model + instructions + tools (e.g. coder, reviewer). What a user customizes: a
-plain-data definition in the instance's `agents/<name>.ts` (filename = Agent name, mirroring `workflows/`); j2 maps it
-onto a flue agent definition when it assembles the Harness image (ADR-0018). _Avoid_: role, persona
+**Agent**: A configured worker persona — model + instructions + Working tools + access (e.g. coder, reviewer). What a
+user customizes: a plain-data definition in the instance's `agents/<name>.ts` (filename = Agent name, mirroring
+`workflows/`); the Harness runs the definition directly (ADR-0018, ADR-0027). _Avoid_: role, persona
 
 **Sandbox**: The isolated pod that gives an Agent a host-level sandbox plus its own filesystem. The primary motivation
 for the Kubernetes architecture — agents must not share host resources (ports, filesystem, process space). _Avoid_:
 worker pod, container
 
-**Harness**: Flue's long-running server process running inside a Sandbox. Hosts one or more Agents and serves them over
-HTTP. Runs in its own container (the j2-owned Harness container) alongside the user container, carrying the agent's own
-toolchain since `local()` tools execute there. _Avoid_: flue agent, server
+**Harness**: j2's own long-running server (`@j2/harness`, the `j2-harness:<ver>` image) running inside a Sandbox. Hosts
+the instance's Agents over the Harness wire (ADR-0027) and executes their Working tools. Runs in its own container
+alongside the user container, carrying the agent's own toolchain since Working tools execute there. _Avoid_: flue agent,
+server, `local()`
 
-**Adapter**: The j2-owned sidecar container in a Sandbox that serves the current turn's tool menu to the Agent over MCP
-and forwards the Agent's picks to the Orchestrator as Gate deliveries. The Agent's only control-plane peer is this
-process on `localhost`; it never speaks to the Orchestrator. A separate container from the Harness _because_ `local()`
-tools give the Agent code execution there — so the Orchestrator credential lives where the Agent cannot read it. In
-Orchestrator terms it is the MCP dialect adapter, relocated into the Sandbox. _Avoid_: shim, proxy, sidecar (that's its
-deployment shape, not what it is), MCP server
+**Adapter**: The j2-owned sidecar container in a Sandbox that serves the current turn's Menu to the Agent over MCP and
+forwards the Agent's picks to the Orchestrator as Gate deliveries. The Agent's only control-plane peer is this process
+on `localhost`; it never speaks to the Orchestrator. A separate container from the Harness _because_ Working tools give
+the Agent code execution there — so the Orchestrator credential lives where the Agent cannot read it. In Orchestrator
+terms it is the MCP dialect adapter, relocated into the Sandbox. _Avoid_: shim, proxy, sidecar (that's its deployment
+shape, not what it is), MCP server
 
 **User Container**: The user-owned container in a Sandbox pod — a customizable image (nvim, dotfiles, extra CLIs) that
 the human `exec`/SSH-es into to work alongside the agent. Shares the worktree volume with the Harness container, so
 human and agent see identical files. A peer of the Harness container; the pod (not the container) is the isolation unit
 — ADR-0005. _Avoid_: workbench, workspace container (collides with Workspace), dev container
 
-**Instance ID**: Flue's identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id`. Successive
-prompts to the same `(Agent name, instance id)` continue one durable, replayable conversation; j2 computes ids and
-persists `(name, instance id)` + stream offset host-side to re-attach after an Orchestrator restart. New agent
-invocations get fresh ids by default (the lossy handoff); continuing a conversation is opt-in. Borrowed verbatim from
-flue rather than renamed, to keep j2 and flue speaking the same language. _Avoid_: conversation id, session id
+**Instance ID**: The identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id` on the Harness
+wire. Successive prompts to the same `(Agent name, instance id)` continue one conversation; j2 computes ids and persists
+`(name, instance id)` + stream offset host-side to re-attach after an Orchestrator restart. New agent invocations get
+fresh ids by default (the lossy handoff); continuing a conversation is opt-in. _Avoid_: conversation id, session id
 
 **Turn**: One Agent's answer to the frame a Machine state set for it — the prompt, the work, and the single menu pick
 that ends it (ADR-0006). A turn belongs to the state that asked for it: when that state stops waiting, the turn is over,
-whatever made it stop (ADR-0024). It rides on one flue submission but is not the same thing — a submission is flue's
+whatever made it stop (ADR-0024). It rides on one Submission but is not the same thing — a Submission is the Harness's
 durable unit, and an Agent whose turn has ended can still be generating, which is the failure ADR-0024 closes. _Avoid_:
 session (a conversation spans turns), generation, request
+
+**Submission**: One admitted prompt on a conversation — the Harness's unit of work. A Turn rides on exactly one; a
+conversation (Instance ID) spans many. Per-conversation queue, processed in admission order; an abort sweeps the active
+Submission and everything queued behind it (ADR-0024, ADR-0027). _Avoid_: request, job
+
+**Admission**: The Harness's acceptance of a Submission — the serializable `{streamUrl, offset, submissionId}` handle
+the host persists in its ledger beside the snapshot (ADR-0016), and the coordinate a restarted Orchestrator re-attaches
+by (ADR-0007). _Avoid_: handle, ticket
+
+**Settlement**: How a Submission ends — `completed`, `failed`, or `aborted`. What the history view reports and the tests
+assert; j2 deliberately never observes the settlement of a turn it aborted (ADR-0024). _Avoid_: result, status
+
+**Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), served by
+the Adapter over MCP. What the Agent may **say**. _Avoid_: tools (unqualified), tool list
+
+**Working tools**: The file and shell tools (read, write, edit, bash, grep, glob) the Harness executes in its own
+container — what the Agent may **do**; filtered by the definition's `access` (ADR-0028). _Avoid_: tools (unqualified),
+sandbox tools
 
 **Source**: The generalized port a Pool draws work items from — "next item, excluding these", plus an optional wake
 signal and a re-query cadence. A queue, a generator, or a re-queried set; a Work Source is one Source adapter. _Avoid_:
