@@ -70,6 +70,13 @@ e2e-kind-up: harness-image-dev adapter-image
 e2e-kind:
     pnpm --filter @j2/e2e test:e2e:kind
 
+# --- flue wire-contract tier (ADR-0010; no infra, ~2s) ---
+
+# check what the REAL flue runtime does at the pinned version, with a scripted fake provider.
+# Opt-in because it owns the @flue pin and builds a flue app; run it before bumping that pin.
+flue-contract:
+    pnpm --filter @j2/flue-contract test:contract
+
 # render the operator install manifest shipped inside the npm package (ADR-0019; check in the result)
 operator-manifest:
     kubectl kustomize operator/config/default > packages/cli/manifests/operator.yaml

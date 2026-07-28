@@ -31,6 +31,17 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   the product's own path (ADR-0019): one shared vanilla kind cluster, locally built kit images, then **`j2 up` per
   scenario into a fresh namespace** — namespace-as-identity makes the scenario the isolation unit here too, so nothing
   is instance-bound to the cluster and `--parallel` is bounded only by cluster capacity.
+- **An opt-in `flue-contract` tier for the Harness's own runtime** (added with
+  [ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)). The three tiers above all reach flue through the **stub
+  Harness**, which is a hand-written model of flue's _wire_ — it holds no conversation, so it can report a turn settled
+  `aborted` without ever having had a turn to settle. That is the right fixture for testing j2, and it is blind by
+  construction to what the real runtime keeps, drops, or sends onward. `./flue-contract/` (`@j2/flue-contract`) runs the
+  **real flue node server at the pinned version**, built by flue's own CLI, against a **scripted fake provider** — so a
+  turn's shape (where it stalls, what it half-emits) is chosen by the test rather than by a model. The witness is the
+  message array the provider receives on the _next_ turn, which is the only place these claims are visible. Opt-in for
+  one reason: it owns the `@flue` pin, which must match `packages/orchestrator/harness/package.json`. **Run it before
+  bumping that pin** — one test deliberately asserts a defect we are waiting on flue to fix, so it fails, loudly and on
+  purpose, the day the fix lands. No docker, no cluster, ~2 s.
 - **A workspace package, not a bare folder.** `./features/` is `@j2/e2e` so it owns its own `xstate` (+ cucumber)
   dependency: a scaffolded instance's `workflows/*.ts` `import "xstate"`, resolved by walking up from the temp dir, and
   the repo root has no `xstate`. The package's `node_modules` satisfies it. It is top-level (not under `packages/cli/`)

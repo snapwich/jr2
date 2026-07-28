@@ -10,3 +10,7 @@ packages:
   # The @kind tier's shared instance (ADR-0010): a workspace member so `j2 up`'s image build can
   # `pnpm deploy` it; scenarios isolate by namespace, not by folder.
   - features/kind-instance
+  # The flue wire-contract tier (ADR-0010/0026): the REAL flue runtime at the pinned version,
+  # driven by a scripted fake provider. A package because it owns the @flue pin — which must match
+  # `packages/orchestrator/harness/package.json`, since that is the claim it checks.
+  - flue-contract
