@@ -79,7 +79,34 @@ test("one conversation, two turns: the abort is ordered ahead of the next turn's
   await waitFor(() => host.status(runId) === undefined);
 });
 
-test("stop() leaves the submissions alive, because restore re-attaches to them (ADR-0007/0024)", async () => {
+test("CANCEL ends the run: its Agents' turns end, and it does not come back (ADR-0025)", async () => {
+  const store = await mkStore();
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store });
+  host.register(codingDef(clients));
+  const { runId, instanceId } = await host.start("coding");
+  await waitFor(() => clients.get(instanceId)!.admits.length === 1);
+
+  await host.cancel(runId);
+
+  // The human said abandon, so the Agent stops being asked and stops answering (ADR-0024).
+  assert.deepEqual(clients.get(instanceId)!.aborts, [{ agentName: "coder", instanceId }]);
+  assert.equal(host.status(runId), undefined, "gone from the live registry");
+  assert.equal(host.agentSurface(instanceId), undefined, "and its surface went with it");
+
+  // Terminal in the store: `read` reports how it ended, keeping where it was when it did…
+  const read = await host.read(runId);
+  assert.equal(read?.status, "cancelled");
+  assert.deepEqual(read?.value, { active: "running" });
+
+  // …and a restore leaves it alone. Ending the turns and refusing to restore are ONE decision:
+  // a cancelled run that came back would re-attach to submissions that settled `aborted`.
+  const second = new RunHost({ store });
+  second.register(codingDef(new Map()));
+  assert.deepEqual(await second.restore(), { reattached: [], lost: [] });
+});
+
+test("stop() is the other verb: no abort, and the run restores (ADR-0007/0025)", async () => {
   const store = await mkStore();
   const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store });

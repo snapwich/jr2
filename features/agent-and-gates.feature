@@ -49,3 +49,19 @@ Feature: Agents and gates drive a run from outside
       When I deliver "reject" to gate "review-1"
       Then the delivery is refused naming the accepted events
       And the run's status shows state "humanReview"
+
+  Rule: CANCEL ends a run, and ending it ends its Agents' turns
+    ADR-0025. `j2 send --event CANCEL` is the human saying "abandon this". It is not a park: the
+    run settles `cancelled` rather than staying restorable, and the Agent it was waiting on stops
+    being asked — and stops answering.
+
+    Scenario: cancelling a live run settles it and ends the turn it was waiting on
+      Given a fresh instance
+      And the instance also has the "review" workflow
+      And the orchestrator is serving
+      And I start the "review" workflow against the stub harness
+      Then the agent's surface offers exactly "request_review"
+      When I cancel the run
+      Then the run's status shows "cancelled"
+      And the agent's surface is gone
+      And the stub Harness reports the Agent's turn settled as "aborted"

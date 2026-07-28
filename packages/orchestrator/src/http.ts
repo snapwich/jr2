@@ -483,6 +483,10 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // Run control (ADR-0002). CANCEL is the only event left on this seam: APPROVE and STEER answered
   // held `deferred` calls and drained `poll` inboxes, and ADR-0013 reserves both semantics without
   // building them. Workflow-defined events reach a run through its GATES, not through here.
+  //
+  // It ENDS the run (ADR-0025): the Agents' turns end with it and the run does not come back on
+  // the next restore. `RunHost.stop()` — park it, keep it restorable — is a different verb, and
+  // deliberately not on the wire.
   app.post("/runs/:runId/events", instanceOnly, async (c) => {
     const runId = c.req.param("runId");
     const body = (await readJson(c.req.text())) as RunEventBody;
@@ -490,7 +494,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       return c.json({ error: `unknown event type "${body.type ?? ""}" (accepts: CANCEL)` }, 400);
     }
     try {
-      await host.stop(runId);
+      await host.cancel(runId);
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: errMessage(err) }, 404);

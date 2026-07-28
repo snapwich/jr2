@@ -84,6 +84,11 @@ When(
   },
 );
 
+When("I cancel the run", async function (this: E2EWorld): Promise<void> {
+  const r = await this.runCli(["send", this.runId!, "--event", "CANCEL"]);
+  assert.equal(r.code, 0, `j2 send CANCEL failed: ${r.stderr}`);
+});
+
 When("I deliver {string} to gate {string}", async function (this: E2EWorld, type: string, gate: string) {
   const res = await fetch(`${this.server?.url}/runs/${this.runId}/gates/${gate}/events`, {
     method: "POST",

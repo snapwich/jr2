@@ -554,7 +554,10 @@ export class RunHost {
       runId,
       workflow: blob.workflow,
       instanceId: blob.instanceId,
-      status: snap.status ?? stored.status,
+      // The STORE row is the authority on the run's lifecycle, the snapshot on the Machine's: a
+      // cancelled run's actor reports xstate's "stopped", which is mechanism, not an outcome
+      // (ADR-0025). While the row still says "live", the Machine's own status is the answer.
+      status: stored.status === "live" ? (snap.status ?? stored.status) : stored.status,
       value: snap.value,
       context: snap.context,
       children: runChildren(snap), // the persisted `children` map — same tree, off the store
@@ -609,10 +612,16 @@ export class RunHost {
   }
 
   /**
-   * TEARDOWN: stop hosting a run in this process, leaving it RESTORABLE (ADR-0007). The run keeps
-   * its stored status "live", so the next `restore()` picks it up where it left off — which is why
-   * this is ADR-0024's one exception: the Agents' submissions must stay alive for that re-attach,
-   * and the actor cannot infer "the host did this", so the binding is told before the stop.
+   * TEARDOWN: stop hosting a run in this process, leaving it RESTORABLE (ADR-0007/0025). The run
+   * keeps its stored status "live", so the next `restore()` picks it up where it left off — which
+   * is why this is ADR-0024's one exception: the Agents' submissions must stay alive for that
+   * re-attach, and the actor cannot infer "the host did this", so the binding is told before the
+   * stop.
+   *
+   * This is NOT the user's CANCEL — that is {@link cancel}, which ends the work. Nothing in a
+   * deployed Orchestrator calls this today (process shutdown stops no actors: `instance.ts` ends
+   * observation and nothing else); it is the teardown primitive, and the seam an orchestrator
+   * restart is simulated through.
    */
   async stop(runId: string): Promise<void> {
     const run = this.runs.get(runId);
@@ -625,6 +634,25 @@ export class RunHost {
     this.announceGone(run);
     run.actor.stop();
     this.untrack(run.record);
+  }
+
+  /**
+   * CANCEL: the human's "abandon this run" (`j2 send <run> --event CANCEL` — ADR-0025). It ends
+   * the work rather than parking it: stopping the actor with no `hostStopping` flag ends every
+   * live `agentRun` invocation, and each one ends its Agent's turn remotely (ADR-0024). The run
+   * is then persisted TERMINAL, so `restore()` leaves it alone and `read()` reports how it ended.
+   *
+   * Ending the turns and refusing to restore are one decision, not two: a cancelled run that came
+   * back would re-attach to submissions that settled `aborted`, and `settle`'s rejection would
+   * fault a run whose Agents were stopped on purpose.
+   */
+  async cancel(runId: string): Promise<void> {
+    const run = this.runs.get(runId);
+    if (!run) return;
+    run.actor.stop();
+    // Persist AFTER the stop: the snapshot is final, and `persist` fans out the last status,
+    // announces `gone`, and untracks — the same terminal path a run that settled on its own takes.
+    this.persist(run, "cancelled");
   }
 
   /** Feed a run's final word to both granularities: where it ended, then that it is gone. */
@@ -766,8 +794,14 @@ export class RunHost {
     this.runs.delete(record.runId);
   }
 
-  /** Persist the run's snapshot after a transition; drop it from the registry once final. */
-  private persist(run: LiveRun): void {
+  /**
+   * Persist the run's snapshot after a transition; drop it from the registry once final.
+   *
+   * `terminal` is the run-lifecycle verdict the MACHINE cannot supply: `cancel()` passes
+   * "cancelled", because xstate only knows its actor was stopped (ADR-0025). It is the stored
+   * status and the one the feeds report.
+   */
+  private persist(run: LiveRun, terminal?: string): void {
     const snapshot = run.actor.getPersistedSnapshot();
     const machineStatus = (snapshot as { status?: string }).status ?? "active";
     const serialized = serializeSnapshot(snapshot, {
@@ -781,7 +815,7 @@ export class RunHost {
       agents: run.agents,
       fault: run.fault,
     };
-    const status = machineStatus === "active" ? "live" : machineStatus;
+    const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
     void this.store.save(run.record.runId, blob, status);
 
     // Feed per-run observers (SSE/CLI watch). On the terminal transition emit the final status
@@ -790,7 +824,7 @@ export class RunHost {
     // Persistence rides the INSPECTION stream (see `spawn`), which fires on a child's transitions
     // too — so this frame lands on child movement, and its `children` tree carries the new state.
     // That is the entire live half of the visualizer's child diagrams: no extra subscription.
-    const runStatus = this.liveStatus(run);
+    const runStatus = terminal ? { ...this.liveStatus(run), status: terminal } : this.liveStatus(run);
     for (const listener of run.listeners) listener({ kind: "status", status: runStatus });
 
     if (status !== "live") {

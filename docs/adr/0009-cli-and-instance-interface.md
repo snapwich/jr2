@@ -89,7 +89,9 @@ GET  /healthz   GET /readyz
 Gates are the human/webhook/CI seam (ADR-0011): a gated state registers `{ gate, accepts, meta }`; `GET /runs/:runId`
 lists the open gates (with schemas + `meta`), and the gate POST validates the body against the named event schema and
 delivers it into that state. Per-gate addressing exists because concurrent children park concurrently — a run-level
-events POST is ambiguous. `CANCEL` is the one reserved run-level event; everything else is workflow vocabulary.
+events POST is ambiguous. `CANCEL` is the one reserved run-level event; everything else is workflow vocabulary. It
+**ends** the run — its Agents' turns end with it and it does not restore
+([ADR-0025](0025-cancel-ends-a-run-stop-parks-it.md)).
 
 ## The `j2` CLI
 
