@@ -1,11 +1,10 @@
-// The coder Agent (CONTEXT.md) — model + instructions. Filename = Agent name:
-// `agents.send("coder", iid, …)` from the orchestrator's `agentRun`.
+// The coder Agent (CONTEXT.md) — model + instructions. Filename = Agent name: the `:name` the
+// orchestrator's `agentRun` admits against.
 //
-// This is a plain-data definition (ADR-0018). The mechanism — the Adapter leash (ADR-0013),
-// `sandbox: local()` + `cwd: "/work"`, the flue dependency pin, the image contracts — lives in the
-// STOCK Harness image, which assembles definitions injected at pod start (`j2 up` publishes them
-// as a ConfigMap). This module never imports flue; `model` is omitted, inheriting the instance's
-// `harness.model` default.
+// This is a plain-data definition (ADR-0018). The mechanism — the Adapter leash (ADR-0013), the
+// Working tools and `cwd: "/work"`, the image contracts — lives in the STOCK Harness image
+// (`@j2/harness`, ADR-0027), which constructs Agents at pod start from definitions `j2 up`
+// publishes as a ConfigMap. `model` is omitted, inheriting the instance's `harness.model` default.
 
 import { defineAgent } from "@j2/orchestrator";
 

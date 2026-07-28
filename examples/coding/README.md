@@ -58,7 +58,7 @@ just operator-image
 #    An HTTPS endpoint signed by a private CA: commit the PEM beside the config and point
 #    `harness.caBundle` at it (this instance does — `ca.crt`); pods and the preflight trust it
 #    via NODE_EXTRA_CA_CERTS (ADR-0020). Token limits for the served model are committed in
-#    j2.config.ts (`provider.models` — flue resolves them per model id; unset would mean 0,
+#    j2.config.ts (`provider.models` — the Harness resolves them per model id; unset would mean 0,
 #    starving auto-compaction).
 #    (Anthropic instead: J2_MODEL=anthropic/claude-sonnet-4-6, create the `anthropic` Secret, and
 #    add `envFrom: [{ secretRef: { name: "anthropic" } }]` to `harness` in j2.config.ts.)
@@ -119,10 +119,11 @@ per-cluster operator too.
 ## agents/ — the Agent definitions
 
 Plain-data definitions (ADR-0018): `agents/<name>.ts` is `export default defineAgent({ instructions, … })` — filename =
-Agent name, no flue imports, typechecked with the instance, `model` optional (inherits `harness.model`). `j2 up`
-publishes them as a ConfigMap; the **stock Harness image** assembles them at pod start (one generated flue shim per
-definition, carrying the Adapter leash — `connectMcpServer` against `$J2_ADAPTER_URL/mcp/<id>` per submission, ADR-0013)
-and `flue build`s in ~0.5 s, offline. Editing a definition is a `j2 up` + pod restart — no image build anywhere.
+Agent name, typechecked with the instance, `model` optional (inherits `harness.model`), `access` optional (ADR-0028).
+`j2 up` publishes them as a ConfigMap; the **stock Harness image** (`@j2/harness`, ADR-0027) constructs the Agents at
+pod start from that JSON — no build step — and carries the mechanism: the Adapter leash (a fresh MCP connection to
+`$J2_ADAPTER_URL/mcp/<id>` per Submission, ADR-0013) and the Working tools. Editing a definition is a `j2 up` + pod
+restart — no image build anywhere.
 
 ## Follow-ups (deliberately out of scope here)
 

@@ -70,3 +70,11 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
 - Human-in-the-loop delivery is covered at the gates API (`features/agent-and-gates.feature` — the agent played over
   `/agents/<iid>/*`, the human over `/runs/:id/gates/:gate/events`); the `j2 send --gate` CLI verb is covered at the
   in-process tier. A CLI-driven e2e gate scenario remains a candidate follow-up `Rule`.
+
+**Corrected 2026-07-28 ([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)).** The
+`flue-contract` tier is retired. flue itself has left the repo — the Harness is `@j2/harness`, j2's own server — so
+there is no foreign runtime to check and no `@flue` pin to own. Its claims did not retire with it: they moved into
+`@j2/harness`'s conformance suite as j2's own requirements, driven through the real turn loop (pi at the exact pin, the
+real `@j2/adapter`, a scripted provider choosing each turn's shape), with the pinned-defect assertion inverted — an
+abort mid-stream must **not** erase the assistant message. The suite runs in the default `test` gate; the opt-in
+existed only for the foreign pin, which is gone.
