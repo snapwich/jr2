@@ -9,23 +9,23 @@
 //      state that invoked the agent — at any nesting depth, no routing, no `instanceId` on
 //      domain events (the closure IS the provenance). `/agents/<iid>/surface` serves exactly
 //      this registration, so menus are state-scoped by lifecycle (ADR-0006's dynamic
-//      advertisement, for free — and, per ADR-0013, with no `list_changed` needed: flue
-//      re-lists per submission).
+//      advertisement, for free — and, per ADR-0013, with no `list_changed` needed: the
+//      Harness re-lists per Submission).
 //
 //   2. ADMITS the run over the Harness at `input.endpoint` — the port is constructed
 //      per-invocation from serializable input (ADR-0007/0011 doctrine), and a dev stub is just
-//      a different URL, never a different code path. The admission flue answers with
+//      a different URL, never a different code path. The Admission the Harness answers with
 //      (`{ streamUrl, offset, submissionId }`) IS the durable re-attach handle (ADR-0016): the
 //      actor reports it through the run binding into the HOST LEDGER (persisted beside the
 //      snapshot, in the same save), and on restore the host rewrites the child's persisted
 //      input (drop `prompt`, set `attach`) so the actor re-follows the admitted submission
-//      instead of re-POSTing the prompt. The flue stream carries lifecycle only (`agent.fault`
-//      when the submission settles failed); domain events never ride it.
+//      instead of re-POSTing the prompt. The Harness stream carries lifecycle only
+//      (`agent.fault` when the Submission settles failed); domain events never ride it.
 //
-// The port factory — `(endpoint) => AgentRunPort`, not `@flue/sdk` — is the dependency, so the
+// The port factory — `(endpoint) => AgentRunPort`, not a wire client — is the dependency, so the
 // actor is unit-testable without a live Harness: `agentRunActorWith(() => mock)` is the seam,
-// and the canonical `agentRun` (bound to the real flue client) lives in flue-client.ts so this
-// module never pulls the SDK onto the test load path.
+// and the canonical `agentRun` (bound to the real wire client) lives in harness-client.ts so this
+// module never pulls the wire client onto the test load path.
 //
 // Stopping the actor ENDS THE TURN (ADR-0024). It abandons the run locally (admission/settlement
 // consumption) AND aborts the submission remotely, because `agentRun` is an invoke: leaving the
@@ -42,15 +42,15 @@ import { ambientHandlesFor } from "./ambient.ts";
 import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
 
 /**
- * One admitted flue submission — the durable re-attach handle (ADR-0016). All fields are
- * server-provided opaque strings (structurally `@flue/sdk`'s `AgentSendResult`), so the whole
+ * One admitted Submission — the durable re-attach handle (ADR-0016). All fields are
+ * server-provided opaque strings (the wire's `AdmissionResponse` — ADR-0027), so the whole
  * record is serializable: it lives in the host ledger and rides the rewritten child input on
  * restore.
  */
 export type AgentAdmission = {
-  /** Fully resolved DS-compatible stream URL for observing the agent instance's events. */
+  /** Fully resolved stream URL for observing the conversation's durable stream. */
   streamUrl: string;
-  /** Opaque DS stream offset captured at admission — replaying from here yields exactly this
+  /** Opaque stream offset captured at admission — replaying from here yields exactly this
    * submission's events (compared and stored verbatim, never arithmetic'd). */
   offset: string;
   /** Correlates the admitted prompt with its settlement. */
@@ -66,14 +66,14 @@ export type AgentAdmission = {
  * resolve ambiently from the enclosing `workspace()`.
  */
 export type AgentTurnInput = {
-  /** The flue agent (persona) to admit the turn against. */
+  /** The Agent (persona) to admit the turn against. */
   agent: string;
   /** This turn's task framing — lands as the conversation's next user message. */
   prompt: string;
   /**
    * Session continuity (ADR-0016). Absent = FRESH: every invocation is a new conversation
    * (jr's lossy handoff — revision agents read notes + code, never the prior conversation).
-   * `"continue"` = the same `(state path, agent, scope)` re-invocation continues ONE flue
+   * `"continue"` = the same `(state path, agent, scope)` re-invocation continues ONE
    * conversation; the prompt lands as its next user turn.
    */
   session?: "continue";
@@ -114,8 +114,8 @@ export type AgentRunInput = {
   tools: readonly string[];
 };
 
-/** Telemetry sent up when the run is out of options: the submission settled failed/aborted
- * (infra fault after flue's own durability retries), or the no-signal nudge budget ran dry.
+/** Telemetry sent up when the run is out of options: the Submission settled failed/aborted
+ * (infra fault after the turn's own provider retries — ADR-0027), or the no-signal nudge budget ran dry.
  * The ONE terminal event (ADR-0016) — where it routes is workflow policy. */
 export type FaultTelemetry = {
   type: "agent.fault";
@@ -133,16 +133,16 @@ export type AgentRunReceiveEvent = { type: "CANCEL" };
 /**
  * The port the Actor drives. Narrow by design — admit a prompt (returning the durable
  * admission), follow an admission to settlement, and end one — so a test can supply a synthetic
- * client and settle, fault or abort it by hand. The real, `@flue/sdk`-backed implementation lives
- * in flue-client.ts. `admit`/`settle` honor `signal`: aborting abandons the LOCAL consumption only
+ * client and settle, fault or abort it by hand. The real, wire-backed implementation lives
+ * in harness-client.ts. `admit`/`settle` honor `signal`: aborting abandons the LOCAL consumption only
  * (see module header), and the rejection it causes is swallowed by the stopped actor.
  */
 export interface AgentRunPort {
-  /** Admit one prompt; resolves with the admission the moment flue accepts it. */
+  /** Admit one prompt; resolves with the admission the moment the Harness accepts it. */
   admit(input: AgentRunInput, opts?: { signal?: AbortSignal }): Promise<AgentAdmission>;
   /**
    * Follow an admitted submission until it settles. Resolving means the submission completed;
-   * rejecting means it settled failed/aborted (or the stream is gone).
+   * rejecting means it settled failed/aborted (or the conversation is gone).
    */
   settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void>;
   /**
@@ -163,9 +163,8 @@ export type AgentRunOptions = {
   /**
    * How many times a turn that settles COMPLETED without having called any menu tool is
    * re-prompted ("you must call one of: …") before the terminal `agent.fault`. jr's dominant
-   * failure mode: flue considers a silent turn a normal completion, and its native `finish`
-   * nudge is structurally unavailable on the durable agent path (ADR-0006), so this loop is
-   * j2-owned. Default 2.
+   * failure mode: the Harness settles a silent turn `completed` like any other (ADR-0006), so
+   * this loop is j2-owned. Default 2.
    */
   nudgeBudget?: number;
 };
@@ -273,11 +272,11 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
     // so a crash right after admission still restores into re-attach, never a re-prompt.
     //
     // Two absorbed fault classes (ADR-0016), deliberately distinct:
-    //   - INFRA faults: flue's own submission durability retries them server-side, and the DS
-    //     client reconnects transparently — so a `settle` rejection means flue itself gave up.
-    //     Terminal, no j2 re-run.
-    //   - NO-SIGNAL: the submission settles COMPLETED but no menu tool was called. Flue calls
-    //     that a normal turn, so j2 owns a budgeted re-prompt on the SAME iid (the conversation
+    //   - INFRA faults: provider retries run inside the turn, Harness-side, and the wire
+    //     client reconnects transparently — so a `settle` rejection means the Submission settled
+    //     failed/aborted, or the conversation is lost (ADR-0027). Terminal, no j2 re-run.
+    //   - NO-SIGNAL: the Submission settles COMPLETED but no menu tool was called. The Harness
+    //     calls that a normal turn, so j2 owns a budgeted re-prompt on the SAME iid (the conversation
     //     continues; each nudge is a fresh admission, ledgered like any other).
     // Either budget exhausting emits the ONE terminal `agent.fault { reason }`.
     void (async () => {
@@ -287,8 +286,8 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
       try {
         // Queue behind any abort still in flight for this iid (ADR-0024). Non-trivial only under
         // `session: "continue"`, which is the only way two invocations share an instance id — and
-        // there it is mandatory: flue queues per instance and an abort settles what is queued
-        // behind it, so losing this race would kill the new turn before it ran, silently.
+        // there it is mandatory: the Harness queues per conversation and an abort settles what
+        // is queued behind it, so losing this race would kill the new turn before it ran, silently.
         await pendingAborts.get(instanceId);
         let admission = input.attach;
         if (!admission) {

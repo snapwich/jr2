@@ -5,15 +5,15 @@
 // the durable stream open, and never act — the Machine parks exactly as it would against a
 // silent real Harness, and e2e drives it by playing the agent against `/mcp/<iid>` instead.
 //
-// Wire (verified against the real `@flue/sdk` client, beta.9):
+// Wire (ADR-0027 — the normative model of the five endpoints; `@j2/harness` serves it for real):
 //   POST /agents/:name/:id  {message}  → 200 { streamUrl, offset, submissionId }
 //   GET  /agents/:name/:id?offset=…[&view=updates] → 200 `[]` + Stream-Next-Offset/Up-To-Date
 //   GET  /agents/:name/:id?…&live=long-poll        → parked; 204 + same headers on timeout
 //   POST /agents/:name/:id/abort                   → 200 { aborted }
 //   GET  /agents/:name/:id?view=history            → 200 { …, settlements }
-// (`agents.wait(admission)` reads `streamUrl?view=updates` from the admission offset; an empty
-// stream parks it — exactly the "admitted, never settles" semantics the mechanics tier needs.)
-// The client then re-polls calmly at the long-poll cadence. `close()` severs parked polls.
+// (the client's `wait(admission)` long-polls `streamUrl?view=updates` from the admission offset;
+// an empty stream parks it — exactly the "admitted, never settles" semantics the mechanics tier
+// needs.) The client then re-polls calmly at the long-poll cadence. `close()` severs parked polls.
 //
 // A stub submission therefore ends exactly one way: ABORTED, when the state that asked for the
 // turn stops waiting (ADR-0024). That is what `history`'s `settlements` carries, and it is the
@@ -26,7 +26,7 @@
 // the stub is inert, which is what the mechanics tier needs (the Machine parks and e2e plays the
 // agent from outside). The dev Harness IMAGE wires a scripted persona into it instead, so the pod
 // originates its own tool calls through the Adapter on `localhost`. The hook receives the
-// admission, iid and all: like flue's per-submission initializer, the Harness names the iid itself.
+// admission, iid and all: the Harness names the iid itself, the persona never picks one.
 
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
@@ -74,8 +74,8 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
 
   // Per-instance submission bookkeeping — the little that abort needs to mean anything (ADR-0024).
   // A stub submission never settles on its own (that IS its semantics), so "unsettled" is simply
-  // "admitted and not yet aborted", and an abort sweeps ALL of them: flue ends the running
-  // submission AND everything queued behind it.
+  // "admitted and not yet aborted", and an abort sweeps ALL of them: the running Submission AND
+  // everything queued behind it (ADR-0024/0027).
   const unsettled = new Map<string, string[]>();
   const settlements = new Map<string, StubSettlement[]>();
   const key = (agentName: string, instanceId: string) => `${agentName}/${instanceId}`;
@@ -87,8 +87,8 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
     const url = new URL(req.url ?? "/", "http://stub");
 
     // End every in-flight and queued submission for one instance (`agents.abort` — ADR-0024).
-    // Answers `{ aborted }`: whether there was anything to end, exactly as flue does for an idle
-    // instance. Settlement is recorded here rather than pushed on the stream, because nothing is
+    // Answers `{ aborted }`: whether there was anything to end, exactly as the real Harness
+    // does for an idle instance. Settlement is recorded here rather than pushed on the stream, because nothing is
     // listening — the actor that asked for the turn is already stopped.
     const aborting = req.method === "POST" && ABORT_PATH.exec(url.pathname);
     if (aborting) {

@@ -12,10 +12,10 @@
 //     validation, delivery and lifecycle stay implemented once, in the table.
 //   - The run's `agentRun` children report their durable admissions through the run binding into
 //     the host LEDGER (`RunBlob.agents` — ADR-0016), persisted in the same save as the snapshot.
-//     (flue surface = lifecycle; the agent surface = domain events.)
+//     (the Harness wire = lifecycle; the agent surface = domain events.)
 //
 // Durability (ADR-0007): a snapshot is persisted after every transition. Live infrastructure (the
-// FlueClient-backed `agentRun` actor) is injected via `.provide()` at start AND restore, never
+// wire-client-backed `agentRun` actor) is injected via `.provide()` at start AND restore, never
 // persisted — so the snapshot is JSON-safe and restore re-attaches by rewriting the child's
 // persisted input (drop `prompt`, set `attach` from the ledger) rather than re-POSTing the prompt.
 
@@ -113,7 +113,7 @@ export type RunStatus = RunRecord & {
  * more.
  *
  * What is absent is the point. `context` is the workflow's working data (branch names, ticket
- * bodies, review verdicts, flue endpoints) and `instanceId`/`fault` name live infrastructure and
+ * bodies, review verdicts, Harness endpoints) and `instanceId`/`fault` name live infrastructure and
  * leak error text; all of it is STATE, which ADR-0013 guards behind the Instance token. `value` is
  * a tree of state KEYS — it is structure, and structure is already public (`/workflows/:name/machine`
  * serves the whole Machine). So an observer learns nothing here it could not read from the Machine
@@ -714,7 +714,7 @@ export class RunHost {
       table: this.table,
       sandbox: this.sandbox,
       // The admission ledger's write half (ADR-0016): `agentRun` reports the durable handle the
-      // moment flue admits it, and the ledger hits the store in the same RunBlob save. An
+      // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
       // exactly like the persist scheduler's tracked-run guard.
       recordAdmission: (instanceId, admission) => {

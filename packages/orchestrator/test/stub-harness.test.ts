@@ -1,19 +1,19 @@
-// Stub-Harness wire tests: the REAL `@flue/sdk`-backed port (`createFlueAgentRunClient`) talks
+// Stub-Harness wire tests: the REAL wire-backed port (`createHarnessAgentRunClient`) talks
 // to the stub over a real socket — proving "an endpoint is just a URL" (ADR-0011): the same
 // single agentRun code path admits, receives a durable admission, and parks in settle, exactly
 // as it would against a silent real Harness. (A socket test — the stub IS wire.)
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createFlueAgentRunClient } from "../src/flue-client.ts";
+import { createHarnessAgentRunClient } from "../src/harness-client.ts";
 import { startStubHarness } from "../src/stub-harness.ts";
 
 const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
 
-test("the real flue port admits against the stub, gets its admission, and parks in settle", async () => {
+test("the real wire port admits against the stub, gets its admission, and parks in settle", async () => {
   const stub = await startStubHarness({ longPollMs: 200 });
   try {
-    const port = createFlueAgentRunClient({ baseUrl: stub.url });
+    const port = createHarnessAgentRunClient({ baseUrl: stub.url });
 
     // Admission reaches the stub (prompt and identity intact) and answers the durable handle —
     // persistable immediately (the ledger's write happens before settlement — ADR-0016).
@@ -29,7 +29,9 @@ test("the real flue port admits against the stub, gets its admission, and parks 
     assert.ok(admission.streamUrl.includes("/agents/coder/iid-9"));
     assert.ok(admission.submissionId);
 
-    // The stub never acts: the run parks across long-poll cycles instead of settling.
+    // The stub never acts: the stream stays empty, so the run parks across MULTIPLE long-poll
+    // cycles (longPollMs 200, watched for 500) instead of settling — wait must keep polling,
+    // never resolve an answerless stream.
     const controller = new AbortController();
     let settled = false;
     const settleP = port
@@ -49,7 +51,7 @@ test("the real flue port admits against the stub, gets its admission, and parks 
 test("abort ends every unsettled submission for the instance, and history says so (ADR-0024)", async () => {
   const stub = await startStubHarness();
   try {
-    const port = createFlueAgentRunClient({ baseUrl: stub.url });
+    const port = createHarnessAgentRunClient({ baseUrl: stub.url });
     const input = { agentName: "coder", instanceId: "iid-9", endpoint: stub.url, prompt: "go", tools: [] };
     const first = await port.admit(input);
     // A second submission on the same instance — what `session: "continue"` produces, and what

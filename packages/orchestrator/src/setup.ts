@@ -35,7 +35,7 @@ import {
 } from "xstate";
 import { eventMap, type EventDef, type EventFrom } from "@j2/agent-protocol";
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
-import { agentRun } from "./flue-client.ts";
+import { agentRun } from "./harness-client.ts";
 import { gate } from "./gate.ts";
 import { boundRunId } from "./registration.ts";
 import { attachVocabulary } from "./vocabulary.ts";
@@ -254,7 +254,7 @@ function wrapAgentInput(orig: unknown, derived: string[]) {
   return (args: InputArgs): AgentRunInput => {
     const consumer = resolveInput(orig, args) as Partial<AgentTurnInput & AgentRunInput>;
     const agentName = consumer.agentName ?? consumer.agent;
-    if (!agentName) throw new Error(`agentRun input needs \`agent\` (the flue agent to admit)`);
+    if (!agentName) throw new Error(`agentRun input needs \`agent\` (the Agent to admit)`);
     return {
       agentName,
       instanceId: consumer.instanceId ?? mintIid(consumer, agentName, args.self),

@@ -9,8 +9,9 @@
 // discovery registers the pre-provide machine (it does — `WorkflowDef.machine`) and `provide`
 // stays a per-run assembly step below the vocabulary lookup.
 //
-// This module is a pure leaf (no flue, no actors) so `run-host.ts` can read vocabularies without
-// dragging `@flue/sdk` onto its test load path — the same isolation actor.ts keeps.
+// This module is a pure leaf (no wire client, no actors) so `run-host.ts` can read vocabularies
+// without dragging the Harness wire client onto its test load path — the same isolation actor.ts
+// keeps.
 
 import type { AnyStateMachine } from "xstate";
 import type { EventDef } from "@j2/agent-protocol";
