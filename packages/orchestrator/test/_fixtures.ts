@@ -25,6 +25,11 @@ export class MockFlueClient implements AgentRunPort {
   settled: AgentAdmission[] = [];
   /** Set when the actor abandons an in-flight settle (stop/CANCEL). */
   abandoned = false;
+  /** Every submission the actor ended remotely (ADR-0024), in order. */
+  aborts: Array<{ agentName: string; instanceId: string }> = [];
+  /** Hold aborts unresolved, so a test can drive the abort→next-admit ORDERING by hand. */
+  holdAborts = false;
+  private heldAborts: Array<() => void> = [];
   private pending: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
   private seq = 0;
 
@@ -51,6 +56,17 @@ export class MockFlueClient implements AgentRunPort {
       this.pending.push({ resolve, reject });
       opts?.signal?.addEventListener("abort", () => (this.abandoned = true), { once: true });
     });
+  }
+
+  abort(agentName: string, instanceId: string): Promise<void> {
+    this.aborts.push({ agentName, instanceId });
+    if (!this.holdAborts) return Promise.resolve();
+    return new Promise<void>((resolve) => this.heldAborts.push(resolve));
+  }
+
+  /** Let a held abort resolve — what the next turn on that iid is waiting on. */
+  releaseAborts(): void {
+    for (const resolve of this.heldAborts.splice(0)) resolve();
   }
 
   /** Simulate the current submission settling COMPLETED (the no-signal case, unless a domain
@@ -119,6 +135,64 @@ export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
   return {
     name: "coding",
     machine: codingTemplate,
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      clients.set(instanceId, client);
+      return { actors: { agentRun: agentRunActorWith(() => client) } };
+    },
+  };
+}
+
+/**
+ * TWO turns of ONE conversation: both states invoke `agentRun` with the same instance id — what
+ * `session: "continue"` derives (ADR-0016). It is the shape ADR-0024's ordering rule exists for:
+ * the second turn's admission must queue behind the first turn's abort, and the pick that ended
+ * the first turn must read `turnComplete` even though the next state re-registers that address.
+ */
+export const continuedTemplate = j2Setup({
+  types: {} as { context: Ctx; input: { instanceId: string } },
+  events: [doneEvent, requestReviewEvent],
+  actors: { agentRun: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },
+}).createMachine({
+  id: "c",
+  context: ({ input }) => ({ instanceId: input.instanceId }),
+  initial: "first",
+  states: {
+    first: {
+      invoke: {
+        src: "agentRun",
+        input: ({ context }): AgentRunInput => ({
+          agentName: "coder",
+          instanceId: context.instanceId,
+          endpoint: "http://harness.invalid",
+          prompt: "turn one",
+          tools: ["request_review"],
+        }),
+      },
+      on: { request_review: "second" },
+    },
+    second: {
+      invoke: {
+        src: "agentRun",
+        input: ({ context }): AgentRunInput => ({
+          agentName: "coder",
+          instanceId: context.instanceId, // the SAME conversation
+          endpoint: "http://harness.invalid",
+          prompt: "turn two",
+          tools: ["done"],
+        }),
+      },
+      on: { done: "#c.done" },
+    },
+    done: { type: "final" },
+  },
+});
+
+/** The two-turn workflow, over one MockFlueClient per run (both turns share it, as one Harness). */
+export function continuedDef(clients: Map<string, MockFlueClient>): WorkflowDef {
+  return {
+    name: "continued",
+    machine: continuedTemplate,
     provide: ({ instanceId }) => {
       const client = new MockFlueClient();
       clients.set(instanceId, client);

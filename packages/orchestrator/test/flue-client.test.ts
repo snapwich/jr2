@@ -1,7 +1,7 @@
-// Unit tests for the real flue-backed AgentRunPort (ADR-0016). The flue SDK client is FAKED (no
-// Harness/cluster needed): the adapter depends only on `agents.send` + `agents.wait`, so a
-// hand-driven fake exercises every mapping branch — fresh admit (admission = the durable handle),
-// settle-as-wait, fault translation, and abandon-by-signal.
+// Unit tests for the real flue-backed AgentRunPort (ADR-0016/0024). The flue SDK client is FAKED
+// (no Harness/cluster needed): the adapter depends only on `agents.send` + `agents.wait` +
+// `agents.abort`, so a hand-driven fake exercises every mapping branch — fresh admit (admission =
+// the durable handle), settle-as-wait, fault translation, abandon-by-signal, and remote abort.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -22,10 +22,16 @@ function fakeFlue(
 ) {
   const sent: Array<{ name: string; id: string; message: string; hasSignal: boolean }> = [];
   const waited: AgentAdmission[] = [];
+  const aborted: Array<{ name: string; id: string }> = [];
   const dep = {
     sent,
     waited,
+    aborted,
     agents: {
+      async abort(name: string, id: string) {
+        aborted.push({ name, id });
+        return { aborted: true };
+      },
       async send(name: string, id: string, options: { message: string; signal?: AbortSignal }) {
         sent.push({ name, id, message: options.message, hasSignal: !!options.signal });
         return admission;
@@ -84,6 +90,15 @@ test("a failed submission rejects as FlueRunFault so the actor surfaces an agent
   const port = flueAgentRunPort(flue);
 
   await assert.rejects(() => port.settle(admission), /flue submission failed: boom/);
+});
+
+test("abort ends the submission remotely — the port's third verb (ADR-0024)", async () => {
+  const flue = fakeFlue();
+  const port = flueAgentRunPort(flue);
+
+  await port.abort("coder", "inst-1");
+
+  assert.deepEqual(flue.aborted, [{ name: "coder", id: "inst-1" }]);
 });
 
 test("a local abort propagates untranslated — abandon is not a fault", async () => {

@@ -92,13 +92,23 @@ test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, t
   assert.equal(review?.semantics, "ack");
   assert.ok(review?.input.properties?.summary, "the input schema is what the Adapter renders as the tool's");
 
-  // What a `tools/call` becomes: a delivery, answered with an addressable receipt.
+  // What a `tools/call` becomes: a delivery, answered with a self-describing receipt (ADR-0024) —
+  // addressable, and honest about whether the turn it belonged to is over.
   const call = await app.request(
     `/agents/${instanceId}/events`,
     jsonPost({ type: "request_review", summary: "PR up" }),
   );
   assert.equal(call.status, 200);
-  assert.ok(((await call.json()) as { deliveryId: string }).deliveryId);
+  const receipt = (await call.json()) as {
+    delivered: boolean;
+    event: string;
+    turnComplete: boolean;
+    deliveryId: string;
+  };
+  assert.ok(receipt.deliveryId);
+  assert.equal(receipt.delivered, true);
+  assert.equal(receipt.event, "request_review");
+  assert.equal(receipt.turnComplete, false, "the invoking state is still waiting — the turn continues");
   await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
 
   // A name this turn does not accept → 400 naming what it does. (Validation is the table's.)

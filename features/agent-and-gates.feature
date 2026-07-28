@@ -24,6 +24,9 @@ Feature: Agents and gates drive a run from outside
       And the agent calls "request_review" with summary "PR up"
       Then the run's status shows state "humanReview"
       And the agent's surface is gone
+      # The turn ends with the state that asked for it (ADR-0024). `humanReview` is the park that
+      # keeps the Workspace, so nothing else would ever stop the Agent generating.
+      And the stub Harness reports the Agent's turn settled as "aborted"
 
   Rule: a gate is an addressable resource on the run
 

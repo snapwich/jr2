@@ -169,6 +169,28 @@ export type AgentSurfaceView = {
 };
 
 /**
+ * The answer to one Agent delivery (`POST /agents/:iid/events`) — a receipt that DESCRIBES ITSELF
+ * (ADR-0024). The Adapter renders it as prose, because a bare `deliveryId` told the Agent nothing
+ * about whether it was finished, and the model answered that silence by calling again.
+ *
+ * `turnComplete` is the HINT, never the guarantee (the abort on invocation end is): it is read off
+ * the registration table right after delivery, so it says whether the state that asked for this
+ * turn has stopped waiting. It fails conservatively — anything that made the read unreliable reads
+ * `false`, which is today's behavior, never a false claim.
+ *
+ * `deliveryId` is unchanged from ADR-0013: an outcome stays ADDRESSABLE after the fact, the room a
+ * deferred result needs when it lands. Nothing polls it today, deliberately.
+ */
+export type AgentDeliveryReceipt = {
+  delivered: true;
+  /** The event delivered — the Agent reads its own pick back, by name. */
+  event: string;
+  /** The invoking state stopped waiting: this Agent's turn is over. */
+  turnComplete: boolean;
+  deliveryId: string;
+};
+
+/**
  * One item on a run's observation feed (the `GET /runs/:id/events` SSE stream — ADR-0009). A
  * `status` snapshot delta (emitted on every transition, and replayed once on attach); an `emit` — a
  * message the workflow author surfaced via xstate `emit({...})` for whoever is watching; absorbed-
@@ -232,6 +254,9 @@ type LiveRun = {
   record: RunRecord;
   actor: AnyActor;
   def: WorkflowDef;
+  /** What this run's callback actors resolve off the actor system — kept so `stop()` can tell
+   * them the HOST is the one ending the run (ADR-0024's one exception). */
+  binding: RunBinding;
   /** The live admission ledger (ADR-0016): persisted as `RunBlob.agents`, seeded on restore. */
   agents: Record<string, AgentAdmission>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
@@ -388,18 +413,28 @@ export class RunHost {
   /**
    * Deliver one event from an Agent's Adapter (`POST /agents/:iid/events` — ADR-0013). Validation
    * and delivery are the table's; this only agent-scopes the address and mints the receipt.
-   *
-   * The `deliveryId` is that receipt: an outcome stays ADDRESSABLE after the fact, which is the
-   * room a deferred result needs when it lands (flue's 60s MCP timeout means the answer will be
-   * poll-with-progress, not a held socket). Nothing polls it today, deliberately.
    */
-  sendToAgent(instanceId: string, event: { type?: unknown } & Record<string, unknown>): { deliveryId: string } {
+  sendToAgent(instanceId: string, event: { type?: unknown } & Record<string, unknown>): AgentDeliveryReceipt {
     const { type, ...payload } = event;
     if (typeof type !== "string" || !type) {
       throw new EventValidationError(`event body must carry a string "type" (one of the surface's accepted names)`);
     }
-    this.table.deliver(agentAddress(instanceId), type, payload);
-    return { deliveryId: this.newId() };
+    const address = agentAddress(instanceId);
+    const invoking = this.table.lookup(address);
+    this.table.deliver(address, type, payload);
+    // Read AFTER the delivery, off the SAME table the ADR-0024 guarantee uses — so the receipt
+    // reports what happened rather than what was hoped. `deliver` reached the invoking state's
+    // `sendBack` synchronously, so a pick that moved the Machine out of that state has already
+    // destroyed this registration by now.
+    //
+    // IDENTITY, not existence: under `session: "continue"` the next state re-registers the SAME
+    // address for its own turn, and that is a new turn — this one still ended.
+    return {
+      delivered: true,
+      event: type,
+      turnComplete: this.table.lookup(address) !== invoking,
+      deliveryId: this.newId(),
+    };
   }
 
   /** A run's open gates as callers discover them (`GET /runs/:id` — ADR-0011). Settled/unknown
@@ -573,10 +608,16 @@ export class RunHost {
     this.workflowListeners.clear();
   }
 
-  /** Stop a run in-process (abandons its Agent via the actor's stop path). Does not delete state. */
+  /**
+   * TEARDOWN: stop hosting a run in this process, leaving it RESTORABLE (ADR-0007). The run keeps
+   * its stored status "live", so the next `restore()` picks it up where it left off — which is why
+   * this is ADR-0024's one exception: the Agents' submissions must stay alive for that re-attach,
+   * and the actor cannot infer "the host did this", so the binding is told before the stop.
+   */
   async stop(runId: string): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) return;
+    run.binding.hostStopping = true;
     // Say so BEFORE the actor stops, while there is still a status to read. A stopped run is not a
     // settled one — `persist()` never runs for it (the tracked-run guard drops the scheduled save,
     // keeping the stored status "live" for restore — see `spawn`), so nothing else on this path
@@ -676,12 +717,18 @@ export class RunHost {
         if (ev.type === "@xstate.snapshot") schedule();
       },
     });
-    live = this.track(record, actor, def, agents);
+    live = this.track(record, actor, def, agents, binding);
     return actor;
   }
 
-  private track(record: RunRecord, actor: AnyActor, def: WorkflowDef, agents: Record<string, AgentAdmission>): LiveRun {
-    const run: LiveRun = { record, actor, def, agents, listeners: new Set() };
+  private track(
+    record: RunRecord,
+    actor: AnyActor,
+    def: WorkflowDef,
+    agents: Record<string, AgentAdmission>,
+    binding: RunBinding,
+  ): LiveRun {
+    const run: LiveRun = { record, actor, def, agents, binding, listeners: new Set() };
     this.runs.set(record.runId, run);
     // Ordinary persistence rides the inspection stream (see `spawn`); the subscription exists
     // for the ERROR channel: an errored actor (an invoke threw — e.g. ADR-0011's invoke-time

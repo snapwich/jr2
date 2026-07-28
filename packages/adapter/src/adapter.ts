@@ -40,6 +40,18 @@ export type SurfaceEvent = {
 /** `GET /agents/:iid/surface` — the turn's menu. */
 export type Surface = { instanceId: string; runId: string; sandbox?: string; accepts: SurfaceEvent[] };
 
+/**
+ * `POST /agents/:iid/events` — the answer to one pick, and the Agent's only way to learn what
+ * became of it (ADR-0024). `turnComplete` says the state that asked for this turn has stopped
+ * waiting; it is a hint that fails conservatively, not the thing that ends the turn.
+ */
+export type DeliveryReceipt = {
+  delivered: boolean;
+  event: string;
+  turnComplete: boolean;
+  deliveryId: string;
+};
+
 /** No live registration for this iid: the state exited, or the run settled. Not a menu — an end. */
 export class NoSurfaceError extends Error {}
 
@@ -73,14 +85,14 @@ export class OrchestratorClient {
     return (await this.ok(res)) as Surface;
   }
 
-  async deliver(instanceId: string, event: Record<string, unknown>): Promise<{ deliveryId: string }> {
+  async deliver(instanceId: string, event: Record<string, unknown>): Promise<DeliveryReceipt> {
     const res = await this.fetchImpl(`${this.url}/agents/${encodeURIComponent(instanceId)}/events`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
       body: JSON.stringify(event),
     });
     if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}"`);
-    return (await this.ok(res)) as { deliveryId: string };
+    return (await this.ok(res)) as DeliveryReceipt;
   }
 
   /** A non-2xx `{ error }` becomes a throw — including 401/403, which must be LOUD: a silently
@@ -121,13 +133,26 @@ export async function serverForTurn(client: OrchestratorClient, instanceId: stri
       async (args: Record<string, unknown>): Promise<CallToolResult> => {
         const receipt = await client.deliver(instanceId, { type: event.name, ...args });
         return {
-          content: [{ type: "text", text: JSON.stringify(receipt) }],
+          content: [{ type: "text", text: receiptProse(receipt) }],
           structuredContent: receipt as unknown as Record<string, unknown>,
         };
       },
     );
   }
   return server;
+}
+
+/**
+ * The receipt in WORDS (ADR-0024), because a model reads text before `structuredContent`. What the
+ * Agent used to get back was a UUID, printed twice, against instructions that say it must finish by
+ * calling the tool and never say when finishing is finished — so it called again. Say the three
+ * things it needs: the pick arrived, the workflow consumed it, the turn is over.
+ */
+function receiptProse(receipt: DeliveryReceipt): string {
+  const delivered = `Delivered "${receipt.event}" to the workflow (delivery ${receipt.deliveryId}).`;
+  return receipt.turnComplete
+    ? `${delivered} The workflow consumed it and moved on: your turn is over. Stop here — do not call this or any other tool again.`
+    : `${delivered} The workflow is still in the state that asked for this turn, so it is not over yet.`;
 }
 
 /**

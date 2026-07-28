@@ -46,6 +46,36 @@ test("the real flue port admits against the stub, gets its admission, and parks 
   }
 });
 
+test("abort ends every unsettled submission for the instance, and history says so (ADR-0024)", async () => {
+  const stub = await startStubHarness();
+  try {
+    const port = createFlueAgentRunClient({ baseUrl: stub.url });
+    const input = { agentName: "coder", instanceId: "iid-9", endpoint: stub.url, prompt: "go", tools: [] };
+    const first = await port.admit(input);
+    // A second submission on the same instance — what `session: "continue"` produces, and what
+    // flue queues rather than rejects. An abort ends the running one AND everything behind it.
+    const queued = await port.admit(input);
+
+    await port.abort("coder", "iid-9");
+
+    const history = (await (await fetch(`${stub.url}/agents/coder/iid-9?view=history`)).json()) as {
+      settlements: Array<{ submissionId: string; outcome: string }>;
+    };
+    assert.deepEqual(history.settlements, [
+      { submissionId: first.submissionId, outcome: "aborted" },
+      { submissionId: queued.submissionId, outcome: "aborted" },
+    ]);
+
+    // Aborting an idle instance is not an error — it is `{ aborted: false }`, nothing to end.
+    const again = (await (await fetch(`${stub.url}/agents/coder/iid-9/abort`, { method: "POST" })).json()) as {
+      aborted: boolean;
+    };
+    assert.equal(again.aborted, false);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("unknown routes 404 (only the agents surface is stubbed)", async () => {
   const stub = await startStubHarness();
   try {

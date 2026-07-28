@@ -12,7 +12,7 @@
 //
 //   # the Agent's Adapter, and nothing else
 //   GET  /agents/:iid/surface          accepts + schemas + semantics             [Sandbox token]
-//   POST /agents/:iid/events           validate + deliver → { deliveryId }       [Sandbox token]
+//   POST /agents/:iid/events           validate + deliver → the turn receipt      [Sandbox token]
 //
 // The token is not decoration: an Agent has code execution in its Harness container and shares the
 // pod's network namespace, so it can reach these routes. A Sandbox token may deliver ONLY to an
@@ -530,8 +530,10 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return error ?? c.json(surface);
   });
 
-  // The Agent's pick, delivered into the state that invoked it. The receipt's `deliveryId` makes an
-  // outcome addressable after the fact — the room a deferred result will need when it lands.
+  // The Agent's pick, delivered into the state that invoked it. The receipt describes itself
+  // (ADR-0024): what was delivered, and whether that ended the turn — which the Adapter renders as
+  // prose. Its `deliveryId` still makes an outcome addressable after the fact, the room a deferred
+  // result will need when it lands.
   app.post("/agents/:instanceId/events", authenticated, async (c) => {
     const { error } = agentRegistration(c);
     if (error) return error;

@@ -11,7 +11,7 @@ import { z } from "zod";
 import { defineEvent, eventMap } from "@j2/agent-protocol";
 import { agentRunActorWith, type AgentRunOptions } from "../src/actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
-import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry } from "../src/registration.ts";
+import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry, type RunBinding } from "../src/registration.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
 const pingEvent = defineEvent({ name: "ping", input: z.object({}) });
@@ -47,17 +47,18 @@ function harness(client: AgentRunPort, input: AgentRunInput, options?: AgentRunO
   });
 
   const actor = createActor(machine);
-  bindRun(actor.system, {
+  const binding: RunBinding = {
     runId: "run-1",
     workflow: "test",
     events: eventMap("test", [pingEvent]),
     table,
     recordAdmission: (iid, admission) => (ledger[iid] = admission),
     telemetry: (event) => telemetry.push(event),
-  });
+  };
+  bindRun(actor.system, binding);
   actor.subscribe({ error: (err) => errors.push(err) }); // xstate reports invoke errors here, not out of start()
   actor.start();
-  return { actor, received, table, errors, ledger, endpoints, telemetry };
+  return { actor, received, table, errors, ledger, endpoints, telemetry, binding };
 }
 
 const baseInput: AgentRunInput = {
@@ -217,4 +218,83 @@ test("a CANCEL abandons the run locally and destroys the registration", async ()
   assert.equal(table.lookup(agentAddress("inst-42")), undefined);
   // Local abandon never fabricates a fault: the durable run stays alive for restore.
   assert.ok(!received.some((e) => e.type === "agent.fault"));
+});
+
+// --- The turn ends with the state that asked for it (ADR-0024) ---------------------------------
+
+test("the invocation ending ends the TURN: the submission is aborted, not just abandoned", async () => {
+  const mock = new MockFlueClient();
+  const { actor, received } = harness(mock, baseInput);
+  await tick();
+
+  actor.send({ type: "CANCEL_RUN" });
+  await tick();
+
+  assert.deepEqual(mock.aborts, [{ agentName: "coder", instanceId: "inst-42" }]);
+  // The actor is already stopped when the abort fires, so its outcome is unobservable BY
+  // CONSTRUCTION — never a fault, never a machine event (ADR-0024).
+  assert.ok(!received.some((e) => e.type === "agent.fault"));
+});
+
+test("a HOST-initiated stop abandons without aborting — restore must find the run alive (ADR-0007)", async () => {
+  const mock = new MockFlueClient();
+  const { actor, binding } = harness(mock, baseInput);
+  await tick();
+
+  // What `RunHost.stop()` sets before stopping the actor: "the host did this". It is a flag,
+  // not something the actor could infer — every other ending is the state losing interest.
+  binding.hostStopping = true;
+  actor.stop();
+  await tick();
+
+  assert.deepEqual(mock.aborts, [], "the durable run stays alive server-side, for restore to re-attach");
+  assert.equal(mock.abandoned, true, "local consumption is still abandoned");
+});
+
+test("a failing abort is swallowed — there is no one left to report it to", async () => {
+  const mock = new MockFlueClient();
+  mock.abort = () => Promise.reject(new Error("harness gone"));
+  const { actor, received } = harness(mock, baseInput);
+  await tick();
+
+  actor.send({ type: "CANCEL_RUN" });
+  await tick();
+
+  assert.ok(!received.some((e) => e.type === "agent.fault"), "the actor is stopped: nothing to fault");
+});
+
+test("the next turn on the same iid waits for the pending abort (session: continue — ADR-0024)", async () => {
+  // Two states, one iid: exactly what `session: "continue"` produces. flue QUEUES per instance, so
+  // an abort that lost this race would settle the SECOND submission before it ran — a silently
+  // lost turn, the worst failure available.
+  const mock = new MockFlueClient();
+  mock.holdAborts = true;
+  const table = new RegistrationTable();
+  const input: AgentRunInput = { ...baseInput, instanceId: "inst-continue" };
+
+  const machine = setup({ actors: { run: agentRunActorWith(() => mock) } }).createMachine({
+    id: "parent",
+    initial: "first",
+    states: {
+      first: { invoke: { id: "run", src: "run", input }, on: { NEXT: "second" } },
+      second: { invoke: { id: "run", src: "run", input: { ...input, prompt: "and again" } } },
+    },
+  });
+  const actor = createActor(machine);
+  bindRun(actor.system, { runId: "run-1", workflow: "test", events: eventMap("test", [pingEvent]), table });
+  actor.start();
+  await tick();
+  assert.equal(mock.admits.length, 1);
+
+  actor.send({ type: "NEXT" });
+  await tick();
+
+  assert.deepEqual(mock.aborts, [{ agentName: "coder", instanceId: "inst-continue" }]);
+  assert.equal(mock.admits.length, 1, "the second turn is NOT admitted while its predecessor's abort is in flight");
+
+  mock.releaseAborts();
+  await tick();
+
+  assert.equal(mock.admits.length, 2, "…and is admitted once the abort is recorded");
+  assert.equal(mock.admits[1]!.prompt, "and again");
 });

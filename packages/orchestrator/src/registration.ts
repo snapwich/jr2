@@ -141,6 +141,22 @@ export type RunBinding = {
    * open feed).
    */
   telemetry?: (event: RetryTelemetry) => void;
+  /**
+   * The HOST is ending this run for its own reasons (ADR-0024). An `agentRun` invocation ending
+   * normally ends the Agent's turn — the state stopped waiting — but `RunHost.stop()` is the one
+   * ending that must leave the durable submission alive, because ADR-0007's restore re-attaches
+   * to it. The host cannot be INFERRED (process shutdown stops no actors, and restore is a fresh
+   * process), so it says so here, before it stops the actor.
+   */
+  hostStopping?: boolean;
+  /**
+   * iid → the abort still in flight for it (ADR-0024). `agentRun` fills this on the way out and
+   * waits on it before admitting, so an abort can never overtake the next turn on the same
+   * instance — flue QUEUES per instance, and an abort that lost that race would settle the new
+   * submission before it ran. Created on demand: the ordering must hold for ANY binding, not only
+   * one the host remembered to equip.
+   */
+  pendingAborts?: Map<string, Promise<void>>;
 };
 
 /** One absorbed-retry attempt (a no-signal nudge), as the run feed carries it. */

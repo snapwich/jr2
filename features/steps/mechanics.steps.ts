@@ -144,6 +144,32 @@ Then("gate {string} is gone", async function (this: E2EWorld, gateId: string): P
   assert.ok(!open.some((g) => g.gate === gateId), `gate "${gateId}" must be destroyed with its state`);
 });
 
+/**
+ * What the HARNESS says became of the Agent's turn (ADR-0024). The Orchestrator cannot answer this
+ * — it aborts from an already-stopped actor and never observes the settlement — so the claim is
+ * checked where it is true: the stub Harness's own conversation history, over its own wire.
+ */
+Then(
+  "the stub Harness reports the Agent's turn settled as {string}",
+  async function (this: E2EWorld, outcome: string): Promise<void> {
+    const iid = (await status(this)).instanceId;
+    const url = `${await this.stubHarnessUrl()}/agents/coder/${encodeURIComponent(iid)}?view=history`;
+    let settlements: Array<{ outcome: string }> = [];
+    for (let i = 0; i < 100; i++) {
+      const res = await fetch(url);
+      assert.equal(res.status, 200);
+      settlements = ((await res.json()) as { settlements?: Array<{ outcome: string }> }).settlements ?? [];
+      if (settlements.length > 0) break;
+      await sleep(50);
+    }
+    assert.deepEqual(
+      settlements.map((s) => s.outcome),
+      [outcome],
+      "the submission the state stopped waiting for is over, at the Harness",
+    );
+  },
+);
+
 Then("the run faults mentioning {string}", async function (this: E2EWorld, needle: string): Promise<void> {
   const s = (await waitForValue(this, "error")) as Status & { fault?: string };
   assert.match(s.fault ?? "", new RegExp(needle));

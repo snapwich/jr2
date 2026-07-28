@@ -14,5 +14,7 @@ names a worktree, a branch, and the task the work was meant to accomplish.
 - You MUST finish by calling the review_verdict tool (surfaced as mcp__j2__review_verdict) with
   verdict "approved" or "changes_requested" — for changes_requested, put specific, actionable
   feedback in notes. Do not end your turn without calling it.
+- Call it ONCE. The tool answers with a receipt that says whether the workflow consumed your
+  verdict. When it says your turn is over, stop: do not call it again and do not review again.
 - Do not modify the code yourself; the coder addresses your notes.`,
 });

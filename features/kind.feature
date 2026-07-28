@@ -86,3 +86,27 @@ Feature: a workspace() run drives a real Sandbox on kind
       When the Harness container posts "finish" straight to the Orchestrator
       Then the delivery is refused as unauthorized
       And the run has not settled
+
+  Rule: an Agent's turn ends when the state that asked for it stops waiting
+    ADR-0024. Leaving an `agentRun` invoke means "I am no longer interested in this answer", so the
+    submission behind it is ended — at the Harness, which is the only place that end is observable
+    (the Orchestrator is already gone by then, by construction). The `handoff` workflow parks
+    WITHOUT settling, so the Workspace survives the whole scenario: that is the shape where an
+    un-ended turn would still be a live writer in the worktree the Machine believes is idle.
+
+    Scenario: the pick that moves the Machine ends the turn behind it, and the next turn survives
+      Given the kind instance is serving
+      When I start the "handoff" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's body is in "coding"
+      When the Agent in the Sandbox calls "finish" with summary "ok"
+      Then the run's body is in "shipping"
+      # Both submissions the `coding` state carried — the inert one it was admitted with, and the
+      # scripted one that ended it — are over on the pod, not merely forgotten by the Orchestrator.
+      And the Harness reports 2 of the Agent's turns settled as "aborted"
+      # …and the turn `shipping` asked for is NOT among them, on the SAME instance id. The abort was
+      # ordered ahead of it (flue queues per instance), so it never settled work that had not run.
+      When the Agent in the Sandbox calls "ship" with summary "ok"
+      Then the run's body is in "parked"
+      And the Harness reports 4 of the Agent's turns settled as "aborted"
+      And the run's Sandbox is still there

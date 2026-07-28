@@ -9,9 +9,15 @@
 //   POST /agents/:name/:id  {message}  → 200 { streamUrl, offset, submissionId }
 //   GET  /agents/:name/:id?offset=…[&view=updates] → 200 `[]` + Stream-Next-Offset/Up-To-Date
 //   GET  /agents/:name/:id?…&live=long-poll        → parked; 204 + same headers on timeout
+//   POST /agents/:name/:id/abort                   → 200 { aborted }
+//   GET  /agents/:name/:id?view=history            → 200 { …, settlements }
 // (`agents.wait(admission)` reads `streamUrl?view=updates` from the admission offset; an empty
 // stream parks it — exactly the "admitted, never settles" semantics the mechanics tier needs.)
 // The client then re-polls calmly at the long-poll cadence. `close()` severs parked polls.
+//
+// A stub submission therefore ends exactly one way: ABORTED, when the state that asked for the
+// turn stops waiting (ADR-0024). That is what `history`'s `settlements` carries, and it is the
+// only place a black-box test can see a turn end — the run itself is untouched by an abort.
 //
 // This can later grow scriptable behavior or be swapped for a real local Harness without
 // touching actor code — it is only a different URL.
@@ -27,6 +33,10 @@ import type { AddressInfo, Socket } from "node:net";
 
 /** One admission of an Agent: which persona, which durable exchange, and the prompt. */
 export type Admission = { agentName: string; instanceId: string; message?: string };
+
+/** One settled submission, in the shape `history()` reports it. The stub settles submissions for
+ * exactly one reason — an abort (ADR-0024) — so `outcome` has exactly one value here. */
+export type StubSettlement = { submissionId: string; outcome: "aborted" };
 
 export type StubHarnessOptions = {
   /** Listen port. Default 0 → ephemeral (read back from `url`). */
@@ -53,6 +63,7 @@ export type RunningStubHarness = {
 };
 
 const AGENT_PATH = /^\/agents\/([^/]+)\/([^/]+)$/;
+const ABORT_PATH = /^\/agents\/([^/]+)\/([^/]+)\/abort$/;
 
 /** Start the stub Harness. Never acts: admit → hold the stream open → answer polls "empty". */
 export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<RunningStubHarness> {
@@ -61,11 +72,37 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
   const admissions: RunningStubHarness["admissions"] = [];
   let submissionSeq = 0;
 
+  // Per-instance submission bookkeeping — the little that abort needs to mean anything (ADR-0024).
+  // A stub submission never settles on its own (that IS its semantics), so "unsettled" is simply
+  // "admitted and not yet aborted", and an abort sweeps ALL of them: flue ends the running
+  // submission AND everything queued behind it.
+  const unsettled = new Map<string, string[]>();
+  const settlements = new Map<string, StubSettlement[]>();
+  const key = (agentName: string, instanceId: string) => `${agentName}/${instanceId}`;
+
   // Parked long-polls hold sockets open; close() must sever them or it hangs on graceful close.
   const sockets = new Set<Socket>();
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://stub");
+
+    // End every in-flight and queued submission for one instance (`agents.abort` — ADR-0024).
+    // Answers `{ aborted }`: whether there was anything to end, exactly as flue does for an idle
+    // instance. Settlement is recorded here rather than pushed on the stream, because nothing is
+    // listening — the actor that asked for the turn is already stopped.
+    const aborting = req.method === "POST" && ABORT_PATH.exec(url.pathname);
+    if (aborting) {
+      const [, agentName, instanceId] = aborting as unknown as [string, string, string];
+      const k = key(decodeURIComponent(agentName), decodeURIComponent(instanceId));
+      const ended = unsettled.get(k)?.splice(0) ?? [];
+      const settled = settlements.get(k) ?? [];
+      settled.push(...ended.map((submissionId) => ({ submissionId, outcome: "aborted" as const })));
+      settlements.set(k, settled);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ aborted: ended.length > 0 }));
+      return;
+    }
+
     const match = AGENT_PATH.exec(url.pathname);
     if (!match) {
       res.writeHead(404, { "content-type": "application/json" });
@@ -86,12 +123,15 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
           message,
         };
         admissions.push(admission);
+        const submissionId = `stub-${++submissionSeq}`;
+        const k = key(admission.agentName, admission.instanceId);
+        unsettled.set(k, [...(unsettled.get(k) ?? []), submissionId]);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
           JSON.stringify({
             streamUrl: `http://${hostname}:${port}${url.pathname}`,
             offset: "0_0",
-            submissionId: `stub-${++submissionSeq}`,
+            submissionId,
           }),
         );
         // After the ack, never before it: the persona's tool call travels Adapter → Orchestrator →
@@ -100,6 +140,24 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
           console.error(`agent turn failed for "${admission.instanceId}":`, err);
         });
       });
+      return;
+    }
+
+    if (req.method === "GET" && url.searchParams.get("view") === "history") {
+      // The conversation snapshot (`agents.history`). Messages are not modeled — the stub has no
+      // model — but SETTLEMENTS are, because `settlements[].outcome` is how a turn's end is
+      // observed from outside (ADR-0024) and what the @kind tier asserts.
+      const k = key(decodeURIComponent(agentName), decodeURIComponent(instanceId));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          v: 1,
+          conversationId: decodeURIComponent(instanceId),
+          offset: "0_0",
+          messages: [],
+          settlements: settlements.get(k) ?? [],
+        }),
+      );
       return;
     }
 

@@ -18,15 +18,16 @@ import { startAdapter } from "../src/serve.ts";
 const TOKEN = "ws-1.signed";
 
 /** A fake Orchestrator: serves one surface, records what was delivered — and what bearer arrived. */
-function fakeOrchestrator(surface: Surface | undefined) {
+function fakeOrchestrator(surface: Surface | undefined, turnComplete = true) {
   const seen: { bearers: string[]; delivered: Array<Record<string, unknown>> } = { bearers: [], delivered: [] };
   const fetchImpl: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
     seen.bearers.push(String((init?.headers as Record<string, string> | undefined)?.authorization));
     if (!surface) return new Response(JSON.stringify({ error: "no live agent surface" }), { status: 404 });
     if (url.endsWith("/surface")) return Response.json(surface);
-    seen.delivered.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-    return Response.json({ deliveryId: "d-1" });
+    const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    seen.delivered.push(event);
+    return Response.json({ delivered: true, event: event.type, turnComplete, deliveryId: "d-1" });
   };
   return {
     seen,
@@ -87,7 +88,11 @@ test("tools/call becomes one authenticated delivery, and the receipt comes back"
     const result = await client.callTool({ name: "request_review", arguments: { summary: "PR up" } });
 
     assert.deepEqual(seen.delivered, [{ type: "request_review", summary: "PR up" }], "the pick, as a run event");
-    assert.deepEqual(result.structuredContent, { deliveryId: "d-1" }, "the delivery receipt reaches the Agent");
+    assert.deepEqual(
+      result.structuredContent,
+      { delivered: true, event: "request_review", turnComplete: true, deliveryId: "d-1" },
+      "the delivery receipt reaches the Agent",
+    );
     // The Sandbox token rides EVERY request. It came from a Secret mounted into this container
     // alone — the Agent, next door with code execution, has no way to read it.
     assert.ok(
@@ -96,6 +101,31 @@ test("tools/call becomes one authenticated delivery, and the receipt comes back"
     );
   } finally {
     await close();
+  }
+});
+
+test("the receipt reads as PROSE, because that is what a model acts on (ADR-0024)", async () => {
+  const over = await connect(fakeOrchestrator(REVIEW_SURFACE, true).client);
+  try {
+    const result = await over.client.callTool({ name: "request_review", arguments: { summary: "PR up" } });
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    // A bare UUID told the Agent nothing about whether it was finished, and the retry that invited
+    // is the failure ADR-0024 closes. The end of the turn must be stated, in words.
+    assert.match(text, /request_review/);
+    assert.match(text, /turn is over/i);
+    assert.match(text, /stop/i);
+  } finally {
+    await over.close();
+  }
+
+  const open = await connect(fakeOrchestrator(REVIEW_SURFACE, false).client);
+  try {
+    const result = await open.client.callTool({ name: "request_review", arguments: { summary: "PR up" } });
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    // The hint fails conservatively: an unmoved workflow is never reported as an ended turn.
+    assert.doesNotMatch(text, /turn is over/i);
+  } finally {
+    await open.close();
   }
 });
 

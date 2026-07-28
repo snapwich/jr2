@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup } from "xstate";
 import { RunHost, type RunStatus } from "../src/run-host.ts";
-import { codingDef, mkStore, MockFlueClient, pipelineDef, tick, waitFor } from "./_fixtures.ts";
+import { codingDef, continuedDef, mkStore, MockFlueClient, pipelineDef, tick, waitFor } from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 
@@ -30,6 +30,74 @@ test("an Agent's delivery routes into the owning run's Machine", async () => {
 
   host.sendToAgent(instanceId, { type: "done" });
   await waitFor(() => host.status(runId) === undefined); // final → dropped from the registry
+});
+
+test("the receipt is self-describing: it says whether the turn is over (ADR-0024)", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(codingDef(new Map()));
+  const { instanceId } = await host.start("coding");
+
+  // `request_review` moves the machine WITHIN the invoking state, so the same turn is still live.
+  const open = host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  assert.equal(open.delivered, true);
+  assert.equal(open.event, "request_review");
+  assert.equal(open.turnComplete, false, "the invoking state is still waiting — this turn is not over");
+
+  // `done` leaves the state that invoked the Agent, which stops the invocation and destroys the
+  // registration. That this is already TRUE when `deliver()` returns is the whole claim: xstate's
+  // `sendBack` reaches the mailbox synchronously, so the flag reports what happened rather than
+  // what was hoped. If an xstate bump ever breaks that, this test fails instead of a live run.
+  const over = host.sendToAgent(instanceId, { type: "done" });
+  assert.equal(over.turnComplete, true, "the state stopped waiting — the turn is over");
+  assert.ok(over.deliveryId, "a delivery stays addressable after the fact (ADR-0013)");
+});
+
+test("one conversation, two turns: the abort is ordered ahead of the next turn's admission", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(continuedDef(clients));
+  const { runId, instanceId } = await host.start("continued");
+  const flue = clients.get(instanceId)!;
+  flue.holdAborts = true;
+  await waitFor(() => flue.admits.length === 1);
+
+  // The pick that ends turn one. The next state re-registers the SAME address a moment later, so
+  // an existence check would call this turn unfinished; the receipt tracks the REGISTRATION.
+  const receipt = host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  assert.equal(receipt.turnComplete, true, "the state that asked for turn one stopped waiting");
+
+  await tick();
+  assert.deepEqual(flue.aborts, [{ agentName: "coder", instanceId }], "turn one's submission is ended");
+  assert.equal(flue.admits.length, 1, "turn two waits: an abort that overtook it would settle it unrun");
+
+  flue.releaseAborts();
+  await waitFor(() => flue.admits.length === 2);
+  assert.equal(flue.admits[1]!.prompt, "turn two");
+
+  // …and turn two still drives the Machine, which is the whole point of ordering it.
+  host.sendToAgent(instanceId, { type: "done" });
+  await waitFor(() => host.status(runId) === undefined);
+});
+
+test("stop() leaves the submissions alive, because restore re-attaches to them (ADR-0007/0024)", async () => {
+  const store = await mkStore();
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store });
+  host.register(codingDef(clients));
+  const { runId, instanceId } = await host.start("coding");
+  await waitFor(() => clients.get(instanceId)!.admits.length === 1);
+  let stored: string | undefined;
+  await waitFor(() => {
+    void store.load(runId).then((s) => (stored = s?.status));
+    return stored === "live";
+  });
+
+  await host.stop(runId);
+
+  assert.deepEqual(clients.get(instanceId)!.aborts, [], "the submissions stay alive for the re-attach");
+  const second = new RunHost({ store });
+  second.register(codingDef(new Map()));
+  assert.deepEqual((await second.restore()).reattached, [runId]);
 });
 
 test("the agent surface IS the invoking state's registration, and dies with it", async () => {

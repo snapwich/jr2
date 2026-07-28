@@ -16,9 +16,11 @@
 // `tool_start`-cadence offset checkpointing. Re-attach after a restart is `wait` with the SAME
 // persisted admission; replay cost is bounded by one submission's chunks.
 //
-// `agents.abort()` exists as of beta.8 (ADR-0002's "flue exposes no cancel primitive" is stale) —
-// but it is deliberately NOT wired into actor stop: stop must abandon locally so restore can
-// re-attach (see actor.ts header). Abort is reserved for a deliberate terminal act.
+// `agents.abort()` (beta.8+; ADR-0002's "flue exposes no cancel primitive" is stale) is the third
+// verb, and ADR-0024 wires it to the END OF THE INVOCATION: a turn ends with the state that asked
+// for it. It aborts the running submission and everything queued behind it, and settles them to
+// flue's distinct `aborted` outcome — worth having for observability, though j2 never reads it
+// (the actor is stopped by then; see actor.ts).
 
 import { createFlueClient, FlueExecutionError } from "@flue/sdk";
 import type { CreateFlueClientOptions, FlueClient as FlueSdkClient } from "@flue/sdk";
@@ -26,7 +28,7 @@ import { agentRunActorWith } from "./actor.ts";
 import type { AgentRunPort, AgentRunInput, AgentAdmission } from "./actor.ts";
 
 /** The narrow slice of the flue SDK client this adapter depends on (the injectable seam). */
-export type FlueAgentRunDep = { agents: Pick<FlueSdkClient["agents"], "send" | "wait"> };
+export type FlueAgentRunDep = { agents: Pick<FlueSdkClient["agents"], "send" | "wait" | "abort"> };
 
 /** A submission that flue settled failed/aborted — surfaced to the actor as an `agent.fault`. */
 export class FlueRunFault extends Error {
@@ -60,6 +62,13 @@ export function flueAgentRunPort(flue: FlueAgentRunDep): AgentRunPort {
         if (err instanceof FlueExecutionError) throw new FlueRunFault(err.error ?? err.message);
         throw err;
       }
+    },
+
+    async abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void> {
+      // The result (`{ aborted }` — whether there was work to end) is dropped: by the time this
+      // runs the state has already moved on, and an idle instance is exactly as fine as a
+      // stopped one. Settlement is asynchronous and nothing here is listening (ADR-0024).
+      await flue.agents.abort(agentName, instanceId, { signal: opts?.signal });
     },
   };
 }

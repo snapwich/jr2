@@ -27,10 +27,15 @@
 // and the canonical `agentRun` (bound to the real flue client) lives in flue-client.ts so this
 // module never pulls the SDK onto the test load path.
 //
-// Stopping the actor abandons the run LOCALLY (aborts admission/settlement consumption) and
-// never `agents.abort()`s the durable work: a host shutdown stops every actor, and the runs it
-// stops must stay alive server-side for restore to re-attach (ADR-0007). Remote abort is a
-// distinct, deliberate act (flue ≥ beta.8 has it), not a stop side effect.
+// Stopping the actor ENDS THE TURN (ADR-0024). It abandons the run locally (admission/settlement
+// consumption) AND aborts the submission remotely, because `agentRun` is an invoke: leaving the
+// state means "I am no longer interested in this answer", and an Agent whose turn has ended but
+// whose submission has not is an unaccounted-for writer in the Workspace.
+//
+// The ONE exception is the host ending the run for its own reasons — `RunHost.stop()`, whose runs
+// must stay alive server-side for ADR-0007's restore to re-attach. That is a FLAG the host sets on
+// the run binding (`hostStopping`), never a fact inferred here: process shutdown stops no actors
+// at all, and restore is a fresh process, so there is nothing to infer it from.
 
 import { fromCallback } from "xstate";
 import { ambientHandlesFor } from "./ambient.ts";
@@ -127,9 +132,9 @@ export type AgentRunReceiveEvent = { type: "CANCEL" };
 
 /**
  * The port the Actor drives. Narrow by design — admit a prompt (returning the durable
- * admission) and follow an admission to settlement — so a test can supply a synthetic client
- * and settle or fault it by hand. The real, `@flue/sdk`-backed implementation lives in
- * flue-client.ts. Both operations honor `signal`: aborting abandons the LOCAL consumption only
+ * admission), follow an admission to settlement, and end one — so a test can supply a synthetic
+ * client and settle, fault or abort it by hand. The real, `@flue/sdk`-backed implementation lives
+ * in flue-client.ts. `admit`/`settle` honor `signal`: aborting abandons the LOCAL consumption only
  * (see module header), and the rejection it causes is swallowed by the stopped actor.
  */
 export interface AgentRunPort {
@@ -140,6 +145,14 @@ export interface AgentRunPort {
    * rejecting means it settled failed/aborted (or the stream is gone).
    */
   settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void>;
+  /**
+   * End the instance's in-flight (and queued) work — the turn is over (ADR-0024). Resolving means
+   * the intent is RECORDED, not that the submission has settled; j2 never observes that outcome,
+   * because the actor is already stopped by the time this is called. The actor passes no `signal`
+   * for exactly that reason — its own controller is already aborted — but the option is here for
+   * parity with the other two.
+   */
+  abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void>;
 }
 
 /** Build a port for one invocation from its serializable input (ADR-0011 static-import doctrine). */
@@ -225,14 +238,29 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
 
     const client = portFactory(endpoint);
     const controller = new AbortController();
+    // Shared per run, created on demand so the ordering guarantee holds for any binding.
+    const pendingAborts = (binding.pendingAborts ??= new Map<string, Promise<void>>());
     let stopped = false;
 
     const abandon = () => {
       if (stopped) return;
       stopped = true;
       dispose();
-      // Local abandon only: the durable run stays alive for restore (module header).
+      // Stop consuming the stream. The remote end of the turn is the next paragraph.
       controller.abort();
+      // A turn ends with the state that asked for it (ADR-0024) — whatever ended the invocation:
+      // the Agent's own pick settling the state, an `after:` timeout, an ancestor transition, a
+      // Pool cancelling a child. The one exception is the host stopping the run for its own
+      // reasons, which ADR-0007's restore re-attaches to.
+      if (binding.hostStopping) return;
+      // Fire-and-forget, and unreportable BY CONSTRUCTION: this actor is stopped, so there is no
+      // `agent.fault` left to raise. An orphan that survives a failed abort 404s on every tool
+      // call and settles on its own.
+      const aborting = client.abort(input.agentName, instanceId).catch(() => {});
+      pendingAborts.set(instanceId, aborting);
+      void aborting.then(() => {
+        if (pendingAborts.get(instanceId) === aborting) pendingAborts.delete(instanceId);
+      });
     };
 
     // Down-channel: interrupts only (ADR-0002 split-channel model).
@@ -257,6 +285,11 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
         if (!stopped) sendBack({ type: "agent.fault", instanceId, reason } satisfies FaultTelemetry);
       };
       try {
+        // Queue behind any abort still in flight for this iid (ADR-0024). Non-trivial only under
+        // `session: "continue"`, which is the only way two invocations share an instance id — and
+        // there it is mandatory: flue queues per instance and an abort settles what is queued
+        // behind it, so losing this race would kill the new turn before it ran, silently.
+        await pendingAborts.get(instanceId);
         let admission = input.attach;
         if (!admission) {
           admission = await client.admit(input, { signal: controller.signal });

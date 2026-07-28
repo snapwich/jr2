@@ -91,6 +91,9 @@ async function waitForReadySandbox(world: E2EWorld): Promise<SandboxCR> {
   );
 }
 
+/** One live child machine under the run, as `j2 status` reports it (context-free by construction). */
+type RunChild = { id: string; value: unknown; children: RunChild[] };
+
 /** The wrapper's own state + context — where the workspace endpoint and the body's output land. */
 type WsStatus = {
   status: string;
@@ -98,6 +101,8 @@ type WsStatus = {
   /** The run's agent instance id — the iid the Harness is admitted under, and the Adapter's path. */
   instanceId: string;
   context: { endpoint?: string; output?: { outcome?: string } };
+  /** The body lives here: a wrapper's own `value` is only ever provisioning/attaching/running. */
+  children: RunChild[];
 };
 
 async function wsStatus(world: E2EWorld): Promise<WsStatus> {
@@ -119,6 +124,29 @@ async function waitForAttached(world: E2EWorld): Promise<WsStatus> {
     await sleep(500);
   }
   throw new Error(`the workspace never finished attaching (last: ${JSON.stringify(last)})`);
+}
+
+/** Is any child machine, at any depth, sitting in this state? (The body is one level down.) */
+function anyChildIn(children: RunChild[], value: string): boolean {
+  return children.some((c) => c.value === value || anyChildIn(c.children, value));
+}
+
+/**
+ * What the Harness itself says became of this instance's turns (`?view=history` — the flue wire).
+ * Read from the pod over a port-forward: a settlement is invisible to the Orchestrator by
+ * construction (ADR-0024 — the actor is stopped before the abort fires), so the only honest place
+ * to observe the end of a turn is the Harness that ran it.
+ */
+async function settlements(world: E2EWorld, iid: string): Promise<Array<{ submissionId: string; outcome: string }>> {
+  const pod = (await waitForReadySandbox(world)).metadata.name;
+  let found: Array<{ submissionId: string; outcome: string }> = [];
+  await withPodForward(world, pod, 8080, async (localUrl) => {
+    const res = await fetch(`${localUrl}/agents/coder/${encodeURIComponent(iid)}?view=history`);
+    assert.equal(res.status, 200, "the Harness serves the conversation history");
+    found =
+      ((await res.json()) as { settlements?: Array<{ submissionId: string; outcome: string }> }).settlements ?? [];
+  });
+  return found;
 }
 
 /** Poll until the run settles (done/error) — restore + teardown are asynchronous. */
@@ -305,6 +333,46 @@ Then("the run's body settled as {string}", async function (this: E2EWorld, outco
   const settled = await waitSettled(this);
   assert.equal(settled.status, "done");
   assert.equal(settled.context.output?.outcome, outcome, "the wrapper forwards the body's output verbatim");
+});
+
+Then("the run's body is in {string}", async function (this: E2EWorld, value: string): Promise<void> {
+  let last: WsStatus | undefined;
+  for (let i = 0; i < 120; i++) {
+    last = await wsStatus(this);
+    if (anyChildIn(last.children ?? [], value)) return;
+    await sleep(500);
+  }
+  throw new Error(`the body never reached "${value}" (last: ${JSON.stringify(last?.children)})`);
+});
+
+/**
+ * The turns this instance has ENDED, counted at the Harness (ADR-0024). The count is exact on
+ * purpose: it is what tells an ordered abort from a racing one. Turn two's submissions must not be
+ * in this set while the Machine is still in the state that asked for them — an abort that overtook
+ * the next `send` would have settled them before they ran, and the Agent would simply never speak.
+ */
+Then(
+  "the Harness reports {int} of the Agent's turns settled as {string}",
+  async function (this: E2EWorld, count: number, outcome: string): Promise<void> {
+    const iid = (await wsStatus(this)).instanceId;
+    let last: Array<{ outcome: string }> = [];
+    for (let i = 0; i < 60; i++) {
+      last = await settlements(this, iid);
+      if (last.length === count) break;
+      await sleep(500);
+    }
+    assert.equal(last.length, count, `settlements: ${JSON.stringify(last)}`);
+    assert.ok(
+      last.every((s) => s.outcome === outcome),
+      `every ended turn settled "${outcome}" (got: ${JSON.stringify(last)})`,
+    );
+  },
+);
+
+Then("the run's Sandbox is still there", async function (this: E2EWorld): Promise<void> {
+  // The park that keeps the Workspace — ADR-0024's dangerous shape, where an un-ended turn would
+  // be a live writer in a worktree the Machine believes is idle.
+  assert.equal((await sandboxesFor(this)).length, 1, "a non-final park retains its Sandbox (ADR-0012)");
 });
 
 Then("the run's Sandbox is destroyed", async function (this: E2EWorld): Promise<void> {

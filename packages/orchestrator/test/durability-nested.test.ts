@@ -18,12 +18,16 @@ import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { mkStore, waitFor } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 
-type Log = { admissions: AgentRunInput[]; settled: AgentAdmission[] };
+type Log = { admissions: AgentRunInput[]; settled: AgentAdmission[]; aborted: string[] };
 
 /** An agentRun bound to a port that records admits + settles and parks forever (never settles). */
 function recordingAgentRun(log: Log) {
   let seq = 0;
   const port: AgentRunPort = {
+    abort(_agentName, instanceId) {
+      log.aborted.push(instanceId);
+      return Promise.resolve();
+    },
     admit(input) {
       log.admissions.push(input);
       return Promise.resolve({
@@ -90,7 +94,7 @@ test("invoke'd body: a grandchild admission is ledgered and restore re-attaches 
   };
 
   const store = await mkStore();
-  const log: Log = { admissions: [], settled: [] };
+  const log: Log = { admissions: [], settled: [], aborted: [] };
   const def = defFor(log);
 
   const first = new RunHost({ store });
@@ -116,6 +120,9 @@ test("invoke'd body: a grandchild admission is ledgered and restore re-attaches 
   await waitFor(() => log.settled.length === 2);
   assert.equal(log.admissions.length, 1, "never re-prompted");
   assert.deepEqual(log.settled[1], admission, "re-attached from the persisted admission, at depth");
+  // The host stopping a run is the ONE ending that must not end the turn (ADR-0024's exception):
+  // an abort here would have killed the very submission this restore re-attached to.
+  assert.deepEqual(log.aborted, [], "a host-initiated stop never aborts the durable run");
 });
 
 test("spawnChild'd body: the spawned machine restores and its agent re-attaches", async () => {
@@ -135,7 +142,7 @@ test("spawnChild'd body: the spawned machine restores and its agent re-attaches"
   };
 
   const store = await mkStore();
-  const log: Log = { admissions: [], settled: [] };
+  const log: Log = { admissions: [], settled: [], aborted: [] };
   const def = defFor(log);
 
   const first = new RunHost({ store });
