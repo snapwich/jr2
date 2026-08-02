@@ -105,11 +105,22 @@ function fakeBuild(record: string[], files: Record<string, string> = { "package.
   };
 }
 
-async function mkInstance(config: string, name = "myinst"): Promise<string> {
+/** `agentModels` writes one `agents/<name>.ts` per entry — the definitions are what the provider
+ * preflight probes now that there is no instance-wide model (ADR-0018 as amended). */
+async function mkInstance(config: string, name = "myinst", agentModels?: Record<string, string>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `j2-up-${name}-`));
   await writeFile(join(root, "j2.config.ts"), config);
   await writeFile(join(root, "package.json"), JSON.stringify({ name: `inst-${name}`, version: "0.0.0" }));
   await mkdir(join(root, "workflows"), { recursive: true });
+  if (agentModels) {
+    await mkdir(join(root, "agents"), { recursive: true });
+    for (const [agent, model] of Object.entries(agentModels)) {
+      await writeFile(
+        join(root, "agents", `${agent}.ts`),
+        `export default { model: ${JSON.stringify(model)}, instructions: "i" };\n`,
+      );
+    }
+  }
   return root;
 }
 
@@ -334,7 +345,7 @@ test("caBundle: the PEM rides a j2-ca ConfigMap and the provider preflight; a mi
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.internal/v1" } } };\n`;
   const pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
 
-  const root = await mkInstance(config);
+  const root = await mkInstance(config, "myinst", { coder: "vllm/qwen-x" });
   await writeFile(join(root, "ca.crt"), pem);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
@@ -400,21 +411,45 @@ test("converged is claimed only of a pod observed carrying the intended image", 
   assert.match(honest.err.join("\n"), /converged/);
 });
 
-test("provider preflight: probed from inside the cluster; a failing probe fails the converge", async () => {
+test("provider preflight: every definition's model probed from inside the cluster; a failing probe fails the converge", async () => {
   const config =
-    `export default { name: "myinst", harness: { model: "vllm/qwen-x", ` +
+    `export default { name: "myinst", harness: { ` +
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } } };\n`;
+  // Two agents on the endpoint, one on another provider, and a repeat — the preflight probes the
+  // DISTINCT vllm models and leaves the anthropic one alone.
+  const agents = {
+    coder: "vllm/qwen-x",
+    reviewer: "vllm/qwen-small",
+    scribe: "vllm/qwen-x",
+    judge: "anthropic/claude-x",
+  };
 
-  const ok = mkWorld(await mkInstance(config));
+  const ok = mkWorld(await mkInstance(config, "myinst", agents));
   assert.equal(await up(["--yes"], ok.io), 0);
-  assert.equal(ok.kube.probes.length, 1, "one in-cluster probe ran");
-  assert.match(ok.kube.probes[0]!, /10\.0\.0\.5:8000/, "the probe targets the configured baseUrl");
-  assert.match(ok.kube.probes[0]!, /qwen-x/, "…with the configured model (provider prefix stripped)");
+  assert.equal(ok.kube.probes.length, 2, "one probe per DISTINCT model this endpoint serves");
+  assert.ok(
+    ok.kube.probes.every((p) => /10\.0\.0\.5:8000/.test(p)),
+    "the probes target the configured baseUrl",
+  );
+  const probed = ok.kube.probes.join("\n");
+  assert.match(probed, /qwen-x/, "…with a definition's model (provider prefix stripped)");
+  assert.match(probed, /qwen-small/, "…and the other one");
+  assert.ok(!/claude-x/.test(probed), "a model on another provider is not this endpoint's business");
   assert.match(ok.kube.probes[0]!, /tool_calls/, "…and demands a tool-call completion (ADR-0019)");
 
-  const bad = mkWorld(await mkInstance(config, "bad"));
+  const bad = mkWorld(await mkInstance(config, "bad", agents));
   bad.kube.probeFails = true;
   await assert.rejects(() => up(["--yes"], bad.io), /provider.*enable-auto-tool-choice/s);
+});
+
+test("provider preflight: configured but no Agent names its models → skipped, not a silent pass", async () => {
+  const config =
+    `export default { name: "myinst", harness: { ` +
+    `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } } };\n`;
+  const w = mkWorld(await mkInstance(config, "myinst", { judge: "anthropic/claude-x" }));
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(w.kube.probes.length, 0);
+  assert.match(w.err.join("\n"), /no Agent names a "vllm\/…" model/);
 });
 
 test("ssh repo urls with no j2-git-ssh Secret: offer a deploy key — accept creates it, decline bails", async () => {

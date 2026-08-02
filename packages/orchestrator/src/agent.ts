@@ -21,10 +21,12 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
  * added a restriction vocabulary (`access`), not an extension one: custom tool implementations
  * stay out of the contract. */
 export type AgentDefinition = {
-  /** Model specifier, `<provider>/<modelId>`, e.g. `anthropic/claude-sonnet-4-6`. Optional:
-   * `harness.model` in `j2.config.ts` is the instance-wide default (ADR-0018); an assembly with
-   * neither fails. */
-  model?: string;
+  /** Model specifier, `<provider>/<modelId>`, e.g. `anthropic/claude-sonnet-4-6`. REQUIRED —
+   * there is no instance-wide default (ADR-0018 as amended): `j2.config.ts`'s `harness` section
+   * declares which providers are REACHABLE, and the definition makes the choice. This is also the
+   * only model `j2 up` can preflight, since a workflow's is not statically recoverable. An
+   * `agentRun` invocation may override it for one Turn (`AgentTurnInput.model`). */
+  model: string;
   /** The Agent's system prompt. */
   instructions: string;
   /** Optional static description — observability, never sent to the model. */
@@ -32,7 +34,9 @@ export type AgentDefinition = {
   /** Working directory inside the Sandbox. Default `/work` — the pod volume the attach step put
    * the worktrees on (ADR-0005); override only for non-Workspace layouts. */
   cwd?: string;
-  /** Reasoning effort. Omitted → the runtime's default. */
+  /** Reasoning effort. Omitted → the runtime's default. An `agentRun` invocation may override it
+   * for one Turn (`AgentTurnInput.thinkingLevel`) — effort is a property of the task's difficulty,
+   * so the same persona legitimately runs at different settings in different workflows. */
   thinkingLevel?: ThinkingLevel;
   /** What this Agent may DO to the Workspace (ADR-0028) — the persona in one word, deliberately
    * not `tools` (that names the control-plane Menu, what it may SAY). `"read"` withholds the
@@ -61,10 +65,11 @@ export async function loadAgents(dir: string): Promise<DiscoveredAgent[]> {
   for (const { name, file } of await discoverModules(join(dir, "agents"))) {
     const mod = (await import(pathToFileURL(file).href)) as { default?: AgentDefinition };
     const definition = mod.default;
-    if (!definition?.instructions) {
+    if (!definition?.instructions || !definition.model) {
       throw new Error(
         `agent "${name}" (${file}) is not a definition — the contract (ADR-0018) is ` +
-          "`export default defineAgent({ model, instructions, … })`",
+          "`export default defineAgent({ model, instructions, … })`, and BOTH are required " +
+          "(there is no instance-wide model default)",
       );
     }
     agents.push({ name, definition });

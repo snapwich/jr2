@@ -141,7 +141,6 @@ export function instanceObjects(opts: {
           {
             agents: opts.agents,
             harness: {
-              model: opts.harness?.model,
               // apiKey is deliberately dropped: it materializes into the Secret as
               // J2_PROVIDER_API_KEY (`up`), and the generated app.ts reads it from env — a
               // ConfigMap is not a place for a credential.

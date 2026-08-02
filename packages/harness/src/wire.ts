@@ -5,7 +5,15 @@
 // documented divergence from the stub: a GET (either view) on an unknown conversation is 404 —
 // POST creates, abort answers `{ aborted: false }` (ADR-0027).
 
-/** The Admission: what `POST /agents/:name/:id {message}` answers with (200, immediately — accept
+import type { TurnDials } from "./spec.ts";
+
+/** What `POST /agents/:name/:id` accepts. `message` is the prompt; the dials are this Submission's
+ * override layer over the Agent's definition (ADR-0018 as amended) — omitted, the Harness runs the
+ * definition's own values, so a dial-less admission is byte-identical to the original contract. An
+ * unresolvable `model` is rejected at admission (400), not settled `failed` mid-run. */
+export type AdmissionRequest = { message: string } & TurnDials;
+
+/** The Admission: what `POST /agents/:name/:id` answers with (200, immediately — accept
  * and queue). The serializable three-string handle the host ledger persists (ADR-0016) and a
  * restarted Orchestrator re-attaches by. `offset` is a j2-minted opaque string. */
 export type AdmissionResponse = {

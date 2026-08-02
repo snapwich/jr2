@@ -6,24 +6,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Conversation } from "../src/conversation.ts";
-import { SUBMISSION_ABORTED, type Settlement } from "../src/wire.ts";
+import type { TurnDials } from "../src/spec.ts";
+import { SUBMISSION_ABORTED, type AdmissionRequest, type Settlement } from "../src/wire.ts";
 
 type ScriptedRun = {
   message: string;
+  /** The whole admitted request — the dials this Submission was framed with (ADR-0018 as
+   * amended) reach the turn beside the prompt. */
+  submission: AdmissionRequest;
   signal: AbortSignal;
   resolve: () => void;
   reject: (err: unknown) => void;
 };
 
-/** A Conversation whose turns the test settles by hand. */
+/** A Conversation whose turns the test settles by hand. `admit` keeps the prompt-only shape most
+ * of these tests care about; dials ride the optional second argument. */
 function scripted() {
   const runs: ScriptedRun[] = [];
-  const conversation = new Conversation("coder", "iid-1", (message, signal) => {
+  const conversation = new Conversation("coder", "iid-1", (submission, signal) => {
     return new Promise<void>((resolve, reject) => {
-      runs.push({ message, signal, resolve, reject });
+      runs.push({ message: submission.message, submission, signal, resolve, reject });
     });
   });
-  return { conversation, runs };
+  const admit = (message: string, dials?: TurnDials) => conversation.admit({ message, ...dials });
+  return { conversation, runs, admit };
 }
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -39,9 +45,9 @@ function settlementEvents(conversation: Conversation, offset: string): Settlemen
 }
 
 test("admit accepts and queues: answers synchronously, only the first Submission runs", () => {
-  const { conversation, runs } = scripted();
-  const first = conversation.admit("one");
-  const second = conversation.admit("two");
+  const { conversation, runs, admit } = scripted();
+  const first = admit("one");
+  const second = admit("two");
   assert.equal(first.streamUrl, "/agents/coder/iid-1");
   assert.notEqual(first.submissionId, second.submissionId);
   assert.equal(runs.length, 1);
@@ -49,8 +55,8 @@ test("admit accepts and queues: answers synchronously, only the first Submission
 });
 
 test("promotion is admission order: each settlement promotes the next Submission", async () => {
-  const { conversation, runs } = scripted();
-  const admissions = [conversation.admit("one"), conversation.admit("two"), conversation.admit("three")];
+  const { conversation, runs, admit } = scripted();
+  const admissions = [admit("one"), admit("two"), admit("three")];
   for (let i = 0; i < 3; i++) {
     assert.equal(runs.length, i + 1);
     runs[i]!.resolve();
@@ -63,8 +69,8 @@ test("promotion is admission order: each settlement promotes the next Submission
 });
 
 test("a rejected turn settles failed, carrying the error message", async () => {
-  const { conversation, runs } = scripted();
-  const { submissionId } = conversation.admit("one");
+  const { conversation, runs, admit } = scripted();
+  const { submissionId } = admit("one");
   runs[0]!.reject(new Error("provider melted"));
   await flush();
   assert.deepEqual(conversation.historyView().settlements, [
@@ -73,8 +79,8 @@ test("a rejected turn settles failed, carrying the error message", async () => {
 });
 
 test("abort sweeps active + queued: aborted in admission order, signal fired, nothing promoted", async () => {
-  const { conversation, runs } = scripted();
-  const admissions = [conversation.admit("one"), conversation.admit("two"), conversation.admit("three")];
+  const { conversation, runs, admit } = scripted();
+  const admissions = [admit("one"), admit("two"), admit("three")];
   const { offset } = admissions[0]!;
 
   assert.deepEqual(conversation.abort(), { aborted: true });
@@ -94,9 +100,9 @@ test("abort sweeps active + queued: aborted in admission order, signal fired, no
 });
 
 test("abort on an idle conversation answers { aborted: false }", async () => {
-  const { conversation, runs } = scripted();
+  const { conversation, runs, admit } = scripted();
   assert.deepEqual(conversation.abort(), { aborted: false });
-  conversation.admit("one");
+  admit("one");
   runs[0]!.resolve();
   await flush();
   assert.deepEqual(conversation.abort(), { aborted: false }, "everything settled is idle again");
@@ -104,27 +110,27 @@ test("abort on an idle conversation answers { aborted: false }", async () => {
 
 test("a signal-caused rejection settles aborted exactly once, never failed", async () => {
   let calls = 0;
-  const conversation = new Conversation("coder", "iid-1", (_message, signal) => {
+  const conversation = new Conversation("coder", "iid-1", (_submission, signal) => {
     calls++;
     return new Promise<void>((_resolve, reject) => {
       signal.addEventListener("abort", () => reject(new Error("run torn down")));
     });
   });
-  const { submissionId } = conversation.admit("one");
+  const { submissionId } = conversation.admit({ message: "one" });
   conversation.abort();
   await flush();
   assert.deepEqual(conversation.historyView().settlements, [
     { submissionId, outcome: "aborted", error: { type: SUBMISSION_ABORTED } },
   ]);
   // The swept turn wound down, so a post-abort admission is first unsettled and runs.
-  conversation.admit("again");
+  conversation.admit({ message: "again" });
   await flush();
   assert.equal(calls, 2);
 });
 
 test("offsets are monotone: each nextOffset reads exactly what landed after it", async () => {
-  const { conversation, runs } = scripted();
-  const { offset } = conversation.admit("one");
+  const { conversation, runs, admit } = scripted();
+  const { offset } = admit("one");
 
   conversation.appendMessage({ role: "user", text: "one" });
   conversation.appendMessage({ role: "assistant", text: "hi" });
@@ -142,8 +148,8 @@ test("offsets are monotone: each nextOffset reads exactly what landed after it",
 });
 
 test("a parked long-poll wakes on settlement", async () => {
-  const { conversation, runs } = scripted();
-  const { offset } = conversation.admit("one");
+  const { conversation, runs, admit } = scripted();
+  const { offset } = admit("one");
   const parked = conversation.waitForEvent(offset, 60_000);
   runs[0]!.resolve();
   const view = await parked;
@@ -165,8 +171,8 @@ test("a long-poll that times out answers empty with the same offset — the 204"
 });
 
 test("historyView carries the wire shape: settlements are the contract, messages best-effort", async () => {
-  const { conversation, runs } = scripted();
-  const { submissionId } = conversation.admit("one");
+  const { conversation, runs, admit } = scripted();
+  const { submissionId } = admit("one");
   conversation.appendMessage({ role: "user", text: "one" });
   conversation.appendMessage({ role: "assistant", text: "done" });
   runs[0]!.resolve();
@@ -187,8 +193,8 @@ test("stream chunks carry the flue-lineage envelope the retiring SDK validates (
   // The phased migration's safety property — an old Orchestrator drives the new image — holds
   // only while every updates-view element passes `@flue/sdk`'s chunk validator: a known flat
   // `type`, a `conversationId`, and a numeric `position` on every chunk.
-  const { conversation, runs } = scripted();
-  const { offset, submissionId } = conversation.admit("one");
+  const { conversation, runs, admit } = scripted();
+  const { offset, submissionId } = admit("one");
   conversation.appendMessage({ role: "assistant", text: "hi" });
   runs[0]!.resolve();
   await flush();

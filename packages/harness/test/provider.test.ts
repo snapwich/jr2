@@ -5,8 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { modelsFor, resolveModel, mapThinkingLevel } from "../src/provider.ts";
-import type { HarnessSpec, ThinkingLevel } from "../src/spec.ts";
+import { dialFault, modelsFor, resolveModel, mapThinkingLevel, validateSpecModels } from "../src/provider.ts";
+import type { AgentsSpec, HarnessSpec, ThinkingLevel } from "../src/spec.ts";
 
 const vllm: HarnessSpec = {
   provider: {
@@ -96,4 +96,24 @@ test("mapThinkingLevel: a level outside j2's scale throws — map loudly, never 
   // guards the runtime spec.
   assert.throws(() => mapThinkingLevel("max" as ThinkingLevel), /has no pi equivalent/);
   assert.throws(() => mapThinkingLevel("bogus" as ThinkingLevel), /has no pi equivalent/);
+});
+
+test("validateSpecModels: every definition resolves at boot, or the container dies naming the agent", () => {
+  const models = modelsFor(vllm, {});
+  const spec = (model: string): AgentsSpec => ({ agents: [{ name: "coder", definition: { model, instructions: "i" } }] });
+  // Listed, unlisted-but-this-provider's, and pi's own catalog all resolve.
+  assert.doesNotThrow(() => validateSpecModels(spec("vllm/Qwen/Qwen3-32B"), models));
+  assert.doesNotThrow(() => validateSpecModels(spec("vllm/never-listed"), models));
+  // A provider nothing serves is a static fact about the mounted spec — loud at boot, not on the
+  // first Submission that happens to use this Agent (ADR-0018 as amended).
+  assert.throws(() => validateSpecModels(spec("ghost/x"), models), /agent "coder".*no custom provider "ghost"/s);
+  assert.throws(() => validateSpecModels(spec("bare"), models), /agent "coder".*not a <provider>\/<modelId>/s);
+});
+
+test("dialFault: an invocation's dials are checked the way the turn would use them", () => {
+  const models = modelsFor(vllm, {});
+  assert.equal(dialFault(models, {}), undefined, "no dials is always fine");
+  assert.equal(dialFault(models, { model: "vllm/anything", thinkingLevel: "high" }), undefined);
+  assert.match(dialFault(models, { model: "ghost/x" }) ?? "", /no custom provider "ghost"/);
+  assert.match(dialFault(models, { thinkingLevel: "max" as ThinkingLevel }) ?? "", /has no pi equivalent/);
 });

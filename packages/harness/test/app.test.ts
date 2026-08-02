@@ -7,13 +7,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harnessApp, type HarnessAppDeps } from "../src/app.ts";
 import type { AgentsSpec } from "../src/spec.ts";
-import type { Settlement, StreamEvent } from "../src/wire.ts";
+import type { AdmissionRequest, Settlement, StreamEvent } from "../src/wire.ts";
 
 const spec: AgentsSpec = {
   agents: [{ name: "coder", definition: { model: "faux/model", instructions: "code" } }],
 };
 
-type ScriptedRun = { message: string; resolve: () => void; reject: (err: unknown) => void };
+type ScriptedRun = {
+  message: string;
+  /** The whole admitted request, so a test can assert which dials framed the turn. */
+  submission: AdmissionRequest;
+  resolve: () => void;
+  reject: (err: unknown) => void;
+};
 
 /** The app over a scripted turn executor: each running Submission parks until the test settles
  * it; the abort signal rejects it, promptly, the way a real turn winds down. */
@@ -22,9 +28,9 @@ function scripted(overrides?: Partial<HarnessAppDeps>) {
   const app = harnessApp({
     spec,
     longPollMs: 25,
-    runSubmissionFor: () => (message, signal) =>
+    runSubmissionFor: () => (submission, signal) =>
       new Promise<void>((resolve, reject) => {
-        runs.push({ message, resolve, reject });
+        runs.push({ message: submission.message, submission, resolve, reject });
         signal.addEventListener("abort", () => reject(new Error("swept")), { once: true });
       }),
     ...overrides,
@@ -176,6 +182,43 @@ test("unknown agent name: POST is 404 — a definition must exist", async () => 
   assert.equal(res.status, 404);
   const body = (await res.json()) as { error: string };
   assert.ok(body.error.includes('"ghost"'));
+});
+
+test("dials ride the admit body to the turn (ADR-0018 as amended)", async () => {
+  const { app, runs } = scripted();
+  const res = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", model: "vllm/big", thinkingLevel: "xhigh" }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(runs[0]!.submission, { message: "go", model: "vllm/big", thinkingLevel: "xhigh" });
+});
+
+test("a dial-less admission is unchanged — no keys invented for the turn", async () => {
+  const { app, runs } = scripted();
+  await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go" }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.deepEqual(runs[0]!.submission, { message: "go" });
+});
+
+test("dials that cannot run are a 400 at admission — no conversation, no Submission", async () => {
+  const { app, runs } = scripted({
+    checkDials: (d) => (d.model === "nope/x" ? `model "nope/x" resolves to nothing` : undefined),
+  });
+  const res = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", model: "nope/x" }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as { error: string }).error, /resolves to nothing/);
+  assert.equal(runs.length, 0, "nothing ran");
+  // The rejected POST must not have created the conversation behind it (ADR-0027: POST creates).
+  assert.equal((await app.request("/agents/coder/i1")).status, 404);
 });
 
 test("unknown method on the conversation path is 405; unknown paths are 404", async () => {

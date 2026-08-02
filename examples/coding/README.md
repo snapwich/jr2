@@ -48,20 +48,24 @@ just adapter-image
 kind load docker-image j2-adapter:local --name j2
 just operator-image
 
-# 2. the model, in examples/coding/.env (uncommitted; the CLI loads the .env beside j2.config.ts
-#    into the environment the config reads — ADR-0019):
+# 2. the ENDPOINT, in examples/coding/.env (uncommitted; the CLI loads the .env beside
+#    j2.config.ts into the environment the config reads — ADR-0019):
 #      VLLM_BASE_URL=https://<address>/v1             # reachable FROM PODS — never localhost
-#      J2_MODEL=vllm/<model-id-as-served>
+#    The MODEL is not here: each agents/<name>.ts names its own (ADR-0018 as amended), because an
+#    address is a deployment fact and a model is a design decision. `j2 up` probes every model the
+#    definitions name for this provider.
 #    vLLM must run with --enable-auto-tool-choice and the matching --tool-call-parser; `j2 up`
-#    preflights both from inside the cluster (one trivial tool-call completion) and fails loudly
-#    if the endpoint or the parser is wrong.
+#    preflights both from inside the cluster (one trivial tool-call completion per model) and
+#    fails loudly if the endpoint, the model id, or the parser is wrong.
 #    An HTTPS endpoint signed by a private CA: commit the PEM beside the config and point
 #    `harness.caBundle` at it (this instance does — `ca.crt`); pods and the preflight trust it
 #    via NODE_EXTRA_CA_CERTS (ADR-0020). Token limits for the served model are committed in
 #    j2.config.ts (`provider.models` — the Harness resolves them per model id; unset would mean 0,
 #    starving auto-compaction).
-#    (Anthropic instead: J2_MODEL=anthropic/claude-sonnet-4-6, create the `anthropic` Secret, and
-#    add `envFrom: [{ secretRef: { name: "anthropic" } }]` to `harness` in j2.config.ts.)
+#    (Anthropic instead: point each definition's `model` at anthropic/claude-sonnet-4-6, create
+#    the `anthropic` Secret, and add `envFrom: [{ secretRef: { name: "anthropic" } }]` to
+#    `harness` in j2.config.ts. Two committed files, not one .env line — the cost of the model
+#    belonging to the Agent.)
 ```
 
 Converge + run (from `examples/coding`, or any folder under it — the CLI walks up to `j2.config.ts` and loads the `.env`
@@ -108,8 +112,9 @@ per-cluster operator too.
   `workspace`, `pool`/`source`. The module contract is `export const machine`; the filename is the workflow name.
 - **Events are the workflow's vocabulary**; `audience` tags who may deliver. A state that invokes `agentRun` gets the
   agent-events its transitions handle as its Agent's tool menu; a `gate` state gets the external set the same way.
-- **`agentRun` takes `{ agent, prompt }`.** Sessions are fresh by default; endpoint and Sandbox resolve ambiently from
-  the enclosing `workspace()`; the workflow sees ONE terminal `agent.fault { reason }`.
+- **`agentRun` takes `{ agent, prompt }`** — plus the optional dials `model` and `thinkingLevel`, which turn this ONE
+  turn up or down without changing who the Agent is (ADR-0018 as amended). Sessions are fresh by default; endpoint and
+  Sandbox resolve ambiently from the enclosing `workspace()`; the workflow sees ONE terminal `agent.fault { reason }`.
 - **`workspace(body, spec)` owns Sandbox lifecycle only** and hands the body `{ workdir, repos, branch }`. A body that
   parks keeps its Sandbox alive — that _is_ the retain policy.
 - **`j2.config.ts` `repos` is the catalog**: the boot reconcile clones each entry onto the in-cluster source volume
@@ -118,12 +123,13 @@ per-cluster operator too.
 
 ## agents/ — the Agent definitions
 
-Plain-data definitions (ADR-0018): `agents/<name>.ts` is `export default defineAgent({ instructions, … })` — filename =
-Agent name, typechecked with the instance, `model` optional (inherits `harness.model`), `access` optional (ADR-0028).
-`j2 up` publishes them as a ConfigMap; the **stock Harness image** (`@j2/harness`, ADR-0027) constructs the Agents at
-pod start from that JSON — no build step — and carries the mechanism: the Adapter leash (a fresh MCP connection to
-`$J2_ADAPTER_URL/mcp/<id>` per Submission, ADR-0013) and the Working tools. Editing a definition is a `j2 up` + pod
-restart — no image build anywhere.
+Plain-data definitions (ADR-0018): `agents/<name>.ts` is `export default defineAgent({ model, instructions, … })` —
+filename = Agent name, typechecked with the instance, `model` and `instructions` required (there is no instance-wide
+model default), `access` optional (ADR-0028). A workflow may turn the `model`/`thinkingLevel` dials for one turn; the
+rest of a definition is identity and only the definition sets it. `j2 up` publishes them as a ConfigMap; the **stock
+Harness image** (`@j2/harness`, ADR-0027) constructs the Agents at pod start from that JSON — no build step — and
+carries the mechanism: the Adapter leash (a fresh MCP connection to `$J2_ADAPTER_URL/mcp/<id>` per Submission, ADR-0013)
+and the Working tools. Editing a definition is a `j2 up` + pod restart — no image build anywhere.
 
 ## Follow-ups (deliberately out of scope here)
 

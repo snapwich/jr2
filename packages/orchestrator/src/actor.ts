@@ -38,6 +38,7 @@
 // at all, and restore is a fresh process, so there is nothing to infer it from.
 
 import { fromCallback } from "xstate";
+import type { ThinkingLevel } from "./agent.ts";
 import { ambientHandlesFor } from "./ambient.ts";
 import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
 
@@ -70,6 +71,19 @@ export type AgentTurnInput = {
   agent: string;
   /** This turn's task framing — lands as the conversation's next user message. */
   prompt: string;
+  /**
+   * This turn's DIALS (ADR-0018 as amended) — how hard to run, layered over the definition's own
+   * values. Agents are instance-scoped and every workflow may name any of them, so the same
+   * persona legitimately runs at different settings in different workflows: a reviewer on a
+   * one-line diff and the same reviewer on an architecture change want identical instructions and
+   * different effort.
+   *
+   * IDENTITY is deliberately absent — no `instructions`, `access` or `cwd` here. A call site that
+   * rewrote those would make the Agent's name a lie, and `access` in particular carries
+   * ADR-0028's containment claim, which per-invocation escalation would void.
+   */
+  model?: string;
+  thinkingLevel?: ThinkingLevel;
   /**
    * Session continuity (ADR-0016). Absent = FRESH: every invocation is a new conversation
    * (jr's lossy handoff — revision agents read notes + code, never the prior conversation).
@@ -105,6 +119,11 @@ export type AgentRunInput = {
    */
   sandbox?: string;
   prompt?: string;
+  /** This turn's dials, passed through from {@link AgentTurnInput}. Plain strings, so they ride
+   * the persisted child input; on restore the Submission already exists server-side with its
+   * model fixed, so a re-attach never re-resolves them. */
+  model?: string;
+  thinkingLevel?: ThinkingLevel;
   /**
    * Re-attach to this already-admitted submission instead of admitting a fresh prompt. Set by
    * the host on restore (which also drops `prompt`) from the run's admission ledger.

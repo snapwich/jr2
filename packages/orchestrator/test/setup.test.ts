@@ -291,3 +291,36 @@ test("explicit tools remain the escape hatch over the derived menu", async () =>
   assert.deepEqual(mock.admitted?.tools, ["pong"]);
   actor.stop();
 });
+
+test("the dials pass through to the admission; omitted, nothing is invented (ADR-0018 as amended)", async () => {
+  const ping = defineEvent({ name: "ping", input: z.object({}) });
+  const dialed = new MockFlueClient();
+  const plain = new MockFlueClient();
+  // `input` is loose because pinning the invoke-config generic here would only re-state xstate's
+  // types in a test that is about the dials.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const build = (mock: MockFlueClient, input: any) =>
+    j2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [ping],
+      actors: { agentRun: agentRunActorWith(() => mock) },
+    }).createMachine({
+      id: "wf",
+      context: {},
+      initial: "a",
+      states: { a: { invoke: { src: "agentRun", input }, on: { ping: "b" } }, b: {} },
+    });
+
+  const base = { agent: "coder", prompt: "go", endpoint: "http://x" };
+  const a = hostless(build(dialed, { ...base, model: "vllm/big", thinkingLevel: "xhigh" }), [ping]);
+  const b = hostless(build(plain, base), [ping]);
+  await tick();
+
+  assert.equal(dialed.admitted?.model, "vllm/big");
+  assert.equal(dialed.admitted?.thinkingLevel, "xhigh");
+  // A workflow that names no dials must not start naming them — the Harness runs the definition.
+  assert.equal(plain.admitted?.model, undefined);
+  assert.equal(plain.admitted?.thinkingLevel, undefined);
+  a.actor.stop();
+  b.actor.stop();
+});

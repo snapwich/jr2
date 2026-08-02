@@ -5,6 +5,15 @@ full record in [docs/design/workflow-api/](../design/workflow-api/proposal.md)).
 workflow vocabulary — `{ agent, prompt }` plus opt-ins below — because everything else it used to take was j2 handing
 the consumer values j2 already had. Each absorption follows, with what it deletes from `examples/coding/`.
 
+**Amended 2026-08-02.** The enumeration gains two optional dials, `model` and `thinkingLevel`
+([ADR-0018](0018-instance-agents-are-definitions-j2-assembles-the-harness.md) as amended, which draws the
+identity-vs-dial line and states where each is validated). The **principle above is untouched, and is what admits
+them**: what this ADR absorbed was values j2 already held and was handing back to the consumer to hand in again —
+mechanism wearing a consumer's clothes. A dial is the opposite case: a genuine per-call choice that j2 cannot derive,
+because Agents are instance-scoped and only the invoking workflow knows how hard this turn is. Both are serializable
+strings, so they ride the persisted child input; a restore re-attaches to a Submission whose model is already fixed
+server-side and never re-resolves them.
+
 ## Ambient endpoint and sandbox (deletes the `turn()` helper and all handle threading)
 
 `workspace()`'s `running` state co-invokes a registrar actor that records its handles in a `WeakMap<ActorRef, Handles>`;

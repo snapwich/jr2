@@ -44,6 +44,14 @@ that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; g
   Harness, the admission ledger ([ADR-0016](0016-agent-turn-mechanics-are-internal.md)), `AgentRunPort`, and every
   mechanics/`@kind` assertion survive byte-identical. Long-poll is the only wait transport; the SDK's `?wait=result` and
   SSE paths are not part of the contract.
+
+  **Amended 2026-08-02.** The admit body is `{message, model?, thinkingLevel?}` — the optional dials
+  ([ADR-0018](0018-instance-agents-are-definitions-j2-assembles-the-harness.md) as amended) are this Submission's
+  override layer over the Agent's definition, and an unresolvable one is a 400 at admission rather than a Submission
+  that settles `failed`. Because they are omitted when unset, a dial-less admission is byte-identical to the original
+  body. The five endpoints, the three-string admission, and the long-poll contract are unchanged. Being j2's own
+  protocol rather than flue's is exactly what made this a one-line decision.
+
 - **The re-owned semantics are stated, not inherited:**
   - **Per-instance queue: accept and queue.** A Submission is promoted when it is the first unsettled Submission of its
     conversation; admission order. [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)'s correction

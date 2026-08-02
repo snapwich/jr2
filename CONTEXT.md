@@ -37,7 +37,14 @@ Orchestrator; the compute is remote. _Avoid_: agent actor
 
 **Agent**: A configured worker persona — model + instructions + Working tools + access (e.g. coder, reviewer). What a
 user customizes: a plain-data definition in the instance's `agents/<name>.ts` (filename = Agent name, mirroring
-`workflows/`); the Harness runs the definition directly (ADR-0018, ADR-0027). _Avoid_: role, persona
+`workflows/`); the Harness runs the definition directly (ADR-0018, ADR-0027). An Agent is instance-scoped, so every
+workflow may invoke it; a Turn may set its **Dials** but never its identity. _Avoid_: role, persona
+
+**Dials**: The two fields a Machine state may set for one Turn on top of an Agent's definition — `model` and
+`thinkingLevel` — because they say how hard to run, not who is running (ADR-0018). Everything else in a definition is
+identity (`instructions`, `access`, `cwd`) and only the definition sets it: an invocation that rewrote identity would
+make the Agent's name a lie, and overriding `access` would void ADR-0028's containment. _Avoid_: options, overrides,
+settings
 
 **Sandbox**: The isolated pod that gives an Agent a host-level sandbox plus its own filesystem. The primary motivation
 for the Kubernetes architecture — agents must not share host resources (ports, filesystem, process space). _Avoid_:

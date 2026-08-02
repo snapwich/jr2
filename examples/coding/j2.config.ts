@@ -6,15 +6,20 @@
 // from env — populate the uncommitted `.env` beside this file (see README); the `j2` CLI loads it
 // before evaluating this config, and anything already set in your shell wins over it.
 //
-// `sandbox` is pod-shaped only (ADR-0018); model concerns live in `harness`:
+// `sandbox` is pod-shaped only (ADR-0018); `harness` declares what this instance can REACH —
+// never WHICH model to use. That choice lives in `agents/<name>.ts` (ADR-0018 as amended):
 //   - VLLM_BASE_URL set → a custom `vllm` provider (OpenAI-compatible; the address must be
 //     reachable FROM PODS — a LAN address, never localhost). `j2 up` preflights it from inside
-//     the cluster, including one tool-call completion.
-//   - J2_MODEL is the instance-wide default model (e.g. `vllm/Qwen/Qwen3-32B` or
-//     `anthropic/claude-sonnet-4-6`); the agents/ definitions omit `model` and inherit it.
-//   - For Anthropic instead of vLLM: create the `anthropic` kube Secret and reference it in
-//     `harness.envFrom` (`kubectl -n coding create secret generic anthropic
-//     --from-literal=ANTHROPIC_API_KEY=...`) — `j2 up` preflights that it exists.
+//     the cluster, probing every model the definitions name against it, including one tool-call
+//     completion each.
+//   - The model specifiers themselves (`vllm/Qwen/…`, `anthropic/claude-sonnet-4-6`) are in the
+//     agent definitions. There is no instance-wide default: agents are shared across workflows,
+//     so the variation that matters is per-agent and per-invocation.
+//   - For Anthropic instead of vLLM: point the definitions' `model` at `anthropic/…`, create the
+//     `anthropic` kube Secret, and reference it in `harness.envFrom` (`kubectl -n coding create
+//     secret generic anthropic --from-literal=ANTHROPIC_API_KEY=...`) — `j2 up` preflights that
+//     it exists. Two committed files instead of one `.env` line: the price of the model being a
+//     design decision rather than a deployment one.
 //
 // The image overrides are kit-dev territory (nothing is published yet — ADR-0019): locally built
 // tags, `kind load`ed by `just harness-image` / `just adapter-image` / `just e2e-kind-up`'s
@@ -33,7 +38,6 @@ export default defineConfig({
   },
   operator: { image: "j2-operator:local" },
   harness: {
-    model: process.env.J2_MODEL,
     // The endpoint's cert chains to a private CA (committed here — CA certs are public data).
     // `j2 up` materializes it into the j2-ca ConfigMap; the Harness container and the provider
     // preflight trust it via NODE_EXTRA_CA_CERTS (ADR-0020).
@@ -44,9 +48,9 @@ export default defineConfig({
           api: "openai-completions",
           baseUrl: vllm,
           // Committed, not env: token limits are properties of the MODEL (vLLM reports
-          // max_model_len on /v1/models), keyed by id — whichever model J2_MODEL or an agent
-          // definition names resolves its own entry. Unset would resolve to 0 (custom ids have
-          // no flue catalog entry), leaving auto-compaction without a context budget.
+          // max_model_len on /v1/models), keyed by id — whichever model an agent definition (or
+          // a workflow's per-turn dial) names resolves its own entry. Unset would resolve to 0
+          // (custom ids have no catalog entry), leaving auto-compaction without a context budget.
           models: { "Qwen/Qwen3-Coder-Next-FP8": { contextWindow: 131072, maxTokens: 32768 } },
         }
       : undefined,

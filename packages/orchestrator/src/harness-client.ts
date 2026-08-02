@@ -28,6 +28,7 @@
 
 import { agentRunActorWith } from "./actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "./actor.ts";
+import type { ThinkingLevel } from "./agent.ts";
 import type { Settlement, StreamEvent, SubmissionSettledEvent } from "@j2/harness/wire";
 
 // Wire literals, restated: `@j2/harness` is a types-only devDependency here (the orchestrator
@@ -40,11 +41,13 @@ const LIVE_LONG_POLL = "long-poll";
 /** The three-verb wire client (the injectable seam — structurally what `@flue/sdk`'s
  * `agents.{send,wait,abort}` was, minus the SDK). */
 export type HarnessClient = {
-  /** `POST /agents/:name/:id {message}` → the Admission, with `streamUrl` resolved absolute. */
+  /** `POST /agents/:name/:id {message, model?, thinkingLevel?}` → the Admission, with `streamUrl`
+   * resolved absolute. The optional dials are this Submission's override layer (ADR-0018 as
+   * amended); omitted, the Harness runs the definition's own values. */
   send(
     agentName: string,
     instanceId: string,
-    options: { message: string; signal?: AbortSignal },
+    options: { message: string; model?: string; thinkingLevel?: ThinkingLevel; signal?: AbortSignal },
   ): Promise<AgentAdmission>;
   /** Follow the stream to this Submission's Settlement: resolve on `completed`, reject with
    * `SettlementFault` on `failed`/`aborted`/404. */
@@ -91,7 +94,12 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
       const res = await fetchImpl(conversationUrl(agentName, instanceId), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: sendOptions.message }),
+        body: JSON.stringify({
+          message: sendOptions.message,
+          // Omitted when unset, so an admission with no dials is byte-identical to before.
+          ...(sendOptions.model ? { model: sendOptions.model } : {}),
+          ...(sendOptions.thinkingLevel ? { thinkingLevel: sendOptions.thinkingLevel } : {}),
+        }),
         signal: sendOptions.signal,
       });
       if (!res.ok) {
@@ -173,6 +181,8 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
       }
       return await client.send(input.agentName, input.instanceId, {
         message: input.prompt,
+        model: input.model,
+        thinkingLevel: input.thinkingLevel,
         signal: opts?.signal,
       });
     },

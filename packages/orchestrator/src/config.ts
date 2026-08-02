@@ -110,10 +110,13 @@ export type HarnessProvider = {
 
 /** The agent-runtime section (ADR-0018): what the stock Harness image consumes alongside the
  * `agents/` definitions. Moved out of `sandbox` deliberately — `sandbox` is pod transport (it
- * still CARRIES this env to the Harness container), but model concerns are Harness semantics. */
+ * still CARRIES this env to the Harness container), but model concerns are Harness semantics.
+ *
+ * It declares what this instance can REACH — endpoints, credentials, trust — and never WHICH
+ * model to use (ADR-0018 as amended). The instance-wide `model` default was removed: Agents are
+ * instance-scoped and every workflow may name any of them, so the variation that matters is
+ * per-definition and per-invocation, which one global default serves not at all. */
 export type HarnessConfig = {
-  /** Default model specifier for Agent definitions that omit `model`. */
-  model?: string;
   /** Custom model provider, preflighted from inside the cluster by `j2 up` (ADR-0019). */
   provider?: HarnessProvider;
   /** Env vars for the Harness container (Agent creds, e.g. ANTHROPIC_API_KEY). Values read from

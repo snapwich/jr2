@@ -34,6 +34,8 @@ export type Turn = {
 export type RecordedCall = {
   messages: Array<Record<string, unknown>>;
   tools?: Array<{ function?: { name?: string } }>;
+  /** The model id the request named — the only witness that a per-turn dial reached the wire. */
+  model?: string;
 };
 
 export type FakeProvider = {

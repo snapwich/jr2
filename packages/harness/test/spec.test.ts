@@ -1,6 +1,7 @@
 // The J2_AGENTS_JSON contract (ADR-0018/0027): `loadSpec` must be LOUD about every spec that would
 // otherwise become a silently thinner or mute Harness, and `resolveDefinition` is the
-// per-Submission read — defaults (harness.model, /work) resolve here, at turn start.
+// per-Submission read — the Submission's dials and the `/work`/`write` defaults resolve here, at
+// turn start.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -13,9 +14,11 @@ function env(spec: unknown): Record<string, string | undefined> {
 }
 
 test("loadSpec: a valid spec round-trips", () => {
-  const spec = loadSpec(env({ agents: [coder], harness: { model: "vllm/q" } }));
+  const spec = loadSpec(
+    env({ agents: [coder], harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "https://v/v1" } } }),
+  );
   assert.equal(spec.agents.length, 1);
-  assert.equal(spec.harness?.model, "vllm/q");
+  assert.equal(spec.harness?.provider?.id, "vllm");
 });
 
 test("loadSpec: no J2_AGENTS_JSON fails loudly — the ConfigMap was not mounted", () => {
@@ -36,23 +39,21 @@ test("loadSpec: an entry without instructions is not a definition", () => {
   assert.throws(() => loadSpec(env({ agents: [{ definition: { instructions: "i" } }] })), /is not a definition/);
 });
 
-test("loadSpec: no model anywhere fails; harness.model is the instance default", () => {
+test("loadSpec: a definition naming no model fails — there is no instance-wide default (ADR-0018)", () => {
   const modelless = { name: "a", definition: { instructions: "i" } };
   assert.throws(() => loadSpec(env({ agents: [modelless] })), /agent "a" names no model/);
-  assert.doesNotThrow(() => loadSpec(env({ agents: [modelless], harness: { model: "vllm/q" } })));
 });
 
 test("loadSpec: a duplicated agent name fails — names are conversation routes", () => {
   assert.throws(() => loadSpec(env({ agents: [coder, coder] })), /agent "coder" is defined twice/);
 });
 
-test("resolveDefinition: definition.model wins over harness.model; defaults apply", () => {
+test("resolveDefinition: the definition supplies the values; defaults apply", () => {
   const spec: AgentsSpec = {
     agents: [
       { name: "coder", definition: { instructions: "code", model: "anthropic/claude-x", thinkingLevel: "high" } },
-      { name: "reviewer", definition: { instructions: "review", cwd: "/elsewhere", access: "read" } },
+      { name: "reviewer", definition: { instructions: "review", model: "vllm/q", cwd: "/elsewhere", access: "read" } },
     ],
-    harness: { model: "vllm/q" },
   };
   assert.deepEqual(resolveDefinition(spec, "coder"), {
     model: "anthropic/claude-x",
@@ -71,11 +72,27 @@ test("resolveDefinition: definition.model wins over harness.model; defaults appl
   });
 });
 
-test("resolveDefinition: an unknown agent fails — the pod predates a rename", () => {
-  assert.throws(() => resolveDefinition({ agents: [coder] }, "ghost"), /agent "ghost" is not in the mounted spec/);
+test("resolveDefinition: this Submission's dials win over the definition (ADR-0018 as amended)", () => {
+  const spec: AgentsSpec = {
+    agents: [
+      { name: "coder", definition: { instructions: "code", model: "anthropic/claude-x", thinkingLevel: "low" } },
+    ],
+  };
+  assert.deepEqual(resolveDefinition(spec, "coder", { model: "vllm/big", thinkingLevel: "xhigh" }), {
+    model: "vllm/big",
+    instructions: "code",
+    cwd: "/work",
+    access: "write",
+    thinkingLevel: "xhigh",
+  });
+  // One dial at a time: the other keeps the definition's value.
+  assert.equal(resolveDefinition(spec, "coder", { thinkingLevel: "xhigh" }).model, "anthropic/claude-x");
+  assert.equal(resolveDefinition(spec, "coder", { model: "vllm/big" }).thinkingLevel, "low");
+  // Dials are the ONLY overridable fields — identity is definition-only (ADR-0028's `access`
+  // above all: per-invocation escalation would void its containment claim).
+  assert.equal(resolveDefinition(spec, "coder", { model: "vllm/big" }).instructions, "code");
 });
 
-test("resolveDefinition: no resolvable model fails (the direct seam, beside loadSpec's check)", () => {
-  const spec: AgentsSpec = { agents: [{ name: "a", definition: { instructions: "i" } }] };
-  assert.throws(() => resolveDefinition(spec, "a"), /agent "a" resolves no model/);
+test("resolveDefinition: an unknown agent fails — the pod predates a rename", () => {
+  assert.throws(() => resolveDefinition({ agents: [coder] }, "ghost"), /agent "ghost" is not in the mounted spec/);
 });

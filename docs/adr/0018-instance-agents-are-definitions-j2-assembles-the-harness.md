@@ -37,6 +37,36 @@ definition" (j2 does the mapping), and an Instance mirrors "flue's `flue.config.
   (it still _carries_ this env to the Harness container), but model concerns are Harness semantics and users configure
   them here. `j2 up` preflights a configured provider from inside the cluster (ADR-0019).
 
+**Amended 2026-08-02.** Two clauses above no longer hold. The `harness` section's **default model is removed**, and
+`model` is **required** on every definition. And a workflow may set two of a definition's fields for one Turn.
+
+_Why the default went._ It was reached through `.env` (`J2_MODEL` → `harness.model`), which put a design decision in the
+file reserved for deployment-varying values (ADR-0019) — and split one fact in two, since this endpoint's per-model
+token limits were already committed in `j2.config.ts` keyed by the very model id `.env` was choosing. Removing it leaves
+the honest split: **`harness` declares what the instance can REACH** (endpoints, credentials, trust, limits), **the
+definition makes the choice.** A required `model` also keeps every Agent independently valid, and keeps definitions the
+only models `j2 up` can preflight — so the preflight now probes each distinct model the definitions name for the
+configured provider, instead of one default that any definition could shadow.
+
+_Why an invocation may override it._ Agents are instance-scoped and every workflow may name any of them, so one persona
+legitimately runs at different settings in different workflows — a reviewer on a one-line diff and the same reviewer on
+an architecture change want identical instructions and different effort. Spread-composition (below) answers this with
+persona×tier files where "heavy" is a knob wearing a persona's filename, so `agentRun` takes two optional **dials**,
+`model` and `thinkingLevel`, layered over the definition per Submission.
+
+_The line that keeps this from becoming "re-specify the definition at the call site."_ **Identity vs. dial.** Identity —
+`instructions`, `access`, `cwd` — is definition-only: a call site that rewrote it would make the Agent's name a lie, and
+`access` carries [ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)'s containment claim
+that a read-only reviewer _cannot_ write, which per-invocation escalation would void. **ADR-0028 is therefore unaffected
+by this amendment.** Dials say only how hard to run: it is still the coder, it is the coder running hot.
+
+_Where a model is checked._ Three seats, each where the knowledge is. A definition's model resolves against the registry
+at **pod boot** (loudly, in the pod log — a typo is a static fact about the mounted spec). A configured provider is
+probed per named model at **converge**. A dial is checked at **admission**, 400-ing the invoke as its state is entered
+rather than settling the Submission `failed` mid-run — a call-site model cannot be checked earlier, because an invoke's
+`input` is a function and is not statically recoverable. Definitions keep converge-time safety; overrides pay a later
+check for the flexibility.
+
 ## Considered options
 
 - **Thin wrapper** (`j2Agent({…})` imported inside a user-owned flue project). Rejected: shrinks the per-agent file but

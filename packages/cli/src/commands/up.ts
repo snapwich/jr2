@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { loadAgents, loadConfig, type J2Config } from "@j2/orchestrator";
+import { loadAgents, loadConfig, type DiscoveredAgent, type J2Config } from "@j2/orchestrator";
 import { pnpmDockerBuild, stageInstanceBundle } from "../build.ts";
 import {
   compareVersions,
@@ -209,7 +209,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   await ensureGitSsh(io, kube, config, namespace, ctx, values.yes === true);
 
   // --- provider preflight (ADR-0019): probe the endpoint FROM INSIDE the cluster ----------------
-  await preflightProvider(io, kube, config, namespace, ctx, caPem);
+  await preflightProvider(io, kube, config, agents, namespace, ctx, caPem);
 
   // --- apply + rollout ---------------------------------------------------------------------------
   activity(io, `orchestrator: applying (image ${tag})`);
@@ -377,29 +377,48 @@ async function preflightProvider(
   io: Io,
   kube: KubeAdmin,
   config: J2Config,
+  agents: DiscoveredAgent[],
   namespace: string,
   ctx: { context?: string },
   caPem?: string,
 ): Promise<void> {
   const provider = config.harness?.provider;
   if (!provider) return;
-  // "vllm/Qwen/Qwen3-32B" → the endpoint's model id is everything after the provider prefix.
-  const spec = config.harness?.model ?? "";
-  const model = spec.startsWith(`${provider.id}/`) ? spec.slice(provider.id.length + 1) : spec;
-  activity(io, `provider: probing ${provider.baseUrl} from inside the cluster (model ${model || "(none)"})`);
-  const script = providerProbeScript(provider.baseUrl, model, provider.apiKey);
-  try {
-    // caPem: the probe trusts the instance's CA bundle exactly like the Harness will (ADR-0020) —
-    // a preflight that fails where the Harness would succeed is a broken promise, and vice versa.
-    await kube.runOneShot({ namespace, name: `j2-provider-preflight-${Date.now() % 100000}`, script, caPem, ...ctx });
-    activity(io, "provider: reachable, and the model completed a tool call");
-  } catch (err) {
-    throw new Error(
-      `provider preflight failed against ${provider.baseUrl} (from inside the cluster): ` +
-        `${err instanceof Error ? err.message : err}\n` +
-        `  - localhost never works from a pod; use a LAN address\n` +
-        `  - vLLM needs --enable-auto-tool-choice and a matching --tool-call-parser`,
-    );
+  // The DEFINITIONS name the models (ADR-0018 as amended), so probe the ones that will actually
+  // run, not one instance-wide default. "vllm/Qwen/Qwen3-32B" → the endpoint's model id is
+  // everything after the provider prefix; a definition on a different provider is not this
+  // endpoint's business. A workflow's per-turn dial cannot be probed here — invoke `input` is a
+  // function, so it is not statically recoverable; it is checked at admission instead.
+  const prefix = `${provider.id}/`;
+  const models = [
+    ...new Set(
+      agents
+        .map((a) => a.definition.model)
+        .filter((m) => m.startsWith(prefix))
+        .map((m) => m.slice(prefix.length)),
+    ),
+  ];
+  if (models.length === 0) {
+    activity(io, `provider: ${provider.baseUrl} configured, but no Agent names a "${provider.id}/…" model — skipped`);
+    return;
+  }
+  for (const model of models) {
+    activity(io, `provider: probing ${provider.baseUrl} from inside the cluster (model ${model})`);
+    const script = providerProbeScript(provider.baseUrl, model, provider.apiKey);
+    try {
+      // caPem: the probe trusts the instance's CA bundle exactly like the Harness will (ADR-0020) —
+      // a preflight that fails where the Harness would succeed is a broken promise, and vice versa.
+      await kube.runOneShot({ namespace, name: `j2-provider-preflight-${Date.now() % 100000}`, script, caPem, ...ctx });
+      activity(io, `provider: ${model} reachable, and it completed a tool call`);
+    } catch (err) {
+      throw new Error(
+        `provider preflight failed for model "${model}" against ${provider.baseUrl} (from inside the cluster): ` +
+          `${err instanceof Error ? err.message : err}\n` +
+          `  - localhost never works from a pod; use a LAN address\n` +
+          `  - the model id must be exactly what the endpoint serves (vLLM: GET /v1/models)\n` +
+          `  - vLLM needs --enable-auto-tool-choice and a matching --tool-call-parser`,
+      );
+    }
   }
 }
 

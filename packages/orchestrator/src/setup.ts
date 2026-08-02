@@ -261,6 +261,10 @@ function wrapAgentInput(orig: unknown, derived: string[]) {
       endpoint: consumer.endpoint,
       sandbox: consumer.sandbox,
       prompt: consumer.prompt,
+      // This turn's dials (ADR-0018 as amended) — passed straight through; the Harness layers
+      // them over the definition when the Submission starts.
+      model: consumer.model,
+      thinkingLevel: consumer.thinkingLevel,
       tools: consumer.tools ?? derived,
     };
   };

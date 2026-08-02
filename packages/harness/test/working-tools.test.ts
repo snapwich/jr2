@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { workingToolsFor, type WorkingTool } from "../src/working-tools.ts";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "working-tools");
-const definition = { instructions: "test" };
+const definition = { instructions: "test", model: "anthropic/claude-x" };
 
 function names(tools: WorkingTool[]): string[] {
   return tools.map((t) => t.name);

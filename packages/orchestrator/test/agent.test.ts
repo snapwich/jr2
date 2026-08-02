@@ -36,12 +36,10 @@ test("loadAgents: filename discovery, sorted, helpers ignored", async () => {
   assert.equal(agents[0]!.definition.model, "m");
 });
 
-test("loadAgents: a definition may omit `model` — the instance's `harness.model` default applies at assembly (ADR-0018)", async () => {
+test("loadAgents: a definition omitting `model` fails — there is no instance-wide default (ADR-0018)", async () => {
   const dir = await mkInstance();
   await writeFile(join(dir, "agents", "coder.ts"), `export default { instructions: "i" };\n`);
-  const agents = await loadAgents(dir);
-  assert.equal(agents[0]!.definition.model, undefined);
-  assert.equal(agents[0]!.definition.instructions, "i");
+  await assert.rejects(() => loadAgents(dir), /agent "coder".*BOTH are required/s);
 });
 
 test("loadAgents: no agents/ dir is fine; a non-definition module throws", async () => {

@@ -8,12 +8,13 @@
 
 import { Hono } from "hono";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
-import type { AgentsSpec } from "./spec.ts";
+import type { AgentsSpec, TurnDials } from "./spec.ts";
 import {
   LIVE_LONG_POLL,
   STREAM_NEXT_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
   VIEW_HISTORY,
+  type AdmissionRequest,
   type HistoryMessage,
 } from "./wire.ts";
 
@@ -30,6 +31,12 @@ export type HarnessAppDeps = {
   /** Build the turn executor for one conversation — `turn.ts`'s `runSubmissionFor` in
    * production (`main.ts` composes it), a stub in wire tests. */
   runSubmissionFor: (seat: ConversationSeat) => RunSubmission;
+  /** Reject an admission whose dials cannot run — the reason, or undefined to accept. A call-site
+   * model is invisible to the boot check (`main.ts`), so this is where an unresolvable one is
+   * caught: at ADMISSION, failing the invoke as the state is entered, rather than settling the
+   * Submission `failed` mid-run. Injected so this module stays pi-free (`main.ts` closes it over
+   * the model registry); omitted, dials are taken on faith — which is what wire tests want. */
+  checkDials?: (dials: TurnDials) => string | undefined;
   /** How long a live long-poll parks before 204 "nothing yet". Default 25s (the stub's
    * cadence); short in tests. */
   longPollMs?: number;
@@ -49,6 +56,11 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   app.post("/agents/:name/:id", async (c) => {
     const agentName = c.req.param("name");
     const instanceId = c.req.param("id");
+    const submission = admissionRequest(await c.req.json().catch(() => undefined));
+    // Before the lookup on purpose: a rejected admission must not leave an empty conversation
+    // (and therefore a live turn factory) behind for an iid that never ran.
+    const badDials = deps.checkDials?.(submission);
+    if (badDials) return c.json({ error: badDials }, 400);
     let conversation = conversations.get(key(agentName, instanceId));
     if (!conversation) {
       if (!deps.spec.agents.some((a) => a.name === agentName)) {
@@ -69,8 +81,7 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
       conversation = created;
       conversations.set(key(agentName, instanceId), conversation);
     }
-    const body = (await c.req.json().catch(() => undefined)) as { message?: unknown } | undefined;
-    const admission = conversation.admit(typeof body?.message === "string" ? body.message : "");
+    const admission = conversation.admit(submission);
     // The Conversation mints a relative streamUrl; the wire's is absolute (the stub's shape).
     return c.json({ ...admission, streamUrl: `${new URL(c.req.url).origin}${admission.streamUrl}` });
   });
@@ -106,6 +117,19 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   app.notFound((c) => c.json({ error: `harness: no route ${new URL(c.req.url).pathname}` }, 404));
 
   return app;
+}
+
+/** The admit body, taken defensively: a missing/garbage `message` admits an empty prompt (the
+ * pre-dials behavior), and a non-string dial is dropped rather than passed on as one. */
+function admissionRequest(body: unknown): AdmissionRequest {
+  const sent = (body ?? {}) as Record<string, unknown>;
+  return {
+    message: typeof sent.message === "string" ? sent.message : "",
+    ...(typeof sent.model === "string" ? { model: sent.model } : {}),
+    ...(typeof sent.thinkingLevel === "string"
+      ? { thinkingLevel: sent.thinkingLevel as TurnDials["thinkingLevel"] }
+      : {}),
+  };
 }
 
 function streamHeaders(view: UpdatesView): Record<string, string> {

@@ -10,8 +10,10 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 
 /** The plain-data Agent definition (ADR-0018), as published to the ConfigMap. */
 export type AgentDefinition = {
-  /** Model specifier, `<provider>/<modelId>`. Optional: `harness.model` is the instance default. */
-  model?: string;
+  /** Model specifier, `<provider>/<modelId>`. REQUIRED — there is no instance-wide default
+   * (ADR-0018 as amended): an Agent is independently valid, and this is the only place a model is
+   * checkable before a workflow names one. An invocation may override it (see {@link TurnDials}). */
+  model: string;
   /** The Agent's system prompt. */
   instructions: string;
   /** Optional static description — observability, never sent to the model. */
@@ -44,10 +46,19 @@ export type ProviderSpec = {
   models?: Record<string, ProviderModelLimits>;
 };
 
-/** The harness section: instance-wide model default + optional custom provider. */
+/** The harness section: what this instance can REACH. Deliberately no model default — the config
+ * declares providers, the definition makes the choice (ADR-0018 as amended). */
 export type HarnessSpec = {
-  model?: string;
   provider?: ProviderSpec;
+};
+
+/** What a Machine state may set for one Turn on top of the definition (ADR-0018 as amended) — the
+ * DIALS (how hard to run), never identity (`instructions`/`access`/`cwd`, which would make the
+ * Agent's name a lie). Rides the admit body per Submission, so one `continue` conversation may
+ * queue Submissions at different settings. */
+export type TurnDials = {
+  model?: string;
+  thinkingLevel?: ThinkingLevel;
 };
 
 /** The whole mounted spec — what `j2 up` writes into the `j2-agents` ConfigMap. */
@@ -56,7 +67,7 @@ export type AgentsSpec = {
   harness?: HarnessSpec;
 };
 
-/** One definition with its per-Submission resolution applied: the model default, the `/work`
+/** One definition with its per-Submission resolution applied: the Submission's dials, the `/work`
  * cwd default, and the `"write"` access default (ADR-0028) are resolved here, so a turn works
  * from concrete values. */
 export type ResolvedDefinition = {
@@ -102,10 +113,10 @@ export function loadSpec(env: Record<string, string | undefined>): AgentsSpec {
       );
     }
     seen.add(a.name);
-    if (!a.definition.model && !spec.harness?.model) {
+    if (!a.definition.model) {
       throw new Error(
-        `agent "${a.name}" names no model and the instance sets no harness.model default — ` +
-          "set one of them (ADR-0018)",
+        `agent "${a.name}" names no model — a definition must name one, there is no instance-wide ` +
+          "default (ADR-0018)",
       );
     }
   }
@@ -113,21 +124,20 @@ export function loadSpec(env: Record<string, string | undefined>): AgentsSpec {
 }
 
 /** One Agent's definition off a loaded spec, defaults applied — the per-Submission read
- * (model/instructions/cwd/thinkingLevel resolve when the turn starts, ADR-0027). */
-export function resolveDefinition(spec: AgentsSpec, name: string): ResolvedDefinition {
+ * (model/instructions/cwd/thinkingLevel resolve when the turn starts, ADR-0027). `dials` is this
+ * Submission's override layer: the definition supplies the default, the invocation may turn it. */
+export function resolveDefinition(spec: AgentsSpec, name: string, dials?: TurnDials): ResolvedDefinition {
   const def = spec.agents.find((a) => a.name === name)?.definition;
   if (!def) {
     throw new Error(`agent "${name}" is not in the mounted spec — the pod predates a definition rename? (ADR-0018)`);
   }
-  const model = def.model ?? spec.harness?.model;
-  if (!model) {
-    throw new Error(`agent "${name}" resolves no model (neither definition.model nor harness.model)`);
-  }
+  const model = dials?.model ?? def.model;
+  const thinkingLevel = dials?.thinkingLevel ?? def.thinkingLevel;
   return {
     model,
     instructions: def.instructions,
     cwd: def.cwd ?? "/work",
     access: def.access ?? "write",
-    ...(def.thinkingLevel ? { thinkingLevel: def.thinkingLevel } : {}),
+    ...(thinkingLevel ? { thinkingLevel } : {}),
   };
 }

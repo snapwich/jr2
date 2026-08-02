@@ -13,7 +13,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
 import type { Surface } from "@j2/adapter";
 import { harnessApp } from "../src/app.ts";
-import { modelsFor } from "../src/provider.ts";
+import { dialFault, modelsFor, validateSpecModels } from "../src/provider.ts";
 import type { AgentsSpec } from "../src/spec.ts";
 import { runSubmissionFor } from "../src/turn.ts";
 import type { HistoryView, Settlement, StreamEvent } from "../src/wire.ts";
@@ -65,11 +65,14 @@ before(async () => {
     agents: [
       {
         name: AGENT,
-        definition: { instructions: "Review what you are handed, then answer through the menu.", cwd: tmpdir() },
+        definition: {
+          model: "fake/model-x",
+          instructions: "Review what you are handed, then answer through the menu.",
+          cwd: tmpdir(),
+        },
       },
     ],
     harness: {
-      model: "fake/model-x",
       provider: {
         id: "fake",
         api: "openai-completions",
@@ -81,9 +84,12 @@ before(async () => {
     },
   };
   const models = modelsFor(spec.harness, {});
+  validateSpecModels(spec, models);
   app = harnessApp({
     spec,
     longPollMs: 250,
+    // The real composition (`main.ts`): admission rejects a dial the turn could not run.
+    checkDials: (dials) => dialFault(models, dials),
     runSubmissionFor: (seat) =>
       runSubmissionFor({
         spec,
@@ -122,10 +128,14 @@ function conversationPath(iid: string): string {
   return `/agents/${AGENT}/${encodeURIComponent(iid)}`;
 }
 
-async function admit(iid: string, message: string): Promise<{ offset: string; submissionId: string }> {
+async function admit(
+  iid: string,
+  message: string,
+  dials?: { model?: string; thinkingLevel?: string },
+): Promise<{ offset: string; submissionId: string }> {
   const res = await app.request(conversationPath(iid), {
     method: "POST",
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, ...dials }),
     headers: { "content-type": "application/json" },
   });
   assert.equal(res.status, 200);
@@ -182,6 +192,46 @@ test("the Menu is listed fresh per Submission: a surface change lands on the nex
   for (const working of ["read", "write", "edit", "bash", "grep", "glob"]) {
     assert.ok(menus[0]?.includes(working), `the Working tools ride along (missing: ${working})`);
   }
+});
+
+test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018 as amended)", async () => {
+  provider.reset([{ text: "One." }, { text: "Two." }, { text: "Three." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/dials";
+
+  // Three Submissions on one conversation — the `session: "continue"` shape, where the harness is
+  // assembled once and later turns reconcile onto it (`setModel`). The definition's model, then a
+  // dial, then back to the definition's when the dial is gone.
+  const first = await admit(iid, "Review the diff.");
+  assert.equal((await settled(iid, first)).outcome, "completed");
+  const second = await admit(iid, "Review it harder.", { model: "fake/model-y", thinkingLevel: "xhigh" });
+  assert.equal((await settled(iid, second)).outcome, "completed");
+  const third = await admit(iid, "Back to normal.");
+  assert.equal((await settled(iid, third)).outcome, "completed");
+
+  assert.deepEqual(
+    provider.calls.map((call) => call.model),
+    ["model-x", "model-y", "model-x"],
+    "the dial is per-SUBMISSION, not sticky on the conversation",
+  );
+  // The conversation itself survived the swap: turn 3 still sees turns 1-2 (one pi session, one
+  // assembled harness — the dial reconciles onto it rather than rebuilding it).
+  assert.ok(
+    provider.calls[2]!.messages.length > provider.calls[0]!.messages.length,
+    "the context accumulated across the model change",
+  );
+});
+
+test("an unresolvable dial is a 400 at admission — the turn never starts", async () => {
+  provider.reset([{ text: "Unreached." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const res = await app.request(conversationPath("conf/bad-dial"), {
+    method: "POST",
+    body: JSON.stringify({ message: "go", model: "ghost/x" }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 400);
+  assert.equal(provider.calls.length, 0, "no provider request was ever made");
 });
 
 test("a Menu pick reaches the Orchestrator and its receipt reaches the model; the Submission settles completed", async () => {

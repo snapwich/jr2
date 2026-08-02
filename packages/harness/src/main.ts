@@ -5,7 +5,7 @@
 
 import { serve } from "@hono/node-server";
 import { harnessApp } from "./app.ts";
-import { modelsFor } from "./provider.ts";
+import { dialFault, modelsFor, validateSpecModels } from "./provider.ts";
 import { loadSpec } from "./spec.ts";
 import { runSubmissionFor } from "./turn.ts";
 
@@ -21,10 +21,14 @@ const adapterUrl = required(
   "the Agent has no Adapter to reach, so it cannot drive its Machine (ADR-0013)",
 );
 const models = modelsFor(spec.harness, process.env);
+// Boot-time, not first-Submission: a definition naming a model nothing serves is a fact about the
+// mounted spec, and the pod log is where it belongs (ADR-0018 as amended).
+validateSpecModels(spec, models);
 
 const app = harnessApp({
   spec,
   runSubmissionFor: (seat) => runSubmissionFor({ spec, models, adapterUrl, ...seat }),
+  checkDials: (dials) => dialFault(models, dials),
 });
 
 const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0" }, (info) => {

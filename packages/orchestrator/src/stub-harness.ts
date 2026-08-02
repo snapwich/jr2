@@ -6,7 +6,7 @@
 // silent real Harness, and e2e drives it by playing the agent against `/mcp/<iid>` instead.
 //
 // Wire (ADR-0027 — the normative model of the five endpoints; `@j2/harness` serves it for real):
-//   POST /agents/:name/:id  {message}  → 200 { streamUrl, offset, submissionId }
+//   POST /agents/:name/:id  {message, model?, thinkingLevel?} → 200 { streamUrl, offset, submissionId }
 //   GET  /agents/:name/:id?offset=…[&view=updates] → 200 `[]` + Stream-Next-Offset/Up-To-Date
 //   GET  /agents/:name/:id?…&live=long-poll        → parked; 204 + same headers on timeout
 //   POST /agents/:name/:id/abort                   → 200 { aborted }
@@ -31,8 +31,16 @@
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 
-/** One admission of an Agent: which persona, which durable exchange, and the prompt. */
-export type Admission = { agentName: string; instanceId: string; message?: string };
+/** One admission of an Agent: which persona, which durable exchange, the prompt, and this
+ * Submission's dials (ADR-0018 as amended) — captured so a mechanics-tier test can assert which
+ * settings a state framed the turn with, exactly as it asserts the prompt. */
+export type Admission = {
+  agentName: string;
+  instanceId: string;
+  message?: string;
+  model?: string;
+  thinkingLevel?: string;
+};
 
 /** One settled submission, in the shape `history()` reports it. The stub settles submissions for
  * exactly one reason — an abort (ADR-0024) — so `outcome` has exactly one value here. */
@@ -116,11 +124,13 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
       let body = "";
       req.on("data", (chunk: Buffer) => (body += chunk));
       req.on("end", () => {
-        const message = (safeParse(body) as { message?: string } | undefined)?.message;
+        const sent = safeParse(body) as { message?: string; model?: string; thinkingLevel?: string } | undefined;
         const admission: Admission = {
           agentName: decodeURIComponent(agentName),
           instanceId: decodeURIComponent(instanceId),
-          message,
+          message: sent?.message,
+          ...(sent?.model ? { model: sent.model } : {}),
+          ...(sent?.thinkingLevel ? { thinkingLevel: sent.thinkingLevel } : {}),
         };
         admissions.push(admission);
         const submissionId = `stub-${++submissionSeq}`;

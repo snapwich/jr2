@@ -7,6 +7,7 @@
 
 import {
   SUBMISSION_ABORTED,
+  type AdmissionRequest,
   type AdmissionResponse,
   type HistoryMessage,
   type HistoryView,
@@ -19,8 +20,9 @@ import {
 
 /** Run one Submission (the turn, `turn.ts`). Resolution settles `completed`; a rejection settles
  * `failed` — unless the signal fired, which settles `aborted`. The signal is how an abort reaches
- * the active pi run. */
-export type RunSubmission = (message: string, signal: AbortSignal) => Promise<void>;
+ * the active pi run. Takes the whole admitted request, not just its prompt: this Submission's
+ * dials frame the turn exactly as the prompt does (ADR-0018 as amended). */
+export type RunSubmission = (submission: AdmissionRequest, signal: AbortSignal) => Promise<void>;
 
 /** One stream read, resolved to the end of the log. The HTTP layer carries `nextOffset` and
  * `upToDate` as the stream headers and `events` as the body. */
@@ -34,7 +36,7 @@ export type UpdatesView = {
  * sweep and the pump race safely: whichever settles first wins, the other is a no-op. */
 type SubmissionRecord = {
   submissionId: string;
-  message: string;
+  submission: AdmissionRequest;
   settled: boolean;
 };
 
@@ -67,9 +69,9 @@ export class Conversation {
   /** Accept and queue (ADR-0027): mint the Admission and answer immediately — running comes
    * later, when the Submission is first unsettled. `streamUrl` is the conversation's wire path,
    * relative; the HTTP layer absolutizes it if it wants to. */
-  admit(message: string): AdmissionResponse {
+  admit(submission: AdmissionRequest): AdmissionResponse {
     const submissionId = `s-${++this.admitted}-${Math.random().toString(36).slice(2, 8)}`;
-    this.queue.push({ submissionId, message, settled: false });
+    this.queue.push({ submissionId, submission, settled: false });
     const admission: AdmissionResponse = {
       streamUrl: `/agents/${encodeURIComponent(this.agentName)}/${encodeURIComponent(this.instanceId)}`,
       offset: String(this.log.length),
@@ -153,7 +155,7 @@ export class Conversation {
     this.active = { record, controller };
     void (async () => {
       try {
-        await this.runSubmission(record.message, controller.signal);
+        await this.runSubmission(record.submission, controller.signal);
         this.settle(record, "completed");
       } catch (err) {
         // A rejection caused by the signal is the swept turn winding down, not a failure. The

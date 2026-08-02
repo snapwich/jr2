@@ -4,6 +4,7 @@
 import { defineAgent } from "@j2/orchestrator";
 
 export default defineAgent({
+  model: "vllm/Qwen/Qwen3-Coder-Next-FP8",
   description: "Reviews the branch in its Workspace worktree and delivers a verdict.",
   // What the reviewer may DO (ADR-0028): read-only Working tools. The prose ban below stays as
   // intent — the half of the contract a model reads; this field is the mechanism's half.

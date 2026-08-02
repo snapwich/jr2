@@ -31,7 +31,7 @@ test("parses bare, quoted, exported, and commented assignments", () => {
       "# a comment",
       "",
       "VLLM_BASE_URL=http://10.0.0.5:8000/v1   # reachable from pods",
-      "export J2_MODEL=vllm/Qwen/Qwen3-32B",
+      "export J2_PROVIDER_API_KEY=sk-abc123",
       `SINGLE='raw $notinterpolated #nothash'`,
       `DOUBLE="line\\none"`,
       "  SPACED  =  padded  ",
@@ -42,7 +42,7 @@ test("parses bare, quoted, exported, and commented assignments", () => {
 
   assert.deepEqual(parsed, {
     VLLM_BASE_URL: "http://10.0.0.5:8000/v1",
-    J2_MODEL: "vllm/Qwen/Qwen3-32B",
+    J2_PROVIDER_API_KEY: "sk-abc123",
     SINGLE: "raw $notinterpolated #nothash",
     DOUBLE: "line\none",
     SPACED: "padded",
@@ -67,12 +67,12 @@ test("loads from the instance root when run in a subdirectory", async () => {
 });
 
 test("the real environment wins over the file", async () => {
-  const { root } = await mkInstance("J2_MODEL=from-file\nOTHER=from-file\n");
-  const { io } = mkIo({ cwd: root, env: { J2_MODEL: "from-shell" } });
+  const { root } = await mkInstance("J2_PROVIDER_API_KEY=from-file\nOTHER=from-file\n");
+  const { io } = mkIo({ cwd: root, env: { J2_PROVIDER_API_KEY: "from-shell" } });
 
   loadDotenv(io);
 
-  assert.equal(io.env.J2_MODEL, "from-shell");
+  assert.equal(io.env.J2_PROVIDER_API_KEY, "from-shell");
   assert.equal(io.env.OTHER, "from-file");
 });
 
