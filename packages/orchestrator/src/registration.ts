@@ -18,7 +18,7 @@
 // collide — with zero workflow plumbing. The WeakMap is rendezvous keyed by per-run object
 // identity, not a swappable adapter (the distinction ADR-0011 draws for the demux).
 
-import type { ActorSystem } from "xstate";
+import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
 import type { EventDef } from "@j2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
 import type { SandboxPort } from "./workspace.ts";
@@ -51,7 +51,79 @@ export type Registration = {
   sandbox?: string;
   /** Close over the invoking state's `sendBack`; delivery lands where the actor was invoked. */
   deliver: (event: DeliveredEvent) => void;
+  /**
+   * The Machine that invoked this actor — `self._parent`, captured at registration. The menu was
+   * derived from THIS machine's transitions (ADR-0015), so it is the only snapshot whose guards
+   * can answer "would this event move anything" (see {@link wouldMove}). Absent on registrations
+   * that have no parent to name, which is why every read of it fails open.
+   */
+  invoker?: AnyActorRef;
 };
+
+/**
+ * Would this exact event move the invoking Machine? The guard question the derived menu cannot ask
+ * for itself: `deriveMenus` reads transition KEYS, so an event whose every transition is guarded
+ * false is on the menu regardless (ADR-0029).
+ *
+ * This is the AUTHORITATIVE form — delivery has the validated payload, so payload-reading guards
+ * answer on real data. {@link mayMove} is the menu's weaker form.
+ *
+ * **Fails open**: no invoker, or a guard that throws, reads as `true`. The failure modes are not
+ * symmetric. A wrong `true` offers a tool that does nothing — today's behavior, and recoverable,
+ * because the receipt now says so. A wrong `false` tells an Agent its work was rejected when the
+ * workflow would have accepted it, and nothing recovers from that.
+ *
+ * A transition that neither targets nor acts (`on: { X: {} }`) reads as false, matching xstate's
+ * own `can()`. Correct: a handler that does nothing is not a handler.
+ */
+export function wouldMove(invoker: AnyActorRef | undefined, event: AnyEventObject): boolean {
+  if (!invoker) return true;
+  try {
+    return invoker.getSnapshot().can(event);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * COULD this event move the invoking Machine, judged before the Agent has picked its arguments?
+ * What the surface build can ask (ADR-0029) — there is no payload yet, so a guard reading one
+ * would answer on `undefined` and report a false "no".
+ *
+ * So the probe watches. The event goes in behind a Proxy that records any read outside `type`; a
+ * `false` is trusted only when the guard never looked at the payload, and a guard that did look is
+ * offered anyway and settled exactly at delivery by {@link wouldMove}. That keeps the two failure
+ * modes where they belong: a context-only guard (`rounds > 0`) filters precisely, and a
+ * payload-only guard (`event.verdict === "approved"`) is never silently hidden from the Agent.
+ *
+ * Verified against the pinned xstate: guards receive the object handed to `can()`, unspread and
+ * unwrapped, so the trap sees exactly the guard's own reads. If an xstate bump ever broke that, the
+ * trap would simply see nothing and this would degrade to filtering slightly more — hence the test
+ * that pins a payload-reading guard STAYING on the menu.
+ */
+export function mayMove(invoker: AnyActorRef | undefined, type: string): boolean {
+  if (!invoker) return true;
+  let readPayload = false;
+  const watch = (prop: string | symbol): void => {
+    if (typeof prop === "string" && prop !== "type") readPayload = true;
+  };
+  const probe = new Proxy({ type } as Record<string, unknown>, {
+    get(target, prop, receiver) {
+      watch(prop);
+      return Reflect.get(target, prop, receiver);
+    },
+    has(target, prop) {
+      watch(prop);
+      return Reflect.has(target, prop);
+    },
+  });
+  try {
+    if (invoker.getSnapshot().can(probe as AnyEventObject)) return true;
+  } catch {
+    return true;
+  }
+  return readPayload;
+}
 
 /** Delivery target absent (unknown address, settled run, exited state) — the one catch point. */
 export class UnknownAddressError extends Error {}

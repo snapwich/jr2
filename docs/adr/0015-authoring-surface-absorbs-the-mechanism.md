@@ -48,6 +48,14 @@ Considered and rejected: per-transition demarcation (xstate transitions have no 
 inventing j2-only config inside the transition table — a DSL by the back door) and purely structural
 own-transitions-only derivation (breaks ADR-0011's blessed handle-`report_blocked`-once-at-an-ancestor idiom).
 
+**Amended 2026-08-02
+([ADR-0029](0029-a-menu-offers-what-the-machine-will-accept-and-a-pick-that-moves-nothing-says-so.md)).** "The
+derivation is **static**" holds for the VOCABULARY and no longer for the SURFACE. The config walk described above is
+unchanged and still the validation scope, but it reads transition _keys_ and so cannot see guards — an event whose every
+transition is guarded false was offered anyway, and the pick that followed moved nothing while the receipt reported the
+turn merely unfinished. `agentSurface` now asks the invoking machine's guards before listing. Authoring is untouched: a
+workflow named no tools before and names none now.
+
 ## Why there is no injection model (the retired ADR-0003)
 
 j2's first composability story — "workflows are templates of injected providers": Machines reference their moving parts

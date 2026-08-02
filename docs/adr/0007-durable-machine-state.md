@@ -27,6 +27,13 @@ snapshot in the same save (ADR-0016). Iids are globally unique, so restore needs
 - **Reconcile against the live world before re-attaching.** Restore is not blind resume: a present Sandbox CR →
   re-attach; an absent one → the defined failure path (`workspace.lost` into the body — ADR-0012), never a silent
   re-provision.
+- **Reconcile against the MACHINE too** (added 2026-08-02,
+  [ADR-0030](0030-a-snapshot-names-the-machine-it-was-written-under.md)). "Reconstructable from a persisted snapshot"
+  was only ever true of the Machine that WROTE it, and a run resolves its workflow by filename while the state volume
+  outlives the image — so a run parked across a deploy meets whatever was baked in next. The snapshot now carries a
+  digest of its Machine's shape, and a mismatch is refused rather than interpreted. This is not belt-and-braces: xstate
+  accepts a `value` naming a state the chart no longer has and starts with `value: undefined`, so nothing downstream
+  would have caught it.
 
 ## Consequences
 

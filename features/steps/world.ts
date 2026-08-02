@@ -37,11 +37,23 @@ export type CliResult = { stdout: string; stderr: string; code: number };
 /** The serving fixture's address + credential — what `J2_URL`/`J2_TOKEN` carry to the `j2` binary. */
 export type ServerInfo = { url: string; token: string };
 
+/** The entrypoint's one-line boot report. `lost`/`drifted`/`failed` appear only when non-empty —
+ * the runs this boot did not resume (ADR-0030). */
+export type Announcement = {
+  url?: string;
+  workflows?: string[];
+  lost?: string[];
+  drifted?: string[];
+  failed?: string[];
+};
+
 export class E2EWorld {
   /** The temp instance folder (holds `j2.config.ts`, `workflows/`, and the runtime `.j2/`). */
   dir = "";
   /** The running server-entrypoint child, while serving. */
   private serverProc?: ChildProcess;
+  /** The last boot's announce line, whole (ADR-0030 reports unresumed runs on it). */
+  announced?: Announcement;
   /** The serving orchestrator's address + Instance token, once serving. */
   server?: ServerInfo;
   /** The in-process stub Harness (ADR-0011), started on demand; its url is run input. */
@@ -150,9 +162,15 @@ export class E2EWorld {
 
   /** Copy any `features/fixtures/<name>.ts` workflow into the instance BEFORE serving. */
   async addFixtureWorkflow(name: string): Promise<void> {
+    await this.installFixtureWorkflow(name, name);
+  }
+
+  /** Install a fixture under a DIFFERENT workflow name — how a scenario replaces a workflow's code
+   * while keeping its identity, which is what `j2 up` does after an edit (ADR-0030). */
+  async installFixtureWorkflow(fixture: string, name: string): Promise<void> {
     await mkdir(join(this.dir, "workflows"), { recursive: true });
     await copyFile(
-      fileURLToPath(new URL(`../fixtures/${name}.ts`, import.meta.url)),
+      fileURLToPath(new URL(`../fixtures/${fixture}.ts`, import.meta.url)),
       join(this.dir, "workflows", `${name}.ts`),
     );
   }
@@ -173,14 +191,14 @@ export class E2EWorld {
     proc.stderr?.on("data", () => {}); // drain so the pipe never blocks
     // The entrypoint announces one JSON object per line; the `{ url }` line is the address (repo
     // reconcile lines may precede it on a sandbox-ful instance).
-    const url = await new Promise<string>((resolve, reject) => {
+    const announced = await new Promise<Announcement>((resolve, reject) => {
       let buf = "";
       proc.stdout!.on("data", (d: Buffer) => {
         buf += d.toString();
         for (const line of buf.split("\n").slice(0, -1)) {
           try {
-            const parsed = JSON.parse(line) as { url?: string };
-            if (parsed.url) return resolve(parsed.url);
+            const parsed = JSON.parse(line) as Announcement;
+            if (parsed.url) return resolve(parsed);
           } catch {
             // non-JSON noise on stdout is not the announcement
           }
@@ -188,7 +206,10 @@ export class E2EWorld {
       });
       proc.on("close", (code) => reject(new Error(`server entrypoint exited (${code}) before announcing`)));
     });
-    this.server = { url, token: this.token };
+    // Kept whole, not just the url: the boot also reports the runs it did NOT resume (ADR-0030),
+    // and that line is the only place a drifted run announces itself.
+    this.announced = announced;
+    this.server = { url: announced.url!, token: this.token };
   }
 
   /** SIGINT the orchestrator and wait for it to exit (idempotent — safe to call again in cleanup). */

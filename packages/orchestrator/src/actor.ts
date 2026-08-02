@@ -252,6 +252,10 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
         signaled = true;
         sendBack(event);
       },
+      // The state that invoked us — the machine the menu derived from, so the only one whose
+      // guards can say whether a pick would move anything (ADR-0029). Same `_parent` the ambient
+      // walk above uses; structural, so a sibling's snapshot is unreachable.
+      invoker: self._parent,
     });
 
     const client = portFactory(endpoint);

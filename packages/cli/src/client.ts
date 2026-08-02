@@ -17,6 +17,9 @@ export type RunStatus = {
   status: string;
   value: unknown;
   context: unknown;
+  /** Why the host set this status, for statuses the Machine did not choose — `drifted` says the
+   * workflow changed shape since the run was saved, and names both fingerprints (ADR-0030). */
+  reason?: string;
 };
 
 /** One item on a run's observation feed — mirrors the orchestrator's `RunFeedEvent`. */

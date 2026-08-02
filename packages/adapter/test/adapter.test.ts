@@ -18,7 +18,7 @@ import { startAdapter } from "../src/serve.ts";
 const TOKEN = "ws-1.signed";
 
 /** A fake Orchestrator: serves one surface, records what was delivered — and what bearer arrived. */
-function fakeOrchestrator(surface: Surface | undefined, turnComplete = true) {
+function fakeOrchestrator(surface: Surface | undefined, turnComplete = true, moved?: boolean) {
   const seen: { bearers: string[]; delivered: Array<Record<string, unknown>> } = { bearers: [], delivered: [] };
   const fetchImpl: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
@@ -27,7 +27,7 @@ function fakeOrchestrator(surface: Surface | undefined, turnComplete = true) {
     if (url.endsWith("/surface")) return Response.json(surface);
     const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
     seen.delivered.push(event);
-    return Response.json({ delivered: true, event: event.type, turnComplete, deliveryId: "d-1" });
+    return Response.json({ delivered: true, event: event.type, moved, turnComplete, deliveryId: "d-1" });
   };
   return {
     seen,
@@ -126,6 +126,36 @@ test("the receipt reads as PROSE, because that is what a model acts on (ADR-0024
     assert.doesNotMatch(text, /turn is over/i);
   } finally {
     await open.close();
+  }
+});
+
+test("a rejected pick is told it was rejected, not that the turn is merely unfinished (ADR-0029)", async () => {
+  const { client, close } = await connect(fakeOrchestrator(REVIEW_SURFACE, false, false).client);
+  try {
+    const result = await client.callTool({ name: "request_review", arguments: { summary: "PR up" } });
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    // "still in the state that asked for this turn" is TRUE here and useless: it reads as progress,
+    // and the model answers it by calling again. Say the thing it can act on.
+    assert.match(text, /did NOT act on it/);
+    assert.match(text, /not repeat this call unchanged/i);
+    assert.doesNotMatch(text, /turn is over/i);
+  } finally {
+    await close();
+  }
+});
+
+test("an Orchestrator too old to report `moved` is not read as rejecting everything", async () => {
+  // The Adapter ships as a stock image and the Orchestrator as the instance image (ADR-0027), so
+  // the two can skew. Absent must mean unknown, not rejected — every receipt would say "did NOT act
+  // on it" on the happy path, which is the cry-wolf failure ADR-0026 already paid for once.
+  const { client, close } = await connect(fakeOrchestrator(REVIEW_SURFACE, true, undefined).client);
+  try {
+    const result = await client.callTool({ name: "request_review", arguments: { summary: "PR up" } });
+    const text = (result.content as Array<{ text: string }>)[0]!.text;
+    assert.match(text, /turn is over/i);
+    assert.doesNotMatch(text, /did NOT act on it/);
+  } finally {
+    await close();
   }
 });
 

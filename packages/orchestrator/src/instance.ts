@@ -69,6 +69,10 @@ export type RunningInstance = {
   instanceToken: string;
   /** Names of the workflows discovered + registered from `<dir>/workflows`. */
   workflows: string[];
+  /** What this boot did with the runs it found persisted (ADR-0007, ADR-0030) — resumed, given up
+   * on, refused because their Machine changed shape, or errored (left for the next boot to retry).
+   * The entrypoint announces everything but the resumed ones. */
+  restored: { reattached: string[]; lost: string[]; drifted: string[]; failed: string[] };
   /**
    * Re-discover `<dir>/workflows` and re-register every file, replacing changed definitions and
    * dropping deleted ones. A dev/test-only affordance — the deployed entrypoint ships workflows
@@ -92,7 +96,15 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   }
   await store.init();
 
-  const host = new RunHost({ store, reconcile: opts.reconcile, sandbox: opts.sandbox });
+  const host = new RunHost({
+    store,
+    reconcile: opts.reconcile,
+    sandbox: opts.sandbox,
+    // A run left `live` to be retried is otherwise unexplained — the announce line names it, this
+    // says why (ADR-0030). stderr, because it is a fault, not the boot's structured result.
+    onRestoreError: (runId, err) =>
+      console.error(`restore failed for run ${runId}: ${err instanceof Error ? err.message : err}`),
+  });
 
   // Bump per reload so `import()` re-reads a changed file rather than serving the ESM module cache.
   let importGen = 0;
@@ -118,8 +130,10 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // 2. Filename discovery: every `workflows/<name>.ts` exports its Machine + event manifest by name.
   for (const { name, file } of await discoverWorkflows(opts.dir)) await registerFile(name, file);
 
-  // 3. Resume in-flight runs persisted by a prior process (ADR-0007).
-  await host.restore();
+  // 3. Resume in-flight runs persisted by a prior process (ADR-0007). The outcome is reported, not
+  // swallowed (ADR-0030): a boot that declined to resume runs must say so, or "drifted" is only
+  // discoverable by asking after a specific run id nobody knows to ask about.
+  const restored = await host.restore();
 
   // 4. Serve, authenticated (ADR-0013). The signing key is loaded from (or minted into) the
   // instance folder, NOT generated per process: live Sandboxes outlive a restart, and their
@@ -138,6 +152,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     url: `http://${hostname}:${port}`,
     instanceToken,
     workflows: host.workflows(),
+    restored,
     reload: async () => {
       importGen++;
       const before = new Set(host.workflows());

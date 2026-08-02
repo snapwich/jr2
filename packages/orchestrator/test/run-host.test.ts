@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup } from "xstate";
-import { RunHost, type RunStatus } from "../src/run-host.ts";
+import { RunHost, type RunStatus, type WorkflowDef } from "../src/run-host.ts";
 import { codingDef, continuedDef, mkStore, MockFlueClient, pipelineDef, tick, waitFor } from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
@@ -50,6 +50,51 @@ test("the receipt is self-describing: it says whether the turn is over (ADR-0024
   const over = host.sendToAgent(instanceId, { type: "done" });
   assert.equal(over.turnComplete, true, "the state stopped waiting — the turn is over");
   assert.ok(over.deliveryId, "a delivery stays addressable after the fact (ADR-0013)");
+});
+
+test("a pick no transition accepts says so, instead of reading as a move (ADR-0029)", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(codingDef(new Map()));
+  const { runId, instanceId } = await host.start("coding");
+
+  const moved = host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  assert.equal(moved.moved, true);
+  assert.equal(moved.turnComplete, false, "moved WITHIN the invoking state: still the same turn");
+  await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
+
+  // `review` handles only `done`, and the invoke lives on the ANCESTOR — so this delivery is
+  // well-formed, arrives, and moves nothing, while the registration survives. Before `moved` the
+  // two outcomes above and below were the same receipt, and the Agent's only move was to retry.
+  const rejected = host.sendToAgent(instanceId, { type: "request_review", summary: "again" });
+  assert.equal(rejected.delivered, true, "it arrived — validation is unchanged");
+  assert.equal(rejected.moved, false, "…and nothing accepted it");
+  assert.equal(rejected.turnComplete, false, "which is NOT the same claim as the turn being over");
+  assert.equal((host.status(runId)?.context as Ctx).summary, "PR up", "a rejected pick changes nothing");
+});
+
+test("the surface stops offering what the current state cannot accept (ADR-0029)", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(codingDef(new Map()));
+  const { runId, instanceId } = await host.start("coding");
+
+  assert.deepEqual(
+    host
+      .agentSurface(instanceId)
+      ?.accepts.map((a) => a.name)
+      .sort(),
+    ["done", "request_review"],
+  );
+
+  host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
+
+  // Same turn, same registration, same vocabulary — a narrower menu, because `review` handles only
+  // `done`. The Adapter re-lists per Submission, so this is what the next Submission sees.
+  assert.deepEqual(
+    host.agentSurface(instanceId)?.accepts.map((a) => a.name),
+    ["done"],
+  );
+  assert.ok(host.agentSurface(instanceId), "the surface still EXISTS — the turn did not end");
 });
 
 test("one conversation, two turns: the abort is ordered ahead of the next turn's admission", async () => {
@@ -103,7 +148,7 @@ test("CANCEL ends the run: its Agents' turns end, and it does not come back (ADR
   // a cancelled run that came back would re-attach to submissions that settled `aborted`.
   const second = new RunHost({ store });
   second.register(codingDef(new Map()));
-  assert.deepEqual(await second.restore(), { reattached: [], lost: [] });
+  assert.deepEqual(await second.restore(), { reattached: [], lost: [], drifted: [], failed: [] });
 });
 
 test("stop() is the other verb: no abort, and the run restores (ADR-0007/0025)", async () => {
@@ -240,6 +285,109 @@ test("restore marks a run lost when the live world is absent", async () => {
   assert.deepEqual(reattached, []);
   assert.deepEqual(lost, [runId]);
   assert.equal((await store.load(runId))!.status, "lost");
+});
+
+// ---- Machine drift (ADR-0030) -------------------------------------------------------------------
+// A run is matched to a workflow by NAME. The state volume outlives the image, so the def found
+// under that name may not be the Machine that wrote the snapshot — and reading it anyway is the
+// silent failure this refuses.
+
+/** Wait until a run's blob carries its Machine stamp. `waitFor` takes a SYNC predicate and the
+ * store is async, so the read is fired into a captured flag — the pattern the ledger test uses. */
+async function waitForStamp(store: SnapshotStore, runId: string): Promise<void> {
+  let stamped = false;
+  await waitFor(() => {
+    void store.load(runId).then((l) => (stamped = (l?.snapshot as { machine?: string })?.machine !== undefined));
+    return stamped;
+  });
+}
+
+/** `codingDef` under its own name, but a different SHAPE — a redeploy that renamed a state. */
+function reshapedCodingDef(): WorkflowDef {
+  return {
+    name: "coding",
+    machine: setup({ types: {} as { context: Record<string, never> } }).createMachine({
+      id: "m",
+      context: {},
+      initial: "elsewhere",
+      states: { elsewhere: {} },
+    }),
+    provide: () => ({}),
+  };
+}
+
+test("a run whose workflow changed shape is refused, not resumed (ADR-0030)", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register(codingDef(new Map()));
+  const { runId } = await hostA.start("coding");
+  await tick();
+  await waitForStamp(store, runId);
+
+  // Same workflow name, different Machine — exactly what a `j2 up` after a workflow edit produces.
+  const hostB = new RunHost({ store, reconcile: () => true });
+  hostB.register(reshapedCodingDef());
+  const { reattached, lost, drifted } = await hostB.restore();
+
+  assert.deepEqual(drifted, [runId]);
+  assert.deepEqual([reattached, lost], [[], []], "refused is its own outcome — not lost, not resumed");
+
+  const stored = (await store.load(runId))!;
+  assert.equal(stored.status, "drifted");
+  assert.ok(stored.snapshot, "the snapshot is KEPT — unlike `lost`, this run is intact and inspectable");
+  assert.match(stored.reason ?? "", /changed shape/);
+
+  // …and therefore still readable, which is the whole reason it is not marked lost: `read` returns
+  // undefined for a null blob, so a nulled snapshot would answer `j2 status` with `no run`.
+  const read = await hostB.read(runId);
+  assert.equal(read?.status, "drifted");
+  assert.match(read?.reason ?? "", /coding/, "the refusal names the workflow, and both fingerprints");
+});
+
+test("an unstamped snapshot is drift: never interpret one whose Machine cannot be vouched for", async () => {
+  const store = await mkStore();
+  const host = new RunHost({ store, reconcile: () => true });
+  host.register(codingDef(new Map()));
+  // A blob written before the stamp existed.
+  await store.save("run-old", { workflow: "coding", instanceId: "iid-1", snapshot: {} }, "live");
+
+  const { drifted } = await host.restore();
+  assert.deepEqual(drifted, ["run-old"]);
+  assert.match((await store.load("run-old"))!.reason ?? "", /unstamped/);
+});
+
+test("a run that throws on restore does not take the rest of the boot with it", async () => {
+  const store = await mkStore();
+  const hostA = new RunHost({ store });
+  hostA.register(codingDef(new Map()));
+  const { runId: first } = await hostA.start("coding");
+  const { runId: second } = await hostA.start("coding");
+  await tick();
+  await waitForStamp(store, second);
+
+  // `reconcile` talks to a cluster, so it is the realistic thrower — a kubectl blip mid-boot. The
+  // loop is sequential, so before ADR-0030 this rejected `restore()`, which rejects `startInstance`,
+  // which crash-loops the pod — and `second`, which is fine, never restored either.
+  const errors: string[] = [];
+  const hostB = new RunHost({
+    store,
+    reconcile: (run) => {
+      if (run.runId === first) throw new Error("kubectl: connection refused");
+      return true;
+    },
+    onRestoreError: (runId) => errors.push(runId),
+  });
+  hostB.register(codingDef(new Map()));
+  const { reattached, drifted, failed } = await hostB.restore();
+
+  assert.deepEqual(failed, [first]);
+  assert.deepEqual(reattached, [second], "the healthy run behind it still restored");
+  assert.deepEqual(drifted, [], "a throw is not a shape change — do not condemn a run for a blip");
+  assert.deepEqual(errors, [first], "and it is reported, since the row itself records nothing");
+
+  // Left `live` deliberately: the next boot tries again. Marking it would make a transient cluster
+  // failure permanent, and marking it LOST would additionally throw the snapshot away.
+  assert.equal((await store.load(first))!.status, "live");
 });
 
 // ---- Child machines (the visualizer's live half) ------------------------------------------------

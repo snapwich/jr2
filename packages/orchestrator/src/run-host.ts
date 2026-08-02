@@ -29,12 +29,15 @@ import {
   bindRun,
   EventValidationError,
   gateAddress,
+  mayMove,
   RegistrationTable,
   UnknownAddressError,
+  wouldMove,
   type RetryTelemetry,
   type RunBinding,
 } from "./registration.ts";
 import type { SandboxPort } from "./workspace.ts";
+import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import type { AgentAdmission } from "./actor.ts";
@@ -105,6 +108,13 @@ export type RunStatus = RunRecord & {
   /** The live child machines beneath the root — where most of a run actually is. */
   children: RunChild[];
   fault?: string;
+  /**
+   * Why the HOST set this status, for the statuses the Machine did not choose — today `drifted`
+   * (ADR-0030). Distinct from `fault`, which is a running actor's own error; this is the store's
+   * account of a run it declined to resume, and until it was surfaced here nothing on any HTTP
+   * route could read it.
+   */
+  reason?: string;
 };
 
 /**
@@ -185,6 +195,15 @@ export type AgentDeliveryReceipt = {
   delivered: true;
   /** The event delivered — the Agent reads its own pick back, by name. */
   event: string;
+  /**
+   * A transition accepted it. False means the pick was well-formed, arrived, and moved nothing —
+   * every transition for it was guarded false in the current state (ADR-0029). Distinct from
+   * {@link turnComplete}: a pick can move the Machine WITHIN the invoking state, which is
+   * `moved: true, turnComplete: false`. Before this existed the two were indistinguishable, so an
+   * Agent whose pick a guard rejected was told the workflow was "still in the state that asked",
+   * and its only move was to call again.
+   */
+  moved: boolean;
   /** The invoking state stopped waiting: this Agent's turn is over. */
   turnComplete: boolean;
   deliveryId: string;
@@ -234,6 +253,9 @@ export type RunHostOptions = {
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
   /** Injectable id generator (deterministic ids in tests). Default: `crypto.randomUUID`. */
   newId?: () => string;
+  /** Report a run that threw during restore (ADR-0030). The row is left `live` for the next boot,
+   * so this is the only account of why — the entrypoint logs it. Default: silent. */
+  onRestoreError?: (runId: string, err: unknown) => void;
   /** The Sandbox backend `workspace()` provisions through (ADR-0012). Absent = no cluster:
    * workspace-less workflows run fine; a `workspace()` invocation faults its run pointedly. */
   sandbox?: SandboxPort;
@@ -245,6 +267,11 @@ export type RunHostOptions = {
 type RunBlob = {
   workflow: string;
   instanceId: string;
+  /** The shape of the Machine that WROTE this snapshot (ADR-0030). `workflow` says which def to
+   * look up; this says whether the def found there is still the one this snapshot can be read by.
+   * Absent means written before the stamp existed, which restore treats as drift — the point is to
+   * never interpret a snapshot whose Machine cannot be vouched for. */
+  machine?: string;
   snapshot: unknown;
   agents?: Record<string, AgentAdmission>;
   fault?: string;
@@ -274,6 +301,7 @@ export class RunHost {
   private readonly store: SnapshotStore;
   private readonly reconcile: (run: RunRecord) => boolean | Promise<boolean>;
   private readonly newId: () => string;
+  private readonly onRestoreError?: (runId: string, err: unknown) => void;
   private readonly sandbox?: SandboxPort;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
   /** Per-workflow name→def resolution scope, built (and validated) at registration. */
@@ -291,6 +319,7 @@ export class RunHost {
     this.store = opts.store;
     this.reconcile = opts.reconcile ?? (() => true);
     this.newId = opts.newId ?? (() => randomUUID());
+    this.onRestoreError = opts.onRestoreError;
     this.sandbox = opts.sandbox;
   }
 
@@ -346,11 +375,26 @@ export class RunHost {
 
   /**
    * Restore every persisted live run: hydrate, reconcile against the live world, and either
-   * re-attach (re-spawn from the rewritten child input) or mark lost. Returns the run ids handled.
+   * re-attach (re-spawn from the rewritten child input), mark lost, or refuse as drifted. Returns
+   * the run ids handled, by outcome — the caller announces it, because a boot that silently skipped
+   * work is the failure this whole path exists to avoid.
+   *
+   * Every run is handled INDEPENDENTLY (ADR-0030). The loop is sequential and one throw used to
+   * reject the whole method, which rejects `startInstance`, which crash-loops the pod — and every
+   * later run in the store never restored at all. One run that cannot be resumed is one run, not an
+   * outage.
+   *
+   * `drifted` and `failed` are different claims, deliberately. Drift is a DURABLE verdict — the
+   * Machine changed, and it will still have changed on the next boot — so it is written to the row.
+   * A throw is not: `reconcile` talks to a cluster, and a kubectl blip must not permanently condemn
+   * a run. Those rows are left `live` to be retried on the next boot, and reported every time until
+   * they stop failing.
    */
-  async restore(): Promise<{ reattached: string[]; lost: string[] }> {
+  async restore(): Promise<{ reattached: string[]; lost: string[]; drifted: string[]; failed: string[] }> {
     const reattached: string[] = [];
     const lost: string[] = [];
+    const drifted: string[] = [];
+    const failed: string[] = [];
 
     for (const stored of await this.store.list()) {
       if (stored.status !== "live") continue;
@@ -362,30 +406,52 @@ export class RunHost {
         continue;
       }
 
-      const record: RunRecord = { runId: stored.runId, workflow: blob.workflow, instanceId: blob.instanceId };
-      if (!(await this.reconcile(record))) {
-        await this.store.markLost(stored.runId, "reconcile: live world absent");
-        lost.push(stored.runId);
+      // The workflow name resolved a def; this asks whether that def is still the Machine this
+      // snapshot was written by (ADR-0030). Refused BEFORE `reconcile`, which talks to the cluster:
+      // there is no point proving a Sandbox is alive for a run that cannot be read.
+      const expected = fingerprintOf(def.machine);
+      if (blob.machine !== expected) {
+        await this.store.markDrifted(
+          stored.runId,
+          `workflow "${blob.workflow}" changed shape since this run was saved ` +
+            `(saved under ${blob.machine ?? "an unstamped Machine"}, now ${expected})`,
+        );
+        drifted.push(stored.runId);
         continue;
       }
 
-      // Re-attach every persisted agentRun input in the TREE from the admission ledger
-      // (ADR-0016): iids are globally unique, so one flat map covers every nesting depth.
-      const agents = blob.agents ?? {};
-      const hydrated = reattachAgentRuns(blob.snapshot, agents);
+      const record: RunRecord = { runId: stored.runId, workflow: blob.workflow, instanceId: blob.instanceId };
 
-      const actor = this.spawn(
-        this.assemble(def, blob.instanceId),
-        { snapshot: hydrated as never },
-        record,
-        def,
-        agents,
-      );
-      actor.start();
-      reattached.push(stored.runId);
+      try {
+        if (!(await this.reconcile(record))) {
+          await this.store.markLost(stored.runId, "reconcile: live world absent");
+          lost.push(stored.runId);
+          continue;
+        }
+
+        // Re-attach every persisted agentRun input in the TREE from the admission ledger
+        // (ADR-0016): iids are globally unique, so one flat map covers every nesting depth.
+        const agents = blob.agents ?? {};
+        const hydrated = reattachAgentRuns(blob.snapshot, agents);
+
+        const actor = this.spawn(
+          this.assemble(def, blob.instanceId),
+          { snapshot: hydrated as never },
+          record,
+          def,
+          agents,
+        );
+        actor.start();
+        reattached.push(stored.runId);
+      } catch (err) {
+        // Left `live` on purpose — see the note above. The row is unchanged, so the next boot tries
+        // again; what must not happen is this taking the remaining runs down with it.
+        this.onRestoreError?.(stored.runId, err);
+        failed.push(stored.runId);
+      }
     }
 
-    return { reattached, lost };
+    return { reattached, lost, drifted, failed };
   }
 
   /**
@@ -393,6 +459,14 @@ export class RunHost {
    * invoked this Agent accepts, right now. Undefined once nothing is registered (the state exited,
    * the run settled, the iid is unknown) — the one catch point, and the reason the Adapter never
    * has to learn which turn is live: it asks, per turn, and the answer IS the turn.
+   *
+   * "Right now" is load-bearing (ADR-0029): the registered defs are the state's VOCABULARY, derived
+   * statically from its transitions, and the guards on those transitions are asked here — so an
+   * event the Machine cannot currently accept is not offered. The pick has not happened yet, so the
+   * question is `mayMove`, not `wouldMove`: a guard that would have judged the Agent's arguments is
+   * left on the menu and settled at delivery. The Adapter rebuilds this per MCP connection and the
+   * Harness re-lists per Submission, so the filter lands at turn boundaries and never moves under
+   * an Agent mid-turn.
    */
   agentSurface(instanceId: string): AgentSurfaceView | undefined {
     const reg = this.table.lookup(agentAddress(instanceId));
@@ -401,12 +475,14 @@ export class RunHost {
       instanceId,
       runId: reg.runId,
       sandbox: reg.sandbox,
-      accepts: [...reg.defs.values()].map((def) => ({
-        name: def.name,
-        description: def.description,
-        input: z.toJSONSchema(def.input),
-        semantics: def.semantics,
-      })),
+      accepts: [...reg.defs.values()]
+        .filter((def) => mayMove(reg.invoker, def.name))
+        .map((def) => ({
+          name: def.name,
+          description: def.description,
+          input: z.toJSONSchema(def.input),
+          semantics: def.semantics,
+        })),
     };
   }
 
@@ -421,6 +497,17 @@ export class RunHost {
     }
     const address = agentAddress(instanceId);
     const invoking = this.table.lookup(address);
+
+    // Ask the guard question BEFORE delivering, and ask it with the VALIDATED payload — this is the
+    // exact form of the check the surface build can only approximate payload-blind (ADR-0029).
+    // Parsed here rather than read back out of `deliver` because `deliver` is void by design (it is
+    // the one behavior behind both dialects); a zod default applied there but not here would leave
+    // a guard reading that field answering on `undefined`. An unaccepted name or a bad payload
+    // makes this unreliable and `deliver` throws on the next line anyway — so it fails open.
+    const def = invoking?.defs.get(type);
+    const parsed = def?.input.safeParse(payload ?? {});
+    const moved = wouldMove(invoking?.invoker, parsed?.success ? { type, ...parsed.data } : { type, ...payload });
+
     this.table.deliver(address, type, payload);
     // Read AFTER the delivery, off the SAME table the ADR-0024 guarantee uses — so the receipt
     // reports what happened rather than what was hoped. `deliver` reached the invoking state's
@@ -432,6 +519,7 @@ export class RunHost {
     return {
       delivered: true,
       event: type,
+      moved,
       turnComplete: this.table.lookup(address) !== invoking,
       deliveryId: this.newId(),
     };
@@ -562,6 +650,7 @@ export class RunHost {
       context: snap.context,
       children: runChildren(snap), // the persisted `children` map — same tree, off the store
       fault: blob.fault,
+      reason: stored.reason,
     };
   }
 
@@ -811,6 +900,9 @@ export class RunHost {
     const blob: RunBlob = {
       workflow: run.record.workflow,
       instanceId: run.record.instanceId,
+      // Stamped on every save, off the registered TEMPLATE (never the per-run `.provide()` result —
+      // providers do not change shape, and `fingerprintOf` memoizes per machine object). ADR-0030.
+      machine: fingerprintOf(run.def.machine),
       snapshot: serialized,
       agents: run.agents,
       fault: run.fault,

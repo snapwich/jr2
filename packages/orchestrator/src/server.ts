@@ -94,6 +94,18 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     signingKey,
     sandbox,
   });
-  opts.announce(JSON.stringify({ url: inst.url, workflows: inst.workflows }));
+  // Resumed runs are routine and stay quiet; runs this boot did NOT resume are not, so they ride
+  // the announce line (ADR-0030) — the one thing every boot prints, whatever is reading it. Without
+  // this, `drifted` is only reachable by asking after a run id nobody knows to ask about.
+  const { lost, drifted, failed } = inst.restored;
+  opts.announce(
+    JSON.stringify({
+      url: inst.url,
+      workflows: inst.workflows,
+      ...(lost.length ? { lost } : {}),
+      ...(drifted.length ? { drifted } : {}),
+      ...(failed.length ? { failed } : {}),
+    }),
+  );
   return inst;
 }

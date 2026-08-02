@@ -89,8 +89,16 @@ by (ADR-0007). _Avoid_: handle, ticket
 **Settlement**: How a Submission ends — `completed`, `failed`, or `aborted`. What the history view reports and the tests
 assert; j2 deliberately never observes the settlement of a turn it aborted (ADR-0024). _Avoid_: result, status
 
-**Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), served by
-the Adapter over MCP. What the Agent may **say**. _Avoid_: tools (unqualified), tool list
+**Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), narrowed
+to those its guards would currently accept (ADR-0029), served by the Adapter over MCP. What the Agent may **say**. The
+derived set is the state's vocabulary and the scope delivery validates against; the Menu is what a given turn is
+offered, so one state can offer different Menus as its context changes. _Avoid_: tools (unqualified), tool list
+
+**Machine shape**: The facts about a Machine that decide whether a persisted snapshot can still be read by it — state
+ids and nesting, invoke ids and srcs, transition targets — as a digest stamped on every save and compared on restore
+(ADR-0030). Deliberately excludes guard and action bodies: those change what a run does next, not whether its snapshot
+is interpretable. A mismatch is **drift**, and a drifted run is refused and kept, never resumed. _Avoid_: version (this
+is a content address, not an ordering), schema
 
 **Working tools**: The file and shell tools (read, write, edit, bash, grep, glob) the Harness executes in its own
 container — what the Agent may **do**; filtered by the definition's `access` (ADR-0028). _Avoid_: tools (unqualified),

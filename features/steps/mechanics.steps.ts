@@ -66,6 +66,18 @@ Given(
   },
 );
 
+// The same start, with the one input the `guarded` fixture's context guard reads (ADR-0029) — so a
+// scenario can put the run on either side of that guard without driving it there first.
+Given(
+  "I start the {string} workflow against the stub harness with {int} attempts",
+  async function (this: E2EWorld, wf: string, attempts: number): Promise<void> {
+    const endpoint = await this.stubHarnessUrl();
+    await this.runCli(["run", wf, "--detach", "--input", JSON.stringify({ endpoint, attempts })]);
+    this.runId = this.resultJson<{ runId: string }>().runId;
+    assert.ok(this.runId, "run --detach printed a runId");
+  },
+);
+
 // What a `tools/call` becomes once the Adapter has translated it: one delivery, into the state that
 // invoked the Agent.
 When(
@@ -83,6 +95,43 @@ When(
     assert.ok(body.deliveryId, "a delivery answers with a receipt");
   },
 );
+
+// A pick the Agent is allowed to make and the Machine declines to act on (ADR-0029). The delivery
+// still succeeds — it was well-formed and it arrived — so the outcome is on the RECEIPT, which is
+// the only thing the Agent gets to read.
+When(
+  "the agent calls {string} with summary {string} and is told it moved nothing",
+  async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
+    const s = await status(this);
+    const res = await fetch(`${this.server?.url}/agents/${s.instanceId}/events`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...this.authHeaders() },
+      body: JSON.stringify({ type: tool, summary }),
+    });
+    const body = (await res.json()) as { moved?: boolean; turnComplete?: boolean; error?: string };
+    assert.equal(res.status, 200, `the delivery was accepted (got: ${body.error})`);
+    assert.equal(body.moved, false, "no transition accepted it");
+    assert.equal(body.turnComplete, false, "…which is not the same claim as the turn being over");
+  },
+);
+
+// The redeploy, played honestly: the orchestrator goes away, the workflow's CODE changes under the
+// same name, and a new process comes up on the same store — exactly `j2 up` after an edit, minus
+// the cluster (ADR-0030). Sequential on purpose; the store brooks one writer.
+When(
+  "the {string} workflow is replaced with the {string} fixture and the orchestrator restarts",
+  async function (this: E2EWorld, name: string, fixture: string): Promise<void> {
+    await this.stopServer();
+    await this.installFixtureWorkflow(fixture, name);
+    await this.startServer();
+  },
+);
+
+Then("the boot reports the run as drifted", function (this: E2EWorld): void {
+  // Not merely discoverable by asking after a run id — announced, because nobody knows to ask.
+  assert.deepEqual(this.announced?.drifted, [this.runId], "the announce line names the refused run");
+  assert.equal(this.announced?.failed, undefined, "a shape change is a verdict, not an error");
+});
 
 When("I cancel the run", async function (this: E2EWorld): Promise<void> {
   const r = await this.runCli(["send", this.runId!, "--event", "CANCEL"]);
@@ -125,6 +174,20 @@ Then("the run's status shows {string}", async function (this: E2EWorld, terminal
   const s = await waitForValue(this, terminal);
   assert.equal(s.status, terminal);
 });
+
+// A refused run is still a READABLE run — the difference from `lost`, which nulls the snapshot and
+// so answers `no run "<id>"`, indistinguishable from one that never existed (ADR-0030).
+Then(
+  "the run reads as drifted, still parked at {string}, and says why",
+  async function (this: E2EWorld, value: string): Promise<void> {
+    const r = await this.runCli(["status", this.runId!]);
+    assert.equal(r.code, 0, `j2 status on a drifted run must still succeed: ${r.stderr}`);
+    const s = this.resultJson<{ status: string; value: unknown; reason?: string }>();
+    assert.equal(s.status, "drifted");
+    assert.equal(s.value, value, "kept exactly where it was — nothing was interpreted");
+    assert.match(s.reason ?? "", /changed shape/, "and the refusal explains itself");
+  },
+);
 
 Then(
   "the run's status lists gate {string} accepting {string} with meta summary {string}",

@@ -128,6 +128,53 @@ test("a fresh boot on the same store restores an in-flight run", async () => {
   }
 });
 
+test("editing a workflow between boots refuses its parked runs instead of resuming them (ADR-0030)", async () => {
+  // The real sequence: a run is parked, someone edits `workflows/<name>.ts`, `j2 up` bakes a new
+  // image, and the state volume carries the old snapshot into the new Machine. The workflow name
+  // still resolves, so nothing used to notice — and xstate does not validate a restored `value`,
+  // it just starts with `value: undefined`. This is the only thing standing there.
+  // Two instance dirs, ONE store — because both boots share this process, and `import()` would
+  // otherwise serve boot B the module cached for boot A. Deployed, boot B is a new process; here a
+  // distinct path is what makes the second `workflows/task.ts` a genuinely different module.
+  const dirA = await mkdtemp(join(pkgDir, ".drift-a-"));
+  const dirB = await mkdtemp(join(pkgDir, ".drift-b-"));
+  const dbDir = await mkdtemp(join(tmpdir(), "j2-drift-"));
+  const dbPath = join(dbDir, "state.db");
+  await mkdir(join(dirA, "workflows"), { recursive: true });
+  await mkdir(join(dirB, "workflows"), { recursive: true });
+  await writeFile(join(dirA, "workflows", "task.ts"), machineSrc("task", "coding"));
+  // The edit: same workflow NAME, a state that is no longer there.
+  await writeFile(join(dirB, "workflows", "task.ts"), machineSrc("task", "implementing"));
+
+  try {
+    const storeA = new SqliteSnapshotStore(dbPath);
+    const instA = await startInstance({ dir: dirA, store: storeA, signingKey: KEY });
+    const { runId } = await instA.host.start("task");
+    await waitFor(async () => (await storeA.load(runId)) !== undefined);
+    assert.deepEqual(instA.restored, { reattached: [], lost: [], drifted: [], failed: [] });
+    await instA.close();
+
+    const storeB = new SqliteSnapshotStore(dbPath);
+    const instB = await startInstance({ dir: dirB, store: storeB, reconcile: () => true, signingKey: KEY });
+    try {
+      assert.deepEqual(instB.restored.drifted, [runId], "the boot refuses it, and says which run");
+      assert.deepEqual(instB.restored.reattached, []);
+      assert.equal(instB.host.status(runId), undefined, "and it is NOT live");
+
+      // Refused, not erased: the run still reads, and says why. This is the difference from
+      // `markLost`, whose nulled snapshot would answer `j2 status` with `no run "<id>"`.
+      const read = await instB.host.read(runId);
+      assert.equal(read?.status, "drifted");
+      assert.match(read?.reason ?? "", /task.*changed shape/);
+      assert.deepEqual(read?.value, "coding", "still parked exactly where it was");
+    } finally {
+      await instB.close();
+    }
+  } finally {
+    for (const d of [dirA, dirB, dbDir]) await rm(d, { recursive: true, force: true });
+  }
+});
+
 test("module contract (ADR-0011): no `machine` named export fails discovery with a pointed error", async () => {
   const dir = await mkdtemp(join(pkgDir, ".contract-"));
   const wfDir = join(dir, "workflows");

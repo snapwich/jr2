@@ -1,0 +1,66 @@
+// An e2e fixture for ADR-0029: a workflow whose transitions are GUARDED, so the surface and the
+// delivery receipt have something to disagree about.
+//
+// `tools:` is explicit for the same reason `review.ts` does it — the steps address the surface at
+// the RUN's instance id, and the derived path mints its own. So this fixture exercises the guard
+// FILTER over the wire, not the derivation; derivation is `setup.test.ts`'s job. The filter reads
+// whatever is registered, however it got there, which is what makes that split sound.
+//
+// Two guard shapes on purpose, because they are handled differently:
+//   `escalate`       — guarded on CONTEXT. Answerable before the Agent picks, so it is filtered off
+//                      the menu when illegal, and appears when `attempts` makes it legal.
+//   `request_review` — guarded on the PAYLOAD. Unanswerable before the Agent picks (there are no
+//                      arguments yet), so it stays on the menu and is judged exactly on delivery.
+//
+// Filename `guarded.ts` → workflow "guarded".
+
+import { z } from "zod";
+import { defineEvent, j2Setup } from "@j2/orchestrator";
+
+const requestReview = defineEvent({
+  name: "request_review",
+  description: "Hand the work off for review. Needs a non-empty summary.",
+  input: z.object({ summary: z.string() }),
+});
+const escalate = defineEvent({
+  name: "escalate",
+  description: "Give up and hand to a human. Only legal after an attempt.",
+  input: z.object({ reason: z.string() }),
+});
+
+type Input = { instanceId: string; endpoint: string; attempts?: number };
+type Ctx = { instanceId: string; endpoint: string; attempts: number };
+
+export const machine = j2Setup({
+  types: {} as { context: Ctx; input: Input },
+  events: [requestReview, escalate],
+}).createMachine({
+  id: "guarded",
+  context: ({ input }) => ({
+    instanceId: input.instanceId,
+    endpoint: input.endpoint,
+    attempts: input.attempts ?? 0,
+  }),
+  initial: "working",
+  states: {
+    working: {
+      invoke: {
+        src: "agentRun",
+        input: ({ context }) => ({
+          agentName: "coder",
+          instanceId: context.instanceId,
+          endpoint: context.endpoint,
+          prompt: "Do the work, then call request_review with a summary.",
+          tools: [requestReview.name, escalate.name],
+        }),
+      },
+      on: {
+        // Reads the event, so it cannot be answered menu-side — offered, then judged on delivery.
+        request_review: { guard: ({ event }) => event.summary.trim().length > 0, target: "done" },
+        // Reads only context, so the menu can answer it and does.
+        escalate: { guard: ({ context }) => context.attempts > 0, target: "done" },
+      },
+    },
+    done: { type: "final" },
+  },
+});

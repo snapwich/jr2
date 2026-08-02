@@ -6,9 +6,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createActor, fromCallback, type AnyActorRef } from "xstate";
 import { z } from "zod";
-import { defineEvent, eventMap } from "@j2/agent-protocol";
+import { defineEvent, eventMap, type EventDef } from "@j2/agent-protocol";
 import { agentRunActorWith } from "../src/actor.ts";
-import { bindRun, RegistrationTable } from "../src/registration.ts";
+import { bindRun, mayMove, RegistrationTable, wouldMove } from "../src/registration.ts";
 import { j2Setup } from "../src/setup.ts";
 import { vocabularyOf } from "../src/vocabulary.ts";
 import { MockFlueClient } from "./_fixtures.ts";
@@ -163,7 +163,12 @@ function hostless(machine: Parameters<typeof createActor>[0], defs: Parameters<t
     inspect: (ev) => {
       if (!bound && ev.type === "@xstate.actor") {
         bound = true;
-        bindRun((ev.actorRef as AnyActorRef).system, { runId: "run-1", workflow: "wf", events: eventMap("wf", defs), table });
+        bindRun((ev.actorRef as AnyActorRef).system, {
+          runId: "run-1",
+          workflow: "wf",
+          events: eventMap("wf", defs),
+          table,
+        });
       }
     },
   });
@@ -296,8 +301,8 @@ test("the dials pass through to the admission; omitted, nothing is invented (ADR
   const ping = defineEvent({ name: "ping", input: z.object({}) });
   const dialed = new MockFlueClient();
   const plain = new MockFlueClient();
-  // `input` is loose because pinning the invoke-config generic here would only re-state xstate's
-  // types in a test that is about the dials.
+  // `input` is loose for the same reason `turnWith` below is: pinning the invoke-config generic
+  // here would only re-state xstate's types in a test that is about the dials.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const build = (mock: MockFlueClient, input: any) =>
     j2Setup({
@@ -323,4 +328,84 @@ test("the dials pass through to the admission; omitted, nothing is invented (ADR
   assert.equal(plain.admitted?.thinkingLevel, undefined);
   a.actor.stop();
   b.actor.stop();
+});
+
+// --- Guard filtering (ADR-0029) ---------------------------------------------------------------
+// The VOCABULARY stays static — the registration still carries every name the state's transitions
+// handle, because that is what delivery validates against. What guards decide is what the SURFACE
+// offers, which is `mayMove`, asked per turn.
+
+/** Build a one-state agent turn whose transitions are `on`, and hand back its live registration.
+ * `on` is loose on purpose: these cases are ABOUT guard shapes, and pinning the transition-config
+ * generic here would only re-state xstate's types in the test. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function turnWith(on: any, context: Record<string, unknown>, defs: EventDef[]) {
+  const mock = new MockFlueClient();
+  const machine = j2Setup({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    types: {} as { context: any },
+    events: defs,
+    actors: { agentRun: agentRunActorWith(() => mock) },
+  }).createMachine({
+    id: "wf",
+    context,
+    initial: "a",
+    states: {
+      a: { invoke: { src: "agentRun", input: { agent: "coder", prompt: "go", endpoint: "http://x" } }, on },
+      b: {},
+    },
+  });
+  const { actor, table } = hostless(machine, defs);
+  await tick();
+  const reg = table.byRun("run-1").find((r) => r.kind === "agent")!;
+  return { actor, reg, mock };
+}
+
+test("a context guard filters the menu; the vocabulary it validates against is untouched", async () => {
+  const escalate = defineEvent({ name: "escalate", input: z.object({ reason: z.string() }) });
+  const go = defineEvent({ name: "go", input: z.object({}) });
+  const on = {
+    escalate: { guard: ({ context }: { context: { rounds: number } }) => context.rounds > 0, target: "b" },
+    go: { target: "b" },
+  };
+
+  const cold = await turnWith(on, { rounds: 0 }, [escalate, go]);
+  // Registered defs are the full derived vocabulary either way — filtering is a surface concern.
+  assert.deepEqual([...cold.reg.defs.keys()].sort(), ["escalate", "go"]);
+  assert.equal(mayMove(cold.reg.invoker, "escalate"), false, "guarded false on round 0: not offered");
+  assert.equal(mayMove(cold.reg.invoker, "go"), true);
+  cold.actor.stop();
+
+  // Same machine, same menu names, one context value different — and the tool appears.
+  const warm = await turnWith(on, { rounds: 1 }, [escalate, go]);
+  assert.equal(mayMove(warm.reg.invoker, "escalate"), true, "the guard flipped: now offered");
+  warm.actor.stop();
+});
+
+test("a guard that reads the PICK is never hidden — the menu defers to delivery", async () => {
+  const verdict = defineEvent({ name: "verdict", input: z.object({ verdict: z.string() }) });
+  const on = {
+    verdict: { guard: ({ event }: { event: { verdict: string } }) => event.verdict === "approved", target: "b" },
+  };
+  const { actor, reg } = await turnWith(on, {}, [verdict]);
+
+  // Payload-blind, this guard answers `false` on `undefined` — a plain `can()` would delete the
+  // Agent's only tool. The probe sees it read the payload and offers it anyway.
+  assert.equal(mayMove(reg.invoker, "verdict"), true, "offered: the guard judges arguments we do not have yet");
+  // Delivery HAS the arguments, so there the same guard is answered exactly, both ways.
+  assert.equal(wouldMove(reg.invoker, { type: "verdict", verdict: "nope" }), false);
+  assert.equal(wouldMove(reg.invoker, { type: "verdict", verdict: "approved" }), true);
+  actor.stop();
+});
+
+test("a handler that neither targets nor acts is not a handler", async () => {
+  const noop = defineEvent({ name: "noop", input: z.object({}) });
+  const { actor, reg } = await turnWith({ noop: {} }, {}, [noop]);
+  assert.equal(mayMove(reg.invoker, "noop"), false);
+  actor.stop();
+});
+
+test("no invoker to ask means offer everything — the predicate fails open", () => {
+  assert.equal(mayMove(undefined, "anything"), true);
+  assert.equal(wouldMove(undefined, { type: "anything" }), true);
 });

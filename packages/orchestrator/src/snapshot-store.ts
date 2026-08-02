@@ -20,6 +20,16 @@ export interface SnapshotStore {
   findIdsByPrefix(prefix: string, limit: number): Promise<string[]>;
   save(runId: string, snapshot: unknown, status?: string): Promise<void>;
   markLost(runId: string, reason: string): Promise<void>;
+  /**
+   * Record a run whose Machine changed shape underneath it (ADR-0030) — refused, not resumed.
+   *
+   * Unlike {@link markLost} this KEEPS the snapshot. A lost run has nothing left to look at, so
+   * nulling it costs nothing; a drifted run is intact and merely unreadable by the Machine now
+   * loaded, and it is the one a human most needs to inspect. Nulling it would also hide the run
+   * entirely: `read()` returns undefined for a null blob, so `j2 status <id>` would answer
+   * `no run` — a refusal indistinguishable from a run that never existed.
+   */
+  markDrifted(runId: string, reason: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -124,6 +134,14 @@ export class SqliteSnapshotStore implements SnapshotStore {
            updated_at = excluded.updated_at`,
       )
       .run(runId, reason, new Date().toISOString());
+  }
+
+  /** An UPDATE, not an upsert: a drifted run is one we already have a snapshot for, and the whole
+   * point is to keep it. A row that is not there is not a drifted run — nothing to record. */
+  async markDrifted(runId: string, reason: string): Promise<void> {
+    this.db
+      .prepare(`UPDATE machine_snapshots SET status = 'drifted', reason = ?, updated_at = ? WHERE run_id = ?`)
+      .run(reason, new Date().toISOString(), runId);
   }
 
   async close(): Promise<void> {

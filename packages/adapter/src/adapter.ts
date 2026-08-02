@@ -43,11 +43,21 @@ export type Surface = { instanceId: string; runId: string; sandbox?: string; acc
 /**
  * `POST /agents/:iid/events` — the answer to one pick, and the Agent's only way to learn what
  * became of it (ADR-0024). `turnComplete` says the state that asked for this turn has stopped
- * waiting; it is a hint that fails conservatively, not the thing that ends the turn.
+ * waiting; it is a hint that fails conservatively, not the thing that ends the turn. `moved` says a
+ * transition accepted the pick at all (ADR-0029) — false is a well-formed pick that a guard
+ * rejected, which without this field looked exactly like a pick that moved the Machine and left it
+ * in the same state.
+ *
+ * The Orchestrator declares this shape too (`AgentDeliveryReceipt`), independently: it is the wire
+ * between two packages, and neither imports the other.
  */
 export type DeliveryReceipt = {
   delivered: boolean;
   event: string;
+  /** Optional on the wire, and read fail-open (absent ≠ rejected): the Adapter ships as a stock
+   * image and the Orchestrator as the instance image, so the two CAN skew. An Orchestrator too old
+   * to send this must not make every receipt read as a rejection. */
+  moved?: boolean;
   turnComplete: boolean;
   deliveryId: string;
 };
@@ -182,6 +192,15 @@ async function liveSurface(client: OrchestratorClient, instanceId: string): Prom
  */
 function receiptProse(receipt: DeliveryReceipt): string {
   const delivered = `Delivered "${receipt.event}" to the workflow (delivery ${receipt.deliveryId}).`;
+  // Order matters: a rejected pick is also `turnComplete: false`, and saying only that sends the
+  // Agent back to do the same thing again (ADR-0029). Say what it can act on FIRST.
+  if (receipt.moved === false) {
+    return (
+      `${delivered} The workflow did NOT act on it: no transition in its current state accepts ` +
+      `"${receipt.event}" with these arguments. Your turn is not over. Do not repeat this call ` +
+      `unchanged — change the arguments, pick a different tool, or do more work first.`
+    );
+  }
   return receipt.turnComplete
     ? `${delivered} The workflow consumed it and moved on: your turn is over. Stop here — do not call this or any other tool again.`
     : `${delivered} The workflow is still in the state that asked for this turn, so it is not over yet.`;

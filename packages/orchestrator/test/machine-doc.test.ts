@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMachine, enqueueActions, fromPromise, setup, spawnChild, type AnyStateMachine } from "xstate";
+import { fingerprintOf } from "../src/fingerprint.ts";
 import { opaqueStates, serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
 
 /** A fixture exercising every serialization path. */
@@ -258,11 +259,132 @@ test("a recursive machine is named, not unrolled", () => {
     id: "rec",
     initial: "go",
     states: { go: { entry: spawnChild("self" as never) } },
-  }) as AnyStateMachine;
+  }) as unknown as AnyStateMachine;
   (recursive.implementations.actors as Record<string, unknown>).self = recursive;
 
   const doc = serializeMachine("rec-wf", recursive);
   const go = findState(doc.root, "rec.go");
   assert.deepEqual(go?.children, [{ src: "self", label: "self", via: "spawn", recursive: true }]);
   assert.deepEqual(JSON.parse(JSON.stringify(doc)), doc);
+});
+
+// --- fingerprintOf (ADR-0030) -----------------------------------------------------------------
+// The hash answers ONE question: can a snapshot written by that Machine still be read by this one.
+// So the line it draws is shape vs logic — and both halves of that line need pinning, because a
+// hash that is too sensitive strands every parked run on a prompt tweak, and one that is too loose
+// resumes a snapshot into a state chart that no longer has its state.
+
+/** The fixture, re-built from a config so each case can vary exactly one thing. */
+const shaped = (mut: (c: Record<string, any>) => Record<string, any> = (c) => c): AnyStateMachine =>
+  setup({ actors: { work: fromPromise(async () => "ok") }, guards: { isReady: () => true } }).createMachine(
+    mut({
+      id: "fp",
+      initial: "draft",
+      states: {
+        draft: { invoke: { id: "worker", src: "work" }, on: { SUBMIT: { target: "review", guard: "isReady" } } },
+        review: { on: { BACK: { target: "draft" } } },
+      },
+    }) as never,
+  ) as unknown as AnyStateMachine;
+
+test("the fingerprint is stable across rebuilds of the same shape", () => {
+  assert.equal(fingerprintOf(shaped()), fingerprintOf(shaped()));
+  assert.match(fingerprintOf(shaped()), /^[0-9a-f]{12}$/);
+});
+
+test("logic changes are NOT drift: a run parked at a gate survives a guard or prompt edit", () => {
+  const base = fingerprintOf(shaped());
+  // A different guard implementation entirely — same topology.
+  const reguarded = setup({
+    actors: { work: fromPromise(async () => "ok") },
+    guards: { isReady: () => false },
+  }).createMachine({
+    id: "fp",
+    initial: "draft",
+    states: {
+      draft: { invoke: { id: "worker", src: "work" }, on: { SUBMIT: { target: "review", guard: "isReady" } } },
+      review: { on: { BACK: { target: "draft" } } },
+    },
+  } as never) as unknown as AnyStateMachine;
+  assert.equal(fingerprintOf(reguarded), base, "the snapshot is still readable; only what happens NEXT differs");
+});
+
+test("reordering `on:` keys is not drift — the transition set is what matters, not its order", () => {
+  const a = fingerprintOf(
+    shaped((c) => ({
+      ...c,
+      states: {
+        ...c.states,
+        draft: {
+          ...c.states.draft,
+          on: { SUBMIT: { target: "review", guard: "isReady" }, PING: { target: "review" } },
+        },
+      },
+    })),
+  );
+  const b = fingerprintOf(
+    shaped((c) => ({
+      ...c,
+      states: {
+        ...c.states,
+        draft: {
+          ...c.states.draft,
+          on: { PING: { target: "review" }, SUBMIT: { target: "review", guard: "isReady" } },
+        },
+      },
+    })),
+  );
+  assert.equal(a, b);
+});
+
+test("shape changes ARE drift: a renamed state, a retargeted transition, a moved invoke", () => {
+  const base = fingerprintOf(shaped());
+
+  // Renamed state — the persisted `value` names a state that is simply gone. Renamed at BOTH ends,
+  // because a machine that still targeted the old name would not build at all.
+  const renamed = fingerprintOf(
+    shaped((c) => ({
+      ...c,
+      states: {
+        draft: { ...c.states.draft, on: { SUBMIT: { target: "reviewing", guard: "isReady" } } },
+        reviewing: { on: { BACK: { target: "draft" } } },
+      },
+    })),
+  );
+  assert.notEqual(renamed, base, "a persisted value pointing at `review` cannot be read here");
+
+  // Retargeted transition — same states, different graph.
+  const retargeted = fingerprintOf(
+    shaped((c) => ({
+      ...c,
+      states: { ...c.states, draft: { ...c.states.draft, on: { SUBMIT: { target: "draft" } } } },
+    })),
+  );
+  assert.notEqual(retargeted, base);
+
+  // Invoke id changed — that id is the KEY in the snapshot's `children` map, so re-attach depends
+  // on it. The most easily-missed of the three, and the one a topology-only hash exists to catch.
+  const reinvoked = fingerprintOf(
+    shaped((c) => ({
+      ...c,
+      states: { ...c.states, draft: { ...c.states.draft, invoke: { id: "runner", src: "work" } } },
+    })),
+  );
+  assert.notEqual(reinvoked, base);
+});
+
+test("drift in a CHILD machine is drift — most of a workflow lives down there", () => {
+  const withBody = (bodyInitial: string): AnyStateMachine => {
+    const body = createMachine({
+      id: "body",
+      initial: bodyInitial,
+      states: { [bodyInitial]: {}, other: {} },
+    }) as unknown as AnyStateMachine;
+    return setup({ actors: { body } }).createMachine({
+      id: "outer",
+      initial: "running",
+      states: { running: { invoke: { id: "body", src: "body" } } },
+    } as never) as unknown as AnyStateMachine;
+  };
+  assert.notEqual(fingerprintOf(withBody("first")), fingerprintOf(withBody("second")));
 });
