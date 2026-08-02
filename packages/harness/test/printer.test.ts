@@ -45,23 +45,29 @@ test("renderToolInput: read/write/edit render the path alone (path or file_path)
   assert.equal(renderToolInput("edit", { path: "/work/c.ts", edits: [] }), "/work/c.ts");
 });
 
-test("renderToolInput: bash renders the first 100 chars of the command, exactly", () => {
-  const command = "x".repeat(99) + "YZ"; // 101 chars: the boundary cuts between Y and Z
-  assert.equal(renderToolInput("bash", { command }), "x".repeat(99) + "Y");
+test("renderToolInput: an ordinary command prints whole — the bound is for outliers", () => {
+  const command = `cd /work/repo && git commit -m "${"m".repeat(500)}"`;
+  assert.equal(renderToolInput("bash", { command }), command);
   assert.equal(renderToolInput("bash", {}), ""); // no command: empty, not "undefined"
 });
 
-test("renderToolInput: any other tool renders 150 chars of the JSON input", () => {
-  const input = { question: "a".repeat(200) };
+test("renderToolInput: bash cuts at 2000 chars, exactly, and says that it cut", () => {
+  const command = "x".repeat(1999) + "YZ"; // 2001 chars: the boundary cuts between Y and Z
+  assert.equal(renderToolInput("bash", { command }), "x".repeat(1999) + "Y…");
+  assert.equal(renderToolInput("bash", { command: "x".repeat(2000) }), "x".repeat(2000)); // at the bound: no mark
+});
+
+test("renderToolInput: any other tool renders the JSON input under the same bound", () => {
+  const input = { question: "a".repeat(3000) };
   const rendered = renderToolInput("mcp__j2__ask", input);
-  assert.equal(rendered, JSON.stringify(input).slice(0, 150));
-  assert.equal(rendered.length, 150);
+  assert.equal(rendered, `${JSON.stringify(input).slice(0, 2000)}…`);
+  assert.equal(renderToolInput("mcp__j2__ask", { question: "short" }), '{"question":"short"}');
   assert.equal(renderToolInput("grep", undefined), "null");
 });
 
 test("renderToolInput: the mcp__j2__ prefix is stripped before the name match", () => {
   assert.equal(renderToolInput("mcp__j2__read", { path: "/work/d.ts" }), "/work/d.ts");
-  assert.equal(renderToolInput("mcp__j2__bash", { command: "c".repeat(150) }), "c".repeat(100));
+  assert.equal(renderToolInput("mcp__j2__bash", { command: "c".repeat(2500) }), `${"c".repeat(2000)}…`);
 });
 
 test("renderMessage: a user message is [prompt]; image parts do not print", () => {

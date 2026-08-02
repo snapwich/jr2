@@ -21,14 +21,26 @@ function bareToolName(toolName: string): string {
   return toolName.replace(/^mcp__[^_]*__/, "");
 }
 
-/** jr's filter, reproduced: a path for Write/Edit/Read, 100 chars of a command, 150 of anything. */
+/**
+ * One bound for every input, set high enough that an ordinary call prints whole: a command, a
+ * review summary, a patch hunk. Only the outliers cut, and the 10Mi budget still holds — an Agent
+ * makes hundreds of calls per run, not thousands of them at 2 KiB each.
+ */
+const MAX_INPUT = 2000;
+
+/** Cut is visible: a bare prefix reads as a bug, `…` reads as the bound doing its job. */
+function bound(text: string): string {
+  return text.length > MAX_INPUT ? `${text.slice(0, MAX_INPUT)}…` : text;
+}
+
+/** A path for Write/Edit/Read (whole — a path is already short), the command for Bash, else JSON. */
 export function renderToolInput(toolName: string, input: unknown): string {
   const arg = (input ?? {}) as Record<string, unknown>;
   const bare = bareToolName(toolName);
   const path = arg.file_path ?? arg.path;
   if (/^(write|edit|read)$/i.test(bare) && typeof path === "string") return path;
-  if (/^bash$/i.test(bare)) return String(arg.command ?? "").slice(0, 100);
-  return JSON.stringify(input ?? null).slice(0, 150);
+  if (/^bash$/i.test(bare)) return bound(String(arg.command ?? ""));
+  return bound(JSON.stringify(input ?? null));
 }
 
 /** One completed message → its labelled line bodies (a body may span lines), or none for what
