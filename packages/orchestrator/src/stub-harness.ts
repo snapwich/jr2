@@ -1,6 +1,6 @@
 // The wire-compatible stub Harness (ADR-0011: dev stubbing happens at the wire, not in the
-// actor). `j2 dev` hosts this on localhost so workspace-less test workflows can run without a
-// cluster: an endpoint is just a URL, so `agentRun` keeps ONE code path and cannot tell it is
+// actor). The e2e world hosts this on localhost so workspace-less test workflows can run without a
+// data plane: an endpoint is just a URL, so `agentRun` keeps ONE code path and cannot tell it is
 // talking to a fake. Semantics: ADMIT the agent (accept the prompt, mint an admission), hold
 // the durable stream open, and never act — the Machine parks exactly as it would against a
 // silent real Harness, and e2e drives it by playing the agent against `/mcp/<iid>` instead.
@@ -22,7 +22,7 @@
 // This can later grow scriptable behavior or be swapped for a real local Harness without
 // touching actor code — it is only a different URL.
 //
-// `onAdmit` is the seam where an AGENT would live (ADR-0013). Left unset — as `j2 dev` leaves it —
+// `onAdmit` is the seam where an AGENT would live (ADR-0013). Left unset — as the e2e world leaves it —
 // the stub is inert, which is what the mechanics tier needs (the Machine parks and e2e plays the
 // agent from outside). The dev Harness IMAGE wires a scripted persona into it instead, so the pod
 // originates its own tool calls through the Adapter on `localhost`. The hook receives the

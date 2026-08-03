@@ -331,7 +331,7 @@ export class RunHost {
     this.workflowDefs.set(def.name, def);
   }
 
-  /** Drop a workflow's registration (a `workflows/` file was deleted — `j2 dev` reload). In-flight
+  /** Drop a workflow's registration (a workflow the host no longer discovers). In-flight
    * runs keep their already-assembled definition; only future `start`s are affected.
    *
    * Observers stay ATTACHED, deliberately. Their runs are still running, so a feed that ended here
@@ -588,7 +588,7 @@ export class RunHost {
    * watcher is quietly wrong until something else happens to move it.
    *
    * Subscribing to a NAME, not to a registration — an unknown workflow attaches to an empty set
-   * (a `j2 dev` reload may register it a moment later, and the feed should just start working).
+   * (a later registration may supply it, and the feed should just start working).
    */
   observeWorkflow(workflow: string, listener: WorkflowListener): { runs: RunStatus[]; unsubscribe: () => void } {
     let listeners = this.workflowListeners.get(workflow);

@@ -174,7 +174,7 @@ export type CreateAppOptions = {
  *
  * `auth` is how a bearer token becomes a principal. Omitting it leaves the surface OPEN, which is
  * only ever right for an in-process test that reaches `app.request` directly — `startInstance`
- * (the one production path, and `j2 dev`) always supplies one.
+ * (every real boot, deployed or fixture) always supplies one.
  */
 export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOptions = {}): Hono<J2Env> {
   const pingMs = opts.pingMs ?? PING_MS;
@@ -215,8 +215,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // readiness probe's target and because identity is not run state — it is the same class of thing
   // as the route table, which is public by being served. The CLI probes it to explain a failure it
   // could otherwise only report as a bare status code (version skew reads as a nonsense 404).
-  // `hash` is the image's content address (ADR-0019), absent for a `j2 dev` process, which has no
-  // image to be addressed.
+  // `hash` is the image's content address (ADR-0019), absent for a host-booted fixture process,
+  // which has no image to be addressed.
   app.get("/healthz", (c) => c.json({ ok: true, version: KIT_VERSION, hash: process.env.J2_CONTENT_HASH }));
   app.get("/readyz", (c) => c.json({ ready: true }));
 
@@ -248,8 +248,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // ---- Observation (`GET /workflows/:name/runs*`) ---------------------------------------------
   // What the visualizer needs, and the most it may have. The page is a BROWSER: it has no token to
   // send, and giving it one would mean giving it the INSTANCE token — gates, run control, every
-  // run's context — to whatever can load a URL (and `j2 dev` binds 0.0.0.0 once the instance has a
-  // Sandbox backend, so that URL is not only yours). So the page gets a projection instead of a
+  // run's context — to whatever can load a URL (and the orchestrator binds 0.0.0.0 — pods must
+  // reach it — so that URL is not only yours). So the page gets a projection instead of a
   // credential: `observe()` keeps identity + the state VALUE and drops context, and the guarded
   // `/runs*` routes above stay exactly as guarded as they were. A projection, not a bypass.
   //
@@ -268,7 +268,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
    * idempotent by construction. Same reconciliation idiom as the Lease (ADR-0021) and ADR-0019.
    *
    * Unknown workflow is NOT a 404: it attaches and reports an empty set, matching
-   * `/workflows/:name/runs`. The page is opened by path, and a `j2 dev` reload may register the
+   * `/workflows/:name/runs`. The page is opened by path, and a later registration may supply the
    * name a moment later — the already-open feed then just starts working.
    *
    * Same open band as the routes above (ADR-0014): `observe()` projects away context, instanceId and

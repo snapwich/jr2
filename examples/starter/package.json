@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Model j2 instance (ADR-0009): the folder `j2 init` scaffolds and `j2 dev` runs.",
+  "description": "Model j2 instance (ADR-0009): the folder `j2 init` scaffolds and `j2 up` deploys.",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

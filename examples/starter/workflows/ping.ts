@@ -1,6 +1,6 @@
 // The simplest j2 workflow: no Agent, no Workspace, no data plane at all. A Machine is free to "just
 // respond to the request" with a plain actor (CONTEXT.md: a workflow need not spawn a Workspace) —
-// this is that case, and the one workflow that runs end-to-end under `j2 dev` before any Sandbox /
+// this is that case, and the one workflow that runs end-to-end on a fresh instance before any Sandbox /
 // Harness infrastructure exists. Filename `ping.ts` → workflow "ping".
 //
 // Shape: take the run input, invoke a plain `fromPromise` actor, fold its result into context, finish.

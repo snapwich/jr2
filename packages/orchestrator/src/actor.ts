@@ -94,7 +94,7 @@ export type AgentTurnInput = {
   /** Distinguishes conversations that would otherwise share a `continue` identity (e.g. a
    * reviewer fresh per task: `scope: task.id`). */
   scope?: string;
-  /** Workspace-less runs only (dev/stub Harness): explicit endpoint, no ambient resolution. */
+  /** Workspace-less runs only (stub Harness): explicit endpoint, no ambient resolution. */
   endpoint?: string;
   /** Escape hatch: override the derived menu. */
   tools?: readonly string[];
@@ -222,7 +222,7 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
       );
     }
 
-    // Resolve the Harness coordinates (ADR-0016): explicit input wins (the workspace-less dev
+    // Resolve the Harness coordinates (ADR-0016): explicit input wins (the workspace-less stub
     // path); otherwise the nearest enclosing workspace() published them — walked structurally
     // via the actor parent chain, so a sibling workspace's handles are unreachable (ADR-0013).
     const ambient = ambientHandlesFor(self);
@@ -230,7 +230,7 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
     if (!endpoint) {
       throw new Error(
         `agentRun "${instanceId}": no Harness to admit against — invoke it inside a workspace() ` +
-          `(ambient resolution), or pass an explicit \`endpoint\` (workspace-less dev/stub path)`,
+          `(ambient resolution), or pass an explicit \`endpoint\` (workspace-less stub path)`,
       );
     }
     const sandbox = input.endpoint ? input.sandbox : (input.sandbox ?? ambient?.sandbox);

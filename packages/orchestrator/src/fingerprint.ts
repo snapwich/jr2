@@ -7,8 +7,8 @@
 // still be interpreted — state ids and nesting, which state is initial, what each state invokes and
 // under which id (the invoke id is the key in the snapshot's `children` map), and where every
 // transition goes. Not guard bodies, not assigns, not prompts. Editing a guard changes what a run
-// DOES next; it does not make the snapshot unreadable, and `j2 dev`'s reload would be unusable if
-// every such edit stranded the runs in flight. That line is the whole design, and ADR-0030 argues
+// DOES next; it does not make the snapshot unreadable, and restore-after-redeploy would be unusable
+// if every such edit stranded the runs in flight. That line is the whole design, and ADR-0030 argues
 // it: this is a restorability check, and drift means "I can no longer read what I saved."
 //
 // The traversal is `machine-doc.ts`'s, deliberately — it is already deterministic (states sorted by

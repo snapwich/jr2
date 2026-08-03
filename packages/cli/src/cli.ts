@@ -43,8 +43,8 @@ global (run verbs): -n/--namespace <ns>, --context <ctx> address the deployment 
  *
  * Scoped to 404/405 because those are the codes a MISSING route produces; a 400/401/403/409 is the
  * instance understanding the request and refusing it, where naming the version would be noise. And
- * it says nothing when the instance reports no version at all, since `j2 dev` — the common local
- * case — legitimately has neither version nor hash to report.
+ * it says nothing when the instance reports no version at all, since a host-booted fixture process
+ * (the e2e tier's) legitimately has neither version nor hash to report.
  */
 function skewNote(err: unknown): string | undefined {
   if (!(err instanceof J2HttpError)) return undefined;

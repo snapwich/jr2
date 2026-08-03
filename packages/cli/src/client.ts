@@ -1,6 +1,6 @@
 // The shared HTTP client every `j2` verb sits on (ADR-0009). One thin class over the orchestrator's
-// REST + SSE surface (`createApp`) — the SAME wire the deployed orchestrator serves, so `j2` against a
-// `j2 dev` process and against a cluster are one code path. It carries no folder/CLI concerns (those
+// REST + SSE surface (`createApp`) — the SAME wire the deployed orchestrator serves, so `j2` against
+// the e2e tier's host-booted fixture and against a cluster are one code path. It carries no folder/CLI concerns (those
 // live in `instance.ts`); it is just "talk to a base URL".
 //
 // `fetchImpl` is injectable so tests drive it with a hono `app.request` (no socket) the same way the

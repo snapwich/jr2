@@ -1,5 +1,5 @@
-// `j2 init [dir] [--name <n>]` (ADR-0009): scaffold a new instance folder — the minimum a `j2 dev`
-// can boot and `j2 run` can drive. v1 scope: the root marker (`j2.config.ts`), a package.json, a
+// `j2 init [dir] [--name <n>]` (ADR-0009): scaffold a new instance folder — the minimum `j2 up`
+// can converge and `j2 run` can drive. v1 scope: the root marker (`j2.config.ts`), a package.json, a
 // `tsconfig.json` so the instance typechecks (and an editor's language service understands it), a
 // `.gitignore` for the runtime `.j2/`, and ONE starter workflow (`ping`) that runs end-to-end with no
 // Workspace/Agent — a small "respond directly" Machine to trim down and build on.
@@ -89,8 +89,8 @@ const CONFIG_TS = `// Instance config (ADR-0009). Its presence at the folder roo
 // per repo as the source-of-truth volume every Workspace worktrees against. This starter has none yet
 // (its workflows don't touch a Workspace), so the list is empty.
 //
-// Workspaces (ADR-0012) are opt-in by adding \`sandbox: { image: "<harness image>" }\`: \`j2 dev\` then
-// reconciles \`repos/\` at boot and drives Sandbox CRs via kubectl (cluster from \`j2 cluster up\`).
+// Workspaces (ADR-0012) are opt-in by adding \`sandbox: { image: "<harness image>" }\`: the orchestrator
+// then reconciles \`repos/\` at boot and drives Sandbox CRs via kubectl in its own namespace (ADR-0019).
 
 import { defineConfig } from "@j2/orchestrator";
 
@@ -111,7 +111,7 @@ node_modules/
 
 const PING_TS = `// The simplest j2 workflow: no Agent, no Workspace, no data plane at all. A Machine is free to "just
 // respond to the request" with a plain actor (CONTEXT.md: a workflow need not spawn a Workspace) —
-// this is that case, and the one workflow that runs end-to-end under \`j2 dev\` before any Sandbox /
+// this is that case, and the one workflow that runs end-to-end on a fresh instance before any Sandbox /
 // Harness infrastructure exists. Filename \`ping.ts\` → workflow "ping".
 //
 // Shape: take the run input, invoke a plain \`fromPromise\` actor, fold its result into context, finish.

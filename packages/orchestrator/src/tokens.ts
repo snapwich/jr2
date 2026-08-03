@@ -6,8 +6,9 @@
 // Two principals, and the asymmetry between them is the whole design:
 //
 //   Instance token  the human/CLI credential. Full trust: gates, run control, agent surfaces.
-//                   Minted per `j2 dev` boot into `.j2/dev.json` (0600), beside the `url` the CLI
-//                   already reads from there. An Agent never has it — it lives on the host.
+//                   From the instance Secret (`J2_INSTANCE_TOKEN`); minted per boot when absent,
+//                   announced once on stdout (fixtures capture it). An Agent never has it — it
+//                   never enters a Sandbox.
 //
 //   Sandbox token   the Adapter's credential. Authorizes exactly: deliver to `kind: "agent"`
 //                   registrations whose Sandbox is THIS one. Never a Gate (a compromised Agent
@@ -50,7 +51,7 @@ export function mintInstanceToken(): string {
 /**
  * The instance's HMAC signing key, at `<dir>/.j2/secret` (0600), created on first use.
  *
- * It MUST outlive the process: a `j2 dev` restart leaves live Sandboxes running (ADR-0012 re-attach),
+ * It MUST outlive the process: an Orchestrator restart leaves live Sandboxes running (ADR-0012 re-attach),
  * and their Adapters still hold tokens minted by the process that died. A fresh key would reject
  * every one of them — the Agent would silently lose its only route to its Machine.
  */
