@@ -8,33 +8,23 @@ run, including its own human-review Gate. So the MCP server lives **in the Sandb
 serves the current turn's menu to the Agent over `localhost` and forwards its picks to the Orchestrator, which speaks no
 MCP at all and keeps one HTTP surface over the registration table it already has (ADR-0011).
 
-## What flue makes possible (the enabling fact)
+## The enabling fact: the Harness connects per Submission
 
-`defineAgent(initialize)` is an **initializer, not a constructor**: flue calls it on **every submission**, and the
-initializer context carries `{ id, env }` — where `id` **is** the agent instance id (j2's Instance ID). Meanwhile
-`connectMcpServer(name, { url })` lists an MCP server's tools at connect and adapts them into flue tool definitions
-(named `mcp__<name>__<tool>`, so the server key is visible to the model). So one static shim, identical for every Agent
-— generated at pod start by the stock Harness image's boot assembly (ADR-0018), never written by users — gets a
-state-scoped menu for free:
-
-```ts
-export default defineAgent(async ({ id }) => ({
-  ...definition, // the instance's plain-data Agent definition
-  tools: (await connectMcpServer("j2", { url: `${process.env.J2_ADAPTER_URL}/mcp/${id}` })).tools,
-}));
-```
-
-The Harness names the iid itself, so the Adapter never has to _learn_ which turn is live — no push channel, no
-long-poll, no `sandbox → active turn` index, no second inbound port on the pod. And because flue re-initializes (and so
-re-lists) per submission while a j2 menu only changes at turn boundaries, no `list_changed` push is needed either
-(ADR-0006).
+Each Submission, the Harness connects a fresh MCP client to `$J2_ADAPTER_URL/mcp/<iid>` and lists the server's tools,
+adapting them into the turn's tool set (named `mcp__j2__<tool>`, so the server key is visible to the model — shipped
+instructions and the printer's prefix-stripping depend on that naming;
+[ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md) states this as explicit j2 code, never
+written by users). The Harness names the iid itself, so the Adapter never has to _learn_ which turn is live — no push
+channel, no long-poll, no `sandbox → active turn` index, no second inbound port on the pod. And because the Harness
+re-connects (and so re-lists) per Submission while a j2 menu only changes at turn boundaries, no `list_changed` push is
+needed either (ADR-0006).
 
 ## Decision
 
 - **The Adapter is a j2-owned container in the Sandbox pod** (ADR-0005). It hosts the MCP server the Agent's Harness
   connects to on `localhost`, and it is the **only** thing in the pod that talks to the Orchestrator. The Agent's sole
   control-plane peer is a process it can reach but whose credential it cannot read.
-- **It is a separate container from the Harness, and that is the whole point.** `local()` tools give the Agent code
+- **It is a separate container from the Harness, and that is the whole point.** The working tools give the Agent code
   execution _in the Harness container_ — so a credential there is a credential the Agent holds. Split, and the Agent is
   confined to a `localhost` menu the Machine set for the turn it is already in. This is what makes ADR-0006's "the Agent
   never steers the workflow" **enforced** rather than advertised.
@@ -85,16 +75,16 @@ re-lists) per submission while a j2 menu only changes at turn boundaries, no `li
   from a fire-and-forget one), and an agent-surface delivery returns a **receipt with a `deliveryId`** (so an outcome is
   addressable after the fact; the gates surface answers `{ ok: true }` — external callers need no receipt). Registering
   a `deferred` or `poll` def **fails loudly as unimplemented** — a silent downgrade to `ack` would be a lying tool
-  contract. How a _Machine_ answers a deferred call is deliberately left open: flue's 60 s MCP `timeoutMs` means the
-  answer will be poll-with-progress, not a held socket (ADR-0002) — an Adapter concern when it lands.
+  contract. How a _Machine_ answers a deferred call is deliberately left open: the MCP client's 60 s per-request timeout
+  means the answer will be poll-with-progress, not a held socket (ADR-0002) — an Adapter concern when it lands.
 
 ## Considered options
 
 - **Agent talks to the Orchestrator directly** (the original cut, plus a callback URL). Rejected: the credential lands
   in a container where the Agent has code execution, so the Agent can deliver `approve` to its own human-review Gate —
   it merges its own PR. The tool menu is advisory once you hold the key to the API.
-- **Translation inside the flue Harness process** (it already knows the iid and the tools). Rejected for the same reason
-  — same container, same code execution, same credential. And the knowledge locality is illusory: the menu originates in
+- **Translation inside the Harness process** (it already knows the iid and the tools). Rejected for the same reason —
+  same container, same code execution, same credential. And the knowledge locality is illusory: the menu originates in
   the _Machine_, so it must travel Orchestrator → pod regardless; hosting the server in the Harness only changes which
   container it lands in.
 - **Adapter as a transparent MCP relay** (proxy `/mcp/:iid` to an Orchestrator MCP server, adding auth). Tempting

@@ -106,7 +106,7 @@ function fakeBuild(record: string[], files: Record<string, string> = { "package.
 }
 
 /** `agentModels` writes one `agents/<name>.ts` per entry — the definitions are what the provider
- * preflight probes now that there is no instance-wide model (ADR-0018 as amended). */
+ * preflight probes now that there is no instance-wide model (ADR-0018). */
 async function mkInstance(config: string, name = "myinst", agentModels?: Record<string, string>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `j2-up-${name}-`));
   await writeFile(join(root, "j2.config.ts"), config);

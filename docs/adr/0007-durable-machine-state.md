@@ -38,7 +38,7 @@ snapshot in the same save (ADR-0016). Iids are globally unique, so restore needs
 ## Consequences
 
 - Actors may not stash live connections in context for convenience; anything live is rebuilt per-invocation from
-  serializable input (the flue client from an `endpoint`, the kube client from ambient config) — which is also why a
+  serializable input (the Harness client from an `endpoint`, the kube client from ambient config) — which is also why a
   mock↔real swap happens at the wire (ADR-0011's stub Harness), never inside actor code.
 - The known durability edge stands: a crash between "run admitted" and "admission persisted" degrades to an at-most-once
   re-POST (a live-run probe replays from `-1`; a genuinely-absent run re-POSTs), and an in-flight POST at the instant of

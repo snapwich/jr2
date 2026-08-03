@@ -105,7 +105,7 @@ test("validateSpecModels: every definition resolves at boot, or the container di
   assert.doesNotThrow(() => validateSpecModels(spec("vllm/Qwen/Qwen3-32B"), models));
   assert.doesNotThrow(() => validateSpecModels(spec("vllm/never-listed"), models));
   // A provider nothing serves is a static fact about the mounted spec — loud at boot, not on the
-  // first Submission that happens to use this Agent (ADR-0018 as amended).
+  // first Submission that happens to use this Agent (ADR-0018).
   assert.throws(() => validateSpecModels(spec("ghost/x"), models), /agent "coder".*no custom provider "ghost"/s);
   assert.throws(() => validateSpecModels(spec("bare"), models), /agent "coder".*not a <provider>\/<modelId>/s);
 });

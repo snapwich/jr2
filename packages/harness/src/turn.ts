@@ -60,7 +60,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
 
   return async (submission, signal) => {
     const { message } = submission;
-    // This Submission's dials layer over the definition (ADR-0018 as amended). Read HERE, per
+    // This Submission's dials layer over the definition (ADR-0018). Read HERE, per
     // Submission, so one `continue` conversation can queue turns at different settings — the
     // `setModel`/`setThinkingLevel` reconciliation below already handles the change.
     const definition = resolveDefinition(deps.spec, deps.agentName, submission);

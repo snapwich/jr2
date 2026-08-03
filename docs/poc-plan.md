@@ -70,7 +70,7 @@ flue + vLLM: approval round-trip (Agent blocks on the deferred `request_approval
 action only post-approval), per-Instance-ID routing across concurrent runs, up-events (`done`/`report_blocked`),
 between-turn steer, Orchestrator-restart re-attach by `(name, instance id) + offset`, and cancel-as-abandon. The
 long-block **risk resolved**: a held approval is bounded by the MCP client `timeoutMs` (60 s default); raised to 600 s
-it tolerated a 3-minute hold, and on timeout the gate held (no gated action). See ADR-0002's amended Consequences.
+it tolerated a 3-minute hold, and on timeout the gate held (no gated action). See ADR-0002.
 
 **Follow-ups #5b / #5c** (control-surface shape → [ADR-0006](adr/0006-agent-control-surface.md)). _#5b_: flue's native
 `finish` (forced, validated structured result) is reachable over HTTP **only via the Workflow surface**

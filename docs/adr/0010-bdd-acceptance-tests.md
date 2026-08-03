@@ -31,17 +31,17 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   the product's own path (ADR-0019): one shared vanilla kind cluster, locally built kit images, then **`j2 up` per
   scenario into a fresh namespace** — namespace-as-identity makes the scenario the isolation unit here too, so nothing
   is instance-bound to the cluster and `--parallel` is bounded only by cluster capacity.
-- **An opt-in `flue-contract` tier for the Harness's own runtime** (added with
-  [ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)). The three tiers above all reach flue through the **stub
-  Harness**, which is a hand-written model of flue's _wire_ — it holds no conversation, so it can report a turn settled
-  `aborted` without ever having had a turn to settle. That is the right fixture for testing j2, and it is blind by
-  construction to what the real runtime keeps, drops, or sends onward. `./flue-contract/` (`@j2/flue-contract`) runs the
-  **real flue node server at the pinned version**, built by flue's own CLI, against a **scripted fake provider** — so a
-  turn's shape (where it stalls, what it half-emits) is chosen by the test rather than by a model. The witness is the
-  message array the provider receives on the _next_ turn, which is the only place these claims are visible. Opt-in for
-  one reason: it owns the `@flue` pin, which must match `packages/orchestrator/harness/package.json`. **Run it before
-  bumping that pin** — one test deliberately asserts a defect we are waiting on flue to fix, so it fails, loudly and on
-  purpose, the day the fix lands. No docker, no cluster, ~2 s.
+- **Harness conformance, in `@j2/harness`, in the default gate**
+  ([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)). The three tiers above all reach the
+  Harness through the **stub Harness**, which is a hand-written model of the _wire_ — it holds no conversation, so it
+  can report a turn settled `aborted` without ever having had a turn to settle. That is the right fixture for testing
+  j2, and it is blind by construction to what the real runtime keeps, drops, or sends onward. Those claims are covered
+  by the conformance suite in `packages/harness/test/`, driven through the real turn loop — pi at the exact pin, the
+  real `@j2/adapter` over a real socket, a **scripted provider** — so a turn's shape (where it stalls, what it
+  half-emits) is chosen by the test rather than by a model. The witness is the message array the provider receives on
+  the _next_ turn, which is the only place these claims are visible. Not a separate tier: it runs as part of
+  `pnpm -r test` (no docker, no cluster), and it is the canary for pi bumps — **run it before bumping the pin**. (A
+  predecessor tier that ran the retired foreign harness runtime at its pin dissolved into this suite — ADR-0027.)
 - **A workspace package, not a bare folder.** `./features/` is `@j2/e2e` so it owns its own `xstate` (+ cucumber)
   dependency: a scaffolded instance's `workflows/*.ts` `import "xstate"`, resolved by walking up from the temp dir, and
   the repo root has no `xstate`. The package's `node_modules` satisfies it. It is top-level (not under `packages/cli/`)
@@ -70,11 +70,3 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
 - Human-in-the-loop delivery is covered at the gates API (`features/agent-and-gates.feature` — the agent played over
   `/agents/<iid>/*`, the human over `/runs/:id/gates/:gate/events`); the `j2 send --gate` CLI verb is covered at the
   in-process tier. A CLI-driven e2e gate scenario remains a candidate follow-up `Rule`.
-
-**Corrected 2026-07-28 ([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)).** The
-`flue-contract` tier is retired. flue itself has left the repo — the Harness is `@j2/harness`, j2's own server — so
-there is no foreign runtime to check and no `@flue` pin to own. Its claims did not retire with it: they moved into
-`@j2/harness`'s conformance suite as j2's own requirements, driven through the real turn loop (pi at the exact pin, the
-real `@j2/adapter`, a scripted provider choosing each turn's shape), with the pinned-defect assertion inverted — an
-abort mid-stream must **not** erase the assistant message. The suite runs in the default `test` gate; the opt-in
-existed only for the foreign pin, which is gone.

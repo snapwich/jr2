@@ -384,7 +384,7 @@ async function preflightProvider(
 ): Promise<void> {
   const provider = config.harness?.provider;
   if (!provider) return;
-  // The DEFINITIONS name the models (ADR-0018 as amended), so probe the ones that will actually
+  // The DEFINITIONS name the models (ADR-0018), so probe the ones that will actually
   // run, not one instance-wide default. "vllm/Qwen/Qwen3-32B" → the endpoint's model id is
   // everything after the provider prefix; a definition on a different provider is not this
   // endpoint's business. A workflow's per-turn dial cannot be probed here — invoke `input` is a

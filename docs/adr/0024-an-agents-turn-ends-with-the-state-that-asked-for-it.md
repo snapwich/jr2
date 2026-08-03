@@ -5,12 +5,11 @@ reviewer delivered `review_verdict`, the Machine parked on `humanReview` — and
 `review_verdict` **41 times**, 20 of them inside one 40-second window, its `notes` degrading from a paragraph to
 `"Approved."`. Eleven minutes after the run had stopped listening, both Agents were still generating.
 
-Nothing in j2 ends the submission. `agentRun` awaits `client.settle` — `agents.wait(admission)` — which resolves only
-when the model stops. The delivery transitions the Machine, xstate stops the invocation, and its cleanup runs
-`abandon()`: the registration is destroyed and **local** consumption is aborted. That is deliberate — a host shutdown
-stops every actor, and [ADR-0007](0007-durable-machine-state.md)'s restore needs those durable runs alive to re-attach —
-but the Harness is never told. The surface does not outlive its state ([ADR-0011](0011-workflow-defined-events.md)); the
-submission does.
+Nothing in j2 ends the submission. `agentRun` awaits `client.settle` — `wait(admission)` — which resolves only when the
+model stops. The delivery transitions the Machine, xstate stops the invocation, and its cleanup runs `abandon()`: the
+registration is destroyed and **local** consumption is aborted. That is deliberate — a host shutdown stops every actor,
+and [ADR-0007](0007-durable-machine-state.md)'s restore needs those durable runs alive to re-attach — but the Harness is
+never told. The surface does not outlive its state ([ADR-0011](0011-workflow-defined-events.md)); the submission does.
 
 The Agent has no way to know. This is the receipt, verbatim as the model received it:
 
@@ -41,8 +40,8 @@ single-threaded.
 ## Decision
 
 - **A turn ends when the state that asked for it stops waiting.** When an `agentRun` invocation ends, its submission is
-  aborted — `flue.agents.abort(name, id)`. `agentRun` is an **invoke**: leaving the state _means_ "I am no longer
-  interested in this answer", and nothing in the kit offers a detached Agent.
+  aborted — `abort` on the wire (`POST /agents/:name/:id/abort`). `agentRun` is an **invoke**: leaving the state _means_
+  "I am no longer interested in this answer", and nothing in the kit offers a detached Agent.
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,
@@ -66,7 +65,7 @@ single-threaded.
 
 - **j2 never observes that settlement, and the ADR does not pretend otherwise.** By construction the actor is already
   stopped when the abort fires — being stopped is the trigger — so `settle`'s rejection was swallowed by
-  `if (stopped) return` before the remote outcome existed. flue's distinct `aborted` outcome is worth having for
+  `if (stopped) return` before the remote outcome existed. The wire's distinct `aborted` outcome is worth having for
   **observability** (`history` reads `aborted`, not `failed`); it is not what suppresses a spurious fault. Nothing
   suppresses it, because nothing is listening.
 - **`AgentRunPort` gains `abort(agentName, instanceId)`**, so the port stays the injectable seam and a unit test can
@@ -79,30 +78,28 @@ single-threaded.
   table the guarantee uses — whether the registration just delivered to is still live — so it reports what happened
   rather than what was hoped. `deliveryId` is unchanged ([ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md) keeps
   it as the room a deferred result will need). **This is the hint, not the guarantee**, and it is named for the Agent's
-  frame rather than flue's: the Agent has no submissions, it has a Turn (CONTEXT.md).
+  frame rather than the wire's: the Agent has no submissions, it has a Turn (CONTEXT.md).
 - **The Adapter renders the receipt as prose**, because a model reads text before `structuredContent`: the pick was
   delivered, the workflow consumed it, the turn is over.
 - **The Agent instructions gain the stop half.** "You MUST finish by calling `review_verdict`" is half a contract — it
   says how to finish and never that finishing is finished. `examples/coding/agents/*.ts` say to call it **once**, then
   stop.
 
-## ADR-0016 is wrong about flue's concurrency, and the correction is load-bearing here
+## The Harness queues, and the queue is load-bearing here
 
-[ADR-0016](0016-agent-turn-mechanics-are-internal.md) states that "invoking a `continue` iid that is already live fails
-loudly (flue lease-fences per iid)". It does not. flue **queues**: direct prompts for one instance "enter the same
-persisted per-instance queue" processed "in accepted order", and `claimSubmission()` promotes a submission "only when it
-is the first unsettled submission for that session" (`@flue/sdk` beta.9 docs, `guide/targets/node.md`,
-`api/data-persistence-api.md`). The lease is about process ownership for crash recovery, not about rejecting a second
-submission.
-
-That correction cuts both ways, and both matter:
+Invoking a `continue` iid that is already live does **not** fail loudly — the Harness **queues**: prompts for one
+instance enter one per-instance queue in admission order, and a Submission is promoted only when it is the first
+unsettled one for its conversation ([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)
+asserts these semantics as j2's own; they were first discovered, mid-incident, as the behavior of the since-retired
+harness runtime — the original ADR-0016 assumed the opposite, a loud per-iid fence). That cuts both ways, and both
+matter:
 
 - **`session: "continue"` was unusable before this ADR, not merely fragile.** A runaway submission does not fail the
   next state's `send` — it makes it queue behind work that may never finish, and the state hangs with no error.
-- **Ordering is mandatory, not hygiene.** Abort "aborts the running submission and everything queued behind it … settles
-  queued work before its provider runs". An abort that loses the race to the next `send` therefore kills the new turn
-  **before it runs at all** — no error, no fault, the Agent simply never speaks. Silent turn loss is the worst failure
-  mode available, which is why the ordering ships with the decision rather than after it.
+- **Ordering is mandatory, not hygiene.** Abort sweeps the running Submission and everything queued behind it
+  (ADR-0027). An abort that loses the race to the next `send` therefore kills the new turn **before it runs at all** —
+  no error, no fault, the Agent simply never speaks. Silent turn loss is the worst failure mode available, which is why
+  the ordering ships with the decision rather than after it.
 
 ## Considered options
 
@@ -119,15 +116,15 @@ That correction cuts both ways, and both matter:
   a whole decision reversing. Invoke semantics already answer the question.
 - **Abort on actor stop, unconditionally.** Rejected: it breaks ADR-0007's restore, which is the reason `abandon()`
   abandons locally in the first place.
-- **Abort from the host, in `sendToAgent`.** Rejected three ways: it puts a flue client in the Orchestrator (ADR-0013
-  keeps it free of data-plane clients), it makes a delivery await a remote call before answering, and it only ever
-  covers endings caused by deliveries — the narrow rule again, wearing a different hat.
+- **Abort from the host, in `sendToAgent`.** Rejected three ways: it puts a data-plane client in the delivery path
+  (ADR-0013 answers deliveries from the registration table alone), it makes a delivery await a remote call before
+  answering, and it only ever covers endings caused by deliveries — the narrow rule again, wearing a different hat.
 - **Have the Adapter close the MCP transport when the surface goes.** Rejected: the Adapter has no push channel by
   design (ADR-0013 — it asks per connection, and the answer is the turn), and a tool server disappearing does not stop a
   model already generating.
-- **Make the event `deferred` and hold the call open.** Rejected: reserved-not-built (ADR-0013), and flue's 60 s MCP
-  timeout means the answer would be poll-with-progress anyway. It also solves a different problem — giving the Agent an
-  _answer_ — where this one is about giving it an _end_.
+- **Make the event `deferred` and hold the call open.** Rejected: reserved-not-built (ADR-0013), and the MCP client's 60
+  s per-request timeout means the answer would be poll-with-progress anyway. It also solves a different problem — giving
+  the Agent an _answer_ — where this one is about giving it an _end_.
 
 ## Consequences
 

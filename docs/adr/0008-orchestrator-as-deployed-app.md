@@ -23,15 +23,14 @@ _writer_ (no split-brain on the snapshot) — **not** one workflow per process. 
 independent scaling is achieved by running **another instance**, not by replicating one run; the default is one
 instance, many workflows.
 
-## Flue stays on the Agent side
+## The Harness stays on the Agent side
 
-The Agent/Sandbox Harness is flue (ADR-0002/0018) — its sweet spot. The Orchestrator is **not** flue: its state is an
-xstate snapshot, not a flue session, and its loop is a deterministic state machine, not an LLM-in-harness; hosting it in
-flue would mean fighting flue's session/agent model. We borrow flue's **ergonomics, not its implementation**: the
-instance folder convention (`j2.config.ts` + discovered `workflows/` and `agents/` dirs, mirroring flue's
-`flue.config.ts` + `agents/`), the `j2` CLI as the primary interface, and an HTTP API shaped like flue's "durable run
-addressed by id" (`POST` to start/feed, `GET /…/:id` for status, SSE for events) — so both sides of the system speak one
-protocol, without coupling the Orchestrator to flue.
+The Agent/Sandbox Harness is j2's own server, `@j2/harness` (ADR-0002/0018/0027) — and the Orchestrator is **not** a
+harness: its state is an xstate snapshot, not an agent session, and its loop is a deterministic state machine, not an
+LLM-in-harness. The two share ergonomics, not implementation: the instance folder convention (`j2.config.ts` +
+discovered `workflows/` and `agents/` dirs), the `j2` CLI as the primary interface, and an HTTP API shaped as "durable
+run addressed by id" (`POST` to start/feed, `GET /…/:id` for status, SSE for events) — so both sides of the system speak
+one protocol without sharing a runtime.
 
 ## Consequences
 

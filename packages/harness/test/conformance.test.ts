@@ -194,7 +194,7 @@ test("the Menu is listed fresh per Submission: a surface change lands on the nex
   }
 });
 
-test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018 as amended)", async () => {
+test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018)", async () => {
   provider.reset([{ text: "One." }, { text: "Two." }, { text: "Three." }]);
   sandbox.reset(surfaceWith("review_verdict"));
   const iid = "conf/dials";

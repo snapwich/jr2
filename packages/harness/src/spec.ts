@@ -11,7 +11,7 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 /** The plain-data Agent definition (ADR-0018), as published to the ConfigMap. */
 export type AgentDefinition = {
   /** Model specifier, `<provider>/<modelId>`. REQUIRED — there is no instance-wide default
-   * (ADR-0018 as amended): an Agent is independently valid, and this is the only place a model is
+   * (ADR-0018): an Agent is independently valid, and this is the only place a model is
    * checkable before a workflow names one. An invocation may override it (see {@link TurnDials}). */
   model: string;
   /** The Agent's system prompt. */
@@ -47,12 +47,12 @@ export type ProviderSpec = {
 };
 
 /** The harness section: what this instance can REACH. Deliberately no model default — the config
- * declares providers, the definition makes the choice (ADR-0018 as amended). */
+ * declares providers, the definition makes the choice (ADR-0018). */
 export type HarnessSpec = {
   provider?: ProviderSpec;
 };
 
-/** What a Machine state may set for one Turn on top of the definition (ADR-0018 as amended) — the
+/** What a Machine state may set for one Turn on top of the definition (ADR-0018) — the
  * DIALS (how hard to run), never identity (`instructions`/`access`/`cwd`, which would make the
  * Agent's name a lie). Rides the admit body per Submission, so one `continue` conversation may
  * queue Submissions at different settings. */

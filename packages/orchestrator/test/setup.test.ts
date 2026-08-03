@@ -297,7 +297,7 @@ test("explicit tools remain the escape hatch over the derived menu", async () =>
   actor.stop();
 });
 
-test("the dials pass through to the admission; omitted, nothing is invented (ADR-0018 as amended)", async () => {
+test("the dials pass through to the admission; omitted, nothing is invented (ADR-0018)", async () => {
   const ping = defineEvent({ name: "ping", input: z.object({}) });
   const dialed = new MockFlueClient();
   const plain = new MockFlueClient();

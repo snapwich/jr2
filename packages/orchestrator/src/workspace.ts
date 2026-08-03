@@ -45,7 +45,7 @@ export type WorkspaceSpec = {
 };
 
 /**
- * What the workspace hands the BODY (ADR-0012, amended by ADR-0016): worktree geography only.
+ * What the workspace hands the BODY (ADR-0012, ADR-0016): worktree geography only.
  * `endpoint` and `sandbox` are mechanism-internal now — `agentRun` resolves them ambiently from
  * the enclosing wrapper (ambient.ts), so a workflow can no longer forget to thread them (the
  * baba71f incident: `sandbox` omitted, every tool call 403'd, fail-closed but silent).

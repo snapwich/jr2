@@ -32,7 +32,7 @@ import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 
 /** One admission of an Agent: which persona, which durable exchange, the prompt, and this
- * Submission's dials (ADR-0018 as amended) — captured so a mechanics-tier test can assert which
+ * Submission's dials (ADR-0018) — captured so a mechanics-tier test can assert which
  * settings a state framed the turn with, exactly as it asserts the prompt. */
 export type Admission = {
   agentName: string;

@@ -2,20 +2,19 @@
 
 A Sandbox pod composes up to three containers around one shared worktree volume (`/work`):
 
-- **Harness container** — the CR's primary container (`spec.image`): flue's server hosting the instance's Agents
-  (ADR-0018), _plus_ the **agent's own toolchain** — the build/test tools the agent invokes. It is not toolless: a coder
-  Agent must build and run tests, and flue's `local()` sandbox executes those tools inside this container, so the
-  toolchain has to live in this image. "Lightweight" here means slim relative to a full human IDE — not without tools.
-  This is also the container a human `kubectl exec`s into to inspect a parked run today.
+- **Harness container** — the CR's primary container (`spec.image`): j2's own server hosting the instance's Agents
+  (ADR-0018/0027), _plus_ the **agent's own toolchain** — the build/test tools the agent invokes. It is not toolless: a
+  coder Agent must build and run tests, and the working tools (read/write/edit/bash) execute inside this container, so
+  the toolchain has to live in this image. "Lightweight" here means slim relative to a full human IDE — not without
+  tools. This is also the container a human `kubectl exec`s into to inspect a parked run today.
 - **Adapter container** — j2-owned sidecar (ADR-0013): serves the Agent its MCP tool menu on `localhost` and is the
-  pod's only credential holder. It exists as a separate container precisely _because_ `local()` gives the Agent code
-  execution in the Harness container — the Orchestrator credential lives where the Agent cannot read it.
+  pod's only credential holder. It exists as a separate container precisely _because_ the working tools give the Agent
+  code execution in the Harness container — the Orchestrator credential lives where the Agent cannot read it.
 - **User Container** — user-owned, customizable image (nvim, dotfiles, extra CLIs) for working alongside the agent with
   your own tools; configured per instance as `sandbox.userImage` in `j2.config.ts` and mapped into the CR's generic
   sidecar list like the Adapter. Absent `userImage`, the pod runs two containers. j2 does not own the image's contents.
 
-All three mount the same `/work` volume, so human and agent see identical files, and flue's session / durable-execution
-log on that volume can be inspected with your own tools.
+All three mount the same `/work` volume, so human and agent see identical files.
 
 ## Why separate containers, not one image
 
@@ -39,6 +38,6 @@ Agent executes code in the Harness and none in the Adapter, so the Adapter's env
 - The generic `Sandbox` CRD composes all of this as plain container specs (ADR-0001 holds — the operator stays
   agent-agnostic); the Orchestrator's `kubectlSandbox` supplies the images.
 - **Deferred probe:** a _truly_ minimal Harness (agent loop only, tool execution delegated to the user container) would
-  require flue to run tools in a sibling container — an unproven capability (flue's container sandboxes are remote-VM
-  style, not sibling-container). Not blocking: the agent toolchain lives in the Harness image; revisit only if image
-  duplication between the Harness and user container becomes a real cost.
+  require the Harness to execute tools in a sibling container — a cross-container transport j2 does not have. Not
+  blocking: the agent toolchain lives in the Harness image; revisit only if image duplication between the Harness and
+  user container becomes a real cost.

@@ -51,7 +51,7 @@ just operator-image
 # 2. the ENDPOINT, in examples/coding/.env (uncommitted; the CLI loads the .env beside
 #    j2.config.ts into the environment the config reads — ADR-0019):
 #      VLLM_BASE_URL=https://<address>/v1             # reachable FROM PODS — never localhost
-#    The MODEL is not here: each agents/<name>.ts names its own (ADR-0018 as amended), because an
+#    The MODEL is not here: each agents/<name>.ts names its own (ADR-0018), because an
 #    address is a deployment fact and a model is a design decision. `j2 up` probes every model the
 #    definitions name for this provider.
 #    vLLM must run with --enable-auto-tool-choice and the matching --tool-call-parser; `j2 up`
@@ -113,7 +113,7 @@ per-cluster operator too.
 - **Events are the workflow's vocabulary**; `audience` tags who may deliver. A state that invokes `agentRun` gets the
   agent-events its transitions handle as its Agent's tool menu; a `gate` state gets the external set the same way.
 - **`agentRun` takes `{ agent, prompt }`** — plus the optional dials `model` and `thinkingLevel`, which turn this ONE
-  turn up or down without changing who the Agent is (ADR-0018 as amended). Sessions are fresh by default; endpoint and
+  turn up or down without changing who the Agent is (ADR-0018). Sessions are fresh by default; endpoint and
   Sandbox resolve ambiently from the enclosing `workspace()`; the workflow sees ONE terminal `agent.fault { reason }`.
 - **`workspace(body, spec)` owns Sandbox lifecycle only** and hands the body `{ workdir, repos, branch }`. A body that
   parks keeps its Sandbox alive — that _is_ the retain policy.

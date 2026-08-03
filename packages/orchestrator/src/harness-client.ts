@@ -42,8 +42,8 @@ const LIVE_LONG_POLL = "long-poll";
  * `agents.{send,wait,abort}` was, minus the SDK). */
 export type HarnessClient = {
   /** `POST /agents/:name/:id {message, model?, thinkingLevel?}` → the Admission, with `streamUrl`
-   * resolved absolute. The optional dials are this Submission's override layer (ADR-0018 as
-   * amended); omitted, the Harness runs the definition's own values. */
+   * resolved absolute. The optional dials are this Submission's override layer (ADR-0018);
+   * omitted, the Harness runs the definition's own values. */
   send(
     agentName: string,
     instanceId: string,

@@ -14,19 +14,19 @@ runtime step (worktree setup as its own state that can fail independently) and a
 
 ## The Harness is the primary container; sidecars are opaque fragments
 
-The CR's `spec.image` is the **Harness** — flue's server hosting the instance's Agents (ADR-0005/0018). Everything else
-in the pod rides `spec.sidecars`: plain Kubernetes `Container` fragments (image, ports, env, volumeMounts) the operator
-schedules **without understanding them** — exactly as a Deployment's pod template carries arbitrary containers without
-the controller knowing their roles. That is how the Adapter (ADR-0013) and the User Container (ADR-0005) land in the pod
-with zero operator awareness: `kubectlSandbox` compiles them into the sidecar list when it builds the CR. Containers
-cannot be added to a live pod (native containers, that is), so everything a Sandbox will run must be in the spec at
-spin-up.
+The CR's `spec.image` is the **Harness** — j2's own server hosting the instance's Agents (ADR-0005/0018/0027).
+Everything else in the pod rides `spec.sidecars`: plain Kubernetes `Container` fragments (image, ports, env,
+volumeMounts) the operator schedules **without understanding them** — exactly as a Deployment's pod template carries
+arbitrary containers without the controller knowing their roles. That is how the Adapter (ADR-0013) and the User
+Container (ADR-0005) land in the pod with zero operator awareness: `kubectlSandbox` compiles them into the sidecar list
+when it builds the CR. Containers cannot be added to a live pod (native containers, that is), so everything a Sandbox
+will run must be in the spec at spin-up.
 
-One Harness **image** serves many **Agents** — flue varies model, instructions, skills, and MCP tool sources at runtime
-without a rebuild, driven by the `defineAgent` initializer (keyed on instance `id`/env) and by worktree content
-(`AGENTS.md`, `.agents/skills/`). So the Orchestrator injects a fixed Harness image plus **config** (env + the prepared
-worktree), never a per-Agent image build. The HTTP prompt body itself carries only `{message, images}`, so anything
-persona-shaping is set at provision time, not per request.
+One Harness **image** serves many **Agents** — the Harness resolves model, instructions, and MCP tool sources at runtime
+without a rebuild, re-reading the mounted definitions per Submission (ADR-0018) and connecting the Adapter's tool menu
+per turn (ADR-0013). So the Orchestrator injects a fixed Harness image plus **config** (env + the prepared worktree),
+never a per-Agent image build. The HTTP prompt body itself carries only `{message, images}`, so anything persona-shaping
+is set at provision time, not per request.
 
 ## Idle GC: a renewed lease, not a TTL
 

@@ -7,7 +7,7 @@
 // before evaluating this config, and anything already set in your shell wins over it.
 //
 // `sandbox` is pod-shaped only (ADR-0018); `harness` declares what this instance can REACH —
-// never WHICH model to use. That choice lives in `agents/<name>.ts` (ADR-0018 as amended):
+// never WHICH model to use. That choice lives in `agents/<name>.ts` (ADR-0018):
 //   - VLLM_BASE_URL set → a custom `vllm` provider (OpenAI-compatible; the address must be
 //     reachable FROM PODS — a LAN address, never localhost). `j2 up` preflights it from inside
 //     the cluster, probing every model the definitions name against it, including one tool-call

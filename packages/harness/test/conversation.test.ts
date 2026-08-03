@@ -11,8 +11,8 @@ import { SUBMISSION_ABORTED, type AdmissionRequest, type Settlement } from "../s
 
 type ScriptedRun = {
   message: string;
-  /** The whole admitted request — the dials this Submission was framed with (ADR-0018 as
-   * amended) reach the turn beside the prompt. */
+  /** The whole admitted request — the dials this Submission was framed with (ADR-0018)
+   * reach the turn beside the prompt. */
   submission: AdmissionRequest;
   signal: AbortSignal;
   resolve: () => void;

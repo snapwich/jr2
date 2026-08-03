@@ -184,7 +184,7 @@ test("unknown agent name: POST is 404 — a definition must exist", async () => 
   assert.ok(body.error.includes('"ghost"'));
 });
 
-test("dials ride the admit body to the turn (ADR-0018 as amended)", async () => {
+test("dials ride the admit body to the turn (ADR-0018)", async () => {
   const { app, runs } = scripted();
   const res = await app.request("/agents/coder/i1", {
     method: "POST",

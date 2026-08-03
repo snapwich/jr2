@@ -22,7 +22,7 @@ const adapterUrl = required(
 );
 const models = modelsFor(spec.harness, process.env);
 // Boot-time, not first-Submission: a definition naming a model nothing serves is a fact about the
-// mounted spec, and the pod log is where it belongs (ADR-0018 as amended).
+// mounted spec, and the pod log is where it belongs (ADR-0018).
 validateSpecModels(spec, models);
 
 const app = harnessApp({

@@ -4,7 +4,7 @@
 // `mapThinkingLevel` is the loud gate between j2's effort scale and pi's.
 //
 // Two validation seats hang off `resolveModel`, because a model now reaches a turn by two routes
-// (ADR-0018 as amended): `validateSpecModels` checks every DEFINITION at boot, and `dialFault`
+// (ADR-0018): `validateSpecModels` checks every DEFINITION at boot, and `dialFault`
 // checks an INVOCATION's dials at admission. Neither is reachable from the other's moment.
 
 import {
@@ -83,7 +83,7 @@ export function resolveModel(models: Models, specifier: string): Model<Api> {
 }
 
 /**
- * Every definition's model, resolved once at boot (ADR-0018 as amended). A definition names the
+ * Every definition's model, resolved once at boot (ADR-0018). A definition names the
  * model, so a typo is a static fact about the mounted spec — it must kill the container in the pod
  * log, not surface as an `agent.fault` on the first Submission that happens to use that Agent.
  * Call-site dials are invisible here (they arrive per admission); `checkDials` is their seat.

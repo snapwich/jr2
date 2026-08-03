@@ -72,7 +72,7 @@ test("resolveDefinition: the definition supplies the values; defaults apply", ()
   });
 });
 
-test("resolveDefinition: this Submission's dials win over the definition (ADR-0018 as amended)", () => {
+test("resolveDefinition: this Submission's dials win over the definition (ADR-0018)", () => {
   const spec: AgentsSpec = {
     agents: [
       { name: "coder", definition: { instructions: "code", model: "anthropic/claude-x", thinkingLevel: "low" } },

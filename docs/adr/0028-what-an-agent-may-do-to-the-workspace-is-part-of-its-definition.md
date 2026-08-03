@@ -16,17 +16,18 @@ words." The prose ban is a persona, not a boundary. ADR-0024 also named the stak
 concurrent writer in a Workspace the Machine believes is single-threaded — and
 [ADR-0012](0012-workspace-wrapper-machine.md) puts coder and reviewer in that one Workspace on purpose.
 
-Under flue this had no seat: the definition contract is data-only, flue's tool list is take-it-or-replace-it, and
-[ADR-0018](0018-instance-agents-are-definitions-j2-assembles-the-harness.md)'s escape hatch was "eject to a real flue
-project". [ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md) retires that constraint: j2
-assembles the working tools per Submission, so what an Agent may do is finally something a definition can state.
+Under the retired flue runtime this had no seat — its tool list was take-it-or-replace-it, and the only recorded out was
+ejecting to a foreign harness project. [ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)
+retires that constraint: j2 assembles the working tools per Submission, so what an Agent may do is finally something a
+definition can state.
 
 ## Decision
 
 - **`AgentDefinition` gains `access?: "write" | "read"`, default `"write"`.** One word that describes the persona — a
   reviewer reads — not a tool inventory. It is deliberately **not** named `tools`: that word already means the
-  control-plane menu at the invoke seam (`actor.ts`'s escape hatch) and would name flue's menu rather than the Agent. A
-  string field, JSON-serializable, riding the existing ConfigMap channel unchanged (ADR-0018's constraint holds).
+  control-plane menu at the invoke seam (`actor.ts`'s escape hatch) and would name the Harness's menu rather than the
+  Agent. A string field, JSON-serializable, riding the existing ConfigMap channel unchanged (ADR-0018's constraint
+  holds).
 - **The tool layer enforces the honest path.** `access: "read"` withholds `write` and `edit` from the assembled working
   tools (pi's journaled active-tool set). `bash` stays — the reviewer's own instructions require running the tests — and
   the ADR says plainly what that means: a shell can write, so the tool layer states intent and stops the honest path. It
@@ -48,9 +49,9 @@ assembles the working tools per Submission, so what an Agent may do is finally s
 ## Considered options
 
 - **Prose alone** (today). Rejected by the incident; the coin flip is already on record.
-- **A `SessionEnv` wrapper that throws on denied operations.** The right stopgap against beta.9 — ~20 lines, no drift —
-  and moot the day j2 owns tool assembly. Building and testing a mechanism the replacement deletes was the argument for
-  folding this decision into ADR-0027.
+- **A `SessionEnv` wrapper that throws on denied operations.** The right stopgap against the retired runtime's fixed
+  toolset — ~20 lines, no drift — and moot the day j2 owns tool assembly. Building and testing a mechanism the
+  replacement deletes was the argument for folding this decision into ADR-0027.
 - **Wait for flue 2.0's tool exports.** Rejected with ADR-0027.
 - **A read-only filesystem for the reviewer.** Rejected: the reviewer must run tests and builds, which write caches,
   `node_modules`, temp files. Read-only breaks the persona's own job description.

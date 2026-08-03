@@ -30,9 +30,14 @@ casts). It:
 
 A state that invokes `agentRun` gets, as its Agent's tool menu, the workflow events its transitions handle (own +
 bubbled ancestors, per statechart semantics); a state that invokes `gate` gets its accepted set the same way. The
-consumer names neither; MCP appears nowhere in workflow code. Mechanics: the derivation is **static, in
-`j2Setup.createMachine`** — a config walk wraps each invoke's `input` to append the derived names, so names still ride
-serializable input and the ADR-0007 restore path and invoke-time validation are unchanged. The same walk feeds
+consumer names neither; MCP appears nowhere in workflow code. Mechanics: the **vocabulary** derivation is static, in
+`j2Setup.createMachine` — a config walk wraps each invoke's `input` to append the derived names, so names still ride
+serializable input and the ADR-0007 restore path and invoke-time validation are unchanged. The walk reads transition
+_keys_ and so cannot see guards, which is why the **surface** is not static on top of it: `agentSurface` asks the
+invoking machine's guards before listing, so an event whose every transition is guarded false is never offered — the
+menu offers only what the machine will accept
+([ADR-0029](0029-a-menu-offers-what-the-machine-will-accept-and-a-pick-that-moves-nothing-says-so.md) owns the
+rationale). Authoring is untouched by the split: a workflow names no tools in either leg. The same walk feeds
 `j2 visualize` ("this state's agent can call X, Y"). Dotted names (`agent.*`, `workspace.lost`, `xstate.*`, `after`) are
 mechanically excluded.
 
@@ -47,14 +52,6 @@ remain as escape hatches.
 Considered and rejected: per-transition demarcation (xstate transitions have no typed metadata slot for it without
 inventing j2-only config inside the transition table — a DSL by the back door) and purely structural
 own-transitions-only derivation (breaks ADR-0011's blessed handle-`report_blocked`-once-at-an-ancestor idiom).
-
-**Amended 2026-08-02
-([ADR-0029](0029-a-menu-offers-what-the-machine-will-accept-and-a-pick-that-moves-nothing-says-so.md)).** "The
-derivation is **static**" holds for the VOCABULARY and no longer for the SURFACE. The config walk described above is
-unchanged and still the validation scope, but it reads transition _keys_ and so cannot see guards — an event whose every
-transition is guarded false was offered anyway, and the pick that followed moved nothing while the receipt reported the
-turn merely unfinished. `agentSurface` now asks the invoking machine's guards before listing. Authoring is untouched: a
-workflow named no tools before and names none now.
 
 ## Why there is no injection model (the retired ADR-0003)
 

@@ -23,7 +23,7 @@ instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + c
 
 - **Run state and run control are the Instance token's alone.** `authenticated` accepts _any_ token we minted, so a
   Sandbox token — the one credential that sits in a pod an Agent shares a network namespace with — could read **every**
-  run's context (other features' branches, ticket bodies, review verdicts, flue endpoints) and **CANCEL any run**.
+  run's context (other features' branches, ticket bodies, review verdicts, Harness endpoints) and **CANCEL any run**.
   Neither is on the Agent's surface, no more than a gate is: ADR-0013 scopes that token to delivering into registrations
   recorded against its _own_ Sandbox. This closes the same class of hole ADR-0013 closed for gates, on the routes it did
   not name. The band is named for the credential it requires, not for a role — "operator" in this repo is the Kubernetes

@@ -1,11 +1,11 @@
 # The `j2` CLI and instance interface
 
 ADR-0008 fixed that j2 is a library + CLI and that an Orchestrator instance is a user-owned folder hosting many
-workflows. This ADR fixes the **instance folder convention**, the **orchestrator HTTP API**, and the **`j2` CLI** — all
-shaped to mirror flue so both sides of the system speak one set of conventions. Operational mechanics (how `j2 up`
-converges a cluster, addressing, secrets) live in ADR-0019.
+workflows. This ADR fixes the **instance folder convention**, the **orchestrator HTTP API**, and the **`j2` CLI** — one
+set of conventions both sides of the system speak. Operational mechanics (how `j2 up` converges a cluster, addressing,
+secrets) live in ADR-0019.
 
-## Instance folder convention (flue-shaped, filename discovery)
+## Instance folder convention (filename discovery)
 
 ```
 my-orchestrator/
@@ -19,8 +19,7 @@ my-orchestrator/
 
 `workflows/<name>.ts` registers a workflow named `<name>` via `export const machine` — the one-export module contract
 (ADR-0015; vocabulary rides the machine object, so there is no manifest export). `agents/<name>.ts` registers an Agent
-definition the same way (`export default defineAgent({…})`, ADR-0018) — exactly mirroring flue's
-`agents/hello-world.ts → hello-world`. No central registry file.
+definition the same way (`export default defineAgent({…})`, ADR-0018). No central registry file.
 
 **The instance repo is a deployment assembly, not a sharing unit** (ADR-0019): reusable workflows/agents are published
 as npm packages and re-exported here; `j2.config.ts` holds only what is specific to this deployment's repos, models, and
@@ -46,9 +45,9 @@ export default defineConfig({ name: "my-orchestrator", sandbox: {} });
   an Adapter — an Agent without one cannot act, ADR-0013); `userImage` opts into the User Container (ADR-0005).
   `sandbox` holds **pod-shaped config only** (images, resources, transport) — agent-runtime concerns live in `harness`
   (ADR-0018).
-- **`harness` is the agent-runtime section** (ADR-0018): default model, custom provider (`api`, `baseUrl`), and the
-  env/creds the Agents need (e.g. an Anthropic key, read from `process.env`/`.env` and materialized as a Secret by
-  `j2 up`, or `envFrom` refs to Secrets you manage).
+- **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`) and the env/creds the Agents
+  need (e.g. an Anthropic key, read from `process.env`/`.env` and materialized as a Secret by `j2 up`, or `envFrom` refs
+  to Secrets you manage) — never which model to use; each definition names its own (ADR-0018).
 - **`registry`** (deployment-varying, resolve from env): absent → images are `kind load`-ed; present → pushed
   (ADR-0019).
 - **The snapshot store defaults to sqlite** on a PVC in the instance's namespace (zero setup); **Postgres** is opt-in
@@ -65,7 +64,7 @@ definition is plain data (ADR-0018), composition needs no API: an instance file 
 extends it by spread (`export default defineAgent({ ...coder, model: "…" })`). Adding tools/skills waits on the
 definition contract growing that seat (ADR-0018).
 
-## Orchestrator HTTP API (hono, flue-shaped, run-addressed-by-id)
+## Orchestrator HTTP API (hono, run-addressed-by-id)
 
 Push + control + observe only — the **pull** path needs no HTTP (the Orchestrator's Source pulls, ADR-0017). Auth bands
 per ADR-0014: structure + observation open; the Agent surface takes the Sandbox token; run state, control, and gates
@@ -123,16 +122,16 @@ covers the interim (ADR-0019).
 ## Settled CLI behavior (v1)
 
 **Instance addressing.** The CLI finds its instance by walking up from cwd to the directory containing `j2.config.ts` —
-the root marker, mirroring `flue.config.ts`. The _deployment_ is addressed by the current kube context + the instance's
-namespace: run-verbs port-forward the Orchestrator Service for the duration of the command and read the Instance token
-from its in-cluster Secret (kube RBAC is the gate). `--url` / `J2_URL` (+ token env) overrides both — the
-ingress-exposed/remote-caller case — and skips the folder walk entirely. Every run-verb prints the context it targets on
-stderr, so ambient-context drift is visible (ADR-0019).
+the root marker. The _deployment_ is addressed by the current kube context + the instance's namespace: run-verbs
+port-forward the Orchestrator Service for the duration of the command and read the Instance token from its in-cluster
+Secret (kube RBAC is the gate). `--url` / `J2_URL` (+ token env) overrides both — the ingress-exposed/remote-caller case
+— and skips the folder walk entirely. Every run-verb prints the context it targets on stderr, so ambient-context drift
+is visible (ADR-0019).
 
-**`j2 run` — blocking, attach-by-default.** Mirrors `flue run`: start the run, stream activity to **stderr**, print the
-terminal `RunStatus` as JSON to **stdout**, exit — so `j2 run … | jq` yields just the result. j2 diverges from flue in
-one way: it **attaches to the running orchestrator**, not a temporary per-invocation runtime — a j2 run is durable and
-may park on a Gate indefinitely, outliving the CLI call. `--detach` starts the run, prints its `runId`, returns.
+**`j2 run` — blocking, attach-by-default.** Start the run, stream activity to **stderr**, print the terminal `RunStatus`
+as JSON to **stdout**, exit — so `j2 run … | jq` yields just the result. It **attaches to the running orchestrator**,
+not a temporary per-invocation runtime — a j2 run is durable and may park on a Gate indefinitely, outliving the CLI
+call. `--detach` starts the run, prints its `runId`, returns.
 
 **Attach / detach / re-attach.** A run lives server-side, so attaching = opening `GET /runs/:runId/events` and detaching
 = closing it (Ctrl-C); neither affects the run. `j2 logs <runId> -f` re-attaches to any running run. On attach, the SSE
@@ -172,7 +171,6 @@ added by their later slices. No auto-install — it prints the `pnpm install && 
 
 ## Consequences
 
-- All `packages/*` publish to npm under `@j2/*`; instances depend on them. The CLI ships as the `j2` bin (`npx j2`,
-  mirroring `npx flue`).
+- All `packages/*` publish to npm under `@j2/*`; instances depend on them. The CLI ships as the `j2` bin (`npx j2`).
 - Workspaces are a first-class CLI resource backed by the operator's `Sandbox` CRs, label-linked to their runs.
 - Dynamic third-party workflow/plugin loading stays deferred (ADR-0008); discovery is over the instance's own code.

@@ -5,20 +5,16 @@ per connection: every `/mcp/:iid` request builds that turn's server from the Orc
 with no registration answered **HTTP 404** — the reasoning being that "no menu" and "an empty menu" are different
 claims, and an Agent whose turn is over should be told the first one.
 
-The reasoning was sound and the outcome was not, because of who else connects. flue re-runs a `defineAgent` initializer
-whenever it needs a session for that agent instance — including the session it opens to write its own
-`submission_aborted` advisory, **after** the turn ends. j2's initializer connects to the Adapter (`harness/boot.mjs`),
-so every turn ended by [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)'s abort produced:
-
-```
-[flue:submission-abort] Failed to record abort advisory for submission <id>
-  StreamableHTTPError: ... {"error":"no live surface for agent ..."}  code: 404
-```
-
-That is the **happy path**. An Agent ending its turn by calling the tool that moves the Machine is the common case, so
-the error fired on every successful turn. A signal that cries wolf on the happy path cannot also be the alarm: the one
-case where the 404 meant something real — an Agent acting against a turn nobody waits on — became indistinguishable from
-routine noise.
+The reasoning was sound and the outcome was not, because of when connects happen. The Harness dials the Adapter at turn
+start (ADR-0013), and a state can exit before the dial lands — an `after:` timeout on the agent state, an ancestor or
+sibling transition, [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)'s abort racing the connect.
+The refusal then answers a well-formed question — "what can I call?" — with a transport error on a path where nothing is
+wrong. A signal that cries wolf cannot also be the alarm: the one case where the 404 meant something real — an Agent
+acting against a turn nobody waits on — becomes indistinguishable from routine noise. (The incident that first surfaced
+the noise — an advisory session the since-retired harness runtime opened after every aborted turn, 404-ing on every
+successful run — went away with that runtime;
+[ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md). The race is the leg the decision stands
+on.)
 
 ## Decision
 
@@ -37,10 +33,8 @@ routine noise.
 
 - **Leave it and filter the log.** Rejected: the noise is a symptom. The Adapter is answering a well-formed question
   ("what can I call?") with an error, and the true answer — nothing — is one it can give.
-- **Hold the registration open one extra round trip** so the advisory's connect finds a live surface. Rejected: it makes
-  turn lifetime depend on an internal detail of how flue opens sessions, and any window is a guess.
-- **Distinguish the advisory's connect from a real turn's.** Rejected as impossible: it is the same initializer, the
-  same URL, the same request. There is nothing on the wire to branch on.
+- **Hold the registration open one extra round trip** so a late connect finds a live surface. Rejected: it makes turn
+  lifetime depend on connection-timing internals, and any window is a guess.
 - **Serve a tombstone tool** (`your_turn_is_over`) instead of an empty list. Rejected: it hands a model something to
   call at the exact moment the goal is that it stop calling things.
 
@@ -48,12 +42,6 @@ routine noise.
 
 - **The Adapter's error log means something again.** Any 500 from `/mcp/:iid` is now a genuine fault — the Orchestrator
   unreachable, or a turn declaring an event the Adapter refuses to serve (a `deferred`/`poll` def, ADR-0013).
-- **flue's abort advisory records** instead of failing, so the abort is visible in the conversation timeline.
-- **This fixes noise, not correctness.** The advisory failing was never the cause of anything: on the pinned
-  `@flue/runtime` 1.0.0-beta.9, an abort that lands while the model is still _streaming_ a tool call strands that call
-  and the conversation projection then drops the whole assistant message from later turns — and it does so identically
-  when the advisory succeeds. That defect is flue's, is fixed on its unreleased line, and is covered separately by the
-  wire-contract check; it is recorded here only so this ADR is not mistaken for its remedy.
 - **An Agent that connects at turn start to an already-dead iid now sees an empty menu rather than a connect failure.**
   That race means the state exited before the Harness dialed, so the turn was already over and ADR-0024 aborts it; an
   empty menu describes it accurately.

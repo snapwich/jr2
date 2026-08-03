@@ -22,7 +22,7 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
  * stay out of the contract. */
 export type AgentDefinition = {
   /** Model specifier, `<provider>/<modelId>`, e.g. `anthropic/claude-sonnet-4-6`. REQUIRED —
-   * there is no instance-wide default (ADR-0018 as amended): `j2.config.ts`'s `harness` section
+   * there is no instance-wide default (ADR-0018): `j2.config.ts`'s `harness` section
    * declares which providers are REACHABLE, and the definition makes the choice. This is also the
    * only model `j2 up` can preflight, since a workflow's is not statically recoverable. An
    * `agentRun` invocation may override it for one Turn (`AgentTurnInput.model`). */

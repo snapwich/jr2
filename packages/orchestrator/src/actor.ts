@@ -72,7 +72,7 @@ export type AgentTurnInput = {
   /** This turn's task framing — lands as the conversation's next user message. */
   prompt: string;
   /**
-   * This turn's DIALS (ADR-0018 as amended) — how hard to run, layered over the definition's own
+   * This turn's DIALS (ADR-0018) — how hard to run, layered over the definition's own
    * values. Agents are instance-scoped and every workflow may name any of them, so the same
    * persona legitimately runs at different settings in different workflows: a reviewer on a
    * one-line diff and the same reviewer on an architecture change want identical instructions and

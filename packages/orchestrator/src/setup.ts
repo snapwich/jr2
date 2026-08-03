@@ -203,7 +203,7 @@ export function j2Setup<
 // kind is the primary router; `audience` on the def exists to RESTRICT (tag the security-
 // sensitive events). Explicit `tools:`/`accepts:` on the invoke input remain as escape hatches.
 //
-// The walk also NAMES unnamed gate invokes with their state key path (ADR-0011 as amended):
+// The walk also NAMES unnamed gate invokes with their state key path (ADR-0011):
 // the gate actor derives its default id from its own actor path, so the invoke id is the leaf
 // segment of a caller-facing name — `humanReview` beats xstate's `0.task-with-review.humanReview`.
 // Naming here is id QUALITY only; uniqueness comes from the path mechanism in gate.ts.
@@ -280,7 +280,7 @@ function wrapAgentInput(orig: unknown, derived: string[]) {
       endpoint: consumer.endpoint,
       sandbox: consumer.sandbox,
       prompt: consumer.prompt,
-      // This turn's dials (ADR-0018 as amended) — passed straight through; the Harness layers
+      // This turn's dials (ADR-0018) — passed straight through; the Harness layers
       // them over the definition when the Submission starts.
       model: consumer.model,
       thinkingLevel: consumer.thinkingLevel,

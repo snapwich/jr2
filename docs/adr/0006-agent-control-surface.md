@@ -6,8 +6,8 @@ transitions (ADR-0015 — the consumer authors no tool lists), is served to the 
 and the Agent **chooses one** (controlled agency); the Machine owns the transition table. The Agent never steers the
 workflow — it answers within a frame the Machine set — and because its only control-plane peer is the Adapter (which
 holds no credential it can read), that frame is _enforced_, not advertised. Menus only change at turn boundaries, and
-flue re-runs the `defineAgent` initializer (re-listing MCP tools) on every submission, so no `list_changed` push channel
-is needed.
+the Harness connects a fresh MCP client and re-lists tools per Submission (ADR-0013/0027), so no `list_changed` push
+channel is needed.
 
 There is no j2-blessed event vocabulary: every menu entry is a workflow-defined event (ADR-0011).
 
@@ -16,30 +16,21 @@ There is no j2-blessed event vocabulary: every menu entry is a workflow-defined 
 A named event schema must compile to a flat tagged object (an `enum` discriminator + each option's params as optionals
 
 - a validation `check`), **never a top-level `oneOf`/`anyOf`**. Measured (PoC #5b): a strict variant (→ `oneOf`/`const`
-  tool schema) is unsatisfiable for Qwen3-Coder — it serializes the tool args as a JSON string, validation fails, and
-  flue re-nudges 33× then throws. A flat object is satisfied first try. A conditional contract ("`notes` required iff
-  `request_changes`") is enforced by j2 after the pick, not by the tool schema.
+  tool schema) is unsatisfiable for Qwen3-Coder — it serializes the tool args as a JSON string and validation fails on
+  every retry. A flat object is satisfied first try. A conditional contract ("`notes` required iff `request_changes`")
+  is enforced by j2 after the pick, not by the tool schema.
 
-## The hard constraint: the agent path and the workflow path do not share a session
+## One path: every conversation lives on the agent wire
 
-flue exposes two HTTP surfaces with **disjoint** capabilities (verified against flue source, re-verified 2026-07-13):
-
-| Surface                              | Continuing memory                            | Force a structured result                                                                     |
-| ------------------------------------ | -------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| **Agent** `POST /agents/:name/:id`   | ✅ resumable by `(name, instance id)+offset` | ❌ executor runs `withCallOverrides({ tools: [], model: undefined })` — no result tools, ever |
-| **Workflow** `POST /workflows/:name` | ❌ session keyed by a fresh per-run `runId`  | ✅ `session.prompt(msg, { result })` → native `finish`, durable `GET /runs/:runId`            |
-
-They **cannot be combined** — the root cause is the session storage key (a workflow's first component is a
-server-generated `runId`), so "workflows on named sessions as the per-turn building block of a Machine" is not viable.
-Consequences:
+The wire has exactly one conversation surface (ADR-0027): `POST /agents/:name/:id`, resumable by `(name, iid) + offset`.
+There is no separate "workflow run" surface, and nothing on the wire forces a structured result out of a turn — the menu
+is the only structured channel. Consequences:
 
 - **All continuing, multi-turn work lives on the agent path**, driven by `agentRun` (ADR-0016).
 - **A turn that settles without a valid pick is re-prompted by j2** — the budgeted no-signal nudge _inside_ `agentRun`
-  (ADR-0016), replicating flue's own `finish` nudge client-side, since native `finish` is structurally unavailable on
-  the agent path. The workflow sees one terminal `agent.fault` on exhaustion.
-- **Workflow-`finish` is reserved for self-contained, single-shot decisions** where the Machine ships _all_ context in
-  the workflow input (an LLM-judge / classifier / "given this diff + this rubric, return a verdict"). Never for anything
-  that needs accumulated session memory.
+  (ADR-0016). The workflow sees one terminal `agent.fault` on exhaustion.
+- **Self-contained, single-shot decisions** (an LLM-judge / classifier / "given this diff + this rubric, return a
+  verdict") are one-turn conversations whose menu is the verdict — the same path, not a second mechanism.
 
 ## Residual
 

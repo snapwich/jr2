@@ -349,7 +349,7 @@ export function pipelineDef(): WorkflowDef {
   return { name: "pipeline", machine: pipelineTemplate, provide: () => ({}) };
 }
 
-// ---- Derived-gate fixtures (ADR-0011 as amended) ------------------------------------------------
+// ---- Derived-gate fixtures (ADR-0011) ------------------------------------------------
 // The fan-out shape with NO authored gate ids: the id derives from the gate's own actor path
 // (spawn id + invoke id + the state key the walk stamped), so concurrent children cannot collide
 // by construction — the claim that lets one machine be safe standalone AND under a pool.

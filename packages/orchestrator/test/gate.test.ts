@@ -90,7 +90,7 @@ test("an unknown gate 404s with the run's open gates named", async () => {
   );
 });
 
-// ---- Derived ids (ADR-0011 as amended): the id is the gate's own actor path. -----------------
+// ---- Derived ids (ADR-0011): the id is the gate's own actor path. -----------------
 
 test("fan-out: derived gate ids are distinct per child, and delivery targets exactly one", async () => {
   const host = new RunHost({ store: await mkStore() });

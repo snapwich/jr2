@@ -113,7 +113,7 @@ export type HarnessProvider = {
  * still CARRIES this env to the Harness container), but model concerns are Harness semantics.
  *
  * It declares what this instance can REACH — endpoints, credentials, trust — and never WHICH
- * model to use (ADR-0018 as amended). The instance-wide `model` default was removed: Agents are
+ * model to use (ADR-0018). The instance-wide `model` default was removed: Agents are
  * instance-scoped and every workflow may name any of them, so the variation that matters is
  * per-definition and per-invocation, which one global default serves not at all. */
 export type HarnessConfig = {
