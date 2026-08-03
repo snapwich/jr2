@@ -1,0 +1,18 @@
+# Build output and runtime state. Prettier does not read .gitignore, so list them here.
+node_modules/
+dist/
+tmp/
+.j2/
+*.tsbuildinfo
+
+# pnpm owns this file's format.
+pnpm-lock.yaml
+
+# A Go module with its own toolchain (gofmt, `make lint`); config/** is kubebuilder-generated.
+# Also outside the pnpm workspace on purpose — see pnpm-workspace.yaml.
+operator/
+
+# Generated from operator/config by `just operator-manifest` (kubectl kustomize). Reformatting
+# them makes the next render show a spurious diff.
+packages/cli/manifests/operator.yaml
+packages/cli/assets/sandbox-crd.yaml

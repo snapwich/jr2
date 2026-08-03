@@ -23,6 +23,10 @@ test:
 format:
     pnpm format
 
+# check formatting without writing (the pre-commit hook formats staged files for you)
+format-check:
+    pnpm format:check
+
 # --- local cluster (requires kind) ---
 
 # create the local kind cluster
