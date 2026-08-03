@@ -100,7 +100,9 @@ test("mapThinkingLevel: a level outside j2's scale throws — map loudly, never 
 
 test("validateSpecModels: every definition resolves at boot, or the container dies naming the agent", () => {
   const models = modelsFor(vllm, {});
-  const spec = (model: string): AgentsSpec => ({ agents: [{ name: "coder", definition: { model, instructions: "i" } }] });
+  const spec = (model: string): AgentsSpec => ({
+    agents: [{ name: "coder", definition: { model, instructions: "i" } }],
+  });
   // Listed, unlisted-but-this-provider's, and pi's own catalog all resolve.
   assert.doesNotThrow(() => validateSpecModels(spec("vllm/Qwen/Qwen3-32B"), models));
   assert.doesNotThrow(() => validateSpecModels(spec("vllm/never-listed"), models));

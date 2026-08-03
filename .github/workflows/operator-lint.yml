@@ -3,12 +3,12 @@ name: operator / Lint
 on:
   push:
     paths:
-      - 'operator/**'
-      - '.github/workflows/operator-lint.yml'
+      - "operator/**"
+      - ".github/workflows/operator-lint.yml"
   pull_request:
     paths:
-      - 'operator/**'
-      - '.github/workflows/operator-lint.yml'
+      - "operator/**"
+      - ".github/workflows/operator-lint.yml"
 
 permissions: {}
 

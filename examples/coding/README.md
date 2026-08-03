@@ -113,8 +113,8 @@ per-cluster operator too.
 - **Events are the workflow's vocabulary**; `audience` tags who may deliver. A state that invokes `agentRun` gets the
   agent-events its transitions handle as its Agent's tool menu; a `gate` state gets the external set the same way.
 - **`agentRun` takes `{ agent, prompt }`** — plus the optional dials `model` and `thinkingLevel`, which turn this ONE
-  turn up or down without changing who the Agent is (ADR-0018). Sessions are fresh by default; endpoint and
-  Sandbox resolve ambiently from the enclosing `workspace()`; the workflow sees ONE terminal `agent.fault { reason }`.
+  turn up or down without changing who the Agent is (ADR-0018). Sessions are fresh by default; endpoint and Sandbox
+  resolve ambiently from the enclosing `workspace()`; the workflow sees ONE terminal `agent.fault { reason }`.
 - **`workspace(body, spec)` owns Sandbox lifecycle only** and hands the body `{ workdir, repos, branch }`. A body that
   parks keeps its Sandbox alive — that _is_ the retain policy.
 - **`j2.config.ts` `repos` is the catalog**: the boot reconcile clones each entry onto the in-cluster source volume

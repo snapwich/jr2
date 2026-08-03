@@ -16,9 +16,12 @@
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
-html, body {
+html,
+body {
   margin: 0;
   height: 100%;
   background: var(--ink);
@@ -27,7 +30,10 @@ html, body {
   font-size: 13px;
 }
 
-body { display: flex; flex-direction: column; }
+body {
+  display: flex;
+  flex-direction: column;
+}
 
 header {
   display: flex;
@@ -47,10 +53,21 @@ header {
   letter-spacing: 0.05em;
 }
 
-header h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: 0.04em; }
-.dim { color: var(--text-dim); }
+header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.04em;
+}
+.dim {
+  color: var(--text-dim);
+}
 
-.zoom { margin-left: auto; display: flex; gap: 4px; }
+.zoom {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
 
 button {
   font: inherit;
@@ -61,9 +78,16 @@ button {
   padding: 1px 8px;
   cursor: pointer;
 }
-button:hover { border-color: var(--phosphor); color: var(--phosphor); }
+button:hover {
+  border-color: var(--phosphor);
+  color: var(--phosphor);
+}
 
-main { flex: 1; display: flex; min-height: 0; }
+main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
 
 #canvas {
   flex: 1;
@@ -81,18 +105,32 @@ main { flex: 1; display: flex; min-height: 0; }
   color: var(--red);
   background: var(--ink-2);
 }
-#error .dim { display: block; margin-top: 8px; color: var(--text-dim); }
+#error .dim {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-dim);
+}
 /* A caveat about the diagram, not a failure to draw one — see `opaqueStates`. */
-#error.notice { border-color: var(--amber); color: var(--amber); }
+#error.notice {
+  border-color: var(--amber);
+  color: var(--amber);
+}
 
-#root-transitions { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
+#root-transitions {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
 #root-transitions span {
   color: var(--text-dim);
   border: 1px dashed var(--line);
   border-radius: 3px;
   padding: 2px 8px;
 }
-#root-transitions:empty { display: none; }
+#root-transitions:empty {
+  display: none;
+}
 
 /* ---- Machine (SVG) ---- */
 
@@ -100,16 +138,40 @@ main { flex: 1; display: flex; min-height: 0; }
   fill: var(--ink-2);
   stroke: var(--line);
   stroke-width: 1.2;
-  transition: stroke 0.25s, fill 0.25s, filter 0.25s;
+  transition:
+    stroke 0.25s,
+    fill 0.25s,
+    filter 0.25s;
 }
-.state--compound > rect, .state--parallel > rect { fill: rgba(14, 21, 36, 0.55); }
-.state--parallel > rect { stroke-dasharray: 5 4; }
-.state--final > rect.final-inner { fill: none; stroke: var(--line); }
-.state-title { fill: var(--text); font: 600 13px var(--mono); letter-spacing: 0.03em; }
-.state-row { fill: var(--text-dim); font: 12px var(--mono); }
-.state-row--invoke { fill: var(--blue); }
-.state-row--self { fill: var(--text-dim); }
-.state-row--tags { fill: var(--amber); }
+.state--compound > rect,
+.state--parallel > rect {
+  fill: rgba(14, 21, 36, 0.55);
+}
+.state--parallel > rect {
+  stroke-dasharray: 5 4;
+}
+.state--final > rect.final-inner {
+  fill: none;
+  stroke: var(--line);
+}
+.state-title {
+  fill: var(--text);
+  font: 600 13px var(--mono);
+  letter-spacing: 0.03em;
+}
+.state-row {
+  fill: var(--text-dim);
+  font: 12px var(--mono);
+}
+.state-row--invoke {
+  fill: var(--blue);
+}
+.state-row--self {
+  fill: var(--text-dim);
+}
+.state-row--tags {
+  fill: var(--amber);
+}
 
 .state.active > rect:first-of-type {
   stroke: var(--phosphor);
@@ -117,39 +179,89 @@ main { flex: 1; display: flex; min-height: 0; }
   fill: var(--phosphor-soft);
   filter: drop-shadow(0 0 6px rgba(78, 240, 167, 0.55));
 }
-.state.active > .state-title { fill: var(--phosphor); }
+.state.active > .state-title {
+  fill: var(--phosphor);
+}
 
 /* ---- Child machines: one subgraph per live instance, or a dimmed template when none ---- */
 
-.child-machine { cursor: pointer; }
+.child-machine {
+  cursor: pointer;
+}
 .child-machine > rect {
   fill: rgba(106, 167, 240, 0.04);
   stroke: var(--blue);
   stroke-width: 1.2;
   stroke-dasharray: 2 3;
 }
-.child-machine > .state-title { fill: var(--blue); }
-.child-machine:hover > rect { stroke-width: 1.8; }
-.child-machine--template { opacity: 0.55; }
-.child-machine--collapsed > rect { stroke-dasharray: none; }
-.child-machine.active > rect:first-of-type { fill: rgba(78, 240, 167, 0.05); }
-.state-row--dim { fill: var(--text-dim); }
+.child-machine > .state-title {
+  fill: var(--blue);
+}
+.child-machine:hover > rect {
+  stroke-width: 1.8;
+}
+.child-machine--template {
+  opacity: 0.55;
+}
+.child-machine--collapsed > rect {
+  stroke-dasharray: none;
+}
+.child-machine.active > rect:first-of-type {
+  fill: rgba(78, 240, 167, 0.05);
+}
+.state-row--dim {
+  fill: var(--text-dim);
+}
 
-.initial-dot { fill: var(--text-dim); }
+.initial-dot {
+  fill: var(--text-dim);
+}
 
-.edge path { fill: none; stroke: var(--text-dim); stroke-width: 1.2; }
-.edge-label { fill: var(--text); font: 11px var(--mono); paint-order: stroke; stroke: var(--ink); stroke-width: 3px; }
-.edge--initial path { stroke: var(--text-dim); }
-.edge--always path { stroke-dasharray: 4 3; }
-.edge--done path { stroke: var(--phosphor); opacity: 0.75; }
-.edge--done .edge-label { fill: var(--phosphor); }
-.edge--error path { stroke: var(--red); }
-.edge--error .edge-label { fill: var(--red); }
-.edge--after path { stroke-dasharray: 1 3; stroke-linecap: round; }
+.edge path {
+  fill: none;
+  stroke: var(--text-dim);
+  stroke-width: 1.2;
+}
+.edge-label {
+  fill: var(--text);
+  font: 11px var(--mono);
+  paint-order: stroke;
+  stroke: var(--ink);
+  stroke-width: 3px;
+}
+.edge--initial path {
+  stroke: var(--text-dim);
+}
+.edge--always path {
+  stroke-dasharray: 4 3;
+}
+.edge--done path {
+  stroke: var(--phosphor);
+  opacity: 0.75;
+}
+.edge--done .edge-label {
+  fill: var(--phosphor);
+}
+.edge--error path {
+  stroke: var(--red);
+}
+.edge--error .edge-label {
+  fill: var(--red);
+}
+.edge--after path {
+  stroke-dasharray: 1 3;
+  stroke-linecap: round;
+}
 
-marker path { fill: var(--text-dim); }
-marker.arrow--done path { fill: var(--phosphor); }
-marker.arrow--error path { fill: var(--red); }
+marker path {
+  fill: var(--text-dim);
+}
+marker.arrow--done path {
+  fill: var(--phosphor);
+}
+marker.arrow--error path {
+  fill: var(--red);
+}
 
 /* ---- Sidebar ---- */
 
@@ -177,7 +289,11 @@ marker.arrow--error path { fill: var(--red); }
   color: var(--text-dim);
 }
 
-ul { list-style: none; margin: 0; padding: 0 8px 8px; }
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 8px;
+}
 
 #run-list li {
   padding: 7px 9px;
@@ -188,23 +304,54 @@ ul { list-style: none; margin: 0; padding: 0 8px 8px; }
   gap: 8px;
   align-items: baseline;
 }
-#run-list li:hover { border-color: var(--line); }
-#run-list li.selected { border-color: var(--phosphor); background: var(--phosphor-soft); }
-#run-list .run-id { color: var(--text); }
-#run-list .run-status { margin-left: auto; font-size: 11px; color: var(--text-dim); }
-#run-list li.selected .run-status { color: var(--phosphor); }
-#run-list .run-status.status--error { color: var(--red); }
-#run-list .run-status.status--done { color: var(--phosphor); }
-#run-list .empty { color: var(--text-dim); cursor: default; padding: 7px 9px; }
+#run-list li:hover {
+  border-color: var(--line);
+}
+#run-list li.selected {
+  border-color: var(--phosphor);
+  background: var(--phosphor-soft);
+}
+#run-list .run-id {
+  color: var(--text);
+}
+#run-list .run-status {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+#run-list li.selected .run-status {
+  color: var(--phosphor);
+}
+#run-list .run-status.status--error {
+  color: var(--red);
+}
+#run-list .run-status.status--done {
+  color: var(--phosphor);
+}
+#run-list .empty {
+  color: var(--text-dim);
+  cursor: default;
+  padding: 7px 9px;
+}
 /* Runs this page watched finish. Dimmed, but still selectable: where a run ENDED is worth reading,
    and it is the client's own memory — a reload starts empty (ADR-0014/0022). */
-#run-list li.settled .run-id { color: var(--text-dim); }
+#run-list li.settled .run-id {
+  color: var(--text-dim);
+}
 
 /* The feed's state. `retrying` is normal and self-healing (EventSource reconnects on its own), so it
    is a caution and not an error — the page is not lying about anything while it says so. */
-.conn { font-size: 11px; letter-spacing: 0.04em; color: var(--text-dim); }
-.conn--live { color: var(--phosphor); }
-.conn--retrying { color: var(--amber); }
+.conn {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.conn--live {
+  color: var(--phosphor);
+}
+.conn--retrying {
+  color: var(--amber);
+}
 
 #emit-log li {
   padding: 5px 9px;
@@ -213,9 +360,17 @@ ul { list-style: none; margin: 0; padding: 0 8px 8px; }
   margin: 4px 0;
   animation: emit-in 0.3s ease-out;
 }
-#emit-log .dim { margin-left: 6px; }
+#emit-log .dim {
+  margin-left: 6px;
+}
 
 @keyframes emit-in {
-  from { opacity: 0; transform: translateX(6px); }
-  to { opacity: 1; transform: none; }
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }

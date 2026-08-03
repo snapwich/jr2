@@ -3,12 +3,12 @@ name: operator / E2E Tests
 on:
   push:
     paths:
-      - 'operator/**'
-      - '.github/workflows/operator-test-e2e.yml'
+      - "operator/**"
+      - ".github/workflows/operator-test-e2e.yml"
   pull_request:
     paths:
-      - 'operator/**'
-      - '.github/workflows/operator-test-e2e.yml'
+      - "operator/**"
+      - ".github/workflows/operator-test-e2e.yml"
 
 permissions: {}
 

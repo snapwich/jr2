@@ -3,12 +3,12 @@ name: operator / Tests
 on:
   push:
     paths:
-      - 'operator/**'
-      - '.github/workflows/operator-test.yml'
+      - "operator/**"
+      - ".github/workflows/operator-test.yml"
   pull_request:
     paths:
-      - 'operator/**'
-      - '.github/workflows/operator-test.yml'
+      - "operator/**"
+      - ".github/workflows/operator-test.yml"
 
 permissions: {}
 

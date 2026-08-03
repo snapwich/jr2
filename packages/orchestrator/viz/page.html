@@ -1,40 +1,40 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>j2 · Machine</title>
-  <link rel="stylesheet" href="/viz/assets/style.css" />
-</head>
-<body>
-  <header>
-    <span class="mark">j2</span>
-    <h1 id="workflow-name">…</h1>
-    <span id="machine-id" class="dim"></span>
-    <div class="zoom">
-      <button id="zoom-out" title="zoom out">−</button>
-      <button id="zoom-reset" title="reset zoom">100%</button>
-      <button id="zoom-in" title="zoom in">+</button>
-      <button id="zoom-fit" title="fit to width">fit</button>
-    </div>
-  </header>
-  <main>
-    <section id="canvas">
-      <div id="error" hidden></div>
-      <div id="root-transitions"></div>
-      <svg id="machine-svg" xmlns="http://www.w3.org/2000/svg"></svg>
-    </section>
-    <aside id="sidebar">
-      <div class="sidebar-head">
-        <h2>Runs</h2>
-        <span id="connection" class="conn" title="feed connection">connecting</span>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>j2 · Machine</title>
+    <link rel="stylesheet" href="/viz/assets/style.css" />
+  </head>
+  <body>
+    <header>
+      <span class="mark">j2</span>
+      <h1 id="workflow-name">…</h1>
+      <span id="machine-id" class="dim"></span>
+      <div class="zoom">
+        <button id="zoom-out" title="zoom out">−</button>
+        <button id="zoom-reset" title="reset zoom">100%</button>
+        <button id="zoom-in" title="zoom in">+</button>
+        <button id="zoom-fit" title="fit to width">fit</button>
       </div>
-      <ul id="run-list"></ul>
-      <div class="sidebar-head"><h2>Emits</h2></div>
-      <ul id="emit-log"></ul>
-    </aside>
-  </main>
-  <script src="/viz/assets/elk.js"></script>
-  <script type="module" src="/viz/assets/main.js"></script>
-</body>
+    </header>
+    <main>
+      <section id="canvas">
+        <div id="error" hidden></div>
+        <div id="root-transitions"></div>
+        <svg id="machine-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      </section>
+      <aside id="sidebar">
+        <div class="sidebar-head">
+          <h2>Runs</h2>
+          <span id="connection" class="conn" title="feed connection">connecting</span>
+        </div>
+        <ul id="run-list"></ul>
+        <div class="sidebar-head"><h2>Emits</h2></div>
+        <ul id="emit-log"></ul>
+      </aside>
+    </main>
+    <script src="/viz/assets/elk.js"></script>
+    <script type="module" src="/viz/assets/main.js"></script>
+  </body>
 </html>
