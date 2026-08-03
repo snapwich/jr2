@@ -37,7 +37,7 @@ import { eventMap, type EventDef, type EventFrom } from "@j2/agent-protocol";
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { agentRun } from "./harness-client.ts";
 import { gate } from "./gate.ts";
-import { boundRunId } from "./registration.ts";
+import { actorPath, boundRunId } from "./registration.ts";
 import { attachVocabulary } from "./vocabulary.ts";
 
 /**
@@ -202,6 +202,11 @@ export function j2Setup<
 // ∈ {agent, any}; a `gate` gets the same set filtered to {external, any}. The invoking actor
 // kind is the primary router; `audience` on the def exists to RESTRICT (tag the security-
 // sensitive events). Explicit `tools:`/`accepts:` on the invoke input remain as escape hatches.
+//
+// The walk also NAMES unnamed gate invokes with their state key path (ADR-0011 as amended):
+// the gate actor derives its default id from its own actor path, so the invoke id is the leaf
+// segment of a caller-facing name — `humanReview` beats xstate's `0.task-with-review.humanReview`.
+// Naming here is id QUALITY only; uniqueness comes from the path mechanism in gate.ts.
 
 type LooseInvoke = { src?: unknown; input?: unknown; [k: string]: unknown };
 type LooseState = {
@@ -220,7 +225,7 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>): unknown {
       return !!d && (d.audience === kind || d.audience === "any");
     });
 
-  const walk = (node: LooseState, inherited: Set<string>): LooseState => {
+  const walk = (node: LooseState, inherited: Set<string>, path: readonly string[]): LooseState => {
     const names = new Set(inherited);
     for (const key of Object.keys(node.on ?? {})) {
       if (!key.includes(".") && key !== "*") names.add(key);
@@ -228,22 +233,36 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>): unknown {
 
     let out = node;
     if (node.invoke) {
+      const invokes = Array.isArray(node.invoke) ? node.invoke : [node.invoke];
+      // >1 unnamed gate in one state would collide on the state-key id; suffix ONLY then, so
+      // the common case (one gate per state) keeps the clean name.
+      const unnamedGates = invokes.filter((inv) => inv?.src === "gate" && inv.id == null).length;
+      let ordinal = 0;
       const wrapOne = (inv: LooseInvoke): LooseInvoke => {
         if (inv?.src === "agentRun") return { ...inv, input: wrapAgentInput(inv.input, pick(names, "agent")) };
-        if (inv?.src === "gate") return { ...inv, input: wrapGateInput(inv.input, pick(names, "external")) };
+        if (inv?.src === "gate") {
+          const wrapped: LooseInvoke = { ...inv, input: wrapGateInput(inv.input, pick(names, "external")) };
+          // A machine-root gate (empty path) is left to xstate's default id: a `""` id would be
+          // worse than a noisy one, and the derived gate id still works.
+          if (inv.id == null && path.length) {
+            const key = path.join(".");
+            wrapped.id = unnamedGates > 1 ? `${key}.${ordinal++}` : key;
+          }
+          return wrapped;
+        }
         return inv;
       };
       out = { ...node, invoke: Array.isArray(node.invoke) ? node.invoke.map(wrapOne) : wrapOne(node.invoke) };
     }
     if (node.states) {
       const states: Record<string, LooseState> = {};
-      for (const [key, child] of Object.entries(node.states)) states[key] = walk(child, names);
+      for (const [key, child] of Object.entries(node.states)) states[key] = walk(child, names, [...path, key]);
       out = { ...(out === node ? node : out), states };
     }
     return out;
   };
 
-  return walk(config as LooseState, new Set());
+  return walk(config as LooseState, new Set(), []);
 }
 
 const resolveInput = (orig: unknown, args: InputArgs): Record<string, unknown> =>
@@ -293,9 +312,7 @@ function wrapGateInput(orig: unknown, derived: string[]) {
  */
 function mintIid(consumer: { session?: "continue"; scope?: string }, agentName: string, self: AnyActorRef): string {
   const runId = boundRunId(self.system) ?? "local";
-  const segments: string[] = [];
-  for (let ref: AnyActorRef | undefined = self; ref?._parent; ref = ref._parent) segments.unshift(ref.id);
-  const path = segments.join(".") || "root";
+  const path = actorPath(self).join(".") || "root";
   const scope = consumer.scope ? `/${consumer.scope}` : "";
   if (consumer.session === "continue") return `${runId}/${path}/${agentName}${scope}`;
   return `${runId}/${path}/${agentName}${scope}/${randomUUID().slice(0, 8)}`;

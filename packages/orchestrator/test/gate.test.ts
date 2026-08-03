@@ -8,7 +8,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { EventValidationError, UnknownAddressError } from "../src/registration.ts";
-import { gatedDef, gatedOverreachTemplate, mkStore, waitFor } from "./_fixtures.ts";
+import {
+  collidingGatesTemplate,
+  derivedFanoutDef,
+  gatedDef,
+  gatedOverreachTemplate,
+  mkStore,
+  twinGatesTemplate,
+  waitFor,
+} from "./_fixtures.ts";
 
 test("a gated state registers a discoverable gate; delivery transitions; exit destroys it", async () => {
   const host = new RunHost({ store: await mkStore() });
@@ -79,6 +87,80 @@ test("an unknown gate 404s with the run's open gates named", async () => {
   assert.throws(
     () => host.sendToGate(runId, "F-99", { type: "approve" }),
     (err: Error) => err instanceof UnknownAddressError && /no open gate "F-99".*open: F-1/.test(err.message),
+  );
+});
+
+// ---- Derived ids (ADR-0011 as amended): the id is the gate's own actor path. -----------------
+
+test("fan-out: derived gate ids are distinct per child, and delivery targets exactly one", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(derivedFanoutDef());
+  const { runId } = await host.start("fanout");
+
+  // Two children, one body machine, ZERO authored ids: spawn id + invoke id + state key.
+  await waitFor(() => host.gates(runId).length === 2);
+  assert.deepEqual(
+    host
+      .gates(runId)
+      .map((g) => g.gate)
+      .sort(),
+    ["F-1.body.coding", "F-2.body.coding"],
+  );
+
+  // Delivery moves ONE child; the sibling's gate (same code, same state) is untouched.
+  host.sendToGate(runId, "F-1.body.coding", { type: "approve" });
+  await waitFor(() => host.gates(runId).length === 1);
+  assert.equal(host.gates(runId)[0]?.gate, "F-2.body.coding");
+});
+
+test("a derived id is deterministic: stop() then restore lists the same gates", async () => {
+  const store = await mkStore();
+  const host = new RunHost({ store });
+  host.register(derivedFanoutDef());
+  const { runId } = await host.start("fanout");
+  await waitFor(() => host.gates(runId).length === 2);
+  let stored: string | undefined;
+  await waitFor(() => {
+    void store.load(runId).then((s) => (stored = s?.status));
+    return stored === "live";
+  });
+  await host.stop(runId);
+
+  // The id is recomputed at (re)start from the actor path — pure structure, so the restored
+  // run advertises the SAME addresses a webhook or inbox card captured before the park.
+  const second = new RunHost({ store });
+  second.register(derivedFanoutDef());
+  assert.deepEqual((await second.restore()).reattached, [runId]);
+  assert.deepEqual(
+    second
+      .gates(runId)
+      .map((g) => g.gate)
+      .sort(),
+    ["F-1.body.coding", "F-2.body.coding"],
+  );
+});
+
+test("two LIVE gates under one AUTHORED id stay an authored bug: loud at invoke", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "colliding", machine: collidingGatesTemplate, provide: () => ({}) });
+  const { runId } = await host.start("colliding");
+  assert.equal(host.status(runId), undefined);
+  const status = await host.read(runId);
+  assert.equal(status?.status, "error");
+  assert.match(status?.fault ?? "", /already live/);
+});
+
+test("two unnamed gates in one state: the walk suffixes the ordinal, ids stay distinct", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "twin", machine: twinGatesTemplate, provide: () => ({}) });
+  const { runId } = await host.start("twin");
+  await waitFor(() => host.gates(runId).length === 2);
+  assert.deepEqual(
+    host
+      .gates(runId)
+      .map((g) => g.gate)
+      .sort(),
+    ["review.0", "review.1"],
   );
 });
 

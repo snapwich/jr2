@@ -127,14 +127,15 @@ const body = j2Setup({
       },
     },
 
-    // The one park. Accepts derive from this state's external transitions; meta is what
-    // `j2 status` / the inbox UI shows. While parked the Sandbox stays alive — inspect the
-    // worktree (and push, if the work should outlive the run) BEFORE approving.
+    // The one park. The gate id derives from the actor path (leaf = this state's key), so the
+    // machine stays fan-out-safe if it is ever nested under a pool; accepts derive from this
+    // state's external transitions; meta is what `j2 status` / the inbox UI shows. While parked
+    // the Sandbox stays alive — inspect the worktree (and push, if the work should outlive the
+    // run) BEFORE approving.
     humanReview: {
       invoke: {
         src: "gate",
         input: ({ context }) => ({
-          gate: "humanReview",
           meta: {
             reason: context.gateReason,
             notes: context.reviewNotes,

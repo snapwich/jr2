@@ -130,6 +130,19 @@ export class UnknownAddressError extends Error {}
 /** Delivery body rejected (unaccepted name, or payload failing the named schema). */
 export class EventValidationError extends Error {}
 
+/**
+ * The actor path below the run's root: every id from the root's children down to `ref` itself,
+ * root-most first. The root is excluded because its id is generated per process — everything
+ * below it is author-named and stable across restore (ADR-0016). One walk for both address
+ * kinds: `mintIid` builds iids from it, `gate` derives default gate ids from it, so the two
+ * cannot drift.
+ */
+export function actorPath(ref: AnyActorRef): string[] {
+  const segments: string[] = [];
+  for (let r: AnyActorRef | undefined = ref; r?._parent; r = r._parent) segments.unshift(r.id);
+  return segments;
+}
+
 /** The address of a run's gate: gate ids are run-scoped by construction (ADR-0011). */
 export function gateAddress(runId: string, gate: string): string {
   return `gate/${runId}/${gate}`;

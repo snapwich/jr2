@@ -124,7 +124,10 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any>): AnyStateMach
       items: {},
     }),
     // The wake seam: a standing gate for the whole run's life (root invokes stop only at final).
-    invoke: wake ? [{ id: "wake", src: "gate", input: { gate: "source", accepts: [wake.name] } }] : [],
+    // The invoke id IS the gate's name (the id derives from the actor path — ADR-0011 as
+    // amended): `source` when the pool is the root, `<path>.source` nested — so two nested
+    // pools' wake gates cannot collide.
+    invoke: wake ? [{ id: "source", src: "gate", input: { accepts: [wake.name] } }] : [],
     initial: "discovering",
     on: {
       // A worker settled, at any moment: collect its output, free its slot, stop the ref, and

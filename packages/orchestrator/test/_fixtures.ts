@@ -348,3 +348,98 @@ export const pipelineTemplate = j2Setup({
 export function pipelineDef(): WorkflowDef {
   return { name: "pipeline", machine: pipelineTemplate, provide: () => ({}) };
 }
+
+// ---- Derived-gate fixtures (ADR-0011 as amended) ------------------------------------------------
+// The fan-out shape with NO authored gate ids: the id derives from the gate's own actor path
+// (spawn id + invoke id + the state key the walk stamped), so concurrent children cannot collide
+// by construction — the claim that lets one machine be safe standalone AND under a pool.
+
+type DerivedInput = { feature: string };
+
+/** Parks on a fully-derived gate: NO input at all — id and accepts both derive. */
+const derivedBody = j2Setup({
+  types: {} as { context: DerivedInput; input: DerivedInput },
+  events: [approveDef],
+}).createMachine({
+  id: "body",
+  context: ({ input }) => input,
+  initial: "coding",
+  states: {
+    coding: { invoke: { src: "gate" }, on: { approve: "shipped" } },
+    shipped: { type: "final" },
+  },
+});
+
+/** The per-feature wrapper (the `workspace()` shape): invokes the body under the id "body". */
+const derivedWrapper = createMachine({
+  types: {} as { context: DerivedInput; input: DerivedInput },
+  id: "ws",
+  context: ({ input }) => input,
+  initial: "running",
+  states: { running: { invoke: { id: "body", src: derivedBody, input: ({ context }) => context } } },
+});
+
+/** Root: fans out two children running the SAME body code — the case authored ids get wrong. */
+export const derivedFanoutTemplate = j2Setup({
+  types: {} as { context: Record<string, never> },
+  events: [approveDef],
+  actors: { feature: derivedWrapper },
+}).createMachine({
+  id: "fanout",
+  context: {},
+  initial: "working",
+  states: {
+    working: {
+      entry: [
+        spawnChild("feature", { id: "F-1", input: { feature: "F-1" } }),
+        spawnChild("feature", { id: "F-2", input: { feature: "F-2" } }),
+      ],
+    },
+  },
+});
+
+export function derivedFanoutDef(): WorkflowDef {
+  return { name: "fanout", machine: derivedFanoutTemplate, provide: () => ({}) };
+}
+
+/** Two live gates under ONE authored id (parallel regions, so both register at start): the
+ * authored-bug case the registration table must keep failing loudly on. */
+export const collidingGatesTemplate = j2Setup({
+  types: {} as { context: Record<string, never> },
+  events: [approveDef],
+}).createMachine({
+  id: "colliding",
+  context: {},
+  type: "parallel",
+  states: {
+    left: {
+      initial: "review",
+      states: {
+        review: { invoke: { src: "gate", input: { gate: "review" } }, on: { approve: "done" } },
+        done: {},
+      },
+    },
+    right: {
+      initial: "review",
+      states: {
+        review: { invoke: { src: "gate", input: { gate: "review" } }, on: { approve: "done" } },
+        done: {},
+      },
+    },
+  },
+});
+
+/** Two UNNAMED gates in one state's invoke array — the one place the state key alone would
+ * collide, so the walk suffixes the invoke ordinal. */
+export const twinGatesTemplate = j2Setup({
+  types: {} as { context: Record<string, never> },
+  events: [approveDef],
+}).createMachine({
+  id: "twin",
+  context: {},
+  initial: "review",
+  states: {
+    review: { invoke: [{ src: "gate" }, { src: "gate" }], on: { approve: "done" } },
+    done: {},
+  },
+});

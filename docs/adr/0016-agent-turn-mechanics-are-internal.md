@@ -71,3 +71,11 @@ and a submission is promoted only when it is the first unsettled one for that se
 ownership for crash recovery, not admission. The consequence is the opposite of what was written — a `continue`
 invocation onto a live iid does not fail, it waits behind work that may never finish — which is why ADR-0024 both ends
 the turn and orders the abort ahead of the next `send`.
+
+**Amended 2026-08-02 ([ADR-0011](0011-workflow-defined-events.md) as amended).** The minting doctrine — addresses are
+computed by j2, never by the workflow — now covers gate ids too: a gate with no authored id derives one from its actor
+path below the run root, through the same walk `mintIid` uses (`actorPath` in registration.ts). One refinement the iid
+text could not state: iids must be minted in the input mapper because minting has a random component (the fresh-session
+suffix) — the input is what persists. A path-derived gate id is deterministic from machine structure, so it is
+recomputed at every actor (re)start and is restore-stable by construction; the mapper rule is about non-determinism, not
+a blanket rule about where ids are born.

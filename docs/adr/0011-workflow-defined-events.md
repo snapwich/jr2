@@ -62,7 +62,23 @@ in gates: a CLI listing shows pending decisions and acts on one; a UI inbox rend
 forms, `meta` drives the copy); a forge webhook translator finds its gate by matching `meta` (e.g. `prUrl`), which is
 why `meta` exists. Generalizing beyond humans also closes a hole hard-coded event types left: a push seam like "a
 work-source webhook wakes discovery" is just an idle state holding a gate accepting `work_ready` (the `wake` seam of
-ADR-0017). A cross-run inbox (`GET /gates`) is the obvious later addition; deferred.
+ADR-0017). Two obvious later additions, both deferred: a cross-run inbox (`GET /gates`), and CLI segment-matching over
+derived gate ids (`--gate F-12` resolving an unambiguous segment, git-style like run-id prefixes).
+
+**Amended 2026-08-02: the gate id is derived; authoring one is the exception.** The original text made the id
+workflow-derived (`gate: context.feature.id`), which quietly violated the address doctrine (Consequences below): the
+gate id was the one caller-facing address a workflow computed by hand, and a machine with a static id (`"humanReview"`)
+was correct standalone but a latent, timing-dependent collision once composed under a pool — the failure only fires when
+two children park concurrently. Now `gate` is optional. Absent, the id is the gate actor's own path below the run root,
+and j2Setup's menu-derivation walk names an unnamed gate invoke with its state key path so the leaf segment is readable
+— `F-12.body.humanReview`, not xstate's `0.body.humanReview` default. This is unique wherever concurrently live siblings
+have distinct actor ids — the invariant any correct fan-out already maintains, because xstate keys children by id (a
+duplicate silently shadows the children-map entry and breaks `xstate.done.actor.<id>` correlation). Authored ids remain
+for meaningful flat names (jr's feature id) and collision on them stays a loud invoke-time error. Derivation runs at
+actor start, not the input mapper — deterministic from structure, so recomputation on every (re)start is restore-stable,
+and one mechanism serves j2Setup and plain-`setup` machines alike (the walk contributes id _quality_ only, never
+correctness). Rejected: deriving only in the walk (a second dialect and an error case for plain-setup callers), and
+xstate's default invoke ids as the name (invoke-index noise no caller cares about).
 
 The full symmetry: **agents deliver through their per-iid registration (via the Adapter); everything else delivers over
 HTTP (per-gate registration).** Two dialects, one primitive, zero routing. Internally that is literal structure: one
@@ -91,9 +107,10 @@ mock by `machine.provide()` at the layer under test.
 
 ## Consequences
 
-- Iids are computed by j2, never by the workflow (ADR-0016): fresh per invocation by default (the lossy handoff), or
-  derived from `(run, enclosing child id, agent, scope)` under `session: "continue"`. Durable handles live in the host
-  ledger (ADR-0016), not in machine contexts.
+- Addresses are computed by j2, never by the workflow — iids always (ADR-0016): fresh per invocation by default (the
+  lossy handoff), or derived from `(run, enclosing child id, agent, scope)` under `session: "continue"`; gate ids by
+  default (2026-08-02 amendment above), authored only to give external callers a meaningful name. Durable handles live
+  in the host ledger (ADR-0016), not in machine contexts.
 - **Test stubbing happens at the wire, not in the actor.** The e2e tier (ADR-0010) hosts a wire-compatible stub Harness
   beside its orchestrator fixture (admits the agent, holds the stream open, never acts). An endpoint is just a URL, so
   `agentRun` keeps a single code path and cannot tell it is talking to a fake. Scope: **workspace-less test workflows
