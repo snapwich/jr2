@@ -23,11 +23,20 @@ definition can state.
 
 ## Decision
 
-- **`AgentDefinition` gains `access?: "write" | "read"`, default `"write"`.** One word that describes the persona — a
-  reviewer reads — not a tool inventory. It is deliberately **not** named `tools`: that word already means the
-  control-plane menu at the invoke seam (`actor.ts`'s escape hatch) and would name the Harness's menu rather than the
-  Agent. A string field, JSON-serializable, riding the existing ConfigMap channel unchanged (ADR-0018's constraint
-  holds).
+- **`AgentDefinition` gains `workspace?: "write" | "read" | "none"`, default `"write"`.** One word that describes the
+  persona — a reviewer reads, a decisioner needs no Workspace at all — not a tool inventory. It is deliberately **not**
+  named `tools`: that word already means the control-plane menu at the invoke seam (`actor.ts`'s escape hatch) and would
+  name the Harness's menu rather than the Agent. And it is named for the thing accessed: the field was first shipped as
+  `access`, and `"none"` exposed the dropped word as load-bearing — access _to what?_ The object was always the
+  Workspace (it is this ADR's title). A string field, JSON-serializable, riding the existing ConfigMap channel unchanged
+  (ADR-0018's constraint holds).
+- **`"none"` is the Menu-only Agent — and the value also names the Harness that hosts the Agent.** `"none"` withholds
+  the entire Working toolset: the Agent converses and picks from its Menu, nothing else — the decisioning persona (read
+  inputs, pick the next event). Because such an Agent touches no Workspace, it does not run in one: `"write"`/`"read"`
+  place a Turn on the enclosing Workspace's Harness; `"none"` places it on the
+  [Instance Harness](0031-menu-only-agents-run-on-the-instance-harness.md), always — even when a `workspace()` encloses
+  the invocation. Placement is definitional, which is this ADR's thesis extended one step: what an Agent may do to the
+  Workspace decides where it runs. (`cwd` is moot for `"none"` — only Working tools consume it.)
 - **The tool layer enforces the honest path.** `access: "read"` withholds `write` and `edit` from the assembled working
   tools (pi's journaled active-tool set). `bash` stays — the reviewer's own instructions require running the tests — and
   the ADR says plainly what that means: a shell can write, so the tool layer states intent and stops the honest path. It
@@ -58,12 +67,16 @@ definition can state.
 - **A separate reviewer Sandbox.** Rejected: it pays a pod per review round and breaks ADR-0012's premise — coder and
   reviewer share one Workspace so the review sees exactly the bytes the coder produced, on the shared clone's economics.
 - **Naming the field `tools: ["read", "grep", ...]`.** Rejected: it names the Harness's menu, breaks when a tool is
-  renamed, and says nothing about the Agent. `access` describes the persona; the tool list is derived mechanism.
+  renamed, and says nothing about the Agent. `workspace` describes the persona's relationship to the thing it works in;
+  the tool list is derived mechanism.
+- **Keeping the name `access`.** Rejected when `"none"` arrived: without the object in the name, `access: "none"` reads
+  as "no access to anything," which is false — the Agent has its full Menu. `workspace: "none"` states exactly what is
+  absent, and doubles as the placement statement above.
 
 ## Consequences
 
-- **The reviewer definition becomes `access: "read"`**, and the prose ban stays in its instructions as intent — the half
-  of the contract a model reads — no longer as the mechanism.
+- **The reviewer definition becomes `workspace: "read"`**, and the prose ban stays in its instructions as intent — the
+  half of the contract a model reads — no longer as the mechanism. A decisioner becomes `workspace: "none"`.
 - **The definition stays plain data.** No code enters the ConfigMap channel; composition by re-export/spread (ADR-0018)
   is preserved. Custom tool _implementations_ remain out of the contract — this decision adds a restriction vocabulary,
   not an extension one. Growing extension tools is a separate, later decision.

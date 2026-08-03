@@ -35,25 +35,30 @@ folder runs on kind locally and on a real cluster. _Avoid_: deployment
 **Actor**: An xstate actor inside a Machine that drives a remote worker via a Harness client. The local handle in the
 Orchestrator; the compute is remote. _Avoid_: agent actor
 
-**Agent**: A configured worker persona — model + instructions + Working tools + access (e.g. coder, reviewer). What a
-user customizes: a plain-data definition in the instance's `agents/<name>.ts` (filename = Agent name, mirroring
+**Agent**: A configured worker persona — model + instructions + Working tools + workspace access (e.g. coder, reviewer).
+What a user customizes: a plain-data definition in the instance's `agents/<name>.ts` (filename = Agent name, mirroring
 `workflows/`); the Harness runs the definition directly (ADR-0018, ADR-0027). An Agent is instance-scoped, so every
 workflow may invoke it; a Turn may set its **Dials** but never its identity. _Avoid_: role, persona
 
 **Dials**: The two fields a Machine state may set for one Turn on top of an Agent's definition — `model` and
 `thinkingLevel` — because they say how hard to run, not who is running (ADR-0018). Everything else in a definition is
-identity (`instructions`, `access`, `cwd`) and only the definition sets it: an invocation that rewrote identity would
-make the Agent's name a lie, and overriding `access` would void ADR-0028's containment. _Avoid_: options, overrides,
+identity (`instructions`, `workspace`, `cwd`) and only the definition sets it: an invocation that rewrote identity would
+make the Agent's name a lie, and overriding `workspace` would void ADR-0028's containment. _Avoid_: options, overrides,
 settings
 
 **Sandbox**: The isolated pod that gives an Agent a host-level sandbox plus its own filesystem. The primary motivation
 for the Kubernetes architecture — agents must not share host resources (ports, filesystem, process space). _Avoid_:
 worker pod, container
 
-**Harness**: j2's own long-running server (`@j2/harness`, the `j2-harness:<ver>` image) running inside a Sandbox. Hosts
-the instance's Agents over the Harness wire (ADR-0027) and executes their Working tools. Runs in its own container
-alongside the user container, carrying the agent's own toolchain since Working tools execute there. _Avoid_: flue agent,
-server, `local()`
+**Harness**: j2's own long-running server (`@j2/harness`, the `j2-harness:<ver>` image), hosted in two placements:
+inside every Sandbox, and once per Instance as the Instance Harness (ADR-0031). Hosts the instance's Agents over the
+Harness wire (ADR-0027) and executes their Working tools. In a Sandbox it runs in its own container alongside the user
+container, carrying the agent's own toolchain since Working tools execute there. _Avoid_: flue agent, server, `local()`
+
+**Instance Harness**: The per-Instance Harness deployment `j2 up` converges when any Agent definition declares
+`workspace: "none"` — the placement for every Menu-only Agent's Turn, regardless of any enclosing Workspace, so a
+continued conversation always lands on the Harness that holds it (ADR-0031). Its pod pairs the Harness with an Adapter
+and mounts no worktree. _Avoid_: shared harness, global harness, dev harness
 
 **Adapter**: The j2-owned sidecar container in a Sandbox that serves the current turn's Menu to the Agent over MCP and
 forwards the Agent's picks to the Orchestrator as Gate deliveries. The Agent's only control-plane peer is this process
@@ -101,8 +106,8 @@ is interpretable. A mismatch is **drift**, and a drifted run is refused and kept
 is a content address, not an ordering), schema
 
 **Working tools**: The file and shell tools (read, write, edit, bash, grep, glob) the Harness executes in its own
-container — what the Agent may **do**; filtered by the definition's `access` (ADR-0028). _Avoid_: tools (unqualified),
-sandbox tools
+container — what the Agent may **do**; filtered by the definition's `workspace` access (ADR-0028; `"none"` withholds
+them all — a Menu-only Agent). _Avoid_: tools (unqualified), sandbox tools
 
 **Source**: The generalized port a Pool draws work items from — "next item, excluding these", plus an optional wake
 signal and a re-query cadence. A queue, a generator, or a re-queried set; a Work Source is one Source adapter. _Avoid_:
@@ -131,8 +136,10 @@ approval (one possible event, not the resource)
 **Emit**: A message a workflow author surfaces from a Machine for whoever is watching (xstate `emit({...})`), carried on
 the observation feeds beside the automatic status deltas. Progress and notice — "review requested", "branch pushed" —
 never control: nothing consumes an Emit, and a Machine cannot be driven by one. Its PAYLOAD is author data of the same
-class as context, so the open band carries the type alone (ADR-0014/0022). _Avoid_: event (the down-channel thing a Gate
-or an Agent delivers, which does drive a Machine), log (an Emit is deliberate vocabulary, not a diagnostic)
+class as context, so the open band carries the type alone (ADR-0014/0022). Also the sole author API for the run
+narrative a Workspace Harness prints (ADR-0023): Emits land in that log because the log is a projection of the feed.
+_Avoid_: event (the down-channel thing a Gate or an Agent delivers, which does drive a Machine), log (an Emit is
+deliberate vocabulary, not a diagnostic)
 
 **Workspace**: A long-lived Sandbox bound to a unit of work, modeled as a child Machine. Entering the state creates the
 Sandbox and its worktree; the child Machine's states manage what happens inside (e.g. coding, review, merge); reaching
