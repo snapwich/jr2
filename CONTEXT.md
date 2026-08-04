@@ -32,6 +32,12 @@ top of that API. _Avoid_: cli tool
 **j2 Application**: An Instance under GitOps — its manifests deploy the Orchestrator plus config and secrets. The same
 folder runs on kind locally and on a real cluster. _Avoid_: deployment
 
+**Console**: The browser surface the Orchestrator serves — one shell, master–detail: the Workflows and their runs in the
+left rail, the selected Workflow's Machine in the center (structure alone, or lit by a selected run), open Gates
+gathered in the right drawer. Observation is open (ADR-0014); entering the Instance token in the nav unlocks control —
+starting runs, answering Gates — without moving any band. _Avoid_: visualizer (one panel of it, and the Console also
+acts), dashboard, UI (unqualified), viz
+
 **Actor**: An xstate actor inside a Machine that drives a remote worker via a Harness client. The local handle in the
 Orchestrator; the compute is remote. _Avoid_: agent actor
 
