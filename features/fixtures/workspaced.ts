@@ -1,6 +1,6 @@
 // A minimal workspace() workflow (ADR-0012): the body is trivial — what this fixture exercises
-// black-box is the WRAPPER's contract with the instance. On an instance without a cluster
-// (no `sandbox` in j2.config.ts) a run of this must fault pointedly, never hang or zombie.
+// black-box is the WRAPPER's contract with the instance. On an instance without a data plane
+// (no `repos` in j2.config.ts — ADR-0031) a run of this must fault pointedly, never hang or zombie.
 // The kind e2e tier (deferred until the suite can assume kind) runs this same shape for real.
 
 import { setup } from "xstate";

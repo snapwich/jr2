@@ -1,9 +1,12 @@
-// The Harness wire (ADR-0027): the five-endpoint protocol as shared shapes. The stub Harness
-// (`packages/orchestrator/src/stub-harness.ts`) is normative for the endpoints, headers, and
-// status codes; this module is those shapes as types, exported as `@j2/harness/wire` so wire
-// consumers (the Orchestrator client, tests) depend on shapes, never on the server. The one
-// documented divergence from the stub: a GET (either view) on an unknown conversation is 404 —
-// POST creates, abort answers `{ aborted: false }` (ADR-0027).
+// The Harness wire (ADR-0027): the five-endpoint protocol as shared shapes, plus ADR-0023's echo
+// endpoint. The stub Harness (`packages/orchestrator/src/stub-harness.ts`) is normative for the
+// five conversation endpoints, headers, and status codes; this module is those shapes as types,
+// exported as `@j2/harness/wire` so wire consumers (the Orchestrator client, tests) depend on
+// shapes, never on the server. The one documented divergence from the stub: a GET (either view)
+// on an unknown conversation is 404 — POST creates, abort answers `{ aborted: false }`
+// (ADR-0027). The echo endpoint (`POST /echo` — the run-narrative shapes at the bottom of this
+// file) is the real Harness's alone: the stub hosts turns for tests, and nothing ever narrates
+// to it.
 
 import type { TurnDials } from "./spec.ts";
 
@@ -89,3 +92,44 @@ export const VIEW_HISTORY = "history";
 /** `?live=` value: park until a new event or timeout (204 + the same headers). Long-poll is the
  * ONLY wait transport (ADR-0027) — no SSE, no `?wait=result`. */
 export const LIVE_LONG_POLL = "long-poll";
+
+// ---- The run-narrative echo (`POST /echo` — ADR-0023) ------------------------------------------
+// "Print these events": the Orchestrator — the observation feed's one subscriber (ADR-0022) —
+// tees the owning run's feed to the enclosing Workspace's Harness, which renders it into its own
+// pod log beside the conversations it hosts. The wire payload is the STRUCTURED event, never a
+// preformatted string — the Harness renders, and printing stays ADR-0023's craft (printer.ts).
+// Instance-token-gated (200 `{ printed }`; 401 on a bad bearer; 403 when the Harness has no gate
+// configured), and FIRE-AND-FORGET on the pushing side: the feed remains the record, the log is
+// a courtesy view, and a failed echo never fails a turn, a state, or a run.
+
+/** One live child MACHINE's place, nested — state keys and spawn ids only, by construction. A
+ * root's value alone says almost nothing about where a run is (the work happens in children:
+ * a `workspace()` body is one), so the narrative carries the tree. */
+export type EchoStatusChild = { id: string; value: unknown; children?: EchoStatusChild[] };
+
+/** The run moved: one status delta, projected to what the narrative needs — the Machine's state
+ * value (root + child machines) and the run-lifecycle status. Deliberately not the full run
+ * status: context is the workflow's working data, and the log narrates, it does not mirror
+ * state. */
+export type EchoStatusEvent = { kind: "status"; status: string; value: unknown; children?: EchoStatusChild[] };
+
+/** An author Emit (the sole author API for the narrative — no `log()` primitive exists or will).
+ * The PAYLOAD rides here: this endpoint is instance-token-gated wire, so the ADR-0014 open band
+ * — which carries Emit types alone — is not widened by it. */
+export type EchoEmitEvent = { kind: "emit"; event: { type: string } & Record<string, unknown> };
+
+/** MARKER, not mirror (ADR-0023): a Turn hosted on another Harness (a Menu-only Agent on the
+ * Instance Harness — ADR-0031) was admitted — the Agent and its framing. Its transcript prints
+ * exactly once, where the Turn ran; the enclosing Workspace's log gets this line and the pick. */
+export type EchoAdmissionEvent = { kind: "admission"; agent: string; prompt: string };
+
+/** The second marker: the remotely-hosted Turn's settlement pick — the Menu event (and payload)
+ * the Agent ended its turn with. */
+export type EchoPickEvent = { kind: "pick"; agent: string; event: string; payload?: Record<string, unknown> };
+
+/** One structured run-narrative event, as the echo body carries it. */
+export type EchoEvent = EchoStatusEvent | EchoEmitEvent | EchoAdmissionEvent | EchoPickEvent;
+
+/** What `POST /echo` accepts: feed events in feed order. The answer is `{ printed }` — how many
+ * lines landed on stdout (an unrenderable event prints nothing; it never errors the batch). */
+export type EchoRequest = { events: EchoEvent[] };

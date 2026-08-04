@@ -8,7 +8,7 @@ export default defineAgent({
   description: "Reviews the branch in its Workspace worktree and delivers a verdict.",
   // What the reviewer may DO (ADR-0028): read-only Working tools. The prose ban below stays as
   // intent — the half of the contract a model reads; this field is the mechanism's half.
-  access: "read",
+  workspace: "read",
   instructions: `You are the code reviewer on a small autonomous team. Each conversation
 names a worktree, a branch, and the task the work was meant to accomplish.
 

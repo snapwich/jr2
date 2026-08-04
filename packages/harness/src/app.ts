@@ -1,13 +1,17 @@
-// The Harness wire, served (ADR-0027): the five endpoints, shaped byte-for-byte on the stub
-// Harness (`packages/orchestrator/src/stub-harness.ts`, the normative model) with the one
-// documented divergence — a GET (either view) on an unknown conversation is 404. POST creates
+// The Harness wire, served (ADR-0027): the five conversation endpoints, shaped byte-for-byte on
+// the stub Harness (`packages/orchestrator/src/stub-harness.ts`, the normative model) with the
+// one documented divergence — a GET (either view) on an unknown conversation is 404. POST creates
 // (that is admission), abort answers `{ aborted: false }`: the stub is inert by design, but a
 // real Harness that answered a lost conversation with silence would park a re-attached wait
-// forever. Turn execution is injected, so this module owns routing alone — wire tests drive it
-// socket-free via `app.request()` and never touch pi.
+// forever. Plus ADR-0023's echo (`POST /echo`): the run-narrative events the Orchestrator tees
+// here, rendered to this pod's stdout in the printer's idiom. Turn execution is injected, so this
+// module owns routing alone — wire tests drive it socket-free via `app.request()` and never touch
+// pi.
 
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
+import { renderEchoEvent, type PrinterOut } from "./printer.ts";
 import type { AgentsSpec, TurnDials } from "./spec.ts";
 import {
   LIVE_LONG_POLL,
@@ -40,7 +44,34 @@ export type HarnessAppDeps = {
   /** How long a live long-poll parks before 204 "nothing yet". Default 25s (the stub's
    * cadence); short in tests. */
   longPollMs?: number;
+  /**
+   * Deployed as the Instance Harness (`J2_MENU_ONLY` — deploy.ts), this process admits Menu-only
+   * Agents ALONE. The wire is unauthenticated in-cluster and the mounted spec is the full
+   * agents.json (same ConfigMap, ADR-0031), so without this gate any in-cluster caller could POST
+   * a `workspace: "write"` definition here and be handed Working tools — code execution in the one
+   * pod ADR-0031 claims has none. Placement is definition-wins; a Turn this Harness refuses runs
+   * on its Workspace's Harness or nowhere. Omitted (a Sandbox's Harness), every definition admits.
+   */
+  menuOnly?: boolean;
+  /**
+   * Verify an echo bearer (ADR-0023): the endpoint is INSTANCE-token-gated, but the raw token
+   * must never enter this process — the Agent has code execution in the Harness container
+   * (tokens.ts: "it never enters a Sandbox") — so the check is injected: `main.ts` compares
+   * sha256(bearer) against `J2_ECHO_TOKEN_SHA256` from the env. Omitted, the endpoint refuses
+   * everything (403): a Harness nobody equipped prints no narrative, and the pushing side is
+   * fire-and-forget about it.
+   */
+  checkEchoBearer?: (bearer: string | undefined) => boolean;
+  /** Where echo lines land — the pod log (`process.stdout`) unless a test collects them. */
+  echoOut?: PrinterOut;
 };
+
+/** The bearer token on a request, if it carries one. */
+function bearerOf(c: Context): string | undefined {
+  const header = c.req.header("authorization") ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match?.[1]?.trim() || undefined;
+}
 
 /** The five wire routes over a map of Conversations, created on POST (admission creates). */
 export function harnessApp(deps: HarnessAppDeps): Hono {
@@ -57,6 +88,24 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
     const agentName = c.req.param("name");
     const instanceId = c.req.param("id");
     const submission = admissionRequest(await c.req.json().catch(() => undefined));
+    // The Instance Harness placement gate (ADR-0031): identity precedes dials. Checked against
+    // the definition (default "write" — ADR-0028), not the conversation map, so the refusal
+    // holds from the very first POST and no non-"none" conversation can ever exist here. An
+    // unknown agent falls through to the 404 below.
+    if (deps.menuOnly) {
+      const definition = deps.spec.agents.find((a) => a.name === agentName)?.definition;
+      const access = definition?.workspace ?? "write";
+      if (definition && access !== "none") {
+        return c.json(
+          {
+            error:
+              `agent "${agentName}" has workspace: "${access}" — this is the Instance Harness, which ` +
+              `admits Menu-only Agents alone (ADR-0031); a "${access}" Turn runs on its Workspace's Harness`,
+          },
+          403,
+        );
+      }
+    }
     // Before the lookup on purpose: a rejected admission must not leave an empty conversation
     // (and therefore a live turn factory) behind for an iid that never ran.
     const badDials = deps.checkDials?.(submission);
@@ -108,6 +157,30 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   app.post("/agents/:name/:id/abort", (c) => {
     const conversation = conversations.get(key(c.req.param("name"), c.req.param("id")));
     return c.json(conversation ? conversation.abort() : { aborted: false });
+  });
+
+  // The run-narrative echo (ADR-0023): "print these events". The body is the STRUCTURED feed —
+  // rendering is this side's craft (printer.ts), so the wire never carries preformatted strings.
+  // Rendering is total: an event the renderer does not recognize prints nothing and fails
+  // nothing, because the log is a courtesy view and the feed remains the record.
+  app.post("/echo", async (c) => {
+    if (!deps.checkEchoBearer) {
+      return c.json({ error: "echo is not enabled on this harness (no J2_ECHO_TOKEN_SHA256 in its environment)" }, 403);
+    }
+    if (!deps.checkEchoBearer(bearerOf(c))) return c.json({ error: "unauthorized" }, 401);
+    const body = (await c.req.json().catch(() => undefined)) as { events?: unknown } | undefined;
+    if (!body || !Array.isArray(body.events)) {
+      return c.json({ error: "echo body must be { events: [...] } — the structured feed events (ADR-0023)" }, 400);
+    }
+    const out = deps.echoOut ?? process.stdout;
+    let printed = 0;
+    for (const event of body.events) {
+      for (const line of renderEchoEvent(event)) {
+        out.write(`${line}\n`);
+        printed++;
+      }
+    }
+    return c.json({ printed });
   });
 
   // Registered after the handlers, so only methods the wire does not speak land here (the

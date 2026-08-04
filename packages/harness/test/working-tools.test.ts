@@ -1,4 +1,4 @@
-// Working tools (ADR-0027/0028): the assembled set per definition, the ADR-0028 access filter,
+// Working tools (ADR-0027/0028): the assembled set per definition, the ADR-0028 workspace filter,
 // and j2's own grep/glob against a real fixture tree. grep must not require ripgrep on PATH —
 // the fallback test strips rg from PATH, so the plain-grep path is exercised deterministically.
 
@@ -32,7 +32,7 @@ async function output(t: WorkingTool, params: unknown): Promise<string> {
 
 test("the full set is read, write, edit, bash, grep, glob", () => {
   assert.deepEqual(names(workingToolsFor(definition, fixtures)), ["read", "write", "edit", "bash", "grep", "glob"]);
-  assert.deepEqual(names(workingToolsFor({ ...definition, access: "write" }, fixtures)), [
+  assert.deepEqual(names(workingToolsFor({ ...definition, workspace: "write" }, fixtures)), [
     "read",
     "write",
     "edit",
@@ -42,13 +42,17 @@ test("the full set is read, write, edit, bash, grep, glob", () => {
   ]);
 });
 
-test('access "read" withholds write and edit — bash stays (ADR-0028)', () => {
-  assert.deepEqual(names(workingToolsFor({ ...definition, access: "read" }, fixtures)), [
+test('workspace "read" withholds write and edit — bash stays (ADR-0028)', () => {
+  assert.deepEqual(names(workingToolsFor({ ...definition, workspace: "read" }, fixtures)), [
     "read",
     "bash",
     "grep",
     "glob",
   ]);
+});
+
+test('workspace "none" withholds the entire set — the Menu-only Agent (ADR-0028)', () => {
+  assert.deepEqual(names(workingToolsFor({ ...definition, workspace: "none" }, fixtures)), []);
 });
 
 test("grep/glob schemas: pattern required, path optional", () => {

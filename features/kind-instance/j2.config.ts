@@ -15,8 +15,7 @@ import { defineConfig } from "@j2/orchestrator";
 export default defineConfig({
   name: "j2-e2e-kind",
   repos: [{ name: "app", url: "/instance/seed/app.bundle" }],
-  // Both images are load-bearing (ADR-0013): the dev Harness runs the scripted persona, the
+  // All three images are load-bearing (ADR-0013): the dev Harness runs the scripted persona, the
   // Adapter is the only way that persona can reach its Machine. Without the second, the pod is mute.
-  sandbox: { image: "j2-harness-dev:local", adapterImage: "j2-adapter:local" },
-  operator: { image: "j2-operator:local" },
+  images: { harness: "j2-harness-dev:local", adapter: "j2-adapter:local", operator: "j2-operator:local" },
 });

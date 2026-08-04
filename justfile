@@ -52,7 +52,7 @@ adapter-image:
     docker build -f deploy/adapter/Dockerfile -t {{ adapter_image }} .
 
 # ADR-0018: definitions are injected at pod start, so no per-instance Harness image exists;
-# `sandbox.image` override territory.
+# `images.harness` override territory (ADR-0031).
 # build the STOCK Harness image (what a real instance runs) and load it into kind
 harness-image:
     docker build -f deploy/harness/Dockerfile -t j2-harness:local .
@@ -78,7 +78,7 @@ e2e-kind:
 operator-manifest:
     kubectl kustomize operator/config/default > packages/cli/manifests/operator.yaml
 
-# build the operator controller image for kit dev and load it into kind (`operator.image` override)
+# build the operator controller image for kit dev and load it into kind (`images.operator` override)
 operator-image:
     docker build -t j2-operator:local operator
     kind load docker-image j2-operator:local --name {{ cluster }}

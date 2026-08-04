@@ -23,8 +23,8 @@ export type AgentDefinition = {
   /** Reasoning effort. Omitted → the runtime's default. */
   thinkingLevel?: ThinkingLevel;
   /** What the Agent may DO to the Workspace (ADR-0028): `"read"` withholds write/edit from the
-   * Working tools. Default `"write"`. */
-  access?: "write" | "read";
+   * Working tools; `"none"` withholds them all — the Menu-only Agent. Default `"write"`. */
+  workspace?: "write" | "read" | "none";
 };
 
 /** Token limits for one model — properties of the MODEL, not the endpoint. */
@@ -53,7 +53,7 @@ export type HarnessSpec = {
 };
 
 /** What a Machine state may set for one Turn on top of the definition (ADR-0018) — the
- * DIALS (how hard to run), never identity (`instructions`/`access`/`cwd`, which would make the
+ * DIALS (how hard to run), never identity (`instructions`/`workspace`/`cwd`, which would make the
  * Agent's name a lie). Rides the admit body per Submission, so one `continue` conversation may
  * queue Submissions at different settings. */
 export type TurnDials = {
@@ -68,13 +68,13 @@ export type AgentsSpec = {
 };
 
 /** One definition with its per-Submission resolution applied: the Submission's dials, the `/work`
- * cwd default, and the `"write"` access default (ADR-0028) are resolved here, so a turn works
+ * cwd default, and the `"write"` workspace default (ADR-0028) are resolved here, so a turn works
  * from concrete values. */
 export type ResolvedDefinition = {
   model: string;
   instructions: string;
   cwd: string;
-  access: "write" | "read";
+  workspace: "write" | "read" | "none";
   thinkingLevel?: ThinkingLevel;
 };
 
@@ -137,7 +137,7 @@ export function resolveDefinition(spec: AgentsSpec, name: string, dials?: TurnDi
     model,
     instructions: def.instructions,
     cwd: def.cwd ?? "/work",
-    access: def.access ?? "write",
+    workspace: def.workspace ?? "write",
     ...(thinkingLevel ? { thinkingLevel } : {}),
   };
 }

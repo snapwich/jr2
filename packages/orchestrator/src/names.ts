@@ -9,6 +9,14 @@ export const ORCHESTRATOR_PORT = 4000;
 /** The instance-owned Secret: Instance token + signing key (+ orchestrator-side creds). */
 export const INSTANCE_SECRET = "j2-instance";
 
+/** The Instance Harness's Deployment + Service name (ADR-0031): converged by `j2 up` whenever any
+ * Agent definition declares `workspace: "none"`, and the deterministic Service DNS `agentRun`
+ * resolves such a Turn to. Doubles as the delivery scope a Menu-only registration records — the
+ * name the placement's Adapter token is signed for (tokens.ts, ADR-0013). The port is the
+ * Harness's own listen port (`PORT` default). */
+export const INSTANCE_HARNESS_SERVICE = "j2-instance-harness";
+export const INSTANCE_HARNESS_PORT = 8080;
+
 /** The Agent definitions + harness config ConfigMap the stock Harness boots from (ADR-0018). */
 export const AGENTS_CONFIGMAP = "j2-agents";
 

@@ -24,6 +24,7 @@ import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
 import type { EventDef, EventSemantics } from "@j2/agent-protocol";
 import { vocabularyOf } from "./vocabulary.ts";
+import type { EchoEvent, EchoStatusChild } from "@j2/harness/wire";
 import {
   agentAddress,
   bindRun,
@@ -35,7 +36,9 @@ import {
   wouldMove,
   type RetryTelemetry,
   type RunBinding,
+  type TurnMarker,
 } from "./registration.ts";
+import type { WorkspaceAccess } from "./agent.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
@@ -212,16 +215,61 @@ export type AgentDeliveryReceipt = {
 /**
  * One item on a run's observation feed (the `GET /runs/:id/events` SSE stream — ADR-0009). A
  * `status` snapshot delta (emitted on every transition, and replayed once on attach); an `emit` — a
- * message the workflow author surfaced via xstate `emit({...})` for whoever is watching; absorbed-
- * retry telemetry; and `closed`, the host going away underneath a feed that would never end.
+ * message the workflow author surfaced via xstate `emit({...})` for whoever is watching; a Turn's
+ * `admission`/`pick` markers (ADR-0023 — what the run-narrative echo projects for remotely-hosted
+ * Turns); absorbed-retry telemetry; and `closed`, the host going away underneath a feed that would
+ * never end. This feed is the Instance token's (http.ts); markers never reach ADR-0014's open band.
  */
 export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
   | { kind: "emit"; event: { type: string } & Record<string, unknown> }
+  | TurnMarker
   // Absorbed-retry telemetry (ADR-0016): `{ child, attempt }` is state-key-class data — no iids
   // ride the feed (ADR-0014). `reason` is mechanism text, guarded like `fault`.
   | RetryTelemetry
   | { kind: "closed" };
+
+/**
+ * The feed-so-far cap. The buffer exists so a Workspace attaching mid-run can open its log with
+ * the run's preamble (ADR-0023); a run long enough to blow past it loses its OLDEST frames, which
+ * is the same trade kubelet's log rotation already makes on the printed side — the feed remains
+ * the record, the buffer serves a courtesy view.
+ */
+const FEED_SO_FAR_CAP = 1000;
+
+/** Project one feed event for the echo at `target` (ADR-0023), or nothing: markers of Turns
+ * hosted AT the target are dropped (the transcript prints there — markers, not mirrors), a status
+ * sheds everything but where the run stands, and retries/`closed` are mechanism, not narrative. */
+function echoEventOf(event: RunFeedEvent, target: string): EchoEvent | undefined {
+  if (event.kind === "status") {
+    const children = echoChildrenOf(event.status.children);
+    return {
+      kind: "status",
+      status: event.status.status,
+      value: event.status.value,
+      ...(children.length ? { children } : {}),
+    };
+  }
+  if (event.kind === "emit") return { kind: "emit", event: event.event };
+  if (event.kind === "admission" && event.endpoint !== target) {
+    return { kind: "admission", agent: event.agent, prompt: event.prompt };
+  }
+  if (event.kind === "pick" && event.endpoint !== target) {
+    const { agent, payload } = event;
+    return { kind: "pick", agent, event: event.event, ...(payload ? { payload } : {}) };
+  }
+  return undefined;
+}
+
+/** The child-machine tree for the echo's status: spawn ids and state values alone — a root's
+ * value says almost nothing about where a run is, and a {@link RunChild} is already context-free
+ * by construction. `src`/`status` stay behind: they are join keys for the visualizer, not story. */
+function echoChildrenOf(children: RunChild[]): EchoStatusChild[] {
+  return children.map((child) => {
+    const nested = echoChildrenOf(child.children);
+    return { id: child.id, value: child.value, ...(nested.length ? { children: nested } : {}) };
+  });
+}
 
 /**
  * One item on a WORKFLOW's observation feed (the `GET /workflows/:name/events` SSE — ADR-0022).
@@ -259,6 +307,18 @@ export type RunHostOptions = {
   /** The Sandbox backend `workspace()` provisions through (ADR-0012). Absent = no cluster:
    * workspace-less workflows run fine; a `workspace()` invocation faults its run pointedly. */
   sandbox?: SandboxPort;
+  /** The definitions' `workspace` access by Agent name (ADR-0028/0031) — what `agentRun` reads
+   * to place a Turn. Instance-level like `sandbox`, so it rides every run's binding. */
+  agentWorkspace?: (agent: string) => WorkspaceAccess | undefined;
+  /** The Instance Harness base URL (ADR-0031) — where `workspace: "none"` Turns are admitted. */
+  instanceHarness?: string;
+  /**
+   * Build the run-narrative echo pusher for one Workspace's Harness (ADR-0023) — the seam a fake
+   * echo server rides in tests; `startInstance` binds the real wire push (harness-client.ts),
+   * closed over the Instance token. Absent = no echo: a host without it runs identically, because
+   * the echo is a courtesy view of the feed, never a dependency of the run.
+   */
+  echo?: (endpoint: string) => (events: EchoEvent[]) => Promise<void>;
 };
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs.
@@ -291,6 +351,10 @@ type LiveRun = {
   fault?: string;
   /** Per-run observers fed by `persist()` (status) and the actor's `emit` (emit) — SSE/CLI watch. */
   listeners: Set<(e: RunFeedEvent) => void>;
+  /** The run's feed-so-far (ADR-0023): what a Workspace attaching mid-run gets replayed as its
+   * log's preamble. In-memory and this-boot only — a restored run's preamble starts at restore,
+   * the same live-only contract the printed log already has. Capped ({@link FEED_SO_FAR_CAP}). */
+  feedSoFar: RunFeedEvent[];
 };
 
 export class RunHost {
@@ -303,6 +367,9 @@ export class RunHost {
   private readonly newId: () => string;
   private readonly onRestoreError?: (runId: string, err: unknown) => void;
   private readonly sandbox?: SandboxPort;
+  private readonly agentWorkspace?: (agent: string) => WorkspaceAccess | undefined;
+  private readonly instanceHarness?: string;
+  private readonly echoFactory?: (endpoint: string) => (events: EchoEvent[]) => Promise<void>;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
   /** Per-workflow name→def resolution scope, built (and validated) at registration. */
   private readonly workflowEvents = new Map<string, Map<string, EventDef>>();
@@ -321,6 +388,9 @@ export class RunHost {
     this.newId = opts.newId ?? (() => randomUUID());
     this.onRestoreError = opts.onRestoreError;
     this.sandbox = opts.sandbox;
+    this.agentWorkspace = opts.agentWorkspace;
+    this.instanceHarness = opts.instanceHarness;
+    this.echoFactory = opts.echo;
   }
 
   /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
@@ -752,6 +822,55 @@ export class RunHost {
 
   // --- internals ---
 
+  /** Put one event on the run's feed: buffer it for ADR-0023's backfill, then fan it out. The
+   * buffer and the fan-out share one seat so an attached echo and a later attach see the SAME
+   * feed — a projection cannot drift from a record it is read out of. */
+  private feed(run: LiveRun, event: RunFeedEvent): void {
+    run.feedSoFar.push(event);
+    if (run.feedSoFar.length > FEED_SO_FAR_CAP) run.feedSoFar.shift();
+    for (const listener of run.listeners) listener(event);
+  }
+
+  /**
+   * Attach the run-narrative echo (ADR-0023): replay the run's feed-so-far to the Workspace's
+   * Harness at `endpoint` — the backfilled preamble, why this Workspace exists — then tee live
+   * until detached. FIRE-AND-FORGET is this method's contract: pushes are chained so events
+   * arrive in feed order, and a failure is logged once and swallowed — the feed remains the
+   * record, the log is a courtesy view, and nothing here can fail a turn, a state, or a run.
+   * Scoped to the OWNING run's lineage by construction: it reads one run's buffer and listeners
+   * and nothing else — a sibling run's events cannot reach this endpoint through here.
+   */
+  private attachEcho(runId: string, endpoint: string): () => void {
+    const run = this.runs.get(runId);
+    const factory = this.echoFactory;
+    if (!run || !factory) return () => {};
+    const push = factory(endpoint);
+    let chain = Promise.resolve();
+    let reported = false;
+    const enqueue = (events: EchoEvent[]): void => {
+      if (events.length === 0) return;
+      chain = chain
+        .then(() => push(events))
+        .catch((err) => {
+          // Log-and-continue, ONCE per attachment — an unreachable Harness must not turn every
+          // transition into an error line, and must not surface anywhere a run could trip on.
+          if (reported) return;
+          reported = true;
+          console.error(
+            `run ${runId}: echo to ${endpoint} failed (log only — the run is unaffected): ` +
+              (err instanceof Error ? err.message : String(err)),
+          );
+        });
+    };
+    enqueue(run.feedSoFar.map((ev) => echoEventOf(ev, endpoint)).filter((ev): ev is EchoEvent => ev !== undefined));
+    const listener = (ev: RunFeedEvent): void => {
+      const projected = echoEventOf(ev, endpoint);
+      if (projected) enqueue([projected]);
+    };
+    run.listeners.add(listener);
+    return () => run.listeners.delete(listener);
+  }
+
   /** A live run's status, read off its actor — the one place the shape is built. */
   private liveStatus(run: LiveRun): RunStatus {
     const snap = run.actor.getSnapshot();
@@ -802,6 +921,8 @@ export class RunHost {
       events: this.workflowEvents.get(def.name) ?? new Map(),
       table: this.table,
       sandbox: this.sandbox,
+      agentWorkspace: this.agentWorkspace,
+      instanceHarness: this.instanceHarness,
       // The admission ledger's write half (ADR-0016): `agentRun` reports the durable handle the
       // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
@@ -817,6 +938,15 @@ export class RunHost {
         for (const listener of this.runs.get(record.runId)?.listeners ?? []) listener(event);
         this.announce(record.workflow, { ...event, runId: record.runId });
       },
+      // Turn markers (ADR-0023) ride the per-run feed alone — the prompt is Instance-token-class
+      // data, so they never touch the workflow feed (ADR-0014's open band strips even Emit
+      // payloads there).
+      marker: (event) => {
+        const run = this.runs.get(record.runId);
+        if (run && run.binding === binding) this.feed(run, event);
+      },
+      // The run-narrative echo attach (ADR-0023), called from `workspace()`'s registrar.
+      echo: (endpoint) => this.attachEcho(record.runId, endpoint),
     };
     let bound = false;
     const actor = createActor(machine, {
@@ -830,6 +960,21 @@ export class RunHost {
         if (!bound && ev.type === "@xstate.actor") {
           bound = true;
           bindRun((ev.actorRef as AnyActorRef).system, binding);
+        }
+        // Forward the workflow author's `emit({...})` onto the feeds, from EVERY actor in the
+        // tree as it is created: xstate scopes emitted events to the actor that emits them — no
+        // bubbling — and a run's Emits mostly happen in child machines (a `workspace()` body IS
+        // one). A root-only subscription silently dropped exactly the Emits ADR-0022/0023 exist
+        // to surface. The subscription dies with its actor; restore re-creates both.
+        if (ev.type === "@xstate.actor") {
+          const ref = ev.actorRef as AnyActorRef & { on?: (type: string, handler: (e: unknown) => void) => unknown };
+          ref.on?.("*", (emitted) => {
+            const event = emitted as { type: string } & Record<string, unknown>;
+            const run = this.runs.get(record.runId);
+            if (!run || run.binding !== binding) return;
+            this.feed(run, { kind: "emit", event });
+            this.announce(record.workflow, { kind: "emit", runId: record.runId, event });
+          });
         }
         if (ev.type === "@xstate.snapshot") schedule();
       },
@@ -845,7 +990,7 @@ export class RunHost {
     agents: Record<string, AgentAdmission>,
     binding: RunBinding,
   ): LiveRun {
-    const run: LiveRun = { record, actor, def, agents, binding, listeners: new Set() };
+    const run: LiveRun = { record, actor, def, agents, binding, listeners: new Set(), feedSoFar: [] };
     this.runs.set(record.runId, run);
     // Ordinary persistence rides the inspection stream (see `spawn`); the subscription exists
     // for the ERROR channel: an errored actor (an invoke threw — e.g. ADR-0011's invoke-time
@@ -860,13 +1005,8 @@ export class RunHost {
         // and ages out of the operator's idle timeout on its own.
       },
     });
-    // Forward the workflow author's `emit({...})` to observers as the SSE `emit` channel. These are
-    // human-facing progress/notice messages, distinct from the auto status deltas `persist()` feeds.
-    actor.on("*", (emitted) => {
-      const event = emitted as { type: string } & Record<string, unknown>;
-      for (const listener of run.listeners) listener({ kind: "emit", event });
-      this.announce(record.workflow, { kind: "emit", runId: record.runId, event });
-    });
+    // (The author's `emit({...})` forwarding lives in `spawn`'s inspect handler — per actor,
+    // because emitted events do not bubble — not here on the root alone.)
     // The run has appeared. This is the convergence point of `start()` and `restore()` — both reach
     // the live set through here, so one fan-out covers a fresh run and a resumed one alike.
     //
@@ -917,7 +1057,7 @@ export class RunHost {
     // too — so this frame lands on child movement, and its `children` tree carries the new state.
     // That is the entire live half of the visualizer's child diagrams: no extra subscription.
     const runStatus = terminal ? { ...this.liveStatus(run), status: terminal } : this.liveStatus(run);
-    for (const listener of run.listeners) listener({ kind: "status", status: runStatus });
+    this.feed(run, { kind: "status", status: runStatus });
 
     if (status !== "live") {
       // The workflow's watchers get the same final status, then `gone` — the run's last word on

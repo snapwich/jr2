@@ -27,6 +27,8 @@ import {
 } from "./support/rig.ts";
 
 const AGENT = "reviewer";
+/** The Menu-only persona (ADR-0028 `workspace: "none"`): picks from its Menu, nothing else. */
+const DECISIONER = "decisioner";
 
 /** One Menu of `ack` events, as the Orchestrator would register it (ADR-0013). */
 function surfaceWith(...names: string[]): Surface {
@@ -69,6 +71,16 @@ before(async () => {
           model: "fake/model-x",
           instructions: "Review what you are handed, then answer through the menu.",
           cwd: tmpdir(),
+        },
+      },
+      {
+        name: DECISIONER,
+        // No cwd on purpose — it is moot for `workspace: "none"` (only Working tools consume it),
+        // so the /work default resolving to a directory that does not exist must not matter.
+        definition: {
+          model: "fake/model-x",
+          instructions: "Read the inputs, then pick the next event from the menu.",
+          workspace: "none",
         },
       },
     ],
@@ -124,16 +136,17 @@ after(async () => {
   await provider.close();
 });
 
-function conversationPath(iid: string): string {
-  return `/agents/${AGENT}/${encodeURIComponent(iid)}`;
+function conversationPath(iid: string, agent = AGENT): string {
+  return `/agents/${agent}/${encodeURIComponent(iid)}`;
 }
 
 async function admit(
   iid: string,
   message: string,
   dials?: { model?: string; thinkingLevel?: string },
+  agent = AGENT,
 ): Promise<{ offset: string; submissionId: string }> {
-  const res = await app.request(conversationPath(iid), {
+  const res = await app.request(conversationPath(iid, agent), {
     method: "POST",
     body: JSON.stringify({ message, ...dials }),
     headers: { "content-type": "application/json" },
@@ -150,11 +163,15 @@ async function abort(iid: string): Promise<{ aborted: boolean }> {
 
 /** Long-poll the stream from the Admission's offset until its Submission settles — the wire's
  * only wait transport, exercised the way the Orchestrator's `wait` will drive it. */
-async function settled(iid: string, admission: { offset: string; submissionId: string }): Promise<Settlement> {
+async function settled(
+  iid: string,
+  admission: { offset: string; submissionId: string },
+  agent = AGENT,
+): Promise<Settlement> {
   let offset = admission.offset;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const res = await app.request(`${conversationPath(iid)}?offset=${offset}&live=long-poll`);
+    const res = await app.request(`${conversationPath(iid, agent)}?offset=${offset}&live=long-poll`);
     offset = res.headers.get("stream-next-offset") ?? offset;
     if (res.status === 204) continue;
     assert.equal(res.status, 200);
@@ -192,6 +209,33 @@ test("the Menu is listed fresh per Submission: a surface change lands on the nex
   for (const working of ["read", "write", "edit", "bash", "grep", "glob"]) {
     assert.ok(menus[0]?.includes(working), `the Working tools ride along (missing: ${working})`);
   }
+});
+
+test('workspace "none" is the Menu-only shape: no Working tools offered, settled by pick alone (ADR-0028/0031)', async () => {
+  provider.reset([
+    {
+      text: "Read the inputs; approving.",
+      toolCall: { id: "call_1", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' },
+    },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/menu-only";
+
+  const admission = await admit(iid, "Decide.", undefined, DECISIONER);
+  assert.equal((await settled(iid, admission, DECISIONER)).outcome, "completed");
+
+  // The Menu is the whole toolset: on every request the model saw its Menu and NOTHING else —
+  // no read/write/edit/bash/grep/glob was offered, so none was executable (ADR-0028).
+  for (const call of provider.calls) {
+    assert.deepEqual(
+      (call.tools ?? []).map((tool) => tool.function?.name),
+      ["mcp__j2__review_verdict"],
+      "a Menu-only turn offers the Menu alone",
+    );
+  }
+  // …and the pick alone is what settled the turn: it reached the Orchestrator as a delivery.
+  assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
 });
 
 test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018)", async () => {

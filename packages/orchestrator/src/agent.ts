@@ -1,8 +1,9 @@
 // Agent definitions (ADR-0018/0027): the instance's `agents/<name>.ts` surface, mirroring
 // `workflows/`. A definition is the part of an Agent a user genuinely owns — model + instructions
-// + access — as SERIALIZABLE DATA. Everything mechanical (the Adapter leash, the Working-tool
-// assembly, the wire) lives in the stock Harness image (`@j2/harness`), which runs definitions
-// directly: `j2 up` publishes them as ConfigMap JSON and the Harness re-reads them per Submission.
+// + workspace access — as SERIALIZABLE DATA. Everything mechanical (the Adapter leash, the
+// Working-tool assembly, the wire) lives in the stock Harness image (`@j2/harness`), which runs
+// definitions directly: `j2 up` publishes them as ConfigMap JSON and the Harness re-reads them
+// per Submission.
 //
 // `defineAgent` is an identity passthrough like `defineConfig` beside it in this package: it
 // exists solely so `agents/<name>.ts` gets full type inference against `AgentDefinition`.
@@ -15,10 +16,14 @@ import { discoverModules } from "./instance.ts";
  * passes through unmapped; mirrored by `@j2/harness`'s spec contract. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
+/** What an Agent may DO to the Workspace (ADR-0028) — and, through `"none"`, where its Turn runs
+ * (ADR-0031): the value `agentRun`'s placement resolution reads off the definition. */
+export type WorkspaceAccess = "write" | "read" | "none";
+
 /** The plain-data Agent definition (ADR-0018). Must stay JSON-serializable: definitions travel to
  * pods as ConfigMap JSON (`j2 up` → the Harness's `J2_AGENTS_JSON`, re-read per Submission), so
  * anything non-serializable would be silently lost — grow this contract deliberately. ADR-0028
- * added a restriction vocabulary (`access`), not an extension one: custom tool implementations
+ * added a restriction vocabulary (`workspace`), not an extension one: custom tool implementations
  * stay out of the contract. */
 export type AgentDefinition = {
   /** Model specifier, `<provider>/<modelId>`, e.g. `anthropic/claude-sonnet-4-6`. REQUIRED —
@@ -41,8 +46,11 @@ export type AgentDefinition = {
   /** What this Agent may DO to the Workspace (ADR-0028) — the persona in one word, deliberately
    * not `tools` (that names the control-plane Menu, what it may SAY). `"read"` withholds the
    * write/edit Working tools; bash stays, so this states intent and stops the honest path — the
-   * detached review worktree is the containment. Default `"write"`. */
-  access?: "write" | "read";
+   * detached review worktree is the containment. `"none"` withholds the ENTIRE Working toolset:
+   * the Menu-only Agent converses and picks from its Menu, nothing else (`cwd` is moot — only
+   * Working tools consume it) — and places the Turn on the Instance Harness (ADR-0031).
+   * Default `"write"`. */
+  workspace?: WorkspaceAccess;
 };
 
 /** Identity passthrough that pins a definition's type to `AgentDefinition` for inference. */

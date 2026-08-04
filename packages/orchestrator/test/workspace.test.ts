@@ -306,6 +306,10 @@ test("a host without a Sandbox backend faults a workspace() run pointedly", asyn
   const final = await host.read(runId);
   assert.equal(final?.status, "error");
   assert.match(final?.fault ?? "", /no Sandbox backend/);
+  // The named fix must exist: the data-plane switch is a non-empty `repos` (server.ts), and the
+  // converging command is `j2 up` (ADR-0019/0031) — not the retired `sandbox` config key.
+  assert.match(final?.fault ?? "", /`repos` in j2\.config\.ts/);
+  assert.match(final?.fault ?? "", /`j2 up`/);
 });
 
 test("ambient resolution (ADR-0016): agentRun inside a workspace finds endpoint + sandbox itself", async () => {

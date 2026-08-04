@@ -18,15 +18,23 @@
 // The first stdout line is one JSON object `{ url, workflows }` — the discovery seam a fixture (or
 // a human tailing pod logs) parses instead of racing the socket.
 
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.ts";
 import { DEFAULT_ADAPTER_IMAGE, DEFAULT_HARNESS_IMAGE } from "./config.ts";
 import { startInstance, type RunningInstance } from "./instance.ts";
-import { AGENTS_CONFIGMAP, GIT_SSH_MOUNT, HARNESS_ENV_SECRET, ORCHESTRATOR_SERVICE } from "./names.ts";
+import {
+  AGENTS_CONFIGMAP,
+  GIT_SSH_MOUNT,
+  HARNESS_ENV_SECRET,
+  INSTANCE_HARNESS_PORT,
+  INSTANCE_HARNESS_SERVICE,
+  ORCHESTRATOR_SERVICE,
+} from "./names.ts";
 import { ensureRepos } from "./repos.ts";
 import { kubectlSandbox } from "./sandbox-kubectl.ts";
-import { loadSigningKey } from "./tokens.ts";
+import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 
 export type ServerMainOptions = {
@@ -46,11 +54,21 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   const signingKey =
     env.J2_SIGNING_KEY !== undefined ? Buffer.from(env.J2_SIGNING_KEY, "base64") : await loadSigningKey(opts.dir);
 
-  // The data-plane switch (ADR-0012): `config.sandbox` present → reconcile the source volume,
-  // then wire the kubectl Sandbox backend. Absent → a workspace-less instance (workspace()
-  // invocations fault pointedly).
+  // Deployed (J2_NAMESPACE set): Adapters dial the orchestrator at its own Service DNS — stable
+  // by nature, which is what lets live Sandboxes outlive orchestrator restarts (ADR-0013).
+  const namespace = env.J2_NAMESPACE;
+
+  // Resolved HERE, not left for startInstance to mint: every Sandbox Harness gets the token's
+  // sha-256 as its echo gate (ADR-0023, below), so the token must exist before the first
+  // provision. From the instance Secret when deployed; per-boot for a host-booted fixture,
+  // exactly as before.
+  const instanceToken = env.J2_INSTANCE_TOKEN ?? mintInstanceToken();
+
+  // The data-plane switch (ADR-0012/0031): `config.repos` non-empty → reconcile the source
+  // volume, then wire the kubectl Sandbox backend — a Workspace needs repos. Empty/absent → a
+  // workspace-less instance (workspace() invocations fault pointedly).
   let sandbox: SandboxPort | undefined;
-  if (config?.sandbox) {
+  if (config?.repos?.length) {
     const reposDir = env.J2_REPOS_DIR ?? join(opts.dir, "repos");
     const sshKeyPath = join(GIT_SSH_MOUNT, "key");
     const synced = await ensureRepos(config, reposDir, undefined, {
@@ -59,19 +77,23 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     });
     for (const repo of synced) opts.announce(JSON.stringify({ repo: repo.name, action: repo.action }));
 
-    // Deployed (J2_NAMESPACE set): Adapters dial the orchestrator at its own Service DNS — stable
-    // by nature, which is what lets live Sandboxes outlive orchestrator restarts (ADR-0013).
-    const namespace = env.J2_NAMESPACE;
     sandbox = kubectlSandbox({
-      image: config.sandbox.image ?? DEFAULT_HARNESS_IMAGE,
-      adapterImage: config.sandbox.adapterImage ?? DEFAULT_ADAPTER_IMAGE,
-      userImage: config.sandbox.userImage,
+      image: config.images?.harness ?? DEFAULT_HARNESS_IMAGE,
+      adapterImage: config.images?.adapter ?? DEFAULT_ADAPTER_IMAGE,
+      userImage: config.images?.user,
       // The Harness containers' env (ADR-0018): the mounted agents spec, then the instance's own
       // valueFrom entries (literal values already live in the j2-harness-env Secret below).
       env: [
         {
           name: "J2_AGENTS_JSON",
           valueFrom: { configMapKeyRef: { name: AGENTS_CONFIGMAP, key: "agents.json" } },
+        },
+        // The echo gate (ADR-0023): the Harness verifies echo bearers against this sha-256. The
+        // digest, never the token — the Agent executes code in the Harness container, and a
+        // digest inverts to nothing (the Instance token itself never enters a Sandbox, ADR-0013).
+        {
+          name: "J2_ECHO_TOKEN_SHA256",
+          value: createHash("sha256").update(instanceToken).digest("base64url"),
         },
         ...(config.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
       ],
@@ -82,7 +104,6 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       orchestratorUrl: namespace ? `http://${ORCHESTRATOR_SERVICE}.${namespace}.svc:${port}` : undefined,
       signingKey,
       namespace,
-      idleTimeout: config.sandbox.idleTimeout,
     });
   }
 
@@ -90,9 +111,15 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     dir: opts.dir,
     port,
     hostname: env.HOST ?? "0.0.0.0",
-    instanceToken: env.J2_INSTANCE_TOKEN,
+    instanceToken,
     signingKey,
     sandbox,
+    // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
+    // `j2 up` converges the Deployment behind it whenever any definition declares
+    // `workspace: "none"`, so deployed, the address exists exactly when it is needed.
+    instanceHarness: namespace
+      ? `http://${INSTANCE_HARNESS_SERVICE}.${namespace}.svc:${INSTANCE_HARNESS_PORT}`
+      : undefined,
   });
   // Resumed runs are routine and stay quiet; runs this boot did NOT resume are not, so they ride
   // the announce line (ADR-0030) — the one thing every boot prints, whatever is reading it. Without

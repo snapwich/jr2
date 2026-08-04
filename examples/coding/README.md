@@ -1,11 +1,16 @@
 # example-coding
 
-Two workflows on the settled ADR-0015..0019 surface:
+Three workflows on the settled ADR-0015..0019 surface:
 
 - **`workflows/task-with-review.ts`** — the MVP validation loop: one run = one task prompt = one Workspace, coder ⇄
   reviewer under a round cap, ending at a human Gate. **Runs for real** against any cluster your kube context points at
   (kind locally), with Agents assembled from the definitions in [`agents/`](./agents) by the stock Harness image. Start
   here; the runbook is below.
+- **`workflows/triaged-task.ts`** — task-with-review with a Menu-only triager in front (ADR-0031): a `triage` state
+  OUTSIDE the `workspace()` runs `agents/triager.ts` (`workspace: "none"` → the Instance Harness) and either answers the
+  task in place — no Sandbox ever — or routes to code; the body's `assess` state then CONTINUES that same conversation
+  (`conversation: "triage"`) to pick ship-vs-review after each coder round. Its mechanics test in [`test/`](./test) runs
+  in the default `pnpm -r test` gate, cluster-free.
 - **`workflows/jr.ts`** — [jr](https://github.com/snapwich/jr)'s `start-work` orchestration as a j2 Machine (machine id
   `coding`). The j2 side is done; the workflow-owned side (tk actors, `openPr`/`pushBranch`) is sketched. Read it as the
   reference for a full-scale workflow shape: Pool over a tk Source, architect review, escalation parking. Its notes are
@@ -98,8 +103,10 @@ kubectl -n coding get sandboxes           # the run's Workspace pod
 kubectl -n coding exec -it <pod> -c harness -- sh   # inspect: git -C /work/obsidian-tasks.nvim/<branch> log -p main..
 # keep the work? push it from inside the pod (or from the User Container) BEFORE approving
 
-j2 send <runId> --gate humanReview --event request_changes --input '{"notes":"..."}'   # loops the coder
-j2 send <runId> --gate humanReview --event approve                                     # finals → Sandbox torn down
+j2 send <runId> --gate body.humanReview --event request_changes --input '{"notes":"..."}'   # loops the coder
+j2 send <runId> --gate body.humanReview --event approve                                     # finals → Sandbox torn down
+# (gate ids derive from the actor path — the workspace() wrapper invokes the body as `body`;
+#  a wrong id errors listing the open gates)
 ```
 
 Verify teardown: `kubectl -n coding get sandboxes` is empty and `j2 status <runId>` reports the run settled with
@@ -125,7 +132,7 @@ per-cluster operator too.
 
 Plain-data definitions (ADR-0018): `agents/<name>.ts` is `export default defineAgent({ model, instructions, … })` —
 filename = Agent name, typechecked with the instance, `model` and `instructions` required (there is no instance-wide
-model default), `access` optional (ADR-0028). A workflow may turn the `model`/`thinkingLevel` dials for one turn; the
+model default), `workspace` optional (ADR-0028). A workflow may turn the `model`/`thinkingLevel` dials for one turn; the
 rest of a definition is identity and only the definition sets it. `j2 up` publishes them as a ConfigMap; the **stock
 Harness image** (`@j2/harness`, ADR-0027) constructs the Agents at pod start from that JSON — no build step — and
 carries the mechanism: the Adapter leash (a fresh MCP connection to `$J2_ADAPTER_URL/mcp/<id>` per Submission, ADR-0013)

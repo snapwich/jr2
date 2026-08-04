@@ -5,7 +5,8 @@
   "type": "module",
   "description": "The jr-parity coding workflow: a real j2 instance whose Machine is complete and whose tk/openPr actors are still sketches. See README.",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
   },
   "dependencies": {
     "@j2/agent-protocol": "workspace:*",

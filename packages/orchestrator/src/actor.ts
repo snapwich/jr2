@@ -40,6 +40,7 @@
 import { fromCallback } from "xstate";
 import type { ThinkingLevel } from "./agent.ts";
 import { ambientHandlesFor } from "./ambient.ts";
+import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
 
 /**
@@ -62,9 +63,9 @@ export type AgentAdmission = {
  * What a WORKFLOW writes on an `agentRun` invoke (ADR-0015/0016): the agent and this turn's
  * prompt — everything else is derived. `j2Setup.createMachine` wraps the invoke input to
  * finalize it into {@link AgentRunInput}: the tool menu derives from the invoking state's
- * transitions, the instance id is minted (fresh session by default; `session: "continue"`
- * derives a deterministic id so re-invocations continue one conversation), and endpoint/sandbox
- * resolve ambiently from the enclosing `workspace()`.
+ * transitions, the instance id is minted (fresh session by default; `session: "continue"` or a
+ * `conversation` pin derives a deterministic id so re-invocations continue one conversation),
+ * and endpoint/sandbox resolve ambiently from the enclosing `workspace()`.
  */
 export type AgentTurnInput = {
   /** The Agent (persona) to admit the turn against. */
@@ -78,8 +79,8 @@ export type AgentTurnInput = {
    * one-line diff and the same reviewer on an architecture change want identical instructions and
    * different effort.
    *
-   * IDENTITY is deliberately absent — no `instructions`, `access` or `cwd` here. A call site that
-   * rewrote those would make the Agent's name a lie, and `access` in particular carries
+   * IDENTITY is deliberately absent — no `instructions`, `workspace` or `cwd` here. A call site
+   * that rewrote those would make the Agent's name a lie, and `workspace` in particular carries
    * ADR-0028's containment claim, which per-invocation escalation would void.
    */
   model?: string;
@@ -94,6 +95,18 @@ export type AgentTurnInput = {
   /** Distinguishes conversations that would otherwise share a `continue` identity (e.g. a
    * reviewer fresh per task: `scope: task.id`). */
   scope?: string;
+  /**
+   * Pin the conversation to a workflow-chosen name — the CROSS-MACHINE continue (ADR-0016's
+   * opt-in continuation, where `session: "continue"` cannot reach: its derived id carries the
+   * invoking actor's path, so it only spans states of one machine). Invocations naming the same
+   * `conversation` derive ONE deterministic, run-scoped instance id (`<runId>/<name>/<agent>`)
+   * wherever in the actor tree they sit — a triage state before the `workspace()` and an assess
+   * state inside its body continue one conversation, the prompt landing as its next user turn.
+   * Only sound where every invocation lands on the same Harness, because a conversation is an
+   * Instance ID on ONE server: a `workspace: "none"` Agent (always the Instance Harness —
+   * definition-wins, ADR-0031) or a fixed explicit `endpoint`.
+   */
+  conversation?: string;
   /** Workspace-less runs only (stub Harness): explicit endpoint, no ambient resolution. */
   endpoint?: string;
   /** Escape hatch: override the derived menu. */
@@ -111,6 +124,8 @@ export type AgentRunInput = {
    * unset: the actor resolves endpoint AND sandbox ambiently from the enclosing wrapper via the
    * actor parent chain, and the registration records that wrapper's Sandbox — the ADR-0013 token
    * scope — with no way for the workflow to forget it. Explicit `endpoint` wins when both exist.
+   * A `workspace: "none"` definition needs neither: its Turn resolves to the Instance Harness,
+   * whatever encloses the invocation (definition-wins — ADR-0031).
    */
   endpoint?: string;
   /**
@@ -222,25 +237,52 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
       );
     }
 
-    // Resolve the Harness coordinates (ADR-0016): explicit input wins (the workspace-less stub
-    // path); otherwise the nearest enclosing workspace() published them — walked structurally
-    // via the actor parent chain, so a sibling workspace's handles are unreachable (ADR-0013).
-    const ambient = ambientHandlesFor(self);
-    const endpoint = input.endpoint ?? ambient?.endpoint;
-    if (!endpoint) {
-      throw new Error(
-        `agentRun "${instanceId}": no Harness to admit against — invoke it inside a workspace() ` +
-          `(ambient resolution), or pass an explicit \`endpoint\` (workspace-less stub path)`,
-      );
+    // Resolve the Harness coordinates (ADR-0016/0031). Explicit input wins (the workspace-less
+    // stub path); then the DEFINITION decides: `workspace: "none"` pins the Turn to the Instance
+    // Harness always — even inside an enclosing workspace(), because a conversation is an
+    // Instance ID on ONE Harness and a continued advisor must land on the server that holds it
+    // (definition-wins, ADR-0031); everyone else resolves the nearest enclosing workspace()'s
+    // handles — walked structurally via the actor parent chain, so a sibling workspace's handles
+    // are unreachable (ADR-0013).
+    const binding = runBindingOf(system);
+    const workspace = binding.agentWorkspace?.(input.agentName) ?? "write";
+    let endpoint: string;
+    let sandbox: string | undefined;
+    if (input.endpoint) {
+      endpoint = input.endpoint;
+      sandbox = input.sandbox;
+    } else if (workspace === "none") {
+      if (!binding.instanceHarness) {
+        throw new Error(
+          `agentRun "${instanceId}": agent "${input.agentName}" has workspace: "none" — its Turn runs on ` +
+            `the Instance Harness (ADR-0031), and this host knows no Instance Harness address (deployed ` +
+            `instances derive it from their namespace; tests pass an explicit \`endpoint\`)`,
+        );
+      }
+      endpoint = binding.instanceHarness;
+      // The registration records the PLACEMENT's name as its delivery scope — ADR-0013's
+      // doctrine, extended to the second placement: the Instance Harness Adapter bears a token
+      // signed for this name (deploy.ts), so it may speak for the Turns hosted there and for no
+      // Workspace's. The Instance token still may (it is the operator, tokens.ts).
+      sandbox = INSTANCE_HARNESS_SERVICE;
+    } else {
+      const ambient = ambientHandlesFor(self);
+      if (!ambient?.endpoint) {
+        throw new Error(
+          `agentRun "${instanceId}": agent "${input.agentName}" has workspace: "${workspace}" — ` +
+            `invoke it inside a workspace() (ambient resolution), or pass an explicit \`endpoint\` ` +
+            `(workspace-less stub path)`,
+        );
+      }
+      endpoint = ambient.endpoint;
+      sandbox = input.sandbox ?? ambient.sandbox;
     }
-    const sandbox = input.endpoint ? input.sandbox : (input.sandbox ?? ambient?.sandbox);
 
     // Register this invocation's event surface (throws on a name outside the vocabulary —
     // ADR-0011's invoke-time check — which errors the run loudly at the invoking state).
     // `signaled` is the no-signal detector: a delivered menu event means the Agent ended its
     // turn the intended way, so a completed settlement needs no nudge.
     let signaled = false;
-    const binding = runBindingOf(system);
     const dispose = binding.table.register({
       address: agentAddress(instanceId),
       runId: binding.runId,
@@ -250,6 +292,17 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
       sandbox,
       deliver: (event) => {
         signaled = true;
+        // The settlement-pick marker (ADR-0023), BEFORE the delivery moves the Machine: the pick
+        // must land on the feed ahead of the status delta it causes, or the narrative reads
+        // effect-then-cause.
+        const { type, ...payload } = event;
+        binding.marker?.({
+          kind: "pick",
+          agent: input.agentName,
+          endpoint,
+          event: type,
+          ...(Object.keys(payload).length ? { payload } : {}),
+        });
         sendBack(event);
       },
       // The state that invoked us — the machine the menu derived from, so the only one whose
@@ -316,6 +369,10 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
         if (!admission) {
           admission = await client.admit(input, { signal: controller.signal });
           binding.recordAdmission?.(instanceId, admission);
+          // The admission marker (ADR-0023): the Turn and its framing, once — a re-attach
+          // continues a Turn already announced, and a nudge (below) is mechanism, not narrative
+          // (its telemetry already rides the feed).
+          binding.marker?.({ kind: "admission", agent: input.agentName, endpoint, prompt: input.prompt ?? "" });
         }
         for (let attempt = 0; ; attempt++) {
           await client.settle(admission, { signal: controller.signal });

@@ -271,6 +271,59 @@ test("session continue derives ONE deterministic iid; the fresh default mints a 
   assert.notEqual(fresh[0], fresh[1], "fresh (default): every invocation is a new conversation");
 });
 
+test("a `conversation` pin derives ONE run-scoped iid across MACHINES; `continue` alone cannot", async () => {
+  // `session: "continue"`'s derived id carries the invoking actor's path, so it spans states of
+  // one machine only. The pin replaces the path with a workflow-chosen name — the seam that lets
+  // a pre-workspace triage state and a state inside the workspace() body continue one
+  // conversation (triaged-task's shape, ADR-0031's continuation scenario).
+  const go = defineEvent({ name: "go", input: z.object({}) });
+  const iidsFor = async (conversation?: string) => {
+    const mock = new MockFlueClient();
+    const turn = (prompt: string) =>
+      conversation
+        ? { agent: "triager", prompt, conversation, endpoint: "http://x" }
+        : { agent: "triager", prompt, session: "continue" as const, endpoint: "http://x" };
+    const child = j2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [],
+      actors: { agentRun: agentRunActorWith(() => mock) },
+    }).createMachine({
+      id: "child",
+      context: {},
+      initial: "deciding",
+      states: { deciding: { invoke: { src: "agentRun", input: turn("again") } } },
+    });
+    const machine = j2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [go],
+      actors: { agentRun: agentRunActorWith(() => mock), child },
+    }).createMachine({
+      id: "wf",
+      context: {},
+      initial: "triage",
+      states: {
+        triage: { invoke: { src: "agentRun", input: turn("one") }, on: { go: "working" } },
+        working: { invoke: { src: "child" } },
+      },
+    });
+    const { actor, table } = hostless(machine, [go]);
+    await tick();
+    table.deliver(`agent/${mock.admits[0]!.instanceId}`, "go", {});
+    await tick();
+    actor.stop();
+    return mock.admits.map((a) => a.instanceId);
+  };
+
+  const pinned = await iidsFor("triage");
+  assert.equal(pinned.length, 2);
+  assert.equal(pinned[0], "run-1/triage/triager", "deterministic, run-scoped, path-free");
+  assert.equal(pinned[0], pinned[1], "one conversation across the two machines");
+
+  const unpinned = await iidsFor(undefined);
+  assert.equal(unpinned.length, 2);
+  assert.notEqual(unpinned[0], unpinned[1], "continue is path-scoped: a machine boundary diverges it");
+});
+
 test("explicit tools remain the escape hatch over the derived menu", async () => {
   const ping = defineEvent({ name: "ping", input: z.object({}) });
   const pong = defineEvent({ name: "pong", input: z.object({}) });

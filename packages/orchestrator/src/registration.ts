@@ -21,6 +21,7 @@
 import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
 import type { EventDef } from "@j2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
+import type { WorkspaceAccess } from "./agent.ts";
 import type { SandboxPort } from "./workspace.ts";
 
 /** xstate doesn't export its internal AnyActorSystem; this matches what actors receive. */
@@ -214,6 +215,20 @@ export type RunBinding = {
    * one cluster per orchestrator instance, so it is host infrastructure like the table). */
   sandbox?: SandboxPort;
   /**
+   * The definition's `workspace` access for one of this instance's Agents, default applied
+   * (ADR-0028) — what places a Turn (ADR-0031): `agentRun` reads it to send a `"none"` Agent to
+   * the Instance Harness and everyone else to the enclosing `workspace()`. Host-supplied from
+   * `loadAgents`; absent (bare unit-test bindings), or returning undefined for an Agent the
+   * host never discovered, resolution assumes the `"write"` default.
+   */
+  agentWorkspace?: (agent: string) => WorkspaceAccess | undefined;
+  /**
+   * The Instance Harness base URL (ADR-0031) — the deterministic Service DNS a
+   * `workspace: "none"` Turn is admitted at. Deployed instances derive it from their namespace;
+   * absent, a `"none"` Agent without an explicit `endpoint` fails loudly.
+   */
+  instanceHarness?: string;
+  /**
    * Record an agent invocation's durable admission in the host ledger (ADR-0016): persisted
    * beside the snapshot in the same RunBlob save, keyed by iid (globally unique, so the map is
    * flat). Optional so a bare unit-test binding can omit it — then admissions simply are not
@@ -226,6 +241,20 @@ export type RunBinding = {
    * open feed).
    */
   telemetry?: (event: RetryTelemetry) => void;
+  /**
+   * Put a Turn marker on the run's feed (ADR-0023): `agentRun` reports its admission and its
+   * settlement pick, so the run's narrative can name what a Turn hosted elsewhere decided.
+   * Host-supplied; absent (bare unit-test bindings), turns leave no markers.
+   */
+  marker?: (event: TurnMarker) => void;
+  /**
+   * Attach the run-narrative echo to a Workspace's Harness (ADR-0023): the host replays the
+   * run's feed-so-far to `endpoint`, then tees live; returns the detach. Called by `workspace()`'s
+   * registrar — the same restore-safe seat the ambient handles ride — and scoped to the OWNING
+   * run by construction: the binding is per-run, so a sibling run's feed is unreachable.
+   * Host-supplied; absent = no echo.
+   */
+  echo?: (endpoint: string) => () => void;
   /**
    * The HOST is ending this run for its own reasons (ADR-0024). An `agentRun` invocation ending
    * normally ends the Agent's turn — the state stopped waiting — but `RunHost.stop()` is the one
@@ -246,6 +275,18 @@ export type RunBinding = {
 
 /** One absorbed-retry attempt (a no-signal nudge), as the run feed carries it. */
 export type RetryTelemetry = { kind: "retry"; child: string; attempt: number; reason: string };
+
+/**
+ * ADR-0023's Turn markers, as the run feed carries them: a Turn admitted on a Harness (the Agent
+ * and its framing), and the settlement pick that ended it. `endpoint` names the HOSTING Harness —
+ * what lets the echo tee keep "markers, not mirrors": a marker whose Turn ran AT the echo's own
+ * target is dropped there, because that pod's log already carries the whole transcript. Feed
+ * data of the Instance-token class (the prompt is working data): markers ride the per-run feed
+ * and the echo, never ADR-0014's open band.
+ */
+export type TurnMarker =
+  | { kind: "admission"; agent: string; endpoint: string; prompt: string }
+  | { kind: "pick"; agent: string; endpoint: string; event: string; payload?: Record<string, unknown> };
 
 const bindings = new WeakMap<AnyActorSystem, RunBinding>();
 

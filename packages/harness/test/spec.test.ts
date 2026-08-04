@@ -52,23 +52,26 @@ test("resolveDefinition: the definition supplies the values; defaults apply", ()
   const spec: AgentsSpec = {
     agents: [
       { name: "coder", definition: { instructions: "code", model: "anthropic/claude-x", thinkingLevel: "high" } },
-      { name: "reviewer", definition: { instructions: "review", model: "vllm/q", cwd: "/elsewhere", access: "read" } },
+      {
+        name: "reviewer",
+        definition: { instructions: "review", model: "vllm/q", cwd: "/elsewhere", workspace: "read" },
+      },
     ],
   };
   assert.deepEqual(resolveDefinition(spec, "coder"), {
     model: "anthropic/claude-x",
     instructions: "code",
     cwd: "/work",
-    access: "write",
+    workspace: "write",
     thinkingLevel: "high",
   });
-  // `access` carries through resolution (ADR-0028) — it is the field the Working-tool assembly
+  // `workspace` carries through resolution (ADR-0028) — it is the field the Working-tool assembly
   // filters by, so dropping it here would silently hand a reviewer the write/edit tools.
   assert.deepEqual(resolveDefinition(spec, "reviewer"), {
     model: "vllm/q",
     instructions: "review",
     cwd: "/elsewhere",
-    access: "read",
+    workspace: "read",
   });
 });
 
@@ -82,13 +85,13 @@ test("resolveDefinition: this Submission's dials win over the definition (ADR-00
     model: "vllm/big",
     instructions: "code",
     cwd: "/work",
-    access: "write",
+    workspace: "write",
     thinkingLevel: "xhigh",
   });
   // One dial at a time: the other keeps the definition's value.
   assert.equal(resolveDefinition(spec, "coder", { thinkingLevel: "xhigh" }).model, "anthropic/claude-x");
   assert.equal(resolveDefinition(spec, "coder", { model: "vllm/big" }).thinkingLevel, "low");
-  // Dials are the ONLY overridable fields — identity is definition-only (ADR-0028's `access`
+  // Dials are the ONLY overridable fields — identity is definition-only (ADR-0028's `workspace`
   // above all: per-invocation escalation would void its containment claim).
   assert.equal(resolveDefinition(spec, "coder", { model: "vllm/big" }).instructions, "code");
 });

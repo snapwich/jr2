@@ -338,6 +338,9 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
               void stream.writeSSE({ event: "retry", data: JSON.stringify({ child: ev.child, attempt: ev.attempt }) });
               return;
             }
+            // Turn markers (ADR-0023) carry an Agent's framing and pick payload — Instance-token
+            // class, so the OPEN band never sees them (not even their types).
+            if (ev.kind === "admission" || ev.kind === "pick") return;
             // Terminal frame must flush before the handler returns and closes the stream (see the
             // guarded feed below for why the exit is chained off the write).
             const terminal = ev.status.status !== "active";
@@ -453,6 +456,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
               // The Instance's own feed: the full telemetry, reason included (same trust class as
               // `fault`).
               void stream.writeSSE({ event: "retry", data: JSON.stringify(ev) });
+              return;
+            }
+            if (ev.kind === "admission" || ev.kind === "pick") {
+              // Turn markers (ADR-0023) — Instance-token band, so the framing/payload ride whole.
+              // These stay OFF the open workflow feed entirely (run-host.ts feeds them per-run).
+              void stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) });
               return;
             }
             // Exiting lets the handler return, which CLOSES the stream — so on the terminal frame we

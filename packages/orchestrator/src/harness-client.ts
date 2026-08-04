@@ -29,7 +29,7 @@
 import { agentRunActorWith } from "./actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "./actor.ts";
 import type { ThinkingLevel } from "./agent.ts";
-import type { Settlement, StreamEvent, SubmissionSettledEvent } from "@j2/harness/wire";
+import type { EchoEvent, Settlement, StreamEvent, SubmissionSettledEvent } from "@j2/harness/wire";
 
 // Wire literals, restated: `@j2/harness` is a types-only devDependency here (the orchestrator
 // ships without it), so the value constants in `@j2/harness/wire` cannot be imported — the
@@ -203,6 +203,36 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
 /** Convenience: build the real wire client from connection options, then the `AgentRunPort`. */
 export function createHarnessAgentRunClient(options: HarnessClientOptions): AgentRunPort {
   return harnessAgentRunPort(createHarnessClient(options));
+}
+
+/**
+ * The run-narrative echo push (ADR-0023): `POST /echo { events }` against one Workspace Harness,
+ * bearing the Instance token (the endpoint is instance-token-gated — the Harness verifies the
+ * bearer against the token's sha-256, never holding the token itself). The payload is the
+ * STRUCTURED feed events; the Harness renders. A non-OK answer rejects, and the CALLER treats
+ * that as log-and-continue — fire-and-forget lives in the tee (run-host.ts), not here, so a test
+ * can still assert a push failed.
+ */
+export function createEchoPush(options: {
+  baseUrl: string;
+  /** The Instance token — the echo bearer. */
+  token: string;
+  /** Injectable for socket-free tests. Default: global `fetch`. */
+  fetch?: typeof fetch;
+}): (events: EchoEvent[]) => Promise<void> {
+  const fetchImpl = options.fetch ?? fetch;
+  return async (events) => {
+    const res = await fetchImpl(new URL("/echo", options.baseUrl).toString(), {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${options.token}` },
+      body: JSON.stringify({ events }),
+    });
+    if (!res.ok) {
+      throw new Error(`harness echo failed (${res.status}): ${await errorDetail(res)}`);
+    }
+    // Drain the `{ printed }` answer so the socket is released; the count is nobody's contract.
+    await res.json().catch(() => undefined);
+  };
 }
 
 /**

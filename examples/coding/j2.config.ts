@@ -6,8 +6,8 @@
 // from env — populate the uncommitted `.env` beside this file (see README); the `j2` CLI loads it
 // before evaluating this config, and anything already set in your shell wins over it.
 //
-// `sandbox` is pod-shaped only (ADR-0018); `harness` declares what this instance can REACH —
-// never WHICH model to use. That choice lives in `agents/<name>.ts` (ADR-0018):
+// `images` names the composed images in one block (ADR-0031); `harness` declares what this
+// instance can REACH — never WHICH model to use. That choice lives in `agents/<name>.ts` (ADR-0018):
 //   - VLLM_BASE_URL set → a custom `vllm` provider (OpenAI-compatible; the address must be
 //     reachable FROM PODS — a LAN address, never localhost). `j2 up` preflights it from inside
 //     the cluster, probing every model the definitions name against it, including one tool-call
@@ -32,11 +32,11 @@ const vllm = process.env.VLLM_BASE_URL;
 export default defineConfig({
   name: "coding",
   repos: [{ name: "obsidian-tasks.nvim", url: "https://github.com/snapwich/obsidian-tasks.nvim.git" }],
-  sandbox: {
-    image: "j2-harness:local",
-    adapterImage: "j2-adapter:local",
+  images: {
+    harness: "j2-harness:local",
+    adapter: "j2-adapter:local",
+    operator: "j2-operator:local",
   },
-  operator: { image: "j2-operator:local" },
   harness: {
     // The endpoint's cert chains to a private CA (committed here — CA certs are public data).
     // `j2 up` materializes it into the j2-ca ConfigMap; the Harness container and the provider

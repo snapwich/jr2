@@ -46,10 +46,10 @@ export type KubectlSandboxOptions = {
    * worktrees. Must have a blocking entrypoint (j2 does not inject one). Absent = no third
    * container. */
   userImage?: string;
-  /** Extra env for the HARNESS container (`SandboxConfig.env`) — merged ahead of the
+  /** Extra env for the HARNESS container (`harness.env`) — merged ahead of the
    * mechanism-owned vars, which win on collision. */
   env?: HarnessEnvVar[];
-  /** Whole-Secret/ConfigMap env for the Harness container (`SandboxConfig.envFrom`) — how a real
+  /** Whole-Secret/ConfigMap env for the Harness container (`harness.envFrom`) — how a real
    * Harness gets its model API key without the value ever touching j2 config. */
   envFrom?: HarnessEnvFromSource[];
   /** The instance ships a private-CA bundle (ADR-0020): mount the `j2-ca` ConfigMap into the
@@ -139,7 +139,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     ...(opts.userImage ? [userSidecar()] : []),
   ];
 
-  // The Harness container's env: the instance's passthrough (`SandboxConfig.env` — e.g. model
+  // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
   // config) first, then the mechanism-owned vars (the Adapter address, the CA trust path), which
   // win on collision. Note the asymmetry stands (ADR-0013): user env/envFrom land on the HARNESS
   // container only — never on the Adapter, whose env is minted here and carries the pod's only

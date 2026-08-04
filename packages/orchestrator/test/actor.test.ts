@@ -11,6 +11,7 @@ import { z } from "zod";
 import { defineEvent, eventMap } from "@j2/agent-protocol";
 import { agentRunActorWith, type AgentRunOptions } from "../src/actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
+import { registerAmbientHandles, type AmbientHandles } from "../src/ambient.ts";
 import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry, type RunBinding } from "../src/registration.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
@@ -22,7 +23,13 @@ const pingEvent = defineEvent({ name: "ping", input: z.object({}) });
  * binding from the actor system, so the test binds one before start (what RunHost.track does) —
  * including the admission-ledger write half, captured into `ledger`.
  */
-function harness(client: AgentRunPort, input: AgentRunInput, options?: AgentRunOptions) {
+function harness(
+  client: AgentRunPort,
+  input: AgentRunInput,
+  options?: AgentRunOptions,
+  bindingExtra?: Partial<RunBinding>,
+  ambient?: AmbientHandles,
+) {
   const received: Array<{ type: string; [k: string]: unknown }> = [];
   const errors: unknown[] = [];
   const ledger: Record<string, AgentAdmission> = {};
@@ -54,8 +61,12 @@ function harness(client: AgentRunPort, input: AgentRunInput, options?: AgentRunO
     table,
     recordAdmission: (iid, admission) => (ledger[iid] = admission),
     telemetry: (event) => telemetry.push(event),
+    ...bindingExtra,
   };
   bindRun(actor.system, binding);
+  // Stand in for an enclosing workspace(): the invoked child's `_parent` is this root actor, so
+  // handles registered under it are what `ambientHandlesFor` finds.
+  if (ambient) registerAmbientHandles(actor, ambient);
   actor.subscribe({ error: (err) => errors.push(err) }); // xstate reports invoke errors here, not out of start()
   actor.start();
   return { actor, received, table, errors, ledger, endpoints, telemetry, binding };
@@ -113,12 +124,111 @@ test("registers its event surface on start; delivery lands on the invoking state
   assert.ok(received.some((e) => e.type === "ping"));
 });
 
-test("no endpoint and no enclosing workspace → the invoke errors loudly at start (ADR-0016)", () => {
+test("no endpoint and no enclosing workspace → the invoke errors loudly, NAMING the definition's workspace (ADR-0031)", () => {
   const mock = new MockFlueClient();
   const { received } = harness(mock, { ...baseInput, endpoint: undefined });
   const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
   assert.ok(errEvent, "the invoke must error at start");
-  assert.match(String(errEvent?.error?.message), /no Harness to admit against/);
+  // No agentWorkspace on the bare binding → the "write" default is what the error names.
+  assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "write"/);
+  assert.match(String(errEvent?.error?.message), /invoke it inside a workspace\(\)/);
+});
+
+// --- Placement resolution (ADR-0031): endpoint → "none" → Instance Harness → ambient → error ----
+
+const AMBIENT: AmbientHandles = {
+  endpoint: "http://ws-1.harness.local:8080",
+  sandbox: "ws-1",
+  workdir: "/work/app/main",
+  repos: { app: "/work/app/main" },
+  branch: "main",
+};
+
+test('explicit input.endpoint wins over everything — even a "none" definition with an Instance Harness', async () => {
+  const mock = new MockFlueClient();
+  const { endpoints, table } = harness(
+    mock,
+    { ...baseInput, sandbox: "stub-1" },
+    undefined,
+    { agentWorkspace: () => "none", instanceHarness: "http://j2-instance-harness.ns.svc:8080" },
+    AMBIENT,
+  );
+  await tick();
+
+  assert.deepEqual(endpoints, ["http://sandbox-7.harness.local:8080"], "the stub path is untouched");
+  assert.equal(table.lookup(agentAddress("inst-42"))?.sandbox, "stub-1", "…and keeps the input's sandbox");
+});
+
+test('workspace "none" → the Instance Harness, and the registration records the placement as its scope (ADR-0031)', async () => {
+  const mock = new MockFlueClient();
+  const { endpoints, table } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, {
+    agentWorkspace: (agent) => (agent === "coder" ? "none" : undefined),
+    instanceHarness: "http://j2-instance-harness.ns.svc:8080",
+  });
+  await tick();
+
+  assert.deepEqual(endpoints, ["http://j2-instance-harness.ns.svc:8080"]);
+  const reg = table.lookup(agentAddress("inst-42"));
+  assert.ok(reg, "the surface registered");
+  // ADR-0013's doctrine on the second placement: only a token signed for the Instance Harness's
+  // own name (its Adapter's — deploy.ts) or the Instance token may deliver this surface's picks.
+  assert.equal(reg.sandbox, "j2-instance-harness");
+});
+
+test('definition-wins: "none" inside an enclosing workspace() still lands on the Instance Harness', async () => {
+  // The deciding scenario is conversation continuation: nearest-wins would route the same
+  // (agent, iid) to a different server mid-conversation (ADR-0031).
+  const mock = new MockFlueClient();
+  const { endpoints, table } = harness(
+    mock,
+    { ...baseInput, endpoint: undefined },
+    undefined,
+    { agentWorkspace: () => "none", instanceHarness: "http://j2-instance-harness.ns.svc:8080" },
+    AMBIENT,
+  );
+  await tick();
+
+  assert.deepEqual(endpoints, ["http://j2-instance-harness.ns.svc:8080"], "not the workspace's Harness");
+  assert.equal(
+    table.lookup(agentAddress("inst-42"))?.sandbox,
+    "j2-instance-harness",
+    "…and not the workspace's Sandbox: the placement is the scope",
+  );
+});
+
+test("everyone else resolves the enclosing workspace(): ambient endpoint AND sandbox", async () => {
+  const mock = new MockFlueClient();
+  const { endpoints, table } = harness(
+    mock,
+    { ...baseInput, endpoint: undefined },
+    undefined,
+    { agentWorkspace: () => "read" },
+    AMBIENT,
+  );
+  await tick();
+
+  assert.deepEqual(endpoints, ["http://ws-1.harness.local:8080"]);
+  assert.equal(table.lookup(agentAddress("inst-42"))?.sandbox, "ws-1", "the ADR-0013 token scope");
+});
+
+test('workspace "none" with no Instance Harness address → loud error at start, naming both', () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, {
+    agentWorkspace: () => "none",
+  });
+  const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
+  assert.ok(errEvent, "the invoke must error at start");
+  assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "none"/);
+  assert.match(String(errEvent?.error?.message), /Instance Harness/);
+});
+
+test('the loud no-Harness error names the definition\'s own workspace value ("read" here)', () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, {
+    agentWorkspace: () => "read",
+  });
+  const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
+  assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "read"/);
 });
 
 test("a tools name outside the workflow's vocabulary errors the invoke at start", () => {

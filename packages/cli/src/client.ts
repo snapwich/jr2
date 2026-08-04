@@ -170,9 +170,12 @@ export class J2Client {
         yield { kind: "emit", event: JSON.parse(frame.data) as { type: string } & Record<string, unknown> };
       } else if (frame.event === "retry") {
         yield { kind: "retry", ...(JSON.parse(frame.data) as { child: string; attempt: number; reason: string }) };
-      } else {
+      } else if (frame.event === "status") {
         yield { kind: "status", status: JSON.parse(frame.data) as RunStatus };
       }
+      // Any other frame (a Turn marker — ADR-0023 — or a kind this CLI predates) is skipped, not
+      // misread as a status: `j2 logs -f` decides "settled" off `status.status`, and a marker
+      // parsed as a status would end the follow mid-run.
     }
   }
 

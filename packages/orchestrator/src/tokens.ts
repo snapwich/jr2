@@ -17,6 +17,9 @@
 //                   run-scoped token would let one feature's coder inject a verdict into another
 //                   feature's reviewer). Delivered as a Secret via the CR's `envFrom` into the
 //                   Adapter container ALONE, which is the one place the Agent cannot read.
+//                   The signed name is a POD hosting Turns, not a Sandbox CR per se: the Instance
+//                   Harness's Adapter bears one signed for that placement's Service name
+//                   (ADR-0031), scoping it to the Menu-only registrations placed there.
 //
 // The Sandbox token is a SIGNED NAME, not a random string in a table: `<sandbox>.<hmac(key, name)>`,
 // verified by recomputing. Three things fall out that a token table would have to work for — the
@@ -89,9 +92,11 @@ export function createAuthenticator(opts: { instanceToken: string; signingKey: B
 
 /**
  * May this principal deliver to this agent registration? The Instance token may (it is the
- * operator). A Sandbox token may only when the registration records ITS Sandbox — which is why
- * `agentRun` carries `sandbox` at all (ADR-0013). An agent registration with NO Sandbox is a
- * workspace-less run (the stub Harness on the host, in no pod): no Sandbox token can claim it.
+ * operator). A Sandbox token may only when the registration records ITS name — which is why
+ * `agentRun` carries `sandbox` at all (ADR-0013). The recorded name is the pod hosting the Turn:
+ * a Workspace's Sandbox, or `j2-instance-harness` for a Menu-only registration (ADR-0031). An
+ * agent registration with NO name at all is an explicit-`endpoint` run (the stub Harness on the
+ * host, in no pod): no Sandbox token can claim it.
  */
 export function mayDeliverToAgent(principal: Principal, registrationSandbox: string | undefined): boolean {
   if (principal.kind === "instance") return true;

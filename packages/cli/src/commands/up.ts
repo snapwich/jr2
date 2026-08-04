@@ -1,23 +1,36 @@
 // `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
 // ownership → operator → instance image → agents ConfigMap → Secret (+ preflight of referenced
-// Secrets) → apply + rollout. Repos reconcile onto the in-cluster source volume at orchestrator
-// boot (ADR-0004); a configured custom provider is preflighted from inside the cluster.
+// Secrets) → apply + rollout → Instance Harness (ADR-0031: converged by convention when any
+// definition declares `workspace: "none"`, deleted when none does). Repos reconcile onto the
+// in-cluster source volume at orchestrator boot (ADR-0004); a configured custom provider is
+// preflighted from inside the cluster.
 //
 // Addressing (ADR-0019): cluster = the current kube context (never recorded); namespace =
 // `config.name` (identity). Whether this cluster hosts the instance is derived FROM the cluster:
 // labeled objects found → converge silently (it's home); nothing → confirm first-time setup
 // (`--yes` for CI); objects labeled as a DIFFERENT instance → refuse.
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { loadAgents, loadConfig, type DiscoveredAgent, type J2Config } from "@j2/orchestrator";
+import {
+  DEFAULT_ADAPTER_IMAGE,
+  DEFAULT_HARNESS_IMAGE,
+  DEFAULT_OPERATOR_IMAGE,
+  loadAgents,
+  loadConfig,
+  sandboxToken,
+  type DiscoveredAgent,
+  type J2Config,
+} from "@j2/orchestrator";
 import { pnpmDockerBuild, stageInstanceBundle } from "../build.ts";
 import {
   compareVersions,
   GIT_SSH_SECRET,
+  INSTANCE_HARNESS_SERVICE,
+  instanceHarnessObjects,
   instanceObjects,
   KIT_VERSION,
   LABEL_HASH,
@@ -89,7 +102,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   if (config.operator?.manage === false) {
     activity(io, "operator: skipped (operator.manage: false — run the controller loop yourself)");
   } else {
-    const image = config.operator?.image ?? `j2-operator:${KIT_VERSION}`;
+    const image = config.images?.operator ?? DEFAULT_OPERATOR_IMAGE;
     const existing = await kube.getJson({
       kind: "deployment",
       name: OPERATOR_DEPLOYMENT,
@@ -172,9 +185,16 @@ export async function up(args: string[], io: Io): Promise<number> {
   });
   const keep = (key: string, mint: () => string): string =>
     secret?.data?.[key] ? Buffer.from(secret.data[key], "base64").toString("utf8") : mint();
+  const instanceToken = keep("J2_INSTANCE_TOKEN", () => randomBytes(24).toString("hex"));
+  const signingKey = keep("J2_SIGNING_KEY", () => randomBytes(32).toString("base64"));
   const secretData: Record<string, string> = {
-    J2_INSTANCE_TOKEN: keep("J2_INSTANCE_TOKEN", () => randomBytes(24).toString("hex")),
-    J2_SIGNING_KEY: keep("J2_SIGNING_KEY", () => randomBytes(32).toString("base64")),
+    J2_INSTANCE_TOKEN: instanceToken,
+    J2_SIGNING_KEY: signingKey,
+    // The Instance Harness Adapter's credential (ADR-0013/0031): a sandbox-style token signed
+    // for the placement's name — it may deliver only to Turns hosted THERE (tokens.ts), so the
+    // Instance token never enters that pod. Derived from the kept key, so re-runs converge to
+    // the same value; live Adapters keep verifying.
+    J2_INSTANCE_HARNESS_TOKEN: sandboxToken(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
   };
   // Git creds for the in-cluster repos reconcile (ADR-0019): an HTTPS token from `.env` is the
   // default path for private repos. It rides the ORCHESTRATOR's Secret — never the harness one.
@@ -237,6 +257,47 @@ export async function up(args: string[], io: Io): Promise<number> {
     ...ctx,
   });
 
+  // --- Instance Harness (ADR-0031): converged by convention, never by config ---------------------
+  // The scan is static and DEFINITION-level (the line ADR-0018 drew: workflow internals are not
+  // statically recoverable) — a declared-but-never-invoked `"none"` Agent over-deploys, erring
+  // toward "the convention works when you need it". No `"none"` definitions → nothing, and a
+  // stale Deployment from a definition that dropped its `"none"` is deleted: the layer converges
+  // toward the definitions like every other layer converges toward the config.
+  const menuOnly = agents.filter((a) => a.definition.workspace === "none");
+  if (menuOnly.length > 0) {
+    activity(
+      io,
+      `instance harness: converging (${menuOnly.map((a) => a.name).join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none")`,
+    );
+    const harnessImage = config.images?.harness ?? DEFAULT_HARNESS_IMAGE;
+    await kube.apply({
+      manifest: instanceHarnessObjects({
+        name,
+        namespace,
+        harnessImage,
+        adapterImage: config.images?.adapter ?? DEFAULT_ADAPTER_IMAGE,
+        harness: config.harness,
+        caBundle: caPem !== undefined,
+        // The echo gate (ADR-0023): the digest of the token materialized above — the same env
+        // the orchestrator stamps onto every Sandbox Harness at provision.
+        echoTokenSha256: createHash("sha256").update(instanceToken).digest("base64url"),
+      }),
+      ...ctx,
+    });
+    await kube.waitRollout({ deployment: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
+    await verifyRunningImage(io, kube, {
+      layer: "instance harness",
+      namespace,
+      selector: `app=${INSTANCE_HARNESS_SERVICE}`,
+      image: harnessImage,
+      container: "harness",
+      ...ctx,
+    });
+  } else {
+    await kube.deleteObject({ kind: "deployment", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
+    await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
+  }
+
   noteDeferred(io, config);
   activity(io, `converged — \`j2 run <workflow>\` when ready`);
   return 0;
@@ -255,14 +316,18 @@ export async function up(args: string[], io: Io): Promise<number> {
 async function verifyRunningImage(
   io: Io,
   kube: KubeAdmin,
-  opts: { layer: string; namespace: string; selector: string; image: string; context?: string },
+  opts: { layer: string; namespace: string; selector: string; image: string; container?: string; context?: string },
 ): Promise<void> {
-  const { layer, image, ...q } = opts;
+  const { layer, image, container, ...q } = opts;
   const pods = await kube.listJson<PodObject>({ kind: "pod", ...q });
   // Mid-termination pods from the outgoing ReplicaSet still carry the old image and are not the
   // thing serving — the question is what the cluster runs now, not what it is done running.
   const live = pods.filter((p) => !p.metadata.deletionTimestamp);
-  const stale = live.filter((p) => p.spec.containers.some((c) => c.image !== image));
+  // `container` narrows a multi-container pod to the one this layer's image claim is about
+  // (the Instance Harness pod also carries the Adapter, which is not this check's business).
+  const stale = live.filter((p) =>
+    p.spec.containers.some((c) => (container === undefined || c.name === container) && c.image !== image),
+  );
   if (stale.length > 0) {
     const carried = stale[0]!.spec.containers.map((c) => c.image).join(", ");
     throw new Error(
@@ -280,7 +345,7 @@ async function verifyRunningImage(
 
 type PodObject = {
   metadata: { name: string; deletionTimestamp?: string };
-  spec: { containers: Array<{ image: string }> };
+  spec: { containers: Array<{ name?: string; image: string }> };
 };
 
 /**

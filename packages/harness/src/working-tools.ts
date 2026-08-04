@@ -1,9 +1,10 @@
 // Working tools (ADR-0027/0028): the file and shell tools the Harness executes in its own
 // container — what an Agent may DO (the Menu, served by the Adapter, is what it may SAY). pi
 // ships read/write/edit/bash; grep and glob are j2-written (`rg` with a plain-`grep` fallback
-// when rg is absent; `find`). The definition's `access` filters the set: `"read"` withholds
+// when rg is absent; `find`). The definition's `workspace` filters the set: `"read"` withholds
 // write and edit (ADR-0028) — bash stays, because the tool layer states intent and stops the
-// honest path; the worktree layer is the containment.
+// honest path; the worktree layer is the containment. `"none"` withholds the whole set — the
+// Menu-only Agent has no data plane at all.
 
 import { execFile } from "node:child_process";
 import {
@@ -28,13 +29,15 @@ const MAX_LINES = 200;
 
 /**
  * The Working tools for one definition, rooted at the resolved cwd. Full set (default
- * `access: "write"`): read, write, edit, bash, grep, glob. `access: "read"` withholds write and
- * edit (ADR-0028) — the field is the definition's own (`spec.ts`, mirroring the Orchestrator's
- * `AgentDefinition`).
+ * `workspace: "write"`): read, write, edit, bash, grep, glob. `workspace: "read"` withholds write
+ * and edit; `workspace: "none"` withholds everything — the Agent converses and picks from its
+ * Menu alone (ADR-0028). The field is the definition's own (`spec.ts`, mirroring the
+ * Orchestrator's `AgentDefinition`).
  */
 export function workingToolsFor(definition: AgentDefinition, cwd: string): WorkingTool[] {
+  if (definition.workspace === "none") return [];
   const search: WorkingTool[] = [grepTool(cwd), globTool(cwd)];
-  if (definition.access === "read") return [createReadTool(), createBashTool(), ...search];
+  if (definition.workspace === "read") return [createReadTool(), createBashTool(), ...search];
   return [createReadTool(), createWriteTool(), createEditTool(), createBashTool(), ...search];
 }
 

@@ -112,7 +112,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the run's Sandbox is still there
 
   Rule: a write from the review worktree cannot reach the branch or the coder's worktree
-    ADR-0028. The tool layer (`access: "read"`) states intent and stops the honest path; the
+    ADR-0028. The tool layer (`workspace: "read"`) states intent and stops the honest path; the
     detached review worktree is the containment. It sits beside the branch worktree at the sha
     under review with a DETACHED HEAD, so a rogue write cannot move the branch and a rogue commit
     lands on a detached HEAD — it evaporates with the checkout.

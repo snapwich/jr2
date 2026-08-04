@@ -221,6 +221,52 @@ test("dials that cannot run are a 400 at admission — no conversation, no Submi
   assert.equal((await app.request("/agents/coder/i1")).status, 404);
 });
 
+test("the Instance Harness admits Menu-only Agents alone — Workspace access is a 403 (ADR-0031)", async () => {
+  // The mounted spec is the FULL agents.json (same ConfigMap — ADR-0031) and the wire is
+  // unauthenticated in-cluster, so the placement gate is the Harness's own: without it, any
+  // in-cluster caller could run a `workspace: "write"` definition here and be handed the
+  // Working tools — code execution in the one pod ADR-0031 says has none.
+  const both: AgentsSpec = {
+    agents: [
+      { name: "coder", definition: { model: "faux/model", instructions: "code" } }, // "write" default
+      { name: "triage", definition: { model: "faux/model", instructions: "pick", workspace: "none" } },
+    ],
+  };
+  const { app, runs } = scripted({ spec: both, menuOnly: true });
+
+  const refused = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go" }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(refused.status, 403);
+  const body = (await refused.json()) as { error: string };
+  assert.match(body.error, /workspace: "write"/);
+  assert.match(body.error, /Instance Harness/);
+  assert.equal(runs.length, 0, "nothing ran");
+  // The refusal precedes creation: no conversation may exist here for a refused definition.
+  assert.equal((await app.request("/agents/coder/i1")).status, 404);
+
+  // The Menu-only definition admits as ever; an unknown agent stays a 404, not a 403.
+  await admit(app, "/agents/triage/i1");
+  assert.equal(runs.length, 1);
+  const unknown = await app.request("/agents/ghost/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go" }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(unknown.status, 404);
+});
+
+test("a Sandbox's Harness (no placement gate) admits every definition unchanged", async () => {
+  const write: AgentsSpec = {
+    agents: [{ name: "coder", definition: { model: "faux/model", instructions: "code" } }],
+  };
+  const { app, runs } = scripted({ spec: write });
+  await admit(app, "/agents/coder/i1");
+  assert.equal(runs.length, 1);
+});
+
 test("unknown method on the conversation path is 405; unknown paths are 404", async () => {
   const { app } = scripted();
   for (const method of ["DELETE", "PUT"]) {

@@ -2,7 +2,8 @@
 packages:
   - packages/*
   # Model instance folders (ADR-0009): npm packages that depend on @j2/* via workspace:* so
-  # `j2 dev` resolves the local engine. Not kit packages — they ship no build/test of their own.
+  # `j2 dev` resolves the local engine. Not kit packages — they ship no build of their own
+  # (example-coding does carry a cluster-free mechanics test in the default gate).
   - examples/*
   # System e2e acceptance suite (ADR-0010): black-box Cucumber.js specs that drive the real `j2`
   # binary. A package so it owns its own `xstate`/cucumber deps (scaffolded instances resolve them).

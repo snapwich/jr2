@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { sandboxToken } from "@j2/orchestrator";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { BuildPort } from "../src/build.ts";
@@ -193,7 +194,7 @@ test("operator: never downgraded — a newer deployed operator is left, with a w
 test("operator: the applied version is waited for and verified, like every other layer", async () => {
   // `up` narrated "applying vX" and moved on without ever waiting or looking — the same unverified
   // claim the instance layer made, one layer up.
-  const root = await mkInstance(`export default { name: "myinst", operator: { image: "j2-operator:local" } };\n`);
+  const root = await mkInstance(`export default { name: "myinst", images: { operator: "j2-operator:local" } };\n`);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
   assert.ok(
@@ -206,14 +207,14 @@ test("operator: the applied version is waited for and verified, like every other
   await assert.rejects(() => up(["--yes"], drifted.io), /operator.*j2-operator:ancient.*expected j2-operator:local/s);
 });
 
-test("operator: manage:false skips the layer; operator.image overrides the ref", async () => {
+test("operator: manage:false skips the layer; images.operator overrides the ref", async () => {
   const skipRoot = await mkInstance(`export default { name: "a", operator: { manage: false } };\n`, "a");
   const w1 = mkWorld(skipRoot);
   assert.equal(await up(["--yes"], w1.io), 0);
   assert.ok(!w1.kube.applied.some((m) => m.includes("controller-manager")));
 
   const overrideRoot = await mkInstance(
-    `export default { name: "b", operator: { image: "j2-operator:local" } };\n`,
+    `export default { name: "b", images: { operator: "j2-operator:local" } };\n`,
     "b",
   );
   const w2 = mkWorld(overrideRoot);
@@ -307,6 +308,12 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-instance")!;
   assert.equal(instance.stringData.J2_INSTANCE_TOKEN, "tok-old", "an existing token is kept (Sandboxes hold it)");
   assert.ok(instance.stringData.J2_SIGNING_KEY, "a missing signing key is minted");
+  // The Instance Harness Adapter's credential (ADR-0031): a sandbox-style token signed for the
+  // placement's name — derived from the kept key, so re-runs converge to the same value.
+  assert.equal(
+    instance.stringData.J2_INSTANCE_HARNESS_TOKEN,
+    sandboxToken(Buffer.from(instance.stringData.J2_SIGNING_KEY, "base64"), "j2-instance-harness"),
+  );
 
   // The ADR-0013 boundary: harness env lands in its OWN Secret — the Harness container envFroms
   // j2-harness-env, and the Instance token/signing key must be unreachable from Agent code.
@@ -474,6 +481,110 @@ test("ssh repo urls with no j2-git-ssh Secret: offer a deploy key — accept cre
   has.kube.set("myinst", "secret", "j2-git-ssh", { metadata: { name: "j2-git-ssh" } });
   has.io.sshKeygen = async () => assert.fail("Secret exists — no key may be generated");
   assert.equal(await up(["--yes"], has.io), 0);
+});
+
+// --- Instance Harness (ADR-0031): converged by convention, never by config -----------------------
+
+/** One `workspace: "none"` definition beside a plain one — the static scan's trigger. */
+async function withDecisioner(root: string): Promise<string> {
+  await mkdir(join(root, "agents"), { recursive: true });
+  await writeFile(
+    join(root, "agents", "decisioner.ts"),
+    `export default { model: "anthropic/claude-x", instructions: "pick", workspace: "none" };\n`,
+  );
+  await writeFile(
+    join(root, "agents", "coder.ts"),
+    `export default { model: "anthropic/claude-x", instructions: "code" };\n`,
+  );
+  return root;
+}
+
+function findInstanceHarness(w: World): { deployment?: Record<string, any>; service?: Record<string, any> } {
+  for (const manifest of w.kube.applied) {
+    if (!manifest.trimStart().startsWith("{")) continue;
+    const doc = JSON.parse(manifest) as { kind?: string; items?: Array<Record<string, any>> };
+    const items = doc.kind === "List" ? (doc.items ?? []) : [];
+    const deployment = items.find((i) => i.kind === "Deployment" && i.metadata.name === "j2-instance-harness");
+    const service = items.find((i) => i.kind === "Service" && i.metadata.name === "j2-instance-harness");
+    if (deployment || service) return { deployment, service };
+  }
+  return {};
+}
+
+test('a workspace: "none" definition converges the Instance Harness — Harness + Adapter, minus the Workspace', async () => {
+  const root = await withDecisioner(
+    await mkInstance(`export default { name: "myinst", harness: { env: [{ name: "K", value: "v" }] } };\n`),
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const { deployment, service } = findInstanceHarness(w);
+  assert.ok(deployment, "the Deployment is applied");
+  assert.ok(service, "…with its Service");
+  assert.ok(w.kube.rollouts.includes("myinst/j2-instance-harness"), "and the rollout is waited for");
+
+  // The one Harness shape, minus the Workspace (ADR-0031): two containers, no /work, no user.
+  const podSpec = deployment.spec.template.spec;
+  assert.deepEqual(
+    podSpec.containers.map((c: { name: string }) => c.name),
+    ["harness", "adapter"],
+  );
+  assert.equal(podSpec.volumes, undefined, "no /work volume, no repos volume");
+
+  // Same wiring a Sandbox's Harness container gets: the definitions ConfigMap + the env Secret.
+  const harness = podSpec.containers[0];
+  assert.equal(harness.image, "j2-harness:0.0.0", "the stock image at the kit version");
+  assert.deepEqual(harness.env[0], {
+    name: "J2_AGENTS_JSON",
+    valueFrom: { configMapKeyRef: { name: "j2-agents", key: "agents.json" } },
+  });
+  assert.ok(
+    harness.envFrom.some((e: { secretRef?: { name: string } }) => e.secretRef?.name === "j2-harness-env"),
+    "the Harness envFroms its own Secret",
+  );
+  // The placement gate (ADR-0031): the mounted spec is the FULL agents.json, so the Harness
+  // itself must refuse any non-Menu-only admission — no code execution in this pod is a claim
+  // this env makes checkable.
+  assert.ok(
+    harness.env.some((e: { name: string; value?: string }) => e.name === "J2_MENU_ONLY" && e.value === "1"),
+    "the Harness is told it is the Instance Harness",
+  );
+
+  // The Adapter's credential is the PLACEMENT's own signed token, not the Instance token: it may
+  // deliver only for registrations recording the Instance Harness (tokens.ts, ADR-0013/0031).
+  const adapter = podSpec.containers[1];
+  assert.ok(
+    adapter.env.some((e: { name: string; value?: string }) => /j2-orchestrator\.myinst\.svc/.test(e.value ?? "")),
+  );
+  const bearer = adapter.env.find((e: { name: string }) => e.name === "J2_SANDBOX_TOKEN");
+  assert.deepEqual(bearer.valueFrom, { secretKeyRef: { name: "j2-instance", key: "J2_INSTANCE_HARNESS_TOKEN" } });
+});
+
+test('no "none" definitions → nothing new deploys, and a stale Instance Harness is deleted on converge', async () => {
+  // Agents exist, none of them Menu-only: the feature stays invisible (ADR-0031).
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", { coder: "anthropic/claude-x" });
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const { deployment, service } = findInstanceHarness(w);
+  assert.equal(deployment, undefined);
+  assert.equal(service, undefined);
+  // Idempotent converge: a definition that dropped its "none" must not leave a stale Deployment.
+  assert.ok(w.kube.deleted.includes("myinst/deployment/j2-instance-harness"));
+  assert.ok(w.kube.deleted.includes("myinst/service/j2-instance-harness"));
+});
+
+test("images.harness/adapter override the Instance Harness images (kit dev)", async () => {
+  const root = await withDecisioner(
+    await mkInstance(
+      `export default { name: "myinst", images: { harness: "j2-harness:local", adapter: "j2-adapter:local" } };\n`,
+    ),
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const { deployment } = findInstanceHarness(w);
+  assert.equal(deployment!.spec.template.spec.containers[0].image, "j2-harness:local");
+  assert.equal(deployment!.spec.template.spec.containers[1].image, "j2-adapter:local");
 });
 
 test("re-running against the instance's own namespace converges silently (no prompt)", async () => {

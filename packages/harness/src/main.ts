@@ -3,6 +3,7 @@
 // pod's Ready signal. Everything here is wiring: validation lives in `spec.ts`, the wire in
 // `app.ts`, the turn in `turn.ts`. Fatal errors land in the pod log by throwing.
 
+import { createHash } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { harnessApp } from "./app.ts";
 import { dialFault, modelsFor, validateSpecModels } from "./provider.ts";
@@ -25,10 +26,25 @@ const models = modelsFor(spec.harness, process.env);
 // mounted spec, and the pod log is where it belongs (ADR-0018).
 validateSpecModels(spec, models);
 
+// The echo gate (ADR-0023): the endpoint is instance-token-gated, but the raw Instance token must
+// never enter this container (the Agent has code execution here — tokens.ts), so the env carries
+// its sha-256 and a bearer verifies by hashing. Digests compare with `===` on purpose: what a
+// timing leak could reveal is a hash prefix, which inverts to nothing. Absent → no gate → the
+// echo endpoint refuses, and the Orchestrator's fire-and-forget push shrugs.
+const echoTokenSha256 = process.env.J2_ECHO_TOKEN_SHA256;
+const sha256 = (value: string): string => createHash("sha256").update(value).digest("base64url");
+
 const app = harnessApp({
   spec,
   runSubmissionFor: (seat) => runSubmissionFor({ spec, models, adapterUrl, ...seat }),
   checkDials: (dials) => dialFault(models, dials),
+  // Set on the Instance Harness Deployment alone (deploy.ts, ADR-0031): this placement admits
+  // Menu-only Agents and refuses every other definition — the gate that keeps "no code
+  // execution in this pod" a property, not a comment.
+  ...(process.env.J2_MENU_ONLY ? { menuOnly: true } : {}),
+  ...(echoTokenSha256
+    ? { checkEchoBearer: (bearer: string | undefined) => bearer !== undefined && sha256(bearer) === echoTokenSha256 }
+    : {}),
 });
 
 const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0" }, (info) => {

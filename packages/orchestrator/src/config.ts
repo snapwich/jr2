@@ -38,37 +38,40 @@ export const KIT_VERSION = (
   }
 ).version;
 
-/** The Harness image `sandbox.image` defaults to — the STOCK published image (ADR-0018): an
+/** The Harness image `images.harness` defaults to — the STOCK published image (ADR-0018): an
  * instance builds no Harness image; its definitions are injected at pod start. Kit dev overrides
  * with a locally built tag (`just harness-image` — the @kind stub is `just harness-image-dev`). */
 export const DEFAULT_HARNESS_IMAGE = `j2-harness:${KIT_VERSION}`;
 
-/** The Adapter image `sandbox.adapterImage` defaults to — pinned the same way (ADR-0009/0019).
+/** The Adapter image `images.adapter` defaults to — pinned the same way (ADR-0009/0019).
  * An Agent without an Adapter has no route to its Machine (ADR-0013), so a sandbox-ful instance
  * always gets one unless the config names a different image. */
 export const DEFAULT_ADAPTER_IMAGE = `j2-adapter:${KIT_VERSION}`;
 
-/** How this instance builds Sandboxes (ADR-0012). Its PRESENCE is the data-plane switch: with it,
- * the instance gets the kubectl Sandbox backend; without it, the instance is workspace-less
- * (workspace() invocations fault pointedly). POD-SHAPED config only — images, resources,
- * transport (ADR-0009); agent-runtime concerns (model, provider, creds) live in `harness`. */
-export type SandboxConfig = {
-  /** The Harness image every Sandbox runs (one image, many Agents — ADR-0001/0018).
-   * Default: the stock published `j2-harness:<kitversion>` (ADR-0018); kit dev overrides it
-   * with a locally built tag. */
-  image?: string;
+/** The operator image `images.operator` defaults to — the published release, pinned the same way
+ * (npm version == image tag, one release train — ADR-0019). */
+export const DEFAULT_OPERATOR_IMAGE = `j2-operator:${KIT_VERSION}`;
+
+/** The composed images (ADR-0031): every image j2 assembles into pods, named in one block. The
+ * kit three default to the published `<kitversion>` tags — overriding them is kit-dev territory
+ * (locally built + `kind load`ed tags); `user` defaults to absent (no User Container). This
+ * replaced the `sandbox` section: the Harness image was `sandbox.image` when the Sandbox pod was
+ * the only place a Harness ran, which the Instance Harness made a misnomer. */
+export type ImagesConfig = {
+  /** The Harness image (ADR-0001/0018): one image, many Agents — every Sandbox's Harness
+   * container, and the Instance Harness Deployment (ADR-0031). */
+  harness?: string;
   /** The Adapter image (ADR-0013): the sidecar that serves the Agent its MCP surface on localhost
    * and is the only thing in the pod holding an Orchestrator credential. Without it an Agent has
-   * no route to its Machine at all, so every Sandbox gets one. Default: the stock published
-   * `j2-adapter:<kitversion>` (ADR-0009). */
-  adapterImage?: string;
+   * no route to its Machine at all, so every Harness placement gets one. */
+  adapter?: string;
+  /** The operator image (ADR-0019) — the per-cluster controller `j2 up` manages. */
+  operator?: string;
   /** The User Container image (ADR-0005): a user-owned third container (nvim, dotfiles, extra
    * CLIs) sharing the `/work` worktrees, for working alongside the agent with your own tools —
    * the `kubectl exec` target. j2 does not own its contents; it must have a BLOCKING entrypoint
-   * (a plain image that exits crash-loops the pod). Absent = the pod runs two containers. */
-  userImage?: string;
-  /** CR `spec.idleTimeout` — the operator's orphan-GC backstop. Default `30m`. */
-  idleTimeout?: string;
+   * (a plain image that exits crash-loops the pod). Absent = a Sandbox pod runs two containers. */
+  user?: string;
 };
 
 /** Token limits for one model — flue registration options, keyed per model because limits are
@@ -138,10 +141,13 @@ export type J2Config = {
    * and `j2 up` labels every object it owns with it. Default: the instance folder's name. */
   name?: string;
   /** Repos the boot reconcile clones into the in-cluster source volume (`repos/<name>/default`,
-   * ADR-0004/0019). A repo pods should see must be fetchable from the cluster. */
+   * ADR-0004/0019). A repo pods should see must be fetchable from the cluster. A NON-EMPTY list
+   * is also the data-plane switch (ADR-0012/0031): a Workspace needs repos, so with them the
+   * instance gets the kubectl Sandbox backend, and without them it is workspace-less
+   * (`workspace()` invocations fault pointedly). */
   repos?: RepoConfig[];
-  /** Pod-shaped Sandbox config; presence = the data-plane switch (see `SandboxConfig`). */
-  sandbox?: SandboxConfig;
+  /** The composed images (see `ImagesConfig`) — kit-dev overrides; defaults are published. */
+  images?: ImagesConfig;
   /** Agent-runtime config for the stock Harness (see `HarnessConfig`). */
   harness?: HarnessConfig;
   /** Image registry prefix (deployment-varying — resolve from env). Absent → images are
@@ -151,9 +157,6 @@ export type J2Config = {
   operator?: {
     /** `false` = `j2 up` skips the operator layer (run the controller loop yourself). */
     manage?: boolean;
-    /** Override the operator image ref (locally built + `kind load`); default: the published
-     * image pinned to this kit's version (npm version == image tag). */
-    image?: string;
   };
 };
 

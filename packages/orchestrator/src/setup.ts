@@ -309,11 +309,20 @@ function wrapGateInput(orig: unknown, derived: string[]) {
  *   actor path excludes the root actor (its id is generated per process — everything below it
  *   is author-named and stable across restore). Invoking a continue iid that is already live
  *   fails loudly at the registration table (one live surface per address).
+ * - `conversation` (the cross-machine continue): a workflow-chosen name REPLACES the actor path,
+ *   so invocations in different machines — a pre-workspace triage state and a state inside the
+ *   `workspace()` body — derive one iid and continue one conversation. Same determinism, same
+ *   restore behavior, same already-live check as `session: "continue"`.
  */
-function mintIid(consumer: { session?: "continue"; scope?: string }, agentName: string, self: AnyActorRef): string {
+function mintIid(
+  consumer: { session?: "continue"; scope?: string; conversation?: string },
+  agentName: string,
+  self: AnyActorRef,
+): string {
   const runId = boundRunId(self.system) ?? "local";
-  const path = actorPath(self).join(".") || "root";
   const scope = consumer.scope ? `/${consumer.scope}` : "";
+  if (consumer.conversation) return `${runId}/${consumer.conversation}/${agentName}${scope}`;
+  const path = actorPath(self).join(".") || "root";
   if (consumer.session === "continue") return `${runId}/${path}/${agentName}${scope}`;
   return `${runId}/${path}/${agentName}${scope}/${randomUUID().slice(0, 8)}`;
 }

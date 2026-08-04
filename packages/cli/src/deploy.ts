@@ -11,6 +11,8 @@ import {
   GIT_SSH_MOUNT,
   GIT_SSH_SECRET,
   HARNESS_ENV_SECRET,
+  INSTANCE_HARNESS_PORT,
+  INSTANCE_HARNESS_SERVICE,
   INSTANCE_SECRET,
   KIT_VERSION,
   ORCHESTRATOR_PORT,
@@ -21,7 +23,15 @@ import {
   type HarnessConfig,
 } from "@j2/orchestrator";
 
-export { AGENTS_CONFIGMAP, GIT_SSH_SECRET, HARNESS_ENV_SECRET, KIT_VERSION, REPOS_PVC, STATE_PVC };
+export {
+  AGENTS_CONFIGMAP,
+  GIT_SSH_SECRET,
+  HARNESS_ENV_SECRET,
+  INSTANCE_HARNESS_SERVICE,
+  KIT_VERSION,
+  REPOS_PVC,
+  STATE_PVC,
+};
 
 export const LABEL_INSTANCE = "j2.dev/instance";
 export const LABEL_VERSION = "j2.dev/version";
@@ -250,6 +260,155 @@ export function instanceObjects(opts: {
       spec: {
         selector: { app: ORCHESTRATOR_SERVICE },
         ports: [{ port: ORCHESTRATOR_PORT, targetPort: ORCHESTRATOR_PORT }],
+      },
+    },
+  ];
+
+  return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/** Where the Instance Harness's Harness container sees the CA bundle — the same path
+ * `kubectlSandbox` mounts it at in a Sandbox pod (ADR-0020). */
+const CA_MOUNT = "/etc/j2/ca";
+
+/** The Adapter's port on the pod's loopback — the same default the Sandbox pod uses. */
+const ADAPTER_PORT = 8081;
+
+/**
+ * The Instance Harness (ADR-0031): the per-instance Harness Deployment + Service `j2 up`
+ * converges whenever any discovered Agent definition declares `workspace: "none"` — the placement
+ * for every Menu-only Agent's Turn, regardless of any enclosing Workspace. The one Harness shape,
+ * minus the Workspace: the stock Harness image plus the Adapter sidecar, the same definitions
+ * ConfigMap and env/envFrom/CA wiring a Sandbox's Harness container gets — and NO `/work` volume,
+ * NO User Container, no attach step. No config key names, sizes, addresses, or enables it: the
+ * definition scan is the entire surface.
+ */
+export function instanceHarnessObjects(opts: {
+  name: string;
+  namespace: string;
+  /** The stock Harness image (`images.harness`, default published — ADR-0018/0031). */
+  harnessImage: string;
+  /** The Adapter image: the Harness's one menu-delivery path, kept even though a `"none"` Agent
+   * cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
+  adapterImage: string;
+  harness?: HarnessConfig;
+  /** The instance ships a private-CA bundle (ADR-0020): mount `j2-ca` into the Harness container. */
+  caBundle?: boolean;
+  /** The Instance token's sha-256 — the Harness's echo gate (ADR-0023). The digest, never the
+   * token: the same env every Sandbox Harness container gets, kept here so the one-Harness-shape
+   * claim stays whole even though nothing narrates to the Instance Harness today. */
+  echoTokenSha256?: string;
+}): string {
+  const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "j2" };
+  const meta = (): KubeManifest => ({
+    name: INSTANCE_HARNESS_SERVICE,
+    namespace: opts.namespace,
+    labels,
+  });
+
+  // The per-container half of the operator's baseline (hardenedContainerSecurityContext there):
+  // drop every capability, forbid escalation, non-root under the default seccomp profile.
+  const hardenedContainerSecurityContext = () => ({
+    runAsNonRoot: true,
+    allowPrivilegeEscalation: false,
+    capabilities: { drop: ["ALL"] },
+    seccompProfile: { type: "RuntimeDefault" },
+  });
+
+  const harnessContainer = {
+    name: "harness",
+    image: opts.harnessImage,
+    imagePullPolicy: "IfNotPresent",
+    ports: [{ containerPort: INSTANCE_HARNESS_PORT }],
+    // The same asymmetry the Sandbox pod builds (ADR-0013/0020): the mounted agents spec and the
+    // instance's valueFrom entries ride `env` (literal values live in the j2-harness-env Secret),
+    // the CA trust lands here and nowhere else, and no credential ever does.
+    env: [
+      {
+        name: "J2_AGENTS_JSON",
+        valueFrom: { configMapKeyRef: { name: AGENTS_CONFIGMAP, key: "agents.json" } },
+      },
+      // The placement gate (ADR-0031): the mounted spec is the FULL agents.json (same ConfigMap,
+      // by decision) and the wire is unauthenticated in-cluster, so the Harness itself refuses
+      // any admission whose definition declares Workspace access — Menu-only Agents alone run
+      // here, which is what makes "no code execution in this pod" true rather than asserted.
+      { name: "J2_MENU_ONLY", value: "1" },
+      ...(opts.echoTokenSha256 ? [{ name: "J2_ECHO_TOKEN_SHA256", value: opts.echoTokenSha256 }] : []),
+      ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
+      { name: "J2_ADAPTER_URL", value: `http://127.0.0.1:${ADAPTER_PORT}` },
+      ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
+    ],
+    envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(opts.harness?.envFrom ?? [])],
+    ...(opts.caBundle ? { volumeMounts: [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] } : {}),
+    // The operator probes a Sandbox's Harness the same way: serving = the socket accepts.
+    readinessProbe: { tcpSocket: { port: INSTANCE_HARNESS_PORT }, initialDelaySeconds: 1 },
+    securityContext: hardenedContainerSecurityContext(),
+  };
+
+  const adapterContainer = {
+    name: "adapter",
+    image: opts.adapterImage,
+    imagePullPolicy: "IfNotPresent",
+    securityContext: hardenedContainerSecurityContext(),
+    env: [
+      {
+        name: "J2_ORCHESTRATOR_URL",
+        value: `http://${ORCHESTRATOR_SERVICE}.${opts.namespace}.svc:${ORCHESTRATOR_PORT}`,
+      },
+      { name: "J2_ADAPTER_PORT", value: String(ADAPTER_PORT) },
+      // The Adapter's bearer env, carrying a sandbox-style token SIGNED FOR THIS PLACEMENT's
+      // name (`up.ts` mints it into the instance Secret): ADR-0013's delivery doctrine, extended
+      // to the second placement — the token speaks only for registrations that record the
+      // Instance Harness as the pod hosting their Turn (tokens.ts), never a Workspace's, and the
+      // Instance token itself never enters this pod. The credential lives in this container,
+      // where no Agent can read it — and `J2_MENU_ONLY` above is what keeps that true: only
+      // Menu-only Agents run here, so nothing in this pod executes code (ADR-0031's
+      // defense-in-depth bonus).
+      {
+        name: "J2_SANDBOX_TOKEN",
+        valueFrom: { secretKeyRef: { name: INSTANCE_SECRET, key: "J2_INSTANCE_HARNESS_TOKEN" } },
+      },
+    ],
+  };
+
+  const items: KubeManifest[] = [
+    {
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: { ...meta(), labels: { ...labels, [LABEL_VERSION]: KIT_VERSION } },
+      spec: {
+        // ONE replica, Recreate: a conversation is an Instance ID on one Harness PROCESS
+        // (ADR-0031) — two pods behind this Service would route one conversation to two servers,
+        // the exact amnesia definition-wins placement exists to prevent. A restart loses the
+        // conversations (live-only, ADR-0023); the Deployment restores the endpoint, not the
+        // history.
+        replicas: 1,
+        strategy: { type: "Recreate" },
+        selector: { matchLabels: { app: INSTANCE_HARNESS_SERVICE } },
+        template: {
+          metadata: { labels: { ...labels, app: INSTANCE_HARNESS_SERVICE } },
+          spec: {
+            containers: [harnessContainer, adapterContainer],
+            // The operator's isolation baseline (sandbox_controller.go), mirrored: same Harness
+            // image, same "never reach the Kubernetes API" north star — J2_MENU_ONLY makes code
+            // execution here unlikely, not unimaginable.
+            automountServiceAccountToken: false,
+            securityContext: {
+              runAsNonRoot: true,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
+            ...(opts.caBundle ? { volumes: [{ name: "ca", configMap: { name: CA_CONFIGMAP } }] } : {}),
+          },
+        },
+      },
+    },
+    {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: meta(),
+      spec: {
+        selector: { app: INSTANCE_HARNESS_SERVICE },
+        ports: [{ port: INSTANCE_HARNESS_PORT, targetPort: INSTANCE_HARNESS_PORT }],
       },
     },
   ];

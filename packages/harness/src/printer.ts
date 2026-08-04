@@ -7,6 +7,7 @@
 
 import type { AgentHarnessEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { EchoEvent } from "./wire.ts";
 
 /** What the printer needs from an AgentHarness: the in-process event stream. */
 export type PrinterSource = {
@@ -76,4 +77,67 @@ export function attachPrinter(harness: PrinterSource, agentName: string, out: Pr
       for (const line of body.split("\n")) out.write(`[${agentName}] ${line}\n`);
     }
   });
+}
+
+// ---- The run narrative (ADR-0023's echo) -------------------------------------------------------
+
+/** An xstate state value, compact: a leaf is its key, nesting joins with `.`, parallel regions
+ * with `, ` — `working.reviewing`, not a JSON tree. The narrative says where the run IS. */
+function compactValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, child]) => `${key}.${compactValue(child)}`)
+      .join(", ");
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/** A payload beside its label, or nothing for an empty one — `approve` says it alone. */
+function payloadSuffix(payload: Record<string, unknown> | undefined): string {
+  if (!payload || Object.keys(payload).length === 0) return "";
+  return ` ${bound(JSON.stringify(payload))}`;
+}
+
+/** Where the run stands, root + child machines on one line: a root's value alone says almost
+ * nothing (the work happens in children), so each child appends as `id: value` — e.g.
+ * `running · body: reviewing`. */
+function compactStatus(value: unknown, children: unknown): string {
+  const parts = [compactValue(value)];
+  for (const child of Array.isArray(children) ? children : []) {
+    const c = (child ?? {}) as { id?: unknown; value?: unknown; children?: unknown };
+    if (typeof c.id !== "string") continue;
+    parts.push(`${c.id}: ${compactStatus(c.value, c.children)}`);
+  }
+  return parts.join(" · ");
+}
+
+/**
+ * One structured feed event → its narrative lines, in the conversation's own idiom: a label per
+ * line, no ANSI, payloads under the same bound as tool inputs. Run-scoped events carry the `run`
+ * label; Turn markers carry the Agent's name, so a remote decisioner's admission and pick read
+ * exactly like a local turn's lines. Taken defensively (the payload is wire data): an event this
+ * renderer does not recognize prints nothing — the log is a courtesy view, never a validator.
+ */
+export function renderEchoEvent(event: EchoEvent | unknown): string[] {
+  const e = (event ?? {}) as Partial<Record<string, unknown>>;
+  const label = (name: string, body: string): string[] => body.split("\n").map((line) => `[${name}] ${line}`);
+  if (e.kind === "status") {
+    // Terminal statuses (`done`, `error`, `cancelled`) ARE the narrative line; while the run is
+    // active, where it stands is.
+    const body = e.status === "active" && e.value !== undefined ? compactStatus(e.value, e.children) : String(e.status);
+    return label("run", `[status] ${body}`);
+  }
+  if (e.kind === "emit") {
+    const { type, ...payload } = (e.event ?? {}) as { type?: unknown } & Record<string, unknown>;
+    if (typeof type !== "string" || !type) return [];
+    return label("run", `[emit] ${type}${payloadSuffix(payload)}`);
+  }
+  if (e.kind === "admission" && typeof e.agent === "string") {
+    return label(e.agent, `[admitted] ${bound(String(e.prompt ?? ""))}`);
+  }
+  if (e.kind === "pick" && typeof e.agent === "string" && typeof e.event === "string") {
+    return label(e.agent, `[pick] ${e.event}${payloadSuffix(e.payload as Record<string, unknown> | undefined)}`);
+  }
+  return [];
 }

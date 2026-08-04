@@ -11,8 +11,9 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
   pod's only credential holder. It exists as a separate container precisely _because_ the working tools give the Agent
   code execution in the Harness container — the Orchestrator credential lives where the Agent cannot read it.
 - **User Container** — user-owned, customizable image (nvim, dotfiles, extra CLIs) for working alongside the agent with
-  your own tools; configured per instance as `sandbox.userImage` in `j2.config.ts` and mapped into the CR's generic
-  sidecar list like the Adapter. Absent `userImage`, the pod runs two containers. j2 does not own the image's contents.
+  your own tools; configured per instance as `images.user` in `j2.config.ts` (ADR-0031) and mapped into the CR's generic
+  sidecar list like the Adapter. Absent `images.user`, the pod runs two containers. j2 does not own the image's
+  contents.
 
 All three mount the same `/work` volume, so human and agent see identical files.
 

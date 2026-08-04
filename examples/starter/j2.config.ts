@@ -6,7 +6,7 @@
 // per repo as the source-of-truth volume every Workspace worktrees against. This starter has none yet
 // (its workflows don't touch a Workspace), so the list is empty.
 //
-// Workspaces (ADR-0012) are opt-in by adding `sandbox: { image: "<harness image>" }`: the orchestrator
+// Workspaces (ADR-0012) are opt-in by adding repos — a Workspace needs them (ADR-0031): the orchestrator
 // then reconciles `repos/` at boot and drives Sandbox CRs via kubectl in its own namespace (ADR-0019).
 
 import { defineConfig } from "@j2/orchestrator";

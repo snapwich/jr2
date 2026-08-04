@@ -112,8 +112,8 @@ export function sandboxOf(system: AnyActorSystem): SandboxPort {
   const port = runBindingOf(system).sandbox;
   if (!port) {
     throw new Error(
-      "this orchestrator has no Sandbox backend — workspace() needs a cluster " +
-        "(configure `sandbox` in j2.config.ts and create the kind cluster with `j2 cluster up`)",
+      "this orchestrator has no Sandbox backend — workspace() needs a cluster with the instance's " +
+        "repos (declare a non-empty `repos` in j2.config.ts and converge with `j2 up` — ADR-0031)",
     );
   }
   return port;
@@ -224,10 +224,21 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
   // actors restart on snapshot restore (entry actions do not), so the publication is
   // restore-safe by construction; and it is listed FIRST, so the handles are readable before
   // the body's first agentRun starts.
-  const registrar = fromCallback<{ type: string }, { handles: MechanismHandles }>(({ input, self }) => {
+  //
+  // The run-narrative echo (ADR-0023) rides the same seat: attaching here IS "at workspace
+  // attach" — the host replays the run's feed-so-far to this Workspace's Harness (the log opens
+  // with its preamble) and tees live thereafter — and the invoked-actor lifetime makes the tee
+  // restore-safe and self-detaching for free. Per-run binding, so the tee carries the OWNING
+  // run's lineage only, never a sibling run's.
+  const registrar = fromCallback<{ type: string }, { handles: MechanismHandles }>(({ input, self, system }) => {
     const wrapperRef = self._parent;
     if (!wrapperRef) return;
-    return registerAmbientHandles(wrapperRef, input.handles);
+    const disposeHandles = registerAmbientHandles(wrapperRef, input.handles);
+    const detachEcho = runBindingOf(system as AnyActorSystem).echo?.(input.handles.endpoint);
+    return () => {
+      detachEcho?.();
+      disposeHandles();
+    };
   });
 
   /**

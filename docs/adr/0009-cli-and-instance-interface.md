@@ -40,11 +40,11 @@ export default defineConfig({ name: "my-orchestrator", sandbox: {} });
 - **`repos[]` is the source catalog.** Each `{ name, url, ref? }` entry is cloned into the in-cluster source volume by
   the boot reconcile (ADR-0004); Sandboxes clone `--shared` against it. There is no host-side catalog directory — a repo
   pods should see must be fetchable from the cluster.
-- **`sandbox` presence is the data-plane switch**: with it, the instance gets the kubectl Sandbox backend; without it,
-  the instance is workspace-less. `adapterImage` defaults to the published `j2-adapter:<kitversion>` (every Sandbox gets
-  an Adapter — an Agent without one cannot act, ADR-0013); `userImage` opts into the User Container (ADR-0005).
-  `sandbox` holds **pod-shaped config only** (images, resources, transport) — agent-runtime concerns live in `harness`
-  (ADR-0018).
+- **A non-empty `repos` list is the data-plane switch** (as amended by ADR-0031): with it, the instance gets the kubectl
+  Sandbox backend; without it, the instance is workspace-less — a Workspace needs repos. Image composition lives in the
+  `images` block: `images.harness`/`images.adapter`/`images.operator` default to the published `<kitversion>` tags
+  (every Sandbox gets an Adapter — an Agent without one cannot act, ADR-0013); `images.user` opts into the User
+  Container (ADR-0005). Agent-runtime concerns live in `harness` (ADR-0018).
 - **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`) and the env/creds the Agents
   need (e.g. an Anthropic key, read from `process.env`/`.env` and materialized as a Secret by `j2 up`, or `envFrom` refs
   to Secrets you manage) — never which model to use; each definition names its own (ADR-0018).

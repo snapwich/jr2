@@ -7,8 +7,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SettlementFault, createHarnessClient, harnessAgentRunPort } from "../src/harness-client.ts";
+import { SettlementFault, createEchoPush, createHarnessClient, harnessAgentRunPort } from "../src/harness-client.ts";
 import type { AgentAdmission, AgentRunInput } from "../src/actor.ts";
+import type { EchoEvent } from "@j2/harness/wire";
 
 const admission: AgentAdmission = {
   streamUrl: "http://h.test/agents/coder/inst-1",
@@ -251,4 +252,29 @@ test("abort POSTs the third verb and drops the answer (ADR-0024)", async () => {
   assert.equal(result, undefined);
   assert.equal(calls[0]!.url.toString(), "http://h.test/agents/coder/inst-1/abort");
   assert.equal(calls[0]!.init?.method, "POST");
+});
+
+test("createEchoPush POSTs the structured events to /echo, bearing the Instance token (ADR-0023)", async () => {
+  const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify({ printed: 2 }), { status: 200 })]);
+  const push = createEchoPush({ baseUrl: "http://ws.test", token: "instance-token", fetch });
+
+  const events: EchoEvent[] = [
+    { kind: "emit", event: { type: "note" } },
+    { kind: "pick", agent: "decider", event: "approve" },
+  ];
+  await push(events);
+
+  assert.equal(calls[0]!.url.toString(), "http://ws.test/echo");
+  assert.equal(calls[0]!.init?.method, "POST");
+  assert.equal((calls[0]!.init?.headers as Record<string, string>).authorization, "Bearer instance-token");
+  assert.deepEqual(JSON.parse(String(calls[0]!.init?.body)), { events });
+});
+
+test("a refused echo rejects with the wire's detail — the TEE decides fire-and-forget, not this client", async () => {
+  const { fetch } = scriptedFetch([() => new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })]);
+  const push = createEchoPush({ baseUrl: "http://ws.test", token: "stale", fetch });
+  await assert.rejects(
+    () => push([{ kind: "emit", event: { type: "note" } }]),
+    (err: unknown) => err instanceof Error && /echo failed \(401\): unauthorized/.test(err.message),
+  );
 });

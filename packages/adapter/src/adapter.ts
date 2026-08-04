@@ -72,8 +72,8 @@ export type DeliveryReceipt = {
 export class NoSurfaceError extends Error {}
 
 export type OrchestratorOptions = {
-  /** Base URL of the Orchestrator, reachable FROM THE POD (`j2 cluster up` records it; Service DNS
-   * when deployed). The Agent never makes this call and is never told this address. */
+  /** Base URL of the Orchestrator, reachable FROM THE POD (Service DNS when deployed —
+   * ADR-0019). The Agent never makes this call and is never told this address. */
   url: string;
   /** The Sandbox token (`J2_SANDBOX_TOKEN`), from the Secret mounted into this container alone. */
   token: string;

@@ -148,16 +148,22 @@ test("SSE: GET /runs/:id/events streams a status delta on transition", async () 
     // Drive a transition (running → review); the SSE feed should push its new status.
     await app.request(`/agents/${instanceId}/events`, jsonPost({ type: "request_review", summary: "PR up" }));
 
+    // The feed replays the current status on attach (value "running"), then pushes the review
+    // delta — and the pick's Turn marker (ADR-0023) rides this feed too, mentioning
+    // "request_review" before any status does. So wait on, and scan, STATUS frames alone.
+    const statusValues = (buf: string): unknown[] =>
+      [...buf.matchAll(/event: status\ndata: (.*)/g)].map(
+        (m) => (JSON.parse(m[1] ?? "{}") as { value: unknown }).value,
+      );
+
     let buf = "";
-    while (!buf.includes("review")) {
+    while (!statusValues(buf).some((v) => JSON.stringify(v).includes("review"))) {
       const { value, done } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
     }
 
-    // The feed replays the current status on attach (value "running"), then pushes the review delta —
-    // so scan every `data:` line rather than the first, and assert one reflects the review state.
-    const values = [...buf.matchAll(/data: (.*)/g)].map((m) => (JSON.parse(m[1] ?? "{}") as { value: unknown }).value);
+    const values = statusValues(buf);
     assert.ok(values.length >= 1, "SSE must carry status data lines");
     assert.ok(
       values.some((v) => JSON.stringify(v).includes("review")),

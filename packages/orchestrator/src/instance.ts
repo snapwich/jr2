@@ -21,6 +21,8 @@ import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
+import { loadAgents } from "./agent.ts";
+import { createEchoPush } from "./harness-client.ts";
 import { createApp } from "./http.ts";
 import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
@@ -41,8 +43,12 @@ export type InstanceOptions = {
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
   /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller
-   * (built from `config.sandbox`); absent = a workspace-less instance. */
+   * (wired when `config.repos` is non-empty); absent = a workspace-less instance. */
   sandbox?: SandboxPort;
+  /** The Instance Harness base URL (ADR-0031) — where a `workspace: "none"` Turn is admitted.
+   * The entrypoint derives it from the pod's namespace (deterministic Service DNS); absent,
+   * such a Turn without an explicit `endpoint` faults pointedly. */
+  instanceHarness?: string;
   /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.j2/secret`, minted on
    * first boot. Supply it when the instance folder must stay untouched (tests), or when the same
    * key must reach a `kubectlSandbox` built before this call (it mints the tokens). */
@@ -96,10 +102,28 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   }
   await store.init();
 
+  // The host's own view of the instance's Agent definitions (ADR-0028/0031): `agentRun` reads a
+  // definition's `workspace` to place its Turn — the same `agents/` discovery `j2 up` ConfigMaps
+  // for the Harness, loaded here for the resolution seat. Only the resolved access is kept: the
+  // Harness runs the definitions; the host merely places them.
+  const workspaceByAgent = new Map(
+    (await loadAgents(opts.dir)).map((a) => [a.name, a.definition.workspace ?? ("write" as const)]),
+  );
+
+  // Resolved BEFORE the host: the Instance token is also the echo bearer (ADR-0023), so the
+  // host's echo pusher closes over it. Served under in step 4 below, unchanged.
+  const instanceToken = opts.instanceToken ?? mintInstanceToken();
+
   const host = new RunHost({
     store,
     reconcile: opts.reconcile,
     sandbox: opts.sandbox,
+    agentWorkspace: (agent) => workspaceByAgent.get(agent),
+    instanceHarness: opts.instanceHarness,
+    // The run-narrative echo (ADR-0023): tee a run's feed to its enclosing Workspace's Harness,
+    // authenticated as the instance. The wire push is here and the fire-and-forget is the
+    // host's, so a Harness that refuses (or is gone) costs a log line at most.
+    echo: (endpoint) => createEchoPush({ baseUrl: endpoint, token: instanceToken }),
     // A run left `live` to be retried is otherwise unexplained — the announce line names it, this
     // says why (ADR-0030). stderr, because it is a fault, not the boot's structured result.
     onRestoreError: (runId, err) =>
@@ -138,7 +162,6 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // 4. Serve, authenticated (ADR-0013). The signing key is loaded from (or minted into) the
   // instance folder, NOT generated per process: live Sandboxes outlive a restart, and their
   // Adapters still bear tokens this key signed. The Instance token is per-boot; the key is not.
-  const instanceToken = opts.instanceToken ?? mintInstanceToken();
   const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));
   const auth = createAuthenticator({ instanceToken, signingKey });
   const app = createApp(host, auth);

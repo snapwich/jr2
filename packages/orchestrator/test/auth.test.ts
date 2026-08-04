@@ -182,6 +182,24 @@ test("a Sandbox token cannot claim a workspace-less agent (no pod owns it)", asy
   assert.equal((await app.request(`/agents/${instanceId}/surface`, get(INSTANCE_TOKEN))).status, 200);
 });
 
+test("the Instance Harness's token speaks for the Turns placed there, and for no Workspace's (ADR-0031)", async () => {
+  const { host, app } = await mkApp();
+  // A Menu-only registration records the placement's name as its scope (actor.ts); the Instance
+  // Harness Adapter bears a token signed for exactly that name (up.ts/deploy.ts) — the same
+  // signed-name doctrine that keeps one feature's coder out of another's reviewer, extended to
+  // the second placement. It is NOT the Instance token: an in-cluster caller that suborned a
+  // Menu-only Turn must not reach a Workspace run's live surface.
+  const menuOnly = await host.start("coding", { sandbox: "j2-instance-harness" });
+  const workspace = await host.start("coding", { sandbox: "ws-1" });
+  const token = sandboxToken(KEY, "j2-instance-harness");
+
+  assert.equal((await app.request(`/agents/${menuOnly.instanceId}/surface`, get(token))).status, 200);
+  assert.equal((await app.request(`/agents/${workspace.instanceId}/surface`, get(token))).status, 403);
+  const inject = await app.request(`/agents/${workspace.instanceId}/events`, post({ type: "done" }, token));
+  assert.equal(inject.status, 403);
+  assert.equal(host.status(workspace.runId)?.status, "active", "the Workspace run did not move");
+});
+
 test("an unknown iid is 404 for a valid token — the scope check leaks nothing about it", async () => {
   const { app } = await mkApp();
   const res = await app.request(`/agents/no-such-iid/surface`, get(sandboxToken(KEY, "ws-1")));
