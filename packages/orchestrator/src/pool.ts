@@ -2,7 +2,7 @@
 // item, at most `cap` at once. It absorbs what every jr-shaped workflow used to hand-roll:
 // spawn-under-cap, stable child identity, `xstate.done.actor.*` completion collection,
 // `stopChild` bookkeeping, the wake gate, and the re-query timer. The one top-level `spawnChild`
-// lives HERE, once — which is what keeps the visualizer's static trace guaranteed by
+// lives HERE, once — which is what keeps the Console's static trace guaranteed by
 // construction (the comment-enforced "keep spawnChild top-level" footgun deletes), and the
 // worker is a registered string src, which is what makes spawned children persistable at all
 // (xstate cannot persist inline-src children).
@@ -23,9 +23,10 @@
 // resolve the richer `{ item: null, open: n }` shape; a bare `null` means drained-when-idle.
 
 import { assign, setup, spawnChild, stopChild, type AnyStateMachine, type PromiseActorLogic } from "xstate";
+import type { z } from "zod";
 import type { EventDef } from "@j2/agent-protocol";
 import { gate } from "./gate.ts";
-import { attachVocabulary, vocabularyOf } from "./vocabulary.ts";
+import { attachInputSchema, attachVocabulary, vocabularyOf } from "./vocabulary.ts";
 
 /**
  * What `next` resolves. A plain item claims it; `null` says "nothing ready now" (drained, when
@@ -60,8 +61,12 @@ export function source<T>(spec: SourceSpec<T>): SourceSpec<T> {
 export type PoolOutput = { status: "drained" | "deadlocked"; items: Record<string, unknown> };
 
 export type PoolSpec<T> = {
-  /** The machine id (the workflow's name in the visualizer). Default "pool". */
+  /** The machine id (the workflow's name in the Console). Default "pool". */
   id?: string;
+  /** The pool's OWN declared run input (ADR-0033) — what `cap` and `itemInput` read off the door.
+   * The WORKER's schema is deliberately not the door: workers are fed per-ITEM (the source item,
+   * or `itemInput`'s result), never the run body, so it describes nothing a starter sends. */
+  input?: z.ZodObject;
   source: SourceSpec<T>;
   /** Stable child identity: the spawn id, the active-set entry, the outcome key. */
   itemId: (item: T) => string;
@@ -220,5 +225,11 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any>): AnyStateMach
     merged.set(wake.name, wake);
   }
   if (merged.size) attachVocabulary(machine, merged);
+  // The run input does NOT propagate from the worker (ADR-0033 as amended): unlike `workspace`,
+  // whose wrapper hands the run input to its body untouched, the pool never passes the run body
+  // to a worker — workers get items. Propagating the worker's schema would demand fields at the
+  // door the pool never uses, and zod's unknown-key stripping would silently DROP the pool-level
+  // fields `cap`/`itemInput` actually read. A pool with a contract declares `spec.input`.
+  if (spec.input) attachInputSchema(machine, spec.input);
   return machine;
 }

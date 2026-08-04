@@ -12,10 +12,12 @@ machine is the one piece of its vocabulary that pattern missed.
 ## Decision
 
 - **The schema rides the machine object, like the rest of the vocabulary.** `j2Setup.createMachine` accepts an `input`
-  (a zod object) and attaches it the same way event defs ride today (WeakMap-keyed on the machine object); the machine
-  factories (`workspace`, `pool`) propagate it onto the wrappers they return, exactly as they propagate vocabulary.
-  `input` is deliberately xstate's own word for what a machine receives at creation — the authoring surface teaches
-  nothing new.
+  (a zod object) and attaches it the same way event defs ride today (WeakMap-keyed on the machine object). `workspace`
+  propagates the body's schema onto the wrapper it returns, exactly as it propagates vocabulary — its wrapper hands the
+  run input to the body untouched, so the body's contract IS the door's. `pool` does not (amended): a worker is fed
+  per-item, never the run body, so propagating its schema would demand fields the pool never passes and strip the
+  pool-level fields `cap`/`itemInput` read; a pool declares its own door via `PoolSpec.input`. `input` is deliberately
+  xstate's own word for what a machine receives at creation — the authoring surface teaches nothing new.
 - **The schema is structure, so it is open.** Workflow-detail JSON (`GET /workflows/:name`, the address ADR-0032's
   negotiation kept) serves it as JSON Schema — same band as the Machine doc, and what drives the Console's start form
   before any token is entered. The _submit_ stays `authenticated`; schema open, trigger guarded.

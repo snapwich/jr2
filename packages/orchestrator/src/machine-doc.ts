@@ -1,4 +1,4 @@
-// Serialize a workflow's Machine for the visualizer (`GET /workflows/:name/machine`). Walks the
+// Serialize a workflow's Machine for the Console (`GET /workflows/:name/machine`). Walks the
 // live StateNode tree (`machine.root`) rather than `machine.definition`/`toJSON()` — those carry
 // entry/exit actions and output mappers as functions, which don't survive JSON. The DTO here is
 // pure data: the nested state tree drives the renderer's containment, the flat transition list its
@@ -296,7 +296,7 @@ function serializeBody(machine: AnyStateMachine, path: Set<AnyStateMachine>): Ma
   return { id: machine.id, root, transitions };
 }
 
-/** Serialize a workflow's template Machine into the visualizer DTO, child machines and all. */
+/** Serialize a workflow's template Machine into the Console's DTO, child machines and all. */
 export function serializeMachine(workflow: string, machine: AnyStateMachine): MachineDoc {
   const doc: MachineDoc = { workflow, ...serializeBody(machine, new Set()) };
   return { ...doc, opaqueStates: opaqueStates(doc) };

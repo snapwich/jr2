@@ -23,3 +23,22 @@ Before({ tags: "@kind" }, async function (this: E2EWorld): Promise<void> {
 After(async function (this: E2EWorld): Promise<void> {
   await this.cleanup();
 });
+
+// The browser tier (@console, ADR-0010 as amended): a REAL Chromium per scenario, driving the
+// Console the scenario's own orchestrator serves. playwright is imported dynamically so the
+// default profile — which excludes @console exactly like @kind — never touches its runtime (or
+// needs its browser binary installed).
+Before({ tags: "@console" }, async function (this: E2EWorld): Promise<void> {
+  const { chromium } = await import("playwright");
+  this.browser = await chromium.launch();
+  this.page = await this.browser.newPage();
+});
+
+// Registered after the generic After, so (Cucumber runs After hooks in reverse order) the browser
+// closes BEFORE the orchestrator it was talking to is stopped — no tab left retrying a dead feed.
+After({ tags: "@console" }, async function (this: E2EWorld): Promise<void> {
+  await this.page?.close();
+  await this.browser?.close();
+  this.page = undefined;
+  this.browser = undefined;
+});

@@ -1,4 +1,4 @@
-// serializeMachine (the visualizer DTO): prove the StateNode walk captures the full statechart
+// serializeMachine (the Console's DTO): prove the StateNode walk captures the full statechart
 // structure — nesting, parallel regions, final states, guards, invokes, always/after/done/error
 // transitions — and that the result is pure JSON (no functions leak through).
 
@@ -72,7 +72,7 @@ test("state tree: ids, keys, types, initial, nesting", () => {
   assert.ok(review, "custom id respected");
   assert.equal(review.key, "review"); // key stays the value segment
   // Children of a custom-id state keep their path-based ids — id and value path diverge here,
-  // which is exactly why the visualizer's active-set walk must follow `key`, never split ids.
+  // which is exactly why the Console's active-set walk must follow `key`, never split ids.
   assert.equal(review.initial, "fix.review.checking");
   assert.equal(findState(doc.root, "fix.review.settled")?.type, "final");
 
@@ -129,7 +129,7 @@ test("the doc is pure JSON — a stringify round-trip is lossless", () => {
 
 test("an un-provided template Machine (empty actor slot) serializes the same structure", () => {
   // A workflow's exported `machine` references actors by name without providing them; structure must
-  // still serialize (the visualizer never assembles providers).
+  // still serialize (the Console never assembles providers).
   const template = createMachine({
     id: "tpl",
     initial: "working",
@@ -141,7 +141,7 @@ test("an un-provided template Machine (empty actor slot) serializes the same str
 });
 
 // ---- Child machines -----------------------------------------------------------------------------
-// The shape `coding` actually has, and the reason the visualizer needed this: the whole feature
+// The shape `coding` actually has, and the reason the Console needed this: the whole feature
 // pipeline hangs off a `spawnChild` (an ACTION — it is nowhere in the state tree), and the machine
 // it spawns invokes its body as an INLINE machine object. Two different resolutions, one join key.
 

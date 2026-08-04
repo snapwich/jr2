@@ -25,7 +25,7 @@
 import { assign, createMachine, fromCallback, fromPromise, sendTo, type AnyStateMachine } from "xstate";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
-import { attachVocabulary, vocabularyOf } from "./vocabulary.ts";
+import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
 
 /** Lease cadence when the backend names none. Well inside the 30m default idle timeout, so a
  * few missed renewals in a row are survivable; also the worst-case detection latency for a
@@ -170,6 +170,10 @@ export function workspace(body: AnyStateMachine, spec: (args: { input: any }) =>
   // wrapper still registers its defs — discovery reads the vocabulary off the exported machine.
   const vocab = vocabularyOf(body);
   if (vocab) attachVocabulary(wrapper, vocab);
+  // Same propagation for the body's declared run input (ADR-0033): the wrapper passes its own
+  // input to the body untouched (`runInput`), so the body's contract IS the wrapper's door.
+  const inputSchema = inputSchemaOf(body);
+  if (inputSchema) attachInputSchema(wrapper, inputSchema);
   return wrapper;
 }
 

@@ -85,11 +85,11 @@ j2 run task-with-review --input '{"prompt":"Fix the ...","repo":"obsidian-tasks.
 j2 logs <runId> -f                        # re-attach to the status feed
 ```
 
-The Machine + live-runs panel is served by the orchestrator itself. Reach it over your own forward:
+The Console (Machine + live-runs panel) is served by the orchestrator itself. Reach it over your own forward:
 
 ```sh
 kubectl port-forward -n coding svc/j2-orchestrator 8080:8080
-open http://localhost:8080/viz/task-with-review
+open http://localhost:8080/workflows/task-with-review
 ```
 
 Every run-verb prints its target (`→ context kind-j2 / namespace coding`) on stderr — the cluster is always whatever
@@ -140,6 +140,6 @@ and the Working tools. Editing a definition is a `j2 up` + pod restart — no im
 
 ## Follow-ups (deliberately out of scope here)
 
-MCP server over the orchestrator API (kick off runs from a coding agent); a global runs-index web UI (the viz page is
-per-workflow); `j2 build` (build + push + render manifests, no apply — the pure-GitOps CI verb, ADR-0019); agent-driven
-push (git credentials in the Sandbox); `--watch` (rebuild-redeploy inner loop).
+MCP server over the orchestrator API (kick off runs from a coding agent); a global runs-index web UI (the Console page
+is per-workflow); `j2 build` (build + push + render manifests, no apply — the pure-GitOps CI verb, ADR-0019);
+agent-driven push (git credentials in the Sandbox); `--watch` (rebuild-redeploy inner loop).

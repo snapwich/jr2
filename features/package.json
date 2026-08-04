@@ -9,7 +9,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test:e2e": "cucumber-js",
-    "test:e2e:kind": "cucumber-js --profile kind"
+    "test:e2e:kind": "cucumber-js --profile kind",
+    "test:e2e-console": "cucumber-js --profile console"
   },
   "devDependencies": {
     "@cucumber/cucumber": "^13.0.0",
@@ -18,6 +19,7 @@
     "@j2/orchestrator": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^26.0.1",
+    "playwright": "^1.62.1",
     "xstate": "^5.18.0",
     "zod": "^4.4.3"
   }

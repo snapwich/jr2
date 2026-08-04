@@ -11,7 +11,11 @@
 //     appearing anywhere in the machine maps to a def — closing xstate's nested-`on` typo hole
 //     (unknown keys in nested states typecheck silently upstream) with a load-time failure;
 //   - the vocabulary is attached to the machine object (`vocabularyOf` — vocabulary.ts), which
-//     is what lets the `export const events` manifest die (ADR-0011 revised).
+//     is what lets the `export const events` manifest die (ADR-0011 revised);
+//   - an optional `input` on the createMachine config — a zod object — declares what a RUN of
+//     this machine is started with (ADR-0033). It rides the machine object beside the vocabulary
+//     (`inputSchemaOf`), never the xstate config: the host validates `POST /workflows/:name/runs`
+//     bodies against it and serves it as JSON Schema; absent, the door stays permissive.
 //
 // The typing follows the proven declared-signature pattern (report-xstate §1): the public
 // signature is precise, the implementation is loosely typed with ONE j2-internal cast at the
@@ -33,12 +37,13 @@ import {
   type SetupReturn,
   type UnknownActorLogic,
 } from "xstate";
+import type { z } from "zod";
 import { eventMap, type EventDef, type EventFrom } from "@j2/agent-protocol";
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { agentRun } from "./harness-client.ts";
 import { gate } from "./gate.ts";
 import { actorPath, boundRunId } from "./registration.ts";
-import { attachVocabulary } from "./vocabulary.ts";
+import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
 /**
  * The events j2's own mechanism delivers into any workflow machine, injected into every j2Setup
@@ -142,16 +147,22 @@ export function j2Setup<
   } as never);
 
   const createMachine = (config: never): AnyStateMachine => {
+    // The declared run input (ADR-0033) rides the config under xstate's own word for what a
+    // machine receives at creation — and is pulled OFF before xstate sees it: a zod schema is
+    // not machine structure, and it must never reach the fingerprint/serialization paths that
+    // read `machine.config`. It is attached beside the vocabulary below.
+    const { input: inputSchema, ...machineConfig } = config as { input?: z.ZodObject } & Record<string, unknown>;
+
     // Resolve the defs first (duplicates and reserved semantics fail HERE, naming the machine —
     // the same loud failure `eventMap` gave the manifest, moved to machine-build time)…
-    const defs = eventMap((config as { id?: string }).id ?? "(machine)", def.events);
+    const defs = eventMap((machineConfig as { id?: string }).id ?? "(machine)", def.events);
 
     // …then rewrite the config (ADR-0015): every `agentRun`/`gate` invoke's input is wrapped to
     // append its DERIVED menu and finalize the mechanism fields. Static — the walk sees the same
-    // config the visualizer will — and the derived names still ride serializable input, so the
+    // config the Console will — and the derived names still ride serializable input, so the
     // ADR-0007 restore path and invoke-time `resolveAccepts` validation are unchanged.
     const machine = (inner.createMachine as unknown as (c: never) => AnyStateMachine)(
-      deriveMenus(config, defs) as never,
+      deriveMenus(machineConfig, defs) as never,
     );
 
     // Close the nested-`on` typo hole (ADR-0015): with the manifest dead, a typo'd key would
@@ -175,6 +186,7 @@ export function j2Setup<
     walk(machine.root);
 
     attachVocabulary(machine, defs);
+    if (inputSchema) attachInputSchema(machine, inputSchema);
     return machine;
   };
 

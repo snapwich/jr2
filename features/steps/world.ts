@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { setWorldConstructor } from "@cucumber/cucumber";
 import { startStubHarness } from "@j2/orchestrator";
+import type { Browser, Page } from "playwright";
 
 /** The `j2` bin (a Node 24 type-stripped `.ts` shebang), resolved from this file's location. */
 const BIN = fileURLToPath(new URL("../../packages/cli/bin/j2.ts", import.meta.url));
@@ -73,6 +74,13 @@ export class E2EWorld {
   branchHeadBefore?: string;
   /** @kind: the detached review worktree's in-pod path (ADR-0028), carried between steps. */
   reviewDir?: string;
+
+  /** @console: the real Chromium the browser tier drives (ADR-0010 as amended) — launched by the
+   * `Before("@console")` hook, closed in `After`. Type-only import: the default profile never
+   * loads playwright's runtime. */
+  browser?: Browser;
+  /** @console: the one tab the console steps drive against this scenario's orchestrator. */
+  page?: Page;
 
   /** @kind: the scenario's fresh namespace — set = kind mode (runCli appends `-n`, no J2_URL). */
   kindNamespace?: string;

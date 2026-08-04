@@ -39,7 +39,7 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   orchestrator fixture unchanged, and a scenario may drive both (the CLI starts a run; the browser sees it park). Tagged
   `@console` and **excluded from the default profile** exactly as `@kind` is — the everyday suite must not require a
   Chromium install — but they need no docker: a host-booted orchestrator serves the Console fine. Scope discipline: they
-  assert what a user does and sees, never pixels or layout; what the page _believes_ stays in `viz-store.test.ts`.
+  assert what a user does and sees, never pixels or layout; what the page _believes_ stays in `console-store.test.ts`.
 - **Harness conformance, in `@j2/harness`, in the default gate**
   ([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)). The three tiers above all reach the
   Harness through the **stub Harness**, which is a hand-written model of the _wire_ — it holds no conversation, so it

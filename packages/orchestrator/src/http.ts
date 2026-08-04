@@ -21,8 +21,9 @@
 //
 // THREE bands of access, not two (ADR-0014) — the middleware is what says which:
 //
-//   open          structure + observation. `/workflows`, a template's Machine, the viz page, and
-//                 the run PROJECTIONS below (`GET /workflows/:name/runs*`). No context, no control.
+//   open          structure + observation. `/workflows`, a template's Machine, the Console shell,
+//                 and the run PROJECTIONS below (`GET /workflows/:name/runs*`). No context, no
+//                 control.
 //   authenticated any principal we minted a token for. The Agent's surface lives here, scoped
 //                 further per-registration by `mayDeliverToAgent`.
 //   instanceOnly  the Instance token ALONE. Run control and full run state (`/runs*`): a Sandbox
@@ -33,6 +34,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
+import { accepts } from "hono/accepts";
 import { streamSSE } from "hono/streaming";
 import { EventValidationError, UnknownAddressError } from "./registration.ts";
 import { mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
@@ -78,13 +80,15 @@ function bearerOf(c: Context<J2Env>): string | undefined {
   return match?.[1]?.trim() || undefined;
 }
 
-// ---- Visualizer assets (`/viz/*`) -----------------------------------------------------------
-// The browser page that renders a workflow's Machine. Plain .html/.js/.css shipped inside this
-// package (browsers don't type-strip TS) plus the vendored elkjs layout bundle, all read from
-// disk — no CDN, no build step. `serveStatic` is deliberately avoided: its root is cwd-relative,
-// and this package is a library that must serve its own files wherever the process starts.
+// ---- Console assets (`/assets/*`) -----------------------------------------------------------
+// The Console: the browser page that renders a workflow's Machine and its runs. Plain
+// .html/.js/.css shipped inside this package (browsers don't type-strip TS) plus the vendored
+// elkjs layout bundle, all read from disk — no CDN, no build step (ADR-0032: the page serves only
+// its own assets). `serveStatic` is deliberately avoided: its root is cwd-relative, and this
+// package is a library that must serve its own files wherever the process starts. Assets are
+// root-owned (`/assets/*`, not under a page path) so no workflow name can ever shadow them.
 
-const VIZ_DIR = new URL("../viz/", import.meta.url);
+const CONSOLE_DIR = new URL("../console/", import.meta.url);
 
 /** The vendored elkjs bundle, resolved through THIS package's dep edge (pnpm-safe), read once. */
 let elkBundle: Promise<Buffer> | undefined;
@@ -95,10 +99,21 @@ function readElkBundle(): Promise<Buffer> {
   return elkBundle;
 }
 
-/** Serve one file of the viz page with its content type. */
-async function vizAsset(rel: string, contentType: string): Promise<Response> {
-  const body = await readFile(new URL(rel, VIZ_DIR));
+/** Serve one file of the Console with its content type. */
+async function consoleAsset(rel: string, contentType: string): Promise<Response> {
+  const body = await readFile(new URL(rel, CONSOLE_DIR));
   return new Response(new Uint8Array(body), { headers: { "content-type": contentType } });
+}
+
+// Content negotiation for the two page addresses (ADR-0032). JSON is the DEFAULT dialect: only a
+// request whose `Accept` prefers `text/html` — a browser's navigation — gets the Console shell.
+// No header, a bare wildcard, `application/json`, `text/event-stream` all fall through to JSON,
+// so the CLI, the Adapter and EventSource never see HTML they did not ask for.
+function prefersHtml(c: Context): boolean {
+  return (
+    accepts(c, { header: "Accept", supports: ["application/json", "text/html"], default: "application/json" }) ===
+    "text/html"
+  );
 }
 
 /**
@@ -220,12 +235,37 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   app.get("/healthz", (c) => c.json({ ok: true, version: KIT_VERSION, hash: process.env.J2_CONTENT_HASH }));
   app.get("/readyz", (c) => c.json({ ready: true }));
 
-  // Structure, not state: the workflow listing, a template's Machine, and the visualizer page are
-  // unauthenticated. They expose no run, drive nothing, and the viz page is a BROWSER — it has no
-  // token to send. Everything that reads or moves a run is guarded below.
+  // Structure, not state: the workflow listing, a template's Machine, and the Console shell are
+  // unauthenticated. They expose no run, drive nothing, and the Console is a BROWSER page — it
+  // loads before any token is entered (ADR-0032). Everything that reads or moves a run is guarded
+  // below.
   app.get("/workflows", (c) => c.json(host.workflows()));
 
+  // The two PAGE addresses (ADR-0032): `/` and `/workflows/:name` negotiate. A browser navigation
+  // (`Accept` prefers text/html) gets the one Console shell — the path carries the selection, the
+  // shell is the same bytes for any of them. Every other caller gets JSON, the default dialect.
+  //
+  // JSON `/` is a 404: nothing lived there before the Console, and inventing an index now would be
+  // surface no client asked for. JSON `/workflows/:name` is the workflow DETAIL: identity plus the
+  // machine's declared input as JSON Schema (`null` when it declares none — ADR-0033). Open band:
+  // a schema is structure, exactly like the Machine document below.
+  app.get("/", (c) => {
+    if (prefersHtml(c)) return consoleAsset("page.html", "text/html; charset=utf-8");
+    return c.json({ error: "no JSON resource at / — the Console is the HTML dialect" }, 404);
+  });
+  app.get("/workflows/:name", (c) => {
+    // The shell for ANY name — an unknown workflow surfaces in-page via its 404'd /machine fetch.
+    if (prefersHtml(c)) return consoleAsset("page.html", "text/html; charset=utf-8");
+    const name = c.req.param("name");
+    const doc = host.machine(name);
+    if (!doc) return c.json({ error: `no workflow "${name}"` }, 404);
+    return c.json({ name, machineId: doc.id, input: host.inputSchema(name) ?? null });
+  });
+
   // Push work: start a run of a registered workflow. Unknown workflow → host.start throws → 404.
+  // A body failing the machine's declared input schema (ADR-0033) → 400 naming the accepted
+  // shape — the same error class, and the same wire mapping, as a gate delivery failing its
+  // schema (`POST /runs/:id/gates/:gate/events` below).
   app.post("/workflows/:name/runs", authenticated, async (c) => {
     const name = c.req.param("name");
     const input = await readJson(c.req.text());
@@ -233,12 +273,13 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       const { runId, instanceId } = await host.start(name, input);
       return c.json({ runId, instanceId }, 201);
     } catch (err) {
+      if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
       return c.json({ error: errMessage(err) }, 404);
     }
   });
 
-  // The registered template Machine's structure — what the visualizer renders (structure is
-  // provider-independent, so the un-`provide()`d template is exactly right).
+  // The registered template Machine's structure — what the Console's diagram renders (structure
+  // is provider-independent, so the un-`provide()`d template is exactly right).
   app.get("/workflows/:name/machine", (c) => {
     const name = c.req.param("name");
     const doc = host.machine(name);
@@ -246,12 +287,13 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   });
 
   // ---- Observation (`GET /workflows/:name/runs*`) ---------------------------------------------
-  // What the visualizer needs, and the most it may have. The page is a BROWSER: it has no token to
-  // send, and giving it one would mean giving it the INSTANCE token — gates, run control, every
-  // run's context — to whatever can load a URL (and the orchestrator binds 0.0.0.0 — pods must
-  // reach it — so that URL is not only yours). So the page gets a projection instead of a
-  // credential: `observe()` keeps identity + the state VALUE and drops context, and the guarded
-  // `/runs*` routes above stay exactly as guarded as they were. A projection, not a bypass.
+  // What the tokenless Console needs, and the most it may have. The page is a BROWSER: it holds no
+  // token until one is ENTERED (ADR-0032), and baking one in would mean giving the INSTANCE token
+  // — gates, run control, every run's context — to whatever can load a URL (and the orchestrator
+  // binds 0.0.0.0 — pods must reach it — so that URL is not only yours). So the page gets a
+  // projection instead of a credential: `observe()` keeps identity + the state VALUE and drops
+  // context, and the guarded `/runs*` routes above stay exactly as guarded as they were. A
+  // projection, not a bypass.
   //
   // Scoped to one workflow because that is what an observer already knows (it is in the page's
   // path): no listing of everything this orchestrator is running.
@@ -358,24 +400,23 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     });
   });
 
-  // The visualizer page. Assets are registered before `/viz/:name` so "assets" is never captured
-  // as a workflow name. The page itself is one static shell for any name (the browser reads the
-  // workflow from the path); an unknown workflow surfaces in-page via its 404'd /machine fetch.
-  app.get("/viz/assets/main.js", () => vizAsset("main.js", "text/javascript; charset=utf-8"));
-  app.get("/viz/assets/store.js", () => vizAsset("store.js", "text/javascript; charset=utf-8"));
-  app.get("/viz/assets/style.css", () => vizAsset("style.css", "text/css; charset=utf-8"));
-  app.get("/viz/assets/elk.js", async () => {
+  // The Console's assets, root-owned (`/assets/*`): they share no prefix with a page address, so
+  // no workflow name can capture them — the guard the old `/viz/assets` ordering provided, now by
+  // construction. The shell itself is served by the negotiated page addresses above.
+  app.get("/assets/main.js", () => consoleAsset("main.js", "text/javascript; charset=utf-8"));
+  app.get("/assets/store.js", () => consoleAsset("store.js", "text/javascript; charset=utf-8"));
+  app.get("/assets/style.css", () => consoleAsset("style.css", "text/css; charset=utf-8"));
+  app.get("/assets/elk.js", async () => {
     const body = await readElkBundle();
     return new Response(new Uint8Array(body), {
       headers: { "content-type": "text/javascript; charset=utf-8" },
     });
   });
-  app.get("/viz/:name", () => vizAsset("page.html", "text/html; charset=utf-8"));
 
   app.get("/runs", instanceOnly, (c) => c.json(host.list()));
 
   // Abbreviated run ids (ADR-0009). Registered before `/runs/:runId` so "resolve" is never captured
-  // as a run id — the same guard the viz assets use above. The prefix rides in the query string
+  // as a run id. The prefix rides in the query string
   // because this is a search, not an address: `/runs/resolve/abc` would read like a run named
   // "resolve". Resolution lives HERE and not on the addressed routes below, which stay full-id —
   // a prefix that resolves today goes ambiguous tomorrow, and a write must never be prefix-sensitive.

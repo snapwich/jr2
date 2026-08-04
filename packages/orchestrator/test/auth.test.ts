@@ -110,7 +110,7 @@ test("the run surface takes no anonymous caller", async () => {
   assert.equal((await app.request(`/runs/${runId}/events`, post({ type: "CANCEL" }))).status, 401);
 });
 
-test("observation is open, and carries no context — the visualizer's whole diet", async () => {
+test("observation is open, and carries no context — the Console's whole diet", async () => {
   const { host, app } = await mkApp();
   const { runId } = await host.start("coding", { sandbox: "ws-1" });
 

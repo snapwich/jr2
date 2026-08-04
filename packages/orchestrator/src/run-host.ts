@@ -23,7 +23,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
 import type { EventDef, EventSemantics } from "@j2/agent-protocol";
-import { vocabularyOf } from "./vocabulary.ts";
+import { inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild } from "@j2/harness/wire";
 import {
   agentAddress,
@@ -122,7 +122,7 @@ export type RunStatus = RunRecord & {
 
 /**
  * A run as an UNAUTHENTICATED observer may see it: which run, of what workflow, and where in the
- * Machine it is. That is the whole set — enough to light up a state in the visualizer, and nothing
+ * Machine it is. That is the whole set — enough to light up a state in the Console, and nothing
  * more.
  *
  * What is absent is the point. `context` is the workflow's working data (branch names, ticket
@@ -267,7 +267,7 @@ function echoEventOf(event: RunFeedEvent, target: string): EchoEvent | undefined
 
 /** The child-machine tree for the echo's status: spawn ids and state values alone — a root's
  * value says almost nothing about where a run is, and a {@link RunChild} is already context-free
- * by construction. `src`/`status` stay behind: they are join keys for the visualizer, not story. */
+ * by construction. `src`/`status` stay behind: they are join keys for the Console, not story. */
 function echoChildrenOf(children: RunChild[]): EchoStatusChild[] {
   return children.map((child) => {
     const nested = echoChildrenOf(child.children);
@@ -432,17 +432,46 @@ export class RunHost {
     return def && serializeMachine(name, def.machine);
   }
 
+  /**
+   * The workflow's declared run-input contract as JSON Schema (ADR-0033) — what the workflow
+   * detail serves and the Console's start form generates from. `null` for a machine that
+   * declares none (a run of it starts with anything), undefined for an unknown workflow. A
+   * schema is STRUCTURE, the same class of thing as the Machine doc — open band (ADR-0014).
+   */
+  inputSchema(name: string): Record<string, unknown> | null | undefined {
+    const def = this.workflowDefs.get(name);
+    if (!def) return undefined;
+    const schema = inputSchemaOf(def.machine);
+    // `io: "input"`: this schema describes what a caller SENDS — a defaulted field is optional
+    // at the door (the default is applied by `start`'s parse), not required of the form.
+    return schema ? (z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>) : null;
+  }
+
   /** Start a fresh run of a registered workflow; returns its durable ids. */
   async start(workflow: string, input: Record<string, unknown> = {}): Promise<{ runId: string; instanceId: string }> {
     const def = this.workflowDefs.get(workflow);
     if (!def) throw new Error(`no workflow registered as "${workflow}"`);
+
+    // A declared schema is enforced at the door (ADR-0033), and what starts the run is the
+    // PARSED shape (defaults applied, unknown keys stripped) — exactly what a gate delivery
+    // lands as, and the same error class: `EventValidationError`, which the wire maps to a 400
+    // naming what is accepted. No schema → accept anything (the permissive door the wire was).
+    const declared = inputSchemaOf(def.machine);
+    let runInput = input;
+    if (declared) {
+      const parsed = declared.safeParse(input);
+      if (!parsed.success) {
+        throw new EventValidationError(`invalid input for workflow "${workflow}": ${parsed.error.message}`);
+      }
+      runInput = parsed.data;
+    }
 
     const runId = this.newId();
     const instanceId = this.newId();
     const record: RunRecord = { runId, workflow, instanceId };
 
     const machine = this.assemble(def, instanceId);
-    const actor = this.spawn(machine, { input: { ...input, instanceId } }, record, def);
+    const actor = this.spawn(machine, { input: { ...runInput, instanceId } }, record, def);
     actor.start();
     return { runId, instanceId };
   }
@@ -746,7 +775,7 @@ export class RunHost {
     return [...new Set([...live, ...stored])].sort().slice(0, limit);
   }
 
-  /** The live runs of ONE workflow, projected for observers (the visualizer's run list). Scoped
+  /** The live runs of ONE workflow, projected for observers (the Console's run list). Scoped
    * server-side: an observer asks about a workflow it can already name, and gets back only runs of
    * it — never a listing of everything this orchestrator happens to be running. */
   observations(workflow: string): RunObservation[] {
@@ -1060,7 +1089,7 @@ export class RunHost {
     //
     // Persistence rides the INSPECTION stream (see `spawn`), which fires on a child's transitions
     // too — so this frame lands on child movement, and its `children` tree carries the new state.
-    // That is the entire live half of the visualizer's child diagrams: no extra subscription.
+    // That is the entire live half of the Console's child diagrams: no extra subscription.
     const runStatus = terminal ? { ...this.liveStatus(run), status: terminal } : this.liveStatus(run);
     this.feed(run, { kind: "status", status: runStatus });
 

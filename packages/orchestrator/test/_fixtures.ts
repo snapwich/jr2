@@ -311,7 +311,7 @@ const featureBody = j2Setup({
 
 /** Level 1: the per-feature wrapper, reached by `spawnChild`. `createMachine`, not `setup`, so `src`
  * can be the body MACHINE OBJECT — the INLINE shape, whose `src` xstate rewrites to a generated key
- * (`workspace()` invokes its body exactly this way, and the visualizer joins on that key). */
+ * (`workspace()` invokes its body exactly this way, and the Console joins on that key). */
 const featureWorkspace = createMachine({
   types: {} as { context: FeatureInput; input: FeatureInput },
   id: "ws",

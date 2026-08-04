@@ -14,6 +14,7 @@
 // keeps.
 
 import type { AnyStateMachine } from "xstate";
+import type { z } from "zod";
 import type { EventDef } from "@j2/agent-protocol";
 
 const vocabularies = new WeakMap<AnyStateMachine, Map<string, EventDef>>();
@@ -29,4 +30,24 @@ export function attachVocabulary(machine: AnyStateMachine, defs: Map<string, Eve
  * (a plain `setup()` machine has no workflow events and resolves to an empty scope). */
 export function vocabularyOf(machine: AnyStateMachine): Map<string, EventDef> | undefined {
   return vocabularies.get(machine);
+}
+
+// The declared run input (ADR-0033): the one piece of a machine's vocabulary the event defs
+// missed — what a run of it is STARTED with. Same key choice as the vocabulary above, for the
+// same reasons (per-machine attribution, no global registry, `.provide()` registers pre-provide).
+
+const inputSchemas = new WeakMap<AnyStateMachine, z.ZodObject>();
+
+/** Attach a machine's declared run-input schema. j2-internal: `j2Setup.createMachine({ input })`
+ * attaches it, and the machine factories (`workspace`, `pool`) PROPAGATE it onto the wrapper
+ * they return exactly as they propagate the vocabulary — so a workflow whose root is a wrapper
+ * still declares its door. */
+export function attachInputSchema(machine: AnyStateMachine, schema: z.ZodObject): void {
+  inputSchemas.set(machine, schema);
+}
+
+/** The run-input schema a machine declared — undefined for a machine that declared none, which
+ * is PERMISSIVE (ADR-0033): a run of it starts with anything, today's behavior. */
+export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined {
+  return inputSchemas.get(machine);
 }

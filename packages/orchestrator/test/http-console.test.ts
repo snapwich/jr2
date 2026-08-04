@@ -1,14 +1,30 @@
-// Visualizer HTTP surface: the Machine-structure route delegates to `RunHost.machine`, and the
-// `/viz/*` routes serve the page's shipped assets — including the vendored elkjs bundle resolved
+// Console HTTP surface (ADR-0032): the two page addresses negotiate — a browser's `Accept` gets
+// the shell, everything else gets JSON (the default dialect, with the workflow DETAIL carrying the
+// declared input schema — ADR-0033). The Machine-structure route delegates to `RunHost.machine`,
+// and `/assets/*` serves the page's shipped files — including the vendored elkjs bundle resolved
 // through this package's own dep edge (the length assertion pins that resolution under pnpm).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, emit } from "xstate";
+import { z } from "zod";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
+import { j2Setup } from "../src/setup.ts";
 import { codingDef, gatedDef, mkStore, pipelineDef, waitFor } from "./_fixtures.ts";
 import type { MachineDoc } from "../src/machine-doc.ts";
+
+/** A workflow that declares its start input (ADR-0033) — what the detail JSON must serve. */
+const titledTemplate = j2Setup({
+  types: {} as { context: { title: string }; input: { title: string } },
+  events: [],
+}).createMachine({
+  id: "titled",
+  input: z.object({ title: z.string() }),
+  context: ({ input }) => ({ title: input.title }),
+  initial: "idle",
+  states: { idle: {} },
+});
 
 /** The app with its host in hand — the observation routes need live runs to observe. */
 async function mkLive() {
@@ -16,8 +32,12 @@ async function mkLive() {
   host.register(codingDef(new Map()));
   host.register(gatedDef());
   host.register(pipelineDef());
+  host.register({ name: "titled", machine: titledTemplate, provide: () => ({}) });
   return { host, app: createApp(host) };
 }
+
+/** A browser navigation's Accept header — text/html preferred, wildcard tail. */
+const BROWSER_ACCEPT = { headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" } };
 
 async function mkApp() {
   return (await mkLive()).app;
@@ -41,13 +61,56 @@ test("GET /workflows/:name/machine on an unknown workflow is a 404", async () =>
   assert.deepEqual(await res.json(), { error: 'no workflow "nope"' });
 });
 
-test("GET /viz/:name serves the page shell for any name", async () => {
+// ---- The page addresses negotiate (ADR-0032) ---------------------------------------------------
+// `/` and `/workflows/:name` are each ONE address with two dialects: a browser's Accept gets the
+// Console shell; everything else — no header, wildcard, application/json — gets JSON, the default.
+
+test("a browser's Accept gets the Console shell on both page addresses", async () => {
   const app = await mkApp();
-  for (const path of ["/viz/coding", "/viz/not-a-workflow"]) {
-    const res = await app.request(path);
+  // The shell for ANY name, known or not: the browser reads the workflow from the path, and an
+  // unknown one surfaces in-page via its 404'd /machine fetch.
+  for (const path of ["/", "/workflows/coding", "/workflows/not-a-workflow"]) {
+    const res = await app.request(path, BROWSER_ACCEPT);
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
     assert.match(await res.text(), /machine-svg/);
+  }
+});
+
+test("JSON `/` is a 404 — no invented index, and no HTML for a caller that did not ask", async () => {
+  const app = await mkApp();
+  for (const init of [{}, { headers: { accept: "application/json" } }, { headers: { accept: "*/*" } }]) {
+    const res = await app.request("/", init);
+    assert.equal(res.status, 404);
+    assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+  }
+});
+
+test("JSON /workflows/:name is the workflow detail, its declared input as JSON Schema", async () => {
+  const app = await mkApp();
+  const res = await app.request("/workflows/titled");
+  assert.equal(res.status, 200);
+  const detail = (await res.json()) as { name: string; machineId: string; input: Record<string, unknown> };
+  assert.equal(detail.name, "titled");
+  assert.equal(detail.machineId, "titled");
+  assert.ok((detail.input.properties as Record<string, unknown>).title, "the schema is served as structure");
+  assert.deepEqual(detail.input.required, ["title"]);
+});
+
+test("a workflow declaring no input serves `input: null`; unknown workflow JSON is a 404", async () => {
+  const app = await mkApp();
+  const gated = (await (await app.request("/workflows/gated")).json()) as Record<string, unknown>;
+  assert.equal(gated.input, null);
+
+  const unknown = await app.request("/workflows/nope");
+  assert.equal(unknown.status, 404);
+  assert.deepEqual(await unknown.json(), { error: 'no workflow "nope"' });
+});
+
+test("/viz/* is retired — gone, not redirected", async () => {
+  const app = await mkApp();
+  for (const path of ["/viz/coding", "/viz/assets/main.js", "/viz/assets/elk.js"]) {
+    assert.equal((await app.request(path)).status, 404);
   }
 });
 
@@ -303,24 +366,24 @@ test("a client going away detaches its observer", async () => {
   await waitFor(() => host.observerCount("coding") === 0);
 });
 
-test("GET /viz/assets/* serves the page's script, styles, and the vendored elkjs bundle", async () => {
+test("GET /assets/* serves the page's script, styles, and the vendored elkjs bundle", async () => {
   const app = await mkApp();
 
-  const js = await app.request("/viz/assets/main.js");
+  const js = await app.request("/assets/main.js");
   assert.equal(js.status, 200);
   assert.match(js.headers.get("content-type") ?? "", /text\/javascript/);
   assert.match(await js.text(), /workflows\/.*machine/);
 
-  const store = await app.request("/viz/assets/store.js");
+  const store = await app.request("/assets/store.js");
   assert.equal(store.status, 200);
   assert.match(store.headers.get("content-type") ?? "", /text\/javascript/);
   assert.match(await store.text(), /applyFrame/);
 
-  const css = await app.request("/viz/assets/style.css");
+  const css = await app.request("/assets/style.css");
   assert.equal(css.status, 200);
   assert.match(css.headers.get("content-type") ?? "", /text\/css/);
 
-  const elk = await app.request("/viz/assets/elk.js");
+  const elk = await app.request("/assets/elk.js");
   assert.equal(elk.status, 200);
   assert.match(elk.headers.get("content-type") ?? "", /text\/javascript/);
   assert.ok((await elk.text()).length > 100_000, "the bundled layout engine, not a stub");

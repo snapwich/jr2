@@ -2,11 +2,16 @@
   "default": {
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
-    "tags": "not @kind"
+    "tags": "not @kind and not @console"
   },
   "kind": {
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
     "tags": "@kind"
+  },
+  "console": {
+    "paths": ["*.feature"],
+    "import": ["steps/**/*.ts"],
+    "tags": "@console"
   }
 }

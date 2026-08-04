@@ -90,7 +90,7 @@ export class J2Client {
     return (await this.json(await this.fetchImpl(`${this.baseUrl}/workflows`), "/workflows")) as string[];
   }
 
-  /** `GET /workflows/:name/machine` — the workflow's Machine as the visualizer DTO. */
+  /** `GET /workflows/:name/machine` — the workflow's Machine as the Console's DTO. */
   async machine(workflow: string): Promise<MachineDoc> {
     const res = await this.fetchImpl(`${this.baseUrl}/workflows/${encodeURIComponent(workflow)}/machine`);
     return (await this.json(res, "/workflows/:name/machine")) as MachineDoc;

@@ -390,7 +390,7 @@ test("a run that throws on restore does not take the rest of the boot with it", 
   assert.equal((await store.load(first))!.status, "live");
 });
 
-// ---- Child machines (the visualizer's live half) ------------------------------------------------
+// ---- Child machines (the Console's live half) ------------------------------------------------
 // A run's root `value` is not where the run IS: `pipeline` (like `coding`) sits in `discover` while
 // every feature it spawned works two levels down. `RunStatus.children` is that tree — and it rides
 // the SAME feed frame the root's status does, because persistence is driven by the actor system's
