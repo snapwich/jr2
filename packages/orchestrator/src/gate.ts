@@ -45,7 +45,8 @@ export const gate = fromCallback<DeliveredEvent, GateInput | undefined>(({ input
   // The derived id is deterministic from machine structure, so recomputing it on every (re)start
   // is restore-stable and needs no input-mapper persistence — the mapper is only load-bearing
   // where minting has a random component (mintIid's fresh-session suffix, ADR-0016).
-  const id = input.gate ?? actorPath(self).join(".");
+  const path = actorPath(self);
+  const id = input.gate ?? path.join(".");
   if (!id) {
     // Only a rootless invocation (createActor(gate) directly) has an empty path.
     throw new Error("gate has no derivable id (no parent actor) — pass `gate` explicitly");
@@ -64,6 +65,7 @@ export const gate = fromCallback<DeliveredEvent, GateInput | undefined>(({ input
     runId: binding.runId,
     kind: "gate",
     id,
+    path,
     defs,
     meta: input.meta,
     deliver: (event) => sendBack(event),

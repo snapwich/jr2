@@ -161,6 +161,10 @@ export function observe(status: RunStatus): RunObservation {
  * plus the workflow-supplied `meta` (what a UI renders and a webhook translator matches on). */
 export type GateView = {
   gate: string;
+  /** The invoking state's actor path below the run root — where the gate lives in the Machine
+   * (what the Console's "parked here" pin resolves against its scope tree), stable whether the
+   * id was authored ("F-12") or derived. Never parse `gate` for this. */
+  path: string[];
   accepts: Array<{ name: string; description?: string; input: unknown }>;
   meta?: Record<string, unknown>;
 };
@@ -603,6 +607,7 @@ export class RunHost {
       .filter((reg) => reg.kind === "gate")
       .map((reg) => ({
         gate: reg.id,
+        path: reg.path ?? [],
         accepts: [...reg.defs.values()].map((def) => ({
           name: def.name,
           description: def.description,

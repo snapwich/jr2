@@ -27,6 +27,9 @@ test("a gated state registers a discoverable gate; delivery transitions; exit de
   const gates = host.gates(runId);
   assert.equal(gates.length, 1);
   assert.equal(gates[0]?.gate, "F-1");
+  // The AUTHORED id names the gate for callers; `path` still says where it lives — the invoking
+  // state's actor path, which an id like "F-1" erases (what the Console's pin resolves).
+  assert.deepEqual(gates[0]?.path, ["review"]);
   assert.deepEqual(gates[0]?.meta, { prUrl: "https://forge/pr/1" });
   const names = gates[0]?.accepts.map((a) => a.name).sort();
   assert.deepEqual(names, ["approve", "request_changes"]);
@@ -105,6 +108,18 @@ test("fan-out: derived gate ids are distinct per child, and delivery targets exa
       .map((g) => g.gate)
       .sort(),
     ["F-1.body.coding", "F-2.body.coding"],
+  );
+  // `path` carries the same segments UNJOINED — the derived id spells it, but a caller must not
+  // have to parse dots out of a string an author may also mint.
+  assert.deepEqual(
+    host
+      .gates(runId)
+      .map((g) => g.path)
+      .sort(),
+    [
+      ["F-1", "body", "coding"],
+      ["F-2", "body", "coding"],
+    ],
   );
 
   // Delivery moves ONE child; the sibling's gate (same code, same state) is untouched.

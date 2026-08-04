@@ -45,6 +45,13 @@ export type Registration = {
   /** Serializable caller/integration context (PR URL, title …) — rides the discovery listing. */
   meta?: Record<string, unknown>;
   /**
+   * The actor path below the run root ({@link actorPath}) — WHERE in the Machine this surface
+   * lives. Carried beside `id` because an authored gate id ("F-12") erases the path a derived id
+   * happens to spell, and a caller locating the invoking state (the Console's gate pin) must
+   * never parse ids. Gates always carry it; agent registrations don't need it today.
+   */
+  path?: string[];
+  /**
    * The Sandbox this agent runs in — the scope of the Sandbox token that may deliver here
    * (ADR-0013). Absent on gates, and on a workspace-less `agentRun` (the mechanics tier's stub
    * Harness runs on the host, in no Sandbox at all): those are the Instance token's business.
