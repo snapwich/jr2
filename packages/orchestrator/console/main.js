@@ -391,6 +391,84 @@ function setScale(next) {
   applyScale();
 }
 
+// ---- Direct navigation: drag pans, wheel zooms --------------------------------------------------
+//
+// The canvas is already a scroll container, so panning is scrolling driven by a pointer drag, and
+// zooming is `setScale` with the scroll re-anchored so the diagram point under the cursor stays
+// under the cursor. View state like the zoom buttons — none of it is belief, none reaches the store.
+
+/** #canvas padding: scroll coordinates include it, diagram coordinates start after it. */
+const CANVAS_PAD = 28;
+
+/** How far a pressed pointer may wander and still be a click on a node, not a pan. */
+const PAN_NUDGE_PX = 4;
+
+/** Set when a pan just ended: the browser fires a click at the release point, and that click must
+ * not select (or fold) whatever box the drag happened to end on. Cleared by the very next click or
+ * press, so a pan that ends off-window cannot eat an unrelated later click. */
+let squelchClick = false;
+
+function wireCanvasNavigation() {
+  const canvas = $("canvas");
+
+  addEventListener(
+    "click",
+    (e) => {
+      if (!squelchClick) return;
+      squelchClick = false;
+      e.stopPropagation();
+      e.preventDefault();
+    },
+    true,
+  );
+
+  canvas.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault(); // the wheel zooms here; travel is the drag's job (and the scrollbars')
+      const perLine = e.deltaMode === 1 ? 16 : 1; // Firefox reports lines, not pixels
+      const rect = canvas.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      // The diagram point under the cursor, unscaled …
+      const dx = (canvas.scrollLeft + cx - CANVAS_PAD) / scale;
+      const dy = (canvas.scrollTop + cy - CANVAS_PAD) / scale;
+      setScale(scale * Math.exp(-e.deltaY * perLine * 0.0015));
+      // … pinned back under the cursor at whatever scale the clamp allowed (read it back).
+      canvas.scrollLeft = dx * scale + CANVAS_PAD - cx;
+      canvas.scrollTop = dy * scale + CANVAS_PAD - cy;
+    },
+    { passive: false },
+  );
+
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    squelchClick = false;
+    const from = { x: e.clientX, y: e.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
+    let panned = false;
+    const move = (ev) => {
+      if (!panned && Math.hypot(ev.clientX - from.x, ev.clientY - from.y) < PAN_NUDGE_PX) return;
+      if (!panned) {
+        panned = true;
+        canvas.classList.add("panning");
+        canvas.setPointerCapture(e.pointerId);
+      }
+      canvas.scrollLeft = from.left - (ev.clientX - from.x);
+      canvas.scrollTop = from.top - (ev.clientY - from.y);
+    };
+    const up = () => {
+      canvas.removeEventListener("pointermove", move);
+      canvas.removeEventListener("pointerup", up);
+      canvas.removeEventListener("pointercancel", up);
+      canvas.classList.remove("panning");
+      squelchClick = panned;
+    };
+    canvas.addEventListener("pointermove", move);
+    canvas.addEventListener("pointerup", up);
+    canvas.addEventListener("pointercancel", up);
+  });
+}
+
 /** Render machine-level transitions ("from any state") as a strip above the Machine. */
 function renderRootTransitions(doc, rootTransitions) {
   const strip = $("root-transitions");
@@ -1348,6 +1426,7 @@ async function boot() {
     fitting = true;
     fitToWidth();
   });
+  wireCanvasNavigation();
   addEventListener("resize", () => fitting && fitToWidth());
   addEventListener("focus", () => void snapshotFleet());
   setInterval(() => void snapshotFleet(), SNAPSHOT_MS);

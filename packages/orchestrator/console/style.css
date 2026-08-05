@@ -92,9 +92,15 @@ main {
 #canvas {
   flex: 1;
   overflow: auto;
-  padding: 28px;
+  padding: 28px; /* main.js CANVAS_PAD anchors wheel zoom on this value */
   background-image: radial-gradient(var(--line-soft) 1px, transparent 1px);
   background-size: 22px 22px;
+  cursor: grab;
+}
+
+#canvas.panning {
+  cursor: grabbing;
+  user-select: none;
 }
 
 #error {
