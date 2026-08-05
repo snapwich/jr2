@@ -91,8 +91,9 @@ main {
 
 #canvas {
   flex: 1;
-  overflow: auto;
-  padding: 28px; /* main.js CANVAS_PAD anchors wheel zoom on this value */
+  overflow: hidden; /* the viewport transform moves the diagram; nothing here scrolls */
+  display: flex;
+  flex-direction: column;
   background-image: radial-gradient(var(--line-soft) 1px, transparent 1px);
   background-size: 22px 22px;
   cursor: grab;
@@ -101,6 +102,23 @@ main {
 #canvas.panning {
   cursor: grabbing;
   user-select: none;
+}
+
+#machine-svg {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: block;
+}
+
+/* The notices sit in flow above the diagram; the old canvas padding lives on them now. */
+#placeholder,
+#error {
+  margin: 28px 28px 0;
+}
+
+#root-transitions {
+  margin: 28px 28px 16px;
 }
 
 #error {

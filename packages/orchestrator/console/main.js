@@ -366,39 +366,55 @@ function renderArrowDefs(svg) {
 }
 
 let layoutSize = { width: 0, height: 0 };
+/** The viewport: the diagram draws `scale`d with its origin at (panX, panY), as one transform on
+ * the root <g> the renderer mounts. A TRANSFORM, not a scroll container — scrolling cannot move a
+ * diagram that happens to fit its pane, and a diagram pane must pan regardless. */
 let scale = 1;
+let panX = 0;
+let panY = 0;
 /** Fit the Machine's width to the canvas, and keep fitting it as the diagram grows — until the
- * reader takes the zoom into their own hands, after which it is theirs. */
+ * reader takes the view into their own hands, after which it is theirs. */
 let fitting = true;
+/** The <g> the current render mounted — the transform target; each re-render swaps it in and
+ * re-applies the view, so a relayout never resets where the reader was looking. */
+let viewportG;
 
-function applyScale() {
-  const svg = $("machine-svg");
-  svg.setAttribute("width", layoutSize.width * scale);
-  svg.setAttribute("height", layoutSize.height * scale);
+/** Breathing room a fresh fit leaves around the diagram. */
+const FIT_PAD = 28;
+
+function applyView() {
+  viewportG?.setAttribute("transform", `translate(${panX} ${panY}) scale(${scale})`);
+  $("zoom-reset").textContent = `${Math.round(scale * 100)}%`; // the nav readout follows every path
 }
 
-/** Scale so the whole width lands in the canvas. Never magnifies — a small Machine stays 1:1. */
+/** Scale so the whole width lands in the pane, centered. Never magnifies — a small Machine stays
+ * 1:1. */
 function fitToWidth() {
-  const avail = $("canvas").clientWidth - 56; // #canvas padding, both sides
-  if (!layoutSize.width || avail <= 0) return applyScale();
-  scale = Math.min(1, Math.max(0.2, avail / layoutSize.width));
-  applyScale();
+  const svg = $("machine-svg");
+  if (!layoutSize.width || svg.clientWidth <= 0) return applyView();
+  scale = Math.min(1, Math.max(0.2, (svg.clientWidth - FIT_PAD * 2) / layoutSize.width));
+  panX = Math.max(FIT_PAD, (svg.clientWidth - layoutSize.width * scale) / 2);
+  panY = FIT_PAD;
+  applyView();
 }
 
-function setScale(next) {
+/** Re-scale about an anchor (svg px; the pane's center when none, for the nav buttons): the
+ * diagram point under the anchor stays under it. */
+function setScale(next, anchor) {
   fitting = false;
-  scale = Math.min(4, Math.max(0.25, next));
-  applyScale();
+  const svg = $("machine-svg");
+  const a = anchor ?? { x: svg.clientWidth / 2, y: svg.clientHeight / 2 };
+  const clamped = Math.min(4, Math.max(0.25, next));
+  panX = a.x - ((a.x - panX) / scale) * clamped;
+  panY = a.y - ((a.y - panY) / scale) * clamped;
+  scale = clamped;
+  applyView();
 }
 
 // ---- Direct navigation: drag pans, wheel zooms --------------------------------------------------
 //
-// The canvas is already a scroll container, so panning is scrolling driven by a pointer drag, and
-// zooming is `setScale` with the scroll re-anchored so the diagram point under the cursor stays
-// under the cursor. View state like the zoom buttons — none of it is belief, none reaches the store.
-
-/** #canvas padding: scroll coordinates include it, diagram coordinates start after it. */
-const CANVAS_PAD = 28;
+// Both are writes to the viewport transform above. View state like the zoom buttons — none of it
+// is belief, none reaches the store.
 
 /** How far a pressed pointer may wander and still be a click on a node, not a pan. */
 const PAN_NUDGE_PX = 4;
@@ -425,18 +441,13 @@ function wireCanvasNavigation() {
   canvas.addEventListener(
     "wheel",
     (e) => {
-      e.preventDefault(); // the wheel zooms here; travel is the drag's job (and the scrollbars')
+      e.preventDefault(); // the wheel zooms here; travel is the drag's job
       const perLine = e.deltaMode === 1 ? 16 : 1; // Firefox reports lines, not pixels
-      const rect = canvas.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      // The diagram point under the cursor, unscaled …
-      const dx = (canvas.scrollLeft + cx - CANVAS_PAD) / scale;
-      const dy = (canvas.scrollTop + cy - CANVAS_PAD) / scale;
-      setScale(scale * Math.exp(-e.deltaY * perLine * 0.0015));
-      // … pinned back under the cursor at whatever scale the clamp allowed (read it back).
-      canvas.scrollLeft = dx * scale + CANVAS_PAD - cx;
-      canvas.scrollTop = dy * scale + CANVAS_PAD - cy;
+      const rect = $("machine-svg").getBoundingClientRect();
+      setScale(scale * Math.exp(-e.deltaY * perLine * 0.0015), {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top,
+      });
     },
     { passive: false },
   );
@@ -444,17 +455,19 @@ function wireCanvasNavigation() {
   canvas.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     squelchClick = false;
-    const from = { x: e.clientX, y: e.clientY, left: canvas.scrollLeft, top: canvas.scrollTop };
+    const from = { x: e.clientX, y: e.clientY, panX, panY };
     let panned = false;
     const move = (ev) => {
       if (!panned && Math.hypot(ev.clientX - from.x, ev.clientY - from.y) < PAN_NUDGE_PX) return;
       if (!panned) {
         panned = true;
+        fitting = false; // the reader took the view into their own hands
         canvas.classList.add("panning");
         canvas.setPointerCapture(e.pointerId);
       }
-      canvas.scrollLeft = from.left - (ev.clientX - from.x);
-      canvas.scrollTop = from.top - (ev.clientY - from.y);
+      panX = from.panX + (ev.clientX - from.x);
+      panY = from.panY + (ev.clientY - from.y);
+      applyView();
     };
     const up = () => {
       canvas.removeEventListener("pointermove", move);
@@ -499,8 +512,6 @@ async function renderMachine(doc, live) {
   const svg = $("machine-svg");
   svg.textContent = "";
   layoutSize = { width: layout.width + 4, height: layout.height + 4 };
-  svg.setAttribute("viewBox", `-2 -2 ${layoutSize.width} ${layoutSize.height}`);
-  fitting ? fitToWidth() : applyScale();
   renderArrowDefs(svg);
   const rootG = svgEl("g", {}, svg);
   stateEls.clear();
@@ -509,6 +520,9 @@ async function renderMachine(doc, live) {
   // INCLUDE_CHILDREN reports every edge's coordinates relative to the root — draw them all here,
   // never inside a state group.
   renderEdges(layout, rootG);
+  // The fresh <g> becomes the viewport, wearing the view the reader already had (or a fit).
+  viewportG = rootG;
+  fitting ? fitToWidth() : applyView();
 }
 
 // ---- Live runs ----------------------------------------------------------------------------------
