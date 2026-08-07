@@ -7,54 +7,22 @@
     <link rel="stylesheet" href="/assets/style.css" />
   </head>
   <body>
-    <header>
-      <nav id="breadcrumb">
-        <a id="crumb-root" href="/" title="the fleet"><span class="mark">j2</span></a>
-        <span id="crumb-sep" class="dim" hidden>/</span>
-        <h1 id="workflow-name"></h1>
-      </nav>
-      <span id="machine-id" class="dim"></span>
-      <div class="zoom">
-        <button id="zoom-out" title="zoom out">−</button>
-        <button id="zoom-reset" title="reset zoom">100%</button>
-        <button id="zoom-in" title="zoom in">+</button>
-        <button id="zoom-fit" title="fit to width">fit</button>
-      </div>
-      <button id="attention-badge" hidden title="open gates across the fleet">
-        ⚑ <span id="attention-count"></span>
-      </button>
-      <span id="connection" class="conn" title="feed connection">connecting</span>
-      <label id="token-box" title="Instance token — unlocks start &amp; gates (ADR-0032)">
-        <input id="token" type="password" placeholder="instance token" autocomplete="off" />
-        <span id="token-state" class="token-state"></span>
-      </label>
-    </header>
-    <main>
-      <aside id="fleet">
-        <div class="sidebar-head"><h2>Fleet</h2></div>
-        <ul id="workflow-list"></ul>
-      </aside>
-      <section id="canvas">
-        <div id="placeholder" hidden></div>
-        <div id="error" hidden></div>
-        <div id="root-transitions"></div>
-        <svg id="machine-svg" xmlns="http://www.w3.org/2000/svg"></svg>
-      </section>
-      <aside id="drawer">
-        <div class="drawer-tabs">
-          <button id="tab-attention" hidden>Attention</button>
-          <button id="tab-activity">Activity</button>
-        </div>
-        <div id="attention-panel" hidden>
-          <label class="inbox-scope"><input id="inbox-all" type="checkbox" /> all workflows</label>
-          <ul id="gate-inbox"></ul>
-        </div>
-        <div id="activity-panel" hidden>
-          <ul id="emit-log"></ul>
-        </div>
-      </aside>
-    </main>
+    <!-- The mount root, and nothing else: the components render the whole shell (ADR-0034) — the
+         same ids and classes the browser tier addresses, minted by the vdom instead of a static
+         skeleton. -->
+    <div id="root"></div>
+    <!-- The import map binds Preact's bare specifiers to the self-served vendor files
+         (ADR-0034) — it must precede any module script, and it covers the vendored modules'
+         own imports too (hooks.module.js imports "preact"). -->
+    <script type="importmap">
+      {
+        "imports": {
+          "preact": "/assets/vendor/preact.module.js",
+          "preact/hooks": "/assets/vendor/hooks.module.js"
+        }
+      }
+    </script>
     <script src="/assets/elk.js"></script>
-    <script type="module" src="/assets/main.js"></script>
+    <script type="module" src="/assets/main.ts"></script>
   </body>
 </html>

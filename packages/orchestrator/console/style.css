@@ -35,6 +35,12 @@ body {
   flex-direction: column;
 }
 
+/* The vdom's mount root (ADR-0034): layout-transparent, so body's flex column still reaches the
+   header/main the components render. */
+#root {
+  display: contents;
+}
+
 header {
   display: flex;
   align-items: baseline;

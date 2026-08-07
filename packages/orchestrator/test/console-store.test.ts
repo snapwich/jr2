@@ -1,5 +1,6 @@
-// The Console's reducer (console/store.js). Plain .js so a browser can load it unbuilt, and a
-// PURE function of (store, frame) so this file can drive it with no DOM, no jsdom and no new deps.
+// The Console's reducer (console/store.ts). One `.ts` both consumers read — Node strips the types
+// here, the server erases them for the browser (ADR-0034) — and a PURE function of (store, frame)
+// so this file can drive it with no DOM, no jsdom and no new deps.
 //
 // The page's renderer is already a pure function of (doc, status); this is the other half — what the
 // page believes, kept separate from what it has painted. Everything worth testing about the client
@@ -19,7 +20,7 @@ import {
   SETTLED_CAP,
   type Frame,
   type GateCard,
-} from "../console/store.js";
+} from "../console/store.ts";
 
 const run = (runId: string, status = "active", workflow = "wf") => ({
   runId,
@@ -384,7 +385,7 @@ test("the visible inbox follows the selection until widened; the badge count nev
 
 // ---- Small page-owned facts through the same door -----------------------------------------------
 
-test("`connection` and `startForm` are frames like any other — main.js owns no state of its own", () => {
+test("`connection` and `startForm` are frames like any other — main.ts owns no belief of its own", () => {
   let store = fold({ kind: "connection", state: "live" }, { kind: "startForm", workflow: "wf" });
   assert.equal(store.connection, "live");
   assert.equal(store.startFormFor, "wf");

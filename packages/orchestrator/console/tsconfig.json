@@ -1,0 +1,18 @@
+{
+  // The Console's checker config (ADR-0034): browser code, so it gets the DOM libs the package
+  // tsconfig deliberately withholds from Node code — which is why console/ has its own project
+  // instead of a place in the main include. `moduleResolution: "Bundler"` because the browser
+  // resolves bare specifiers through the page's import map, not Node's algorithm; imports keep
+  // their `.ts` extensions because the server serves the source erased, never compiled. `tsc`
+  // here is a checker, never an emitter — the typecheck script runs both projects.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["*.ts", "components/*.ts"]
+}

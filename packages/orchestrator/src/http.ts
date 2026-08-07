@@ -30,8 +30,10 @@
 //                 token authenticates but is refused, because reading another feature's context or
 //                 cancelling a run is not on the Agent's surface any more than a Gate is.
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+import tsBlankSpace from "ts-blank-space";
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { accepts } from "hono/accepts";
@@ -81,12 +83,20 @@ function bearerOf(c: Context<J2Env>): string | undefined {
 }
 
 // ---- Console assets (`/assets/*`) -----------------------------------------------------------
-// The Console: the browser page that renders a workflow's Machine and its runs. Plain
-// .html/.js/.css shipped inside this package (browsers don't type-strip TS) plus the vendored
-// elkjs layout bundle, all read from disk — no CDN, no build step (ADR-0032: the page serves only
-// its own assets). `serveStatic` is deliberately avoided: its root is cwd-relative, and this
-// package is a library that must serve its own files wherever the process starts. Assets are
-// root-owned (`/assets/*`, not under a page path) so no workflow name can ever shadow them.
+// The Console: the browser page that renders a workflow's Machine and its runs. Shipped inside
+// this package and read from disk — no CDN, no build step (ADR-0032: the page serves only its own
+// assets). `serveStatic` is deliberately avoided: its root is cwd-relative, and this package is a
+// library that must serve its own files wherever the process starts. Assets are root-owned
+// (`/assets/*`, not under a page path) so no workflow name can ever shadow them. Three kinds:
+//
+//   .html/.css       the shipped bytes, verbatim.
+//   *.ts             Console source (ADR-0034) — the flat files plus the one `components/` level
+//                    the view modules live in. Browsers don't type-strip, so the server does what
+//                    Node does for itself: types replaced by whitespace (`ts-blank-space`), erased
+//                    once per (file, mtime) and cached. Erasure, not compilation — positions are
+//                    preserved, so stack traces point at the real line with no sourcemaps.
+//   /assets/vendor/* Preact's browser ESM, resolved through THIS package's dep edge like the elkjs
+//                    bundle. The page's import map binds the bare specifiers to these URLs.
 
 const CONSOLE_DIR = new URL("../console/", import.meta.url);
 
@@ -99,10 +109,68 @@ function readElkBundle(): Promise<Buffer> {
   return elkBundle;
 }
 
+/**
+ * Preact's browser ESM at `/assets/vendor/*` (ADR-0034): the served name → the file under the
+ * `preact` package. Resolved via "preact/package.json" — preact HAS an `exports` map (unlike
+ * elkjs), so its dist subpaths don't resolve directly. `hooks.module.js` imports the bare
+ * specifier `"preact"`; the page's import map covers vendored modules too, so that import lands
+ * back on `/assets/vendor/preact.module.js` and the files can sit flat.
+ */
+const VENDOR_FILES: Record<string, string> = {
+  "preact.module.js": "dist/preact.module.js",
+  "hooks.module.js": "hooks/dist/hooks.module.js",
+};
+
+/** Vendor files, read once each — package contents only change with the package. */
+const vendorCache = new Map<string, Promise<Buffer>>();
+function readVendor(name: string): Promise<Buffer> | undefined {
+  const rel = VENDOR_FILES[name];
+  if (!rel) return undefined;
+  let body = vendorCache.get(name);
+  if (!body) {
+    const pkg = createRequire(import.meta.url).resolve("preact/package.json");
+    body = readFile(new URL(rel, pathToFileURL(pkg)));
+    vendorCache.set(name, body);
+  }
+  return body;
+}
+
 /** Serve one file of the Console with its content type. */
 async function consoleAsset(rel: string, contentType: string): Promise<Response> {
   const body = await readFile(new URL(rel, CONSOLE_DIR));
   return new Response(new Uint8Array(body), { headers: { "content-type": contentType } });
+}
+
+/** Erased Console source, cached per file: an edit moves the mtime, which drops the entry. */
+const erasedCache = new Map<string, { mtimeMs: number; js: string }>();
+
+/**
+ * Serve one Console `.ts` file with its types erased (ADR-0034). The failure class is gated where
+ * it belongs — what `ts-blank-space` cannot erase (an enum, a namespace), `tsc --noEmit` already
+ * rejected in CI — so the 500 here is a should-never bar, not a compiler diagnostic surface.
+ */
+async function consoleTsAsset(file: string): Promise<Response> {
+  const url = new URL(file, CONSOLE_DIR);
+  let mtimeMs: number;
+  try {
+    mtimeMs = (await stat(url)).mtimeMs;
+  } catch {
+    return Response.json({ error: `no console asset "${file}"` }, { status: 404 });
+  }
+  let hit = erasedCache.get(file);
+  if (!hit || hit.mtimeMs !== mtimeMs) {
+    const source = await readFile(url, "utf8");
+    const unerasable: string[] = [];
+    // The node's own text, sliced by position — `getText()` needs a parent chain the parse here
+    // does not build.
+    const js = tsBlankSpace(source, (node) => unerasable.push(source.slice(node.pos, node.end).trim()));
+    if (unerasable.length) {
+      return new Response(`cannot erase types from ${file}: ${unerasable.join(", ")}`, { status: 500 });
+    }
+    hit = { mtimeMs, js };
+    erasedCache.set(file, hit);
+  }
+  return new Response(hit.js, { headers: { "content-type": "text/javascript; charset=utf-8" } });
 }
 
 // Content negotiation for the two page addresses (ADR-0032). JSON is the DEFAULT dialect: only a
@@ -403,12 +471,27 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // The Console's assets, root-owned (`/assets/*`): they share no prefix with a page address, so
   // no workflow name can capture them — the guard the old `/viz/assets` ordering provided, now by
   // construction. The shell itself is served by the negotiated page addresses above.
-  app.get("/assets/main.js", () => consoleAsset("main.js", "text/javascript; charset=utf-8"));
-  app.get("/assets/store.js", () => consoleAsset("store.js", "text/javascript; charset=utf-8"));
   app.get("/assets/style.css", () => consoleAsset("style.css", "text/css; charset=utf-8"));
   app.get("/assets/elk.js", async () => {
     const body = await readElkBundle();
     return new Response(new Uint8Array(body), {
+      headers: { "content-type": "text/javascript; charset=utf-8" },
+    });
+  });
+
+  // Console SOURCE (ADR-0034): any `.ts` under console/ is served with its types erased — the
+  // flat files (main.ts, store.ts, canvas.ts) and the `components/` level the view modules live
+  // in. Each param pattern admits one flat path segment of name characters — no separators, so no
+  // traversal, and nothing outside console/ is reachable by construction.
+  app.get("/assets/:file{[\\w.-]+\\.ts}", (c) => consoleTsAsset(c.req.param("file")));
+  app.get("/assets/components/:file{[\\w.-]+\\.ts}", (c) => consoleTsAsset(`components/${c.req.param("file")}`));
+
+  // Preact's browser ESM (ADR-0034), off this package's own dep edge — the elkjs precedent.
+  app.get("/assets/vendor/:file", async (c) => {
+    const file = c.req.param("file");
+    const body = await readVendor(file);
+    if (!body) return c.json({ error: `no vendor asset "${file}"` }, 404);
+    return new Response(new Uint8Array(await body), {
       headers: { "content-type": "text/javascript; charset=utf-8" },
     });
   });

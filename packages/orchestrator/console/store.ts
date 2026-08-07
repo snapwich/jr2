@@ -1,10 +1,13 @@
-// What the page BELIEVES, kept apart from what it has painted (main.js's `shown`/`queue`).
+// What the page BELIEVES, kept apart from what it has painted (canvas.ts's `shown`/`queue`).
 //
 // A pure reducer over everything the Console hears — the selected workflow's feed frames
 // (ADR-0022), fleet snapshots, gate re-fetches (ADR-0032), the token's state, the reader's own
 // selections — no DOM, no fetch, no module state — so the interesting cases are testable under
 // `node:test` with no jsdom and no build step. The renderer downstream is already a pure function
 // of (doc, status); this is the other half.
+//
+// One `.ts` read by both consumers (ADR-0034): the test suite through Node's type stripping, the
+// browser through the server's erasure (`/assets/store.ts` in http.ts).
 //
 // The feed is LEVEL-TRIGGERED: every `status` carries a whole observation and `runs` carries the
 // whole live set, so nothing here merges patches or replays a log. Re-delivery of any frame is
@@ -13,12 +16,45 @@
 // is a whole re-fetch of one run's open gates, so an emptied card is a fact the server stated,
 // never bookkeeping this side did after a delivery (ADR-0032).
 
-/** How many finished runs stay on the page. Enough to see what just happened, bounded so a page
- *  left open for a week does not grow without end. */
-export const SETTLED_CAP = 20;
+/** A run as the OPEN observation band reports it (ADR-0014): identity and where it is, nothing of
+ *  what it is carrying. Mirrors `RunObservation` in run-host.ts. */
+export type ObservedRun = {
+  runId: string;
+  workflow: string;
+  status: string;
+  value: unknown;
+  children: Array<Record<string, unknown>>;
+};
 
-/** How many emits stay in the log, for the same reason. */
-export const EMIT_CAP = 200;
+/** One open gate as `GET /runs/:id` reports it — mirrors `GateView` in run-host.ts. */
+export type GateCard = {
+  gate: string;
+  path: string[];
+  accepts: Array<{ name: string; description?: string; input: unknown }>;
+  meta?: Record<string, unknown>;
+};
+
+/** The credential's state — never its value, which stays in sessionStorage (ADR-0032). */
+export type TokenState = "none" | "checking" | "live" | "invalid";
+
+/** One frame folded into the store: the workflow feed's wire frames (ADR-0022), plus the page's
+ *  own facts — fleet snapshots, gate re-fetches, token state, the reader's selections (ADR-0032). */
+export type Frame =
+  | { kind: "runs"; runs: ObservedRun[] }
+  | { kind: "status"; status: ObservedRun }
+  | { kind: "gone"; runId: string }
+  | { kind: "emit"; runId: string; type: string }
+  | { kind: "connection"; state: Store["connection"] }
+  | { kind: "workflows"; workflows: string[] }
+  | { kind: "select"; workflow: string | null }
+  | { kind: "selectRun"; runId: string | null }
+  | { kind: "selectNode"; nodeId: string | null }
+  | { kind: "fleet"; workflow: string; runs: ObservedRun[] }
+  | { kind: "toggleWorkflow"; workflow: string }
+  | { kind: "token"; state: TokenState }
+  | { kind: "gates"; runId: string; workflow: string; gates: GateCard[] }
+  | { kind: "inboxScope"; all: boolean }
+  | { kind: "startForm"; workflow: string | null };
 
 /**
  * `runs`     the SELECTED workflow's live runs by id — replaced wholesale by a `runs` frame,
@@ -48,7 +84,32 @@ export const EMIT_CAP = 200;
  *            to — an id minted under another run's instance scopes simply matches no box, and the
  *            root-scope ids stay valid across runs, which is exactly the selection worth keeping.
  */
-export function emptyStore() {
+export type Store = {
+  runs: Map<string, ObservedRun>;
+  settled: Map<string, ObservedRun>;
+  emits: Array<{ runId: string; type: string }>;
+  selectedRunId: string | null;
+  selectedNodeId: string | null;
+  connection: "connecting" | "live" | "retrying";
+  workflow: string | null;
+  workflows: string[];
+  fleet: Map<string, ObservedRun[]>;
+  expanded: Set<string>;
+  token: TokenState;
+  gates: Map<string, { workflow: string; gates: GateCard[] }>;
+  inboxAll: boolean;
+  startFormFor: string | null;
+};
+
+/** How many finished runs stay on the page. Enough to see what just happened, bounded so a page
+ *  left open for a week does not grow without end. */
+export const SETTLED_CAP = 20;
+
+/** How many emits stay in the log, for the same reason. */
+export const EMIT_CAP = 200;
+
+/** The page before it has heard anything — every field documented on {@link Store}. */
+export function emptyStore(): Store {
   return {
     runs: new Map(),
     settled: new Map(),
@@ -69,7 +130,7 @@ export function emptyStore() {
 
 /** Fold one frame into the store, returning a new one. Unknown frame kinds are ignored, so a server
  *  that learns a new frame type does not break a page still running yesterday's script. */
-export function applyFrame(store, frame) {
+export function applyFrame(store: Store, frame: Frame): Store {
   switch (frame.kind) {
     case "runs":
       // The server's whole truth about what is live. Runs that ended during a disconnect are simply
@@ -78,7 +139,7 @@ export function applyFrame(store, frame) {
       // never be re-fetched again, so its card leaves with it.
       return select({
         ...store,
-        runs: new Map(frame.runs.map((r) => [r.runId, r])),
+        runs: new Map(frame.runs.map((r): [string, ObservedRun] => [r.runId, r])),
         gates: dropAbsent(store.gates, store.workflow, new Set(frame.runs.map((r) => r.runId))),
       });
 
@@ -96,7 +157,7 @@ export function applyFrame(store, frame) {
       const runs = new Map(store.runs);
       runs.delete(frame.runId);
       const settled = new Map(store.settled).set(frame.runId, departing);
-      while (settled.size > SETTLED_CAP) settled.delete(settled.keys().next().value);
+      while (settled.size > SETTLED_CAP) settled.delete(settled.keys().next().value!);
       return select({ ...store, runs, settled, gates });
     }
 
@@ -190,7 +251,7 @@ export function applyFrame(store, frame) {
 
 /** A copy of `map` without `key` — or `map` itself when the key was never there, so a caller can
  *  cheaply tell "nothing changed". */
-function mapWithout(map, key) {
+function mapWithout<K, V>(map: Map<K, V>, key: K): Map<K, V> {
   if (!map.has(key)) return map;
   const next = new Map(map);
   next.delete(key);
@@ -200,7 +261,7 @@ function mapWithout(map, key) {
 /** Drop `workflow`'s inbox entries for runs a whole-set frame did not mention. Those runs will
  *  never be re-fetched again (frames and snapshots are per-run triggers), so a card kept here would
  *  be stale forever — this is the level-triggered idiom applied to the inbox, not bookkeeping. */
-function dropAbsent(gates, workflow, present) {
+function dropAbsent(gates: Store["gates"], workflow: string | null, present: Set<string>): Store["gates"] {
   if (!workflow) return gates;
   let next = gates;
   for (const [runId, entry] of gates) {
@@ -218,7 +279,7 @@ function dropAbsent(gates, workflow, present) {
  * there was nothing to select and nothing to re-check, so the diagram stayed blank until a reload.
  * A settled run still counts as selectable — a reader watching a run to its end keeps watching it.
  */
-function select(store) {
+function select(store: Store): Store {
   if (store.selectedRunId && (store.runs.has(store.selectedRunId) || store.settled.has(store.selectedRunId))) {
     return store;
   }
@@ -227,14 +288,15 @@ function select(store) {
 }
 
 /** The run the page is currently showing, live or settled — whichever half still holds it. */
-export function selectedRun(store) {
+export function selectedRun(store: Store): ObservedRun | null {
+  if (store.selectedRunId === null) return null;
   return store.runs.get(store.selectedRunId) ?? store.settled.get(store.selectedRunId) ?? null;
 }
 
 /** The selected workflow's run list as the rail draws it: live runs first, then what we watched
  *  leave (newest first). One ordered list keeps the renderer from having to know there are two
  *  maps behind it. */
-export function runList(store) {
+export function runList(store: Store): Array<{ run: ObservedRun; settled: boolean }> {
   return [
     ...[...store.runs.values()].map((run) => ({ run, settled: false })),
     ...[...store.settled.values()].reverse().map((run) => ({ run, settled: true })),
@@ -243,7 +305,7 @@ export function runList(store) {
 
 /** One workflow's rail rows: the feed's view for the selection, the REST snapshot for the rest.
  *  Same shape either way, so the painter draws a run row without knowing which side fed it. */
-export function fleetRuns(store, workflow) {
+export function fleetRuns(store: Store, workflow: string): Array<{ run: ObservedRun; settled: boolean }> {
   if (workflow === store.workflow) return runList(store);
   return (store.fleet.get(workflow) ?? []).map((run) => ({ run, settled: false }));
 }
@@ -251,7 +313,7 @@ export function fleetRuns(store, workflow) {
 /** The inbox as the Attention tab draws it: every card, or the selection's slice. The inbox itself
  *  is GLOBAL (every workflow the fleet knows) — the filter is presentation, which is why it lives
  *  in a selector and not in `applyFrame`. */
-export function visibleGates(store) {
+export function visibleGates(store: Store): Array<{ runId: string; workflow: string; gates: GateCard[] }> {
   const all = [...store.gates.entries()].map(([runId, entry]) => ({ runId, ...entry }));
   if (store.inboxAll || !store.workflow) return all;
   return all.filter((entry) => entry.workflow === store.workflow);
@@ -260,13 +322,14 @@ export function visibleGates(store) {
 /** The SELECTED run's open gates — what the diagram pins (`GateView.path` resolves each one to a
  *  node). A selector, not reducer state: the pins are a view over the global inbox, exactly like
  *  {@link visibleGates}, and derive from two facts the store already holds. */
-export function selectedRunGates(store) {
+export function selectedRunGates(store: Store): GateCard[] {
+  if (store.selectedRunId === null) return [];
   return store.gates.get(store.selectedRunId)?.gates ?? [];
 }
 
 /** What the nav badge counts: every open gate everywhere — attention is global even when the
  *  inbox view is filtered. */
-export function gateCount(store) {
+export function gateCount(store: Store): number {
   let n = 0;
   for (const entry of store.gates.values()) n += entry.gates.length;
   return n;

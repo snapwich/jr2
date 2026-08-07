@@ -6,6 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { rm, writeFile } from "node:fs/promises";
 import { setup, emit } from "xstate";
 import { z } from "zod";
 import { RunHost } from "../src/run-host.ts";
@@ -73,7 +74,10 @@ test("a browser's Accept gets the Console shell on both page addresses", async (
     const res = await app.request(path, BROWSER_ACCEPT);
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
-    assert.match(await res.text(), /machine-svg/);
+    // The shell is the mount root plus the module script — the components render the rest.
+    const shell = await res.text();
+    assert.match(shell, /id="root"/);
+    assert.match(shell, /\/assets\/main\.ts/);
   }
 });
 
@@ -369,15 +373,25 @@ test("a client going away detaches its observer", async () => {
 test("GET /assets/* serves the page's script, styles, and the vendored elkjs bundle", async () => {
   const app = await mkApp();
 
-  const js = await app.request("/assets/main.js");
+  // The page's whole script tree is `.ts` (ADR-0034): the shell loads /assets/main.ts and the
+  // erase route serves it — and everything it imports — type-free.
+  const js = await app.request("/assets/main.ts");
   assert.equal(js.status, 200);
   assert.match(js.headers.get("content-type") ?? "", /text\/javascript/);
   assert.match(await js.text(), /workflows\/.*machine/);
 
-  const store = await app.request("/assets/store.js");
+  const store = await app.request("/assets/store.ts");
   assert.equal(store.status, 200);
   assert.match(store.headers.get("content-type") ?? "", /text\/javascript/);
-  assert.match(await store.text(), /applyFrame/);
+  const reducer = await store.text();
+  assert.match(reducer, /applyFrame/);
+  assert.ok(!reducer.includes("export type"), "served erased, not as authored");
+
+  // The view modules live one level down; the components route serves them erased the same way.
+  const shellView = await app.request("/assets/components/app.ts");
+  assert.equal(shellView.status, 200);
+  assert.match(shellView.headers.get("content-type") ?? "", /text\/javascript/);
+  assert.ok(!(await shellView.text()).includes("export type"), "served erased, not as authored");
 
   const css = await app.request("/assets/style.css");
   assert.equal(css.status, 200);
@@ -387,6 +401,80 @@ test("GET /assets/* serves the page's script, styles, and the vendored elkjs bun
   assert.equal(elk.status, 200);
   assert.match(elk.headers.get("content-type") ?? "", /text\/javascript/);
   assert.ok((await elk.text()).length > 100_000, "the bundled layout engine, not a stub");
+});
+
+// ---- Console source is `.ts`; the server erases the types (ADR-0034) ---------------------------
+// The browser asks for the source file and gets it back type-free — erasure, not compilation, so
+// the probe below must come back as the same code with its type syntax blanked, on the same lines.
+
+/** A Console `.ts` fixture written into console/ for one test and removed after it. */
+async function withConsoleTs(
+  name: string,
+  source: string,
+  run: (app: Awaited<ReturnType<typeof mkApp>>) => Promise<void>,
+) {
+  const file = new URL(`../console/${name}`, import.meta.url);
+  await writeFile(file, source);
+  try {
+    await run(await mkApp());
+  } finally {
+    await rm(file);
+  }
+}
+
+test("GET /assets/*.ts serves the source with its types erased", async () => {
+  const source = [`interface Probe {`, `  count: number;`, `}`, `export const probe: Probe = { count: 1 };`].join("\n");
+  await withConsoleTs("probe-erase.ts", source, async (app) => {
+    const res = await app.request("/assets/probe-erase.ts");
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/javascript.*charset/);
+    const js = await res.text();
+    assert.ok(!js.includes("interface"), "type declarations are gone");
+    assert.ok(!js.includes(": Probe"), "annotations are gone");
+    assert.match(js, /export const probe\s*=\s*\{ count: 1 \};/, "the value code survives");
+    // Erasure preserves positions: the export sits on the same line it does in the source.
+    assert.match(js.split("\n")[3] ?? "", /export const probe/);
+  });
+});
+
+test("unerasable syntax is a 500 naming the file — the bar CI's tsc already holds", async () => {
+  await withConsoleTs("probe-enum.ts", `enum Nope { A }\n`, async (app) => {
+    const res = await app.request("/assets/probe-enum.ts");
+    assert.equal(res.status, 500);
+    assert.match(await res.text(), /cannot erase types from probe-enum\.ts/);
+  });
+});
+
+test("a `.ts` asset that does not exist is a 404, and the routes admit no path separators", async () => {
+  const app = await mkApp();
+  assert.equal((await app.request("/assets/no-such.ts")).status, 404);
+  // A name that could reach outside console/ never matches either route's flat-segment pattern —
+  // the second probe would resolve to a real file if the encoded separator got through.
+  assert.equal((await app.request("/assets/..%2Fsrc%2Fhttp.ts")).status, 404);
+  assert.equal((await app.request("/assets/components/..%2Fstore.ts")).status, 404);
+});
+
+// ---- Preact rides the dep edge (`/assets/vendor/*` — ADR-0034) ---------------------------------
+
+test("GET /assets/vendor/* serves preact and preact/hooks as browser ESM", async () => {
+  const app = await mkApp();
+
+  const core = await app.request("/assets/vendor/preact.module.js");
+  assert.equal(core.status, 200);
+  assert.match(core.headers.get("content-type") ?? "", /text\/javascript/);
+  assert.match(await core.text(), /\bexport\b/, "ESM, not a CJS or UMD build");
+
+  const hooks = await app.request("/assets/vendor/hooks.module.js");
+  assert.equal(hooks.status, 200);
+  assert.match(hooks.headers.get("content-type") ?? "", /text\/javascript/);
+  // hooks imports the bare specifier "preact" — the shell's import map is what resolves it, so
+  // the map and the vendor URL space must agree or the page breaks on load.
+  assert.match(await hooks.text(), /from\s*"preact"/);
+  const shell = await (await app.request("/", BROWSER_ACCEPT)).text();
+  assert.match(shell, /"preact":\s*"\/assets\/vendor\/preact\.module\.js"/);
+  assert.match(shell, /"preact\/hooks":\s*"\/assets\/vendor\/hooks\.module\.js"/);
+
+  assert.equal((await app.request("/assets/vendor/nope.js")).status, 404, "only the vendored files, nothing else");
 });
 
 // ---- Child machines: the observation surface carries the TREE, and still no context --------------
