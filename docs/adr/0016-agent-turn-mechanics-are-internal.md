@@ -38,7 +38,8 @@ offset, and `abort` is the deliberate terminal cancel ([ADR-0002](0002-duplex-st
 
 ## Retries and nudges are absorbed; the workflow sees one terminal `agent.fault` (deletes the retry bookkeeping)
 
-Two fault classes, deliberately not one knob:
+Two fault classes, deliberately not one knob ([ADR-0035](0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md)
+later adds the third: runaway):
 
 - **Infra faults** (stream drop, pod restart, provider error): provider-stream retry lives inside the turn in the
   Harness, and `wait` reconnects indefinitely from the offset ledger; a dead Harness surfaces as a fault (ADR-0027).

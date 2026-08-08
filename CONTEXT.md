@@ -100,6 +100,12 @@ by (ADR-0007). _Avoid_: handle, ticket
 **Settlement**: How a Submission ends — `completed`, `failed`, or `aborted`. What the history view reports and the tests
 assert; j2 deliberately never observes the settlement of a turn it aborted (ADR-0024). _Avoid_: result, status
 
+**Runaway**: A Turn that will not conclude on its own — ended by the Harness when it runs past the point where j2 stops
+believing it will end. The third absorbed fault class beside infra and no-signal (ADR-0016, ADR-0035): rerolled once as
+a fresh conversation, then surfaced as the one terminal `agent.fault`. Named for what j2 observed, not the model's
+pathology. _Avoid_: degeneration (the model behavior a runaway guard usually catches, not the fault class), loop, hang,
+stall
+
 **Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), narrowed
 to those its guards would currently accept (ADR-0029), served by the Adapter over MCP. What the Agent may **say**. The
 derived set is the state's vocabulary and the scope delivery validates against; the Menu is what a given turn is
