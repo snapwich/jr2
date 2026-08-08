@@ -296,6 +296,13 @@ function wrapAgentInput(orig: unknown, derived: string[]) {
       // them over the definition when the Submission starts.
       model: consumer.model,
       thinkingLevel: consumer.thinkingLevel,
+      // ADR-0035's reroll gate: closed to `session: "continue"` and a `conversation` pin (the
+      // runaway recovery is a FRESH conversation — exactly what they opted out of), and to a
+      // caller-passed iid — fresh on first use, but not j2-minted, so no reroll identity may
+      // derive from it (ADR-0016's minting doctrine).
+      ...(consumer.session === "continue" || consumer.conversation || consumer.instanceId
+        ? { continuation: true }
+        : {}),
       tools: consumer.tools ?? derived,
     };
   };

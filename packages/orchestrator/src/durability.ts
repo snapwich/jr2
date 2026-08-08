@@ -81,8 +81,11 @@ export function hydrateSnapshot(
 }
 
 /** The durable admission record restore rewrites into a child input (see actor.ts). Structural
- * twin of `AgentAdmission` — kept import-free so this codec module stays a pure leaf. */
-type Admission = { streamUrl: string; offset: string; submissionId: string };
+ * twin of `AgentAdmission` — kept import-free so this codec module stays a pure leaf.
+ * `instanceId` is the actor's live-conversation stamp (a runaway reroll advances it past the
+ * ledger key — ADR-0035); it rides the rewrite verbatim so the restored actor re-addresses the
+ * live conversation. */
+type Admission = { streamUrl: string; offset: string; submissionId: string; instanceId?: string };
 
 /** A persisted `agentRun` child input: `instanceId` (the durable handle) beside `agentName` —
  * both strings by construction (machine children carry neither at top level; `endpoint` can no

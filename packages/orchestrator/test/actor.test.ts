@@ -90,8 +90,9 @@ test("admits the run over a port built from input.endpoint and ledgers the admis
   assert.equal(mock.admitted?.agentName, "coder");
   assert.equal(mock.admitted?.instanceId, "inst-42");
   assert.deepEqual(endpoints, ["http://sandbox-7.harness.local:8080"]);
-  // The durable handle went to the HOST ledger the moment flue admitted (ADR-0016)…
-  assert.deepEqual(ledger["inst-42"], mock.minted);
+  // The durable handle went to the HOST ledger the moment flue admitted (ADR-0016), stamped
+  // with the conversation it was admitted under (the reroll advances the stamp — ADR-0035)…
+  assert.deepEqual(ledger["inst-42"], { ...mock.minted, instanceId: "inst-42" });
   // …and the actor is now following that admission to settlement.
   assert.deepEqual(mock.settled, [mock.minted]);
 });
@@ -264,7 +265,11 @@ test("no-signal: a completed turn with no menu call is re-prompted on the SAME i
   assert.equal(mock.admits.length, 2, "a nudge is a fresh admission");
   assert.equal(mock.admits[1]!.instanceId, "inst-42", "same iid — the conversation continues");
   assert.match(mock.admits[1]!.prompt ?? "", /calling exactly one of: ping/);
-  assert.deepEqual(ledger["inst-42"], mock.minted, "the nudge's admission is ledgered like any other");
+  assert.deepEqual(
+    ledger["inst-42"],
+    { ...mock.minted, instanceId: "inst-42" },
+    "the nudge's admission is ledgered like any other",
+  );
   // `child` is the invoking parent's actor id — meaningful in real trees ("F-1", "body"); the
   // root harness here gets a generated one, so assert the shape, not the label.
   assert.equal(telemetry.length, 1);
@@ -328,6 +333,170 @@ test("a CANCEL abandons the run locally and destroys the registration", async ()
   assert.equal(table.lookup(agentAddress("inst-42")), undefined);
   // Local abandon never fabricates a fault: the durable run stays alive for restore.
   assert.ok(!received.some((e) => e.type === "agent.fault"));
+});
+
+// --- Runaway: ended by the Harness, rerolled once, then a fault (ADR-0035) ---------------------
+
+test("runaway: a fresh-session turn is rerolled ONCE — fresh conversation, IDENTICAL prompt", async () => {
+  const mock = new MockFlueClient();
+  const { received, ledger, telemetry, table } = harness(mock, baseInput);
+  await tick();
+
+  mock.faultSettled("runaway", "repeated an identical tool call 4 times");
+  await tick();
+
+  assert.equal(mock.admits.length, 2, "the reroll is a fresh admission");
+  assert.equal(mock.admits[1]!.instanceId, "inst-42-r1", "a fresh conversation, derived from the original");
+  assert.equal(mock.admits[1]!.prompt, "do the thing", "the identical prompt — no annotation");
+  // The reroll's admission is ledgered under the ORIGINAL iid (the persisted input's key, like a
+  // nudge's) and STAMPED with the reroll's own, so a restore settle-follows the LIVE submission
+  // and re-addresses the live conversation…
+  assert.deepEqual(ledger["inst-42"], { ...mock.minted, instanceId: "inst-42-r1" });
+  assert.equal(ledger["inst-42-r1"], undefined);
+  // …and the reroll's surface is live at the DERIVED address: its conversation's menu dials
+  // /mcp/inst-42-r1 (the Adapter resolves surfaces by iid, end to end).
+  assert.ok(table.lookup(agentAddress("inst-42-r1")), "the reroll surface registered before the admit");
+  assert.equal(telemetry.length, 1);
+  assert.equal(telemetry[0]!.kind, "retry");
+  assert.equal(telemetry[0]!.attempt, 1);
+  assert.equal(telemetry[0]!.reason, "runaway reroll");
+  assert.ok(!received.some((e) => e.type === "agent.fault"), "budget not exhausted — no fault yet");
+});
+
+test("runaway: a pick delivered on the reroll surface lands on the invoking state — and IS the signal", async () => {
+  const mock = new MockFlueClient();
+  const { received, table } = harness(mock, baseInput);
+  await tick();
+  mock.faultSettled("runaway", "exceeded 128 steps");
+  await tick();
+
+  table.deliver(agentAddress("inst-42-r1"), "ping", {});
+  mock.complete();
+  await tick();
+
+  assert.ok(received.some((e) => e.type === "ping"));
+  assert.equal(mock.admits.length, 2, "no nudge after a delivered signal");
+  assert.ok(!received.some((e) => e.type === "agent.fault"));
+});
+
+test("runaway: a second runaway is the ONE terminal agent.fault, carrying the runaway reason", async () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, baseInput);
+  await tick();
+  mock.faultSettled("runaway", "repeated an identical tool call 4 times");
+  await tick();
+  mock.faultSettled("runaway", "repeated an identical tool call 4 times");
+  await tick();
+
+  assert.equal(mock.admits.length, 2, "budget 1: two independent runaways mean the task is pathological");
+  const faults = received.filter((e) => e.type === "agent.fault");
+  assert.equal(faults.length, 1);
+  assert.match(String(faults[0]!.reason), /repeated an identical tool call 4 times/);
+});
+
+test("runaway: a continuation gets NO reroll — straight to the fault (ADR-0035)", async () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, { ...baseInput, continuation: true });
+  await tick();
+  mock.faultSettled("runaway", "exceeded 128 steps");
+  await tick();
+
+  assert.equal(mock.admits.length, 1, "j2 does not invent a conversation the workflow asked to continue");
+  const faults = received.filter((e) => e.type === "agent.fault");
+  assert.equal(faults.length, 1);
+  assert.match(String(faults[0]!.reason), /exceeded 128 steps/);
+});
+
+test("a typed settlement failure that is NOT runaway keeps its terminal behavior", async () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, baseInput);
+  await tick();
+  mock.faultSettled("provider_error", "the provider gave up");
+  await tick();
+
+  assert.equal(mock.admits.length, 1, "no reroll for any other class");
+  const faults = received.filter((e) => e.type === "agent.fault");
+  assert.equal(faults.length, 1);
+  assert.match(String(faults[0]!.reason), /the provider gave up/);
+});
+
+test("a CANCEL after a reroll aborts the REROLL conversation and destroys both surfaces", async () => {
+  const mock = new MockFlueClient();
+  const { actor, table } = harness(mock, baseInput);
+  await tick();
+  mock.faultSettled("runaway", "exceeded 128 steps");
+  await tick();
+
+  actor.send({ type: "CANCEL_RUN" });
+  await tick();
+
+  // The runaway original was ended by the Harness itself (the self-abort); the reroll is the one
+  // live conversation this turn still owns.
+  assert.deepEqual(mock.aborts, [{ agentName: "coder", instanceId: "inst-42-r1" }]);
+  assert.equal(table.lookup(agentAddress("inst-42")), undefined);
+  assert.equal(table.lookup(agentAddress("inst-42-r1")), undefined);
+});
+
+test("runaway: restore after a reroll rebinds to the LIVE conversation via the admission stamp", async () => {
+  const mock = new MockFlueClient();
+  // What durability rewrites after a reroll: `attach` is the ledgered record — stamped with the
+  // reroll's iid — under the ORIGINAL instanceId, `prompt` dropped.
+  const attach: AgentAdmission = {
+    streamUrl: "http://mock/agents/coder/inst-42-r1",
+    offset: "adm-9",
+    submissionId: "sub-9",
+    instanceId: "inst-42-r1",
+  };
+  const { actor, received, table } = harness(mock, { ...baseInput, prompt: undefined, attach });
+  await tick();
+
+  // The LIVE conversation's surface is the registered one: its menu dials /mcp/inst-42-r1.
+  assert.ok(table.lookup(agentAddress("inst-42-r1")), "the reroll surface survives restore");
+  assert.equal(table.lookup(agentAddress("inst-42")), undefined, "the dead original gets no surface");
+  table.deliver(agentAddress("inst-42-r1"), "ping", {});
+  await tick();
+  assert.ok(received.some((e) => e.type === "ping"));
+
+  actor.send({ type: "CANCEL_RUN" });
+  await tick();
+  assert.deepEqual(mock.aborts, [{ agentName: "coder", instanceId: "inst-42-r1" }], "abandon ends the LIVE turn");
+});
+
+test("runaway: a restored turn (attach, no prompt) gets NO reroll — there is nothing identical to replay", async () => {
+  const mock = new MockFlueClient();
+  const attach: AgentAdmission = {
+    streamUrl: "http://mock/agents/coder/inst-42",
+    offset: "adm-9",
+    submissionId: "sub-9",
+    instanceId: "inst-42",
+  };
+  const { received } = harness(mock, { ...baseInput, prompt: undefined, attach });
+  await tick();
+  mock.faultSettled("runaway", "exceeded 128 steps");
+  await tick();
+
+  assert.equal(mock.admits.length, 0, "no admit — a promptless reroll would be a mechanism 400");
+  const faults = received.filter((e) => e.type === "agent.fault");
+  assert.equal(faults.length, 1);
+  assert.match(
+    String(faults[0]!.reason),
+    /exceeded 128 steps/,
+    "the fault carries the runaway reason, not admit noise",
+  );
+});
+
+test("runaway AFTER a delivered pick gets NO reroll — the workflow already holds this turn's signal", async () => {
+  const mock = new MockFlueClient();
+  const { received, table } = harness(mock, baseInput);
+  await tick();
+
+  table.deliver(agentAddress("inst-42"), "ping", {});
+  mock.faultSettled("runaway", "repeated an identical tool call 4 times");
+  await tick();
+
+  assert.equal(mock.admits.length, 1, "a reroll would replay a prompt whose signal was already delivered");
+  const faults = received.filter((e) => e.type === "agent.fault");
+  assert.equal(faults.length, 1, "terminal, like every settle rejection before the reroll existed");
 });
 
 // --- The turn ends with the state that asked for it (ADR-0024) ---------------------------------

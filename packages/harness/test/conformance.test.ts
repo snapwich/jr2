@@ -52,6 +52,9 @@ function surfaceWith(...names: string[]): Surface {
 let provider: FakeProvider;
 let sandbox: FakeSandbox;
 let app: Hono;
+/** The same composition under a toy step budget (ADR-0035) — proving `exceeded 256 steps` at the
+ * shipped bound would run 256 provider rounds. The knob is a test seam, never an author surface. */
+let boundedApp: Hono;
 /** What each conversation printed (ADR-0023) — the pod log, keyed by iid. */
 const printed = new Map<string, string>();
 /** The would-be-fatal noise a clean turn end must not produce (ADR-0026). */
@@ -97,24 +100,28 @@ before(async () => {
   };
   const models = modelsFor(spec.harness, {});
   validateSpecModels(spec, models);
-  app = harnessApp({
-    spec,
-    longPollMs: 250,
-    // The real composition (`main.ts`): admission rejects a dial the turn could not run.
-    checkDials: (dials) => dialFault(models, dials),
-    runSubmissionFor: (seat) =>
-      runSubmissionFor({
-        spec,
-        models,
-        adapterUrl: sandbox.url,
-        // No provider-stream retries: a scripted failure must settle on the first attempt.
-        maxRetries: 0,
-        printerOut: {
-          write: (chunk) => printed.set(seat.instanceId, (printed.get(seat.instanceId) ?? "") + chunk),
-        },
-        ...seat,
-      }),
-  });
+  const appWith = (runaway?: { stepBudget?: number; identicalCallLimit?: number }): Hono =>
+    harnessApp({
+      spec,
+      longPollMs: 250,
+      // The real composition (`main.ts`): admission rejects a dial the turn could not run.
+      checkDials: (dials) => dialFault(models, dials),
+      runSubmissionFor: (seat) =>
+        runSubmissionFor({
+          spec,
+          models,
+          adapterUrl: sandbox.url,
+          // No provider-stream retries: a scripted failure must settle on the first attempt.
+          maxRetries: 0,
+          printerOut: {
+            write: (chunk) => printed.set(seat.instanceId, (printed.get(seat.instanceId) ?? "") + chunk),
+          },
+          ...runaway,
+          ...seat,
+        }),
+    });
+  app = appWith();
+  boundedApp = appWith({ stepBudget: 3 });
   process.on("unhandledRejection", onRejection);
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array, ...rest: never[]) => {
@@ -145,8 +152,9 @@ async function admit(
   message: string,
   dials?: { model?: string; thinkingLevel?: string },
   agent = AGENT,
+  via: Hono = app,
 ): Promise<{ offset: string; submissionId: string }> {
-  const res = await app.request(conversationPath(iid, agent), {
+  const res = await via.request(conversationPath(iid, agent), {
     method: "POST",
     body: JSON.stringify({ message, ...dials }),
     headers: { "content-type": "application/json" },
@@ -167,11 +175,12 @@ async function settled(
   iid: string,
   admission: { offset: string; submissionId: string },
   agent = AGENT,
+  via: Hono = app,
 ): Promise<Settlement> {
   let offset = admission.offset;
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const res = await app.request(`${conversationPath(iid, agent)}?offset=${offset}&live=long-poll`);
+    const res = await via.request(`${conversationPath(iid, agent)}?offset=${offset}&live=long-poll`);
     offset = res.headers.get("stream-next-offset") ?? offset;
     if (res.status === 204) continue;
     assert.equal(res.status, 200);
@@ -454,4 +463,81 @@ test("the printer wrote the conversation: prompts, text, tool calls — results 
   );
   assert.ok(lines.includes(`[${AGENT}] [text] All done.`), `no second-turn text line in:\n${log}`);
   assert.ok(!log.includes("Delivered"), "a tool RESULT is a boundary, never printed (ADR-0023)");
+});
+
+test('K byte-identical tool calls are a Runaway: the Harness ends the turn, typed "runaway" (ADR-0035)', async () => {
+  // The production shape: the model collapses into the same call forever. K=4 is the j2-owned
+  // default — no knob injected here, the shipped bound is the claim. The tripping call is the
+  // 4th, and it never executes, so no 5th provider round-trip exists.
+  const repeated = { name: "bash", args: '{"command":"true"}' };
+  provider.reset([
+    { text: "Searching.", toolCall: { id: "call_1", ...repeated } },
+    { toolCall: { id: "call_2", ...repeated } },
+    { toolCall: { id: "call_3", ...repeated } },
+    { toolCall: { id: "call_4", ...repeated } },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/runaway-identical";
+  const rejectionsMark = rejections.length;
+
+  const admission = await admit(iid, "Find the flag.");
+  const settlement = await settled(iid, admission);
+  assert.equal(settlement.outcome, "failed", 'a runaway settles FAILED — "aborted" stays the sweep\'s word (ADR-0024)');
+  assert.deepEqual(settlement.error, { type: "runaway", message: "repeated an identical tool call 4 times" });
+  assert.equal(provider.calls.length, 4, "the 4th identical call trips before executing — no 5th round-trip");
+
+  // The self-abort is clean (ADR-0026) and the conversation is not poisoned at the wire level: a
+  // later Submission on the same conversation still runs and completes (the reroll's fresh
+  // conversation is agentRun policy, not a Harness constraint).
+  await sleep(100); // a stray rejection surfaces on a later tick — give it room to land
+  assert.deepEqual(rejections.slice(rejectionsMark), [], "the self-abort leaves no rejection nothing awaits");
+  const next = await admit(iid, "Answer in text.");
+  assert.equal((await settled(iid, next)).outcome, "completed");
+  assert.deepEqual(
+    (await history(iid)).settlements.map((s) => ({ outcome: s.outcome, errorType: s.error?.type })),
+    [
+      { outcome: "failed", errorType: "runaway" },
+      { outcome: "completed", errorType: undefined },
+    ],
+  );
+});
+
+test('the step budget is the unconditional backstop: varied calls past the bound settle "runaway" (ADR-0035)', async () => {
+  // Honest dithering that never repeats — only the budget catches it. Every command differs, so
+  // the identical-call trigger stays quiet; the call past the budget (the 4th, over this app's
+  // toy bound of 3) trips without executing.
+  provider.reset(
+    Array.from({ length: 4 }, (_, i) => ({
+      toolCall: { id: `call_${i + 1}`, name: "bash", args: `{"command":"echo ${i}"}` },
+    })),
+  );
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/runaway-budget";
+
+  const admission = await admit(iid, "Keep busy.", undefined, AGENT, boundedApp);
+  const settlement = await settled(iid, admission, AGENT, boundedApp);
+  assert.equal(settlement.outcome, "failed");
+  assert.deepEqual(settlement.error, { type: "runaway", message: "exceeded 3 steps" });
+  assert.equal(provider.calls.length, 4, "the call past the budget trips before executing — no further round-trip");
+});
+
+test("a healthy turn is untouched: varied calls, a sub-K repeat, then the pick (ADR-0035)", async () => {
+  // The watch counts CONSECUTIVE identical calls, and any different call resets the run — the
+  // read → edit → read shape the ADR keeps legitimate. Two identical, a break, one more: never K.
+  provider.reset([
+    { text: "Looking.", toolCall: { id: "call_1", name: "bash", args: '{"command":"echo a"}' } },
+    { toolCall: { id: "call_2", name: "bash", args: '{"command":"echo a"}' } },
+    { toolCall: { id: "call_3", name: "bash", args: '{"command":"echo b"}' } },
+    { toolCall: { id: "call_4", name: "bash", args: '{"command":"echo a"}' } },
+    { toolCall: { id: "call_5", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/runaway-healthy";
+
+  const admission = await admit(iid, "Review the diff.");
+  const settlement = await settled(iid, admission);
+  assert.equal(settlement.outcome, "completed");
+  assert.equal(settlement.error, undefined);
+  assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
 });

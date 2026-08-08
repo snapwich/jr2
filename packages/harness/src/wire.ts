@@ -35,6 +35,11 @@ export type SettlementError = { type: string; message?: string };
 /** `SettlementError.type` for a swept Submission — continuity with what ADR-0024/0025 recorded. */
 export const SUBMISSION_ABORTED = "submission_aborted";
 
+/** `SettlementError.type` for a Turn the Harness ended as a Runaway (ADR-0035) — no fourth
+ * `SettlementOutcome`; the typed error on a `failed` settlement is what lets `agentRun` switch on
+ * the class (one fresh-conversation reroll) without parsing prose. */
+export const SUBMISSION_RUNAWAY = "runaway";
+
 /** One settled Submission, in the shape `?view=history`'s `settlements` reports — the asserted
  * contract (the mechanics/@kind tiers assert exact counts and outcomes). */
 export type Settlement = {

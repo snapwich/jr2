@@ -79,6 +79,17 @@ export class MockFlueClient implements AgentRunPort {
   fault(reason: string): void {
     this.pending.pop()?.reject(new Error(reason));
   }
+
+  /** Simulate a settlement with a TYPED `SettlementError` — the rejection carries `settlement`
+   * the way the wire client's `SettlementFault` does, so the actor can switch on `error.type`
+   * (ADR-0035's runaway class) without this suite touching the wire. */
+  faultSettled(type: string, message: string): void {
+    this.pending.pop()?.reject(
+      Object.assign(new Error(`submission settled failed: ${message}`), {
+        settlement: { submissionId: `sub-${this.seq}`, outcome: "failed", error: { type, message } },
+      }),
+    );
+  }
 }
 
 export type Ctx = { instanceId: string; sandbox?: string; summary?: string };

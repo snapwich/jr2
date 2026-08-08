@@ -44,10 +44,10 @@ import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
 
 /**
- * One admitted Submission — the durable re-attach handle (ADR-0016). All fields are
- * server-provided opaque strings (the wire's `AdmissionResponse` — ADR-0027), so the whole
- * record is serializable: it lives in the host ledger and rides the rewritten child input on
- * restore.
+ * One admitted Submission — the durable re-attach handle (ADR-0016). The wire fields are
+ * server-provided opaque strings (the wire's `AdmissionResponse` — ADR-0027) plus the
+ * actor-stamped `instanceId`, so the whole record is serializable: it lives in the host ledger
+ * and rides the rewritten child input on restore.
  */
 export type AgentAdmission = {
   /** Fully resolved stream URL for observing the conversation's durable stream. */
@@ -57,6 +57,13 @@ export type AgentAdmission = {
   offset: string;
   /** Correlates the admitted prompt with its settlement. */
   submissionId: string;
+  /**
+   * The conversation this admission was admitted under — stamped by the ACTOR at ledger time
+   * (the wire response carries no iid). Equal to the invocation's iid until a runaway reroll
+   * (ADR-0035) advances it; a restore reads it back so a rerolled run re-registers, nudges and
+   * aborts the LIVE conversation, never the dead original the ledger is keyed by.
+   */
+  instanceId?: string;
 };
 
 /**
@@ -144,13 +151,23 @@ export type AgentRunInput = {
    * the host on restore (which also drops `prompt`) from the run's admission ledger.
    */
   attach?: AgentAdmission;
+  /**
+   * This invocation is closed to the ADR-0035 reroll — set by the input mapper for
+   * `session: "continue"` and a `conversation` pin (both name an EXISTING conversation, and
+   * the runaway's one recovery is a fresh one — exactly what they opted out of), and for a
+   * caller-passed `instanceId` (fresh on its first invocation, but j2 did not mint the id and
+   * must not derive reroll identity from one it does not own — ADR-0016's minting doctrine).
+   * A gated runaway goes straight to the terminal fault.
+   */
+  continuation?: boolean;
   /** Event names (from the workflow's vocabulary) this invocation accepts over MCP. */
   tools: readonly string[];
 };
 
 /** Telemetry sent up when the run is out of options: the Submission settled failed/aborted
- * (infra fault after the turn's own provider retries — ADR-0027), or the no-signal nudge budget ran dry.
- * The ONE terminal event (ADR-0016) — where it routes is workflow policy. */
+ * (infra fault after the turn's own provider retries — ADR-0027), the no-signal nudge budget ran
+ * dry, or the runaway reroll budget did (ADR-0035). The ONE terminal event (ADR-0016) — where it
+ * routes is workflow policy. */
 export type FaultTelemetry = {
   type: "agent.fault";
   instanceId: string;
@@ -201,7 +218,30 @@ export type AgentRunOptions = {
    * this loop is j2-owned. Default 2.
    */
   nudgeBudget?: number;
+  /**
+   * How many times a RUNAWAY — a turn the Harness itself ended because it would not conclude,
+   * settled failed with the typed `"runaway"` error (ADR-0035) — is rerolled: a FRESH
+   * conversation under an iid derived from the original, admitting the IDENTICAL prompt. The
+   * degenerate context is poisoned, so the recovery is a new roll of the dice, never a nudge into
+   * the same conversation — and a continuation gets none at all (it opted out of fresh
+   * conversations). Default 1: two independent runaways are evidence the task itself is
+   * pathological, which belongs with the workflow's fault routing.
+   */
+  runawayBudget?: number;
 };
+
+/**
+ * The runaway settlement class (ADR-0035), read STRUCTURALLY off a settle rejection: the wire
+ * client's `SettlementFault` carries the Settlement, but this module is wire-free (see header),
+ * so the literal is restated (`SUBMISSION_RUNAWAY` in `@j2/harness/wire`) and the shape
+ * duck-typed. A lost conversation (404) carries no settlement, so it stays terminal like every
+ * other class.
+ */
+function runawayReason(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const error = (err as { settlement?: { error?: { type?: string; message?: string } } }).settlement?.error;
+  return error?.type === "runaway" ? (error.message ?? "runaway") : undefined;
+}
 
 /** The forced-final-pick re-prompt (ADR-0006, absorbed here by ADR-0016). */
 function nudgePrompt(tools: readonly string[]): string {
@@ -223,6 +263,7 @@ function nudgePrompt(tools: readonly string[]): string {
  */
 export function agentRunActorWith(portFactory: AgentRunPortFactory, options: AgentRunOptions = {}) {
   const nudgeBudget = options.nudgeBudget ?? 2;
+  const runawayBudget = options.runawayBudget ?? 1;
   // Typed as the union so BOTH shapes typecheck on an invoke: j2Setup machines write
   // AgentTurnInput (and the config wrapper finalizes it before the actor ever runs); plain
   // setup() machines must pass the finalized shape themselves — checked loudly below.
@@ -281,46 +322,66 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
     // Register this invocation's event surface (throws on a name outside the vocabulary —
     // ADR-0011's invoke-time check — which errors the run loudly at the invoking state).
     // `signaled` is the no-signal detector: a delivered menu event means the Agent ended its
-    // turn the intended way, so a completed settlement needs no nudge.
+    // turn the intended way, so a completed settlement needs no nudge. ONE invocation can hold
+    // more than one surface: a runaway reroll (ADR-0035) is a fresh conversation whose menu
+    // dials `/mcp/<derived iid>`, so its address must be live too — same defs, same deliver,
+    // because whichever conversation answers, it answers THIS invocation.
     let signaled = false;
-    const dispose = binding.table.register({
-      address: agentAddress(instanceId),
-      runId: binding.runId,
-      kind: "agent",
-      id: instanceId,
-      defs: resolveAccepts(binding, input.tools),
-      sandbox,
-      deliver: (event) => {
-        signaled = true;
-        // The settlement-pick marker (ADR-0023), BEFORE the delivery moves the Machine: the pick
-        // must land on the feed ahead of the status delta it causes, or the narrative reads
-        // effect-then-cause.
-        const { type, ...payload } = event;
-        binding.marker?.({
-          kind: "pick",
-          agent: input.agentName,
-          endpoint,
-          event: type,
-          ...(Object.keys(payload).length ? { payload } : {}),
-        });
-        sendBack(event);
-      },
-      // The state that invoked us — the machine the menu derived from, so the only one whose
-      // guards can say whether a pick would move anything (ADR-0029). Same `_parent` the ambient
-      // walk above uses; structural, so a sibling's snapshot is unreachable.
-      invoker: self._parent,
-    });
+    // The conversation this turn currently rides — advanced by a runaway reroll (ADR-0035) and,
+    // on restore, read back off the ledgered admission's stamp: a reroll is ledgered under the
+    // ORIGINAL iid (the persisted input's key) but stamped with its OWN, so a restored run
+    // registers, nudges and aborts the LIVE conversation, never the dead original the Harness
+    // already ended.
+    let currentIid = input.attach?.instanceId ?? instanceId;
+    const defs = resolveAccepts(binding, input.tools);
+    const disposers: Array<() => void> = [];
+    const registerSurface = (iid: string) =>
+      disposers.push(
+        binding.table.register({
+          address: agentAddress(iid),
+          runId: binding.runId,
+          kind: "agent",
+          id: iid,
+          defs,
+          sandbox,
+          deliver: (event) => {
+            signaled = true;
+            // The settlement-pick marker (ADR-0023), BEFORE the delivery moves the Machine: the pick
+            // must land on the feed ahead of the status delta it causes, or the narrative reads
+            // effect-then-cause.
+            const { type, ...payload } = event;
+            binding.marker?.({
+              kind: "pick",
+              agent: input.agentName,
+              endpoint,
+              event: type,
+              ...(Object.keys(payload).length ? { payload } : {}),
+            });
+            sendBack(event);
+          },
+          // The state that invoked us — the machine the menu derived from, so the only one whose
+          // guards can say whether a pick would move anything (ADR-0029). Same `_parent` the ambient
+          // walk above uses; structural, so a sibling's snapshot is unreachable.
+          invoker: self._parent,
+        }),
+      );
+    registerSurface(currentIid);
 
     const client = portFactory(endpoint);
     const controller = new AbortController();
     // Shared per run, created on demand so the ordering guarantee holds for any binding.
     const pendingAborts = (binding.pendingAborts ??= new Map<string, Promise<void>>());
     let stopped = false;
+    // Ledgered under the ORIGINAL iid — the persisted input's key, like a nudge's — with the
+    // LIVE conversation stamped on the record, so a restore settle-follows the live submission
+    // AND re-addresses it (see `currentIid` above).
+    const ledger = (admission: AgentAdmission) =>
+      binding.recordAdmission?.(instanceId, { ...admission, instanceId: currentIid });
 
     const abandon = () => {
       if (stopped) return;
       stopped = true;
-      dispose();
+      for (const dispose of disposers.splice(0)) dispose();
       // Stop consuming the stream. The remote end of the turn is the next paragraph.
       controller.abort();
       // A turn ends with the state that asked for it (ADR-0024) — whatever ended the invocation:
@@ -331,10 +392,11 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
       // Fire-and-forget, and unreportable BY CONSTRUCTION: this actor is stopped, so there is no
       // `agent.fault` left to raise. An orphan that survives a failed abort 404s on every tool
       // call and settles on its own.
-      const aborting = client.abort(input.agentName, instanceId).catch(() => {});
-      pendingAborts.set(instanceId, aborting);
+      const iid = currentIid;
+      const aborting = client.abort(input.agentName, iid).catch(() => {});
+      pendingAborts.set(iid, aborting);
       void aborting.then(() => {
-        if (pendingAborts.get(instanceId) === aborting) pendingAborts.delete(instanceId);
+        if (pendingAborts.get(iid) === aborting) pendingAborts.delete(iid);
       });
     };
 
@@ -347,14 +409,18 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
     // immediately. The admission is recorded in the host ledger BEFORE settlement is awaited,
     // so a crash right after admission still restores into re-attach, never a re-prompt.
     //
-    // Two absorbed fault classes (ADR-0016), deliberately distinct:
+    // Three absorbed fault classes (ADR-0016), deliberately distinct:
     //   - INFRA faults: provider retries run inside the turn, Harness-side, and the wire
     //     client reconnects transparently — so a `settle` rejection means the Submission settled
     //     failed/aborted, or the conversation is lost (ADR-0027). Terminal, no j2 re-run.
     //   - NO-SIGNAL: the Submission settles COMPLETED but no menu tool was called. The Harness
     //     calls that a normal turn, so j2 owns a budgeted re-prompt on the SAME iid (the conversation
     //     continues; each nudge is a fresh admission, ledgered like any other).
-    // Either budget exhausting emits the ONE terminal `agent.fault { reason }`.
+    //   - RUNAWAY: the Harness ended a turn that would not conclude and settled it failed with
+    //     the typed "runaway" error (ADR-0035). The degenerate context is poisoned, so the
+    //     budgeted reroll is the OPPOSITE of a nudge: a fresh conversation under a derived iid,
+    //     admitting the identical prompt — closed to continuations, which opted out of exactly that.
+    // Any budget exhausting emits the ONE terminal `agent.fault { reason }`.
     void (async () => {
       const fault = (reason: string) => {
         if (!stopped) sendBack({ type: "agent.fault", instanceId, reason } satisfies FaultTelemetry);
@@ -368,30 +434,63 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
         let admission = input.attach;
         if (!admission) {
           admission = await client.admit(input, { signal: controller.signal });
-          binding.recordAdmission?.(instanceId, admission);
+          ledger(admission);
           // The admission marker (ADR-0023): the Turn and its framing, once — a re-attach
           // continues a Turn already announced, and a nudge (below) is mechanism, not narrative
           // (its telemetry already rides the feed).
           binding.marker?.({ kind: "admission", agent: input.agentName, endpoint, prompt: input.prompt ?? "" });
         }
-        for (let attempt = 0; ; attempt++) {
-          await client.settle(admission, { signal: controller.signal });
+        let nudges = 0;
+        let rerolls = 0;
+        for (;;) {
+          try {
+            await client.settle(admission, { signal: controller.signal });
+          } catch (err) {
+            // The reroll gate closes on `signaled` like the nudge gate below: a delivered pick
+            // means the workflow already holds this turn's signal, so replaying the identical
+            // prompt would re-deliver it (a targetless pick keeps the actor alive through the
+            // settlement). It also closes when restore dropped `prompt` (`attach` rides instead):
+            // there is nothing identical to replay, and the thrown settlement still carries the
+            // legible runaway reason.
+            const reason = stopped || signaled ? undefined : runawayReason(err);
+            if (reason === undefined || input.continuation || input.prompt === undefined || rerolls >= runawayBudget)
+              throw err;
+            rerolls++;
+            binding.telemetry?.({
+              kind: "retry",
+              child: self._parent?.id ?? self.id,
+              attempt: rerolls,
+              reason: "runaway reroll",
+            });
+            // Deterministically derived, so a reroll never mints identity (ADR-0016: minting
+            // lives in the input mapper). Surface FIRST: the fresh conversation's menu dials
+            // `/mcp/<currentIid>`, so its address must be live before the Harness can run it.
+            currentIid = `${instanceId}-r${rerolls}`;
+            registerSurface(currentIid);
+            admission = await client.admit(
+              { ...input, attach: undefined, instanceId: currentIid },
+              { signal: controller.signal },
+            );
+            ledger(admission);
+            continue;
+          }
           if (stopped || signaled || input.tools.length === 0) return; // the turn ended as intended
-          if (attempt >= nudgeBudget) {
+          if (nudges >= nudgeBudget) {
             fault(`agent completed its turn without calling any of: ${input.tools.join(", ")}`);
             return;
           }
+          nudges++;
           binding.telemetry?.({
             kind: "retry",
             child: self._parent?.id ?? self.id,
-            attempt: attempt + 1,
+            attempt: nudges,
             reason: "no-signal nudge",
           });
           admission = await client.admit(
-            { ...input, attach: undefined, prompt: nudgePrompt(input.tools) },
+            { ...input, attach: undefined, instanceId: currentIid, prompt: nudgePrompt(input.tools) },
             { signal: controller.signal },
           );
-          binding.recordAdmission?.(instanceId, admission);
+          ledger(admission);
         }
       } catch (err) {
         if (stopped) return;

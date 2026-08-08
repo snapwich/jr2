@@ -7,6 +7,7 @@
 
 import {
   SUBMISSION_ABORTED,
+  SUBMISSION_RUNAWAY,
   type AdmissionRequest,
   type AdmissionResponse,
   type HistoryMessage,
@@ -23,6 +24,12 @@ import {
  * the active pi run. Takes the whole admitted request, not just its prompt: this Submission's
  * dials frame the turn exactly as the prompt does (ADR-0018). */
 export type RunSubmission = (submission: AdmissionRequest, signal: AbortSignal) => Promise<void>;
+
+/** A Turn the Harness itself ended because it would not conclude (ADR-0035) — a runaway trigger
+ * tripped in the turn loop. `turn.ts` throws it; the pump maps it to a `failed` settlement typed
+ * `"runaway"`, carrying the legible reason as the message. Distinct from the sweep by
+ * construction: the pump's signal never fired, so `aborted` stays ADR-0024's word. */
+export class RunawayError extends Error {}
 
 /** One stream read, resolved to the end of the log. The HTTP layer carries `nextOffset` and
  * `upToDate` as the stream headers and `events` as the body. */
@@ -162,6 +169,8 @@ export class Conversation {
         // sweep normally settled it already; this arm only matters if the run rejected first.
         if (controller.signal.aborted) {
           this.settle(record, "aborted", { type: SUBMISSION_ABORTED });
+        } else if (err instanceof RunawayError) {
+          this.settle(record, "failed", { type: SUBMISSION_RUNAWAY, message: err.message });
         } else {
           this.settle(record, "failed", {
             type: "submission_failed",

@@ -236,7 +236,7 @@ test("the admission is ledgered host-side and persisted beside the snapshot (ADR
     void store.load(runId).then((l) => (agents = (l?.snapshot as { agents?: Record<string, unknown> })?.agents));
     return agents?.[instanceId] !== undefined;
   });
-  assert.deepEqual(agents?.[instanceId], minted, "the durable handle rides RunBlob.agents");
+  assert.deepEqual(agents?.[instanceId], { ...minted, instanceId }, "the durable handle rides RunBlob.agents");
 });
 
 test("a second host restores an in-flight run and re-attaches by persisted admission", async () => {
@@ -268,7 +268,11 @@ test("a second host restores an in-flight run and re-attaches by persisted admis
   const reattachedClient = clientsB.get(instanceId);
   assert.ok(reattachedClient, "the restored run rebuilt its port");
   assert.equal(reattachedClient!.admitted, undefined, "re-attach must not re-POST the prompt");
-  assert.deepEqual(reattachedClient!.settled, [minted], "settlement follows the PERSISTED admission");
+  assert.deepEqual(
+    reattachedClient!.settled,
+    [{ ...minted, instanceId }],
+    "settlement follows the PERSISTED admission",
+  );
 });
 
 test("restore marks a run lost when the live world is absent", async () => {

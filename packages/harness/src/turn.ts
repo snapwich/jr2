@@ -16,7 +16,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { AssistantMessage, Models, UserMessage } from "@earendil-works/pi-ai";
-import type { RunSubmission } from "./conversation.ts";
+import { RunawayError, type RunSubmission } from "./conversation.ts";
 import { connectMenu, type Menu } from "./menu.ts";
 import { attachPrinter, type PrinterOut } from "./printer.ts";
 import { mapThinkingLevel, resolveModel } from "./provider.ts";
@@ -40,7 +40,20 @@ export type TurnDeps = {
   maxRetries?: number;
   /** Where the conversation prints (ADR-0023). Default `process.stdout` (the pod log). */
   printerOut?: PrinterOut;
+  /** ADR-0035's runaway bounds — j2-owned defaulted knobs (ADR-0016), no author surface. These
+   * seams exist for the conformance suite alone, which cannot afford 128 provider rounds. */
+  stepBudget?: number;
+  identicalCallLimit?: number;
 };
+
+/** The step budget (ADR-0035): the unconditional backstop on tool calls per Submission. Healthy
+ * turns peaked at 53 on a trivial task, and an honest live bug-hunt burned 161 steps — the bound
+ * sits above real investigation. It bounds STEPS, not context: a long turn can still exhaust its
+ * window first (compaction's seat, not this one). */
+const STEP_BUDGET = 256;
+/** K consecutive byte-identical tool calls (same name, same JSON arguments) — the early exit.
+ * Healthy max observed: 2. */
+const IDENTICAL_CALL_LIMIT = 4;
 
 /** The conversation's assembled runtime: one AgentHarness on one pi session, plus the seat the
  * lazy `systemPrompt`/`toolContext` callbacks read — so each turn works from the definition
@@ -57,9 +70,19 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   /** The previous turn's Menu connection — closed when the next turn assembles, whatever state
    * that turn ended in. */
   let menu: Menu | undefined;
+  const stepBudget = deps.stepBudget ?? STEP_BUDGET;
+  const identicalCallLimit = deps.identicalCallLimit ?? IDENTICAL_CALL_LIMIT;
+  /** The runaway watch (ADR-0035), per Submission — reset when each turn starts. The
+   * once-per-conversation `tool_call` hook reads it through this seat, like `current.definition`. */
+  const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
 
   return async (submission, signal) => {
     const { message } = submission;
+    // Each Submission earns a fresh runaway budget (ADR-0035) — the watch is per-turn state.
+    watch.steps = 0;
+    watch.streak = 0;
+    watch.signature = "";
+    watch.tripped = "";
     // This Submission's dials layer over the definition (ADR-0018). Read HERE, per
     // Submission, so one `continue` conversation can queue turns at different settings — the
     // `setModel`/`setThinkingLevel` reconciliation below already handles the change.
@@ -100,6 +123,33 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // message that carried real content re-enters the context completed (pi synthesizes results
       // for its orphaned tool calls); the empty synthesized failure shells stay dropped.
       harness.on("context", ({ messages }) => ({ messages: messages.map(settleAbandonedMessage) }));
+      // The runaway watch (ADR-0035): steps are the tool calls this Submission observed; K
+      // consecutive byte-identical calls is the early exit, the step budget the unconditional
+      // backstop. Identity is name + JSON arguments — pi hands the PARSED args, and stringify
+      // keeps the wire's key order, so byte-identical provider frames compare equal. Tripping
+      // ends the run: abort() is fire-and-forget — it awaits waitForIdle, which is parked on
+      // this very hook, so awaiting would deadlock; and it REJECTS when a wind-down step throws
+      // (see onAbort below). pi re-checks the run signal the moment this hook returns, so the
+      // tripping call never executes; the block is the belt over that check, and it also answers
+      // any parallel sibling calls in flight behind the trip.
+      harness.on("tool_call", ({ toolName, input }) => {
+        if (!watch.tripped) {
+          watch.steps += 1;
+          const signature = `${toolName} ${JSON.stringify(input)}`;
+          watch.streak = signature === watch.signature ? watch.streak + 1 : 1;
+          watch.signature = signature;
+          if (watch.streak >= identicalCallLimit) {
+            watch.tripped = `repeated an identical tool call ${identicalCallLimit} times`;
+          } else if (watch.steps > stepBudget) {
+            watch.tripped = `exceeded ${stepBudget} steps`;
+          }
+          if (!watch.tripped) return undefined;
+          harness.abort().catch((err: unknown) => {
+            console.error(`[${deps.agentName}] abort wind-down failed:`, err);
+          });
+        }
+        return { block: true, reason: watch.tripped };
+      });
       assembled = { harness, current };
     } else {
       assembled.current.definition = definition;
@@ -132,6 +182,11 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     try {
       if (signal.aborted) throw new Error("swept before its turn started");
       const answer = await harness.prompt(message);
+      // The watch's SELF-abort (ADR-0035): pi resolved with stopReason `aborted`, but the pump's
+      // signal never fired. Checked first so the runaway reason wins over the generic mapping
+      // below; a sweep that raced the trip still settles `aborted` — the pump's own signal check
+      // outranks any throw.
+      if (watch.tripped) throw new RunawayError(watch.tripped);
       // pi 0.82 resolves prompt() even on abort/failure — the synthesized message carries the
       // outcome. Rejecting here is what lets the pump promote the next admission promptly.
       if (signal.aborted || answer.stopReason === "aborted") {
