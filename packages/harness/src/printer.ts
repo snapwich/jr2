@@ -66,6 +66,29 @@ export function renderMessage(message: AgentMessage): string[] {
 }
 
 /**
+ * The Compaction line (ADR-0036) — the one mechanic a reader must see. A turn that summarized 120
+ * tool calls away is not an agent that forgot what it read at step 20, and without this line the
+ * two are indistinguishable in the pod log. Facts only, and only here: pi emits `session_compact`
+ * from its idle-guarded `compact()` alone, which a mid-turn cut cannot call, so this renderer has
+ * a CALLER (`turn.ts`) instead of a subscription — the `renderEchoEvent` shape. The cut itself is
+ * pi's compaction entry; this is its projection, never the record.
+ *
+ * The two numbers are measured differently on purpose (`compaction.ts` says why): before is the
+ * provider's own count, after is an estimate of what remains.
+ */
+export function renderCompaction(tokensBefore: number, tokensAfter: number, contextWindow: number): string {
+  return `[compacted] context ${tokensBefore} → ~${tokensAfter} tokens (window ${contextWindow})`;
+}
+
+/** A conversation line's one shape: the Agent name, then a labelled body that may span lines.
+ * Every writer goes through here, so the format has exactly one definition. */
+export function printLines(out: PrinterOut, agentName: string, bodies: string[]): void {
+  for (const body of bodies) {
+    for (const line of body.split("\n")) out.write(`[${agentName}] ${line}\n`);
+  }
+}
+
+/**
  * Subscribe the conversation printer to a harness's event stream. Every line carries the Agent
  * name alone — the minted iid mostly restates it (ADR-0015), and per-conversation diagnostics
  * live elsewhere. Returns the unsubscribe.
@@ -73,9 +96,7 @@ export function renderMessage(message: AgentMessage): string[] {
 export function attachPrinter(harness: PrinterSource, agentName: string, out: PrinterOut = process.stdout): () => void {
   return harness.subscribe((event) => {
     if (event.type !== "message_end") return;
-    for (const body of renderMessage(event.message)) {
-      for (const line of body.split("\n")) out.write(`[${agentName}] ${line}\n`);
-    }
+    printLines(out, agentName, renderMessage(event.message));
   });
 }
 

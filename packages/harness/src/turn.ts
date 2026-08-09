@@ -13,12 +13,15 @@ import {
   InMemorySessionRepo,
   type AgentMessage,
   type ExecutionToolContext,
+  type Session,
+  type ThinkingLevel as PiThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import type { AssistantMessage, Models, UserMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model, Models, UserMessage } from "@earendil-works/pi-ai";
+import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { RunawayError, type RunSubmission } from "./conversation.ts";
 import { connectMenu, type Menu } from "./menu.ts";
-import { attachPrinter, type PrinterOut } from "./printer.ts";
+import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
 import { mapThinkingLevel, resolveModel } from "./provider.ts";
 import { resolveDefinition, type AgentsSpec, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage } from "./wire.ts";
@@ -44,6 +47,11 @@ export type TurnDeps = {
    * seams exist for the conformance suite alone, which cannot afford 128 provider rounds. */
   stepBudget?: number;
   identicalCallLimit?: number;
+  /** ADR-0036's retention, in the same register and for the same reason: a scripted transcript is
+   * a few hundred characters, so at the shipped 20000 every cut would degenerate to "keep
+   * everything, summarize nothing" and no test could see a context shrink. The reserve needs no
+   * seam — fabricated provider usage crosses the derived threshold on its own. */
+  keepRecentTokens?: number;
 };
 
 /** The step budget (ADR-0035): the unconditional backstop on tool calls per Submission. Healthy
@@ -54,13 +62,27 @@ const STEP_BUDGET = 256;
 /** K consecutive byte-identical tool calls (same name, same JSON arguments) — the early exit.
  * Healthy max observed: 2. */
 const IDENTICAL_CALL_LIMIT = 4;
+// Compaction's numbers (ADR-0036) live in `compaction.ts`, beside the derivation that reads them:
+// `reserve = max(16384, maxTokens)` with the small-window floor, and a 20000-token retained tail.
 
 /** The conversation's assembled runtime: one AgentHarness on one pi session, plus the seat the
- * lazy `systemPrompt`/`toolContext` callbacks read — so each turn works from the definition
- * resolved at ITS start, on a harness constructed once. */
+ * lazy `systemPrompt`/`toolContext` callbacks and the once-registered hooks read — so each turn
+ * works from what was resolved at ITS start, on a harness constructed once. The Session is held
+ * because pi keeps its own reference private and Compaction writes to it (ADR-0036). */
 type Assembled = {
   harness: AgentHarness<ExecutionToolContext>;
-  current: { definition: ResolvedDefinition };
+  session: Session;
+  current: {
+    definition: ResolvedDefinition;
+    /** This Submission's resolved model and level — the summarizer inherits both (ADR-0036), and
+     * the model carries the `contextWindow`/`maxTokens` the thresholds derive from. */
+    model: Model<Api>;
+    thinkingLevel: PiThinkingLevel;
+    /** The run's abort signal. pi's loop hands `transformContext` a signal but `AgentHarness`
+     * drops it before the hook sees it, so a summary would outlive the sweep that cancelled its
+     * turn (ADR-0024) unless j2 carries the signal itself. */
+    signal: AbortSignal;
+  };
 };
 
 /** Build the turn executor for one conversation (the `RunSubmission` its Conversation pumps). */
@@ -72,6 +94,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   let menu: Menu | undefined;
   const stepBudget = deps.stepBudget ?? STEP_BUDGET;
   const identicalCallLimit = deps.identicalCallLimit ?? IDENTICAL_CALL_LIMIT;
+  /** The `context` hook writes the Compaction line itself (there is no pi event to subscribe to),
+   * so the printer's destination is resolved once here rather than only inside `attachPrinter`. */
+  const out = deps.printerOut ?? process.stdout;
+  const summaryRetry = summaryRetryPolicy(deps.maxRetries);
   /** The runaway watch (ADR-0035), per Submission — reset when each turn starts. The
    * once-per-conversation `tool_call` hook reads it through this seat, like `current.definition`. */
   const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
@@ -98,9 +124,12 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     menu = await connectMenu(deps.adapterUrl, deps.instanceId, signal);
 
     if (!assembled) {
-      const current = { definition };
+      const current = { definition, model, thinkingLevel, signal };
+      // Held, not inlined: Compaction appends its entry to THIS session (ADR-0036), and
+      // `AgentHarness` exposes no accessor for the one it was given.
+      const session = await repo.create();
       const harness = new AgentHarness<ExecutionToolContext>({
-        session: await repo.create(),
+        session,
         models: deps.models,
         model,
         thinkingLevel,
@@ -110,19 +139,68 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       });
       // Once per conversation — the subscriptions survive across Submissions; re-attaching per
       // Submission would duplicate every line and every stream event.
-      attachPrinter(harness, deps.agentName, deps.printerOut);
+      attachPrinter(harness, deps.agentName, out);
       harness.subscribe((event) => {
         if (event.type !== "message_end") return;
         const entry = historyMessage(event.message);
         if (entry) deps.appendMessage(entry);
       });
-      // pi keeps an aborted partial message in the session but REPLAYS none of it — its API layer
-      // drops any assistant message whose stopReason is `aborted` from every later request, which
-      // is byte-for-byte the flue defect ADR-0027 inverts (an abort mid-stream must NOT erase the
-      // assistant message). So the abandoned trailing state settles at read time: an aborted
-      // message that carried real content re-enters the context completed (pi synthesizes results
-      // for its orphaned tool calls); the empty synthesized failure shells stay dropped.
-      harness.on("context", ({ messages }) => ({ messages: messages.map(settleAbandonedMessage) }));
+      // The `context` hook, which j2 owns twice over — ONE handler, because pi's `emitHook` hands
+      // every handler the same untransformed event and keeps only the LAST non-undefined result,
+      // so a second registration would silently discard the first's transform rather than chain
+      // onto it.
+      //
+      // First the Compaction (ADR-0036). This hook fires before EVERY provider request, including
+      // a turn's first — pi emits the prompt's `message_end` straight to the Session before the
+      // loop starts, and `prepareNextTurn` rebuilds from the Session after every later step, so
+      // the Session is complete and consistent at this moment either way. Firing on a first
+      // request is what rescues ADR-0016's nudge ladder: a nudge is a fresh admission on the same
+      // conversation, so it compacts before it asks. A cut answers with the rebuilt context, so
+      // the request that NOTICED is already compacted; a failure throws, which pi turns into a
+      // failed run and `prompt()` reports below as an infra fault. It touches no ADR-0035 counter:
+      // the watch counts tool calls, the summarizer makes none, and a turn that compacts and
+      // continues is still spending its one step budget.
+      //
+      // Then the abandoned trailing state, on whichever array will be sent. pi keeps an aborted
+      // partial message in the session but REPLAYS none of it — its API layer drops any assistant
+      // message whose stopReason is `aborted` from every later request, which is byte-for-byte the
+      // flue defect ADR-0027 inverts (an abort mid-stream must NOT erase the assistant message).
+      // So it settles at read time: an aborted message that carried real content re-enters the
+      // context completed (pi synthesizes results for its orphaned tool calls); the empty
+      // synthesized failure shells stay dropped. The rebuilt context needs the same pass — the
+      // Session stores the aborted message verbatim, cut or no cut.
+      harness.on("context", async ({ messages }) => {
+        // A tripped watch (ADR-0035) already ended this turn, so there is nothing left to compact
+        // FOR. pi does not agree yet: it has no signal check between a blocked tool batch and the
+        // next request, so the loop takes one more pass through here — and the signal this seat
+        // carries is the pump's, which a runaway trip never touches (the trip aborts pi's OWN
+        // controller, and pi's `transformContext` wrapper drops the signal before the hook sees
+        // it). Without this gate the cut would run a full summarization, on a full window, for a
+        // request that is aborted before it is sent: real tokens and an unbounded wait — the very
+        // liveness ADR-0035's watch exists to guarantee — plus a compaction entry and a
+        // `[compacted]` line that make a killed turn read as a healthy one. Skipping beats
+        // cancelling: there is no round-trip to cancel.
+        const cut = watch.tripped
+          ? undefined
+          : await compactIfOver(
+              {
+                session,
+                models: deps.models,
+                model: current.model,
+                thinkingLevel: current.thinkingLevel,
+                settings: compactionSettingsFor(current.model, deps.keepRecentTokens),
+                retry: summaryRetry,
+                signal: current.signal,
+              },
+              messages,
+            );
+        if (cut) {
+          printLines(out, deps.agentName, [
+            renderCompaction(cut.tokensBefore, cut.tokensAfter, current.model.contextWindow),
+          ]);
+        }
+        return { messages: (cut?.messages ?? messages).map(settleAbandonedMessage) };
+      });
       // The runaway watch (ADR-0035): steps are the tool calls this Submission observed; K
       // consecutive byte-identical calls is the early exit, the step budget the unconditional
       // backstop. Identity is name + JSON arguments — pi hands the PARSED args, and stringify
@@ -150,9 +228,12 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         }
         return { block: true, reason: watch.tripped };
       });
-      assembled = { harness, current };
+      assembled = { harness, session, current };
     } else {
       assembled.current.definition = definition;
+      assembled.current.model = model;
+      assembled.current.thinkingLevel = thinkingLevel;
+      assembled.current.signal = signal;
       const live = assembled.harness.getModel() as { provider: string; id: string };
       if (live.provider !== model.provider || live.id !== model.id) await assembled.harness.setModel(model);
       if (assembled.harness.getThinkingLevel() !== thinkingLevel) {

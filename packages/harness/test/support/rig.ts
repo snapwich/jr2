@@ -28,6 +28,10 @@ export type Turn = {
   /** Answer this HTTP status with an error body instead of a stream — the provider-failure lever
    * (with `maxRetries: 0` the turn settles `failed` on the first attempt). */
   status?: number;
+  /** The usage this response reports — Compaction's only lever (ADR-0036), since a scripted
+   * transcript can never fill a real window. pi DERIVES its total from the parts rather than
+   * reading `total_tokens`, so the fabricated context size goes in `prompt_tokens`. */
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
 /** One request body, as the provider received it. `tools` is where the per-turn Menu is visible. */
@@ -36,12 +40,26 @@ export type RecordedCall = {
   tools?: Array<{ function?: { name?: string } }>;
   /** The model id the request named — the only witness that a per-turn dial reached the wire. */
   model?: string;
+  /** The thinking level the request named. pi writes a non-`off` level as `reasoning_effort` for
+   * every model declaring `reasoning` (which `provider.ts` does for the custom provider), so this
+   * is where a Turn's level is visible — including on the summarizer's own request (ADR-0036). */
+  reasoning_effort?: string;
+  /** Arrival order across BOTH streams (turn requests and summarizer requests), from 1. Compaction
+   * happens at a step the test does not choose, so this is the only witness that the cut landed
+   * BETWEEN two requests of one turn rather than at a turn boundary. */
+  seq: number;
 };
 
 export type FakeProvider = {
   url: string;
   /** Every request body the provider received since the last `reset`, in order. */
   calls: RecordedCall[];
+  /** The compaction summarizer's requests (ADR-0036) — pi's own LLM call, recorded APART from
+   * `calls`: it fires at a step the test does not choose, so letting it consume a script slot
+   * would shift every later turn and quietly break the exact-count assertions. */
+  summaries: RecordedCall[];
+  /** What any summarization request answers with. `status` is the compaction-failure lever. */
+  summarize: (answer: { text?: string; status?: number; stall?: boolean }) => void;
   /** True while a scripted response is deliberately holding its socket open. */
   stalled: () => boolean;
   /** Rearm for the next scenario: forget recorded calls, swap the script. */
@@ -49,10 +67,17 @@ export type FakeProvider = {
   close: () => Promise<void>;
 };
 
+/** How a summarization request is told apart from a turn request: pi sends it standalone, with its
+ * own system prompt and no tools (`SUMMARIZATION_SYSTEM_PROMPT`, matched on its opening clause). */
+const SUMMARIZER_MARK = "You are a context summarization assistant";
+
 /** `script[n]` answers call n+1; anything past the end answers plain text. */
 export async function startFakeProvider(initialScript: Turn[] = []): Promise<FakeProvider> {
   let script = initialScript;
   const calls: RecordedCall[] = [];
+  const summaries: RecordedCall[] = [];
+  let summaryAnswer: { text?: string; status?: number; stall?: boolean } = {};
+  let seq = 0;
   let stalling = 0;
 
   const server: Server = createServer((req, res) => {
@@ -65,12 +90,24 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
         return;
       }
       const body = JSON.parse(raw) as RecordedCall & { stream?: boolean };
-      calls.push(body);
-      const n = calls.length;
-      const turn = script[n - 1] ?? { text: `turn ${n}` };
-      const id = `chatcmpl-${n}`;
+      seq += 1;
+      body.seq = seq;
+      // pi's summarizer request is not a scripted turn: it arrives at a step the test did not
+      // choose, so it is recorded apart and answered from `summarize` (ADR-0036).
+      const summarizing = raw.includes(SUMMARIZER_MARK);
+      let turn: Turn;
+      if (summarizing) {
+        summaries.push(body);
+        turn = { text: summaryAnswer.text ?? "## Goal\nEverything before this was summarized.", ...summaryAnswer };
+      } else {
+        calls.push(body);
+        turn = script[calls.length - 1] ?? { text: `turn ${calls.length}` };
+      }
+      const id = `chatcmpl-${seq}`;
       const created = Math.floor(Date.now() / 1000);
-      const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
+      // `total_tokens` is decoration: pi derives the total from the parts, so a scripted context
+      // size only counts when it rides in `prompt_tokens`.
+      const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, ...turn.usage };
 
       if (turn.status !== undefined) {
         res.writeHead(turn.status, { "content-type": "application/json" });
@@ -114,10 +151,15 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
   return {
     url: `http://127.0.0.1:${port}/v1`,
     calls,
+    summaries,
+    summarize: (answer) => (summaryAnswer = answer),
     stalled: () => stalling > 0,
     reset: (next) => {
       script = next;
       calls.length = 0;
+      summaries.length = 0;
+      summaryAnswer = {};
+      seq = 0;
     },
     close: () => {
       server.closeAllConnections();
