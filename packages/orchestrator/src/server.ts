@@ -22,12 +22,13 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.ts";
-import { DEFAULT_ADAPTER_IMAGE, DEFAULT_HARNESS_IMAGE } from "./config.ts";
 import { startInstance, type RunningInstance } from "./instance.ts";
 import {
   AGENTS_CONFIGMAP,
   GIT_SSH_MOUNT,
   HARNESS_ENV_SECRET,
+  IMAGES_KEY,
+  IMAGES_MOUNT,
   INSTANCE_HARNESS_PORT,
   INSTANCE_HARNESS_SERVICE,
   ORCHESTRATOR_SERVICE,
@@ -78,9 +79,12 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     for (const repo of synced) opts.announce(JSON.stringify({ repo: repo.name, action: repo.action }));
 
     sandbox = kubectlSandbox({
-      image: config.images?.harness ?? DEFAULT_HARNESS_IMAGE,
-      adapterImage: config.images?.adapter ?? DEFAULT_ADAPTER_IMAGE,
-      userImage: config.images?.user,
+      // Named here the same way AGENTS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
+      // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
+      // buys: the map is read per provision, so an instance whose `j2-images` ConfigMap is not yet
+      // mounted still BOOTS and serves — only a provision fails, pointing at `j2 up`. That is the
+      // correct blast pattern, and the stale-read window is one kubelet propagation.
+      imagesPath: join(IMAGES_MOUNT, IMAGES_KEY),
       // The Harness containers' env (ADR-0018): the mounted agents spec, then the instance's own
       // valueFrom entries (literal values already live in the j2-harness-env Secret below).
       env: [

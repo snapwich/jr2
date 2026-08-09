@@ -10,10 +10,14 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
 - **Adapter container** — j2-owned sidecar (ADR-0013): serves the Agent its MCP tool menu on `localhost` and is the
   pod's only credential holder. It exists as a separate container precisely _because_ the working tools give the Agent
   code execution in the Harness container — the Orchestrator credential lives where the Agent cannot read it.
-- **User Container** — user-owned, customizable image (nvim, dotfiles, extra CLIs) for working alongside the agent with
-  your own tools; configured per instance as `images.user` in `j2.config.ts` (ADR-0031) and mapped into the CR's generic
-  sidecar list like the Adapter. Absent `images.user`, the pod runs two containers. j2 does not own the image's
-  contents.
+- **User Container** — ~~user-owned, customizable image (nvim, dotfiles, extra CLIs) for working alongside the agent
+  with your own tools; configured per instance as `images.user` in `j2.config.ts` (ADR-0031) and mapped into the CR's
+  generic sidecar list like the Adapter. Absent `images.user`, the pod runs two containers. j2 does not own the image's
+  contents.~~ **Superseded by [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)**: the
+  User Container, `images.user`, and the "your entrypoint must block" contract are deleted. The Sandbox Image ate it —
+  the primary container is now the _user's_ image with j2's runtime injected at `/opt/j2`, so `kubectl exec -c harness`
+  gives a human the agent's tools, worktrees, and filesystem. The promise below (human and agent see identical files) is
+  delivered by the image rather than by a second container sharing a volume with it.
 
 All three mount the same `/work` volume, so human and agent see identical files.
 

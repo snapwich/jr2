@@ -1,10 +1,14 @@
 // kubectlSandbox — the CR/exec MAPPING, against a fake process seam (the cluster itself is the
 // kind e2e tier's job). What matters here: the CR carries the run labels + RO repos mount, Ready
-// gates provisioning (returning the CR's own svc-DNS endpoint), and the attach script is the
-// idempotent ADR-0004 sequence.
+// gates provisioning (returning the CR's own svc-DNS endpoint), the attach script is the
+// idempotent ADR-0004 sequence, and — since ADR-0037/0038 — `spec.image` is RESOLVED from the
+// mounted image map on every provision rather than pinned at construction.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { attachScript, kubectlSandbox } from "../src/sandbox-kubectl.ts";
 import type { KubectlExec } from "../src/sandbox-kubectl.ts";
 
@@ -23,6 +27,29 @@ function fakeExec(handlers: Record<string, (call: Call) => string>) {
   return { exec, calls };
 }
 
+/** Every provision now applies a token Secret first (the Adapter is unconditional — ADR-0013), so
+ * "the CR" is the apply whose body is a Sandbox, never simply the first call. */
+const crOf = (calls: Call[]): any =>
+  JSON.parse(calls.find((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))!.input!);
+
+/** The mounted `j2-images` map (ADR-0038) as a real file — the port reads it per provision. */
+async function mkImages(refs: unknown): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
+  const path = join(dir, "images.json");
+  await writeFile(path, JSON.stringify(refs));
+  return path;
+}
+
+const REFS = {
+  harness: "j2-harness:h00",
+  adapter: "j2-adapter:a00",
+  sandbox: { default: "j2-workspace-inst-default:d00", rust: "j2-workspace-inst-rust:r00" },
+};
+
+/** Everything a provision needs beyond the images map: the Adapter is always injected now, so its
+ * token Secret (and therefore a signing key and a route home) is no longer optional. */
+const provisionable = { signingKey: Buffer.from("k"), orchestratorUrl: "http://host:1234", pollMs: 1 };
+
 const readyStatus = JSON.stringify({
   status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-1" },
 });
@@ -31,25 +58,24 @@ test("provision applies the labeled CR with the RO repos mount, gates on Ready",
   let gets = 0;
   const { exec, calls } = fakeExec({
     apply: () => "applied",
+    patch: () => "ok",
     get: () => (++gets < 3 ? JSON.stringify({ status: { phase: "Pending" } }) : readyStatus),
   });
-  const port = kubectlSandbox({ image: "j2/harness:dev", pollMs: 1, exec });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
 
   const { endpoint } = await port.provision({ name: "sb-1", runId: "run-9", workflow: "coding" });
   assert.equal(endpoint, "http://sb-1.default.svc:8080");
   assert.equal(gets, 3, "polled until phase Ready");
 
-  const applied = JSON.parse(calls[0]!.input!) as {
-    metadata: { name: string; labels: Record<string, string> };
-    spec: { image: string; volumes: unknown[]; volumeMounts: Array<{ mountPath: string; readOnly: boolean }> };
-  };
+  const applied = crOf(calls);
   assert.equal(applied.metadata.name, "sb-1");
   assert.deepEqual(applied.metadata.labels, { "j2.dev/run": "run-9", "j2.dev/workflow": "coding" });
-  assert.equal(applied.spec.image, "j2/harness:dev");
+  // No name on the spec → `images/default` (ADR-0037's middle leg), resolved from the map.
+  assert.equal(applied.spec.image, "j2-workspace-inst-default:d00");
   // The repos volume is RO; the worktree root is a writable POD volume. Proven necessary on kind:
   // the operator runs the Harness as an unprivileged uid, so a work dir owned by the image (or
-  // absent) makes every `attach` fail with "mkdir /work: permission denied" — and ADR-0005 has the
-  // User Container sharing these worktrees, which only a pod volume can do.
+  // absent) makes every `attach` fail with "mkdir /work: permission denied" — and `/work` is the
+  // wrap's WORKDIR (ADR-0037), where a human's `kubectl exec` lands on the same worktrees.
   assert.deepEqual(applied.spec.volumeMounts, [
     { name: "repos", mountPath: "/repos", readOnly: true },
     { name: "work", mountPath: "/work" },
@@ -62,153 +88,153 @@ test("provision applies the labeled CR with the RO repos mount, gates on Ready",
   ]);
 });
 
-test("env/envFrom pass through to the HARNESS container spec; mechanism env rides after them", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({
-    image: "img",
+test("the Sandbox Image chain: spec name → images/default → the stock Harness", async () => {
+  const provisionWith = async (refs: unknown, image?: string): Promise<string> => {
+    const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+    const port = kubectlSandbox({ imagesPath: await mkImages(refs), ...provisionable, exec });
+    await port.provision({ name: "sb", runId: "r", workflow: "w", ...(image ? { image } : {}) });
+    return crOf(calls).spec.image;
+  };
 
-    pollMs: 1,
+  assert.equal(await provisionWith(REFS, "rust"), "j2-workspace-inst-rust:r00", "the spec's name wins");
+  assert.equal(await provisionWith(REFS), "j2-workspace-inst-default:d00", "no name → images/default");
+  // The last leg comes out of the MAP, not a `j2-harness:<kitversion>` literal: in a kit checkout
+  // the Harness is a content-addressed tag (ADR-0038) and a literal would name nothing built.
+  assert.equal(
+    await provisionWith({ harness: "j2-harness:h00", adapter: "j2-adapter:a00", sandbox: {} }),
+    "j2-harness:h00",
+    "no images/default → the stock Harness",
+  );
+});
+
+test("an unknown image name fails the provision with NOTHING applied, listing what was discovered", async () => {
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+
+  await assert.rejects(
+    () => port.provision({ name: "sb", runId: "r", workflow: "w", image: "golang" }),
+    (err: Error) => {
+      assert.match(err.message, /no Sandbox Image named "golang"/);
+      assert.match(err.message, /"default", "rust"/, "the error lists what the converge built");
+      return true;
+    },
+  );
+  // Read-first is what buys this: no token Secret, no CR, nothing for anyone to clean up.
+  assert.deepEqual(calls, []);
+});
+
+test("the map is re-read PER provision, so a converge reaches the next Sandbox without a roll", async () => {
+  // The whole reason the refs arrive as a mounted ConfigMap rather than Deployment env (ADR-0038):
+  // a rebuilt image must reach FUTURE Sandboxes without bouncing every live run through restore.
+  const imagesPath = await mkImages(REFS);
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({ imagesPath, ...provisionable, exec });
+
+  await port.provision({ name: "sb-a", runId: "r", workflow: "w" });
+  await writeFile(imagesPath, JSON.stringify({ ...REFS, sandbox: { default: "j2-workspace-inst-default:d99" } }));
+  await port.provision({ name: "sb-b", runId: "r", workflow: "w" });
+
+  const images = calls
+    .filter((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))
+    .map((c) => (JSON.parse(c.input!) as { spec: { image: string } }).spec.image);
+  assert.deepEqual(images, ["j2-workspace-inst-default:d00", "j2-workspace-inst-default:d99"]);
+});
+
+test("an absent or malformed image map fails the provision pointing at `j2 up`, never a published tag", async () => {
+  const { exec } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const missing = kubectlSandbox({ imagesPath: "/nonexistent/j2/images.json", ...provisionable, exec });
+  await assert.rejects(
+    () => missing.provision({ name: "sb", runId: "r", workflow: "w" }),
+    (err: Error) => {
+      assert.match(err.message, /\/nonexistent\/j2\/images\.json/, "names the path");
+      assert.match(err.message, /j2 up/, "names the fix");
+      return true;
+    },
+  );
+
+  // A map with no `adapter` is loud, not a pod with no route home: an Agent whose Adapter is
+  // missing parks its Machine forever on a tool call it cannot make (ADR-0013).
+  const noAdapter = kubectlSandbox({
+    imagesPath: await mkImages({ harness: "j2-harness:h00", sandbox: {} }),
+    ...provisionable,
+    exec,
+  });
+  await assert.rejects(() => noAdapter.provision({ name: "sb", runId: "r", workflow: "w" }), /no `adapter` ref/);
+});
+
+test("env/envFrom pass through to the HARNESS container spec; mechanism env rides after them", async () => {
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
     exec,
     env: [{ name: "FLUE_LOG", value: "debug" }],
     envFrom: [{ secretRef: { name: "anthropic" } }],
   });
   await port.provision({ name: "sb-env", runId: "r", workflow: "w" });
 
-  const applied = JSON.parse(calls[0]!.input!) as {
-    spec: { env?: Array<{ name: string }>; envFrom?: unknown[]; sidecars?: unknown[] };
-  };
-  assert.deepEqual(applied.spec.env, [{ name: "FLUE_LOG", value: "debug" }]);
+  const applied = crOf(calls);
+  assert.deepEqual(
+    applied.spec.env.map((e: { name: string }) => e.name),
+    ["FLUE_LOG", "J2_ADAPTER_URL"],
+  );
   assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "anthropic" } }]);
-  // No Adapter configured here → no sidecar, and no J2_ADAPTER_URL in the harness env.
-  assert.equal(applied.spec.sidecars, undefined);
 });
 
-test("with an Adapter, user env precedes J2_ADAPTER_URL and envFrom never reaches the Adapter", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", get: () => readyStatus, patch: () => "ok" });
+test("the Adapter is UNCONDITIONAL and is the pod's only credential holder", async () => {
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
   const port = kubectlSandbox({
-    image: "img",
-    adapterImage: "j2/adapter:dev",
-    orchestratorUrl: "http://host:1234",
-    signingKey: Buffer.from("k"),
-
-    pollMs: 1,
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
     exec,
-    env: [{ name: "FLUE_LOG", value: "debug" }],
     envFrom: [{ secretRef: { name: "anthropic" } }],
   });
   await port.provision({ name: "sb-env2", runId: "r", workflow: "w" });
 
-  const crApply = calls.find((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))!;
-  const applied = JSON.parse(crApply.input!) as {
-    spec: {
-      env: Array<{ name: string }>;
-      envFrom: unknown[];
-      sidecars: Array<{ name: string; envFrom: unknown[] }>;
-    };
-  };
+  const applied = crOf(calls);
+  // One sidecar, always. With the ref in the map there is no "no adapter configured" state left to
+  // branch on — and the User Container is gone (ADR-0037), so this list is exactly the Adapter.
   assert.deepEqual(
-    applied.spec.env.map((e) => e.name),
-    ["FLUE_LOG", "J2_ADAPTER_URL"],
+    applied.spec.sidecars.map((s: { name: string; image: string }) => [s.name, s.image]),
+    [["adapter", "j2-adapter:a00"]],
   );
-  assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "anthropic" } }]);
   // The Adapter's envFrom stays exactly its token Secret (ADR-0013 asymmetry).
-  assert.deepEqual(applied.spec.sidecars[0]!.envFrom, [{ secretRef: { name: "sb-env2-token" } }]);
+  assert.deepEqual(applied.spec.sidecars[0].envFrom, [{ secretRef: { name: "sb-env2-token" } }]);
+  const secret = JSON.parse(calls.find((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Secret"'))!.input!);
+  assert.equal(secret.metadata.name, "sb-env2-token");
 });
 
 test("caBundle: the j2-ca ConfigMap mounts into the HARNESS container with NODE_EXTRA_CA_CERTS; absent → nothing", async () => {
-  const withCa = fakeExec({ apply: () => "ok", get: () => readyStatus });
-  await kubectlSandbox({ image: "img", pollMs: 1, exec: withCa.exec, caBundle: true }).provision({
+  const imagesPath = await mkImages(REFS);
+  const withCa = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  await kubectlSandbox({ imagesPath, ...provisionable, exec: withCa.exec, caBundle: true }).provision({
     name: "sb-ca",
     runId: "r",
     workflow: "w",
   });
-  const applied = JSON.parse(withCa.calls[0]!.input!) as {
-    spec: {
-      env: Array<{ name: string; value: string }>;
-      volumes: Array<{ name: string }>;
-      volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>;
-    };
-  };
-  assert.deepEqual(applied.spec.env, [{ name: "NODE_EXTRA_CA_CERTS", value: "/etc/j2/ca/ca.crt" }]);
+  const applied = crOf(withCa.calls);
+  assert.deepEqual(applied.spec.env, [
+    { name: "J2_ADAPTER_URL", value: "http://127.0.0.1:8081" },
+    { name: "NODE_EXTRA_CA_CERTS", value: "/etc/j2/ca/ca.crt" },
+  ]);
   assert.deepEqual(applied.spec.volumes.at(-1), { name: "ca", configMap: { name: "j2-ca" } });
   // CR-level volumeMounts land on the HARNESS container only (operator contract) — the ADR-0020
-  // asymmetry: the Adapter and User Container never inherit the trust path.
+  // asymmetry: the Adapter never inherits the trust path.
   assert.deepEqual(applied.spec.volumeMounts.at(-1), { name: "ca", mountPath: "/etc/j2/ca", readOnly: true });
 
-  const without = fakeExec({ apply: () => "ok", get: () => readyStatus });
-  await kubectlSandbox({ image: "img", pollMs: 1, exec: without.exec }).provision({
+  const without = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  await kubectlSandbox({ imagesPath, ...provisionable, exec: without.exec }).provision({
     name: "sb-noca",
     runId: "r",
     workflow: "w",
   });
-  const bare = JSON.parse(without.calls[0]!.input!) as { spec: { env?: unknown; volumes: Array<{ name: string }> } };
-  assert.equal(bare.spec.env, undefined);
-  assert.ok(!bare.spec.volumes.some((v) => v.name === "ca"));
-});
-
-test("userImage: a third container sharing /work (+ RO /repos), no command, no user env", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", get: () => readyStatus, patch: () => "ok" });
-  const port = kubectlSandbox({
-    image: "img",
-    adapterImage: "j2/adapter:dev",
-    userImage: "me/dotfiles:latest",
-    orchestratorUrl: "http://host:1234",
-    signingKey: Buffer.from("k"),
-
-    pollMs: 1,
-    exec,
-    env: [{ name: "FLUE_LOG", value: "debug" }],
-    envFrom: [{ secretRef: { name: "anthropic" } }],
-  });
-  await port.provision({ name: "sb-user", runId: "r", workflow: "w" });
-
-  const crApply = calls.find((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))!;
-  const applied = JSON.parse(crApply.input!) as {
-    spec: {
-      sidecars: Array<{
-        name: string;
-        image: string;
-        command?: unknown;
-        env?: unknown;
-        envFrom?: unknown;
-        volumeMounts?: unknown;
-      }>;
-    };
-  };
-  // Adapter first, User Container after — both opaque fragments on the same list (ADR-0001).
-  assert.deepEqual(
-    applied.spec.sidecars.map((s) => s.name),
-    ["adapter", "user"],
-  );
-  const user = applied.spec.sidecars[1]!;
-  assert.equal(user.image, "me/dotfiles:latest");
-  // The worktrees are the point; RO /repos rides along for the --shared clones' objects.
-  assert.deepEqual(user.volumeMounts, [
-    { name: "work", mountPath: "/work" },
-    { name: "repos", mountPath: "/repos", readOnly: true },
-  ]);
-  // j2 does not own the image: no injected command (its entrypoint must block), and none of the
-  // Harness's env/envFrom — a human shell must not inherit the agent's model keys (ADR-0005/0013).
-  assert.equal(user.command, undefined);
-  assert.equal(user.env, undefined);
-  assert.equal(user.envFrom, undefined);
-});
-
-test("userImage without an Adapter still lands as the only sidecar", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ image: "img", userImage: "me/tools:1", pollMs: 1, exec });
-  await port.provision({ name: "sb-user2", runId: "r", workflow: "w" });
-
-  const applied = JSON.parse(calls[0]!.input!) as { spec: { sidecars: Array<{ name: string }> } };
-  assert.deepEqual(
-    applied.spec.sidecars.map((s) => s.name),
-    ["user"],
-  );
+  const bare = crOf(without.calls);
+  assert.ok(!bare.spec.volumes.some((v: { name: string }) => v.name === "ca"));
 });
 
 test("provision reports the pod identity the lease will hold the workspace to", async () => {
-  const { exec } = fakeExec({ apply: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ image: "img", pollMs: 1, exec });
+  const { exec } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
 
   assert.deepEqual(await port.provision({ name: "sb-1", runId: "r", workflow: "w" }), {
     endpoint: "http://sb-1.default.svc:8080",
@@ -218,7 +244,7 @@ test("provision reports the pod identity the lease will hold the workspace to", 
 
 test("renew(): one call stamps the lease AND reads back continuity", async () => {
   const { exec, calls } = fakeExec({ annotate: () => readyStatus });
-  const port = kubectlSandbox({ image: "img", exec });
+  const port = kubectlSandbox({ exec });
 
   assert.deepEqual(await port.renew("sb-1"), { present: true, identity: "pod-uid-1" });
 
@@ -239,7 +265,7 @@ test("renew(): a replacement pod is reported as a NEW identity under the same na
     annotate: () =>
       JSON.stringify({ status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-2" } }),
   });
-  const port = kubectlSandbox({ image: "img", exec });
+  const port = kubectlSandbox({ exec });
 
   assert.deepEqual(await port.renew("sb-1"), { present: true, identity: "pod-uid-2" });
 });
@@ -250,7 +276,7 @@ test("renew(): NotFound is absent; any other kubectl failure THROWS (unknown is 
       throw new Error(`Error from server (NotFound): sandboxes.core.j2.dev "gone" not found`);
     },
   });
-  assert.deepEqual(await kubectlSandbox({ image: "img", exec: notFound.exec }).renew("gone"), { present: false });
+  assert.deepEqual(await kubectlSandbox({ exec: notFound.exec }).renew("gone"), { present: false });
 
   const down = fakeExec({
     annotate: () => {
@@ -259,14 +285,14 @@ test("renew(): NotFound is absent; any other kubectl failure THROWS (unknown is 
   });
   // Rejecting is load-bearing: resolving `{present: false}` here would settle every live run
   // in the namespace the first time the API server hiccuped.
-  await assert.rejects(() => kubectlSandbox({ image: "img", exec: down.exec }).renew("sb"), /refused/);
+  await assert.rejects(() => kubectlSandbox({ exec: down.exec }).renew("sb"), /refused/);
 });
 
 test("renew(): an operator that publishes no podUID degrades to presence-only continuity", async () => {
   const { exec } = fakeExec({
     annotate: () => JSON.stringify({ status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080" } }),
   });
-  assert.deepEqual(await kubectlSandbox({ image: "img", exec }).renew("sb-1"), {
+  assert.deepEqual(await kubectlSandbox({ exec }).renew("sb-1"), {
     present: true,
     identity: undefined,
   });
@@ -274,7 +300,7 @@ test("renew(): an operator that publishes no podUID degrades to presence-only co
 
 test("attach execs the idempotent ADR-0004 script in the harness container", async () => {
   const { exec, calls } = fakeExec({ exec: () => "" });
-  const port = kubectlSandbox({ image: "img", exec });
+  const port = kubectlSandbox({ exec });
 
   const spec = {
     repos: [
@@ -289,6 +315,7 @@ test("attach execs the idempotent ADR-0004 script in the harness container", asy
 
   const argv = calls[0]!.args;
   assert.deepEqual(argv.slice(0, 2), ["exec", "pod/sb-3"]);
+  // Still `harness`, and still right after ADR-0037: the wrapped Sandbox Image IS that container.
   assert.ok(argv.includes("harness"), "targets the harness container");
   const script = argv[argv.length - 1]!;
   assert.match(script, /git clone --shared --no-checkout '\/repos\/app\/default' '\/work\/app\/default'/);

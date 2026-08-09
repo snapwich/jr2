@@ -24,12 +24,17 @@ class FakeSandbox implements SandboxPort {
   /** Fast enough that a test can observe several ticks without sleeping on wall clock. */
   leaseIntervalMs = 5;
 
+  /** The Sandbox Image NAME each provision was asked for (ADR-0037) — resolution is the port's. */
+  images: Array<string | undefined> = [];
+
   async provision(req: {
     name: string;
     runId: string;
     workflow: string;
+    image?: string;
   }): Promise<{ endpoint: string; identity?: string }> {
     this.calls.push(`provision:${req.name}`);
+    this.images.push(req.image);
     this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
     return { endpoint: "http://sandbox.test", identity: this.identity };
   }
@@ -197,6 +202,35 @@ test("a spec deriving undefined fields (missing run input) faults BEFORE any pod
     !sandbox.calls.some((c) => c.startsWith("provision:")),
     "faulted before the port — a bad spec never costs a pod",
   );
+});
+
+test("spec.image: the NAME reaches the port untouched; a malformed one faults before any pod", async () => {
+  // ADR-0037: what the Sandbox is MADE OF is spec vocabulary now, but only as a NAME — resolution
+  // to a ref is the port's, so the Machine stays cluster-agnostic and no content-addressed tag ever
+  // lands in a snapshot.
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const named = workspace(body, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b", image: "rust" }));
+  host.register({ name: "named", machine: named, provide: () => ({}) });
+
+  const { runId } = await host.start("named");
+  await waitFor(() => host.gates(runId).length === 1);
+  assert.deepEqual(sandbox.images, ["rust"]);
+
+  // Shape only — an image that does not EXIST is unknowable here (the map lives in the cluster),
+  // so that failure belongs to provision.
+  const bad = new FakeSandbox();
+  const host2 = new RunHost({ store: await mkStore(), sandbox: bad });
+  const empty = workspace(body, () => ({
+    repos: [{ name: "app", baseRef: "main" }],
+    branch: "b",
+    image: "" as string,
+  }));
+  host2.register({ name: "empty", machine: empty, provide: () => ({}) });
+  const run2 = await host2.start("empty");
+  await waitFor(() => host2.status(run2.runId) === undefined);
+  assert.match((await host2.read(run2.runId))?.fault ?? "", /workspace spec invalid: image \(got ""\)/);
+  assert.deepEqual(bad.calls, [], "a bad spec never costs a pod");
 });
 
 test("a terminal fault leaves the pod inspectable and stamps no lease (idle GC reaps it)", async () => {

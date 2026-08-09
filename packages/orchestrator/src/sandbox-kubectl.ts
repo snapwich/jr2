@@ -12,6 +12,12 @@
 // All four operations are idempotent (SandboxPort contract): apply is create-or-update, attach
 // guards every clone/worktree, delete ignores absent.
 //
+// WHICH IMAGE a Sandbox runs is not an option here (ADR-0037/0038). The spec carries a NAME; the
+// resolved name→ref map arrives as a mounted ConfigMap and is read on EVERY provision, so a
+// `j2 up` that rebuilds an image reaches future Sandboxes without rolling this process. The pod's
+// primary container is the wrapped Sandbox Image — the user's toolchain with j2's runtime injected
+// at `/opt/j2` — which is why there is no longer a User Container beside it.
+//
 // This is also where the ADAPTER is injected (ADR-0013). The operator needs no change to carry it:
 // ADR-0001 made `Sidecars` generic container fragments it schedules WITHOUT understanding, so the
 // Adapter is exactly that — a container with an image, an env, and a Secret. What this module
@@ -25,7 +31,9 @@
 // the Secret re-applies as a no-op.
 
 import { execFile } from "node:child_process";
-import { CA_CONFIGMAP, REPOS_PVC } from "./names.ts";
+import { join } from "node:path";
+import { readImageRefs, resolveSandboxImage, type ImageRefs } from "./images.ts";
+import { CA_CONFIGMAP, IMAGES_KEY, IMAGES_MOUNT, REPOS_PVC } from "./names.ts";
 import { sandboxToken } from "./tokens.ts";
 import type { HarnessEnvFromSource, HarnessEnvVar } from "./config.ts";
 import type { WorkspaceSpec, SandboxPort } from "./workspace.ts";
@@ -37,15 +45,10 @@ export type KubectlExec = (args: string[], opts?: { input?: string }) => Promise
 const CA_MOUNT = "/etc/j2/ca";
 
 export type KubectlSandboxOptions = {
-  /** The Harness image every Sandbox runs (one image, many personas — ADR-0001). */
-  image: string;
-  /** The Adapter image (ADR-0013) — the Agent's MCP surface, and the pod's only credential holder.
-   * Absent = no Adapter is injected, so the Agent has no route to its Machine. */
-  adapterImage?: string;
-  /** The User Container image (ADR-0005) — user-owned, rides the generic sidecar list sharing the
-   * worktrees. Must have a blocking entrypoint (j2 does not inject one). Absent = no third
-   * container. */
-  userImage?: string;
+  /** The mounted image map (ADR-0037/0038) — every ref this port can name, written by `j2 up`.
+   * Default: the `j2-images` ConfigMap's mount. No image option here any more: which image a
+   * Sandbox runs is a NAME on the spec, resolved against this map at provision. */
+  imagesPath?: string;
   /** Extra env for the HARNESS container (`harness.env`) — merged ahead of the
    * mechanism-owned vars, which win on collision. */
   env?: HarnessEnvVar[];
@@ -53,9 +56,8 @@ export type KubectlSandboxOptions = {
    * Harness gets its model API key without the value ever touching j2 config. */
   envFrom?: HarnessEnvFromSource[];
   /** The instance ships a private-CA bundle (ADR-0020): mount the `j2-ca` ConfigMap into the
-   * HARNESS container and point NODE_EXTRA_CA_CERTS at it — never the Adapter (it speaks plain
-   * HTTP to the Orchestrator's Service) and never the User Container (user-owned image; the same
-   * asymmetry as env/envFrom above). */
+   * HARNESS container and point NODE_EXTRA_CA_CERTS at it — never the Adapter, which speaks plain
+   * HTTP to the Orchestrator's Service (the same asymmetry as env/envFrom above). */
   caBundle?: boolean;
   /**
    * Where the Adapter reaches the Orchestrator FROM INSIDE THE CLUSTER — the orchestrator's own
@@ -86,8 +88,9 @@ export type KubectlSandboxOptions = {
   exec?: KubectlExec;
 };
 
-export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
+export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const ns = opts.namespace ?? "default";
+  const imagesPath = opts.imagesPath ?? join(IMAGES_MOUNT, IMAGES_KEY);
   const workRoot = opts.workRoot ?? "/work";
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const pollMs = opts.pollMs ?? 1_000;
@@ -105,9 +108,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     typeof opts.orchestratorUrl === "function" ? opts.orchestratorUrl() : opts.orchestratorUrl;
 
   /** The Adapter, as the operator sees it: an opaque container fragment (ADR-0001). */
-  const adapterSidecar = (name: string) => ({
+  const adapterSidecar = (name: string, refs: ImageRefs) => ({
     name: "adapter",
-    image: opts.adapterImage,
+    image: refs.adapter,
     env: [
       { name: "J2_ORCHESTRATOR_URL", value: orchestratorUrl() },
       { name: "J2_SANDBOX", value: name },
@@ -119,25 +122,14 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
     envFrom: [{ secretRef: { name: secretName(name) } }],
   });
 
-  /** The User Container (ADR-0005): a user-owned image beside the Harness, sharing the worktrees.
-   * `/work` is the point; the RO `/repos` rides along because the worktrees' `--shared` clones
-   * borrow objects from it — a `git log` in the user's shell needs them. No command is injected
-   * (j2 does not own the image; its entrypoint must block) and no user env/envFrom lands here:
-   * that stays Harness-only, so a human shell does not inherit the agent's model keys. */
-  const userSidecar = () => ({
-    name: "user",
-    image: opts.userImage,
-    volumeMounts: [
-      { name: "work", mountPath: workRoot },
-      { name: "repos", mountPath: "/repos", readOnly: true },
-    ],
-  });
-
-  /** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim). */
-  const sidecarsFor = (name: string) => [
-    ...(opts.adapterImage ? [adapterSidecar(name)] : []),
-    ...(opts.userImage ? [userSidecar()] : []),
-  ];
+  /** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim). The
+   * Adapter is ALWAYS here now: with its ref in the image map there is no "no adapter configured"
+   * state left to branch on, and a Sandbox without one is a pod that comes up Ready and then parks
+   * its Machine forever on a tool call it cannot make (ADR-0013). A map with no `adapter` fails the
+   * read instead (images.ts). The User Container is gone entirely (ADR-0037): the wrap already ate
+   * it — a Sandbox Image is the user's tools PLUS the Harness, so `kubectl exec -c harness` is the
+   * human's shell on the agent's own filesystem. */
+  const sidecarsFor = (name: string, refs: ImageRefs) => [adapterSidecar(name, refs)];
 
   // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
   // config) first, then the mechanism-owned vars (the Adapter address, the CA trust path), which
@@ -146,12 +138,12 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
   // credential.
   const harnessEnv = (): HarnessEnvVar[] => [
     ...(opts.env ?? []),
-    ...(opts.adapterImage ? [{ name: "J2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` }] : []),
+    { name: "J2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` },
     ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
   ];
 
-  const crFor = (req: { name: string; runId: string; workflow: string }) => {
-    const sidecars = sidecarsFor(req.name);
+  const crFor = (req: { name: string; runId: string; workflow: string; image?: string }, refs: ImageRefs) => {
+    const sidecars = sidecarsFor(req.name, refs);
     return {
       apiVersion: "core.j2.dev/v1alpha1",
       kind: "Sandbox",
@@ -162,14 +154,17 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
         labels: { "j2.dev/run": req.runId, "j2.dev/workflow": req.workflow },
       },
       spec: {
-        image: opts.image,
+        // The wrapped Sandbox Image (ADR-0037) — the user's toolchain with j2's runtime injected at
+        // `/opt/j2`, so this container IS both the Harness and the human's `exec` shell.
+        image: resolveSandboxImage(refs, req.image),
         idleTimeout: opts.idleTimeout ?? "30m",
-        ...(harnessEnv().length ? { env: harnessEnv() } : {}),
+        // Never empty any more: J2_ADAPTER_URL is unconditional, so the "omit an empty env" branch
+        // this used to carry was unreachable.
+        env: harnessEnv(),
         ...(opts.envFrom?.length ? { envFrom: opts.envFrom } : {}),
         // What the AGENT gets: an address on its own loopback, and no credential anywhere. This is
-        // the only thing in the pod that tells it how to reach its Machine (ADR-0013). The User
-        // Container (ADR-0005), when configured, rides the same opaque list.
-        ...(sidecars.length ? { sidecars } : {}),
+        // the only thing in the pod that tells it how to reach its Machine (ADR-0013).
+        sidecars,
         volumes: [
           // The in-cluster source volume (ADR-0004/0019): the same PVC the orchestrator's boot
           // reconcile writes, mounted read-only here. No hostPath, nothing kind-special.
@@ -177,16 +172,17 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
           // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
           // both load-bearing: the operator runs every Sandbox container as an unprivileged uid
           // (ADR-0001), which cannot mkdir under `/` — so an image-owned `/work` would make every
-          // attach fail — and ADR-0005 has the User Container sharing the worktrees with the
-          // Harness, which only a pod volume can do. An emptyDir lands 0777, so it is writable
-          // whatever uid the Harness image happens to run as: no image contract beyond `git`.
+          // attach fail — and `/work` is the wrap's `WORKDIR` (ADR-0037), the spot a human's
+          // `kubectl exec` lands on, which must hold the same worktrees the Agent writes. An
+          // emptyDir lands 0777, so it is writable whatever uid the Sandbox Image runs as: no
+          // image contract beyond `git`.
           { name: "work", emptyDir: {} },
           ...(opts.caBundle ? [{ name: "ca", configMap: { name: CA_CONFIGMAP } }] : []),
         ],
         // Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in a
         // Sandbox can `gc` the object store its `--shared` clones borrow from.
         // CR-level volumeMounts land on the HARNESS container only (the operator's contract) —
-        // exactly the CA-trust asymmetry ADR-0020 wants.
+        // exactly the CA-trust asymmetry ADR-0020 wants: the Adapter never inherits it.
         volumeMounts: [
           { name: "repos", mountPath: "/repos", readOnly: true },
           { name: "work", mountPath: workRoot },
@@ -226,7 +222,6 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
    * Adapter that has been holding it all along stays valid.
    */
   const applyTokenSecret = async (name: string): Promise<void> => {
-    if (!opts.adapterImage) return;
     if (!opts.signingKey) throw new Error("kubectlSandbox: an Adapter needs a signingKey to mint its Sandbox token");
     // Fail the provision rather than ship an Adapter that cannot reach the Orchestrator. A mute
     // Adapter is the worst possible outcome: the pod comes up Ready, the Agent is admitted, its
@@ -255,7 +250,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
    * pod, so it is not worth failing the provision over.
    */
   const ownSecret = async (name: string, uid: string | undefined): Promise<void> => {
-    if (!opts.adapterImage || !uid) return;
+    if (!uid) return;
     const ownerRef = [
       { apiVersion: "core.j2.dev/v1alpha1", kind: "Sandbox", name, uid, controller: true, blockOwnerDeletion: false },
     ];
@@ -273,8 +268,16 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
 
   return {
     async provision(req) {
+      // Read PER PROVISION, and first (ADR-0038). Not hoisted into `kubectlSandbox()`: a boot-time
+      // read would freeze the map for the process lifetime, which is precisely the Deployment-env
+      // behavior the ConfigMap mount was chosen over — the point of the mount is that a `j2 up`
+      // reaches future Sandboxes without rolling the Orchestrator. Reading before the Secret apply
+      // also means an unknown image name costs nothing: no Secret, no CR, nothing to clean up.
+      const refs = await readImageRefs(imagesPath);
+      const cr = crFor(req, refs);
+
       await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start
-      await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(crFor(req)) });
+      await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(cr) });
 
       const deadline = Date.now() + readyTimeoutMs;
       let owned = false;
@@ -298,6 +301,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions): SandboxPort {
 
     async attach(req) {
       const { script, workdir, repos, review } = attachScript(req.spec, { reposMount: "/repos", workRoot });
+      // `-c harness` is unchanged and still correct after ADR-0037: the wrapped Sandbox Image IS
+      // the harness container — the user's toolchain with j2's runtime injected at `/opt/j2`.
       await exec(["exec", `pod/${req.name}`, ...base, "-c", "harness", "--", "sh", "-ec", script]);
       return { workdir, repos, ...(review ? { review } : {}) };
     },

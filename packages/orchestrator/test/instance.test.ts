@@ -12,7 +12,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { startInstance } from "../src/instance.ts";
+import { discoverImages, startInstance } from "../src/instance.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
@@ -252,6 +252,48 @@ test("reload picks up added, changed, and removed workflow files (dev hot-reload
     await assert.rejects(inst.host.start("alpha"), /no workflow registered as "alpha"/);
   } finally {
     await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverImages: dirname = name, `_`-prefixed skipped, sorted; absent images/ is empty", async () => {
+  // ADR-0037's discovery, the third member of the filename-discovery family (`workflows/`,
+  // `agents/`, `images/`) — same doctrine, one difference proven below.
+  const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
+  try {
+    assert.deepEqual(await discoverImages(dir), [], "an instance that authored none");
+
+    for (const name of ["rust", "default", "_scratch"]) {
+      await mkdir(join(dir, "images", name), { recursive: true });
+      await writeFile(join(dir, "images", name, "Dockerfile"), "FROM node:24-slim\n");
+    }
+    await writeFile(join(dir, "images", "README.md"), "not an image");
+
+    assert.deepEqual(await discoverImages(dir), [
+      {
+        name: "default",
+        dir: join(dir, "images", "default"),
+        dockerfile: join(dir, "images", "default", "Dockerfile"),
+      },
+      { name: "rust", dir: join(dir, "images", "rust"), dockerfile: join(dir, "images", "rust", "Dockerfile") },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverImages: a subdirectory with no Dockerfile THROWS, naming the missing path", async () => {
+  // Unlike `agents/README.md`, a SUBDIRECTORY of images/ has no other reason to exist — staying
+  // quiet would leave an image its author believes in and no converge ever builds.
+  const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
+  try {
+    await mkdir(join(dir, "images", "golang"), { recursive: true });
+    await assert.rejects(discoverImages(dir), (err: Error) => {
+      assert.match(err.message, /Sandbox Image "golang" has no Dockerfile/);
+      assert.ok(err.message.includes(join(dir, "images", "golang", "Dockerfile")));
+      return true;
+    });
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -33,10 +33,17 @@ import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from
 const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
 
 /** What to attach, in workspace vocabulary only (ADR-0012 boundary): which repos on what base
- * ref, and the one branch the body works on. Workflow configuration never enters the spec. */
+ * ref, the one branch the body works on — and, since ADR-0037, what the Sandbox is MADE OF.
+ * Workflow configuration still never enters the spec; pod composition is admitted because it is
+ * the wrapper's business in exactly the way its worktrees are. */
 export type WorkspaceSpec = {
   repos: Array<{ name: string; baseRef: string }>;
   branch: string;
+  /** The Sandbox Image (ADR-0037): an `images/<name>` DIRNAME, never a ref. Resolution to a ref is
+   * the port's, which keeps the Machine cluster-agnostic and — the load-bearing half — keeps a
+   * content-addressed tag out of the persisted snapshot, where it would outlive the image it
+   * names. Absent → `images/default`, then the stock Harness. */
+  image?: string;
   /** Attach the detached review worktree at this sha (ADR-0028): `<branchDir>-review`, a sibling
    * of the branch worktree, forced to exactly this sha on every attach. Creation-time seat only;
    * the per-round refresh verb (the sha moves between review rounds) is a later, workflow-driven
@@ -81,8 +88,14 @@ export type Continuity = { present: false } | { present: true; identity?: string
 export interface SandboxPort {
   /** Ensure the Sandbox CR exists (labeled with its run for `j2 ls`) and await `phase: Ready`;
    * resolve with the Harness endpoint the orchestrator can reach, and the identity the lease
-   * will hold this workspace to. */
-  provision(req: { name: string; runId: string; workflow: string }): Promise<{ endpoint: string; identity?: string }>;
+   * will hold this workspace to. `image` is the spec's Sandbox Image NAME (ADR-0037) — the port
+   * resolves it to a ref, and an unknown name fails here rather than converge-time. */
+  provision(req: {
+    name: string;
+    runId: string;
+    workflow: string;
+    image?: string;
+  }): Promise<{ endpoint: string; identity?: string }>;
   /** Post-Ready attach (ADR-0004): per repo, `git clone --shared --no-checkout` from the RO
    * `default/` volume, then a branch worktree sibling — and, with `spec.reviewSha`, the detached
    * review worktree (ADR-0028). Resolves with the worktree paths. */
@@ -195,6 +208,11 @@ function assertSpec(spec: WorkspaceSpec): void {
     });
   if (spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
     bad.push(`reviewSha (got ${JSON.stringify(spec?.reviewSha)})`);
+  // Shape only. Whether the NAME exists is unanswerable here — the image map lives in the cluster
+  // and this runs before any port call — so an unknown name fails at provision (ADR-0037), loudly
+  // and listing what was discovered.
+  if (spec?.image !== undefined && (typeof spec.image !== "string" || !spec.image))
+    bad.push(`image (got ${JSON.stringify(spec?.image)})`);
   if (bad.length) {
     throw new Error(
       `workspace spec invalid: ${bad.join("; ")} — the spec derives from run input; does ` +
@@ -212,6 +230,8 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
         name: workspaceName(binding.runId, input.wsId),
         runId: binding.runId,
         workflow: binding.workflow,
+        // The NAME, straight through (ADR-0037) — the port owns resolution.
+        ...(input.spec.image !== undefined ? { image: input.spec.image } : {}),
       });
     },
   );

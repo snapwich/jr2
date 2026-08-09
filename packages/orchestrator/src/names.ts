@@ -20,6 +20,18 @@ export const INSTANCE_HARNESS_PORT = 8080;
 /** The Agent definitions + harness config ConfigMap the stock Harness boots from (ADR-0018). */
 export const AGENTS_CONFIGMAP = "j2-agents";
 
+/** The resolved image map `j2 up` writes and every provision reads (ADR-0037/0038): name → ref for
+ * the Harness, the Adapter, and each `images/<name>` Sandbox Image.
+ *
+ * MOUNTED, never projected into env — the load-bearing part. A mount updates in place through
+ * kubelet propagation, so adding a CLI to a Dockerfile costs one propagation window; the same map
+ * as Deployment env would be a pod-template change, rolling the Orchestrator and putting every
+ * live run through snapshot restore (ADR-0007) for a change that affects only FUTURE Sandboxes. */
+export const IMAGES_CONFIGMAP = "j2-images";
+export const IMAGES_MOUNT = "/etc/j2/images";
+/** The ConfigMap key, hence the filename under the mount — the two-sided contract's other half. */
+export const IMAGES_KEY = "images.json";
+
 /** The HARNESS containers' env Secret — Agent creds only, never the Instance token (ADR-0013). */
 export const HARNESS_ENV_SECRET = "j2-harness-env";
 

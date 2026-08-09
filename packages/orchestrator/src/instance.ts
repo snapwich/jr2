@@ -15,7 +15,8 @@
 // `input.endpoint`). The host injects NOTHING into workflow machines; `WorkflowDef.provide`
 // remains a seam for tests, not a wiring obligation.
 
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
@@ -222,4 +223,47 @@ export async function discoverModules(moduleDir: string): Promise<Array<{ name: 
     .filter((f) => f.endsWith(".ts") && !f.endsWith(".d.ts") && !f.startsWith("_"))
     .sort()
     .map((f) => ({ name: f.slice(0, -3), file: join(moduleDir, f) }));
+}
+
+/**
+ * The Sandbox Images an instance authored (ADR-0037): every `<dir>/images/<name>/Dockerfile`, name
+ * = the DIRNAME (the build context is that directory, so the image's content hash covers exactly
+ * what its build can see). Same doctrine as {@link discoverModules} — filename discovery is the one
+ * registration mechanism, an ABSENT dir is empty, `_`-prefixed entries are helpers, sorted — with
+ * one difference: a subdirectory holding no `Dockerfile` THROWS, naming the missing path. Unlike
+ * `agents/README.md`, a subdirectory of `images/` has no other reason to exist, so silence there
+ * would be a Sandbox Image the author believes in and no converge ever builds.
+ *
+ * The Orchestrator process never calls this — refs reach it resolved, through the `j2-images`
+ * ConfigMap (images.ts). It lives here so the convention has ONE implementation, beside the two it
+ * mirrors, rather than a second copy in the CLI that can drift.
+ */
+export async function discoverImages(dir: string): Promise<Array<{ name: string; dir: string; dockerfile: string }>> {
+  const imagesDir = join(dir, "images");
+  let entries: Dirent[];
+  try {
+    entries = await readdir(imagesDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const names = entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
+    .map((e) => e.name)
+    .sort();
+  const found: Array<{ name: string; dir: string; dockerfile: string }> = [];
+  for (const name of names) {
+    const imageDir = join(imagesDir, name);
+    const dockerfile = join(imageDir, "Dockerfile");
+    try {
+      await stat(dockerfile);
+    } catch {
+      throw new Error(
+        `Sandbox Image "${name}" has no Dockerfile (${dockerfile}) — a directory under \`images/\` IS an ` +
+          "image (ADR-0037: dirname = name, that directory = the build context).",
+      );
+    }
+    found.push({ name, dir: imageDir, dockerfile });
+  }
+  return found;
 }
