@@ -879,6 +879,33 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   assert.deepEqual(bearer.valueFrom, { secretKeyRef: { name: "j2-instance", key: "J2_INSTANCE_HARNESS_TOKEN" } });
 });
 
+test("both readiness probes set a period — a ~1s boot must not be billed as a 10s rollout wait", async () => {
+  const root = await withDecisioner(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const list = w.kube.applied.find((m) => m.includes(`"j2-orchestrator"`) && m.includes(`"kind":"List"`))!;
+  const orchestrator = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.kind === "Deployment" && i.metadata.name === "j2-orchestrator",
+  )!;
+  const { deployment: harness } = findInstanceHarness(w);
+
+  // Measured on kind: the Orchestrator answers /healthz 1.1s after its container starts, and the
+  // omitted period (k8s default 10s) made the rollout 11.0s. The period is the rollout wait.
+  //
+  // The threshold is pinned BESIDE it, because the period alone would have paid for the faster
+  // rollout with the stall tolerance: one knob sets both, and these pods are single-replica, so
+  // dropping the only endpoint is an outage rather than a failover. 15 × 2s holds the 30s that the
+  // default 3 × 10s gave. A future edit that shortens the period must move this too.
+  for (const probe of [
+    orchestrator.spec.template.spec.containers[0].readinessProbe,
+    harness!.spec.template.spec.containers[0].readinessProbe,
+  ]) {
+    assert.equal(probe.periodSeconds, 2);
+    assert.equal(probe.periodSeconds * probe.failureThreshold, 30, "the stall tolerance the default period gave");
+  }
+});
+
 test('no "none" definitions → nothing new deploys, and a stale Instance Harness is deleted on converge', async () => {
   // Agents exist, none of them Menu-only: the feature stays invisible (ADR-0031).
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", { coder: "anthropic/claude-x" });

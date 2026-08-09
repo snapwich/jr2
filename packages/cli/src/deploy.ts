@@ -274,9 +274,23 @@ export function instanceObjects(opts: {
                   // it costs one kubelet propagation window instead of a rollout.
                   { name: "images", mountPath: IMAGES_MOUNT, readOnly: true },
                 ],
+                // The period, not the boot, is what `up`'s rollout wait measures. Measured: the
+                // container answers `/healthz` 1.1s after it starts, and the default 10s period
+                // billed that as 11.0s — one probe fired before the server was up, then a whole
+                // missed period. 2s quantizes a ~1s boot at ~1s.
+                //
+                // `failureThreshold` is then raised to hold the tolerance the default period gave,
+                // because ONE knob sets two unrelated things: how fast a boot is noticed, and how
+                // long a running pod may stall before the kubelet takes it out of service. The
+                // Orchestrator is `replicas: 1` (CONTEXT.md: single writer), so its Service has
+                // exactly one endpoint and losing it is an outage, not a failover — and its store
+                // writes are synchronous, so a GC pause or a node busy with a docker build can
+                // silence `/healthz` for seconds. 15 × 2s keeps the 30s the default 3 × 10s gave.
                 readinessProbe: {
                   httpGet: { path: "/healthz", port: ORCHESTRATOR_PORT },
                   initialDelaySeconds: 1,
+                  periodSeconds: 2,
+                  failureThreshold: 15,
                 },
               },
             ],
@@ -386,7 +400,15 @@ export function instanceHarnessObjects(opts: {
     envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(opts.harness?.envFrom ?? [])],
     ...(opts.caBundle ? { volumeMounts: [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] } : {}),
     // The operator probes a Sandbox's Harness the same way: serving = the socket accepts.
-    readinessProbe: { tcpSocket: { port: INSTANCE_HARNESS_PORT }, initialDelaySeconds: 1 },
+    // Period and threshold as reasoned on the Orchestrator above: the default 10s period is the
+    // rollout wait rather than the boot, and the threshold then has to carry the stall tolerance
+    // the period used to supply. This pod is single-replica too.
+    readinessProbe: {
+      tcpSocket: { port: INSTANCE_HARNESS_PORT },
+      initialDelaySeconds: 1,
+      periodSeconds: 2,
+      failureThreshold: 15,
+    },
     securityContext: hardenedContainerSecurityContext(),
   };
 

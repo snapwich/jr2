@@ -6,12 +6,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIT_VERSION } from "@j2/orchestrator";
 import {
   buildSandboxImage,
+  contentHash,
   crictlLabels,
   detectKitCheckout,
   formatBytes,
@@ -48,11 +50,15 @@ function nullPort(): BuildPort {
   };
 }
 
-/** A port that materializes `files(out)` — what `pnpm deploy` would have written into the bundle. */
-function stagingPort(files: (out: string) => Record<string, string>): BuildPort {
+/** A port that materializes `files(out)` — what `pnpm deploy` would have written into the bundle.
+ * `out` is the real scratch dir `stageInstanceBundle` chose, so a fake can bake it into the bundle
+ * exactly as pnpm does, and the seal that follows is the real one. */
+function stagingPort(files: (out: string) => Record<string, string | Uint8Array>): BuildPort {
   return {
     ...nullPort(),
     bundle: async (_dir, out) => {
+      // `pnpm deploy` creates its target; a fake that resolves `out` must be able to see it too.
+      await mkdir(out, { recursive: true });
       for (const [rel, content] of Object.entries(files(out))) {
         await mkdir(join(out, dirname(rel)), { recursive: true });
         await writeFile(join(out, rel), content);
@@ -102,19 +108,150 @@ function kitFiles(harnessSrc: string): Record<string, string> {
   };
 }
 
-test("the bundle hash ignores the stager's own bookkeeping, so identical sources address identically", async () => {
-  // `pnpm deploy` writes two things that vary run to run without the image varying at all:
-  // `.modules.yaml` stamps `prunedAt`, and `.bin/*` shims embed the absolute staging path — which
-  // is a fresh temp dir each run, and wrong inside the container regardless (the bundle is COPY'd
-  // to /instance). Hashing them made every converge look stale, which is a cache that never hits.
-  const port = (n: number) =>
-    stagingPort((out) => ({
+/** What `pnpm deploy --legacy` writes that names where and when it staged. MEASURED, not imagined —
+ * a shim's `NODE_PATH` is a CHAIN, and it holds the staging path in two spellings plus the
+ * `node_modules` of every directory above it:
+ *
+ *   <realpath(out)>/node_modules/.pnpm/<pkg>/node_modules   ← the resolved form, always present
+ *   <out>/node_modules/.pnpm/node_modules                   ← the form `mkdtemp` returned
+ *   <dirname(realpath(out))>/node_modules                   ← one ancestor rung, and so on to `/`
+ *
+ * The two spellings coincide only where the temp root is a real directory. They diverge on macOS,
+ * where `os.tmpdir()` is `/var/folders/…` and `/var` is a symlink to `/private/var` — so a seal
+ * that knows only the returned form leaves the random `mkdtemp` component behind in the resolved
+ * one. The ancestor rungs carry it too: on macOS the per-boot `/var/folders/<xy>/<random>` sits
+ * ABOVE the bundle. `.modules.yaml` is nothing but a record of where and when. */
+function pnpmStagingPort(prunedAt: string): BuildPort {
+  return stagingPort((out) => {
+    const real = realpathSync(out);
+    const chain = (pkg: string): string =>
+      `${real}/node_modules/.pnpm/${pkg}/node_modules:${out}/node_modules/.pnpm/node_modules:${dirname(real)}/node_modules:/node_modules`;
+    return {
       "package.json": `{"name":"inst"}`,
-      "node_modules/.modules.yaml": `prunedAt: Mon, 20 Jul 2026 00:04:${n} GMT\n`,
-      "node_modules/.bin/node-which": `export NODE_PATH="${out}/node_modules/.pnpm/which"\n`,
-    }));
+      "node_modules/.modules.yaml": `prunedAt: Mon, 20 Jul 2026 00:04:${prunedAt} GMT\nvirtualStoreDir: ${out}/node_modules/.pnpm\n`,
+      "node_modules/.bin/tsx": `export NODE_PATH="${chain("tsx@4")}"\nexec node "$basedir/../tsx/dist/cli.mjs" "$@"\n`,
+      "node_modules/.bin/which": `export NODE_PATH="${chain("which@4")}"\n`,
+      "node_modules/.pnpm/tsx@4/node_modules/tsx/dist/cli.mjs": "export const cli = 1;\n",
+    };
+  });
+}
 
-  assert.equal(await hashOf(port(14)), await hashOf(port(15)), "same sources, two stagings, one address");
+/** Run `body` with `os.tmpdir()` pointed at a SYMLINK to a real directory — the macOS shape, which
+ * is where the returned and resolved spellings of a staging path diverge. Restores `TMPDIR`. */
+async function withSymlinkedTmpdir(body: (root: string) => Promise<void>): Promise<void> {
+  const base = await mkdtemp(join(tmpdir(), "j2-symtmp-"));
+  const real = join(base, "real");
+  const link = join(base, "link");
+  await mkdir(real);
+  await symlink(real, link);
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = link;
+  try {
+    await body(base);
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+    await rm(base, { recursive: true, force: true });
+  }
+}
+
+/** Stage one Instance twice. Each call gets its own scratch dir, so the pair IS the experiment;
+ * both bundles stay on disk until the caller disposes them, because the claim is about bytes. */
+async function stageTwice(port: BuildPort, other = port) {
+  const root = await mkdtemp(join(tmpdir(), "j2-build-"));
+  const a = await stageInstanceBundle(port, root);
+  const b = await stageInstanceBundle(other, root);
+  return { a, b, dispose: () => Promise.all([a.dispose(), b.dispose()]) };
+}
+
+/** Every byte of a bundle, nothing excluded — the property the image tag is supposed to have. */
+const bundleBytes = (dir: string) => contentHash([dir], "bundle-bytes", new Set());
+
+test("one Instance staged twice is byte-identical: the bundle records neither where nor when it was staged", async () => {
+  // ADR-0038. The tag addresses the materialized bundle, so anything in it that names its own
+  // scratch dir — or the minute it was written — makes one tag name many images, and "present
+  // implies current" stops being true for the one image every Instance runs. The seal answers both
+  // BEFORE the hash: the staging path is rewritten to /instance, the WORKDIR the image holds the
+  // bundle at, so the shims go from WRONG to CORRECT rather than merely stable; `.modules.yaml` is
+  // deleted. Excluding those entries instead named exactly the files that varied, so the tag stood
+  // still while the bytes moved — the mechanism that should have exposed the drift was hiding it.
+  const { a, b, dispose } = await stageTwice(pnpmStagingPort("14"), pnpmStagingPort("15"));
+  try {
+    assert.equal(await bundleBytes(a.dir), await bundleBytes(b.dir), "two stagings, one set of bytes");
+    assert.equal(a.hash, b.hash, "…and therefore one address");
+
+    // Correct, not merely stable: this is the path the shim resolves against inside the container.
+    // Every rung of the chain lands somewhere real — the bundle's own entries at /instance, the
+    // rungs above it at the root, which is where /instance's ancestors are.
+    assert.equal(
+      await readFile(join(a.dir, "node_modules", ".bin", "tsx"), "utf8"),
+      `export NODE_PATH="/instance/node_modules/.pnpm/tsx@4/node_modules:/instance/node_modules/.pnpm/node_modules:` +
+        `/node_modules:/node_modules"\nexec node "$basedir/../tsx/dist/cli.mjs" "$@"\n`,
+    );
+    await assert.rejects(stat(join(a.dir, "node_modules", ".modules.yaml")), "a record of where and when, deleted");
+  } finally {
+    await dispose();
+  }
+});
+
+test("the seal holds where the temp root is a symlink — the macOS shape", async () => {
+  // `os.tmpdir()` is `/var/folders/…` on macOS and `/var` is a symlink to `/private/var`, so pnpm
+  // bakes the RESOLVED spelling of a path `mkdtemp` handed back unresolved. A seal anchored on the
+  // returned spelling alone rewrites some entries and leaves the random component in the rest —
+  // green on Linux, and on a Mac every converge re-tags and re-loads the whole instance image while
+  // the shims keep naming a directory the container does not have. The ancestor rungs are the same
+  // failure one level up: on macOS they carry a per-boot random segment of their own.
+  await withSymlinkedTmpdir(async (root) => {
+    const { a, b, dispose } = await stageTwice(pnpmStagingPort("14"), pnpmStagingPort("15"));
+    try {
+      assert.equal(await bundleBytes(a.dir), await bundleBytes(b.dir), "two stagings, one set of bytes");
+      assert.equal(a.hash, b.hash, "…and therefore one address");
+      const shim = await readFile(join(a.dir, "node_modules", ".bin", "tsx"), "utf8");
+      assert.ok(!shim.includes(root), `the shim still names the staging root:\n${shim}`);
+      assert.ok(!shim.includes(realpathSync(root)), `the shim still names the RESOLVED staging root:\n${shim}`);
+    } finally {
+      await dispose();
+    }
+  });
+});
+
+test("a non-UTF-8 file holding the staging path is a loud failure, never a blind rewrite", async () => {
+  // /instance is SHORTER than the scratch path, so rewriting bytes inside a binary slides every
+  // offset after it and ships an executable that segfaults in a Sandbox instead of a build that
+  // failed on a laptop. j2 does not know how to seal such a file, and says so, naming it.
+  const port = stagingPort((out) => ({
+    "package.json": `{"name":"inst"}`,
+    "node_modules/.pnpm/esbuild@0/node_modules/esbuild/bin/esbuild": Buffer.concat([
+      Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0xc3, 0x28]),
+      Buffer.from(`${out}/node_modules\0`),
+    ]),
+  }));
+
+  await assert.rejects(
+    stageInstanceBundle(port, await mkdtemp(join(tmpdir(), "j2-build-"))),
+    /esbuild\/bin\/esbuild.*not valid UTF-8/s,
+  );
+});
+
+test("a symlink pointing at the staging path is a loud failure — its target is content nothing else sees", async () => {
+  // `contentHash` skips symlinks, and so does the seal's rewrite, so a link naming the scratch dir
+  // would be neither sealed nor addressed: the bundle varies at a tag that never moves, which is
+  // exactly the failure the seal exists to make impossible, arriving with no symptom. pnpm writes
+  // relative targets (a real bundle: 276 links, none absolute), so this is a guard, not a path j2
+  // knows how to repair.
+  const port: BuildPort = {
+    ...nullPort(),
+    bundle: async (_dir, out) => {
+      await mkdir(join(out, "node_modules", ".pnpm"), { recursive: true });
+      await writeFile(join(out, "package.json"), `{"name":"inst"}`);
+      await symlink(`${out}/node_modules/.pnpm/which@4`, join(out, "node_modules", "which"));
+    },
+  };
+
+  await assert.rejects(
+    stageInstanceBundle(port, await mkdtemp(join(tmpdir(), "j2-build-"))),
+    /symlink node_modules\/which points at the staging path/,
+  );
 });
 
 test("the bundle hash tracks the kit — a dependency's sources are image content", async () => {

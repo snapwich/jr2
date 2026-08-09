@@ -25,6 +25,18 @@ of build-it-yourself-first image on top of that.
   file list its Dockerfile copies. Deriving the list by hand means a new `COPY` silently desynchronizes it, which is the
   invisible-stale-image bug being deleted; a needless rebuild in kit dev costs cached-layer seconds. **A Sandbox Image's
   hash includes the resolved harness ref**, because its wrap is `COPY --from=<harness>` (ADR-0037).
+- **A staged bundle records nothing about where or when it was staged.** The instance image's tag addresses the
+  materialized bundle, so anything in that bundle that names its own scratch directory — or the minute it was written —
+  makes one tag name many images, and "present implies current" stops being true for the one image every Instance runs.
+  `pnpm deploy` writes both: each `.bin` shim bakes the staging path into `NODE_PATH`, and `node_modules/.modules.yaml`
+  is nothing but a record of where and when. So the bundle is **sealed** before it is hashed — the staging path is
+  rewritten to `/instance`, the `WORKDIR` the image actually holds it at, so the shims go from _wrong_ to _correct_
+  rather than merely stable; `.modules.yaml` is deleted, beside the `images/` deletion that already precedes the hash. A
+  non-UTF-8 file holding the path is a loud failure, never a blind rewrite. **Nothing is excluded from the hash any
+  more.** The old exclude set named exactly the files that varied, so the tag stood still while the bytes moved and the
+  mechanism that should have exposed the drift was the one hiding it; with an empty set the failure inverts — a bundle
+  that ever varies again re-tags on every converge, in the open, where a rebuild-and-reload every single time is
+  impossible to miss.
 - **One transport branch for all of them**, the one the instance image already uses: `registry` configured → push; kind
   context → `kind load`; neither → fail loudly naming `registry`. `j2 up` records the converged name→ref map as an
   annotation on the Orchestrator Deployment and diffs it, so a steady-state converge spends a directory walk and no
@@ -80,6 +92,22 @@ of build-it-yourself-first image on top of that.
 - **Hashing only the files each Dockerfile copies**, or hashing the whole kit tree via git. The first desynchronizes
   silently; the second rebuilds all three images on any edit anywhere. Per-image directory hashing sits between them and
   errs toward rebuilding.
+- **pnpm's hoisted node linker** (`deploy --node-linker=hoisted`), which emits no absolute path at all and so needs no
+  seal. Verified to work and to leave the artifact all but identical (60 MB vs 62 MB, 3998 vs 4029 files). Rejected on
+  exposure, not on merit: `pnpm deploy` calls itself experimental and j2 already pins `--legacy`, so a third deviation —
+  one that changes the `node_modules` layout of every deployed image on every cluster — buys nothing the seal does not.
+  The seal changes no pnpm behavior; it corrects strings pnpm wrote for a directory the image never sees.
+- **A `.dockerignore` derived from the exclude set.** Rejected: it deletes the shims, and pnpm's shims `exec` through a
+  relative `$basedir` — they WORK in the container. An Instance whose dependency ships a CLI would lose it. The four
+  varying files are content the image should keep, holding a path that is simply wrong.
+- **Freezing the staging path** (a stable scratch dir instead of `mkdtemp`). Rejected twice over: it freezes the wrong
+  path rather than fixing it, and it makes the bundle a function of `TMPDIR` and the instance's location — the same
+  inputs would yield different bytes in CI than on a laptop, which is the property this decision exists to establish. It
+  also collides when one Instance folder is converged concurrently.
+- **`pnpm deploy` inside the Dockerfile**, so the bundle is materialized at `/instance` and no host path can leak.
+  Rejected for now: it needs the whole monorepo plus the pnpm store in the build context (or network during the build
+  for an installed Instance), and it moves the hash off the materialized bundle — the ground ADR-0019 chose
+  deliberately, because hashing guessed inputs instead is how `j2 up` came to skip builds it needed.
 - **Opt-in `--prune-images`.** Rejected: `down` is already the destructive, always-confirms command, and abandoned
   images are discovered at 100% disk rather than at the moment one would think to pass a flag.
 
@@ -95,5 +123,14 @@ of build-it-yourself-first image on top of that.
   that is a first-converge cost, not a per-converge one.
 - **An air-gapped or mirror-only cluster still cannot pull published kit images.** The answer is a registry _prefix_ for
   kit refs, not per-image overrides — a different mechanism, deliberately deferred while nothing is published.
+- **The seal deletes garbage at its source.** Before it, every converge built a new image id under an unchanged tag, so
+  each one orphaned a whole instance image — 465 MB on the `@kind` instance — which ADR-0039's sweep then collected.
+  That was garbage produced by the builder on every run, not by iteration, and the collector was doing work that should
+  never have existed. It also made the delivery real: `kind load` skips a node already holding the id, so the kit images
+  cost under a second each while the instance image was re-transferred every time.
+- **`j2 up` leans on `pnpm deploy`, which pnpm still labels experimental**, at `--legacy`. The seal does not deepen that
+  exposure — no flag changes — but the assumption that staging is otherwise deterministic is now held by a test that
+  stages one Instance into two directories and compares hashes, rather than by trust. A pnpm upgrade that bakes a path
+  somewhere new fails that test instead of silently shipping two images under one tag.
 - **`just` recipes stop being load-bearing**, and the `images:` lines in `features/kind-instance/j2.config.ts` and
   `examples/coding/j2.config.ts` are deleted with the block.

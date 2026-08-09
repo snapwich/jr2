@@ -28,7 +28,7 @@
 
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,12 +95,13 @@ export type BuildPort = {
 };
 
 /**
- * Bundle entries that vary between two stagings of identical sources, and so cannot be part of a
- * content address: `.modules.yaml` stamps `prunedAt`, and `.bin/*` shims embed the absolute staging
- * path — a fresh temp dir every run. Neither is image content in any case; the shims' baked paths
- * are already wrong inside the container, where the bundle lives at /instance.
+ * Nothing is excluded from a BUNDLE hash (ADR-0038). The old exclude set named `.modules.yaml` and
+ * `.bin` — exactly the entries that varied between two stagings — so the tag stood still while the
+ * bytes moved, and the mechanism that should have exposed the drift was the one hiding it. The
+ * bundle is SEALED instead (`sealInstanceBundle`), and the empty default is what guards the seal:
+ * with nothing excluded, a bundle that ever varies again re-tags on every converge, in the open,
+ * where a rebuild-and-reload every single time is impossible to miss.
  */
-const HASH_EXCLUDE = new Set([".modules.yaml", ".bin"]);
 
 /**
  * Exclude sets for hashing KIT source directories — one per build CONTEXT, because an exclusion is
@@ -139,7 +140,7 @@ const NO_EXCLUDE: Set<string> = new Set();
  * twice. Each path contributes its entries under its own index prefix, so two directories that
  * happen to hold the same relative filenames stay distinguishable.
  */
-export async function contentHash(paths: string[], salt: string, exclude: Set<string> = HASH_EXCLUDE): Promise<string> {
+export async function contentHash(paths: string[], salt: string, exclude: Set<string> = new Set()): Promise<string> {
   const h = createHash("sha256");
   h.update(`salt:${salt}\n`);
   const walk = async (root: string, d: string, index: number): Promise<void> => {
@@ -434,8 +435,17 @@ export async function buildSandboxImage(
   });
   // The wrapped image holds the layers; dropping the `-base` tag only stops the host daemon
   // accumulating one dangling tag per iteration of a Dockerfile. What it leaves behind — a labeled
-  // image with no tags — is the sweep's, by id (ADR-0039).
-  await port.removeHostImage(opts.baseTag);
+  // image with no tags — is the sweep's, by id (ADR-0039). Delete-if-present, like the sweep's
+  // removal: the tag is a content address, so two converges of one checkout build the SAME `-base`
+  // and whichever untags second finds it gone.
+  //
+  // This makes the LOSER of the untag benign. It does not make the shared name safe: an untag that
+  // lands while another converge's wrap is still resolving `FROM <baseTag>` fails that build
+  // outright, which is why concurrent converges of one checkout are not supported and the `@kind`
+  // tier runs serially (ADR-0010, ADR-0037's shared-intermediate consequence).
+  await port.removeHostImage(opts.baseTag).catch((err: unknown) => {
+    if (!isAlreadyGone(err)) throw err;
+  });
 }
 
 // --- the sweep (ADR-0039) ----------------------------------------------------------------------
@@ -1017,6 +1027,100 @@ async function execStdin(argv: string[], stdin: string): Promise<void> {
   });
 }
 
+/** Where the bundle really lives: the `WORKDIR` of {@link INSTANCE_DOCKERFILE}, which `COPY . .`
+ * puts it at. The one path a staged bundle is allowed to name itself by. */
+const BUNDLE_WORKDIR = "/instance";
+
+/** Fatal on purpose — a lenient decode would replace the bytes it could not read (see the seal). */
+const UTF8 = new TextDecoder("utf8", { fatal: true });
+
+/**
+ * Every substitution the seal makes, longest needle first. A `.bin` shim's `NODE_PATH` is a CHAIN —
+ * the bundle's own `node_modules`, then the `node_modules` of each directory above it, up to the
+ * root — and `pnpm deploy` writes the staging path into it in BOTH spellings it knows: the one
+ * `mkdtemp` returned, and the one `realpath` resolves it to. The two coincide only where the temp
+ * root is a real directory, so anchoring on the returned spelling alone is correct on Linux and
+ * wrong on macOS, where `os.tmpdir()` is `/var/folders/…` and `/var` is a symlink to `/private/var`.
+ * There the resolved spelling keeps the random `mkdtemp` component, the bundle stays a different
+ * artifact every converge, and the tag it is addressed by never notices.
+ *
+ * The rungs ABOVE the bundle are the same failure one level up — macOS puts a per-boot random
+ * segment there (`/var/folders/<xy>/<random>`) — so each is rewritten to the root's, which is
+ * where `/instance`'s ancestors actually are. They are matched as `<ancestor>/node_modules` and
+ * never as a bare directory: replacing every occurrence of `/tmp` would rewrite that string
+ * wherever some dependency's own source happens to hold it.
+ */
+async function bundleRewrites(dir: string): Promise<Array<[string, string]>> {
+  const spellings = new Set([dir, await realpath(dir)]);
+  const rewrites: Array<[string, string]> = [];
+  for (const form of spellings) {
+    rewrites.push([form, BUNDLE_WORKDIR]);
+    for (let up = dirname(form); up !== dirname(up); up = dirname(up)) {
+      rewrites.push([`${up}/node_modules`, "/node_modules"]);
+    }
+  }
+  return rewrites.sort(([a], [b]) => b.length - a.length);
+}
+
+/**
+ * Seal the staged bundle (ADR-0038): after this, its bytes are a function of its inputs alone.
+ * `pnpm deploy` writes the scratch directory into every `.bin` shim's `NODE_PATH`, and that
+ * directory is a fresh `mkdtemp` per converge — so the same sources staged twice are two different
+ * images under one content-addressed tag, which is "present implies current" broken for the one
+ * image every Instance runs. The rewrite targets `/instance` rather than any stable placeholder
+ * because that is where the image holds the bundle: the shims go from WRONG to CORRECT, and
+ * determinism falls out of fixing them. What gets rewritten, and why it is more than one string,
+ * is {@link bundleRewrites}.
+ *
+ * A file that holds the path but does not decode as UTF-8 stops the converge, named. `/instance` is
+ * SHORTER than the scratch path, so rewriting inside a binary slides every offset after it — that
+ * ships an Orchestrator image whose executable fails in the cluster, where nothing can attribute
+ * it, instead of a converge that failed on the machine that built it.
+ */
+async function sealInstanceBundle(dir: string): Promise<void> {
+  const rewrites = await bundleRewrites(dir);
+  const needles = rewrites.map(([from]) => Buffer.from(from));
+  const walk = async (d: string): Promise<void> => {
+    for (const e of await readdir(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      // A symlink's CONTENT is its target, and `contentHash` skips symlinks too — so a link naming
+      // the staging path would be neither sealed nor addressed: the bundle would vary at a tag that
+      // never moved, which is the one failure this seal exists to make impossible, arriving
+      // silently. pnpm writes relative targets (a real bundle: 276 links, none absolute), so this
+      // throws rather than rewriting — nothing is known about what such a link would mean.
+      if (e.isSymbolicLink()) {
+        const target = await readlink(p);
+        if (rewrites.some(([from]) => target.includes(from))) {
+          throw new Error(
+            `cannot seal the instance bundle: the symlink ${relative(dir, p)} points at the staging path ` +
+              `("${target}"), which would leave the bundle naming a directory the image does not have`,
+          );
+        }
+        continue;
+      }
+      // Directories and files below are reached through `Dirent`, which is lstat-based, so the walk
+      // cannot follow a link out of the bundle.
+      if (e.isDirectory()) await walk(p);
+      else if (e.isFile()) {
+        const bytes = await readFile(p);
+        if (!needles.some((needle) => bytes.includes(needle))) continue;
+        let text: string;
+        try {
+          text = UTF8.decode(bytes);
+        } catch {
+          throw new Error(
+            `cannot seal the instance bundle: ${relative(dir, p)} holds the staging path but is not valid UTF-8 — ` +
+              `"${BUNDLE_WORKDIR}" is shorter than "${dir}", so rewriting it would corrupt every offset after it`,
+          );
+        }
+        for (const [from, to] of rewrites) text = text.replaceAll(from, to);
+        await writeFile(p, text);
+      }
+    }
+  };
+  await walk(dir);
+}
+
 /** A materialized instance bundle: the exact bytes the image is built FROM, and their address. */
 export type StagedBundle = {
   /** The bundle directory — the build context. */
@@ -1035,6 +1139,11 @@ export type StagedBundle = {
  * Hashing the instance folder instead missed kit sources entirely, which is how `j2 up` came to
  * skip builds it needed and report convergence on code it had not deployed.
  *
+ * The bundle is SEALED before it is hashed, and NOTHING is excluded from that hash (ADR-0038): a
+ * bundle that named its own scratch dir made one tag address many images, and the exclude set that
+ * used to paper over it hid exactly the drift it was supposed to expose. With an empty exclude set
+ * the failure inverts — anything that ever varies again re-tags on every converge, in the open.
+ *
  * Staging precedes the staleness decision, so `pnpm deploy` (~1s) runs even on the skip path; the
  * docker build it guards is the expensive half. The Dockerfile salts the hash — it is image content
  * that never lands in the context (it rides `docker build -f -`).
@@ -1051,6 +1160,11 @@ export async function stageInstanceBundle(port: BuildPort, instanceDir: string):
     // tag, which is a pod-template change, which rolled the Orchestrator and put every live run
     // through snapshot restore — the exact cost the map-not-env decision was taken to avoid.
     await rm(join(dir, "images"), { recursive: true, force: true });
+    // `.modules.yaml` is nothing but a record of where and when this staging happened (a `prunedAt`
+    // stamp and the scratch paths), and the image reads it never. It goes beside `images/`; the
+    // rest of the where-and-when — the shims' baked `NODE_PATH` — the seal corrects.
+    await rm(join(dir, "node_modules", ".modules.yaml"), { force: true });
+    await sealInstanceBundle(dir);
     return {
       dir,
       hash: await contentHash([dir], INSTANCE_DOCKERFILE),

@@ -134,3 +134,13 @@ owning the base it runs on.
   reusable workflow or Agent (ADR-0019). If sharing them ever matters, it is a separate decision.
 - **CONTEXT.md**: **Sandbox Image** becomes a glossary term; **User Container** is removed; **Harness** names the
   injected runtime beside the stock image.
+- **The wrap's intermediate `-base` tag is a shared global name, so one checkout cannot be converged concurrently.** The
+  two-stage build tags what `images/<name>/Dockerfile` produced as `j2-sandbox-<instance>-<name>-base:<hash>` and wraps
+  it, then untags it — and because the hash is a content address
+  ([ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)), every concurrent converge of the same checkout resolves the
+  SAME intermediate. Two failures follow: the second untag finds it gone (absorbed — the removal is delete-if-present,
+  as ADR-0039 requires of both stores), and an untag that lands while another converge's wrap is resolving
+  `FROM <baseTag>` fails that build outright (not absorbable — the image the build needs is gone). This is what makes
+  the `@kind` tier serial rather than `--parallel` ([ADR-0010](0010-bdd-acceptance-tests.md), with the measurements).
+  The fix is a per-converge-unique intermediate name: it is never delivered, never registry-prefixed, and untagged on
+  success, so uniqueness costs no documented property — but it is a naming decision and is deliberately not taken here.

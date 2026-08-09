@@ -5,6 +5,7 @@
     "tags": "not @kind and not @console"
   },
   "kind": {
+    "//": "SERIAL, and not because of cluster capacity: concurrent converges of one checkout share the wrap's intermediate `-base` tag. ADR-0010 carries the measurements, ADR-0037 the cause. Raise the degree when that intermediate stops being a shared name, not before.",
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
     "tags": "@kind"

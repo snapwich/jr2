@@ -30,7 +30,13 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   They are tagged `@kind` and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is
   the product's own path (ADR-0019): one shared vanilla kind cluster, locally built kit images, then **`j2 up` per
   scenario into a fresh namespace** — namespace-as-identity makes the scenario the isolation unit here too, so nothing
-  is instance-bound to the cluster and `--parallel` is bounded only by cluster capacity.
+  is instance-bound to the cluster. **`--parallel` was expected to be bounded only by cluster capacity; it is not, and
+  the tier runs serially.** Measured (11 scenarios, sealed tree): 4 workers → 7/11, 3 → 9/11, 2 → 9/11, serial → 11/11
+  in 4m58s. Capacity is not what binds it — degree 2 produced ZERO capacity timeouts and still lost two scenarios. Every
+  degree loses them to one shared name: the Sandbox Image wrap's intermediate `-base` tag (ADR-0037), which is a content
+  address, so concurrent converges of one checkout build and untag the _same_ image. The scenario isolation this ADR
+  designed is intact — each scenario has its own namespace and its own scripted model port, and nothing leaked between
+  workers. Raise the degree when the intermediate stops being a shared name, not before.
 - **An opt-in `@console` tier for the Console's UX** (added with
   [ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)). The Console's risky behavior is interaction —
   token-mode switching, the frame-triggered gate inbox, selection vs. folding — which no reducer test sees and no CLI

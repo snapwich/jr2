@@ -89,5 +89,12 @@ parsing names.
   them by construction rather than reporting them.
 - The wrapped Sandbox Image inherits its base's labels through the image config — harmless (same owner), noted so nobody
   "fixes" the duplication.
+- **A converge in flight is not a root.** An image is needed iff a LIVE root names it — and a converge that has resolved
+  its refs but not yet applied them names them nowhere the cluster can see, so a sweep finishing in another namespace
+  can take a ref between its build and its delivery. It does not reach the `@kind` tier under `--parallel`: every
+  scenario converges the same checkout, so each worker's own `extraKeep` already holds the identical refs the others are
+  building. It bites two instances on one cluster, or one instance converged twice across a source edit. Recorded as a
+  known limit; the fix — a claim the converge publishes BEFORE it builds, making an in-flight ref a root like any other
+  — is not taken here.
 - ADR-0038's `j2 down` prune clause is **superseded by this ADR**; its `imagePullPolicy`/content-address reasoning
-  stands untouched.
+  stands untouched, and ADR-0038's seal is what finally makes it true of the instance image.
