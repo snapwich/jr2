@@ -106,6 +106,12 @@ a fresh conversation, then surfaced as the one terminal `agent.fault`. Named for
 pathology. _Avoid_: degeneration (the model behavior a runaway guard usually catches, not the fault class), loop, hang,
 stall
 
+**Compaction**: The cut itself — what a conversation's model context still holds, replaced by a summary plus a retained
+tail — taken by the Harness mid-Turn at a step boundary when the context crosses its reserve (ADR-0036). Turn mechanics
+(ADR-0016): j2-owned thresholds, no author surface, not a Dial. It changes what the model sees, never what j2 recorded:
+the history view is what was said. _Avoid_: summarization (one step of taking a Compaction, and the LLM call is not the
+decision), truncation (the failure Compaction exists to prevent), pruning
+
 **Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), narrowed
 to those its guards would currently accept (ADR-0029), served by the Adapter over MCP. What the Agent may **say**. The
 derived set is the state's vocabulary and the scope delivery validates against; the Menu is what a given turn is
