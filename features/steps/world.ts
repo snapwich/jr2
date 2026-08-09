@@ -7,6 +7,8 @@
 // (the one machine-readable result), stderr (human activity), and the process exit code. The `j2`
 // binary is pointed at the fixture's server the supported way: `J2_URL` + `J2_TOKEN` env. The
 // wire-compatible stub Harness (ADR-0011) is a fixture owned by this tier, started in-process.
+// @kind owns a second in-process fixture: the scripted MODEL its pods talk to (ADR-0038) — there
+// the Harness is the REAL one, in a real pod, and only the LLM is faked.
 
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -18,6 +20,7 @@ import { join } from "node:path";
 import { setWorldConstructor } from "@cucumber/cucumber";
 import { startStubHarness } from "@j2/orchestrator";
 import type { Browser, Page } from "playwright";
+import { startFakeProvider, type FakeProvider } from "./fake-provider.ts";
 
 /** The `j2` bin (a Node 24 type-stripped `.ts` shebang), resolved from this file's location. */
 const BIN = fileURLToPath(new URL("../../packages/cli/bin/j2.ts", import.meta.url));
@@ -84,6 +87,12 @@ export class E2EWorld {
 
   /** @kind: the scenario's fresh namespace — set = kind mode (runCli appends `-n`, no J2_URL). */
   kindNamespace?: string;
+  /** @kind: the scripted MODEL this scenario's pods talk to (ADR-0038). The pod runs the stock
+   * Harness, so this is the only fake left in the tier — see `fake-provider.ts`. */
+  provider?: FakeProvider;
+  /** Extra env for the `j2` binary — @kind publishes the fake provider's address here, because a
+   * deployment-varying endpoint rides env and never a committed literal (ADR-0019). */
+  private extraEnv: Record<string, string> = {};
   /** The Instance token this scenario's server boots with (the fixture plays `j2 up`'s Secret). */
   private readonly token = randomBytes(16).toString("hex");
 
@@ -97,11 +106,18 @@ export class E2EWorld {
    * Adopt the shared kind instance (@kind scenarios) under a FRESH namespace, and make sure the
    * seed git bundle the config's `repos[]` clones from exists (self-healing: generated once,
    * then baked into the instance image by content hash).
+   *
+   * Also starts this scenario's scripted MODEL (ADR-0038) and publishes its address to the `j2`
+   * binary. HOST-SIDE, on an ephemeral port, so `--parallel` stays safe and the tier needs neither
+   * an image nor a manifest for it. The instance image's content hash is unaffected: the config
+   * file is byte-identical run to run, and the varying URL materializes into the agents ConfigMap.
    */
   async setupKind(): Promise<void> {
     this.kindNamespace = `j2e2e-${randomBytes(3).toString("hex")}`;
     this.dir = KIND_DIR;
     await ensureSeedBundle(join(this.dir, "seed"));
+    this.provider = await startFakeProvider();
+    this.extraEnv.J2_FAKE_PROVIDER_URL = `http://${await kindHostAddress()}:${this.provider.port}/v1`;
   }
 
   /** Tear the scenario down: stop the orchestrator (if any) and delete what the scenario owns —
@@ -110,6 +126,8 @@ export class E2EWorld {
     await this.stopServer();
     await this.stub?.close();
     this.stub = undefined;
+    await this.provider?.close();
+    this.provider = undefined;
     if (this.kindNamespace) {
       await execKubectl(["delete", "namespace", this.kindNamespace, "--ignore-not-found", "--wait=false"]).catch(
         () => {},
@@ -143,7 +161,9 @@ export class E2EWorld {
    * deployed orchestrator" path (ADR-0009). @kind sets neither: the verbs resolve the REAL way
    * (current kube context + `-n <scenario namespace>` → Secret + port-forward, ADR-0019). */
   async runCli(args: string[]): Promise<CliResult> {
-    const env = this.server ? { ...process.env, J2_URL: this.server.url, J2_TOKEN: this.server.token } : process.env;
+    const env = this.server
+      ? { ...process.env, ...this.extraEnv, J2_URL: this.server.url, J2_TOKEN: this.server.token }
+      : { ...process.env, ...this.extraEnv };
     const full = this.kindNamespace ? [...args, "-n", this.kindNamespace] : args;
     const child = spawn(process.execPath, [BIN, ...full], { cwd: this.dir, env });
     let stdout = "";
@@ -236,6 +256,38 @@ export class E2EWorld {
     const lines = (this.last?.stdout ?? "").trim().split("\n");
     return JSON.parse(lines[lines.length - 1] ?? "{}") as T;
   }
+}
+
+/**
+ * The address a POD reaches this host on (@kind). `localhost` never works from a pod (ADR-0019
+ * says so where `HarnessProvider.baseUrl` is declared), and the scripted provider runs host-side —
+ * so the tier needs the kind bridge's GATEWAY, which is this host's address on the docker network
+ * every kind node is attached to.
+ *
+ * The fallback, if a docker daemon is ever not local to the test process: run the fake provider
+ * in-cluster as a Deployment + Service and point the config at its Service DNS. Host-side is
+ * preferred while the daemon IS local — zero images, zero manifests, and an ephemeral port per
+ * scenario, which is what keeps `--parallel` safe.
+ */
+async function kindHostAddress(): Promise<string> {
+  const gateway = await new Promise<string>((resolve, reject) => {
+    execFile(
+      "docker",
+      ["network", "inspect", "kind", "-f", "{{(index .IPAM.Config 0).Gateway}}"],
+      (err, stdout, stderr) =>
+        err
+          ? reject(
+              new Error(
+                `could not resolve the kind bridge gateway (docker network inspect kind): ${stderr || err.message}\n` +
+                  `  the @kind tier serves its scripted model from the HOST, so pods must be able to dial back;\n` +
+                  `  is the cluster up (\`just e2e-kind-up\`) and is this docker daemon the local one?`,
+              ),
+            )
+          : resolve(stdout.trim()),
+    );
+  });
+  assert.ok(gateway, "the kind docker network reported a gateway address");
+  return gateway;
 }
 
 /** kubectl, for the World's own teardown (steps have their own namespace-aware helper). */

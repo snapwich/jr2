@@ -40,9 +40,9 @@ const body = j2Setup({
           agentName: "coder",
           instanceId: context.instanceId,
           tools: [finish.name],
-          // An inert prompt: the persona in the dev Harness image parks unless the message scripts
-          // it (`call <tool> <json>`), so the Machine waits here exactly as it would on a real Agent
-          // that is still thinking. The scenario gives it its instructions in a later submission.
+          // A plain prompt. The pod runs the STOCK Harness (ADR-0038), so what parks the Machine
+          // here is the scripted MODEL: it holds the turn's provider request until the scenario
+          // releases it with a tool call — exactly what an Agent that is still thinking looks like.
           prompt: "implement the thing",
         }),
       },

@@ -7,12 +7,13 @@
 // the run↔workspace link ADR-0012 promises (what `j2 ls` will group by), so looking it up this way
 // asserts the promise instead of trusting the naming function.
 //
-// NOTHING HERE PLAYS THE AGENT (ADR-0013). "The Agent calls X" submits to the HARNESS — the flue
-// wire, over the port-forward the orchestrator already holds — and the persona inside the pod then
-// does the calling, over MCP, to the Adapter on localhost. That indirection is the entire point:
-// if this file opened an MCP client, the pod would never originate a connection and the leg under
-// test would not be tested. (Faithful to flue, too: `defineAgent` is an initializer that re-runs
-// on every submission, so a submission IS how a turn begins.)
+// NOTHING HERE PLAYS THE AGENT (ADR-0013), and since ADR-0038 the reason has inverted. The pod
+// runs the REAL `@j2/harness`: it holds its own MCP connection to the Adapter on localhost, is
+// served this state's Menu, and pi decides. What this file drives is the one thing still faked —
+// the MODEL. "The Agent calls X" RELEASES the provider request this pod's Harness is parked on,
+// answering it with a tool call; everything after that (the MCP call, the delivery, the Machine
+// moving) happens inside the cluster. If this file opened an MCP client, the pod would never
+// originate a connection and the leg under test would not be tested.
 
 import { After, Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
@@ -86,8 +87,9 @@ async function waitForReadySandbox(world: E2EWorld): Promise<SandboxCR> {
     await sleep(1000);
   }
   throw new Error(
-    `no Sandbox for run ${world.runId} reached Ready — were the kit images built + loaded ` +
-      `(\`just e2e-kind-up\`)? Check the operator: kubectl -n j2-system get pods`,
+    `no Sandbox for run ${world.runId} reached Ready — \`j2 up\` builds and loads every image ` +
+      `itself (ADR-0038), so check the operator (kubectl -n j2-system get pods) and the pod's ` +
+      `own events: kubectl -n ${world.kindNamespace} describe sandbox`,
   );
 }
 
@@ -132,7 +134,8 @@ function anyChildIn(children: RunChild[], value: string): boolean {
 }
 
 /**
- * What the Harness itself says became of this instance's turns (`?view=history` — the flue wire).
+ * What the Harness itself says became of this instance's turns (`?view=history` — ADR-0027's wire;
+ * the stock Harness serves the same shape the retired stub did, so this reader is unchanged).
  * Read from the pod over a port-forward: a settlement is invisible to the Orchestrator by
  * construction (ADR-0024 — the actor is stopped before the abort fires), so the only honest place
  * to observe the end of a turn is the Harness that ran it.
@@ -200,29 +203,36 @@ When("the orchestrator starts again", async function (this: E2EWorld): Promise<v
 });
 
 /**
- * Give the Agent a turn, and a script for it (ADR-0013). This is a SUBMISSION on the Harness's flue
- * wire — the same POST the Machine's own `agentRun` makes, at the endpoint the run reports — so
- * what happens next happens entirely inside the pod: the persona re-initializes for this turn,
- * connects MCP to the Adapter on localhost, is served the invoking state's menu, and calls from it.
- * The Machine moves because the POD asked it to. Nothing on this side speaks MCP.
+ * The model this pod's Harness talks to now answers with a tool call (ADR-0013/0038). The step
+ * TEXT is unchanged and still true — the Agent calls the tool — but the mechanism inverted: the
+ * submission was admitted by the Machine's own `agentRun`, the pod's Harness has been parked on a
+ * provider request ever since (which is exactly what "still thinking" looks like from the
+ * Machine's side), and this releases it. Everything downstream is real and in-cluster: pi executes
+ * `mcp__j2__<tool>` over its own MCP connection to the Adapter on localhost, the Adapter delivers,
+ * the Machine moves. Nothing on this side speaks MCP or the Harness wire.
+ *
+ * The request is matched by the tool it was OFFERED, never by arrival order — see fake-provider.ts:
+ * after a pick, the ended turn's post-tool-result request is parked beside the next state's fresh
+ * one, and only the Menu tells them apart.
  */
 When(
   "the Agent in the Sandbox calls {string} with summary {string}",
   async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
-    const ws = await waitForAttached(this);
-    assert.ok(ws.context.endpoint, "the workspace reported its Harness endpoint");
-    // The run's endpoint is in-cluster Service DNS (the orchestrator dials it from inside —
-    // ADR-0019); this host-side stand-in reaches the same Harness over a scoped port-forward.
-    const pod = (await waitForReadySandbox(this)).metadata.name;
-    await withPodForward(this, pod, 8080, async (localUrl) => {
-      // "coder" is the agent name the `sandboxed` fixture admits under (flue: /agents/:name/:id).
-      const res = await fetch(`${localUrl}/agents/coder/${ws.instanceId}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: `call ${tool} ${JSON.stringify({ summary })}` }),
-      });
-      assert.equal(res.status, 200, "the Harness admitted the turn");
-    });
+    await waitForAttached(this); // the turn cannot exist before the workspace finished attaching
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    await this.provider.release(tool, { summary });
+  },
+);
+
+/** The Agent reaches for its own toolchain (ADR-0027/0037): the model answers with the `bash`
+ * WORKING tool, which the Harness executes in its own container — which IS the wrapped Sandbox
+ * Image. No Menu tool is picked, so the Machine does not move; what moves is the conversation. */
+When(
+  "the Agent runs {string} through its bash Working tool",
+  async function (this: E2EWorld, command: string): Promise<void> {
+    await waitForAttached(this);
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    await this.provider.release("bash", { command });
   },
 );
 
@@ -250,7 +260,9 @@ When(
     ).trim();
     assert.ok(url, "the Adapter container carries the Orchestrator's address (the Harness does not)");
 
-    // node, not curl: it is what the image has, and it is what a `local()` tool would use.
+    // node, not curl: it is what the image has, and it is what a bash Working tool would use.
+    // Still resolvable after the ADR-0037 wrap because PATH is APPENDED — the Sandbox Image's own
+    // node answers here, and j2's relocated one at /opt/j2/bin is merely the fallback.
     const probe =
       `fetch(${JSON.stringify(`${url}/agents/${iid}/events`)},{method:"POST",` +
       `headers:{"content-type":"application/json"},` +
@@ -361,6 +373,102 @@ Then(
       `[ ! -e '${worktree}/probe.txt' ] && echo absent`,
     ]);
     assert.equal(probe.trim(), "absent", "the probe file never reached the coder's worktree");
+  },
+);
+
+/** The six Working tools the default `workspace: "write"` leaves in place (ADR-0028). */
+const WORKING_TOOLS = ["read", "write", "edit", "bash", "grep", "glob"];
+
+/**
+ * What the Harness OFFERED the model for this turn, asserted off the provider's recorded request —
+ * which is free here, and stronger than the retired persona's `listTools()` call: it is the tool
+ * set pi actually put on the wire. Two halves in one claim: this state's Menu (ADR-0015/0029,
+ * `mcp__j2__`-prefixed by `menu.ts`) and exactly the Working tools the definition allows
+ * (ADR-0028). "Exactly one Menu tool" is the sharp edge — a turn must not see another state's.
+ */
+Then(
+  "the model was offered {string} from the Menu and its Working tools",
+  async function (this: E2EWorld, tool: string): Promise<void> {
+    assert.ok(this.provider, "the scenario's scripted model is running");
+    const provider = this.provider;
+    let seen: string[][] = [];
+    for (let i = 0; i < 240; i++) {
+      seen = provider.calls.filter((c) => c.stream).map((c) => c.tools);
+      if (seen.some((tools) => tools.includes(`mcp__j2__${tool}`))) break;
+      await sleep(500);
+    }
+    const turn = seen.find((tools) => tools.includes(`mcp__j2__${tool}`));
+    assert.ok(turn, `no turn was offered "mcp__j2__${tool}" (offered: ${JSON.stringify(seen)})`);
+    assert.deepEqual(
+      turn.filter((t) => t.startsWith("mcp__j2__")),
+      [`mcp__j2__${tool}`],
+      "the turn sees this state's Menu and no other's (ADR-0015)",
+    );
+    for (const working of WORKING_TOOLS) {
+      assert.ok(turn.includes(working), `the ${working} Working tool was offered (got: ${turn.join(", ")})`);
+    }
+  },
+);
+
+/**
+ * The output of a Working tool, read where the model would read it: the NEXT provider request of
+ * the same turn carries the tool result in its messages. That the string is there at all is the
+ * ADR-0037 claim — the tool ran in the Sandbox Image, so it reached a binary only that image has.
+ */
+Then("the model was shown the tool result {string}", async function (this: E2EWorld, marker: string): Promise<void> {
+  assert.ok(this.provider, "the scenario's scripted model is running");
+  const provider = this.provider;
+  for (let i = 0; i < 240; i++) {
+    if (provider.calls.some((c) => c.stream && c.raw.includes(marker))) return;
+    await sleep(500);
+  }
+  throw new Error(`no provider request ever carried "${marker}" (${provider.calls.length} recorded)`);
+});
+
+/**
+ * ADR-0037's wrap, proved in the pod it was built for — the only tier that can. Each line is a
+ * separate silent failure: no `git` and every attach fails; no writable `$HOME` and the attach's
+ * `git config --global` dies with `fatal: $HOME not set` INSIDE a turn; a relocated node that
+ * cannot find its C++ runtime and the container never serves; no `rg` and the grep Working tool
+ * degrades to plain `grep` with nobody the wiser. PATH is the subtle one: it must be APPENDED, so
+ * the USER's node wins and j2's is only the fallback — prepending would silently shadow a pinned
+ * toolchain inside someone's own image.
+ */
+Then("the Harness container satisfies the wrap's contracts", async function (this: E2EWorld): Promise<void> {
+  const pod = (await waitForReadySandbox(this)).metadata.name;
+  const script = [
+    `git --version >/dev/null`,
+    `[ "$HOME" = /home/j2 ]`,
+    `touch "$HOME/.j2-home-probe"`,
+    `/opt/j2/bin/node -e ''`,
+    `rg --version >/dev/null`,
+    `command -v node`,
+  ].join("\n");
+  const nodePath = (await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script])).trim();
+  assert.notEqual(
+    nodePath,
+    "/opt/j2/bin/node",
+    `PATH is APPENDED, so the image's own node wins (ADR-0037); resolved: ${nodePath}`,
+  );
+  assert.ok(nodePath, "the image's own node is on PATH");
+});
+
+/**
+ * The deleted User Container's promise, now delivered by the image (ADR-0037/0005): `kubectl exec`
+ * into the harness container lands a human in the worktree root and hands them the agent's tools
+ * and the agent's files — the same container, so "human and agent see identical files" is not a
+ * shared volume any more, it is an identity.
+ */
+Then(
+  "a human's shell in the Sandbox lands in {string} with the image's own toolchain",
+  async function (this: E2EWorld, workdir: string): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    // No `-w`: the landing directory is the image's WORKDIR, which is what the wrap sets for
+    // exactly this reason (it has no effect on the Agent — every Working tool carries its own cwd).
+    const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", "pwd && j2-toolchain"]);
+    const [landed, toolchain] = out.trim().split("\n");
+    assert.equal(landed, workdir, "exec lands in the wrap's WORKDIR — the worktree root");
+    assert.equal(toolchain, "j2-toolchain-ok", "the human gets the Sandbox Image's own tools, not j2's");
   },
 );
 

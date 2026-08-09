@@ -6,7 +6,8 @@
 //   - the coder's turn ENDS when `coding` is left — the pod's Harness records that submission as
 //     `aborted`, which is the only place a turn's end is observable from outside;
 //   - the next turn on the SAME instance id (what `session: "continue"` derives) is admitted
-//     AFTER that abort, so it is not swallowed by it — flue queues per instance;
+//     AFTER that abort, so it is not swallowed by it — the Harness queues per conversation in
+//     admission order (ADR-0027);
 //   - `parked` is not final, so the Workspace survives the whole thing. That is the dangerous
 //     shape: an orphaned Agent would still be live in a worktree the Machine believes is idle.
 //
@@ -32,8 +33,9 @@ const body = j2Setup({
     coding: {
       invoke: {
         src: "agentRun",
-        // Inert prompts throughout: the dev image's persona parks unless the message scripts it,
-        // so the Machine waits exactly as it would on an Agent that is still thinking.
+        // Plain prompts throughout: the pod's stock Harness parks on its scripted model until a
+        // scenario releases it (ADR-0038), so the Machine waits exactly as it would on an Agent
+        // that is still thinking.
         input: ({ context }) => ({
           agentName: "coder",
           instanceId: context.instanceId,

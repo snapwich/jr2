@@ -7,6 +7,7 @@
   "files": [
     "package.json",
     "j2.config.ts",
+    "agents",
     "workflows",
     "seed"
   ],

@@ -37,24 +37,19 @@ kind-up:
 kind-down:
     kind delete cluster --name {{ cluster }}
 
-# --- kit images (docker) — the local tags instance configs override to (ADR-0019 kit dev) ---
+# --- kit images (docker) — SHORTCUTS for building one image by hand (ADR-0038) ---
+#
+# None of these is a prerequisite of anything. `j2 up` run from this checkout builds every image it
+# deploys, at content-addressed tags, and delivers them itself; the `:local` tags below exist only
+# for poking at an image by hand, and nothing resolves them.
 
-harness_dev_image := "j2-harness-dev:local"
 adapter_image := "j2-adapter:local"
-
-# Builds only — `e2e-kind-up` is what loads it onto the cluster, batched with the Adapter.
-# build the DEV stub Harness image (@kind): the wire-compatible stub + a scripted persona + git
-harness-image-dev:
-    docker build -f deploy/harness-dev/Dockerfile -t {{ harness_dev_image }} .
 
 # build the Adapter image: the Agent's MCP surface, hosted in the Sandbox (ADR-0013)
 adapter-image:
     docker build -f deploy/adapter/Dockerfile -t {{ adapter_image }} .
 
 # ADR-0018: definitions are injected at pod start, so no per-instance Harness image exists.
-# A SHORTCUT, never a prerequisite (ADR-0038): `j2 up` run from this checkout builds this image
-# itself, at a content-addressed tag. `j2-harness:local` is a convenience tag for poking at the
-# image by hand — it is not what a converge deploys, and nothing resolves it.
 # build the STOCK Harness image (what a real instance runs) and load it into kind
 harness-image:
     docker build -f deploy/harness/Dockerfile -t j2-harness:local .
@@ -62,15 +57,14 @@ harness-image:
 
 # --- kind e2e tier (ADR-0010; requires docker + kind) ---
 
-# a VANILLA cluster + the locally built kit images. Nothing is instance-bound to the cluster
-# (ADR-0019): each @kind scenario `j2 up`s into a fresh namespace, operator included.
-e2e-kind-up: harness-image-dev adapter-image
+# A VANILLA cluster, and nothing else (ADR-0038): `j2 up` from this checkout builds and `kind load`s
+# every image it deploys — Harness, Adapter, operator, instance, and the instance's Sandbox Images.
+# Pre-loading a `:local` tag here would be exactly the invisible-stale-image bug that deletes.
+# Nothing is instance-bound to the cluster (ADR-0019): each @kind scenario `j2 up`s into a fresh
+# namespace, operator included.
+e2e-kind-up:
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
-    docker build -t j2-operator:local operator
-    kind load docker-image {{ harness_dev_image }} --name {{ cluster }}
-    kind load docker-image {{ adapter_image }} --name {{ cluster }}
-    kind load docker-image j2-operator:local --name {{ cluster }}
-    @echo "now: \`just e2e-kind\`"
+    @echo "now: \`just operator-run\` (another shell), then \`just e2e-kind\`"
 
 # run the kind e2e tier (needs `just e2e-kind-up`)
 e2e-kind:
@@ -80,14 +74,10 @@ e2e-kind:
 operator-manifest:
     kubectl kustomize operator/config/default > packages/cli/manifests/operator.yaml
 
-# build the operator controller image for kit dev and load it into kind (`images.operator` override)
+# build the operator controller image by hand and load it into kind (a shortcut, not a prerequisite)
 operator-image:
     docker build -t j2-operator:local operator
     kind load docker-image j2-operator:local --name {{ cluster }}
-    # Kit dev pins a STATIC tag, so a rebuild leaves the pod template identical and nothing rolls —
-    # `j2 up`'s image verification compares tags and cannot see it. Restarting here is what makes
-    # "rebuilt" mean "running" (ignored when the operator isn't deployed yet).
-    kubectl --context kind-{{ cluster }} -n j2-system rollout restart deploy/j2-controller-manager 2>/dev/null || true
 
 # --- operator (requires kubebuilder; see operator/README.md) ---
 

@@ -205,7 +205,8 @@ pool(feature, { source: readyFeatures, itemId, cap, itemInput, onDrained: "final
 1. **Bump `@flue/sdk` beta.5 → beta.8+**: gains real `agents.abort()` (replaces abandon-and-reap cancel; ADR-0002
    assumption stale) and `agents.observe()/history()` (reconnect-from-offset — may replace the hand-rolled `tool_start`
    checkpointing in `flue-client.ts` wholesale).
-2. **Fix `connectMcpServer` call shape** in ADR-0013's sample and `deploy/harness-dev/agent.ts`.
+2. **Fix `connectMcpServer` call shape** in ADR-0013's sample. (The other consumer, the dev Harness image's hand-rolled
+   persona, was deleted with the image — ADR-0038.)
 3. **Delete `packages/agent-protocol/src/addressing.ts`** (`mcpPath`) — dead post-ADR-0013.
 4. Flue's `durability` config for infra retries (§1.3) is available today.
 

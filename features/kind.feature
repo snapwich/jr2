@@ -1,22 +1,25 @@
 @kind
 Feature: a workspace() run drives a real Sandbox on kind
   ADR-0012: a Workspace is ALWAYS a real Sandbox — there is no stubbed workspace mode — so this is
-  the one tier where the data plane is real: the operator's Sandbox CR, a pod running the Harness
-  image, the instance's read-only repos volume, a git worktree inside the pod, and the Harness
-  endpoint the body's agent is admitted against.
+  the one tier where the data plane is real: the operator's Sandbox CR, a pod running the instance's
+  own Sandbox Image with j2's runtime injected into it (ADR-0037), the read-only repos volume, a git
+  worktree inside the pod, and the Harness endpoint the body's agent is admitted against.
 
   It is also the only tier where the AGENT is real in the way that matters (ADR-0013): the pod
-  originates its own tool calls. The dev Harness image carries a scripted persona which, on every
-  submission, connects an MCP client to the Adapter on `localhost` and calls a tool from the menu
-  the Machine registered for that turn. Nothing here plays the agent from the host. What is still
-  faked is the LLM — the prompt names the tool instead of a model choosing it; the wire, the
-  container boundary, and the tool call are real.
+  originates its own tool calls. Since ADR-0038 the pod runs the STOCK Harness — pi, the real Menu
+  over MCP to the Adapter on localhost, the real Working tools — and the ONLY thing still faked is
+  the model: a scripted OpenAI-compatible endpoint the World serves from the host. "The Agent calls
+  X" means that model now answers with a tool call; the wire, the container boundary, the MCP
+  connection and the tool call are all real. Which makes this tier a SECOND pi canary beside the
+  conformance suite (ADR-0027): a pi bump can break it.
 
   This tier is opt-in (`@kind`, excluded from the default suite) because it needs infrastructure:
-    just e2e-kind-up      # a vanilla kind cluster + locally built kit images (operator, adapter, dev Harness)
+    just e2e-kind-up      # a VANILLA kind cluster; nothing is built or loaded here
     just e2e-kind
-  Bring-up is the product's own path (ADR-0010/0019): each scenario runs `j2 up` into a fresh
-  namespace of the shared cluster — nothing is instance-bound to the cluster itself.
+  Bring-up is the product's own path (ADR-0010/0019/0038): each scenario runs `j2 up` into a fresh
+  namespace of the shared cluster, and that converge builds and loads every image it deploys —
+  Harness, Adapter, operator, the instance, and the instance's `images/default`. Nothing is
+  instance-bound to the cluster itself.
 
   Rule: the wrapper provisions a real Sandbox, attaches the worktree, and destroys it on final
 
@@ -70,8 +73,11 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox runs the Adapter beside the Harness
-      # The pod dials out; the host dials nothing. The persona connected to the Adapter on
-      # localhost, was served this state's menu, and called from it — and the Machine moved.
+      # The pod dialed out and listed its Menu over MCP before the model ever spoke — visible here
+      # as the tool set the Harness put on the provider request (ADR-0015/0028/0029).
+      And the model was offered "finish" from the Menu and its Working tools
+      # The pod dials out; the host dials nothing. Its Harness was served this state's menu and
+      # called from it — and the Machine moved.
       When the Agent in the Sandbox calls "finish" with summary "ok"
       Then the run's status shows "done"
       And the run's body settled as "finished"
@@ -80,7 +86,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      # `local()` tools give the Agent code execution in the Harness container, which shares the
+      # Working tools give the Agent code execution in the Harness container, which shares the
       # pod's network namespace — so it CAN reach the Orchestrator, address and all. It simply has
       # no credential: the Sandbox token is delivered into the Adapter container only.
       When the Harness container posts "finish" straight to the Orchestrator
@@ -101,14 +107,16 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the run's body is in "coding"
       When the Agent in the Sandbox calls "finish" with summary "ok"
       Then the run's body is in "shipping"
-      # Both submissions the `coding` state carried — the inert one it was admitted with, and the
-      # scripted one that ended it — are over on the pod, not merely forgotten by the Orchestrator.
-      And the Harness reports 2 of the Agent's turns settled as "aborted"
+      # ONE submission per state: the script rides the provider now, not a second submission, and
+      # the Harness queues per conversation in admission order (ADR-0027). The turn `coding` asked
+      # for is over on the pod — not merely forgotten by the Orchestrator — and its model is still
+      # parked mid-turn, which is the shape an abort has to be able to end.
+      And the Harness reports 1 of the Agent's turns settled as "aborted"
       # …and the turn `shipping` asked for is NOT among them, on the SAME instance id. The abort was
-      # ordered ahead of it (flue queues per instance), so it never settled work that had not run.
+      # ordered ahead of it, so it never settled work that had not run.
       When the Agent in the Sandbox calls "ship" with summary "ok"
       Then the run's body is in "parked"
-      And the Harness reports 4 of the Agent's turns settled as "aborted"
+      And the Harness reports 2 of the Agent's turns settled as "aborted"
       And the run's Sandbox is still there
 
   Rule: a write from the review worktree cannot reach the branch or the coder's worktree
@@ -129,3 +137,42 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the review worktree gets a write probe and a commit
       Then the branch ref of repo "app" branch "feat-e2e" is unmoved
       And the coder's worktree for repo "app" branch "feat-e2e" is untouched
+
+  Rule: j2 injects its runtime into the user's image, and every line of the wrap holds
+    ADR-0037. A Sandbox Image is the user's Dockerfile — zero j2 knowledge, any base — plus a
+    kit-owned wrap that copies /opt/j2 in, creates a writable home, appends PATH, and points
+    WORKDIR at the worktree root. Each of those is a SILENT failure when wrong: it surfaces inside
+    a turn, as a tool error the model has to interpret. Only a real pod can prove they hold.
+
+    Scenario: the wrapped image gives the pod git, a home, node, rg, and an APPENDED PATH
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the Harness container satisfies the wrap's contracts
+
+  Rule: exec into the Harness container is the human's shell
+    ADR-0037 deletes the User Container: a Sandbox Image is the user's tools PLUS the Harness, so
+    `kubectl exec -c harness` gives a human the agent's tools, worktrees, and filesystem. ADR-0005's
+    promise — human and agent see identical files — is delivered by the image rather than by a
+    second container sharing a volume with it, so it is now an identity, not a mount.
+
+    Scenario: a human execs in, lands in the worktree root, and has the image's own tools
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
+      And a human's shell in the Sandbox lands in "/work" with the image's own toolchain
+
+  Rule: the Agent's Working tools reach the Sandbox Image's own toolchain
+    ADR-0027/0037. Working tools execute in the Harness container, and that container IS the
+    wrapped Sandbox Image — which is the entire feature: what an Agent can DO stops being bounded
+    by whatever the stock image happened to carry. `j2-toolchain` exists only in this instance's
+    `images/default/Dockerfile`.
+
+    Scenario: a bash Working tool runs a binary only images/default carries
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
+      When the Agent runs "j2-toolchain" through its bash Working tool
+      Then the model was shown the tool result "j2-toolchain-ok"
