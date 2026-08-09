@@ -45,18 +45,20 @@ of build-it-yourself-first image on top of that.
   [ADR-0021](0021-workspace-continuity-is-a-lease-that-answers-back.md) exists to report. So the converge lists them
   (`kubectl get sandboxes`, no new state) and stops: _"2 running workspaces keep `…:9c1e02`; new workspaces use
   `:4a77b1`; delete these runs to re-image."_
-- **`j2 down` prunes this instance's images from kind nodes by default**, scoped to EXACT repo names:
-  `j2-instance-<name>:*` plus, per discovered `images/<x>/`, `j2-sandbox-<name>-<x>:*` and its `-base` intermediate
-  (matched after stripping containerd's `docker.io/library/` namespace, which `kind load` normalizes local tags into —
-  and nothing else, so a registry-pushed tag keeps its host and stays unmatched). Exact names, never one open-ended
-  `j2-sandbox-<name>-` prefix, which also matches instance `<name>-extra`'s images on a shared node. Removal is planned
-  **per image id**: `crictl rmi` cannot untag — it resolves any tag to the id and takes the whole image, every tag with
-  it — so an id is removed only when every tag on it is this instance's, and an id sharing tags with anyone else (two
-  instances whose image inputs are byte-identical produce one id) is kept whole and reported. Content addressing means
-  ten Dockerfile iterations leave ten full images in the node's containerd, invisible to `kubectl` and on the
-  developer's own disk. **Kit images are never pruned** — they are shared by every instance on the cluster — and neither
-  are registry-pushed tags. The accepted remainder: deleting an `images/<x>/` folder orphans that image's already-loaded
-  tags (nothing derives their names any more); they go with the cluster, or by hand.
+- **`j2 down` prunes this instance's images from kind nodes by default** — **superseded by
+  [ADR-0039](0039-image-garbage-collects-by-reachability.md)**, which replaces name-scoped, down-only pruning with a
+  label-scoped reachability sweep at both `up` and `down`, host daemon included. Kept as written for the record: scoped
+  to EXACT repo names: `j2-instance-<name>:*` plus, per discovered `images/<x>/`, `j2-sandbox-<name>-<x>:*` and its
+  `-base` intermediate (matched after stripping containerd's `docker.io/library/` namespace, which `kind load`
+  normalizes local tags into — and nothing else, so a registry-pushed tag keeps its host and stays unmatched). Exact
+  names, never one open-ended `j2-sandbox-<name>-` prefix, which also matches instance `<name>-extra`'s images on a
+  shared node. Removal is planned **per image id**: `crictl rmi` cannot untag — it resolves any tag to the id and takes
+  the whole image, every tag with it — so an id is removed only when every tag on it is this instance's, and an id
+  sharing tags with anyone else (two instances whose image inputs are byte-identical produce one id) is kept whole and
+  reported. Content addressing means ten Dockerfile iterations leave ten full images in the node's containerd, invisible
+  to `kubectl` and on the developer's own disk. **Kit images are never pruned** — they are shared by every instance on
+  the cluster — and neither are registry-pushed tags. The accepted remainder: deleting an `images/<x>/` folder orphans
+  that image's already-loaded tags (nothing derives their names any more); they go with the cluster, or by hand.
 - **No `repos`, no Sandbox Image builds.** A non-empty `repos` is already the data-plane switch (ADR-0012/0031): a
   workspace-less instance has no Sandboxes, so it must not pay a docker build for a scaffolded `images/default/` it can
   never use.
