@@ -21,6 +21,13 @@
 // LOST conversation (ADR-0027: a conversation lives as long as its Harness process) — a
 // `SettlementFault`, never an endless poll.
 //
+// Both verbs re-send on a network failure, for one reason stated twice: an unanswered request is
+// not an answer. They differ in bound, and the difference is where the Submission is — `wait`'s is
+// already admitted, so the lease may report a dead pod and this loop need never give up, while
+// `send`'s does not exist yet, so its window closes and faults. `send` also re-sends ONLY what
+// provably never left this host (`postAdmission` — ADR-0042: it is the first thing ever to dial a
+// Sandbox's Service, and a CR at `phase: Ready` is not yet routable).
+//
 // `abort` is the third verb, and ADR-0024 wires it to the END OF THE INVOCATION: a turn ends with
 // the state that asked for it. It sweeps the running Submission and everything queued behind it to
 // the distinct `aborted` Settlement — worth having for observability, though j2 never reads it
@@ -65,6 +72,15 @@ export type HarnessClientOptions = {
    * long-poll re-polls immediately). Defaults 250ms → 5s; tests shrink them. */
   backoffInitialMs?: number;
   backoffMaxMs?: number;
+  /**
+   * How long `send` keeps re-POSTing an admission that never reached the Harness. See
+   * `postAdmission` for why this window exists and why it is BOUNDED where `wait`'s reconnect is
+   * not. Default 60s: wide enough to outlast BOTH ways a just-Ready Service refuses — kube-proxy
+   * programming the EndpointSlice (sub-second) and a cluster DNS negative answer cached from a
+   * lookup made too early (CoreDNS's default TTL is 30s, so a 30s window could expire exactly at
+   * the boundary). Tests shrink it.
+   */
+  admitWindowMs?: number;
 };
 
 /** A Submission that settled `failed`/`aborted` — or whose conversation the Harness no longer
@@ -85,23 +101,78 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   const fetchImpl = options.fetch ?? fetch;
   const backoffInitialMs = options.backoffInitialMs ?? 250;
   const backoffMaxMs = options.backoffMaxMs ?? 5_000;
+  const admitWindowMs = options.admitWindowMs ?? 60_000;
 
   const conversationUrl = (agentName: string, instanceId: string) =>
     new URL(`/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`, baseUrl).toString();
 
+  /**
+   * POST the admission, re-sending it while the request DEMONSTRABLY never left this host.
+   *
+   * This is `wait`'s reconnect rule, applied one step earlier and for the same reason: a request
+   * that could not connect is not a Harness that refused the prompt. It matters here because the
+   * admission is the FIRST thing j2 ever sends over the Sandbox's Service — provisioning waits on
+   * the CR's `phase: Ready`, which the operator computes from the POD, and the attach reaches the
+   * pod through the API server, so nothing before this has proven the Service dialable. Ready is
+   * not routable: the EndpointSlice behind the ClusterIP is programmed after the pod passes its
+   * probe, and until it is, kube-proxy REJECTs — which arrives here as a refused connection.
+   * Un-retried, that single blip lost the whole turn (the actor calls an admission failure a
+   * terminal `agent.fault`), which is exactly the flake that kept the `@kind` tier serial.
+   *
+   * Only a NEVER-DELIVERED failure is re-sent. Admission is accept-and-queue (ADR-0027): a POST
+   * the Harness received but could not answer has already queued a Submission, so re-sending it
+   * would run the turn twice — worse than losing it. `neverDelivered` is therefore the narrow
+   * question "did this reach the wire at all", never "does this look transient".
+   *
+   * And the window is BOUNDED where `wait`'s is not. `wait` may reconnect forever because its
+   * Submission is already admitted, so the lease owns the reporting (`workspace.lost` — ADR-0021).
+   * Nothing is admitted yet here, so there is no turn for a lease to be about: an address that
+   * never answers is a fault this call has to name itself.
+   */
+  const postAdmission = async (url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> => {
+    const deadline = Date.now() + admitWindowMs;
+    let backoffMs = backoffInitialMs;
+    let attempts = 0;
+    for (;;) {
+      attempts += 1;
+      try {
+        return await fetchImpl(url, init);
+      } catch (err) {
+        // A local abandon propagates untranslated, exactly as in `wait` — the stopped actor
+        // swallows it, and it is not a fault.
+        if (signal?.aborted) throw err;
+        if (!neverDelivered(err)) throw err;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `harness admission never connected to ${url} after ${attempts} attempt(s) over ` +
+              `${admitWindowMs}ms: ${transportDetail(err)}`,
+            { cause: err },
+          );
+        }
+        await sleep(backoffMs, signal);
+        backoffMs = Math.min(backoffMs * 2, backoffMaxMs);
+      }
+    }
+  };
+
   return {
     async send(agentName, instanceId, sendOptions) {
-      const res = await fetchImpl(conversationUrl(agentName, instanceId), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          message: sendOptions.message,
-          // Omitted when unset, so an admission with no dials is byte-identical to before.
-          ...(sendOptions.model ? { model: sendOptions.model } : {}),
-          ...(sendOptions.thinkingLevel ? { thinkingLevel: sendOptions.thinkingLevel } : {}),
-        }),
-        signal: sendOptions.signal,
-      });
+      const url = conversationUrl(agentName, instanceId);
+      const res = await postAdmission(
+        url,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            message: sendOptions.message,
+            // Omitted when unset, so an admission with no dials is byte-identical to before.
+            ...(sendOptions.model ? { model: sendOptions.model } : {}),
+            ...(sendOptions.thinkingLevel ? { thinkingLevel: sendOptions.thinkingLevel } : {}),
+          }),
+          signal: sendOptions.signal,
+        },
+        sendOptions.signal,
+      );
       if (!res.ok) {
         throw new Error(`harness admission failed (${res.status}): ${await errorDetail(res)}`);
       }
@@ -222,10 +293,17 @@ export function createEchoPush(options: {
 }): (events: EchoEvent[]) => Promise<void> {
   const fetchImpl = options.fetch ?? fetch;
   return async (events) => {
-    const res = await fetchImpl(new URL("/echo", options.baseUrl).toString(), {
+    const url = new URL("/echo", options.baseUrl).toString();
+    // The echo is log-only, un-retried, and fires at workspace attach — which makes it the FIRST
+    // thing to touch a Sandbox's Service and therefore j2's earliest witness that the Service is
+    // not routable yet (ADR-0042). It is only a witness if it says what went wrong: bare
+    // `fetch failed` in the pod log is what let that condition hide.
+    const res = await fetchImpl(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${options.token}` },
       body: JSON.stringify({ events }),
+    }).catch((err: unknown) => {
+      throw new Error(`harness echo to ${url} failed: ${transportDetail(err)}`, { cause: err });
     });
     if (!res.ok) {
       throw new Error(`harness echo failed (${res.status}): ${await errorDetail(res)}`);
@@ -246,6 +324,51 @@ export const agentRun = agentRunActorWith((endpoint) => createHarnessAgentRunCli
 
 /** A stream read worth retrying (server hiccup) — internal to the reconnect loop, never thrown out. */
 class ReconnectableError extends Error {}
+
+/** Errnos that mean no connection was ever established. `getaddrinfo`/`connect` say it by syscall;
+ * undici's own connect timeout says it by code. Deliberately short — anything not on this list is
+ * treated as possibly-delivered (see `postAdmission`). */
+const NEVER_DELIVERED_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH"]);
+const NEVER_DELIVERED_SYSCALLS = new Set(["connect", "getaddrinfo"]);
+
+/**
+ * Did this rejection happen BEFORE any byte of the request reached the wire?
+ *
+ * `fetch` reports transport failures as a generic `TypeError: fetch failed` and puts the real
+ * errno on `cause`, which for a dual-stack address is an `AggregateError` over one attempt per
+ * family — so the answer is only ever legible by walking down. Read structurally (syscall/code),
+ * never by matching the message: the message is the part that changes between Node versions.
+ */
+/**
+ * The most specific thing a transport rejection says about itself. `fetch` reports every one of
+ * them as the same three words — `fetch failed` — and that string, arriving as an `agent.fault`
+ * reason or a log line, names nothing an operator can act on. The errno one level down
+ * (`connect ECONNREFUSED 10.96.0.7:8080`, `getaddrinfo ENOTFOUND …`) is the whole diagnosis.
+ */
+function transportDetail(err: unknown, depth = 0): string {
+  if (depth > 4 || typeof err !== "object" || err === null) return String(err);
+  const { message, cause, errors } = err as { message?: unknown; cause?: unknown; errors?: unknown };
+  const nested = Array.isArray(errors) ? errors[0] : cause;
+  if (nested !== undefined && nested !== null) {
+    const deeper = transportDetail(nested, depth + 1);
+    if (deeper) return deeper;
+  }
+  return typeof message === "string" ? message : String(err);
+}
+
+function neverDelivered(err: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof err !== "object" || err === null) return false;
+  const { code, syscall, cause, errors } = err as {
+    code?: unknown;
+    syscall?: unknown;
+    cause?: unknown;
+    errors?: unknown;
+  };
+  if (typeof syscall === "string" && NEVER_DELIVERED_SYSCALLS.has(syscall)) return true;
+  if (typeof code === "string" && (code === "UND_ERR_CONNECT_TIMEOUT" || NEVER_DELIVERED_CODES.has(code))) return true;
+  if (Array.isArray(errors) && errors.some((nested) => neverDelivered(nested, depth + 1))) return true;
+  return neverDelivered(cause, depth + 1);
+}
 
 /** A readable fault message from a non-`completed` Settlement. */
 function faultMessage(settlement: Settlement): string {

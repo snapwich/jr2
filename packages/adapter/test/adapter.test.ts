@@ -208,3 +208,62 @@ test("a deferred event is refused, not degraded to a fire-and-forget tool", asyn
     await adapter.close();
   }
 });
+
+test("a surface read that never connected is retried — an Orchestrator Service between endpoints does not kill the turn", async () => {
+  // ADR-0042, one hop over from the admission it was written for. The Adapter dials the
+  // Orchestrator's Service, and that Service is between EndpointSlices every time the Orchestrator
+  // restarts (which ADR-0007's restore makes an ordinary event) and for a moment after a fresh
+  // namespace converges. Un-retried, the turn behind it settles `failed` before the model is asked
+  // once — the Harness fetches its Menu first, so the whole turn rides on this GET.
+  let attempts = 0;
+  const fetchImpl: typeof globalThis.fetch = async (input) => {
+    attempts += 1;
+    if (attempts <= 2) {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("connect ECONNREFUSED 10.96.0.7:4000"), {
+          code: "ECONNREFUSED",
+          syscall: "connect",
+        }),
+      });
+    }
+    if (String(input).endsWith("/surface")) return Response.json(REVIEW_SURFACE);
+    return Response.json({ delivered: true, event: "done", turnComplete: true, deliveryId: "d-1" });
+  };
+  const client = new OrchestratorClient({
+    url: "http://orchestrator.invalid",
+    token: TOKEN,
+    fetch: fetchImpl,
+    retryInitialMs: 1,
+    retryMaxMs: 2,
+    retryWindowMs: 500,
+  });
+
+  const surface = await client.surface("iid-1");
+
+  assert.equal(attempts, 3, "it re-asked until the Service answered");
+  assert.deepEqual(
+    surface.accepts.map((a) => a.name),
+    ["request_review", "done"],
+  );
+});
+
+test("a surface read whose window closes names the address, not `fetch failed`", async () => {
+  const fetchImpl: typeof globalThis.fetch = async () => {
+    throw new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect ECONNREFUSED 10.96.0.7:4000"), {
+        code: "ECONNREFUSED",
+        syscall: "connect",
+      }),
+    });
+  };
+  const client = new OrchestratorClient({
+    url: "http://orchestrator.invalid",
+    token: TOKEN,
+    fetch: fetchImpl,
+    retryInitialMs: 1,
+    retryMaxMs: 2,
+    retryWindowMs: 20,
+  });
+
+  await assert.rejects(() => client.surface("iid-1"), /ECONNREFUSED 10\.96\.0\.7:4000/);
+});

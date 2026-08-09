@@ -92,6 +92,56 @@ test("a refused admission is an error carrying the wire's detail", async () => {
   );
 });
 
+/** A transport rejection shaped the way undici shapes one: a generic `fetch failed` over a cause
+ * that carries the syscall and errno. What the client reads is the CAUSE, never the message. */
+function transportError(code: string, syscall: string): Error {
+  return new TypeError("fetch failed", { cause: Object.assign(new Error(`${syscall} ${code}`), { code, syscall }) });
+}
+
+test("an admission that never left the host is retried — a Service with no backend yet is not a failed turn", async () => {
+  const { calls, fetch } = scriptedFetch([
+    // What a ClusterIP with no programmed EndpointSlice answers: kube-proxy REJECTs, so the
+    // connection is refused before a byte of the prompt is sent.
+    () => Promise.reject(transportError("ECONNREFUSED", "connect")),
+    () => Promise.reject(transportError("ECONNREFUSED", "connect")),
+    () => new Response(JSON.stringify(admission), { status: 200 }),
+  ]);
+
+  const adm = await client(fetch).send("coder", "inst-1", { message: "do the thing" });
+
+  assert.equal(calls.length, 3, "the POST is re-sent until it connects");
+  assert.deepEqual(adm, admission);
+});
+
+test("a transport failure that may have reached the Harness is NOT retried — a re-POST is a second turn", async () => {
+  // Admission is accept-and-queue (ADR-0027): a POST the Harness received but could not answer
+  // has already queued a Submission, so re-sending it would run the turn twice. Only a failure
+  // that proves the request never left the host may be retried, and a reset connection does not.
+  const { calls, fetch } = scriptedFetch([() => Promise.reject(transportError("ECONNRESET", "read"))]);
+
+  await assert.rejects(() => client(fetch).send("coder", "inst-1", { message: "do the thing" }), /fetch failed/);
+  assert.equal(calls.length, 1);
+});
+
+test("an endpoint that never answers faults with the address it kept trying", async () => {
+  const { calls, fetch } = scriptedFetch([() => Promise.reject(transportError("ECONNREFUSED", "connect"))]);
+  const bounded = createHarnessClient({
+    baseUrl: "http://h.test",
+    fetch,
+    backoffInitialMs: 1,
+    backoffMaxMs: 2,
+    admitWindowMs: 20,
+  });
+
+  await assert.rejects(
+    () => bounded.send("coder", "inst-1", { message: "do the thing" }),
+    // Not a bare `fetch failed`: the reason lands on the run as the terminal `agent.fault`, and a
+    // fault nobody can act on is what made this class of failure invisible.
+    /never connected to http:\/\/h\.test\/agents\/coder\/inst-1/,
+  );
+  assert.ok(calls.length > 1, "it kept trying for the whole window");
+});
+
 test("the port admits via send and forwards the signal; admit without a prompt is an error", async () => {
   const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
   const port = harnessAgentRunPort(client(fetch));

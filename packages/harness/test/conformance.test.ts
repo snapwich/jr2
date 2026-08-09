@@ -242,6 +242,25 @@ test("the Menu is listed fresh per Submission: a surface change lands on the nex
   }
 });
 
+test("a Menu read the Adapter cannot answer fails the turn before the model is ever asked", async () => {
+  provider.reset([{ text: "never reached" }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  // Not a 404 (that is ADR-0026's empty menu, and a turn still runs): the Orchestrator answered
+  // the Adapter with a fault, which is what a blip on the pod→Orchestrator hop looks like.
+  sandbox.faultSurface();
+  const iid = "conf/menu-fault";
+
+  const admission = await admit(iid, "Review the diff.");
+  const settlement = await settled(iid, admission);
+
+  assert.equal(settlement.outcome, "failed", "a turn that cannot see its Menu settles failed (ADR-0027)");
+  assert.equal(
+    provider.calls.length,
+    0,
+    "the Menu is fetched BEFORE the model is asked, so this turn never reached the provider",
+  );
+});
+
 test('workspace "none" is the Menu-only shape: no Working tools offered, settled by pick alone (ADR-0028/0031)', async () => {
   provider.reset([
     {

@@ -5,10 +5,11 @@
     "tags": "not @kind and not @console"
   },
   "kind": {
-    "//": "Serial by default, but no longer because of a shared name: ADR-0040 made the wrap's `-base` intermediate per-converge scratch, and `--parallel 4` runs the tier green in ~1m45 (ADR-0010 has the measurements) — use it locally. What keeps the default serial is an undiagnosed, degree-independent flake: ~1 in 3 parallel runs loses one scenario whose first turn never reaches the scripted model (`menus seen: []`, converge clean). Diagnose that, then raise the default.",
+    "//": "Parallel by default (ADR-0010 has the measurements: ~1m35 at degree 4 against ~5m serial). Two bounds had to fall first — ADR-0040 made the wrap's `-base` intermediate per-converge scratch, and ADR-0042 stopped a just-Ready Sandbox Service losing the run's first turn to one unretried admission. `parallel` lives HERE rather than in the package script so a human running `npx cucumber-js --profile kind` from `features/` gets it too; add `--parallel 1` to bisect a suspected isolation bug.",
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
-    "tags": "@kind"
+    "tags": "@kind",
+    "parallel": 4
   },
   "console": {
     "paths": ["*.feature"],

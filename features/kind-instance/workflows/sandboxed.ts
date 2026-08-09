@@ -12,15 +12,18 @@
 // than infer it from the run merely being done.
 
 import { z } from "zod";
+import { assign } from "xstate";
 import { defineEvent, j2Setup, workspace } from "@j2/orchestrator";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 
 type Ws = { workdir: string; repos: Record<string, string>; branch: string };
 type BodyInput = { instanceId: string; workspace: Ws };
+/** Plus the one thing the body records without acting on it — see the `agent.fault` handler. */
+type BodyContext = BodyInput & { fault?: string };
 
 const body = j2Setup({
-  types: {} as { context: BodyInput; input: BodyInput },
+  types: {} as { context: BodyContext; input: BodyInput },
   events: [finish],
 }).createMachine({
   id: "body",
@@ -46,10 +49,25 @@ const body = j2Setup({
           prompt: "implement the thing",
         }),
       },
-      on: { finish: { target: "finished" } },
+      on: {
+        finish: { target: "finished" },
+        // ADR-0016's ONE terminal telemetry, ROUTED — because an ignored event is an invisible one.
+        // A body with no `agent.fault` policy does not keep waiting for its Agent; it stops waiting
+        // silently, `active` in `coding` forever, with the reason nowhere any observer can read
+        // (`j2 status` reports a child's state value, never its context). That is what made a lost
+        // first turn look like a mysteriously slow one, and it cost this tier its parallel default.
+        // Settling instead names the failure in the one place every scenario already reads.
+        "agent.fault": {
+          target: "faulted",
+          actions: assign({ fault: ({ event }) => (event as { reason?: string }).reason }),
+        },
+      },
     },
     finished: { type: "final", output: { outcome: "finished" } },
     lost: { type: "final", output: { outcome: "lost" } },
+    /** Carries the reason, not just the word: this is the only place a fault the Orchestrator
+     * absorbed and gave up on becomes readable from outside the cluster. */
+    faulted: { type: "final", output: ({ context }) => ({ outcome: "faulted", reason: context.fault }) },
   },
   output: ({ event }) => (event as { output?: { outcome: string } }).output,
 });

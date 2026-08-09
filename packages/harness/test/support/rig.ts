@@ -177,6 +177,13 @@ export type FakeSandbox = {
   /** What a state exit does to the registration: every later surface read is a 404. */
   killSurface: () => void;
   reviveSurface: () => void;
+  /**
+   * What a BLIP does to it, which is a different claim (ADR-0026): a 404 means "this turn is
+   * over", and the Adapter answers it with an empty Menu; anything else means the Adapter could
+   * not reach the Orchestrator at all. The two must not be confused, and only this lever produces
+   * the second — the leg of a turn that runs BEFORE the model is ever asked.
+   */
+  faultSurface: (status?: number) => void;
   /** Every pick delivered since the last `reset`, in order. */
   delivered: Array<Record<string, unknown>>;
   /** Park every LATER delivery after recording it — the abort-mid-tool-call lever. The parked
@@ -191,10 +198,16 @@ export async function startAdapterOverFakeOrchestrator(initialSurface: Surface):
   let surface = initialSurface;
   let live = true;
   let holding = false;
+  let surfaceFault: number | undefined;
   const delivered: Array<Record<string, unknown>> = [];
   const fetchImpl: typeof globalThis.fetch = async (input, init) => {
     if (!live) return new Response(JSON.stringify({ error: "no live agent surface" }), { status: 404 });
-    if (String(input).endsWith("/surface")) return Response.json(surface);
+    if (String(input).endsWith("/surface")) {
+      if (surfaceFault !== undefined) {
+        return new Response(JSON.stringify({ error: "scripted orchestrator failure" }), { status: surfaceFault });
+      }
+      return Response.json(surface);
+    }
     const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
     delivered.push(event);
     if (holding) await new Promise<never>(() => {});
@@ -218,12 +231,14 @@ export async function startAdapterOverFakeOrchestrator(initialSurface: Surface):
     setSurface: (next) => (surface = next),
     killSurface: () => (live = false),
     reviveSurface: () => (live = true),
+    faultSurface: (status = 500) => (surfaceFault = status),
     delivered,
     holdDeliveries: () => (holding = true),
     reset: (next) => {
       surface = next;
       live = true;
       holding = false;
+      surfaceFault = undefined;
       delivered.length = 0;
     },
     close: adapter.close,

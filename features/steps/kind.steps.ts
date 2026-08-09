@@ -15,14 +15,15 @@
 // moving) happens inside the cluster. If this file opened an MCP client, the pod would never
 // originate a connection and the leg under test would not be tested.
 
-import { After, Given, Then, When } from "@cucumber/cucumber";
+import { After, Given, Then, When, type ITestCaseHookParameter } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@j2/orchestrator";
 import { E2EWorld } from "./world.ts";
@@ -752,9 +753,121 @@ Then("every node still holds the images this instance's map names", async functi
   }
 });
 
+// --- failure diagnostics ---------------------------------------------------------------------------
+//
+// A @kind scenario's namespace is deleted the moment it ends, which takes the only witnesses with
+// it: the pods' logs and — the one that names a cause — the Harness's own history view, where a
+// Submission that settled `failed` carries the error message verbatim (ADR-0027). So a FAILED
+// scenario dumps everything it can reach first. Reading, never mutating: the dump must not change
+// what the next run does, and every probe swallows its own error, because a diagnostic that fails
+// the teardown destroys the evidence it exists to collect.
+
+/** Where a failed scenario's evidence lands (gitignored, beside the tier's temp instances). */
+const FAILURE_DIR = fileURLToPath(new URL("../.tmp/kind-failures/", import.meta.url));
+
+/** Run a probe and answer its output, or the reason it could not be taken. */
+async function probe(fn: () => Promise<string>): Promise<string> {
+  try {
+    return await fn();
+  } catch (err) {
+    return `<unavailable: ${err instanceof Error ? err.message : String(err)}>\n`;
+  }
+}
+
+/**
+ * The Harness's own account of this conversation — the settlements, with the failure message on
+ * any that settled `failed`. It answers the first question a lost turn poses: a 404 here means the
+ * admission POST never landed at all (POST is what creates a conversation — ADR-0027), while a
+ * `failed` settlement means the turn started and died on the pod, and says how.
+ */
+async function harnessHistory(world: E2EWorld, iid: string): Promise<string> {
+  const pod = (await sandboxesFor(world)).find((s) => s.status?.phase === "Ready")?.metadata.name;
+  if (!pod) return "<no Ready Sandbox to read the history from>\n";
+  let body = "";
+  await withPodForward(world, pod, 8080, async (localUrl) => {
+    const res = await fetch(`${localUrl}/agents/coder/${encodeURIComponent(iid)}?view=history`);
+    body = `HTTP ${res.status}\n${await res.text()}\n`;
+  });
+  return body;
+}
+
+/** Every container of every pod in the namespace, timestamped. Named pod by pod rather than by
+ * label: the Sandbox's pod carries the operator's labels, not the run's, and a selector that
+ * silently matches nothing writes an empty file that reads exactly like a silent container. */
+async function allPodLogs(world: E2EWorld): Promise<string> {
+  const names = (await kubectl(world, ["get", "pods", "-o", "name"])).split("\n").filter(Boolean);
+  const chunks = await Promise.all(
+    names.map(async (pod) => {
+      const log = await probe(() =>
+        kubectl(world, ["logs", pod, "--all-containers", "--prefix", "--timestamps", "--tail=-1"]),
+      );
+      return `--- ${pod} ---\n${log}`;
+    }),
+  );
+  return chunks.join("\n");
+}
+
+/** Everything a failed @kind scenario can still be asked, written to one folder. */
+async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promise<void> {
+  const slug = scenarioName.replace(/[^A-Za-z0-9]+/g, "-").slice(0, 60);
+  const dir = join(FAILURE_DIR, `${world.kindNamespace}-${slug}`);
+  await mkdir(dir, { recursive: true });
+
+  const status = await probe(async () => (await world.runCli(["status", world.runId ?? ""])).stdout);
+  // The iid the Harness is admitted under — read off `j2 status`, which is also the dump's copy.
+  const iid = (() => {
+    try {
+      return (JSON.parse(status.trim().split("\n").pop() ?? "{}") as { instanceId?: string }).instanceId;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  // The provider's side, first: how many requests EVER reached this scenario's scripted model, and
+  // whether any of them streamed. Zero streaming is the flake's signature — the pod's turn loop
+  // never got as far as asking the model anything.
+  const calls = world.provider?.calls ?? [];
+  const files: Array<[string, Promise<string> | string]> = [
+    [
+      "provider-calls.txt",
+      `${calls.length} request(s), ${calls.filter((c) => c.stream).length} streaming\n` +
+        calls.map((c) => `#${c.seq} stream=${c.stream} model=${c.model ?? "?"} tools=${c.tools.join(",")}`).join("\n") +
+        "\n",
+    ],
+    ["j2-status.json", status],
+    ["harness-history.json", iid ? probe(() => harnessHistory(world, iid)) : "<no instanceId in j2 status>\n"],
+    ["pods.txt", probe(() => kubectl(world, ["get", "pods", "-o", "wide"]))],
+    ["sandboxes.yaml", probe(() => kubectl(world, ["get", "sandbox", "-o", "yaml"]))],
+    ["events.txt", probe(() => kubectl(world, ["get", "events", "--sort-by=.metadata.creationTimestamp"]))],
+    // The Service the Orchestrator dials the Harness through: `phase: Ready` is computed from the
+    // POD's readiness, and the EndpointSlice behind the ClusterIP is programmed after that — so
+    // what this shows is whether the address the run was handed had a backend at all (ADR-0042).
+    ["endpointslices.yaml", probe(() => kubectl(world, ["get", "endpointslices", "-o", "yaml"]))],
+    // `--timestamps` is not optional (inside `allPodLogs` too): the Harness's own log is the
+    // ADR-0023 conversation projection and carries none of its own, so without them nothing can be
+    // ordered against the Orchestrator's lines or the provider's arrival times.
+    ["logs.txt", probe(() => allPodLogs(world))],
+    [
+      "logs-orchestrator.txt",
+      probe(() => kubectl(world, ["logs", "--prefix", "--timestamps", "--tail=-1", "deployment/j2-orchestrator"])),
+    ],
+  ];
+  for (const [name, content] of files) {
+    await writeFile(join(dir, name), await content).catch(() => {});
+  }
+  console.error(`[kind] scenario failed — diagnostics in ${dir}`);
+}
+
 // Namespace deletion (World.cleanup) is the real teardown; this only unsticks a Sandbox whose
-// finalizer might slow that deletion down after a failed scenario.
-After({ tags: "@kind" }, async function (this: E2EWorld): Promise<void> {
+// finalizer might slow that deletion down after a failed scenario. Registered in this file, which
+// Cucumber imports after `hooks.ts`, so (After hooks run in reverse) this runs BEFORE the namespace
+// is deleted — which is what makes the diagnostics dump above possible at all.
+After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHookParameter): Promise<void> {
+  if (scenario.result?.status === "FAILED") {
+    await dumpKindDiagnostics(this, scenario.pickle.name).catch((err: unknown) => {
+      console.error(`[kind] diagnostics dump failed:`, err);
+    });
+  }
   // A scenario that failed before (or during) the sweep leaves its planted image behind; the next
   // `j2 gc` collects it either way — a labeled image no root names is exactly what the sweep is
   // for — but the tier must not depend on that to stay clean. Every ref the load added goes, since

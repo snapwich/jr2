@@ -71,6 +71,40 @@ export type DeliveryReceipt = {
  */
 export class NoSurfaceError extends Error {}
 
+/** A pause, for the surface read's backoff ladder. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Did this request fail without the Orchestrator answering at all? `fetch` rejects on transport
+ * failure and resolves on every HTTP status, so the rejection itself is the whole test — an
+ * answered request never lands here. `this.ok`'s throws are ordinary `Error`s and must NOT be
+ * mistaken for one, so the check is the shape of a transport rejection: a `TypeError`, or anything
+ * carrying an errno underneath.
+ */
+function isTransportFailure(err: unknown): boolean {
+  if (err instanceof TypeError) return true;
+  const cause = (err as { cause?: unknown } | null)?.cause;
+  return typeof (cause as { code?: unknown } | undefined)?.code === "string";
+}
+
+/**
+ * The most specific thing a transport rejection says about itself. `fetch` reports every one of
+ * them as `fetch failed`, and those three words in a pod log or a settlement message diagnose
+ * nothing; the errno one level down (`connect ECONNREFUSED 10.96.0.7:4000`) is the answer.
+ */
+function transportDetail(err: unknown, depth = 0): string {
+  if (depth > 4 || typeof err !== "object" || err === null) return String(err);
+  const { message, cause, errors } = err as { message?: unknown; cause?: unknown; errors?: unknown };
+  const nested = Array.isArray(errors) ? errors[0] : cause;
+  if (nested !== undefined && nested !== null) {
+    const deeper = transportDetail(nested, depth + 1);
+    if (deeper) return deeper;
+  }
+  return typeof message === "string" ? message : String(err);
+}
+
 export type OrchestratorOptions = {
   /** Base URL of the Orchestrator, reachable FROM THE POD (Service DNS when deployed —
    * ADR-0019). The Agent never makes this call and is never told this address. */
@@ -79,6 +113,11 @@ export type OrchestratorOptions = {
   token: string;
   /** Injectable for tests. Defaults to global `fetch`. */
   fetch?: typeof globalThis.fetch;
+  /** Surface-read retry ladder and window (ADR-0042) — see `surface`. Defaults 250ms → 5s over
+   * 60s; tests shrink them. */
+  retryInitialMs?: number;
+  retryMaxMs?: number;
+  retryWindowMs?: number;
 };
 
 /** The Orchestrator, as the Adapter uses it: read this turn's surface, deliver this turn's pick. */
@@ -86,19 +125,58 @@ export class OrchestratorClient {
   private readonly url: string;
   private readonly token: string;
   private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly retryInitialMs: number;
+  private readonly retryMaxMs: number;
+  private readonly retryWindowMs: number;
 
   constructor(opts: OrchestratorOptions) {
     this.url = opts.url.replace(/\/+$/, "");
     this.token = opts.token;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
+    this.retryInitialMs = opts.retryInitialMs ?? 250;
+    this.retryMaxMs = opts.retryMaxMs ?? 5_000;
+    this.retryWindowMs = opts.retryWindowMs ?? 60_000;
   }
 
+  /**
+   * This turn's Menu — and the read the WHOLE TURN rides on, which is why it is the one call here
+   * that retries (ADR-0042).
+   *
+   * The Harness fetches its Menu before it asks the model anything, so a transport failure on this
+   * hop settles the Submission `failed` with the model never dialed — and the Orchestrator treats
+   * that as a terminal `agent.fault`. The hop is not as safe as it looks: the Adapter dials the
+   * Orchestrator's SERVICE, which is between EndpointSlices every time the Orchestrator restarts
+   * (ordinary, under ADR-0007's restore) and for a moment after a fresh namespace converges. Ready
+   * is not routable here either.
+   *
+   * A GET is idempotent, so unlike an admission this retries on ANY transport failure rather than
+   * only a never-delivered one — there is no second turn to accidentally start. Bounded, and the
+   * fault names the address: `fetch failed` alone diagnoses nothing.
+   *
+   * `deliver` deliberately does NOT retry. A failed pick reaches the model as a tool error it can
+   * act on — pick again, or pick differently — so the turn survives it; and a POST that may have
+   * been delivered must not be re-sent, because a duplicate pick is a duplicate transition.
+   */
   async surface(instanceId: string): Promise<Surface> {
-    const res = await this.fetchImpl(`${this.url}/agents/${encodeURIComponent(instanceId)}/surface`, {
-      headers: { authorization: `Bearer ${this.token}` },
-    });
-    if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}"`);
-    return (await this.ok(res)) as Surface;
+    const url = `${this.url}/agents/${encodeURIComponent(instanceId)}/surface`;
+    const deadline = Date.now() + this.retryWindowMs;
+    let backoffMs = this.retryInitialMs;
+    for (;;) {
+      try {
+        const res = await this.fetchImpl(url, { headers: { authorization: `Bearer ${this.token}` } });
+        if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}"`);
+        return (await this.ok(res)) as Surface;
+      } catch (err) {
+        // An answered request is an answer, however unwelcome: a 404 is ADR-0026's turn-is-over,
+        // and a 403 is a scope refusal. Only a request that never got one is worth re-asking.
+        if (err instanceof NoSurfaceError || !isTransportFailure(err)) throw err;
+        if (Date.now() >= deadline) {
+          throw new Error(`the Orchestrator never answered ${url}: ${transportDetail(err)}`, { cause: err });
+        }
+        await sleep(backoffMs);
+        backoffMs = Math.min(backoffMs * 2, this.retryMaxMs);
+      }
+    }
   }
 
   async deliver(instanceId: string, event: Record<string, unknown>): Promise<DeliveryReceipt> {
