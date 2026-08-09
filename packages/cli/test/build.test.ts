@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { stageInstanceBundle, type BuildPort } from "../src/build.ts";
+import { sandboxWrapDockerfile, stageInstanceBundle, type BuildPort } from "../src/build.ts";
 
 /** A port that materializes `files(out)` — what `pnpm deploy` would have written into the bundle. */
 function stagingPort(files: (out: string) => Record<string, string>): BuildPort {
@@ -61,4 +61,27 @@ test("the bundle hash tracks the kit — a dependency's sources are image conten
   const before = await hashOf(kit("export const renew = () => 1;\n"));
   assert.notEqual(await hashOf(kit("export const renew = () => 2;\n")), before);
   assert.equal(await hashOf(kit("export const renew = () => 1;\n")), before);
+});
+
+test("the wrap injects the Harness at /opt/j2, appends PATH, and gives uid 1000 a home", async () => {
+  // Three claims that are SILENTLY wrong at runtime if inverted, on a base image no test here can
+  // see, so nothing downstream catches them (ADR-0037):
+  //   - `/app` instead of `/opt/j2` shadows an /app the user's own base already uses;
+  //   - a PREPENDED PATH shadows the toolchain the user pinned — and interpolating `${PATH}` in
+  //     the generator emits `PATH=":/opt/j2/bin"`, deleting it outright;
+  //   - no writable $HOME for uid 1000 fails every attach with `fatal: $HOME not set`, mid-turn.
+  const wrap = sandboxWrapDockerfile("j2-workspace-inst-default-base:abc123", "j2-harness:9f1e02c4d5a6");
+
+  assert.match(wrap, /^FROM j2-workspace-inst-default-base:abc123$/m);
+  assert.match(wrap, /^COPY --from=j2-harness:9f1e02c4d5a6 \/opt\/j2 \/opt\/j2$/m);
+  assert.ok(!wrap.includes("/app"), "the injected runtime lives at /opt/j2, never /app");
+
+  // The literal `${PATH}` must survive into the emitted Dockerfile, and j2's bin must FOLLOW it.
+  assert.match(wrap, /^ENV HOME=\/home\/j2 PATH="\$\{PATH\}:\/opt\/j2\/bin"$/m);
+
+  assert.match(wrap, /^RUN mkdir -p \/home\/j2 && chown 1000:0 \/home\/j2 && chmod 0775 \/home\/j2$/m);
+  assert.ok(
+    wrap.trimEnd().endsWith(`CMD ["/opt/j2/bin/node", "/opt/j2/src/main.ts"]`),
+    "absolute CMD, WORKDIR-independent",
+  );
 });

@@ -1,7 +1,9 @@
 // Working tools (ADR-0027/0028): the file and shell tools the Harness executes in its own
 // container — what an Agent may DO (the Menu, served by the Adapter, is what it may SAY). pi
 // ships read/write/edit/bash; grep and glob are j2-written (`rg` with a plain-`grep` fallback
-// when rg is absent; `find`). The definition's `workspace` filters the set: `"read"` withholds
+// when rg is absent; `find`). `rg` is vendored into the image at /opt/j2/bin and reached off PATH,
+// never by absolute path, so a user's own rg in a Sandbox Image wins (ADR-0037) and the plain-grep
+// fallback still covers a host run. The definition's `workspace` filters the set: `"read"` withholds
 // write and edit (ADR-0028) — bash stays, because the tool layer states intent and stops the
 // honest path; the worktree layer is the containment. `"none"` withholds the whole set — the
 // Menu-only Agent has no data plane at all.

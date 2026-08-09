@@ -77,6 +77,44 @@ EXPOSE 4000
 CMD ["tsx", "node_modules/@j2/orchestrator/bin/server.ts"]
 `;
 
+/**
+ * The **wrap** (ADR-0037): the second, kit-owned stage `j2 up` builds on top of whatever
+ * `images/<name>/Dockerfile` produced. The user's file has zero j2 knowledge and is never
+ * rewritten — this is the entire j2 half of a Sandbox Image, and every line is load-bearing:
+ *
+ * - `COPY --from=<harness> /opt/j2 /opt/j2` — the injected runtime, verbatim from the stock
+ *   Harness image (`deploy/harness/Dockerfile` publishes that tree). `/opt/j2`, not `/app`, so a
+ *   base that already uses `/app` is not shadowed. `bin/` and `lib/` arrive as siblings, which is
+ *   what makes node's `$ORIGIN/../lib` rpath resolve on a base with no libstdc++ of its own.
+ * - `HOME=/home/j2`, created at **build** — an image layer, not a volume, so a mount never shadows
+ *   dotfiles the user baked in. The attach's first act writes `$HOME/.gitconfig`, and uid 1000 on
+ *   a minimal base has neither a passwd entry nor a home; without this every attach dies with
+ *   `fatal: $HOME not set`, inside a turn, as a tool error the model has to interpret.
+ * - `PATH` is **appended**, never prepended. Working tools spawn with no env override, so children
+ *   inherit this PATH — appending lets the user's pinned `node`/`rg`/toolchain win and leaves j2's
+ *   as the fallback. Note the escaped `\${PATH}`: the *emitted* Dockerfile must contain the literal
+ *   `${PATH}` for the shell-free `ENV` form to expand it at build. Interpolating it here would
+ *   emit `PATH=":/opt/j2/bin"` and delete the user's toolchain — the exact failure the
+ *   append-never-prepend rule exists to prevent, arriving silently.
+ * - `WORKDIR /work` is for the human: with the User Container gone it is where `kubectl exec`
+ *   lands. It has no effect on the Agent — every Working tool takes an explicit cwd.
+ * - `CMD` is absolute for that reason, identical to the stock image's.
+ *
+ * The returned text is also the salt for the Sandbox Image's content hash, which is how "the hash
+ * must include the resolved harness ref" (ADR-0038) is satisfied without a second mechanism.
+ */
+export function sandboxWrapDockerfile(baseRef: string, harnessRef: string): string {
+  return `FROM ${baseRef}
+COPY --from=${harnessRef} /opt/j2 /opt/j2
+USER root
+RUN mkdir -p /home/j2 && chown 1000:0 /home/j2 && chmod 0775 /home/j2
+ENV HOME=/home/j2 PATH="\${PATH}:/opt/j2/bin"
+WORKDIR /work
+USER 1000
+CMD ["/opt/j2/bin/node", "/opt/j2/src/main.ts"]
+`;
+}
+
 /** The real build port: pnpm + docker + kind subprocesses. */
 export const pnpmDockerBuild: BuildPort = {
   async bundle(instanceDir, outDir) {
