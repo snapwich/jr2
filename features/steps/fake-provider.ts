@@ -154,8 +154,14 @@ export async function startFakeProvider(): Promise<FakeProvider> {
       const entry = await until(
         () => held.find((h) => !h.done && h.call.tools.some((t) => wanted.includes(t))),
         // Lazily rendered: what makes a miss debuggable is the menus seen by the TIME IT GAVE UP,
-        // not the (usually empty) set at the moment the step started polling.
-        () => `a parked turn request offering "${tool}" (menus seen: ${JSON.stringify(held.map((h) => h.call.tools))})`,
+        // not the (usually empty) set at the moment the step started polling. The total request
+        // count is in the message because it splits the two failure classes an empty menu list
+        // cannot: "the pod never reached this endpoint at all" (0 requests — look at the network
+        // and the Harness pod's logs) vs "requests arrived but no turn ever parked" (preflights
+        // only, or a stream that closed early — look at the turn admission).
+        () =>
+          `a parked turn request offering "${tool}" (menus seen: ${JSON.stringify(held.map((h) => h.call.tools))}; ` +
+          `${calls.length} request(s) ever received, ${calls.filter((c) => c.stream).length} streaming)`,
       );
       const name = wanted.find((w) => entry.call.tools.includes(w))!;
       streamToolCall(entry.res, name, JSON.stringify(args));

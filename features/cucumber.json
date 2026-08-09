@@ -5,7 +5,7 @@
     "tags": "not @kind and not @console"
   },
   "kind": {
-    "//": "SERIAL, and not because of cluster capacity: concurrent converges of one checkout share the wrap's intermediate `-base` tag. ADR-0010 carries the measurements, ADR-0037 the cause. Raise the degree when that intermediate stops being a shared name, not before.",
+    "//": "Serial by default, but no longer because of a shared name: ADR-0040 made the wrap's `-base` intermediate per-converge scratch, and `--parallel 4` runs the tier green in ~1m45 (ADR-0010 has the measurements) — use it locally. What keeps the default serial is an undiagnosed, degree-independent flake: ~1 in 3 parallel runs loses one scenario whose first turn never reaches the scripted model (`menus seen: []`, converge clean). Diagnose that, then raise the default.",
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
     "tags": "@kind"

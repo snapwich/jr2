@@ -30,13 +30,22 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   They are tagged `@kind` and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is
   the product's own path (ADR-0019): one shared vanilla kind cluster, locally built kit images, then **`j2 up` per
   scenario into a fresh namespace** — namespace-as-identity makes the scenario the isolation unit here too, so nothing
-  is instance-bound to the cluster. **`--parallel` was expected to be bounded only by cluster capacity; it is not, and
-  the tier runs serially.** Measured (11 scenarios, sealed tree): 4 workers → 7/11, 3 → 9/11, 2 → 9/11, serial → 11/11
-  in 4m58s. Capacity is not what binds it — degree 2 produced ZERO capacity timeouts and still lost two scenarios. Every
-  degree loses them to one shared name: the Sandbox Image wrap's intermediate `-base` tag (ADR-0037), which is a content
-  address, so concurrent converges of one checkout build and untag the _same_ image. The scenario isolation this ADR
-  designed is intact — each scenario has its own namespace and its own scripted model port, and nothing leaked between
-  workers. Raise the degree when the intermediate stops being a shared name, not before.
+  is instance-bound to the cluster. **The tier defaults to serial, but the serial bound moved.** `--parallel` was
+  expected to be bounded only by cluster capacity, and was instead bound by one shared name — the Sandbox Image wrap's
+  intermediate `-base` tag (ADR-0037), a content address, so concurrent converges of one checkout built and untagged the
+  _same_ image. Measured then (11 scenarios, sealed tree): 4 workers → 7/11, 3 → 9/11, 2 → 9/11, serial → 11/11 in ~5m —
+  degree 2 produced ZERO capacity timeouts and still lost two scenarios, which is what proved the name, not capacity,
+  was the bound. [ADR-0040](0040-the-wraps-intermediate-is-scratch-a-converge-names-its-own.md) deleted that bound (the
+  intermediate is per-converge scratch) and [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) made a
+  warm scenario's converge build nothing (~13s fresh-namespace converge, every build disk-skipped). Measured on that
+  tree: serial → 11/11 in 5m01s; **degree 4 → 11/11 in ~1m30–1m45s in 8 of 10 runs**, and sixteen parallel runs across
+  degrees 2–4 produced ZERO converge or image failures — the shared-name class is verifiably gone, and the scenario
+  isolation this ADR designed was intact throughout (own namespace, own scripted model port). What parallelism surfaces
+  instead is a distinct, degree-independent flake: roughly one run in three loses ONE scenario whose first turn never
+  reaches the scripted model inside the 90–120s budgets (`menus seen: []` — zero provider requests; the converge was
+  clean; the scenario varies). That is a first-turn-admission latency question, not an isolation or naming one, and it
+  is undiagnosed — so the wired default stays serial, `--parallel 4` is the documented local option for a ~3× faster
+  run, and the default rises when that flake is understood, not before.
 - **An opt-in `@console` tier for the Console's UX** (added with
   [ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)). The Console's risky behavior is interaction —
   token-mode switching, the frame-triggered gate inbox, selection vs. folding — which no reducer test sees and no CLI
