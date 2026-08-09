@@ -6,8 +6,8 @@
 // from env — populate the uncommitted `.env` beside this file (see README); the `j2` CLI loads it
 // before evaluating this config, and anything already set in your shell wins over it.
 //
-// `images` names the composed images in one block (ADR-0031); `harness` declares what this
-// instance can REACH — never WHICH model to use. That choice lives in `agents/<name>.ts` (ADR-0018):
+// `harness` declares what this instance can REACH — never WHICH model to use. That choice lives in
+// `agents/<name>.ts` (ADR-0018):
 //   - VLLM_BASE_URL set → a custom `vllm` provider (OpenAI-compatible; the address must be
 //     reachable FROM PODS — a LAN address, never localhost). `j2 up` preflights it from inside
 //     the cluster, probing every model the definitions name against it, including one tool-call
@@ -21,9 +21,10 @@
 //     it exists. Two committed files instead of one `.env` line: the price of the model being a
 //     design decision rather than a deployment one.
 //
-// The image overrides are kit-dev territory (nothing is published yet — ADR-0019): locally built
-// tags, `kind load`ed by `just harness-image` / `just adapter-image` / `just e2e-kind-up`'s
-// operator build. Delete them once the published `<kitversion>` images exist.
+// No image is named here, by design (ADR-0038): `j2 up` builds every image it deploys and resolves
+// every ref itself — the kit three from source when it runs out of a kit checkout, the published
+// `<kitversion>` tags otherwise. What the AGENTS' toolchain is lives in `images/default/Dockerfile`
+// (ADR-0037), which this instance has because it has `repos`.
 
 import { defineConfig } from "@j2/orchestrator";
 
@@ -32,11 +33,6 @@ const vllm = process.env.VLLM_BASE_URL;
 export default defineConfig({
   name: "coding",
   repos: [{ name: "obsidian-tasks.nvim", url: "https://github.com/snapwich/obsidian-tasks.nvim.git" }],
-  images: {
-    harness: "j2-harness:local",
-    adapter: "j2-adapter:local",
-    operator: "j2-operator:local",
-  },
   harness: {
     // The endpoint's cert chains to a private CA (committed here — CA certs are public data).
     // `j2 up` materializes it into the j2-ca ConfigMap; the Harness container and the provider

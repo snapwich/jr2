@@ -54,7 +54,15 @@ class FakeCluster implements KubeAdmin {
   /** Drift injection, per selector: the image that layer's pod carries when it must differ from
    * the applied one. Unset → an HONEST cluster, reporting a pod running whatever was last applied. */
   podImages: Record<string, string> = {};
+  /** Live Sandbox CRs, as `j2 up`'s closing report reads them (ADR-0038: report, never re-image). */
+  sandboxes: Array<{ metadata: { name: string }; spec?: { image?: string } }> = [];
+  /** `true` → listing Sandboxes throws, as it does when the CRD is absent or RBAC forbids it. */
+  sandboxListFails = false;
   async listJson<T>(opts: { kind: string; selector?: string; namespace?: string }): Promise<T[]> {
+    if (opts.kind.startsWith("sandboxes")) {
+      if (this.sandboxListFails) throw new Error("the server doesn't have a resource type sandboxes");
+      return this.sandboxes as T[];
+    }
     if (opts.kind !== "pod") return [];
     const image = this.podImages[opts.selector ?? ""] ?? this.lastAppliedImage(opts.selector ?? "");
     if (!image) return [];
@@ -90,8 +98,17 @@ class FakeCluster implements KubeAdmin {
 
 /** A build port that records instead of building. `files` is what `pnpm deploy` would have
  * materialized into the bundle — including, in the real thing, the kit's own sources under
- * `node_modules/.pnpm` (the resolved dependency, workspace-linked or registry-fetched alike). */
-function fakeBuild(record: string[], files: Record<string, string> = { "package.json": "{}" }): BuildPort {
+ * `node_modules/.pnpm` (the resolved dependency, workspace-linked or registry-fetched alike).
+ *
+ * Every verb records distinguishably, because ADR-0038's layers differ in exactly HOW they build:
+ * a kit image is `-f <committed Dockerfile>` against another context, the instance image and the
+ * wrap are generated Dockerfiles on stdin, and the preflight is a `docker run` against a tag. The
+ * tag alone is recorded on the `build ` line so the address stays extractable from it. */
+function fakeBuild(
+  record: string[],
+  opts: { files?: Record<string, string>; preflightFails?: boolean } = {},
+): BuildPort {
+  const files = opts.files ?? { "package.json": "{}" };
   return {
     bundle: async (_dir, out) => {
       record.push("bundle");
@@ -100,9 +117,22 @@ function fakeBuild(record: string[], files: Record<string, string> = { "package.
         await writeFile(join(out, rel), content);
       }
     },
-    build: async (tag) => void record.push(`build ${tag}`),
+    build: async ({ tag, context, dockerfile, dockerfileContent }) => {
+      record.push(`build ${tag}`);
+      if (dockerfile) record.push(`build-with -f ${dockerfile} ctx ${context}`);
+      else if (dockerfileContent?.startsWith("FROM j2-workspace")) record.push(`build-with wrap ${tag}`);
+      else if (dockerfileContent) record.push(`build-with stdin ${tag}`);
+      else record.push(`build-with context-default ${tag}`);
+    },
+    run: async (image, argv) => {
+      record.push(`run ${image} ${argv.join(" ")}`);
+      if (opts.preflightFails) throw new Error("exit 127: rg: not found");
+      return "";
+    },
+    untag: async (tag) => void record.push(`untag ${tag}`),
     push: async (tag) => void record.push(`push ${tag}`),
     kindLoad: async (tag, cluster) => void record.push(`kind-load ${tag} → ${cluster}`),
+    kindPrune: async () => [],
   };
 }
 
@@ -125,11 +155,44 @@ async function mkInstance(config: string, name = "myinst", agentModels?: Record<
   return root;
 }
 
+/** Add a Sandbox Image to an instance (ADR-0037: `images/<name>/Dockerfile`, dirname = name). */
+async function withImage(root: string, name: string, dockerfile = "FROM node:24-slim\n"): Promise<string> {
+  await mkdir(join(root, "images", name), { recursive: true });
+  await writeFile(join(root, "images", name, "Dockerfile"), dockerfile);
+  return root;
+}
+
+/** A kit checkout as ADR-0038's detection sees one: BOTH markers, plus each image's hash sources. */
+async function mkKit(): Promise<string> {
+  const kit = await mkdtemp(join(tmpdir(), "j2-kit-"));
+  const files: Record<string, string> = {
+    "deploy/harness/Dockerfile": "FROM node:24-slim\n",
+    "deploy/adapter/Dockerfile": "FROM node:24-alpine\n",
+    "operator/Dockerfile": "FROM golang:1.23\n",
+    "packages/harness/package.json": `{"name":"@j2/harness"}`,
+    "packages/adapter/package.json": `{"name":"@j2/adapter"}`,
+  };
+  for (const [rel, content] of Object.entries(files)) {
+    await mkdir(join(kit, dirname(rel)), { recursive: true });
+    await writeFile(join(kit, rel), content);
+  }
+  return kit;
+}
+
 type World = { io: Io; kube: FakeCluster; built: string[]; err: string[]; confirms: string[] };
 
 function mkWorld(
   root: string,
-  over: { confirm?: boolean; env?: Record<string, string>; bundleFiles?: Record<string, string> } = {},
+  over: {
+    confirm?: boolean;
+    env?: Record<string, string>;
+    bundleFiles?: Record<string, string>;
+    /** A kit checkout root, when the world is meant to be one. Default: the instance folder, which
+     * is NOT a checkout — so every test stays in installed-kit mode unless it says otherwise, and
+     * none of them detect the real repo the suite happens to run inside. */
+    kitDir?: string;
+    preflightFails?: boolean;
+  } = {},
 ): World {
   const kube = new FakeCluster();
   const built: string[] = [];
@@ -140,14 +203,24 @@ function mkWorld(
     stderr: (s) => err.push(s),
     env: over.env ?? {},
     cwd: root,
+    kitDir: over.kitDir ?? root,
     kubeAdmin: kube,
-    build: fakeBuild(built, over.bundleFiles),
+    build: fakeBuild(built, { files: over.bundleFiles, preflightFails: over.preflightFails }),
     confirm: async (q) => {
       confirms.push(q);
       return over.confirm ?? true;
     },
   };
   return { io, kube, built, err, confirms };
+}
+
+/** The `j2-images` map this converge applied — the ConfigMap the Orchestrator reads per provision
+ * and, byte-identical, the annotation the next converge diffs (ADR-0038). */
+function imagesOf(w: World): Record<string, any> {
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-images")!;
+  return JSON.parse(cm.data["images.json"]);
 }
 
 test("up refuses a namespace labeled for another instance", async () => {
@@ -194,35 +267,222 @@ test("operator: never downgraded — a newer deployed operator is left, with a w
 test("operator: the applied version is waited for and verified, like every other layer", async () => {
   // `up` narrated "applying vX" and moved on without ever waiting or looking — the same unverified
   // claim the instance layer made, one layer up.
-  const root = await mkInstance(`export default { name: "myinst", images: { operator: "j2-operator:local" } };\n`);
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
   assert.ok(
     w.kube.rollouts.includes("j2-system/j2-controller-manager"),
     `the operator rollout is waited for (got: ${w.kube.rollouts.join(", ")})`,
   );
+  const operatorApply = w.kube.applied.find((m) => m.includes("controller-manager"))!;
+  assert.match(operatorApply, new RegExp(`image: j2-operator:`));
+  assert.ok(!operatorApply.includes("controller:latest"), "the placeholder image ref was substituted");
 
   const drifted = mkWorld(root);
   drifted.kube.podImages = { "control-plane=controller-manager": "j2-operator:ancient" };
-  await assert.rejects(() => up(["--yes"], drifted.io), /operator.*j2-operator:ancient.*expected j2-operator:local/s);
+  await assert.rejects(() => up(["--yes"], drifted.io), /operator.*j2-operator:ancient.*expected j2-operator:/s);
 });
 
-test("operator: manage:false skips the layer; images.operator overrides the ref", async () => {
+test("operator: manage:false skips the layer — and the image build with it", async () => {
+  const kit = await mkKit();
   const skipRoot = await mkInstance(`export default { name: "a", operator: { manage: false } };\n`, "a");
-  const w1 = mkWorld(skipRoot);
+  const w1 = mkWorld(skipRoot, { kitDir: kit });
   assert.equal(await up(["--yes"], w1.io), 0);
   assert.ok(!w1.kube.applied.some((m) => m.includes("controller-manager")));
-
-  const overrideRoot = await mkInstance(
-    `export default { name: "b", images: { operator: "j2-operator:local" } };\n`,
-    "b",
+  assert.ok(
+    !w1.built.some((b) => b.startsWith("build j2-operator:")),
+    `an image this converge does not deploy is not built (got: ${w1.built.join(", ")})`,
   );
-  const w2 = mkWorld(overrideRoot);
+  // …and it is not recorded either: a ref in the record with nothing built would make the NEXT
+  // converge (with manage back on) skip a build the cluster needs.
+  assert.equal(imagesOf(w1).operator, undefined);
+});
+
+// --- kit images (ADR-0038): built from source in a checkout, published when installed -----------
+
+test("a kit checkout builds the Harness, Adapter, and operator; installed from npm builds none", async () => {
+  const kit = await mkKit();
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+
+  const checkout = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], checkout.io), 0);
+  assert.match(checkout.err.join("\n"), /kit checkout/, "the mode is narrated once, not inferred");
+  for (const repo of ["j2-harness", "j2-adapter", "j2-operator"]) {
+    const built = checkout.built.find((b) => b.startsWith(`build ${repo}:`))!;
+    assert.ok(built, `${repo} is built (got: ${checkout.built.join(", ")})`);
+    const ref = built.slice("build ".length);
+    assert.match(ref, new RegExp(`^${repo}:[0-9a-f]{12}$`), "…at a content address, never a moving tag");
+    // The SAME transport branch the instance image uses — one story, no per-layer drift.
+    assert.ok(checkout.built.includes(`kind-load ${ref} → test`), `${repo} is delivered by kind load`);
+    assert.ok(
+      checkout.built.some((b) => b.startsWith(`build-with -f ${kit}/`)),
+      "…from its committed Dockerfile",
+    );
+  }
+
+  const installed = mkWorld(root);
+  assert.equal(await up(["--yes"], installed.io), 0);
+  assert.match(installed.err.join("\n"), /installed kit/);
+  assert.ok(
+    !installed.built.some((b) => /^build j2-(harness|adapter|operator):/.test(b)),
+    `installed from npm, kit images are pulled, never built (got: ${installed.built.join(", ")})`,
+  );
+  // The published <kitversion> refs are what the map names, and what the Instance Harness runs.
+  assert.equal(imagesOf(installed).harness, "j2-harness:0.0.0");
+  assert.equal(imagesOf(installed).adapter, "j2-adapter:0.0.0");
+});
+
+test("a registry pushes every layer; a non-kind context without one fails BEFORE any build", async () => {
+  const kit = await mkKit();
+  const pushRoot = await mkInstance(`export default { name: "r", registry: "reg.example.com/j2" };\n`, "r");
+  const w = mkWorld(pushRoot, { kitDir: kit });
+  assert.equal(await up(["--yes"], w.io), 0);
+  for (const repo of ["j2-harness", "j2-adapter", "j2-operator", "j2-instance-r"]) {
+    assert.ok(
+      w.built.some((b) => b.startsWith(`push reg.example.com/j2/${repo}:`)),
+      `${repo} is pushed (got: ${w.built.join(", ")})`,
+    );
+  }
+  assert.ok(!w.built.some((b) => b.includes("kind-load")));
+
+  const bareRoot = await mkInstance(`export default { name: "s" };\n`, "s");
+  const w2 = mkWorld(bareRoot, { kitDir: kit });
+  w2.kube.ctx = "gke-prod";
+  await assert.rejects(() => up(["--yes"], w2.io), /not a kind cluster and no `registry`/);
+  assert.deepEqual(w2.built, [], "a converge that can deliver nothing spends no docker discovering it");
+});
+
+test("the Deployment's image annotation makes a second converge spend zero docker; --force overrides it", async () => {
+  const kit = await mkKit();
+  const root = await withImage(
+    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    "default",
+  );
+
+  const first = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], first.io), 0);
+  const images = imagesOf(first);
+
+  // The cluster now records what was converged — on the Deployment's OWN metadata, so re-resolving
+  // a ref never rolls the Orchestrator and never restores a live run's snapshot (ADR-0038/0007).
+  const list = first.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const deployment = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.kind === "Deployment" && i.metadata.name === "j2-orchestrator",
+  )!;
+  assert.equal(deployment.metadata.annotations["j2.dev/images"], JSON.stringify(images, null, 2));
+  assert.equal(
+    deployment.spec.template.metadata.annotations,
+    undefined,
+    "never on the pod template — that would roll every run",
+  );
+  assert.ok(
+    !JSON.stringify(deployment.spec.template.spec.containers[0].env).includes("IMAGE"),
+    "and never as env: no J2_*_IMAGE anywhere",
+  );
+
+  const again = mkWorld(root, { kitDir: kit });
+  again.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  again.kube.set("myinst", "deployment", "j2-orchestrator", {
+    metadata: {
+      name: "j2-orchestrator",
+      labels: { "j2.dev/content-hash": deployment.metadata.labels["j2.dev/content-hash"] },
+      annotations: { "j2.dev/images": JSON.stringify(images, null, 2) },
+    },
+  });
+  assert.equal(await up([], again.io), 0);
+  assert.deepEqual(again.built, ["bundle"], "staged to hash, and nothing else was spent");
+  assert.deepEqual(imagesOf(again), images, "…and the map re-converges to the same refs");
+
+  const forced = mkWorld(root, { kitDir: kit });
+  forced.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  forced.kube.set("myinst", "deployment", "j2-orchestrator", {
+    metadata: {
+      name: "j2-orchestrator",
+      labels: { "j2.dev/content-hash": deployment.metadata.labels["j2.dev/content-hash"] },
+      annotations: { "j2.dev/images": JSON.stringify(images, null, 2) },
+    },
+  });
+  assert.equal(await up(["--force"], forced.io), 0);
+  for (const ref of [images.harness, images.adapter, images.operator, images.sandbox.default]) {
+    assert.ok(forced.built.includes(`build ${ref}`), `--force rebuilds ${ref} (got: ${forced.built.join(", ")})`);
+  }
+});
+
+// --- Sandbox Images (ADR-0037) -----------------------------------------------------------------
+
+test("a Sandbox Image is two builds off one hash, preflighted, and only with repos to work on", async () => {
+  const kit = await mkKit();
+  const root = await withImage(
+    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    "default",
+    "FROM node:24-slim\nRUN apt-get install -y cargo\n",
+  );
+  const w = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const ref = imagesOf(w).sandbox.default as string;
+  assert.match(ref, /^j2-workspace-myinst-default:[0-9a-f]{12}$/);
+  const hash = ref.split(":")[1]!;
+  const base = `j2-workspace-myinst-default-base:${hash}`;
+  // Two builds off ONE hash: the user's own Dockerfile (its directory IS the context), then the
+  // kit-owned wrap on top of the result. The user's file is never rewritten.
+  assert.ok(w.built.includes(`build ${base}`), `the user's Dockerfile builds first (got: ${w.built.join(", ")})`);
+  assert.ok(w.built.includes(`build-with context-default ${base}`), "…against its own directory");
+  assert.ok(w.built.includes(`build-with wrap ${ref}`), "…then the generated wrap, on stdin");
+  assert.ok(w.built.includes(`untag ${base}`), "the intermediate tag does not accumulate");
+  // ADR-0037's preflight, verbatim, against the LOCAL daemon — hence before transport.
+  const preflight = w.built.find((b) => b.startsWith(`run ${ref}`))!;
+  assert.match(preflight, /git config --global safe\.directory "\*" && \/opt\/j2\/bin\/node -e "" && rg --version/);
+  assert.ok(
+    w.built.indexOf(preflight) < w.built.indexOf(`kind-load ${ref} → test`),
+    "preflight, then deliver — a broken image never reaches the cluster",
+  );
+
+  // A Sandbox Image's hash includes the RESOLVED harness ref (ADR-0038), so a kit edit re-tags it.
+  await writeFile(join(kit, "packages", "harness", "main.ts"), "export const x = 2;\n");
+  const afterKitEdit = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], afterKitEdit.io), 0);
+  assert.notEqual(imagesOf(afterKitEdit).sandbox.default, ref, "editing the Harness re-tags every Sandbox Image");
+
+  // No repos, no Sandbox Image build — said out loud, not skipped silently.
+  const norepos = await withImage(await mkInstance(`export default { name: "n" };\n`, "n"), "default");
+  const w2 = mkWorld(norepos, { kitDir: kit });
   assert.equal(await up(["--yes"], w2.io), 0);
-  const operatorApply = w2.kube.applied.find((m) => m.includes("controller-manager"));
-  assert.ok(operatorApply, "the operator install was applied");
-  assert.match(operatorApply, /image: j2-operator:local/);
-  assert.ok(!operatorApply.includes("controller:latest"), "the placeholder image ref was substituted");
+  assert.ok(!w2.built.some((b) => b.includes("j2-workspace-")));
+  assert.match(w2.err.join("\n"), /sandbox images: skipped \(no `repos`/);
+  assert.deepEqual(imagesOf(w2).sandbox, {});
+});
+
+test("a failing preflight refuses the converge, naming the fix", async () => {
+  const kit = await mkKit();
+  const root = await withImage(
+    await mkInstance(`export default { name: "p2", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`, "p2"),
+    "default",
+  );
+  const w = mkWorld(root, { kitDir: kit, preflightFails: true });
+  await assert.rejects(() => up(["--yes"], w.io), /failed the preflight.*alpine\/musl.*shell-free base/s);
+  assert.ok(!w.built.some((b) => b.startsWith("kind-load j2-workspace-")), "a failed image is never delivered");
+});
+
+test("live workspaces on an older image are reported, and nothing re-images them", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`,
+  );
+  const w = mkWorld(root);
+  w.kube.sandboxes = [
+    { metadata: { name: "ws-1" }, spec: { image: "j2-workspace-myinst-default:0ldc0ntent" } },
+    { metadata: { name: "ws-2" }, spec: { image: "j2-workspace-myinst-default:0ldc0ntent" } },
+  ];
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join("\n"), /2 running workspace\(s\) keep `j2-workspace-myinst-default:0ldc0ntent`/);
+  assert.match(w.err.join("\n"), /delete those runs to re-image/);
+  assert.ok(!w.kube.deleted.some((d) => d.includes("ws-")), "a running Workspace is never touched (ADR-0021)");
+
+  // The CRD may not be installed at all: informational, so a failed look degrades to a warning.
+  const noCrd = mkWorld(root);
+  noCrd.kube.sandboxListFails = true;
+  assert.equal(await up(["--yes"], noCrd.io), 0);
+  assert.match(noCrd.err.join("\n"), /workspaces: could not be listed/);
 });
 
 test("image: fresh hash skips the build; stale hash builds and kind-loads (no registry, kind context)", async () => {
@@ -533,6 +793,8 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
 
   // Same wiring a Sandbox's Harness container gets: the definitions ConfigMap + the env Secret.
   const harness = podSpec.containers[0];
+  // This world is NOT a kit checkout (mkWorld's default kitDir is the instance folder), so the
+  // resolved ref is the published one — the branch a real instance takes (ADR-0038).
   assert.equal(harness.image, "j2-harness:0.0.0", "the stock image at the kit version");
   assert.deepEqual(harness.env[0], {
     name: "J2_AGENTS_JSON",
@@ -574,17 +836,21 @@ test('no "none" definitions → nothing new deploys, and a stale Instance Harnes
   assert.ok(w.kube.deleted.includes("myinst/service/j2-instance-harness"));
 });
 
-test("images.harness/adapter override the Instance Harness images (kit dev)", async () => {
-  const root = await withDecisioner(
-    await mkInstance(
-      `export default { name: "myinst", images: { harness: "j2-harness:local", adapter: "j2-adapter:local" } };\n`,
-    ),
-  );
-  const w = mkWorld(root);
+test("the Instance Harness runs the refs THIS converge resolved — the same ones the map names", async () => {
+  // There is no `images` block to override them with (ADR-0038): in a kit checkout the Instance
+  // Harness runs the content-addressed images just built here, and nothing else can be pointed at.
+  // The accepted asymmetry: this Deployment names its images in the pod template (it is SUPPOSED
+  // to roll when they move), while a Sandbox's refs travel through the j2-images ConfigMap.
+  const kit = await mkKit();
+  const root = await withDecisioner(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], w.io), 0);
+
+  const images = imagesOf(w);
+  assert.match(images.harness, /^j2-harness:[0-9a-f]{12}$/);
   const { deployment } = findInstanceHarness(w);
-  assert.equal(deployment!.spec.template.spec.containers[0].image, "j2-harness:local");
-  assert.equal(deployment!.spec.template.spec.containers[1].image, "j2-adapter:local");
+  assert.equal(deployment!.spec.template.spec.containers[0].image, images.harness);
+  assert.equal(deployment!.spec.template.spec.containers[1].image, images.adapter);
 });
 
 test("re-running against the instance's own namespace converges silently (no prompt)", async () => {

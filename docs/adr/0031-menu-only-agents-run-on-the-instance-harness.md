@@ -38,12 +38,14 @@ built.
   [ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md) rationale technically lapses): the Harness has exactly one
   menu-delivery path — an Adapter on `localhost` — and forking that path for one pod buys a divergence in the component
   this ADR keeps deliberately uniform. Defense-in-depth is the bonus, not the reason.
-- **Image config consolidates into `images`.** The Harness image was configured as `sandbox.image` because the Sandbox
-  pod was the only place a Harness ran — now a misnomer. `j2.config.ts` gains one block naming all composed images:
-  `images: { harness, adapter, operator, user }` — the kit three defaulting to published `<kitversion>` tags (overridden
-  only in kit dev), `user` defaulting to absent (no user container). `sandbox.image`, `sandbox.adapterImage`, and
-  `operator.image` dissolve into it; the `sandbox` config section disappears until something genuinely pod-shaped and
-  user-tunable exists.
+- **Image config consolidates into `images`.** _(Superseded by [ADR-0038](0038-j2-up-builds-every-image-it-deploys.md):
+  the `images` block is deleted outright — `j2 up` builds and resolves every image it deploys, and `user` died with the
+  User Container in [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md).)_ The Harness
+  image was configured as `sandbox.image` because the Sandbox pod was the only place a Harness ran — now a misnomer.
+  `j2.config.ts` gains one block naming all composed images: `images: { harness, adapter, operator, user }` — the kit
+  three defaulting to published `<kitversion>` tags (overridden only in kit dev), `user` defaulting to absent (no user
+  container). `sandbox.image`, `sandbox.adapterImage`, and `operator.image` dissolve into it; the `sandbox` config
+  section disappears until something genuinely pod-shaped and user-tunable exists.
 
 ## Considered options
 

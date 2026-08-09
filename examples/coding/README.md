@@ -36,9 +36,10 @@ and push it if the work should outlive the run — `approve` reaches the final s
 
 ## Runbook
 
-The everyday story is two commands (ADR-0019): point kubectl at a cluster, `j2 up`. Everything below the fold is kit-dev
-bring-up that exists only because nothing is published yet — the config pins locally built image tags, so the images
-must be built + `kind load`ed first.
+The whole story is two commands (ADR-0019): point kubectl at a cluster, `j2 up`. There is no image bring-up step —
+`j2 up` builds every image it deploys (ADR-0038). Run from this checkout it builds the Harness, Adapter, and operator
+from source too, plus this instance's own [`images/default/Dockerfile`](./images/default/Dockerfile) — each at a
+content-addressed tag, each `kind load`ed for you, and each skipped on the next converge if nothing moved.
 
 One-time setup (repo root):
 
@@ -46,14 +47,7 @@ One-time setup (repo root):
 # 0. a cluster — any vanilla one; kind locally. Nothing about it is j2- or instance-specific.
 just kind-up
 
-# 1. kit images (kit-dev only, until published <kitversion> images exist): the stock Harness
-#    (assembles agents/ at pod start — ADR-0018), the Adapter, and the operator.
-just harness-image
-just adapter-image
-kind load docker-image j2-adapter:local --name j2
-just operator-image
-
-# 2. the ENDPOINT, in examples/coding/.env (uncommitted; the CLI loads the .env beside
+# 1. the ENDPOINT, in examples/coding/.env (uncommitted; the CLI loads the .env beside
 #    j2.config.ts into the environment the config reads — ADR-0019):
 #      VLLM_BASE_URL=https://<address>/v1             # reachable FROM PODS — never localhost
 #    The MODEL is not here: each agents/<name>.ts names its own (ADR-0018), because an
@@ -77,9 +71,10 @@ Converge + run (from `examples/coding`, or any folder under it — the CLI walks
 beside it; a var already set in your shell wins over the file):
 
 ```sh
-j2 up                 # converges the current context: operator → instance image → agents ConfigMap
-                      # → Secrets (+ preflights) → provider preflight → rollout. Idempotent; re-run
-                      # after any change. First contact asks; --yes for CI.
+j2 up                 # converges the current context: operator → kit images → instance image →
+                      # Sandbox Images (+ their preflight) → agents ConfigMap → Secrets (+
+                      # preflights) → provider preflight → rollout. Idempotent; re-run after any
+                      # change — unmoved images cost no docker. First contact asks; --yes for CI.
 
 j2 run task-with-review --input '{"prompt":"Fix the ...","repo":"obsidian-tasks.nvim","branch":"task/mvp-1"}'
 j2 logs <runId> -f                        # re-attach to the status feed
@@ -101,7 +96,8 @@ agent-fault):
 ```sh
 kubectl -n coding get sandboxes           # the run's Workspace pod
 kubectl -n coding exec -it <pod> -c harness -- sh   # inspect: git -C /work/obsidian-tasks.nvim/<branch> log -p main..
-# keep the work? push it from inside the pod (or from the User Container) BEFORE approving
+# keep the work? push it from inside the pod BEFORE approving — that shell is the agent's own
+# container, with your images/default toolchain and the same worktrees (ADR-0037)
 
 j2 send <runId> --gate body.humanReview --event request_changes --input '{"notes":"..."}'   # loops the coder
 j2 send <runId> --gate body.humanReview --event approve                                     # finals → Sandbox torn down

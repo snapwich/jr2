@@ -11,6 +11,9 @@ import {
   GIT_SSH_MOUNT,
   GIT_SSH_SECRET,
   HARNESS_ENV_SECRET,
+  IMAGES_CONFIGMAP,
+  IMAGES_KEY,
+  IMAGES_MOUNT,
   INSTANCE_HARNESS_PORT,
   INSTANCE_HARNESS_SERVICE,
   INSTANCE_SECRET,
@@ -36,6 +39,11 @@ export {
 export const LABEL_INSTANCE = "j2.dev/instance";
 export const LABEL_VERSION = "j2.dev/version";
 export const LABEL_HASH = "j2.dev/content-hash";
+
+/** The converged name→ref image map, stamped on the Orchestrator Deployment's OWN metadata so the
+ * next `j2 up` can diff it and spend no docker on what has not moved (ADR-0038). An ANNOTATION, not
+ * a label: a serialized map blows past the 63-character label-value limit immediately. */
+export const ANNOTATION_IMAGES = "j2.dev/images";
 
 export const ORCHESTRATOR_SA = "j2-orchestrator";
 
@@ -84,6 +92,11 @@ export function instanceObjects(opts: {
   harness?: HarnessConfig;
   /** The private-CA PEM bundle (`harness.caBundle` file contents, read by `up` — ADR-0020). */
   caBundle?: string;
+  /** Every image ref THIS converge resolved (ADR-0037/0038): `{ harness, adapter, operator?,
+   * sandbox: { <name>: ref } }`. It lands twice, deliberately as one JSON so the record `up` diffs
+   * and the map pods read can never disagree: as the `j2-images` ConfigMap the Orchestrator reads
+   * per provision, and as an annotation on the Deployment's own metadata. */
+  imageRefs: Record<string, unknown>;
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "j2" };
   const meta = (name: string, extra: Record<string, string> = {}): KubeManifest => ({
@@ -91,6 +104,7 @@ export function instanceObjects(opts: {
     namespace: opts.namespace,
     labels: { ...labels, ...extra },
   });
+  const imagesJson = JSON.stringify(opts.imageRefs, null, 2);
 
   const items: KubeManifest[] = [
     {
@@ -173,6 +187,17 @@ export function instanceObjects(opts: {
         ),
       },
     },
+    {
+      // The resolved image map (ADR-0037/0038): what a Sandbox is made of, read PER PROVISION
+      // from the mount below. A ConfigMap and not Deployment env, because env is a pod-template
+      // change: adding a CLI to a Sandbox Dockerfile would roll the Orchestrator and put every
+      // live run through snapshot restore (ADR-0007) for a change affecting only FUTURE Sandboxes.
+      // Mounted by name, so a content update propagates in place and nothing rolls.
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: meta(IMAGES_CONFIGMAP),
+      data: { [IMAGES_KEY]: imagesJson },
+    },
     // The private-CA bundle (ADR-0020) — a ConfigMap, not a Secret: CA certs are public data.
     // kubectlSandbox mounts it into the Harness container and points NODE_EXTRA_CA_CERTS at it.
     ...(opts.caBundle
@@ -205,7 +230,15 @@ export function instanceObjects(opts: {
     {
       apiVersion: "apps/v1",
       kind: "Deployment",
-      metadata: meta(ORCHESTRATOR_SERVICE, { [LABEL_HASH]: opts.hash, [LABEL_VERSION]: KIT_VERSION }),
+      metadata: {
+        ...meta(ORCHESTRATOR_SERVICE, { [LABEL_HASH]: opts.hash, [LABEL_VERSION]: KIT_VERSION }),
+        // The converged image map, on the DEPLOYMENT'S OWN metadata and never on
+        // `spec.template.metadata` (ADR-0038). On the pod template it would be part of the pod
+        // spec, so every re-resolved ref would roll the Orchestrator — the exact cost the
+        // ConfigMap exists to avoid. Here it is a record `j2 up` reads back and diffs, which is
+        // what makes a steady-state converge spend a directory walk and no docker at all.
+        annotations: { [ANNOTATION_IMAGES]: imagesJson },
+      },
       spec: {
         replicas: 1, // single WRITER (CONTEXT.md): the snapshot store brooks no split-brain
         strategy: { type: "Recreate" }, // two writers may never overlap on the PVC
@@ -237,6 +270,9 @@ export function instanceObjects(opts: {
                   { name: "repos", mountPath: "/repos" },
                   // The optional deploy key (`j2 up`'s ssh offer) — the reconcile's identity.
                   { name: "git-ssh", mountPath: GIT_SSH_MOUNT, readOnly: true },
+                  // The image map, read per provision (ADR-0038). A mount, so `j2 up` rewriting
+                  // it costs one kubelet propagation window instead of a rollout.
+                  { name: "images", mountPath: IMAGES_MOUNT, readOnly: true },
                 ],
                 readinessProbe: {
                   httpGet: { path: "/healthz", port: ORCHESTRATOR_PORT },
@@ -248,6 +284,7 @@ export function instanceObjects(opts: {
               { name: "state", persistentVolumeClaim: { claimName: STATE_PVC } },
               { name: "repos", persistentVolumeClaim: { claimName: REPOS_PVC } },
               { name: "git-ssh", secret: { secretName: GIT_SSH_SECRET, optional: true, defaultMode: 0o400 } },
+              { name: "images", configMap: { name: IMAGES_CONFIGMAP } },
             ],
           },
         },
@@ -280,16 +317,24 @@ const ADAPTER_PORT = 8081;
  * for every Menu-only Agent's Turn, regardless of any enclosing Workspace. The one Harness shape,
  * minus the Workspace: the stock Harness image plus the Adapter sidecar, the same definitions
  * ConfigMap and env/envFrom/CA wiring a Sandbox's Harness container gets — and NO `/work` volume,
- * NO User Container, no attach step. No config key names, sizes, addresses, or enables it: the
- * definition scan is the entire surface.
+ * no attach step. It runs the STOCK image permanently: `workspace: "none"` withholds the whole
+ * Working toolset (ADR-0028), so there is no toolchain to carry and no Sandbox Image to wrap
+ * (ADR-0037). No config key names, sizes, addresses, or enables it: the definition scan is the
+ * entire surface.
  */
 export function instanceHarnessObjects(opts: {
   name: string;
   namespace: string;
-  /** The stock Harness image (`images.harness`, default published — ADR-0018/0031). */
+  /** The RESOLVED stock Harness ref (ADR-0018/0031/0038) — a content-addressed tag in a kit
+   * checkout, the published `<kitversion>` tag installed. Not an override seat: `images.harness`
+   * is gone, and the only Harness this instance can run is the one `j2 up` resolved.
+   *
+   * The accepted asymmetry: the Instance Harness names its images HERE, in the pod template, while
+   * a Sandbox's refs travel through the `j2-images` ConfigMap. Both are right for what they are —
+   * this Deployment is supposed to roll when its image moves; the Orchestrator is not. */
   harnessImage: string;
-  /** The Adapter image: the Harness's one menu-delivery path, kept even though a `"none"` Agent
-   * cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
+  /** The resolved Adapter ref: the Harness's one menu-delivery path, kept even though a `"none"`
+   * Agent cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
   adapterImage: string;
   harness?: HarnessConfig;
   /** The instance ships a private-CA bundle (ADR-0020): mount `j2-ca` into the Harness container. */

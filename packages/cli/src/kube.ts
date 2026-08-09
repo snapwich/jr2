@@ -29,9 +29,11 @@ export type KubePort = {
 
 const ctxArgs = (context?: string): string[] => (context ? ["--context", context] : []);
 
-/** The loosely-typed kube object shape the converge logic inspects (labels, mostly). */
+/** The loosely-typed kube object shape the converge logic inspects: labels carry the instance's
+ * identity and the instance image's content hash; annotations carry the converged image map, which
+ * is too long for a label value (ADR-0038). */
 export type KubeObject = {
-  metadata: { name: string; labels?: Record<string, string> };
+  metadata: { name: string; labels?: Record<string, string>; annotations?: Record<string, string> };
 } & Record<string, unknown>;
 
 /** What `j2 up`/`j2 down` converge through — admin-shaped, next to the transport-shaped KubePort.

@@ -1,10 +1,19 @@
 // `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
-// ownership → operator → instance image → agents ConfigMap → Secret (+ preflight of referenced
-// Secrets) → apply + rollout → Instance Harness (ADR-0031: converged by convention when any
-// definition declares `workspace: "none"`, deleted when none does). Repos reconcile onto the
+// ownership → image resolution → operator → kit images → instance image → Sandbox Images → agents
+// ConfigMap → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance Harness
+// (ADR-0031: converged by convention when any definition declares `workspace: "none"`, deleted when
+// none does) → a report of live workspaces still on an older image. Repos reconcile onto the
 // in-cluster source volume at orchestrator boot (ADR-0004); a configured custom provider is
 // preflighted from inside the cluster.
+//
+// Images (ADR-0038): `j2 up` builds every image it deploys, and every tag is a content address of
+// its own inputs. In a kit CHECKOUT that includes the Harness, Adapter, and operator; installed
+// from npm those sources do not resolve and the published `<kitversion>` refs are used with no
+// docker at all. There is no `images` config block and no env escape hatch — nobody gets to point a
+// real cluster at a hand-picked Harness (ADR-0027's no-eject-hatch, enforced rather than stated).
+// The converged name→ref map is stamped on the Orchestrator Deployment and diffed on the next run,
+// so a steady-state converge spends directory walks and no docker.
 //
 // Addressing (ADR-0019): cluster = the current kube context (never recorded); namespace =
 // `config.name` (identity). Whether this cluster hosts the instance is derived FROM the cluster:
@@ -16,17 +25,32 @@ import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import {
-  DEFAULT_ADAPTER_IMAGE,
-  DEFAULT_HARNESS_IMAGE,
-  DEFAULT_OPERATOR_IMAGE,
+  discoverImages,
   loadAgents,
   loadConfig,
   sandboxToken,
   type DiscoveredAgent,
+  type ImageRefs,
   type J2Config,
 } from "@j2/orchestrator";
-import { pnpmDockerBuild, stageInstanceBundle } from "../build.ts";
 import {
+  buildSandboxImage,
+  detectKitCheckout,
+  kitImageBuild,
+  kitImageRefs,
+  preflightSandboxImage,
+  pnpmDockerBuild,
+  publishedKitRefs,
+  sandboxBaseTag,
+  sandboxImageHash,
+  sandboxImageTag,
+  stageInstanceBundle,
+  INSTANCE_DOCKERFILE,
+  type KitImageName,
+  type KitImageRefs,
+} from "../build.ts";
+import {
+  ANNOTATION_IMAGES,
   compareVersions,
   GIT_SSH_SECRET,
   INSTANCE_HARNESS_SERVICE,
@@ -98,11 +122,71 @@ export async function up(args: string[], io: Io): Promise<number> {
     ...ctx,
   });
 
+  // --- image resolution (ADR-0038): decide every ref BEFORE any layer spends a build -----------
+  const build = io.build ?? pnpmDockerBuild;
+  const registry = config.registry;
+  const cluster = context.startsWith("kind-") ? context.slice("kind-".length) : undefined;
+  // The CHECKOUT is the signal — no flag, no config key, no env (ADR-0038). `io.kitDir` exists so
+  // tests can drive both worlds from a temp dir instead of detecting the repo they run inside.
+  const kitRoot = await detectKitCheckout(io.kitDir);
+  const refs: KitImageRefs = kitRoot ? await kitImageRefs(kitRoot, registry) : publishedKitRefs();
+  activity(
+    io,
+    kitRoot
+      ? `images: kit checkout at ${kitRoot} — building the Harness, Adapter, and operator from source`
+      : `images: installed kit — the published v${KIT_VERSION} Harness, Adapter, and operator`,
+  );
+
+  // Read the Orchestrator Deployment ONCE: it carries both convergence records — the instance
+  // image's content hash (a label) and the previous name→ref map (an annotation, ADR-0038).
+  const orch = await kube.getJson({ kind: "deployment", name: ORCHESTRATOR_SERVICE, namespace, ...ctx });
+  const previous = previousImages(orch);
+  const converged: ConvergedImages = { harness: refs.harness, adapter: refs.adapter, sandbox: {} };
+
+  // ONE transport branch for every image (ADR-0038), so instance, kit, and Sandbox Images cannot
+  // drift into three delivery stories.
+  const deliver = async (tag: string): Promise<void> => {
+    if (registry) {
+      activity(io, `  push → ${registry}`);
+      await build.push(tag);
+    } else if (cluster) {
+      activity(io, `  kind load → cluster "${cluster}"`);
+      await build.kindLoad(tag, cluster);
+    } else {
+      throw undeliverable(context);
+    }
+  };
+  // Checked BEFORE the first build rather than after it: a converge that cannot deliver anything
+  // must not spend minutes of docker discovering that.
+  const assertDeliverable = (): void => {
+    if (!registry && !cluster) throw undeliverable(context);
+  };
+
+  /** Build + deliver one kit image, unless the cluster's record already names this exact ref.
+   * Installed from npm there is nothing to build: the published tag is the answer. */
+  const ensureKitImage = async (which: KitImageName): Promise<string> => {
+    const ref = refs[which];
+    if (!kitRoot) return ref;
+    if (previous?.[which] === ref && values.force !== true) {
+      // A claim about the CLUSTER'S RECORD, not the node's disk: a `docker rmi` or a `kind load`
+      // that never happened leaves a ref recorded but absent, which surfaces as ImagePullBackOff.
+      // `--force` is the way back.
+      activity(io, `${which} image: ${ref} (fresh — build skipped; --force to rebuild anyway)`);
+      return ref;
+    }
+    assertDeliverable();
+    activity(io, `${which} image: building ${ref}${values.force === true ? " (--force)" : ""}`);
+    await build.build(kitImageBuild(kitRoot, which, ref));
+    await deliver(ref);
+    return ref;
+  };
+
   // --- operator (per-cluster, shared) ------------------------------------------------------------
   if (config.operator?.manage === false) {
     activity(io, "operator: skipped (operator.manage: false — run the controller loop yourself)");
   } else {
-    const image = config.images?.operator ?? DEFAULT_OPERATOR_IMAGE;
+    const image = await ensureKitImage("operator");
+    converged.operator = image;
     const existing = await kube.getJson({
       kind: "deployment",
       name: OPERATOR_DEPLOYMENT,
@@ -123,9 +207,10 @@ export async function up(args: string[], io: Io): Promise<number> {
         ...ctx,
       });
       await kube.waitRollout({ deployment: OPERATOR_DEPLOYMENT, namespace: OPERATOR_NAMESPACE, ...ctx });
-      // Kit dev pins a static tag (`j2-operator:local`), which this cannot catch — a same-tag
-      // rebuild leaves the pod template identical and nothing rolls. `just operator-image`
-      // restarts the Deployment for exactly that reason; here the tag is the released version.
+      // Sound for every layer now that EVERY tag is a content address (ADR-0038): a source edit
+      // moves the ref, which moves the pod template, which rolls. The old hole — kit dev pinning a
+      // static `:local` tag, so a rebuild left the template identical and nothing rolled — closed
+      // with the `images` block that created it.
       await verifyRunningImage(io, kube, {
         layer: "operator",
         namespace: OPERATOR_NAMESPACE,
@@ -136,39 +221,73 @@ export async function up(args: string[], io: Io): Promise<number> {
     }
   }
 
+  // --- the kit's own runtime images (ADR-0038) ---------------------------------------------------
+  // Built here rather than lazily beside their consumers: the Harness ref salts every Sandbox
+  // Image's hash below, and the Adapter is deployed into every Sandbox this instance provisions.
+  await ensureKitImage("harness");
+  await ensureKitImage("adapter");
+
   // --- instance image (content-addressed by the bundle) ------------------------------------------
   // Stage first, THEN decide: the hash is over the materialized bundle — the actual image inputs,
   // kit included — so the tag is a content address rather than a guess about what changed.
-  const build = io.build ?? pnpmDockerBuild;
   const staged = await stageInstanceBundle(build, root);
   const hash = staged.hash;
-  const registry = config.registry;
   const tag = registry ? `${registry}/j2-instance-${name}:${hash}` : `j2-instance-${name}:${hash}`;
   try {
-    const orch = await kube.getJson({ kind: "deployment", name: ORCHESTRATOR_SERVICE, namespace, ...ctx });
     if (orch?.metadata.labels?.[LABEL_HASH] === hash && values.force !== true) {
       // Safe to skip only because the rolled-out pod is verified against `tag` below: this decides
       // whether to spend a docker build, not whether the cluster is already correct.
       activity(io, `image: ${tag} (fresh — build skipped; --force to rebuild anyway)`);
     } else {
+      assertDeliverable();
       activity(io, `image: building ${tag}${values.force === true ? " (--force)" : ""}`);
-      await build.build(tag, staged.dir);
-      if (registry) {
-        activity(io, `image: pushing to ${registry}`);
-        await build.push(tag);
-      } else if (context.startsWith("kind-")) {
-        const cluster = context.slice("kind-".length);
-        activity(io, `image: no registry configured — \`kind load\` onto cluster "${cluster}"`);
-        await build.kindLoad(tag, cluster);
-      } else {
-        throw new Error(
-          `context ${context} is not a kind cluster and no \`registry\` is configured — ` +
-            `set \`registry\` in j2.config.ts (from env) so the image can be pushed (ADR-0019)`,
-        );
-      }
+      await build.build({ tag, context: staged.dir, dockerfileContent: INSTANCE_DOCKERFILE });
+      await deliver(tag);
     }
   } finally {
     await staged.dispose();
+  }
+
+  // --- Sandbox Images (ADR-0037): the instance's own `images/<name>/Dockerfile` -------------------
+  // Gated on `repos`, which is already the data-plane switch (ADR-0012/0031): a workspace-less
+  // instance has no Sandboxes, so it must not pay a docker build for a scaffolded image it can
+  // never use. Said out loud, because a silent skip of a folder you just wrote reads as a bug.
+  if (config.repos?.length) {
+    const images = await discoverImages(root);
+    if (images.length === 0) {
+      activity(io, "sandbox images: none authored (add images/<name>/Dockerfile — Sandboxes run the stock Harness)");
+    }
+    for (const image of images) {
+      // The wrap text salts the hash, so the resolved harness ref is an input: editing
+      // packages/harness/src re-tags every Sandbox Image instead of leaving pods on the old
+      // runtime (ADR-0037's consequence, ADR-0038's rule).
+      const imageHash = await sandboxImageHash(image.dir, refs.harness);
+      const ref = sandboxImageTag(name, image.name, imageHash, registry);
+      if (previous?.sandbox?.[image.name] === ref && values.force !== true) {
+        // Unlike the instance image there is no rollout to verify a Sandbox Image against, so a
+        // recorded-but-absent ref only shows up as ImagePullBackOff at the next provision —
+        // `--force` rebuilds and re-delivers it.
+        activity(io, `sandbox image "${image.name}": ${ref} (fresh — build skipped; --force to rebuild anyway)`);
+      } else {
+        assertDeliverable();
+        activity(io, `sandbox image "${image.name}": building ${ref}`);
+        await buildSandboxImage(build, {
+          dir: image.dir,
+          tag: ref,
+          baseTag: sandboxBaseTag(name, image.name, imageHash),
+          harnessRef: refs.harness,
+        });
+        // Before transport, because it is a `docker run` against the LOCAL daemon — and before
+        // the converge, because a Sandbox Image that cannot run git or node fails inside a turn,
+        // as a tool error the model has to interpret (ADR-0037).
+        await preflightSandboxImage(build, image.name, ref);
+        activity(io, `  preflight ok — git, $HOME, node, and rg all answer as uid 1000`);
+        await deliver(ref);
+      }
+      converged.sandbox[image.name] = ref;
+    }
+  } else {
+    activity(io, "sandbox images: skipped (no `repos` — a workspace-less instance provisions no Sandbox)");
   }
 
   // --- agents + secrets --------------------------------------------------------------------------
@@ -244,6 +363,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       agents,
       harness: config.harness,
       caBundle: caPem,
+      imageRefs: converged,
     }),
     ...ctx,
   });
@@ -269,13 +389,13 @@ export async function up(args: string[], io: Io): Promise<number> {
       io,
       `instance harness: converging (${menuOnly.map((a) => a.name).join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none")`,
     );
-    const harnessImage = config.images?.harness ?? DEFAULT_HARNESS_IMAGE;
+    const harnessImage = refs.harness;
     await kube.apply({
       manifest: instanceHarnessObjects({
         name,
         namespace,
         harnessImage,
-        adapterImage: config.images?.adapter ?? DEFAULT_ADAPTER_IMAGE,
+        adapterImage: refs.adapter,
         harness: config.harness,
         caBundle: caPem !== undefined,
         // The echo gate (ADR-0023): the digest of the token materialized above — the same env
@@ -298,9 +418,73 @@ export async function up(args: string[], io: Io): Promise<number> {
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
   }
 
+  await reportOlderWorkspaces(io, kube, namespace, ctx, converged);
   noteDeferred(io, config);
   activity(io, `converged — \`j2 run <workflow>\` when ready`);
   return 0;
+}
+
+/** Every image ref one converge resolved. The Orchestrator reads `harness`/`adapter`/`sandbox`
+ * from the mounted map (`ImageRefs`); `operator` rides the same JSON because the record `j2 up`
+ * diffs must cover every image it builds, and one map is what keeps the record it diffs and the
+ * map pods read from ever disagreeing (ADR-0038). */
+type ConvergedImages = ImageRefs & { operator?: string };
+
+/** The map the LAST converge recorded, off the Orchestrator Deployment's annotation. Anything
+ * unreadable (absent, hand-edited, a foreign shape) reads as "no record", which costs a rebuild —
+ * the safe direction, since the alternative is skipping a build the cluster needs. */
+function previousImages(orch?: KubeObject): Partial<ConvergedImages> | undefined {
+  const raw = orch?.metadata.annotations?.[ANNOTATION_IMAGES];
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Partial<ConvergedImages>;
+    return typeof parsed === "object" && parsed !== null ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The one delivery failure that is a configuration error rather than a docker one (ADR-0019). */
+function undeliverable(context: string): Error {
+  return new Error(
+    `context ${context} is not a kind cluster and no \`registry\` is configured — ` +
+      `set \`registry\` in j2.config.ts (from env) so the image can be pushed (ADR-0019)`,
+  );
+}
+
+/**
+ * Report live workspaces still on an image this converge did not resolve — and NEVER re-image one
+ * (ADR-0038). Provision is create-if-absent, so a running Sandbox keeps the image its CR was
+ * created with; replacing the pod would take the worktrees and unpushed commits with it, which is
+ * precisely the Continuity break ADR-0021 exists to report rather than cause. Informational, so a
+ * failed look (no CRD installed, no RBAC) degrades to a warning: this must never fail a converge
+ * that already succeeded.
+ */
+async function reportOlderWorkspaces(
+  io: Io,
+  kube: KubeAdmin,
+  namespace: string,
+  ctx: { context?: string },
+  converged: ConvergedImages,
+): Promise<void> {
+  const current = new Set([converged.harness, ...Object.values(converged.sandbox)]);
+  try {
+    const sandboxes = await kube.listJson<{ metadata: { name: string }; spec?: { image?: string } }>({
+      kind: "sandboxes.core.j2.dev",
+      namespace,
+      ...ctx,
+    });
+    const older = sandboxes.filter((s) => s.spec?.image && !current.has(s.spec.image));
+    if (older.length === 0) return;
+    const byImage = new Map<string, number>();
+    for (const s of older) byImage.set(s.spec!.image!, (byImage.get(s.spec!.image!) ?? 0) + 1);
+    for (const [image, count] of byImage) {
+      activity(io, `${count} running workspace(s) keep \`${image}\` — delete those runs to re-image them`);
+    }
+    activity(io, `  new workspaces use the refs this converge resolved`);
+  } catch (err) {
+    activity(io, `workspaces: could not be listed (${err instanceof Error ? err.message : err}) — not re-imaged`);
+  }
 }
 
 /**

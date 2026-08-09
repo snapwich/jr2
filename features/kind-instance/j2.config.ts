@@ -7,15 +7,14 @@
 // volume — a bundle, because it must be fetchable FROM the cluster and survive the image build
 // (`pnpm deploy` strips nested `.git` directories; a single bundle file rides `files` fine).
 //
-// The image overrides are kit-dev territory (ADR-0019): locally built + `kind load`ed tags
-// (`just e2e-kind-up`), including the operator's.
+// No image is named here (ADR-0038): the `j2` binary under test runs from this checkout, so its
+// converge builds the Harness, Adapter, and operator from source at content-addressed tags and
+// `kind load`s them itself. Naming a `:local` tag here is exactly the invisible-stale-image bug
+// that decision deletes.
 
 import { defineConfig } from "@j2/orchestrator";
 
 export default defineConfig({
   name: "j2-e2e-kind",
   repos: [{ name: "app", url: "/instance/seed/app.bundle" }],
-  // All three images are load-bearing (ADR-0013): the dev Harness runs the scripted persona, the
-  // Adapter is the only way that persona can reach its Machine. Without the second, the pod is mute.
-  images: { harness: "j2-harness-dev:local", adapter: "j2-adapter:local", operator: "j2-operator:local" },
 });

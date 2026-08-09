@@ -20,7 +20,15 @@ import type { Io } from "../src/output.ts";
 const STARTER = fileURLToPath(new URL("../../../examples/starter", import.meta.url));
 
 /** Every path `init` is expected to write. `package.json` is compared separately (it varies). */
-const MIRRORED = ["tsconfig.json", "j2.config.ts", ".gitignore", "workflows/ping.ts"];
+const MIRRORED = [
+  "tsconfig.json",
+  "j2.config.ts",
+  ".gitignore",
+  "workflows/ping.ts",
+  // The scaffolded Sandbox Image (ADR-0037): `images/default` is what makes the resolution chain's
+  // middle leg a visible convention rather than magic, so it has to be scaffolded to exist at all.
+  "images/default/Dockerfile",
+];
 
 async function scaffold(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "j2-init-"));

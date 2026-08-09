@@ -1,8 +1,9 @@
 // `j2 init [dir] [--name <n>]` (ADR-0009): scaffold a new instance folder — the minimum `j2 up`
 // can converge and `j2 run` can drive. v1 scope: the root marker (`j2.config.ts`), a package.json, a
 // `tsconfig.json` so the instance typechecks (and an editor's language service understands it), a
-// `.gitignore` for the runtime `.j2/`, and ONE starter workflow (`ping`) that runs end-to-end with no
-// Workspace/Agent — a small "respond directly" Machine to trim down and build on.
+// `.gitignore` for the runtime `.j2/`, ONE starter workflow (`ping`) that runs end-to-end with no
+// Workspace/Agent — a small "respond directly" Machine to trim down and build on — and
+// `images/default/Dockerfile`, the Sandbox Image every Workspace falls back to (ADR-0037).
 //
 // Templates mirror `examples/starter/` verbatim (that folder is the model instance) — byte-for-byte
 // except package.json's `name`/`description`, which are per-instance. `test/init.test.ts` enforces
@@ -31,6 +32,7 @@ export async function init(args: string[], io: Io): Promise<number> {
     { path: "j2.config.ts", content: CONFIG_TS },
     { path: ".gitignore", content: GITIGNORE },
     { path: join("workflows", "ping.ts"), content: PING_TS },
+    { path: join("images", "default", "Dockerfile"), content: IMAGE_DOCKERFILE },
   ];
 
   activity(io, `j2 init — scaffolding ${name} in ${dir}`);
@@ -97,6 +99,39 @@ import { defineConfig } from "@j2/orchestrator";
 export default defineConfig({
   repos: [],
 });
+`;
+
+// The scaffolded Sandbox Image (ADR-0037). Scaffolding it is the point: `images/default` is the
+// middle leg of the resolution chain (a `workspace()` spec's `image` → `images/default` → the stock
+// Harness), so writing it out makes the fallback a visible convention rather than magic. It has
+// ZERO j2 knowledge by contract — no ARG, no `FROM j2-harness`, no USER/CMD/WORKDIR — because the
+// wrap owns all of that. It also satisfies the preflight by construction: a glibc base with git.
+const IMAGE_DOCKERFILE = `# A Sandbox Image (ADR-0037): the tools your agents can reach, and the shell you get when you
+# \`kubectl exec\` into a running Workspace. This file is yours — j2 never rewrites it and reads
+# nothing out of it.
+#
+# The build context is THIS directory (\`images/default/\`), so \`COPY\` paths are relative to it and
+# nothing outside it can invalidate the image's content hash.
+#
+# j2 injects its own runtime at /opt/j2 in a second, kit-owned stage on top of whatever this
+# Dockerfile produces — node, ripgrep, the Harness, a writable /home/j2, and PATH appended (never
+# prepended, so a toolchain YOU pin wins). So: no USER, no CMD, no WORKDIR, no j2 base image here.
+#
+# Two things j2 cannot vendor, both proven by \`j2 up\` before it converges:
+#   - \`git\` — the agent clones, worktrees, and commits with the git you chose;
+#   - a glibc base no older than j2's node. alpine/musl cannot run it at all.
+#
+# The name is the directory name. Add \`images/<other>/Dockerfile\` for a second toolchain and name
+# it from a workflow's \`workspace()\` spec. This instance has \`repos: []\`, so \`j2 up\` builds
+# nothing here until it has repos to work on.
+
+FROM node:24-slim
+
+RUN apt-get update \\
+  && apt-get install -y --no-install-recommends git ca-certificates \\
+  && rm -rf /var/lib/apt/lists/*
+
+# Your agents' toolchain goes here — compilers, CLIs, language servers, dotfiles.
 `;
 
 const GITIGNORE = `# Runtime state the orchestrator writes under the instance root (ADR-0009): the sqlite snapshot store

@@ -1,5 +1,8 @@
-// Workflow author configuration: the repos a j2 deployment orchestrates, and (when the
-// instance has a cluster) how Sandboxes are built.
+// Workflow author configuration: the repos a j2 deployment orchestrates, and what the instance's
+// Harness may reach. What a Sandbox is MADE of is not here — it is `images/<name>/Dockerfile`
+// (ADR-0037), and every image ref is resolved by `j2 up` (ADR-0038). The `images` block is gone
+// with no replacement key and no env hatch, deliberately: an override seat for the Harness ref is
+// the eject hatch ADR-0027 refuses.
 //
 // `defineConfig` is an identity passthrough — it exists solely so a `j2.config.ts` gets full
 // type inference and checking against `J2Config` at authoring time, exactly like the config
@@ -37,42 +40,6 @@ export const KIT_VERSION = (
     version: string;
   }
 ).version;
-
-/** The Harness image `images.harness` defaults to — the STOCK published image (ADR-0018): an
- * instance builds no Harness image; its definitions are injected at pod start. Kit dev overrides
- * with a locally built tag (`just harness-image` — the @kind stub is `just harness-image-dev`). */
-export const DEFAULT_HARNESS_IMAGE = `j2-harness:${KIT_VERSION}`;
-
-/** The Adapter image `images.adapter` defaults to — pinned the same way (ADR-0009/0019).
- * An Agent without an Adapter has no route to its Machine (ADR-0013), so a sandbox-ful instance
- * always gets one unless the config names a different image. */
-export const DEFAULT_ADAPTER_IMAGE = `j2-adapter:${KIT_VERSION}`;
-
-/** The operator image `images.operator` defaults to — the published release, pinned the same way
- * (npm version == image tag, one release train — ADR-0019). */
-export const DEFAULT_OPERATOR_IMAGE = `j2-operator:${KIT_VERSION}`;
-
-/** The composed images (ADR-0031): every image j2 assembles into pods, named in one block. The
- * kit three default to the published `<kitversion>` tags — overriding them is kit-dev territory
- * (locally built + `kind load`ed tags); `user` defaults to absent (no User Container). This
- * replaced the `sandbox` section: the Harness image was `sandbox.image` when the Sandbox pod was
- * the only place a Harness ran, which the Instance Harness made a misnomer. */
-export type ImagesConfig = {
-  /** The Harness image (ADR-0001/0018): one image, many Agents — every Sandbox's Harness
-   * container, and the Instance Harness Deployment (ADR-0031). */
-  harness?: string;
-  /** The Adapter image (ADR-0013): the sidecar that serves the Agent its MCP surface on localhost
-   * and is the only thing in the pod holding an Orchestrator credential. Without it an Agent has
-   * no route to its Machine at all, so every Harness placement gets one. */
-  adapter?: string;
-  /** The operator image (ADR-0019) — the per-cluster controller `j2 up` manages. */
-  operator?: string;
-  /** The User Container image (ADR-0005): a user-owned third container (nvim, dotfiles, extra
-   * CLIs) sharing the `/work` worktrees, for working alongside the agent with your own tools —
-   * the `kubectl exec` target. j2 does not own its contents; it must have a BLOCKING entrypoint
-   * (a plain image that exits crash-loops the pod). Absent = a Sandbox pod runs two containers. */
-  user?: string;
-};
 
 /** Token limits for one model — flue registration options, keyed per model because limits are
  * properties of the MODEL, not the endpoint (agents pick models per definition, ADR-0018). */
@@ -131,8 +98,9 @@ export type HarnessConfig = {
   /** Path to a PEM CA bundle, RELATIVE to the instance folder — commit the file (CA certs are
    * public; e.g. an internal CA in front of a LAN vLLM). Only `j2 up` reads it (host-side): it
    * materializes the `j2-ca` ConfigMap and runs the provider preflight with the same trust. The
-   * bundle lands on the Harness container as `NODE_EXTRA_CA_CERTS` — never the Adapter or the
-   * User Container (the `harness.env` asymmetry, ADR-0005/0013/0020). */
+   * bundle lands on the Harness container and NOWHERE else — never the Adapter, whose Orchestrator
+   * credential has no business behind the same trust store (the `harness.env` asymmetry,
+   * ADR-0013/0020). */
   caBundle?: string;
 };
 
@@ -146,8 +114,6 @@ export type J2Config = {
    * instance gets the kubectl Sandbox backend, and without them it is workspace-less
    * (`workspace()` invocations fault pointedly). */
   repos?: RepoConfig[];
-  /** The composed images (see `ImagesConfig`) — kit-dev overrides; defaults are published. */
-  images?: ImagesConfig;
   /** Agent-runtime config for the stock Harness (see `HarnessConfig`). */
   harness?: HarnessConfig;
   /** Image registry prefix (deployment-varying — resolve from env). Absent → images are

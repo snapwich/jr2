@@ -1,32 +1,32 @@
-// Config surface tests (ADR-0019/0031). Small on purpose: `defineConfig` is an identity
-// passthrough and `loadConfig` is exercised through the server/instance tests — what is pinned
-// here is the `images` contract, because three deploy seats (Sandbox pods, the Instance Harness,
-// the operator layer) default off these constants and drifting tags would ship different code to
-// different pods of one release train (npm version == image tag).
+// Config surface tests (ADR-0019/0031/0038). Small on purpose: `defineConfig` is an identity
+// passthrough and `loadConfig` is exercised through the server/instance tests.
+//
+// What is NOT here any more is the `images` contract. `j2 up` builds every image it deploys and
+// resolves every ref itself (ADR-0038), so there is no config seat for one — the published
+// `<kitversion>` refs moved to the CLI's resolution layer and are pinned there
+// (`packages/cli/test/build.test.ts`), where the not-a-kit-checkout branch actually reads them.
+//
+// A stale `images:` key in someone's committed config has NO runtime enforcement: deleting the type
+// is the whole signal (a typecheck error at authoring time), and `loadConfig` deliberately gains no
+// rejection pass — the ADR asks for the seat to be gone, not for a linter.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  DEFAULT_ADAPTER_IMAGE,
-  DEFAULT_HARNESS_IMAGE,
-  DEFAULT_OPERATOR_IMAGE,
-  KIT_VERSION,
-  defineConfig,
-} from "../src/config.ts";
+import { KIT_VERSION, defineConfig } from "../src/config.ts";
 
-test("the kit three default to the published <kitversion> tags (ADR-0031)", () => {
-  assert.equal(DEFAULT_HARNESS_IMAGE, `j2-harness:${KIT_VERSION}`);
-  assert.equal(DEFAULT_ADAPTER_IMAGE, `j2-adapter:${KIT_VERSION}`);
-  assert.equal(DEFAULT_OPERATOR_IMAGE, `j2-operator:${KIT_VERSION}`);
+test("KIT_VERSION is the package's own version — npm version == image tag, one release train", () => {
+  assert.match(KIT_VERSION, /^\d+\.\d+\.\d+/);
 });
 
-test("defineConfig is an identity passthrough — the images block rides through untouched", () => {
+test("defineConfig is an identity passthrough — the whole config rides through untouched", () => {
   const config = defineConfig({
     repos: [{ name: "app", url: "https://example.test/app.git" }],
-    images: { harness: "j2-harness:local", user: "workbench:me" },
+    registry: "reg.example.com/j2",
+    harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } },
   });
   assert.deepEqual(config, {
     repos: [{ name: "app", url: "https://example.test/app.git" }],
-    images: { harness: "j2-harness:local", user: "workbench:me" },
+    registry: "reg.example.com/j2",
+    harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } },
   });
 });

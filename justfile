@@ -51,8 +51,10 @@ harness-image-dev:
 adapter-image:
     docker build -f deploy/adapter/Dockerfile -t {{ adapter_image }} .
 
-# ADR-0018: definitions are injected at pod start, so no per-instance Harness image exists;
-# `images.harness` override territory (ADR-0031).
+# ADR-0018: definitions are injected at pod start, so no per-instance Harness image exists.
+# A SHORTCUT, never a prerequisite (ADR-0038): `j2 up` run from this checkout builds this image
+# itself, at a content-addressed tag. `j2-harness:local` is a convenience tag for poking at the
+# image by hand — it is not what a converge deploys, and nothing resolves it.
 # build the STOCK Harness image (what a real instance runs) and load it into kind
 harness-image:
     docker build -f deploy/harness/Dockerfile -t j2-harness:local .

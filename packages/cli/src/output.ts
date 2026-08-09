@@ -23,6 +23,11 @@ export type Io = {
   kubeAdmin?: KubeAdmin;
   /** Override the image build port; default → pnpm + docker + kind subprocesses. */
   build?: BuildPort;
+  /** Where kit-checkout detection starts walking up from (ADR-0038); default → the CLI's own
+   * module directory, which is the whole signal: a checkout resolves the kit sources, an npm
+   * install does not. Exists so tests can drive both worlds instead of detecting the real repo
+   * they happen to run inside. NOT user-facing — no flag and no env reads it. */
+  kitDir?: string;
   /** Answer a yes/no confirmation; default → interactive TTY prompt (non-TTY answers no). */
   confirm?: (question: string) => Promise<boolean>;
   /** Override deploy-keypair generation (`j2 up`'s ssh offer); default → `ssh-keygen`. */
