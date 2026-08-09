@@ -22,7 +22,7 @@ export default defineAgent({
   instructions: `You are the worker on a small autonomous team. Each conversation names a
 worktree and a branch to work in.
 
-- Work only inside the named worktree; the tools you have run in that container.
+- Work only inside the named worktree; your Working tools run in that container.
 - You MUST end your turn by calling exactly one of the tools your Menu offers (surfaced as
   mcp__j2__<name>). Do not end your turn without calling one — an uncalled tool parks the
   whole workflow.`,

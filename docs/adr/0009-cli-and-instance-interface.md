@@ -41,10 +41,14 @@ export default defineConfig({ name: "my-orchestrator", sandbox: {} });
   the boot reconcile (ADR-0004); Sandboxes clone `--shared` against it. There is no host-side catalog directory — a repo
   pods should see must be fetchable from the cluster.
 - **A non-empty `repos` list is the data-plane switch** (as amended by ADR-0031): with it, the instance gets the kubectl
-  Sandbox backend; without it, the instance is workspace-less — a Workspace needs repos. Image composition lives in the
-  `images` block: `images.harness`/`images.adapter`/`images.operator` default to the published `<kitversion>` tags
+  Sandbox backend; without it, the instance is workspace-less — a Workspace needs repos. ~~Image composition lives in
+  the `images` block: `images.harness`/`images.adapter`/`images.operator` default to the published `<kitversion>` tags
   (every Sandbox gets an Adapter — an Agent without one cannot act, ADR-0013); `images.user` opts into the User
-  Container (ADR-0005). Agent-runtime concerns live in `harness` (ADR-0018).
+  Container (ADR-0005).~~ **Superseded by [ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)**: the `images` block
+  is deleted outright, no key and no env escape hatch — `j2 up` builds every image it deploys and resolves each to a
+  content-addressed tag, and `images.user` died with the User Container
+  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)). An Adapter in every Sandbox is
+  unchanged; it is simply not configurable. Agent-runtime concerns live in `harness` (ADR-0018).
 - **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`) and the env/creds the Agents
   need (e.g. an Anthropic key, read from `process.env`/`.env` and materialized as a Secret by `j2 up`, or `envFrom` refs
   to Secrets you manage) — never which model to use; each definition names its own (ADR-0018).
@@ -108,9 +112,14 @@ j2 send <runId|abbrev> --gate <gate> --event <name> [--input <json>]
 
 # workspaces (kubectl-style, over the operator's Sandbox CRs)
 j2 ls                             # list workspaces + run + status + endpoint
-j2 ssh <workspace>                # exec into the User Container (ADR-0005)
+j2 ssh <workspace>                # exec into the Sandbox's harness container (ADR-0037)
 j2 logs <workspace>   j2 rm <workspace>
 ```
+
+`j2 ssh` originally read "exec into the User Container (ADR-0005)", **superseded by
+[ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)**: the User Container is deleted, so
+the human's seat is `kubectl exec -c harness` into the wrapped Sandbox Image — the agent's own tools, worktrees, and
+filesystem. The verb is unchanged; only what it exec's into is.
 
 The CLI is the everyday surface; HTTP is the machine-to-machine one. The workspace verbs make the orchestrator feel like
 `kubectl` for agents: the run↔workspace link rides on the CR's labels (`j2.dev/run`, `j2.dev/workflow`), so `j2 ls` can

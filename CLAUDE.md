@@ -23,13 +23,13 @@ step spawns the real `j2` binary against a real orchestrator process served per 
 step defs (no ts-node). **`@kind` (opt-in, needs docker + kind + go):** the data-plane tier — real Sandboxes for
 `workspace()` flows (ADR-0012), running the **stock** Harness against a host-side scripted model provider, so only the
 LLM is faked (ADR-0038). Excluded from the default profile, so the everyday suite needs no infra. Bring-up builds
-nothing: `j2 up` from this checkout builds and loads every image it deploys. Run: `just e2e-kind-up`,
-`just operator-run` (another shell), `just e2e-kind`. **`@console` (opt-in, needs a Playwright chromium):** browser
-scenarios for the Console's UX — a Playwright page held inside Cucumber steps against the same per-scenario
-orchestrator; no docker (ADR-0010 as amended, ADR-0032). Excluded from the default e2e profile; store logic stays
-unit-tested in `console-store.test.ts`. **Harness conformance (ADR-0027; in `@j2/harness`, no infra):** the claims the
-socket-free tests cannot see, driven through the real turn loop — pi at the exact pin, the real `@j2/adapter` over a
-real socket, a scripted provider that chooses each turn's shape. Not a separate tier: it runs in the default `test` gate
-as part of `pnpm -r test`. `@j2/harness` owns the pi pin; conformance is the canary for pi bumps (0.x minors break), and
-since ADR-0038 `@kind` is a **second** canary — it drives the same turn loop in a real pod — so **run both before
-bumping pi**.
+nothing: `j2 up` from this checkout builds and loads every image it deploys, and converges the operator in-cluster (the
+tier's config never sets `operator.manage: false`), so it is exactly two commands — `just e2e-kind-up`, then
+`just e2e-kind`. **`@console` (opt-in, needs a Playwright chromium):** browser scenarios for the Console's UX — a
+Playwright page held inside Cucumber steps against the same per-scenario orchestrator; no docker (ADR-0010 as amended,
+ADR-0032). Excluded from the default e2e profile; store logic stays unit-tested in `console-store.test.ts`. **Harness
+conformance (ADR-0027; in `@j2/harness`, no infra):** the claims the socket-free tests cannot see, driven through the
+real turn loop — pi at the exact pin, the real `@j2/adapter` over a real socket, a scripted provider that chooses each
+turn's shape. Not a separate tier: it runs in the default `test` gate as part of `pnpm -r test`. `@j2/harness` owns the
+pi pin; conformance is the canary for pi bumps (0.x minors break), and since ADR-0038 `@kind` is a **second** canary —
+it drives the same turn loop in a real pod — so **run both before bumping pi**.

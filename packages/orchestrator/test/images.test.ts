@@ -25,7 +25,7 @@ const refs = (over: Partial<ImageRefs> = {}): ImageRefs => ({
 });
 
 test("the map is nested, so a user image named `harness` cannot collide with the kit's", async () => {
-  // `images/harness/Dockerfile` is a perfectly legal name for someone's toolchain, and
+  // `images/harness/Dockerfile` is a perfectly legal name for someone's Sandbox Image, and
   // `images/default` is a name ADR-0037 hands out itself — a flat map would let either shadow a
   // kit ref, which is why user images live under `sandbox`.
   const path = await mkMap(

@@ -172,12 +172,12 @@ pool(feature, { source: readyFeatures, itemId, cap, itemInput, onDrained: "final
 1. **Fresh sessions by default** (§1.3) — coding.ts inverted jr's most deliberate design decision.
 2. **Escalation must not destroy work — SETTLED (grill 2026-07-14): park-a-gate.** jr ground truth: most escalations
    were _environment_ issues the human resolved inside the environment, so the Sandbox must stay alive
-   (parking-is-retention; the User Container is the human's seat). The rewrite's `escalated` state: record tk escalation
-   → best-effort `pushBranch` (so an idle-GC-reaped park still leaves the branch recoverable) → park a gate accepting
-   `resume` (blocker fixed → re-enter `working`; jr's coder re-entry protocol re-escalates if not) and `dismiss` (give
-   up → settle as escalated). `workspace.lost` while parked settles directly. Publish-then-settle survives only as the
-   `dismiss` exit. Accepted consequence: runs with live escalations stay open — "what needs me" is the gates list (jr's
-   exit-2/3, done properly).
+   (parking-is-retention; the human's seat is `kubectl exec -c harness` into the wrapped Sandbox Image, ADR-0037). The
+   rewrite's `escalated` state: record tk escalation → best-effort `pushBranch` (so an idle-GC-reaped park still leaves
+   the branch recoverable) → park a gate accepting `resume` (blocker fixed → re-enter `working`; jr's coder re-entry
+   protocol re-escalates if not) and `dismiss` (give up → settle as escalated). `workspace.lost` while parked settles
+   directly. Publish-then-settle survives only as the `dismiss` exit. Accepted consequence: runs with live escalations
+   stay open — "what needs me" is the gates list (jr's exit-2/3, done properly).
 3. **Round accounting**: human `request_changes` starts a _fresh_ architect cycle (`archRounds: 0`), architect approval
    resets the counter; per-task coder reset kept (jr's per-run reset was an accident of note-counting).
 4. **`stalled` state deleted**: jr has no analog (a chain blocked on a human-assigned task just never surfaces in the

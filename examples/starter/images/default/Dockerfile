@@ -13,7 +13,7 @@
 #   - `git` — the agent clones, worktrees, and commits with the git you chose;
 #   - a glibc base no older than j2's node. alpine/musl cannot run it at all.
 #
-# The name is the directory name. Add `images/<other>/Dockerfile` for a second toolchain and name
+# The name is the directory name. Add `images/<other>/Dockerfile` for a second Sandbox Image and name
 # it from a workflow's `workspace()` spec. This instance has `repos: []`, so `j2 up` builds
 # nothing here until it has repos to work on.
 

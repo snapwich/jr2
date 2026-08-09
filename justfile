@@ -64,7 +64,7 @@ harness-image:
 # namespace, operator included.
 e2e-kind-up:
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
-    @echo "now: \`just operator-run\` (another shell), then \`just e2e-kind\`"
+    @echo "now: \`just e2e-kind\`"
 
 # run the kind e2e tier (needs `just e2e-kind-up`)
 e2e-kind:

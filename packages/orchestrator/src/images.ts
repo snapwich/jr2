@@ -5,7 +5,7 @@
 // port.
 //
 // The map is NESTED, never flat. `images/harness/Dockerfile` is a legal user image (nothing stops
-// someone naming their toolchain image "harness"), and `images/default` is the name ADR-0037's
+// someone naming their Sandbox Image "harness"), and `images/default` is the name ADR-0037's
 // fallback chain is built on — so user images must sit under their own `sandbox` key or a user
 // image would shadow the kit's own refs.
 //
