@@ -56,10 +56,11 @@ settings
 for the Kubernetes architecture — agents must not share host resources (ports, filesystem, process space). _Avoid_:
 worker pod, container
 
-**Harness**: j2's own long-running server (`@j2/harness`, the `j2-harness:<ver>` image), hosted in two placements:
-inside every Sandbox, and once per Instance as the Instance Harness (ADR-0031). Hosts the instance's Agents over the
-Harness wire (ADR-0027) and executes their Working tools. In a Sandbox it runs in its own container alongside the user
-container, carrying the agent's own toolchain since Working tools execute there. _Avoid_: flue agent, server, `local()`
+**Harness**: j2's own long-running server (`@j2/harness`), hosted in two placements: inside every Sandbox, and once per
+Instance as the Instance Harness (ADR-0031). Hosts the instance's Agents over the Harness wire (ADR-0027) and executes
+their Working tools. Ships both as the stock `j2-harness:<ver>` image and as the runtime j2 injects into a Sandbox Image
+at `/opt/j2` — Working tools execute in this container, so the tools they can reach are that image's (ADR-0037).
+_Avoid_: flue agent, server, `local()`
 
 **Instance Harness**: The per-Instance Harness deployment `j2 up` converges when any Agent definition declares
 `workspace: "none"` — the placement for every Menu-only Agent's Turn, regardless of any enclosing Workspace, so a
@@ -73,10 +74,10 @@ the Agent code execution there — so the Orchestrator credential lives where th
 terms it is the MCP dialect adapter, relocated into the Sandbox. _Avoid_: shim, proxy, sidecar (that's its deployment
 shape, not what it is), MCP server
 
-**User Container**: The user-owned container in a Sandbox pod — a customizable image (nvim, dotfiles, extra CLIs) that
-the human `exec`/SSH-es into to work alongside the agent. Shares the worktree volume with the Harness container, so
-human and agent see identical files. A peer of the Harness container; the pod (not the container) is the isolation unit
-— ADR-0005. _Avoid_: workbench, workspace container (collides with Workspace), dev container
+**Sandbox Image**: A user-authored image an Instance builds for its Sandboxes — the tools an Agent's Working tools can
+reach, and the shell a human gets on `exec`. Discovered from `images/<name>/Dockerfile` and named by a `workspace()`; j2
+injects the Harness runtime into it, so the Dockerfile names only tools (ADR-0037). _Avoid_: workspace image (a
+Workspace is a Machine; the image is the pod's), agent image, harness image (the kit's own base), toolchain
 
 **Instance ID**: The identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id` on the Harness
 wire. Successive prompts to the same `(Agent name, instance id)` continue one conversation; j2 computes ids and persists
