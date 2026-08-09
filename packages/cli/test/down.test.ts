@@ -6,11 +6,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { down } from "../src/commands/down.ts";
-import { prunableTags, type BuildPort } from "../src/build.ts";
+import { prunePlan, type BuildPort, type NodeImage } from "../src/build.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { Io } from "../src/output.ts";
 
@@ -37,11 +37,11 @@ function mkKube(
 }
 
 /** A build port whose only live verb is `kindPrune` — everything else fails, because `down` must
- * never build, push, or load. `nodeTags` is what containerd on the cluster's nodes holds, and the
- * fake answers through the REAL matcher: the seam used to sit above it, which is how a prune that
+ * never build, push, or load. `nodeImages` is what containerd on the cluster's nodes holds, and the
+ * fake answers through the REAL planner: the seam used to sit above it, which is how a prune that
  * matched nothing ever shipped green (the tags containerd holds are namespaced, ADR-0038). */
 function mkPrune(
-  nodeTags: string[],
+  nodeImages: NodeImage[],
   fails = false,
 ): BuildPort & { calls: Array<{ cluster: string; prefixes: string[] }> } {
   const port = {
@@ -55,10 +55,8 @@ function mkPrune(
     kindPrune: async (cluster: string, prefixes: string[]) => {
       port.calls.push({ cluster, prefixes });
       if (fails) throw new Error("crictl: connection refused");
-      return prunableTags(
-        nodeTags.map((tag, i) => ({ id: `sha256:${i}`, repoTags: [tag] })),
-        prefixes,
-      );
+      const plan = prunePlan(nodeImages, prefixes);
+      return { removed: plan.remove.flatMap((e) => e.tags), kept: plan.kept, failed: [] };
     },
   };
   return port;
@@ -67,6 +65,10 @@ function mkPrune(
 async function mkWorld(kube: KubeAdmin, confirm: boolean, build?: BuildPort) {
   const root = await mkdtemp(join(tmpdir(), "j2-down-"));
   await writeFile(join(root, "j2.config.ts"), `export default { name: "myinst" };\n`);
+  // The prune prefixes are derived from the DISCOVERED images (exact names, ADR-0038) — this
+  // instance authored one Sandbox Image, `images/default`.
+  await mkdir(join(root, "images", "default"), { recursive: true });
+  await writeFile(join(root, "images", "default", "Dockerfile"), "FROM node:24-slim\n");
   const err: string[] = [];
   const confirms: string[] = [];
   const io: Io = {
@@ -109,34 +111,64 @@ test("down deletes the instance's namespace; --all takes the operator too", asyn
 test("down prunes this instance's images off kind nodes — and only this instance's", async () => {
   const kube = mkKube(ownNs);
   // What a kind node's containerd actually holds after a few converges: this instance's images,
-  // ANOTHER instance's, the shared kit's, and a registry-pushed copy of this instance's own. The
-  // local ones wear containerd's `docker.io/library/` namespace, because that is what `kind load`
-  // normalizes an unqualified tag into — the fact the matching used to miss entirely.
+  // ANOTHER instance's — including one named `myinst-extra`, which an open-ended
+  // `j2-sandbox-myinst-` prefix would have matched — the shared kit's, and a registry-pushed copy
+  // of this instance's own. The local ones wear containerd's `docker.io/library/` namespace,
+  // because that is what `kind load` normalizes an unqualified tag into.
+  const tag = (t: string, i: number): NodeImage => ({ id: `sha256:${i}`, repoTags: [t] });
   const prune = mkPrune([
-    "docker.io/library/j2-instance-myinst:aa11bb22cc33",
-    "docker.io/library/j2-instance-myinst:dd44ee55ff66",
-    "docker.io/library/j2-sandbox-myinst-default:99aa88bb77cc",
-    "docker.io/library/j2-instance-other:112233445566",
-    "docker.io/library/j2-sandbox-other-default:665544332211",
-    "docker.io/library/j2-harness:0f1e2d3c4b5a",
-    "docker.io/library/j2-adapter:5a4b3c2d1e0f",
-    "reg.example.com/j2-instance-myinst:aa11bb22cc33",
+    tag("docker.io/library/j2-instance-myinst:aa11bb22cc33", 0),
+    tag("docker.io/library/j2-instance-myinst:dd44ee55ff66", 1),
+    tag("docker.io/library/j2-sandbox-myinst-default:99aa88bb77cc", 2),
+    tag("docker.io/library/j2-instance-other:112233445566", 3),
+    tag("docker.io/library/j2-sandbox-other-default:665544332211", 4),
+    tag("docker.io/library/j2-sandbox-myinst-extra-default:314159265358", 5),
+    tag("docker.io/library/j2-harness:0f1e2d3c4b5a", 6),
+    tag("docker.io/library/j2-adapter:5a4b3c2d1e0f", 7),
+    tag("reg.example.com/j2-instance-myinst:aa11bb22cc33", 8),
   ]);
   const w = await mkWorld(kube, true, prune);
   assert.equal(await down([], w.io), 0);
 
-  assert.deepEqual(prune.calls, [{ cluster: "test", prefixes: ["j2-instance-myinst:", "j2-sandbox-myinst-"] }]);
+  // Exact, colon-terminated repo names per discovered image — one open-ended `j2-sandbox-myinst-`
+  // also matched instance `myinst-extra`'s images on a shared node (ADR-0038).
+  assert.deepEqual(prune.calls, [
+    {
+      cluster: "test",
+      prefixes: ["j2-instance-myinst:", "j2-sandbox-myinst-default:", "j2-sandbox-myinst-default-base:"],
+    },
+  ]);
   const line = w.err.join("\n");
   assert.match(line, /pruned 3 image\(s\)/);
   assert.match(line, /j2-sandbox-myinst-default:99aa88bb77cc/, "every content-addressed iteration goes");
-  // Kit images are shared by every instance on the cluster; another instance's are not ours; and a
-  // registry-pushed tag is the registry's business — all three fall out of ANCHORED prefixes.
+  // Kit images are shared by every instance on the cluster; another instance's are not ours —
+  // `myinst-extra` above all; and a registry-pushed tag is the registry's business.
   assert.ok(!/j2-harness|j2-adapter/.test(line));
-  assert.ok(!/other/.test(line));
+  assert.ok(!/other|extra/.test(line));
   assert.ok(!/reg\.example\.com/.test(line));
 
   // After the namespace delete (which waits), so containerd is no longer holding them.
   assert.deepEqual(kube.deleted, ["/Namespace/myinst"]);
+});
+
+test("down reports what a mixed image id kept in place, and still exits 0", async () => {
+  // Two instances whose image trees are byte-identical share one image id on the node; `crictl
+  // rmi` cannot untag, so the id is left whole and SAID (build.ts prunePlan) — silence would read
+  // as "pruned everything".
+  const prune = mkPrune([
+    {
+      id: "sha256:dd",
+      repoTags: [
+        "docker.io/library/j2-sandbox-myinst-default:c0ccbf36fb77",
+        "docker.io/library/j2-sandbox-twin-default:c0ccbf36fb77",
+      ],
+    },
+  ]);
+  const w = await mkWorld(mkKube(ownNs), true, prune);
+  assert.equal(await down([], w.io), 0);
+  const line = w.err.join("\n");
+  assert.match(line, /kept 1 tag\(s\).*j2-sandbox-myinst-default:c0ccbf36fb77/);
+  assert.ok(!/pruned/.test(line));
 });
 
 test("down prunes nothing off a non-kind context, and a failed prune still exits 0", async () => {

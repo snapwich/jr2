@@ -318,7 +318,7 @@ const ADAPTER_PORT = 8081;
  * minus the Workspace: the stock Harness image plus the Adapter sidecar, the same definitions
  * ConfigMap and env/envFrom/CA wiring a Sandbox's Harness container gets — and NO `/work` volume,
  * no attach step. It runs the STOCK image permanently: `workspace: "none"` withholds the whole
- * Working toolset (ADR-0028), so there is no toolchain to carry and no Sandbox Image to wrap
+ * Working toolset (ADR-0028), so there are no tools to carry and no Sandbox Image to wrap
  * (ADR-0037). No config key names, sizes, addresses, or enables it: the definition scan is the
  * entire surface.
  */

@@ -14,7 +14,7 @@ import {
   detectKitCheckout,
   kitImageBuild,
   kitImageRefs,
-  prunableTags,
+  prunePlan,
   publishedKitRefs,
   sandboxImageHash,
   sandboxWrapDockerfile,
@@ -36,7 +36,7 @@ function stagingPort(files: (out: string) => Record<string, string>): BuildPort 
     untag: async () => {},
     push: async () => {},
     kindLoad: async () => {},
-    kindPrune: async () => [],
+    kindPrune: async () => ({ removed: [], kept: [], failed: [] }),
   };
 }
 
@@ -180,6 +180,29 @@ test("each kit image addresses its own sources; the registry prefixes a built re
   assert.equal(kitImageBuild(kit, "operator", refs.operator).context, join(kit, "operator"));
 });
 
+test("kit hashes exclude only what each context's OWN .dockerignore drops", async () => {
+  // An exclusion is sound only when the entry is context-invisible; excluding anything the build
+  // can see under-hashes (a silent stale image, ADR-0038). packages/* build from the KIT ROOT,
+  // whose .dockerignore drops **/node_modules and **/dist — so a packages/harness/bin/ IS context
+  // content and must move the ref (the old shared exclude set skipped it). The operator builds
+  // from operator/, whose .dockerignore allowlists go sources only — bin/testbin/cover.out are
+  // invisible there, so they must NOT move the ref (and the ~400 MB of downloaded tooling under
+  // operator/bin stays off the converge walk).
+  const src = "export const x = 1;\n";
+  const base = await kitImageRefs(await mkTree(kitFiles(src)));
+
+  const withBin = await kitImageRefs(await mkTree({ ...kitFiles(src), "packages/harness/bin/tool": "#!/bin/sh\n" }));
+  assert.notEqual(withBin.harness, base.harness, "packages/harness/bin is context-visible, so it is hashed");
+
+  const withNm = await kitImageRefs(await mkTree({ ...kitFiles(src), "packages/harness/node_modules/x.js": "1;" }));
+  assert.equal(withNm.harness, base.harness, "**/node_modules is dockerignored, so it stays excluded");
+
+  const withTooling = await kitImageRefs(
+    await mkTree({ ...kitFiles(src), "operator/bin/etcd": "ELF…", "operator/cover.out": "mode: set\n" }),
+  );
+  assert.equal(withTooling.operator, base.operator, "operator's non-go tooling and coverage stay excluded");
+});
+
 test("a packages/harness edit moves the harness ref AND, through the wrap salt, every Sandbox Image ref", async () => {
   // ADR-0037's consequence, and the only place it is checkable: a Sandbox Image is
   // `COPY --from=<harness>`, so without the harness ref in its hash, editing packages/harness/src
@@ -261,7 +284,7 @@ test("`images/` never enters the instance bundle, so a Dockerfile edit cannot ro
   }
 });
 
-test("the kind prune matches containerd's names, and removes by tag rather than by image id", async () => {
+test("the kind prune matches containerd's names and plans one removal per image id", async () => {
   // The dead-code defect: `kind load` imports into containerd, which NORMALIZES a local tag to
   // `docker.io/library/<name>:<tag>`. Matching bare prefixes with `startsWith` therefore matched
   // nothing ever — a real `j2 down` left 28 of this instance's images on the node and reported
@@ -272,16 +295,47 @@ test("the kind prune matches containerd's names, and removes by tag rather than 
     {"id":"sha256:bbb","repoTags":["reg.example.com/j2-instance-myinst:aa11bb22cc33"],"size":"412000000"},
     {"id":"sha256:ccc","repoTags":["docker.io/library/j2-harness:0f1e2d3c4b5a"],"size":"238000000"}
   ]}`;
-  const images = (JSON.parse(listing) as { images: Parameters<typeof prunableTags>[0] }).images;
+  const images = (JSON.parse(listing) as { images: Parameters<typeof prunePlan>[0] }).images;
 
   assert.deepEqual(
-    prunableTags(images, ["j2-instance-myinst:", "j2-sandbox-myinst-"]),
-    ["docker.io/library/j2-instance-myinst:aa11bb22cc33"],
+    prunePlan(images, ["j2-instance-myinst:", "j2-sandbox-myinst-default:"]),
+    { remove: [{ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-myinst:aa11bb22cc33"] }], kept: [] },
     "the local tag goes; the registry's copy and the shared kit image stay",
   );
+});
 
-  // One id can carry several tags, which is why removal is by TAG: `crictl rmi <id>` would take
-  // the kit tag below with it — an image every other instance on the cluster still needs.
-  const shared = [{ id: "sha256:ddd", repoTags: ["docker.io/library/j2-sandbox-myinst-x:99aa", "j2-harness:0f1e"] }];
-  assert.deepEqual(prunableTags(shared, ["j2-sandbox-myinst-"]), ["docker.io/library/j2-sandbox-myinst-x:99aa"]);
+test("a mixed image id is kept whole — crictl cannot untag, and the foreign tags must survive", () => {
+  // `crictl rmi <tag>` resolves the tag to its image id and removes the WHOLE image, every tag
+  // with it (CRI has no untag verb). So removal is a per-ID decision: an id goes only when every
+  // repoTag on it matched. This is not paranoia — two instances whose `images/x` trees and harness
+  // ref are byte-identical hash to the SAME tag suffix on the SAME id, and the other instance
+  // still needs it.
+  const shared = [
+    {
+      id: "sha256:ddd",
+      repoTags: ["docker.io/library/j2-sandbox-myinst-default:99aa", "docker.io/library/j2-sandbox-other-default:99aa"],
+    },
+  ];
+  assert.deepEqual(prunePlan(shared, ["j2-sandbox-myinst-default:"]), {
+    remove: [],
+    kept: ["docker.io/library/j2-sandbox-myinst-default:99aa"],
+  });
+
+  // The failure observed live: three of THIS instance's tags on one id (hash-moving edits that
+  // produced byte-identical images). One id, one removal, all three tags reported — a second
+  // `rmi` for a sibling tag is what died `no such image` and aborted the old loop.
+  const triple = [
+    {
+      id: "sha256:eee",
+      repoTags: [
+        "docker.io/library/j2-sandbox-myinst-default:c0cc",
+        "docker.io/library/j2-sandbox-myinst-default:b1aa",
+        "docker.io/library/j2-instance-myinst:77ff",
+      ],
+    },
+  ];
+  assert.deepEqual(prunePlan(triple, ["j2-instance-myinst:", "j2-sandbox-myinst-default:"]), {
+    remove: [{ id: "sha256:eee", tags: triple[0]!.repoTags }],
+    kept: [],
+  });
 });

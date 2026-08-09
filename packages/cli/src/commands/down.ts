@@ -11,7 +11,7 @@
 
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { loadConfig } from "@j2/orchestrator";
+import { discoverImages, loadConfig } from "@j2/orchestrator";
 import { pnpmDockerBuild } from "../build.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
@@ -68,14 +68,34 @@ export async function down(args: string[], io: Io): Promise<number> {
   // the registry's business, and anchoring the match at the start of the ref is what excludes it
   // (`reg.example.com/j2-instance-x:h` does not start with `j2-instance-x:`) rather than a second
   // check that could disagree. Kit tags are NEVER pruned: every instance on the cluster shares
-  // them (ADR-0038). The prefixes are the LOCAL names — `prunableTags` strips containerd's
+  // them (ADR-0038). The prefixes are the LOCAL names — `prunePlan` strips containerd's
   // `docker.io/library/` namespace before matching, and nothing else, so the anchor still holds.
   if (context.startsWith("kind-")) {
     const cluster = context.slice("kind-".length);
     const build = io.build ?? pnpmDockerBuild;
     try {
-      const removed = await build.kindPrune(cluster, [`j2-instance-${name}:`, `j2-sandbox-${name}-`]);
-      activity(io, removed.length ? `pruned ${removed.length} image(s): ${removed.join(", ")}` : "no images to prune");
+      // EXACT, colon-terminated repo names, one per discovered image (plus the wrap's `-base`
+      // intermediate, which never ships but must still be ours to take if one was ever loaded by
+      // hand). One open-ended `j2-sandbox-<name>-` prefix also matched instance `<name>-extra`'s
+      // images on a shared node (ADR-0038). The recorded cost: deleting an `images/<x>/` folder
+      // orphans that image's already-loaded tags — nothing derives their names any more.
+      const prefixes = [
+        `j2-instance-${name}:`,
+        ...(await discoverImages(root)).flatMap((i) => [
+          `j2-sandbox-${name}-${i.name}:`,
+          `j2-sandbox-${name}-${i.name}-base:`,
+        ]),
+      ];
+      const { removed, kept, failed } = await build.kindPrune(cluster, prefixes);
+      if (removed.length) activity(io, `pruned ${removed.length} image(s): ${removed.join(", ")}`);
+      if (kept.length) {
+        activity(
+          io,
+          `kept ${kept.length} tag(s) — their image id also carries tags that are not this instance's: ${kept.join(", ")}`,
+        );
+      }
+      if (failed.length) activity(io, `failed to remove ${failed.length} image(s): ${failed.join(", ")}`);
+      if (!removed.length && !kept.length && !failed.length) activity(io, "no images to prune");
     } catch (err) {
       // A warning, never a non-zero exit: the instance IS removed, which is what `down` promised.
       activity(io, `image prune failed (${err instanceof Error ? err.message : err}) — the instance is still removed`);

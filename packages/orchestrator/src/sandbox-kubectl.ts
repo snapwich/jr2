@@ -15,7 +15,7 @@
 // WHICH IMAGE a Sandbox runs is not an option here (ADR-0037/0038). The spec carries a NAME; the
 // resolved name→ref map arrives as a mounted ConfigMap and is read on EVERY provision, so a
 // `j2 up` that rebuilds an image reaches future Sandboxes without rolling this process. The pod's
-// primary container is the wrapped Sandbox Image — the user's toolchain with j2's runtime injected
+// primary container is the wrapped Sandbox Image — the user's tools with j2's runtime injected
 // at `/opt/j2` — which is why there is no longer a User Container beside it.
 //
 // This is also where the ADAPTER is injected (ADR-0013). The operator needs no change to carry it:
@@ -154,7 +154,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         labels: { "j2.dev/run": req.runId, "j2.dev/workflow": req.workflow },
       },
       spec: {
-        // The wrapped Sandbox Image (ADR-0037) — the user's toolchain with j2's runtime injected at
+        // The wrapped Sandbox Image (ADR-0037) — the user's tools with j2's runtime injected at
         // `/opt/j2`, so this container IS both the Harness and the human's `exec` shell.
         image: resolveSandboxImage(refs, req.image),
         idleTimeout: opts.idleTimeout ?? "30m",
@@ -302,7 +302,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     async attach(req) {
       const { script, workdir, repos, review } = attachScript(req.spec, { reposMount: "/repos", workRoot });
       // `-c harness` is unchanged and still correct after ADR-0037: the wrapped Sandbox Image IS
-      // the harness container — the user's toolchain with j2's runtime injected at `/opt/j2`.
+      // the harness container — the user's tools with j2's runtime injected at `/opt/j2`.
       await exec(["exec", `pod/${req.name}`, ...base, "-c", "harness", "--", "sh", "-ec", script]);
       return { workdir, repos, ...(review ? { review } : {}) };
     },

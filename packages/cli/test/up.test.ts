@@ -132,7 +132,7 @@ function fakeBuild(
     untag: async (tag) => void record.push(`untag ${tag}`),
     push: async (tag) => void record.push(`push ${tag}`),
     kindLoad: async (tag, cluster) => void record.push(`kind-load ${tag} → ${cluster}`),
-    kindPrune: async () => [],
+    kindPrune: async () => ({ removed: [], kept: [], failed: [] }),
   };
 }
 

@@ -59,10 +59,11 @@ export type BuildPort = {
   push(tag: string): Promise<void>;
   /** `kind load docker-image` — the no-registry delivery onto a kind cluster's nodes. */
   kindLoad(tag: string, cluster: string): Promise<void>;
-  /** Remove every image on a kind cluster's nodes whose repo:tag starts with one of `prefixes`,
-   * returning what was removed (`j2 down`, ADR-0038). Content addressing means ten Dockerfile
-   * iterations leave ten full images in containerd, invisible to `kubectl`. */
-  kindPrune(cluster: string, prefixes: string[]): Promise<string[]>;
+  /** Remove this instance's images from a kind cluster's nodes (`j2 down`, ADR-0038): every image
+   * whose repoTags ALL start with one of `prefixes`, reporting what it removed, what a mixed
+   * image id made it keep, and what failed. Content addressing means ten Dockerfile iterations
+   * leave ten full images in containerd, invisible to `kubectl`. */
+  kindPrune(cluster: string, prefixes: string[]): Promise<PruneResult>;
 };
 
 /**
@@ -74,19 +75,31 @@ export type BuildPort = {
 const HASH_EXCLUDE = new Set([".modules.yaml", ".bin"]);
 
 /**
- * The exclude set for hashing a KIT source directory (a kit package, the operator tree) — and
- * NOTHING else. Each entry is a path the KIT's own root `.dockerignore` really drops, so hashing it
- * would move a tag without moving the image, and `operator/bin` alone is ~400 MB of downloaded
- * tooling every converge would then walk. Everything else is hashed deliberately, tests included
- * (ADR-0038: a hand-derived file list desynchronizes silently the first time someone adds a `COPY`).
+ * Exclude sets for hashing KIT source directories — one per build CONTEXT, because an exclusion is
+ * only sound when the `.dockerignore` governing that context really drops the entry. Excluding
+ * anything context-visible under-hashes: an edit there changes the image at an unchanged tag, the
+ * silent-stale-image bug ADR-0038 exists to delete. The inverse (hashing something the context
+ * drops) merely costs a needless rebuild — the direction that ADR chose. So everything else is
+ * hashed deliberately, tests included; each entry below is justified against its own ignore file.
  *
- * Named `KIT_` so it cannot be reached for a USER directory by accident. A Sandbox Image's folder
- * IS its build context (ADR-0037) and carries no `.dockerignore`, so docker copies `dist/` and
- * `node_modules/` straight in; excluding them there under-hashes, and an edit under `images/x/dist`
- * would change the image at an unchanged tag — the silent-stale-image bug ADR-0038 exists to
- * delete. Over-hashing is that ADR's stated direction; under-hashing is the defect.
+ * Named `KIT_` so neither can be reached for a USER directory by accident. A Sandbox Image's
+ * folder IS its build context (ADR-0037) and carries no `.dockerignore`, so docker copies `dist/`
+ * and `node_modules/` straight in — hash them (`NO_EXCLUDE`).
  */
-const KIT_SOURCE_EXCLUDE = new Set(["node_modules", ".git", "bin", "testbin", "dist", "cover.out"]);
+
+/** For walks under `packages/*` (harness, adapter): their context is the KIT ROOT, so the root
+ * `.dockerignore` governs, and the only entries it drops at any depth are `**\/node_modules` and
+ * `**\/dist` (plus `*.log`/`.env` globs `contentHash`'s name-set cannot express — hashing a stray
+ * one of those over-hashes, which is allowed). A `packages/harness/bin/` would be context-VISIBLE,
+ * so it must stay hashed — the old shared set excluded it and lied. */
+const KIT_PACKAGE_EXCLUDE = new Set(["node_modules", "dist"]);
+
+/** For the walk of `operator/`: its context is `operator/` itself, governed by
+ * `operator/.dockerignore`, an ALLOWLIST (`**` then `!**\/*.go`, go.mod, go.sum). `bin/` (~400 MB
+ * of downloaded tooling) and `testbin/` hold no `.go`, and `cover.out` is not one — all three are
+ * context-invisible, so excluding them is sound and keeps the converge walk off the tooling. The
+ * rest of the non-go tree (Makefile, config/, hack/) stays hashed: over-hash, the cheap side. */
+const KIT_OPERATOR_EXCLUDE = new Set(["bin", "testbin", "cover.out"]);
 
 /** Hash everything: the only honest exclude set for a directory j2 does not own (see above). */
 const NO_EXCLUDE: Set<string> = new Set();
@@ -199,6 +212,9 @@ type KitImage = {
    * A hand-derived list desynchronizes silently the first time a `COPY` is added, which is the
    * invisible-stale-image bug this whole layer deletes; a needless rebuild costs cached seconds. */
   sources: string[];
+  /** What the walk skips — only entries this image's OWN `.dockerignore` really drops (see the
+   * `KIT_*_EXCLUDE` sets above): context-invisible, so skipping them cannot under-hash. */
+  exclude: Set<string>;
 };
 
 export const KIT_IMAGES: Record<KitImageName, KitImage> = {
@@ -207,18 +223,21 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     dockerfile: "deploy/harness/Dockerfile",
     context: ".",
     sources: ["packages/harness", "deploy/harness/Dockerfile"],
+    exclude: KIT_PACKAGE_EXCLUDE,
   },
   adapter: {
     repo: "j2-adapter",
     dockerfile: "deploy/adapter/Dockerfile",
     context: ".",
     sources: ["packages/adapter", "deploy/adapter/Dockerfile"],
+    exclude: KIT_PACKAGE_EXCLUDE,
   },
   operator: {
     repo: "j2-operator",
     dockerfile: "operator/Dockerfile",
     context: "operator",
     sources: ["operator"],
+    exclude: KIT_OPERATOR_EXCLUDE,
   },
 };
 
@@ -280,7 +299,7 @@ export async function kitImageRefs(kitRoot: string, registry?: string): Promise<
     const hash = await contentHash(
       image.sources.map((s) => join(kitRoot, s)),
       `kit:${image.repo}`,
-      KIT_SOURCE_EXCLUDE,
+      image.exclude,
     );
     refs[name] = `${registry ? `${registry}/` : ""}${image.repo}:${hash}`;
   }
@@ -319,8 +338,8 @@ export function sandboxBaseTag(instance: string, name: string, hash: string): st
  *
  * No exclusions is the whole point: that directory IS the build context (ADR-0037) and carries no
  * `.dockerignore`, so a `dist/` or `node_modules/` beside the Dockerfile is image content and must
- * be image address. `KIT_SOURCE_EXCLUDE` describes the KIT's `.dockerignore` and is a lie about
- * anyone else's tree. */
+ * be image address. The `KIT_*_EXCLUDE` sets describe the KIT's own ignore files and are a lie
+ * about anyone else's tree. */
 export function sandboxImageHash(dir: string, harnessRef: string): Promise<string> {
   return contentHash([dir], sandboxWrapDockerfile(WRAP_SALT_BASE, harnessRef), NO_EXCLUDE);
 }
@@ -355,29 +374,60 @@ export type NodeImage = { id: string; repoTags?: string[] };
  */
 const CONTAINERD_LOCAL_NS = "docker.io/library/";
 
+/** What one node's prune will do, and what it deliberately will not (see {@link prunePlan}). */
+export type PrunePlan = {
+  /** One removal per image id — every repoTag on the id matched, so the whole image is this
+   * instance's. `tags` is all of them, as containerd names them; `crictl rmi` gets ONE. */
+  remove: Array<{ id: string; tags: string[] }>;
+  /** Matched tags left in place: their image id also carries tags no prefix matched, and crictl
+   * cannot take one without the others. */
+  kept: string[];
+};
+
+/** What a prune actually did across a cluster's nodes — the port's report to `j2 down`. */
+export type PruneResult = {
+  /** Gone — including "was already gone": like every other delete path here, delete-if-present. */
+  removed: string[];
+  /** Matched but deliberately kept: their image id also carries tags outside the prefixes. */
+  kept: string[];
+  /** `tag (error)` per removal that failed; the loop continues past a failure rather than
+   * abandoning everything behind it. */
+  failed: string[];
+};
+
 /**
- * Which repoTags on a node belong to this instance (`j2 down`, ADR-0038) — the whole matching rule,
- * pure and exported because it is the part that was wrong, and the port around it is unfakeable.
+ * Which images on a node this instance's prune may remove (`j2 down`, ADR-0038) — the whole
+ * removal policy, pure and exported because it is the part that was wrong twice, and the port
+ * around it is unfakeable.
  *
- * Exactly ONE normalization: strip `docker.io/library/`, then match anchored prefixes. Stripping
- * only that namespace is what preserves the property the anchoring existed for — a registry-pushed
- * `reg.example.com/j2-instance-x:h` keeps its host, so it never matches and stays the registry's
- * business — while `docker.io/library/j2-instance-x:h` matches, which is the whole point. Kit tags
- * (`j2-harness`, `j2-adapter`, `j2-operator`) match no prefix: every instance on the cluster shares
- * them.
+ * Matching: exactly ONE normalization — strip `docker.io/library/`, then match anchored prefixes.
+ * Stripping only that namespace preserves the property the anchoring existed for: a
+ * registry-pushed `reg.example.com/j2-instance-x:h` keeps its host, so it never matches and stays
+ * the registry's business, while `docker.io/library/j2-instance-x:h` (what `kind load` normalizes
+ * a local tag into) matches. Kit tags (`j2-harness`, `j2-adapter`, `j2-operator`) match no prefix:
+ * every instance on the cluster shares them.
  *
- * Returns the tags AS CONTAINERD NAMES them, because those are what `crictl rmi` is given: removing
- * by image ID would delete every OTHER tag on the same id with it.
+ * Removal is a PER-ID decision: `crictl rmi <tag>` resolves the tag to its image id and removes
+ * the whole image, every tag with it — CRI has no untag verb. So an id is removed (once) only
+ * when every repoTag on it matched, and an id carrying any foreign tag is kept whole and
+ * reported. The mixed id is a real case, not a hypothetical: two instances whose `images/<x>`
+ * trees and harness ref are byte-identical produce the same image id under different tags.
  */
-export function prunableTags(images: NodeImage[], prefixes: string[]): string[] {
-  const matched: string[] = [];
+export function prunePlan(images: NodeImage[], prefixes: string[]): PrunePlan {
+  const matches = (tag: string): boolean => {
+    const local = tag.startsWith(CONTAINERD_LOCAL_NS) ? tag.slice(CONTAINERD_LOCAL_NS.length) : tag;
+    return prefixes.some((p) => local.startsWith(p));
+  };
+  const remove: PrunePlan["remove"] = [];
+  const kept: string[] = [];
   for (const image of images) {
-    for (const tag of image.repoTags ?? []) {
-      const local = tag.startsWith(CONTAINERD_LOCAL_NS) ? tag.slice(CONTAINERD_LOCAL_NS.length) : tag;
-      if (prefixes.some((p) => local.startsWith(p))) matched.push(tag);
-    }
+    const tags = image.repoTags ?? [];
+    const matched = tags.filter(matches);
+    if (matched.length === 0) continue;
+    if (matched.length === tags.length) remove.push({ id: image.id, tags });
+    else kept.push(...matched);
   }
-  return matched;
+  return { remove, kept };
 }
 
 /** ADR-0037's preflight, verbatim: git present · `$HOME` writable as uid 1000 · glibc new enough
@@ -455,20 +505,31 @@ export const pnpmDockerBuild: BuildPort = {
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
-    const removed: string[] = [];
+    const removed = new Set<string>();
+    const kept = new Set<string>();
+    const failed: string[] = [];
     // The images live in each node's containerd, not the host daemon — `kind load` imported them
     // there — so the reach is `docker exec <node> crictl`, per node.
     for (const node of nodes) {
       const { stdout: raw } = await exec("docker", ["exec", node, "crictl", "images", "-o", "json"], BIG);
       const images = (JSON.parse(raw) as { images?: NodeImage[] }).images ?? [];
-      // By TAG, never by `image.id`: `crictl rmi <id>` drops every tag on that id, including ones
-      // no prefix matched — a kit tag sharing an id with an instance tag would go with it.
-      for (const tag of prunableTags(images, prefixes)) {
-        await exec("docker", ["exec", node, "crictl", "rmi", tag], BIG);
-        removed.push(tag);
+      const plan = prunePlan(images, prefixes);
+      for (const tag of plan.kept) kept.add(tag);
+      // ONE `rmi` per image id (see prunePlan): `crictl rmi` takes the whole image, so a second
+      // call for a sibling tag dies `no such image` — which is also why "no such image" counts as
+      // removed rather than failed: absent IS the goal state, however it got there.
+      for (const entry of plan.remove) {
+        try {
+          await exec("docker", ["exec", node, "crictl", "rmi", entry.tags[0]!], BIG);
+          for (const tag of entry.tags) removed.add(tag);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (/no such image/i.test(message)) for (const tag of entry.tags) removed.add(tag);
+          else failed.push(`${entry.tags[0]} (${message.split("\n")[0]})`);
+        }
       }
     }
-    return removed;
+    return { removed: [...removed], kept: [...kept], failed };
   },
 };
 
