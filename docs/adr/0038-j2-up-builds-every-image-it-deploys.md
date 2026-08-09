@@ -1,0 +1,89 @@
+# `j2 up` builds every image it deploys
+
+[ADR-0019](0019-one-converging-command-against-the-current-context.md) promised one converging command, but `j2 up`
+builds exactly one image — the instance's. The Harness, Adapter, and operator images come from `just` recipes at
+**mutable tags** (`j2-harness:local`), pointed at by `images` overrides in `j2.config.ts`. Nothing can detect that a
+mutable tag moved, so editing `packages/harness/src` and running `j2 up` reports convergence onto pods running last
+week's code — the failure the instance image already fixed for itself by hashing the materialized bundle rather than the
+source folder. [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md) would add a second class
+of build-it-yourself-first image on top of that.
+
+## Decision
+
+- **Every image `j2 up` deploys, `j2 up` builds — when its source is visible.** The CLI detects a kit checkout by
+  resolving from its own module URL and requiring _both_ `deploy/harness/Dockerfile` and `packages/harness/package.json`
+  naming `@j2/harness`. In a checkout it builds the Harness, Adapter, and operator images; installed from npm those
+  paths do not resolve, so a real instance takes the published-`<kitversion>` path and never needs docker for kit
+  images. **The checkout is the signal** — no flag, no config key, no env. The `just` recipes survive as shortcuts for
+  building one image without a converge, never as prerequisites.
+- **Every tag is a content address.** Instance, Sandbox, Harness, Adapter, operator — each hashed over its own inputs.
+  Three things follow: `imagePullPolicy: IfNotPresent` becomes _correct_ rather than lucky (a unique tag per content
+  means "present" implies "current"), which is what makes kind and a real cluster behave identically instead of needing
+  `Never` on one and `Always` on the other; a kit source edit moves its own image's tag with no bookkeeping; and
+  skipping is exact.
+- **Over-hash deliberately.** A kit image is hashed over its whole source directory, tests included, not over the exact
+  file list its Dockerfile copies. Deriving the list by hand means a new `COPY` silently desynchronizes it, which is the
+  invisible-stale-image bug being deleted; a needless rebuild in kit dev costs cached-layer seconds. **A Sandbox Image's
+  hash includes the resolved harness ref**, because its wrap is `COPY --from=<harness>` (ADR-0037).
+- **One transport branch for all of them**, the one the instance image already uses: `registry` configured → push; kind
+  context → `kind load`; neither → fail loudly naming `registry`. `j2 up` records the converged name→ref map as an
+  annotation on the Orchestrator Deployment and diffs it, so a steady-state converge spends a directory walk and no
+  docker at all.
+- **The resolved name→ref map reaches the Orchestrator as a ConfigMap, read per provision — never as Deployment env.**
+  Env is a pod-template change, so every Dockerfile edit would roll the Orchestrator and put every live run through
+  snapshot restore ([ADR-0007](0007-durable-machine-state.md)) for a change that affects only _future_ Sandboxes. The
+  map is data consulted when creating a pod, not configuration defining the process. The cost is a stale-read window of
+  one kubelet propagation after `j2 up`, and that two workspaces provisioned seconds apart can straddle a change — which
+  was already true across a roll.
+- **The `images` config block is deleted outright — no key, no env escape hatch.** Its `harness`/`adapter`/`operator`
+  entries were kit-dev overrides that auto-build now covers; its `user` entry died with the User Container (ADR-0037).
+  Nobody should be able to run a patched Harness against a real cluster: that is ADR-0027's "no eject hatch" enforced
+  rather than merely stated.
+- **`j2 up` reports live workspaces on an older image; it never re-images one.** Provision is create-if-absent, so a
+  running Sandbox keeps the image its CR was created with — the only safe behavior, since replacing the pod takes the
+  worktrees and unpushed commits with it, which is precisely the Continuity break
+  [ADR-0021](0021-workspace-continuity-is-a-lease-that-answers-back.md) exists to report. So the converge lists them
+  (`kubectl get sandboxes`, no new state) and stops: _"2 running workspaces keep `…:9c1e02`; new workspaces use
+  `:4a77b1`; delete these runs to re-image."_
+- **`j2 down` prunes this instance's images from kind nodes by default**, scoped to `j2-instance-<name>:*` and
+  `j2-workspace-<name>-*:*`. Content addressing means ten Dockerfile iterations leave ten full images in the node's
+  containerd, invisible to `kubectl` and on the developer's own disk. **Kit images are never pruned** — they are shared
+  by every instance on the cluster — and neither are registry-pushed tags.
+- **No `repos`, no Sandbox Image builds.** A non-empty `repos` is already the data-plane switch (ADR-0012/0031): a
+  workspace-less instance has no Sandboxes, so it must not pay a docker build for a scaffolded `images/default/` it can
+  never use.
+
+## Considered options
+
+- **An env escape hatch for kit image refs** (`J2_HARNESS_IMAGE`, …), kept for the `@kind` tier, which pins
+  `j2-harness-dev:local`. Rejected once the stub was read properly: `deploy/harness-dev/` is a whole alternate Harness —
+  the stub plus a hand-rolled MCP client — written when "flue's real Harness image is not part of this repo," which
+  ADR-0027 made false. The substitution belongs at the **provider**, not the image: `harness.provider` already accepts
+  any OpenAI-compatible `baseUrl`, so pointing `@kind` at a scripted model endpoint runs the **stock** Harness and
+  removes the last consumer of image substitution.
+- **The ref map as Deployment env** (symmetric with `J2_AGENTS_JSON`). Attractive because a run's Sandbox image becomes
+  a deterministic function of the Orchestrator generation instead of a read-at-a-moment. Rejected on the roll: bouncing
+  every run in flight because someone added a CLI to a Dockerfile is the wrong trade.
+- **A `--reimage` flag** that deletes and re-provisions live Sandboxes. Rejected: it destroys unpushed work, and the run
+  already has a designed path for losing its Sandbox (`workspace.lost`, ADR-0021) that the workflow's policy drives —
+  not the CLI.
+- **Hashing only the files each Dockerfile copies**, or hashing the whole kit tree via git. The first desynchronizes
+  silently; the second rebuilds all three images on any edit anywhere. Per-image directory hashing sits between them and
+  errs toward rebuilding.
+- **Opt-in `--prune-images`.** Rejected: `down` is already the destructive, always-confirms command, and abandoned
+  images are discovered at 100% disk rather than at the moment one would think to pass a flag.
+
+## Consequences
+
+- **The `@kind` tier is rewritten, not renamed.** `deploy/harness-dev/` dies; the scripted persona's behavior moves from
+  MCP client calls to OpenAI-format `tool_calls` on a fake provider (in-cluster, or host-side with a LAN `baseUrl` — the
+  config already notes a LAN address works on kind). The tier gains real-Harness coverage and becomes a **second pi
+  canary** beside the conformance suite (ADR-0027), so a pi bump can now break it too.
+- `stub-harness.ts` keeps its job — the socket-free tier reaches it by explicit `endpoint` (ADR-0031). Only the
+  containerized stub is retired.
+- **`j2 up` in a kit checkout now needs docker for kit images**, including a Go build for the operator. Hash-skip means
+  that is a first-converge cost, not a per-converge one.
+- **An air-gapped or mirror-only cluster still cannot pull published kit images.** The answer is a registry _prefix_ for
+  kit refs, not per-image overrides — a different mechanism, deliberately deferred while nothing is published.
+- **`just` recipes stop being load-bearing**, and the `images:` lines in `features/kind-instance/j2.config.ts` and
+  `examples/coding/j2.config.ts` are deleted with the block.
