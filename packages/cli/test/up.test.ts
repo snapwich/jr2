@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { sandboxToken } from "@j2/orchestrator";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
-import type { BuildPort } from "../src/build.ts";
+import type { BuildPort, ObservedImage } from "../src/build.ts";
 import type { Io } from "../src/output.ts";
 
 /** A scriptable cluster: `objects` keyed "namespace/kind/name" ("" namespace for cluster-scoped). */
@@ -55,14 +55,35 @@ class FakeCluster implements KubeAdmin {
    * the applied one. Unset → an HONEST cluster, reporting a pod running whatever was last applied. */
   podImages: Record<string, string> = {};
   /** Live Sandbox CRs, as `j2 up`'s closing report reads them (ADR-0038: report, never re-image). */
-  sandboxes: Array<{ metadata: { name: string }; spec?: { image?: string } }> = [];
+  sandboxes: Array<{ metadata: { name: string; namespace?: string }; spec?: { image?: string } }> = [];
   /** `true` → listing Sandboxes throws, as it does when the CRD is absent or RBAC forbids it. */
   sandboxListFails = false;
-  async listJson<T>(opts: { kind: string; selector?: string; namespace?: string }): Promise<T[]> {
+  /** The sweep's roots (ADR-0039), read cluster-wide: the namespaces some instance owns, their
+   * `j2-images` maps, and every pod in them. Empty by default — a cluster holding nothing but this
+   * converge, which is what every test that is not about the sweep wants. */
+  instanceNamespaces: Array<{ metadata: { name: string } }> = [];
+  imageMaps: Array<{ metadata: { name: string; namespace?: string }; data?: Record<string, string> }> = [];
+  clusterPods: Array<{
+    metadata: { name: string; namespace?: string };
+    spec?: { containers?: Array<{ image?: string }> };
+  }> = [];
+  async listJson<T>(opts: {
+    kind: string;
+    selector?: string;
+    fieldSelector?: string;
+    namespace?: string;
+    allNamespaces?: boolean;
+  }): Promise<T[]> {
     if (opts.kind.startsWith("sandboxes")) {
       if (this.sandboxListFails) throw new Error("the server doesn't have a resource type sandboxes");
       return this.sandboxes as T[];
     }
+    if (opts.kind === "namespace") return this.instanceNamespaces as T[];
+    if (opts.kind === "configmap") return this.imageMaps as T[];
+    // The cluster-wide pod read is the sweep's; the selected one is a layer's image verification.
+    // Distinguished explicitly, because falling through to the verification branch would answer a
+    // keep-set question with whatever the last apply happened to name.
+    if (opts.kind === "pod" && opts.allNamespaces) return this.clusterPods as T[];
     if (opts.kind !== "pod") return [];
     const image = this.podImages[opts.selector ?? ""] ?? this.lastAppliedImage(opts.selector ?? "");
     if (!image) return [];
@@ -106,7 +127,16 @@ class FakeCluster implements KubeAdmin {
  * tag alone is recorded on the `build ` line so the address stays extractable from it. */
 function fakeBuild(
   record: string[],
-  opts: { files?: Record<string, string>; preflightFails?: boolean } = {},
+  opts: {
+    files?: Record<string, string>;
+    preflightFails?: boolean;
+    /** What the two stores hold when the post-converge sweep looks (ADR-0039). Empty by default,
+     * so a test that is not about the sweep sees one narrated line and no removals. */
+    hostImages?: ObservedImage[];
+    nodeImages?: ObservedImage[];
+    /** `true` → the host listing throws, as it does with no docker daemon reachable. */
+    sweepFails?: boolean;
+  } = {},
 ): BuildPort {
   const files = opts.files ?? { "package.json": "{}" };
   return {
@@ -117,8 +147,11 @@ function fakeBuild(
         await writeFile(join(out, rel), content);
       }
     },
-    build: async ({ tag, context, dockerfile, dockerfileContent }) => {
+    build: async ({ tag, context, dockerfile, dockerfileContent, labels }) => {
       record.push(`build ${tag}`);
+      // The ownership stamp is recorded on its own line (ADR-0039): an unstamped build is an image
+      // no sweep can ever collect, which is invisible in every other assertion here.
+      record.push(`stamp ${tag} ${JSON.stringify(labels ?? null)}`);
       if (dockerfile) record.push(`build-with -f ${dockerfile} ctx ${context}`);
       else if (dockerfileContent?.startsWith("FROM j2-sandbox")) record.push(`build-with wrap ${tag}`);
       else if (dockerfileContent) record.push(`build-with stdin ${tag}`);
@@ -129,11 +162,21 @@ function fakeBuild(
       if (opts.preflightFails) throw new Error("exit 127: rg: not found");
       return "";
     },
-    untag: async (tag) => void record.push(`untag ${tag}`),
     push: async (tag) => void record.push(`push ${tag}`),
     kindLoad: async (tag, cluster) => void record.push(`kind-load ${tag} → ${cluster}`),
-    kindPrune: async () => ({ removed: [], kept: [], failed: [] }),
+    hostImages: async () => {
+      if (opts.sweepFails) throw new Error("Cannot connect to the Docker daemon");
+      return opts.hostImages ?? [];
+    },
+    removeHostImage: async (ref) => void record.push(`rmi-host ${ref}`),
+    nodeImages: async (cluster) => [{ node: `${cluster}-control-plane`, images: opts.nodeImages ?? [] }],
+    removeNodeImage: async (_cluster, node, id) => void record.push(`rmi-node ${node} ${id}`),
   };
+}
+
+/** One image as a store reports it — j2-built and worth reclaiming unless the test says otherwise. */
+function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
+  return { tags: [], bytes: 0, labeled: true, ...over };
 }
 
 /** `agentModels` writes one `agents/<name>.ts` per entry — the definitions are what the provider
@@ -192,6 +235,9 @@ function mkWorld(
      * none of them detect the real repo the suite happens to run inside. */
     kitDir?: string;
     preflightFails?: boolean;
+    hostImages?: ObservedImage[];
+    nodeImages?: ObservedImage[];
+    sweepFails?: boolean;
   } = {},
 ): World {
   const kube = new FakeCluster();
@@ -205,7 +251,13 @@ function mkWorld(
     cwd: root,
     kitDir: over.kitDir ?? root,
     kubeAdmin: kube,
-    build: fakeBuild(built, { files: over.bundleFiles, preflightFails: over.preflightFails }),
+    build: fakeBuild(built, {
+      files: over.bundleFiles,
+      preflightFails: over.preflightFails,
+      hostImages: over.hostImages,
+      nodeImages: over.nodeImages,
+      sweepFails: over.sweepFails,
+    }),
     confirm: async (q) => {
       confirms.push(q);
       return over.confirm ?? true;
@@ -429,7 +481,12 @@ test("a Sandbox Image is two builds off one hash, preflighted, and only with rep
   assert.ok(w.built.includes(`build ${base}`), `the user's Dockerfile builds first (got: ${w.built.join(", ")})`);
   assert.ok(w.built.includes(`build-with context-default ${base}`), "…against its own directory");
   assert.ok(w.built.includes(`build-with wrap ${ref}`), "…then the generated wrap, on stdin");
-  assert.ok(w.built.includes(`untag ${base}`), "the intermediate tag does not accumulate");
+  assert.ok(w.built.includes(`rmi-host ${base}`), "the intermediate tag does not accumulate");
+  // Both builds are stamped (ADR-0039): the `-base` tag is dropped straight after, and the labeled
+  // image it leaves behind is collectable only because it was stamped.
+  const stamp = JSON.stringify({ "j2.dev/kind": "sandbox", "j2.dev/instance": "myinst" });
+  assert.ok(w.built.includes(`stamp ${base} ${stamp}`), "the user's build carries the ownership label");
+  assert.ok(w.built.includes(`stamp ${ref} ${stamp}`), "…and so does the wrap");
   // ADR-0037's preflight, verbatim, against the LOCAL daemon — hence before transport.
   const preflight = w.built.find((b) => b.startsWith(`run ${ref}`))!;
   assert.match(preflight, /git config --global safe\.directory "\*" && \/opt\/j2\/bin\/node -e "" && rg --version/);
@@ -851,6 +908,135 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
   const { deployment } = findInstanceHarness(w);
   assert.equal(deployment!.spec.template.spec.containers[0].image, images.harness);
   assert.equal(deployment!.spec.template.spec.containers[1].image, images.adapter);
+});
+
+// --- the post-converge sweep (ADR-0039) ----------------------------------------------------------
+
+test("every layer j2 builds is stamped with who owns it", async () => {
+  // Ownership is a label, never a name (ADR-0039) — so an unstamped build is not a cosmetic miss,
+  // it is an image no sweep can ever collect. The kit's three, the instance's own, and the two
+  // Sandbox Image builds all pass through here.
+  const kit = await mkKit();
+  const root = await withImage(
+    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    "default",
+  );
+  const w = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const stamps = new Map(
+    w.built
+      .filter((b) => b.startsWith("stamp "))
+      .map((b) => {
+        const rest = b.slice("stamp ".length);
+        const cut = rest.indexOf(" ");
+        return [rest.slice(0, cut), rest.slice(cut + 1)] as const;
+      }),
+  );
+  const kind = (ref: string): unknown => JSON.parse(stamps.get(ref) ?? "null");
+  for (const repo of ["j2-harness", "j2-adapter", "j2-operator"]) {
+    const ref = [...stamps.keys()].find((r) => r.startsWith(`${repo}:`))!;
+    assert.deepEqual(kind(ref), { "j2.dev/kind": "kit" }, `${repo} is stamped as the kit's`);
+  }
+  const instanceRef = [...stamps.keys()].find((r) => r.startsWith("j2-instance-myinst:"))!;
+  assert.deepEqual(kind(instanceRef), { "j2.dev/kind": "instance", "j2.dev/instance": "myinst" });
+  const sandboxRef = [...stamps.keys()].find((r) => r.startsWith("j2-sandbox-myinst-default:"))!;
+  assert.deepEqual(kind(sandboxRef), { "j2.dev/kind": "sandbox", "j2.dev/instance": "myinst" });
+});
+
+test("a converge that succeeded sweeps the generation it replaced, and keeps what it just resolved", async () => {
+  // The garbage this collects is made HERE: iterating while up leaves one full image per iteration,
+  // and the moment this converge's map replaces the last one is the moment the old one stops being
+  // reachable (ADR-0039).
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const stale = image({ id: "sha256:old", tags: ["j2-instance-myinst:0ldc0ntent"], bytes: 2_100_000_000 });
+  const foreign = image({ id: "sha256:pg", tags: ["postgres:16"], bytes: 500, labeled: false });
+  const w = mkWorld(root, { hostImages: [stale, foreign] });
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const fresh = w.built.find((b) => b.startsWith("build j2-instance-myinst:"))!.slice("build ".length);
+  assert.deepEqual(
+    w.built.filter((b) => b.startsWith("rmi-host ")),
+    ["rmi-host j2-instance-myinst:0ldc0ntent"],
+    `only the replaced generation goes — never ${fresh}, and never an image j2 did not build`,
+  );
+  assert.match(w.err.join("\n"), /swept 1 image\(s\) \(2\.1 GB\)/, "bytes, because disk is what the user feels");
+});
+
+test("the node sweep grants the map it replaced one generation of grace; the host gets none", async () => {
+  // The `j2-images` ConfigMap reaches a Sandbox through a kubelet propagation window, so for one
+  // more round a provision can still ask a NODE for a ref the new map no longer names. Nothing is
+  // ever provisioned from the host daemon, so its copy goes immediately (ADR-0039).
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const previous = { harness: "j2-harness:0ldharnes", adapter: "j2-adapter:0.0.0", sandbox: {} };
+  const replaced = (id: string) => image({ id, tags: ["j2-harness:0ldharnes"], bytes: 10 });
+  const w = mkWorld(root, { hostImages: [replaced("sha256:host")], nodeImages: [replaced("sha256:node")] });
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  w.kube.set("myinst", "deployment", "j2-orchestrator", {
+    metadata: { name: "j2-orchestrator", annotations: { "j2.dev/images": JSON.stringify(previous) } },
+  });
+
+  assert.equal(await up([], w.io), 0);
+  assert.ok(w.built.includes("rmi-host j2-harness:0ldharnes"), `the host copy goes (got: ${w.built.join(", ")})`);
+  assert.ok(
+    !w.built.some((b) => b.startsWith("rmi-node ")),
+    "…while the node keeps it one more round, so the propagation window cannot lose a provision",
+  );
+});
+
+test("a converge that failed sweeps nothing", async () => {
+  // The sweep is the last act of a run that fully succeeded — annotation applied, rollouts
+  // verified. A converge that threw has not moved the root set, so nothing it built is garbage.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root, { hostImages: [image({ id: "sha256:old", tags: ["j2-instance-myinst:0ld"], bytes: 1 })] });
+  w.kube.podImages = { "app=j2-orchestrator": "j2-instance-myinst:0ldc0ntent" };
+
+  await assert.rejects(() => up(["--yes"], w.io), /running pod carries/);
+  assert.ok(!w.built.some((b) => b.startsWith("rmi-host ")), "a failed converge collects nothing");
+});
+
+test("a sweep that cannot run is a warning — the converge still succeeded", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root, { sweepFails: true });
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join("\n"), /sweep skipped.*the converge stands/);
+  assert.match(w.err.join("\n"), /converged/);
+});
+
+test("another instance's roots protect its images, kit refs included", async () => {
+  // The keep set is cluster-wide: a ref ANY instance's image map names is not garbage, which is
+  // what makes "kit images are never pruned" dissolve into reachability rather than stay a rule.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root, {
+    hostImages: [
+      image({ id: "sha256:other", tags: ["j2-instance-other:c0ffee"], bytes: 10 }),
+      image({ id: "sha256:kit", tags: ["j2-harness:0f1e2d3c4b5a"], bytes: 20 }),
+      image({ id: "sha256:gone", tags: ["j2-harness:deadbeef1234"], bytes: 30 }),
+    ],
+  });
+  w.kube.instanceNamespaces = [{ metadata: { name: "other" } }];
+  w.kube.imageMaps = [
+    {
+      metadata: { name: "j2-images", namespace: "other" },
+      data: {
+        "images.json": JSON.stringify({
+          harness: "j2-harness:0f1e2d3c4b5a",
+          adapter: "j2-adapter:5a4b3c2d1e0f",
+          sandbox: { default: "j2-sandbox-other-default:99aa88bb77cc" },
+        }),
+      },
+    },
+  ];
+  w.kube.clusterPods = [
+    { metadata: { name: "orch", namespace: "other" }, spec: { containers: [{ image: "j2-instance-other:c0ffee" }] } },
+  ];
+
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.deepEqual(
+    w.built.filter((b) => b.startsWith("rmi-host ")),
+    ["rmi-host j2-harness:deadbeef1234"],
+    "the kit generation nothing names goes; the one another instance's map names stays",
+  );
 });
 
 test("re-running against the instance's own namespace converges silently (no prompt)", async () => {

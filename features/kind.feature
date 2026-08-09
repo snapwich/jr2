@@ -163,6 +163,22 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
       And a human's shell in the Sandbox lands in "/work" with the image's own toolchain
 
+  Rule: the sweep takes a node image no live root names, and leaves the ones a root does
+    ADR-0039. Reachability is decided from Kubernetes, but the removal happens in a node's
+    containerd — the one store no socket-free test can hold. Its physics are why: CRI cannot untag,
+    a `kind load`ed image is held under an `import-<date>@<digest>` ref CRI never reports, and
+    `crictl rmi` exits 0 either way. So "the sweep removed it" is only checkable on a real node, by
+    asking containerd itself what it still holds afterwards.
+
+    Scenario: j2 gc takes the unreachable image off every node and keeps what this instance runs
+      Given the kind instance is serving
+      # Labeled like an image `j2 up` built and then replaced — the iteration garbage the sweep
+      # exists for — but named by no image map, Sandbox, or pod, on this instance or any other.
+      And a labeled image no live root names is loaded onto every node
+      When I sweep the cluster's images
+      Then no node holds the unreachable image any more
+      And every node still holds the images this instance's map names
+
   Rule: the Agent's Working tools reach the Sandbox Image's own toolchain
     ADR-0027/0037. Working tools execute in the Harness container, and that container IS the
     wrapped Sandbox Image — which is the entire feature: what an Agent can DO stops being bounded

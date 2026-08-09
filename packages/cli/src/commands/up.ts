@@ -15,6 +15,12 @@
 // The converged name→ref map is stamped on the Orchestrator Deployment and diffed on the next run,
 // so a steady-state converge spends directory walks and no docker.
 //
+// Content addressing also MAKES garbage — iterating on a Dockerfile while up leaves one full image
+// per iteration — so a converge that fully succeeded ends by sweeping every labeled image no live
+// root names (ADR-0039). It runs here, and not only at `j2 down`, because here is where the garbage
+// is made: the moment this converge's map replaces the last one is the moment the old generation
+// stops being reachable.
+//
 // Addressing (ADR-0019): cluster = the current kube context (never recorded); namespace =
 // `config.name` (identity). Whether this cluster hosts the instance is derived FROM the cluster:
 // labeled objects found → converge silently (it's home); nothing → confirm first-time setup
@@ -36,6 +42,7 @@ import {
 import {
   buildSandboxImage,
   detectKitCheckout,
+  instanceImageLabels,
   kitImageBuild,
   kitImageRefs,
   preflightSandboxImage,
@@ -46,6 +53,7 @@ import {
   sandboxImageTag,
   stageInstanceBundle,
   INSTANCE_DOCKERFILE,
+  type BuildPort,
   type KitImageName,
   type KitImageRefs,
 } from "../build.ts";
@@ -68,6 +76,7 @@ import {
 import { resolveRoot } from "../instance.ts";
 import { kubectlAdmin, ORCHESTRATOR_SERVICE, type KubeAdmin, type KubeObject } from "../kube.ts";
 import { activity, confirmOrBail, type Io } from "../output.ts";
+import { kindCluster, sweepImages } from "../sweep.ts";
 
 export async function up(args: string[], io: Io): Promise<number> {
   const { values } = parseArgs({
@@ -125,7 +134,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // --- image resolution (ADR-0038): decide every ref BEFORE any layer spends a build -----------
   const build = io.build ?? pnpmDockerBuild;
   const registry = config.registry;
-  const cluster = context.startsWith("kind-") ? context.slice("kind-".length) : undefined;
+  const cluster = kindCluster(context);
   // The CHECKOUT is the signal — no flag, no config key, no env (ADR-0038). `io.kitDir` exists so
   // tests can drive both worlds from a temp dir instead of detecting the repo they run inside.
   const kitRoot = await detectKitCheckout(io.kitDir);
@@ -241,7 +250,12 @@ export async function up(args: string[], io: Io): Promise<number> {
     } else {
       assertDeliverable();
       activity(io, `image: building ${tag}${values.force === true ? " (--force)" : ""}`);
-      await build.build({ tag, context: staged.dir, dockerfileContent: INSTANCE_DOCKERFILE });
+      await build.build({
+        tag,
+        context: staged.dir,
+        dockerfileContent: INSTANCE_DOCKERFILE,
+        labels: instanceImageLabels(name),
+      });
       await deliver(tag);
     }
   } finally {
@@ -276,6 +290,7 @@ export async function up(args: string[], io: Io): Promise<number> {
           tag: ref,
           baseTag: sandboxBaseTag(name, image.name, imageHash),
           harnessRef: refs.harness,
+          instance: name,
         });
         // Before transport, because it is a `docker run` against the LOCAL daemon — and before
         // the converge, because a Sandbox Image that cannot run git or node fails inside a turn,
@@ -419,6 +434,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
 
   await reportOlderWorkspaces(io, kube, namespace, ctx, converged);
+  await sweepAfterConverge(io, { build, kube, context, ctx, converged, instanceImage: tag, previous });
   noteDeferred(io, config);
   activity(io, `converged — \`j2 run <workflow>\` when ready`);
   return 0;
@@ -441,6 +457,60 @@ function previousImages(orch?: KubeObject): Partial<ConvergedImages> | undefined
     return typeof parsed === "object" && parsed !== null ? parsed : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** Every ref one image map names, flattened — the kit's own plus each Sandbox Image. */
+function mapRefs(map: Partial<ConvergedImages>): string[] {
+  return [map.harness, map.adapter, map.operator, ...Object.values(map.sandbox ?? {})].filter(
+    (ref): ref is string => typeof ref === "string",
+  );
+}
+
+/**
+ * Collect (ADR-0039) — and only here, at the end of a converge that fully succeeded: the annotation
+ * is applied and every rollout is verified, which is the moment the root set moved, and moving the
+ * root set is precisely what makes the previous generation garbage. A converge that threw never
+ * reaches this line, so a failed run sweeps nothing.
+ *
+ * The keep set gets two additions on top of the cluster's own roots. `extraKeep` is what THIS
+ * converge resolved — recorded in the map and running in the pods this function's callers just
+ * verified, but named explicitly so a read that raced the apply cannot make a fresh image look
+ * unreachable. `grace` is the map this converge REPLACED, and it is node-only: the `j2-images`
+ * ConfigMap reaches a Sandbox through a kubelet propagation window, so for one more round a
+ * provision can still ask a node for a ref the new map no longer names. The host has no such
+ * window — nothing is ever provisioned from it — so it is swept aggressively.
+ *
+ * A failure here is a WARNING. The instance is converged, which is what `up` promised; disk is not
+ * that promise, and the next `j2 up` or `j2 gc` collects whatever this run could not.
+ */
+async function sweepAfterConverge(
+  io: Io,
+  opts: {
+    build: BuildPort;
+    kube: KubeAdmin;
+    context: string;
+    ctx: { context?: string };
+    converged: ConvergedImages;
+    instanceImage: string;
+    previous?: Partial<ConvergedImages>;
+  },
+): Promise<void> {
+  const { build, kube, context, ctx, converged, instanceImage, previous } = opts;
+  try {
+    await sweepImages({
+      io,
+      build,
+      kube,
+      context,
+      ctx,
+      // The instance image rides `extraKeep` explicitly: it is the one ref this converge resolved
+      // that the image map does not carry (it is the Deployment's own, ADR-0038).
+      extraKeep: [instanceImage, ...mapRefs(converged)],
+      grace: previous ? mapRefs(previous) : [],
+    });
+  } catch (err) {
+    activity(io, `images: sweep skipped (${err instanceof Error ? err.message : err}) — the converge stands`);
   }
 }
 

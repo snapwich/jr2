@@ -33,7 +33,15 @@ const ctxArgs = (context?: string): string[] => (context ? ["--context", context
  * identity and the instance image's content hash; annotations carry the converged image map, which
  * is too long for a label value (ADR-0038). */
 export type KubeObject = {
-  metadata: { name: string; labels?: Record<string, string>; annotations?: Record<string, string> };
+  metadata: {
+    name: string;
+    /** Only ever populated by a cluster-wide read. It is how the sweep's roots (ADR-0039) narrow a
+     * `--all-namespaces` listing back to the namespaces that belong to a j2 instance — the objects
+     * are found cluster-wide precisely because no instance's images are only its own business. */
+    namespace?: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
 } & Record<string, unknown>;
 
 /** What `j2 up`/`j2 down` converge through — admin-shaped, next to the transport-shaped KubePort.
@@ -53,8 +61,19 @@ export type KubeAdmin = {
    * silently passes when it could not look is the defect it exists to catch. */
   listJson<T = KubeObject>(opts: {
     kind: string;
+    /** `-l`. A bare key (no `=`) is an EXISTENCE selector, which is how the sweep asks for "every
+     * namespace some instance owns" without knowing any of their names. */
     selector?: string;
+    /** `--field-selector`. The one root addressed by NAME rather than by label — the `j2-images`
+     * ConfigMap (ADR-0039) — is read this way instead of with `getJson`, because `getJson` reads
+     * every failure as "absent", and a root that reads as absent when the API could not be reached
+     * is a keep set that deletes another instance's images. */
+    fieldSelector?: string;
     namespace?: string;
+    /** `--all-namespaces`. The sweep's roots are CLUSTER-WIDE (ADR-0039): a ref that any instance's
+     * image map, Sandbox, or pod names is not garbage, so "my namespace" is the wrong scope for a
+     * keep set. Ignored when `namespace` is set. */
+    allNamespaces?: boolean;
     context?: string;
   }): Promise<T[]>;
   /** `kubectl apply -f -` of a multi-doc YAML or JSON manifest string. */
@@ -100,6 +119,17 @@ export type KubeAdmin = {
 
 const nsArgs = (namespace?: string): string[] => (namespace ? ["--namespace", namespace] : []);
 
+/**
+ * Did this read fail because the cluster has no such RESOURCE TYPE (`kubectl get sandboxes… ` on a
+ * cluster with no j2 CRD)? kubectl exits 1 with `the server doesn't have a resource type "…"`, and
+ * that single failure means something no other one does: the kind cannot exist, so neither can any
+ * object of it. Narrow on purpose — Forbidden and "connection refused" DID hide objects, and a
+ * caller that degraded on those would build a keep set that deletes another instance's images.
+ */
+export function isMissingResourceType(err: unknown): boolean {
+  return /doesn't have a resource type/i.test(err instanceof Error ? err.message : String(err));
+}
+
 /** The real admin port, over `kubectl` subprocesses. */
 export const kubectlAdmin: KubeAdmin = {
   context: () => kubectlKube.currentContext(),
@@ -121,16 +151,26 @@ export const kubectlAdmin: KubeAdmin = {
     }
   },
 
-  async listJson({ kind, selector, namespace, context }) {
-    const { stdout } = await exec("kubectl", [
-      ...ctxArgs(context),
-      ...nsArgs(namespace),
-      "get",
-      kind,
-      ...(selector ? ["-l", selector] : []),
-      "-o",
-      "json",
-    ]);
+  async listJson({ kind, selector, fieldSelector, namespace, allNamespaces, context }) {
+    const { stdout } = await exec(
+      "kubectl",
+      [
+        ...ctxArgs(context),
+        ...nsArgs(namespace),
+        "get",
+        kind,
+        // AFTER the kind, unlike `--namespace`: kubectl reads a `--all-namespaces` that precedes
+        // `get` as a plugin invocation and fails with "flags cannot be placed before plugin name".
+        ...(!namespace && allNamespaces ? ["--all-namespaces"] : []),
+        ...(selector ? ["-l", selector] : []),
+        ...(fieldSelector ? ["--field-selector", fieldSelector] : []),
+        "-o",
+        "json",
+      ],
+      // A cluster-wide pod list (the sweep's third root, ADR-0039) blows past execFile's 1 MB
+      // default on any cluster with real workloads, and a truncated read is a SMALLER keep set.
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
     return (JSON.parse(stdout) as { items?: never[] }).items ?? [];
   },
 

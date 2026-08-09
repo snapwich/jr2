@@ -4,19 +4,25 @@
 // per-cluster operator — only sane when this was the cluster's last instance, which is the
 // caller's judgment, not derivable here.
 //
-// It also prunes this instance's IMAGES from a kind cluster's nodes (ADR-0038). Content addressing
-// means ten Dockerfile iterations leave ten full images in each node's containerd — invisible to
+// It also sweeps IMAGES — on the host daemon that built them and, on kind, on every node (ADR-0039).
+// Content addressing means ten Dockerfile iterations leave ten full images per store — invisible to
 // `kubectl`, on the developer's own disk, and discovered at 100% full rather than at the moment
-// anyone would think to pass a flag. Hence: by default, not behind `--prune-images`.
+// anyone would think to pass a flag. Hence: by default, not behind a flag.
+//
+// The MECHANISM is the delete that just happened, not a name match: with this instance's namespace
+// gone, its image map, its Sandboxes, and its pods are gone with it, so its images are unreachable
+// by construction — while every other instance's roots still protect everything they share, kit
+// refs included. Nothing here parses a tag.
 
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { discoverImages, loadConfig } from "@j2/orchestrator";
+import { loadConfig } from "@j2/orchestrator";
 import { pnpmDockerBuild } from "../build.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import { kubectlAdmin } from "../kube.ts";
 import { activity, confirmOrBail, type Io } from "../output.ts";
+import { sweepImages } from "../sweep.ts";
 
 export async function down(args: string[], io: Io): Promise<number> {
   const { values } = parseArgs({
@@ -63,49 +69,25 @@ export async function down(args: string[], io: Io): Promise<number> {
   activity(io, `deleting namespace "${namespace}" (runs, store, and Sandboxes go with it)`);
   await kube.deleteObject({ kind: "Namespace", name: namespace, ...ctx });
 
-  // AFTER the delete: `deleteObject` waits, so containerd no longer holds these images. Only on
-  // kind, where `kind load` put them on the nodes in the first place — a registry-pushed tag is
-  // the registry's business, and anchoring the match at the start of the ref is what excludes it
-  // (`reg.example.com/j2-instance-x:h` does not start with `j2-instance-x:`) rather than a second
-  // check that could disagree. Kit tags are NEVER pruned: every instance on the cluster shares
-  // them (ADR-0038). The prefixes are the LOCAL names — `prunePlan` strips containerd's
-  // `docker.io/library/` namespace before matching, and nothing else, so the anchor still holds.
-  if (context.startsWith("kind-")) {
-    const cluster = context.slice("kind-".length);
-    const build = io.build ?? pnpmDockerBuild;
-    try {
-      // EXACT, colon-terminated repo names, one per discovered image (plus the wrap's `-base`
-      // intermediate, which never ships but must still be ours to take if one was ever loaded by
-      // hand). One open-ended `j2-sandbox-<name>-` prefix also matched instance `<name>-extra`'s
-      // images on a shared node (ADR-0038). The recorded cost: deleting an `images/<x>/` folder
-      // orphans that image's already-loaded tags — nothing derives their names any more.
-      const prefixes = [
-        `j2-instance-${name}:`,
-        ...(await discoverImages(root)).flatMap((i) => [
-          `j2-sandbox-${name}-${i.name}:`,
-          `j2-sandbox-${name}-${i.name}-base:`,
-        ]),
-      ];
-      const { removed, kept, failed } = await build.kindPrune(cluster, prefixes);
-      if (removed.length) activity(io, `pruned ${removed.length} image(s): ${removed.join(", ")}`);
-      if (kept.length) {
-        activity(
-          io,
-          `kept ${kept.length} tag(s) — their image id also carries tags that are not this instance's: ${kept.join(", ")}`,
-        );
-      }
-      if (failed.length) activity(io, `failed to remove ${failed.length} image(s): ${failed.join(", ")}`);
-      if (!removed.length && !kept.length && !failed.length) activity(io, "no images to prune");
-    } catch (err) {
-      // A warning, never a non-zero exit: the instance IS removed, which is what `down` promised.
-      activity(io, `image prune failed (${err instanceof Error ? err.message : err}) — the instance is still removed`);
-    }
-  }
-
+  // BEFORE the sweep, not after: while the operator Deployment stands, its pod is a live root and
+  // the operator image would survive its own uninstall.
   if (values.all) {
     activity(io, "uninstalling the operator (j2-system)");
     // The image ref doesn't matter for a delete-by-manifest; the object names do.
     await kube.deleteManifest({ manifest: await operatorManifest(`j2-operator:${KIT_VERSION}`), ...ctx });
+  }
+
+  // AFTER both deletes, which is the whole mechanism (see the module doc): `deleteObject` waits, so
+  // this instance's roots are gone before the roots read runs. No grace — a namespace that no
+  // longer exists has no propagation window to lose a provision in. `kubectl delete -f` waits on
+  // the operator Deployment but not on its pods, so a terminating operator pod can still hold its
+  // image one more round; the next `j2 gc` collects it, and excluding terminating pods instead
+  // would let a sweep take an image out from under a mid-roll one.
+  try {
+    await sweepImages({ io, build: io.build ?? pnpmDockerBuild, kube, context, ctx });
+  } catch (err) {
+    // A warning, never a non-zero exit: the instance IS removed, which is what `down` promised.
+    activity(io, `image sweep failed (${err instanceof Error ? err.message : err}) — the instance is still removed`);
   }
 
   activity(io, "removed");

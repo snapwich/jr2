@@ -11,33 +11,60 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIT_VERSION } from "@j2/orchestrator";
 import {
+  buildSandboxImage,
+  crictlLabels,
   detectKitCheckout,
+  formatBytes,
+  hostSweepPlan,
   kitImageBuild,
+  kitImageLabels,
   kitImageRefs,
-  prunePlan,
+  mergeSweeps,
+  nodeSweepPlan,
   publishedKitRefs,
   sandboxImageHash,
   sandboxWrapDockerfile,
   stageInstanceBundle,
+  sweepHost,
+  sweepNodes,
   type BuildPort,
+  type BuildRequest,
+  type ObservedImage,
 } from "../src/build.ts";
+
+/** Every verb, inert. Each test overrides the two or three it is about; the rest answering with
+ * nothing is what keeps a build test from depending on the sweep and vice versa. */
+function nullPort(): BuildPort {
+  return {
+    bundle: async () => {},
+    build: async () => {},
+    run: async () => "",
+    push: async () => {},
+    kindLoad: async () => {},
+    hostImages: async () => [],
+    removeHostImage: async () => {},
+    nodeImages: async () => [],
+    removeNodeImage: async () => {},
+  };
+}
 
 /** A port that materializes `files(out)` — what `pnpm deploy` would have written into the bundle. */
 function stagingPort(files: (out: string) => Record<string, string>): BuildPort {
   return {
+    ...nullPort(),
     bundle: async (_dir, out) => {
       for (const [rel, content] of Object.entries(files(out))) {
         await mkdir(join(out, dirname(rel)), { recursive: true });
         await writeFile(join(out, rel), content);
       }
     },
-    build: async () => {},
-    run: async () => "",
-    untag: async () => {},
-    push: async () => {},
-    kindLoad: async () => {},
-    kindPrune: async () => ({ removed: [], kept: [], failed: [] }),
   };
+}
+
+/** One image as a store reports it. Defaults are the interesting case: j2 built it, and it holds
+ * bytes worth reclaiming. */
+function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
+  return { tags: [], bytes: 0, labeled: true, ...over };
 }
 
 async function hashOf(port: BuildPort): Promise<string> {
@@ -176,6 +203,8 @@ test("each kit image addresses its own sources; the registry prefixes a built re
     tag: refs.harness,
     context: kit,
     dockerfile: join(kit, "deploy", "harness", "Dockerfile"),
+    // Stamped on the command line, because the committed Dockerfile stays plain (ADR-0039).
+    labels: { "j2.dev/kind": "kit" },
   });
   assert.equal(kitImageBuild(kit, "operator", refs.operator).context, join(kit, "operator"));
 });
@@ -284,58 +313,314 @@ test("`images/` never enters the instance bundle, so a Dockerfile edit cannot ro
   }
 });
 
-test("the kind prune matches containerd's names and plans one removal per image id", async () => {
-  // The dead-code defect: `kind load` imports into containerd, which NORMALIZES a local tag to
-  // `docker.io/library/<name>:<tag>`. Matching bare prefixes with `startsWith` therefore matched
-  // nothing ever — a real `j2 down` left 28 of this instance's images on the node and reported
-  // "no images to prune". Stripping exactly that one namespace fixes it while keeping the property
-  // the anchoring existed for: a registry-pushed ref keeps its host and is still spared (ADR-0038).
-  const listing = `{"images":[
-    {"id":"sha256:aaa","repoTags":["docker.io/library/j2-instance-myinst:aa11bb22cc33"],"size":"412000000"},
-    {"id":"sha256:bbb","repoTags":["reg.example.com/j2-instance-myinst:aa11bb22cc33"],"size":"412000000"},
-    {"id":"sha256:ccc","repoTags":["docker.io/library/j2-harness:0f1e2d3c4b5a"],"size":"238000000"}
-  ]}`;
-  const images = (JSON.parse(listing) as { images: Parameters<typeof prunePlan>[0] }).images;
+// --- ownership + the sweep (ADR-0039) ----------------------------------------------------------
 
+test("every image j2 builds is stamped, so ownership is read off the image and never off its name", async () => {
+  // The primitive ADR-0039 deletes is parsing names: `j2-sandbox-<instance>-<name>` has no reserved
+  // delimiter, so `my` + `extra-default` and `my-extra` + `default` are one repo, and deleting an
+  // `images/<x>/` folder orphaned its tags because nothing derived their names any more. A stamp
+  // answers both — but only for images that carry one, so an unstamped build is a permanent leak.
+  const requests: BuildRequest[] = [];
+  const port: BuildPort = { ...nullPort(), build: async (req) => void requests.push(req) };
+
+  await buildSandboxImage(port, {
+    dir: "/tmp/images/default",
+    tag: "j2-sandbox-inst-default:99aa",
+    baseTag: "j2-sandbox-inst-default-base:99aa",
+    harnessRef: "j2-harness:0f1e",
+    instance: "inst",
+  });
+
+  // BOTH builds, not just the wrap: the `-base` tag is dropped straight after, and the labeled id
+  // it leaves behind is only collectable because it was stamped.
   assert.deepEqual(
-    prunePlan(images, ["j2-instance-myinst:", "j2-sandbox-myinst-default:"]),
-    { remove: [{ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-myinst:aa11bb22cc33"] }], kept: [] },
-    "the local tag goes; the registry's copy and the shared kit image stay",
+    requests.map((r) => [r.tag, r.labels]),
+    [
+      ["j2-sandbox-inst-default-base:99aa", { "j2.dev/kind": "sandbox", "j2.dev/instance": "inst" }],
+      ["j2-sandbox-inst-default:99aa", { "j2.dev/kind": "sandbox", "j2.dev/instance": "inst" }],
+    ],
   );
 });
 
-test("a mixed image id is kept whole — crictl cannot untag, and the foreign tags must survive", () => {
-  // `crictl rmi <tag>` resolves the tag to its image id and removes the WHOLE image, every tag
-  // with it (CRI has no untag verb). So removal is a per-ID decision: an id goes only when every
-  // repoTag on it matched. This is not paranoia — two instances whose `images/x` trees and harness
-  // ref are byte-identical hash to the SAME tag suffix on the SAME id, and the other instance
-  // still needs it.
-  const shared = [
-    {
-      id: "sha256:ddd",
-      repoTags: ["docker.io/library/j2-sandbox-myinst-default:99aa", "docker.io/library/j2-sandbox-other-default:99aa"],
-    },
+test("the sweep matches containerd's names, and a registry copy is a different ref", () => {
+  // ONE normalization, on both sides: `kind load` imports into containerd, which rewrites a local
+  // tag to `docker.io/library/<name>:<tag>`, while every root — the `j2-images` map, a Sandbox's
+  // spec.image, a pod's container image — spells it the short way. Stripping exactly that namespace
+  // and nothing else is also what keeps the two COPIES apart: a keep set naming the local ref must
+  // not protect the registry's copy of the same content, which under ADR-0039 is cache like any
+  // other and sweeps when nothing names it.
+  const images = [
+    image({ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-myinst:aa11"], bytes: 412_000_000 }),
+    image({ id: "sha256:bbb", tags: ["reg.example.com/j2-instance-myinst:aa11"], bytes: 412_000_000 }),
+    image({ id: "sha256:ccc", tags: ["docker.io/library/j2-harness:0f1e"], bytes: 238_000_000 }),
   ];
-  assert.deepEqual(prunePlan(shared, ["j2-sandbox-myinst-default:"]), {
+  const keep = ["j2-instance-myinst:aa11", "j2-harness:0f1e"];
+
+  assert.deepEqual(nodeSweepPlan(images, keep), {
+    remove: [{ id: "sha256:bbb", tags: ["reg.example.com/j2-instance-myinst:aa11"], bytes: 412_000_000 }],
+    kept: [],
+  });
+
+  // …and the registry's copy IS kept once a root names it by its own, host-qualified ref.
+  assert.deepEqual(nodeSweepPlan(images, [...keep, "reg.example.com/j2-instance-myinst:aa11"]).remove, []);
+});
+
+test("a node image id is removed whole, once — and a mixed id is kept whole and said", () => {
+  // `crictl rmi <tag>` resolves the tag to its image id and removes the WHOLE image, every tag with
+  // it (CRI has no untag verb). So removal is a per-ID decision: an id goes only when every tag on
+  // it is unreachable. Not paranoia — two instances whose `images/x` trees and harness ref are
+  // byte-identical hash to the same content under different tags, and the other one is running.
+  const shared = [
+    image({
+      id: "sha256:ddd",
+      tags: ["docker.io/library/j2-sandbox-myinst-default:99aa", "docker.io/library/j2-sandbox-other-default:99aa"],
+      bytes: 500,
+    }),
+  ];
+  assert.deepEqual(nodeSweepPlan(shared, ["j2-sandbox-other-default:99aa"]), {
     remove: [],
     kept: ["docker.io/library/j2-sandbox-myinst-default:99aa"],
   });
 
-  // The failure observed live: three of THIS instance's tags on one id (hash-moving edits that
-  // produced byte-identical images). One id, one removal, all three tags reported — a second
-  // `rmi` for a sibling tag is what died `no such image` and aborted the old loop.
+  // The failure observed live: three unreachable tags on one id (hash-moving edits that produced
+  // byte-identical images). One id, one removal, all three tags reported — a second `rmi` for a
+  // sibling tag is what died `no such image` and aborted the old loop.
   const triple = [
-    {
+    image({
       id: "sha256:eee",
-      repoTags: [
+      tags: [
         "docker.io/library/j2-sandbox-myinst-default:c0cc",
         "docker.io/library/j2-sandbox-myinst-default:b1aa",
         "docker.io/library/j2-instance-myinst:77ff",
       ],
-    },
+      bytes: 900,
+    }),
   ];
-  assert.deepEqual(prunePlan(triple, ["j2-instance-myinst:", "j2-sandbox-myinst-default:"]), {
-    remove: [{ id: "sha256:eee", tags: triple[0]!.repoTags }],
+  assert.deepEqual(nodeSweepPlan(triple, ["j2-instance-myinst:88ee"]), {
+    remove: [{ id: "sha256:eee", tags: triple[0]!.tags, bytes: 900 }],
     kept: [],
   });
+});
+
+test("an unlabeled image is invisible — not removed, not kept, not reported", () => {
+  // Images built before ADR-0039 carry no stamp, and neither does anything j2 never built. Sweeping
+  // them means guessing by name again, which is the whole primitive being deleted — so they are not
+  // "kept" either: the sweep has nothing to say about an image that is not its business.
+  const images = [
+    image({ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-old:beef"], bytes: 100, labeled: false }),
+    image({ id: "sha256:bbb", tags: ["docker.io/library/postgres:16"], bytes: 200, labeled: false }),
+    image({ id: "sha256:ccc", tags: ["docker.io/library/j2-instance-new:c0de"], bytes: 300 }),
+  ];
+  assert.deepEqual(nodeSweepPlan(images, []), {
+    remove: [{ id: "sha256:ccc", tags: ["docker.io/library/j2-instance-new:c0de"], bytes: 300 }],
+    kept: [],
+  });
+  // The ref removed is the store's OWN spelling — normalization decides reachability, never what
+  // is handed back to `docker rmi`, which knows only the tags it holds.
+  assert.deepEqual(hostSweepPlan(images, []).remove, [
+    { ref: "docker.io/library/j2-instance-new:c0de", id: "sha256:ccc", bytes: 300 },
+  ]);
+});
+
+test("reachability beats any naming: a kit ref goes when nothing names it, a stranger stays when something does", () => {
+  // "Kit images are never pruned" was a rule by fiat; it dissolves into reachability. A kit ref is
+  // kept because some instance's map or pod names it — and when the last instance leaves the
+  // cluster, it collects like everything else. The converse matters just as much: a ref no name
+  // grammar would recognize is untouchable while a live root names it.
+  const images = [
+    image({ id: "sha256:kit", tags: ["docker.io/library/j2-harness:0f1e"], bytes: 238_000_000 }),
+    image({ id: "sha256:odd", tags: ["docker.io/library/whatever-i-named-it:v3"], bytes: 10 }),
+  ];
+  assert.deepEqual(nodeSweepPlan(images, ["whatever-i-named-it:v3"]), {
+    remove: [{ id: "sha256:kit", tags: ["docker.io/library/j2-harness:0f1e"], bytes: 238_000_000 }],
+    kept: [],
+  });
+});
+
+test("the host sweeps per TAG, and credits an id's bytes exactly once — on the tag that frees them", () => {
+  // `docker rmi <tag>` untags: the id lives on under its other tags, and the disk comes back only
+  // with the last one. So the host plan is per ref (no mixed-id case at all), while the byte
+  // accounting is per id — summing per tag would report an image twice for having two names.
+  const twoTags = image({ id: "sha256:aaa", tags: ["j2-instance-x:aa", "j2-instance-x:bb"], bytes: 1_000 });
+
+  // One tag reachable: the other still goes, but nothing is reclaimed by dropping a name.
+  const partial = hostSweepPlan([twoTags], ["j2-instance-x:aa"]);
+  assert.deepEqual(partial, { remove: [{ ref: "j2-instance-x:bb", id: "sha256:aaa", bytes: 0 }], bytes: 0 });
+
+  // Both unreachable: two removals, one credit.
+  const whole = hostSweepPlan([twoTags], []);
+  assert.deepEqual(
+    whole.remove.map((r) => r.ref),
+    ["j2-instance-x:aa", "j2-instance-x:bb"],
+  );
+  assert.equal(whole.bytes, 1_000, "the id's size is credited once, not once per tag");
+});
+
+test("a labeled image with no tags left is garbage by construction, and goes by id", () => {
+  // Rebuilding a moved tag leaves its predecessor `<none>:<none>` on the host, and `kind load`
+  // leaves the same tagless id on a node. No keep set can ever name one — and a ref-only sweep
+  // leaks exactly them, which after a Dockerfile-iteration session is most of the disk.
+  const orphan = image({ id: "sha256:dead", tags: [], bytes: 2_000 });
+  assert.deepEqual(hostSweepPlan([orphan], ["j2-instance-x:aa"]), {
+    remove: [{ ref: "sha256:dead", id: "sha256:dead", bytes: 2_000 }],
+    bytes: 2_000,
+  });
+  assert.deepEqual(nodeSweepPlan([orphan], ["j2-instance-x:aa"]).remove, [
+    { id: "sha256:dead", tags: [], bytes: 2_000 },
+  ]);
+});
+
+test("a failed removal is reported and the loop goes on; already-gone is success", () => {
+  // Neither `docker rmi` nor `crictl rmi` is idempotent — both exit 1 on a missing image — so
+  // delete-if-present has to be read out of the error, and one image's failure must never abandon
+  // everything queued behind it (ADR-0039).
+  const images = [
+    image({ id: "sha256:aaa", tags: ["j2-a:1"], bytes: 10 }),
+    image({ id: "sha256:bbb", tags: ["j2-b:1"], bytes: 20 }),
+    image({ id: "sha256:ccc", tags: ["j2-c:1"], bytes: 40 }),
+  ];
+  const port: BuildPort = {
+    ...nullPort(),
+    hostImages: async () => images,
+    removeHostImage: async (ref) => {
+      if (ref === "j2-a:1") throw new Error("Error response from daemon: No such image: j2-a:1");
+      if (ref === "j2-b:1") throw new Error("Error response from daemon: conflict: image is in use\nby a container");
+    },
+  };
+
+  return sweepHost(port, { keep: [] }).then((result) => {
+    assert.deepEqual(result.removed, ["j2-a:1", "j2-c:1"], "absent IS the goal state, however it got there");
+    assert.deepEqual(result.failed, ["j2-b:1 (Error response from daemon: conflict: image is in use)"]);
+    assert.equal(result.bytes, 40, "an image something else already took gave US no bytes back");
+  });
+});
+
+/**
+ * A node store that really removes — the listing shrinks. A fake whose `removeNodeImage` only
+ * returned is how the node half came to reclaim nothing while reporting gigabytes: on a kind node
+ * `crictl rmi <id>` exits 0 having dropped only the names CRI knows, leaving the image alive under
+ * the `import-<date>@<digest>` ref `kind load` also created. Nothing socket-free can see that, but
+ * a store that can DISAGREE with its own exit code can — see `keeps` below.
+ */
+function nodeStore(
+  perNode: Record<string, ObservedImage[]>,
+  opts: { keeps?: string[] } = {},
+): BuildPort & { calls: string[] } {
+  const store = new Map(Object.entries(perNode).map(([node, images]) => [node, [...images]]));
+  const port = {
+    ...nullPort(),
+    calls: [] as string[],
+    nodeImages: async () => [...store].map(([node, images]) => ({ node, images })),
+    removeNodeImage: async (_cluster: string, node: string, id: string) => {
+      port.calls.push(`${node} ${id}`);
+      // Exits 0 either way; `keeps` is the store that shrugged and kept the image anyway.
+      if (opts.keeps?.includes(id)) return;
+      store.set(
+        node,
+        (store.get(node) ?? []).filter((i) => i.id !== id),
+      );
+    },
+  };
+  return port;
+}
+
+test("the node sweep reaches every node, one rmi per id, and sums what it took", async () => {
+  const nodes = () => ({
+    "j2-control-plane": [
+      image({ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-x:aa"], bytes: 1_000 }),
+      image({ id: "sha256:bbb", tags: ["docker.io/library/j2-harness:0f1e"], bytes: 2_000 }),
+    ],
+    "j2-worker": [image({ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-x:aa"], bytes: 1_000 })],
+  });
+  const port = nodeStore(nodes());
+
+  const result = await sweepNodes(port, { cluster: "j2", keep: ["j2-harness:0f1e"] });
+  assert.deepEqual(port.calls, ["j2-control-plane sha256:aaa", "j2-worker sha256:aaa"], "each node holds its copy");
+  assert.deepEqual(result.removed, ["docker.io/library/j2-instance-x:aa", "docker.io/library/j2-instance-x:aa"]);
+  assert.equal(result.bytes, 2_000, "two nodes, two copies, two lots of disk");
+  assert.deepEqual(result.failed, []);
+
+  // A dry run answers the same plan and touches nothing (`j2 gc --dry-run`, ADR-0039).
+  const untouched = nodeStore(nodes());
+  const dry = await sweepNodes(untouched, { cluster: "j2", keep: ["j2-harness:0f1e"], dryRun: true });
+  assert.deepEqual(untouched.calls, []);
+  assert.deepEqual(dry.removed, result.removed);
+});
+
+test("a node removal is confirmed by re-listing — an exit code is not a reclaimed byte", async () => {
+  // The failure this exists for: `crictl rmi <id>` exits 0 on a kind node having dropped only the
+  // names CRI knows, while the image lives on under the `import-<date>@<digest>` ref `kind load`
+  // also wrote — so the store says success, the disk says nothing was freed, and the next `j2 gc`
+  // re-plans the very same id. Trusting the exit code makes the one number ADR-0039 prints a lie.
+  const port = nodeStore(
+    {
+      "j2-control-plane": [
+        image({ id: "sha256:stays", tags: ["docker.io/library/j2-instance-x:aa"], bytes: 400_000_000 }),
+        image({ id: "sha256:goes", tags: ["docker.io/library/j2-instance-x:bb"], bytes: 1_000 }),
+      ],
+    },
+    { keeps: ["sha256:stays"] },
+  );
+
+  const result = await sweepNodes(port, { cluster: "j2", keep: [] });
+  assert.deepEqual(result.removed, ["docker.io/library/j2-instance-x:bb"], "only what the node no longer holds");
+  assert.equal(result.bytes, 1_000, "the 400 MB the store kept are not the user's to celebrate");
+  assert.deepEqual(result.failed, ["docker.io/library/j2-instance-x:aa (the node still holds it after the removal)"]);
+});
+
+test("a re-list that cannot answer leaves the removals unverified, and unverified is not reclaimed", async () => {
+  let listings = 0;
+  const port: BuildPort = {
+    ...nullPort(),
+    nodeImages: async () => {
+      if (++listings > 1) throw new Error("Cannot connect to the Docker daemon\nis it running?");
+      return [{ node: "j2-control-plane", images: [image({ id: "sha256:a", tags: ["j2-x:1"], bytes: 10 })] }];
+    },
+  };
+  const result = await sweepNodes(port, { cluster: "j2", keep: [] });
+  assert.deepEqual(result.removed, []);
+  assert.equal(result.bytes, 0);
+  assert.deepEqual(result.failed, ["j2-x:1 (could not verify the removal: Cannot connect to the Docker daemon)"]);
+});
+
+test("one image swept on both stores is one image, however each store spells it", async () => {
+  // The host says `j2-adapter:33a4`, containerd says `docker.io/library/j2-adapter:33a4`. Merging
+  // raw strings reports one image twice; the bytes stay summed, because the two copies are two
+  // lots of the user's disk (the same rule as two nodes holding one ref).
+  const merged = mergeSweeps(
+    { removed: ["j2-adapter:33a4"], kept: [], failed: [], bytes: 217_000_000 },
+    { removed: ["docker.io/library/j2-adapter:33a4"], kept: [], failed: [], bytes: 224_000_000 },
+  );
+  assert.deepEqual(merged.removed, ["j2-adapter:33a4"], "one image, once, in the spelling a root would use");
+  assert.equal(merged.bytes, 441_000_000);
+});
+
+test("a node whose images will not say who built them stops the sweep instead of narrating success", async () => {
+  // A broken label read makes every image read as unlabeled, and unlabeled is invisible — so the
+  // whole node sweep becomes a no-op that prints "swept nothing". One id nobody answers for is
+  // still fine: that one is gone or racing, and the rest of the node is swept normally.
+  const ok = await crictlLabels("j2-control-plane", ["sha256:a", "sha256:b"], async (batch) => {
+    if (batch.length > 1) throw new Error("crictl: no such image sha256:b");
+    if (batch[0] === "sha256:b") throw new Error("crictl: no such image sha256:b");
+    return JSON.stringify({
+      status: { id: "sha256:a" },
+      info: { imageSpec: { config: { Labels: kitImageLabels() } } },
+    });
+  });
+  assert.deepEqual([...ok.keys()], ["sha256:a"]);
+
+  await assert.rejects(
+    () =>
+      crictlLabels("j2-control-plane", ["sha256:a"], async () => {
+        throw new Error('OCI runtime exec failed: exec: "crictl": executable file not found in $PATH');
+      }),
+    /no image on node "j2-control-plane" would say who built it.*crictl.*not found/s,
+  );
+});
+
+test("bytes are the narration, because disk is the quantity the user feels", () => {
+  assert.equal(formatBytes(0), "0 B");
+  assert.equal(formatBytes(940), "940 B");
+  assert.equal(formatBytes(4_445_841), "4.4 MB");
+  assert.equal(formatBytes(2_100_000_000), "2.1 GB");
 });

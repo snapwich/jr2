@@ -18,8 +18,13 @@
 import { After, Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
+import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@j2/orchestrator";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -597,9 +602,168 @@ Then("no Sandbox was re-provisioned for the run", async function (this: E2EWorld
   assert.deepEqual(await sandboxesFor(this), [], "a lost workspace is reported, never silently re-created");
 });
 
+// --- the image sweep (ADR-0039) --------------------------------------------------------------------
+//
+// The one claim no socket-free test can make: a REAL node's image store got smaller. The other
+// tiers stop at the plan or at a fake store, and a fake cannot reproduce what makes this store
+// hard — `kind load` leaves an image held under THREE refs (its tag, an `import-<date>@<digest>`,
+// and a bare `sha256:<id>`), and `crictl rmi` drops only the ones CRI knows while exiting 0. A
+// removal that reclaimed nothing is therefore indistinguishable from a real one unless containerd
+// itself is asked.
+//
+// So the scenario asks containerd, and it asks about EVERY ref the load added, not just the tag:
+// the refs are diffed across the load and every one of them must be gone afterwards. Checking the
+// tag alone would pass on a sweep that never reached `ctr` — which is the whole defect.
+
+/** The kind cluster the current context addresses, derived the way the CLI derives it. */
+async function kindClusterName(): Promise<string> {
+  const { stdout } = await exec("kubectl", ["config", "current-context"]);
+  const context = stdout.trim();
+  assert.ok(context.startsWith("kind-"), `the @kind tier runs against a kind context (got "${context}")`);
+  return context.slice("kind-".length);
+}
+
+/** The nodes of the tier's cluster. */
+async function kindNodes(): Promise<string[]> {
+  const { stdout } = await exec("kind", ["get", "nodes", "--name", await kindClusterName()]);
+  return stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** containerd normalizes a local tag; every root spells it the short way (the CLI's `normalizeRef`). */
+const shortRef = (ref: string): string => ref.replace(/^docker\.io\/library\//, "");
+
+/**
+ * Every ref CONTAINERD holds on a node, verbatim. Containerd's own list, not CRI's, because CRI's
+ * can outlive it: a removal that reaches `ctr` leaves the CRI image store still answering for an id
+ * whose refs and content are gone (ADR-0039). `ctr images ls` is the truth about the node.
+ */
+async function nodeRefs(node: string): Promise<Set<string>> {
+  const { stdout } = await exec("docker", ["exec", node, "ctr", "-n", "k8s.io", "images", "ls", "-q"], {
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  return new Set(
+    stdout
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+/** Every ref CRI names an image by on a node — the list a human reads with `crictl images`. */
+async function nodeCriRefs(node: string): Promise<Set<string>> {
+  const { stdout } = await exec("docker", ["exec", node, "crictl", "images", "-o", "json"], {
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const listed = (JSON.parse(stdout) as { images?: Array<{ repoTags?: string[] }> }).images ?? [];
+  return new Set(listed.flatMap((i) => i.repoTags ?? []).map(shortRef));
+}
+
+/** Every ref this instance's image map names — the root that says what future Sandboxes will run. */
+async function imageMapRefs(world: E2EWorld): Promise<string[]> {
+  const out = await kubectl(world, ["get", "configmap", IMAGES_CONFIGMAP, "-o", "json"]);
+  const raw = (JSON.parse(out) as { data?: Record<string, string> }).data?.[IMAGES_KEY];
+  assert.ok(raw, `the ${IMAGES_CONFIGMAP} ConfigMap carries ${IMAGES_KEY} (ADR-0038)`);
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  return Object.values(parsed).flatMap((v) =>
+    typeof v === "string" ? [v] : Object.values(v as Record<string, string>).filter((n) => typeof n === "string"),
+  );
+}
+
+Given(
+  "a labeled image no live root names is loaded onto every node",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const ref = `j2-e2e-garbage:${randomBytes(6).toString("hex")}`;
+    // A one-layer image from `scratch`: kilobytes, no base to pull, and a real image config to
+    // carry the stamp. The layer's content is random, so the load is a real import every time
+    // rather than a re-tag of an id the node already holds. The labels go on the COMMAND LINE,
+    // never in the Dockerfile — the same rule `j2 up` follows (ADR-0037/0039) — and `j2.dev/kind`
+    // is what makes the image j2's to take at all.
+    const dir = await mkdtemp(join(tmpdir(), "j2-e2e-garbage-"));
+    try {
+      await writeFile(join(dir, "marker"), `${ref} ${randomBytes(16).toString("hex")}\n`);
+      await writeFile(join(dir, "Dockerfile"), "FROM scratch\nCOPY marker /marker\n");
+      await exec("docker", [
+        "build",
+        "-t",
+        ref,
+        "--label",
+        "j2.dev/kind=sandbox",
+        "--label",
+        `j2.dev/instance=${this.kindNamespace}`,
+        dir,
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    const nodes = await kindNodes();
+    const before = new Map(
+      await Promise.all(nodes.map(async (n): Promise<[string, Set<string>]> => [n, await nodeRefs(n)])),
+    );
+    await exec("kind", ["load", "docker-image", ref, "--name", await kindClusterName()]);
+    this.plantedImage = ref;
+    // What the load ADDED, per node — the tag plus the names only containerd knows. This is the
+    // set the sweep has to take, and the reason the assertion is a diff and not a tag lookup.
+    this.plantedRefs = {};
+    for (const node of nodes) {
+      const added = [...(await nodeRefs(node))].filter((r) => !before.get(node)!.has(r));
+      assert.ok(
+        added.some((r) => shortRef(r) === ref),
+        `the planted image reached node ${node} before the sweep (added: ${added.join(", ")})`,
+      );
+      this.plantedRefs[node] = added;
+    }
+  },
+);
+
+When("I sweep the cluster's images", { timeout: 300_000 }, async function (this: E2EWorld): Promise<void> {
+  // No `-n`: `j2 gc` asks the whole cluster what it still needs, so it addresses no instance.
+  const r = await this.runCli(["gc"], { namespaced: false });
+  assert.equal(r.code, 0, `j2 gc failed: ${r.stderr}`);
+});
+
+Then("no node holds the unreachable image any more", async function (this: E2EWorld): Promise<void> {
+  const planted = this.plantedRefs;
+  assert.ok(planted && this.plantedImage, "the planted image's refs were carried from the Given");
+  for (const [node, refs] of Object.entries(planted)) {
+    const held = await nodeRefs(node);
+    const survivors = refs.filter((r) => held.has(r));
+    assert.deepEqual(
+      survivors,
+      [],
+      `node ${node} still holds ${survivors.join(", ")} — an \`import-…@digest\` survivor means the ` +
+        `removal stopped at the names CRI knows, so \`crictl rmi\` exited 0 and reclaimed nothing`,
+    );
+    assert.ok(!(await nodeCriRefs(node)).has(this.plantedImage!), `node ${node} still names it in crictl's list`);
+  }
+});
+
+Then("every node still holds the images this instance's map names", async function (this: E2EWorld): Promise<void> {
+  const refs = await imageMapRefs(this);
+  assert.ok(refs.length > 0, "the image map names at least one image");
+  for (const node of await kindNodes()) {
+    const held = new Set([...(await nodeRefs(node))].map(shortRef));
+    for (const ref of refs) {
+      assert.ok(held.has(shortRef(ref)), `the sweep took ${ref} off node ${node}, which this instance still needs`);
+    }
+  }
+});
+
 // Namespace deletion (World.cleanup) is the real teardown; this only unsticks a Sandbox whose
 // finalizer might slow that deletion down after a failed scenario.
 After({ tags: "@kind" }, async function (this: E2EWorld): Promise<void> {
+  // A scenario that failed before (or during) the sweep leaves its planted image behind; the next
+  // `j2 gc` collects it either way — a labeled image no root names is exactly what the sweep is
+  // for — but the tier must not depend on that to stay clean. Every ref the load added goes, since
+  // taking the tag alone is what leaves the bytes behind. `ctr images rm` is delete-if-present.
+  if (this.plantedImage) await exec("docker", ["rmi", this.plantedImage]).catch(() => {});
+  for (const [node, refs] of Object.entries(this.plantedRefs ?? {})) {
+    if (refs.length === 0) continue;
+    await exec("docker", ["exec", node, "ctr", "-n", "k8s.io", "images", "rm", ...refs]).catch(() => {});
+  }
   if (!this.runId) return;
   await kubectl(this, ["delete", "sandbox", "-l", `j2.dev/run=${this.runId}`, "--ignore-not-found"]).catch(() => {});
 });

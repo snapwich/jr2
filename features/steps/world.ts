@@ -77,6 +77,13 @@ export class E2EWorld {
   branchHeadBefore?: string;
   /** @kind: the detached review worktree's in-pod path (ADR-0028), carried between steps. */
   reviewDir?: string;
+  /** @kind: the tag of the labeled image the sweep scenario planted on every node (ADR-0039) —
+   * garbage by construction, since no root will ever name it. */
+  plantedImage?: string;
+  /** @kind: every ref the plant's `kind load` ADDED, per node — the tag, the
+   * `import-<date>@<digest>` only containerd knows, and the bare `sha256:<id>`. The sweep has to
+   * take all of them, so the assertion (and the teardown) works from this set, not from the tag. */
+  plantedRefs?: Record<string, string[]>;
 
   /** @console: the real Chromium the browser tier drives (ADR-0010 as amended) — launched by the
    * `Before("@console")` hook, closed in `After`. Type-only import: the default profile never
@@ -159,12 +166,16 @@ export class E2EWorld {
   /** Run `j2 <args>` against this instance, capturing stdout/stderr/exit code into `last`.
    * While serving on the host, the target rides `J2_URL`/`J2_TOKEN` — the supported "attach to a
    * deployed orchestrator" path (ADR-0009). @kind sets neither: the verbs resolve the REAL way
-   * (current kube context + `-n <scenario namespace>` → Secret + port-forward, ADR-0019). */
-  async runCli(args: string[]): Promise<CliResult> {
+   * (current kube context + `-n <scenario namespace>` → Secret + port-forward, ADR-0019).
+   *
+   * `namespaced: false` is for the verbs that address no instance at all: `j2 gc` decides what is
+   * garbage by asking the WHOLE cluster (ADR-0039), so a namespace flag would narrow nothing — and
+   * a step must invoke it the way a user does. */
+  async runCli(args: string[], opts: { namespaced?: boolean } = {}): Promise<CliResult> {
     const env = this.server
       ? { ...process.env, ...this.extraEnv, J2_URL: this.server.url, J2_TOKEN: this.server.token }
       : { ...process.env, ...this.extraEnv };
-    const full = this.kindNamespace ? [...args, "-n", this.kindNamespace] : args;
+    const full = this.kindNamespace && opts.namespaced !== false ? [...args, "-n", this.kindNamespace] : args;
     const child = spawn(process.execPath, [BIN, ...full], { cwd: this.dir, env });
     let stdout = "";
     let stderr = "";

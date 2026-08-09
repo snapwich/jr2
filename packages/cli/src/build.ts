@@ -15,6 +15,14 @@
 // hash must include the resolved harness ref" for free — the same trick `stageInstanceBundle` plays
 // with `INSTANCE_DOCKERFILE`, and one less mechanism than a second, hand-maintained input list.
 //
+// Content addressing also MAKES garbage — ten Dockerfile iterations leave ten full images — so the
+// same seam owns the collector (ADR-0039). Two facts shape it: every image j2 builds is STAMPED
+// (`j2.dev/kind`, plus `j2.dev/instance` on the instance-owned kinds) at build time, so ownership is
+// read off the image instead of parsed out of its name; and an image is garbage iff no live root
+// names its ref. The reachability part — assembling the keep set from the cluster — belongs to the
+// commands layer; what lives here is the part that touches images: the two stores' physics, the pure
+// removal policy over them, and the loop that executes it.
+//
 // `BuildPort` is what the converge logic drives (tests fake it); `pnpmDockerBuild` is the real one:
 // pnpm + docker + kind + crictl subprocesses.
 
@@ -26,6 +34,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { KIT_VERSION } from "@j2/orchestrator";
+import { LABEL_INSTANCE } from "./deploy.ts";
 
 const exec = promisify(execFile);
 
@@ -42,6 +51,13 @@ export type BuildRequest = {
    * written into the context, so a generated file can never be mistaken for a user's own and can
    * never perturb the content hash of the directory it is built from. */
   dockerfileContent?: string;
+  /** `--label k=v`: who built this image (ADR-0039). Stamped at BUILD time, never written into a
+   * Dockerfile — the user's file keeps zero j2 knowledge (ADR-0037) and the committed kit
+   * Dockerfiles stay plain. The labels ride the image config through `kind load` into containerd,
+   * so both stores can read provenance back, and the sweep touches labeled images and nothing
+   * else. Use {@link kitImageLabels}/{@link instanceImageLabels}/{@link sandboxImageLabels}: an
+   * unstamped build is an image no sweep can ever collect. */
+  labels?: Record<string, string>;
 };
 
 export type BuildPort = {
@@ -52,18 +68,30 @@ export type BuildPort = {
   /** `docker run --rm --user 1000 <image> <argv…>` → stdout. The Sandbox Image preflight
    * (ADR-0037) is the one caller: it needs the LOCAL daemon, so it runs before transport. */
   run(image: string, argv: string[]): Promise<string>;
-  /** Drop a local tag (`docker rmi`). Used on the wrap's intermediate `-base` tag, whose layers
-   * the wrapped image holds — so this untags, it does not reclaim. */
-  untag(tag: string): Promise<void>;
   /** `docker push` — the registry delivery (ADR-0019). */
   push(tag: string): Promise<void>;
   /** `kind load docker-image` — the no-registry delivery onto a kind cluster's nodes. */
   kindLoad(tag: string, cluster: string): Promise<void>;
-  /** Remove this instance's images from a kind cluster's nodes (`j2 down`, ADR-0038): every image
-   * whose repoTags ALL start with one of `prefixes`, reporting what it removed, what a mixed
-   * image id made it keep, and what failed. Content addressing means ten Dockerfile iterations
-   * leave ten full images in containerd, invisible to `kubectl`. */
-  kindPrune(cluster: string, prefixes: string[]): Promise<PruneResult>;
+
+  /** Every LABELED image the host daemon holds (ADR-0039) — the daemon filters by label key, so
+   * an image j2 did not build never reaches the policy at all. Reports exact bytes and ALL tags
+   * per image id, including the id that has none left (a rebuilt tag leaves its predecessor
+   * `<none>:<none>`, still labeled, reachable by no ref — the bulk of an iteration session's
+   * garbage). */
+  hostImages(): Promise<ObservedImage[]>;
+  /** Drop one host ref (`docker rmi <tag|id>`). Two callers, one subprocess: the wrap's
+   * intermediate `-base` tag, and the host sweep — which removes per TAG precisely because
+   * `docker rmi` untags, and the bytes come back only with an id's last tag. Delete-if-present. */
+  removeHostImage(ref: string): Promise<void>;
+
+  /** What each of a kind cluster's nodes holds, per node: containerd's own view (`crictl images`),
+   * with the ownership label read back per image. Labels are not in CRI's image list — they live
+   * in the image config, one `crictl inspecti` away — so the port pays that read and hands the
+   * policy one shape for both stores. */
+  nodeImages(cluster: string): Promise<NodeImages[]>;
+  /** Remove one node image BY ID (`crictl rmi`), which takes every tag on it — CRI has no untag
+   * verb, which is why the node policy is a per-id decision. Delete-if-present. */
+  removeNodeImage(cluster: string, node: string, id: string): Promise<void>;
 };
 
 /**
@@ -194,6 +222,43 @@ CMD ["/opt/j2/bin/node", "/opt/j2/src/main.ts"]
 `;
 }
 
+// --- ownership: who built this image (ADR-0039) ------------------------------------------------
+
+/**
+ * Ownership is a LABEL, not a naming convention (ADR-0039). Name grammar was load-bearing and
+ * ambiguous — `j2-sandbox-<instance>-<name>` has no reserved delimiter, so instance `my` + image
+ * `extra-default` and instance `my-extra` + image `default` collide on one repo — and it could not
+ * survive its own source: deleting `images/<x>/` orphaned that image's tags, because nothing
+ * derived their names any more. A stamp answers both: the image says who built it.
+ */
+export const LABEL_IMAGE_KIND = "j2.dev/kind";
+
+/** The three kinds ADR-0038 builds, and the whole value domain of {@link LABEL_IMAGE_KIND}. */
+export type ImageKind = "instance" | "sandbox" | "kit";
+
+/** The kit's own images (Harness, Adapter, operator). No instance label: every instance on the
+ * cluster shares one copy, and "kit images are never swept" is not a rule any more — a kit ref is
+ * kept because some instance's map or pod names it, and collects with everything else when the
+ * last instance leaves (ADR-0039). */
+export function kitImageLabels(): Record<string, string> {
+  return { [LABEL_IMAGE_KIND]: "kit" };
+}
+
+/** The instance's own image (engine + workflows baked). `j2.dev/instance` is the SAME key the
+ * Namespace and the rest of the converged objects wear (deploy.ts) — deliberately one word for one
+ * owner, whether it labels a Kubernetes object or an image config. */
+export function instanceImageLabels(instance: string): Record<string, string> {
+  return { [LABEL_IMAGE_KIND]: "instance", [LABEL_INSTANCE]: instance };
+}
+
+/** A Sandbox Image — the user's Dockerfile plus the kit-owned wrap (ADR-0037). Stamped on BOTH
+ * builds: the wrap inherits these through `FROM <base>` anyway (harmless, same owner), but the
+ * intermediate `-base` id survives its own untag as a labeled dangling image, and only a stamp
+ * makes it collectable rather than invisible garbage forever. */
+export function sandboxImageLabels(instance: string): Record<string, string> {
+  return { [LABEL_IMAGE_KIND]: "sandbox", [LABEL_INSTANCE]: instance };
+}
+
 // --- the kit images (ADR-0038) --------------------------------------------------------------
 
 /** The three images the KIT owns. An instance deploys them but never authors them. */
@@ -306,10 +371,16 @@ export async function kitImageRefs(kitRoot: string, registry?: string): Promise<
   return refs;
 }
 
-/** The `docker build` for one kit image: its committed Dockerfile against its own context. */
+/** The `docker build` for one kit image: its committed Dockerfile against its own context, stamped
+ * `j2.dev/kind=kit` on the command line — the committed Dockerfiles stay plain (ADR-0039). */
 export function kitImageBuild(kitRoot: string, name: KitImageName, tag: string): BuildRequest {
   const image = KIT_IMAGES[name];
-  return { tag, context: join(kitRoot, image.context), dockerfile: join(kitRoot, image.dockerfile) };
+  return {
+    tag,
+    context: join(kitRoot, image.context),
+    dockerfile: join(kitRoot, image.dockerfile),
+    labels: kitImageLabels(),
+  };
 }
 
 // --- Sandbox Images (ADR-0037) ---------------------------------------------------------------
@@ -319,9 +390,10 @@ export function kitImageBuild(kitRoot: string, name: KitImageName, tag: string):
  * in the same text does, which is the point (ADR-0038). */
 const WRAP_SALT_BASE = "<base>";
 
-/** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>` — the wrapped image a Sandbox runs, and what
- * `j2 down` prunes by prefix. `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and
- * the image is the POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). */
+/** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>` — the wrapped image a Sandbox runs. Names are
+ * for humans and for content addressing only: nothing reads ownership out of this string any more
+ * (ADR-0039). `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and the image is the
+ * POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). */
 export function sandboxImageTag(instance: string, name: string, hash: string, registry?: string): string {
   return `${registry ? `${registry}/` : ""}j2-sandbox-${instance}-${name}:${hash}`;
 }
@@ -345,89 +417,330 @@ export function sandboxImageHash(dir: string, harnessRef: string): Promise<strin
 }
 
 /** Two builds off one hash (ADR-0037): the user's Dockerfile, then the kit-owned wrap on top of
- * the result. The user's file is never rewritten and never even read by j2. */
+ * the result. The user's file is never rewritten and never even read by j2 — which is exactly why
+ * `instance` is a parameter: the stamp both builds carry is applied on the command line, so the
+ * Dockerfile stays the user's (ADR-0039). */
 export async function buildSandboxImage(
   port: BuildPort,
-  opts: { dir: string; tag: string; baseTag: string; harnessRef: string },
+  opts: { dir: string; tag: string; baseTag: string; harnessRef: string; instance: string },
 ): Promise<void> {
-  await port.build({ tag: opts.baseTag, context: opts.dir });
+  const labels = sandboxImageLabels(opts.instance);
+  await port.build({ tag: opts.baseTag, context: opts.dir, labels });
   await port.build({
     tag: opts.tag,
     context: opts.dir,
     dockerfileContent: sandboxWrapDockerfile(opts.baseTag, opts.harnessRef),
+    labels,
   });
   // The wrapped image holds the layers; dropping the `-base` tag only stops the host daemon
-  // accumulating one dangling tag per iteration of a Dockerfile.
-  await port.untag(opts.baseTag);
+  // accumulating one dangling tag per iteration of a Dockerfile. What it leaves behind — a labeled
+  // image with no tags — is the sweep's, by id (ADR-0039).
+  await port.removeHostImage(opts.baseTag);
 }
 
-// --- the kind prune (ADR-0038) -----------------------------------------------------------------
+// --- the sweep (ADR-0039) ----------------------------------------------------------------------
 
-/** One entry of `crictl images -o json` on a kind node — containerd's view, not the host daemon's. */
-export type NodeImage = { id: string; repoTags?: string[] };
+/**
+ * One image as either store reports it. The two stores disagree about almost everything — the host
+ * daemon can untag and filters by label, containerd can do neither and counts its own snapshot
+ * bytes — but they agree about this much, so one shape carries both and the policy below is one
+ * body of reasoning instead of two.
+ *
+ * `tags` is EVERY tag on the id, not the interesting ones: both policies below turn on "are they
+ * ALL unreachable", and an id with no tags at all (a rebuilt tag's predecessor, on either side) is
+ * reachable by nothing and is therefore garbage by construction.
+ */
+export type ObservedImage = {
+  /** The image id — the unit containerd removes, and the unit bytes are counted in. */
+  id: string;
+  /** Every ref the store names this id by, verbatim (containerd's are fully qualified). */
+  tags: string[];
+  /** The store's own byte count. Never compare one store's to the other's: containerd counts its
+   * snapshots and the daemon counts its layers, and the same image differs by several percent. */
+  bytes: number;
+  /** Does the image config carry {@link LABEL_IMAGE_KIND}? An unlabeled image is not j2's to take
+   * (ADR-0039), so it is invisible: never removed, never even reported as kept. */
+  labeled: boolean;
+};
+
+/** What one kind node holds. `kind load` put it there; only `docker exec <node> crictl` can see it. */
+export type NodeImages = { node: string; images: ObservedImage[] };
 
 /**
  * The namespace containerd gives a local, unqualified tag. `kind load` imports into containerd,
- * which NORMALIZES `j2-instance-x:h` to `docker.io/library/j2-instance-x:h` — so the bare prefixes
- * `j2 down` prunes by matched nothing at all, and a real run left 28 of this instance's images on
- * the node while reporting "no images to prune".
+ * which NORMALIZES `j2-instance-x:h` to `docker.io/library/j2-instance-x:h`, while every root that
+ * names an image — the `j2-images` ConfigMap, a Sandbox's `spec.image`, a pod's container image —
+ * spells it the short way.
  */
 const CONTAINERD_LOCAL_NS = "docker.io/library/";
 
-/** What one node's prune will do, and what it deliberately will not (see {@link prunePlan}). */
-export type PrunePlan = {
-  /** One removal per image id — every repoTag on the id matched, so the whole image is this
-   * instance's. `tags` is all of them, as containerd names them; `crictl rmi` gets ONE. */
-  remove: Array<{ id: string; tags: string[] }>;
-  /** Matched tags left in place: their image id also carries tags no prefix matched, and crictl
-   * cannot take one without the others. */
-  kept: string[];
+/**
+ * The one normalization, applied to both sides before comparison: strip `docker.io/library/` and
+ * nothing else. Stripping only that namespace is what keeps a registry ref comparable to itself —
+ * `reg.example.com/j2-instance-x:h` and `j2-instance-x:h` are two different refs of two different
+ * copies, and a keep set that names one must not protect the other (ADR-0039: a registry-delivered
+ * copy is cache and sweeps like everything else).
+ */
+export function normalizeRef(ref: string): string {
+  return ref.startsWith(CONTAINERD_LOCAL_NS) ? ref.slice(CONTAINERD_LOCAL_NS.length) : ref;
+}
+
+/** The keep set: the refs live roots name, normalized. Membership is WHOLE-REF equality — the
+ * prefix matching this replaces is the primitive ADR-0039 deletes, so nothing here may grow a
+ * `startsWith` back. */
+function keepSet(keep: Iterable<string>): Set<string> {
+  return new Set([...keep].map(normalizeRef));
+}
+
+/** What one host sweep will do (see {@link hostSweepPlan}). */
+export type HostSweepPlan = {
+  /** One entry per REF to drop, in listing order. */
+  remove: Array<{
+    /** What `docker rmi` is given: the tag, or the id when the image has no tags left. */
+    ref: string;
+    /** The image this ref names — the unit bytes belong to. */
+    id: string;
+    /** Bytes credited to THIS removal: the id's size on the removal that takes its last labeled
+     * ref, and 0 on every other, because that is when the daemon actually gives the disk back. */
+    bytes: number;
+  }>;
+  /** The plan's upper bound on reclaimed bytes (see {@link SweepResult.bytes}). */
+  bytes: number;
 };
 
-/** What a prune actually did across a cluster's nodes — the port's report to `j2 down`. */
-export type PruneResult = {
-  /** Gone — including "was already gone": like every other delete path here, delete-if-present. */
-  removed: string[];
-  /** Matched but deliberately kept: their image id also carries tags outside the prefixes. */
+/** What one node sweep will do, and what it deliberately will not (see {@link nodeSweepPlan}). */
+export type NodeSweepPlan = {
+  /** One removal per image id — every tag on it is unreachable, so the whole image goes. `tags` is
+   * all of them, for the report; `crictl rmi` gets the ID. */
+  remove: Array<{ id: string; tags: string[]; bytes: number }>;
+  /** Unreachable tags left in place: their image id also carries a tag some root still names, and
+   * crictl cannot take one without the others. Reported, because silence would read as "swept". */
   kept: string[];
-  /** `tag (error)` per removal that failed; the loop continues past a failure rather than
-   * abandoning everything behind it. */
-  failed: string[];
 };
 
 /**
- * Which images on a node this instance's prune may remove (`j2 down`, ADR-0038) — the whole
- * removal policy, pure and exported because it is the part that was wrong twice, and the port
- * around it is unfakeable.
+ * The HOST policy: per TAG, because `docker rmi <tag>` untags — an id keeps living under its other
+ * tags. So a labeled ref no root names goes, even when a sibling tag on the same id stays; there
+ * is no mixed-id case on this side.
  *
- * Matching: exactly ONE normalization — strip `docker.io/library/`, then match anchored prefixes.
- * Stripping only that namespace preserves the property the anchoring existed for: a
- * registry-pushed `reg.example.com/j2-instance-x:h` keeps its host, so it never matches and stays
- * the registry's business, while `docker.io/library/j2-instance-x:h` (what `kind load` normalizes
- * a local tag into) matches. Kit tags (`j2-harness`, `j2-adapter`, `j2-operator`) match no prefix:
- * every instance on the cluster shares them.
- *
- * Removal is a PER-ID decision: `crictl rmi <tag>` resolves the tag to its image id and removes
- * the whole image, every tag with it — CRI has no untag verb. So an id is removed (once) only
- * when every repoTag on it matched, and an id carrying any foreign tag is kept whole and
- * reported. The mixed id is a real case, not a hypothetical: two instances whose `images/<x>`
- * trees and harness ref are byte-identical produce the same image id under different tags.
+ * Aggressive by ADR-0039: nothing RUNS from the host daemon — its images are scratch awaiting
+ * delivery — and BuildKit's cache is a separate store `docker rmi` does not touch, so regenerating
+ * a swept tag costs seconds. The accepted cost, written down so nobody adds a name filter to
+ * "fix" it: a second checkout converging to a different cluster can have its host kit generation
+ * swept, because this keep set only sees the current context's roots.
  */
-export function prunePlan(images: NodeImage[], prefixes: string[]): PrunePlan {
-  const matches = (tag: string): boolean => {
-    const local = tag.startsWith(CONTAINERD_LOCAL_NS) ? tag.slice(CONTAINERD_LOCAL_NS.length) : tag;
-    return prefixes.some((p) => local.startsWith(p));
-  };
-  const remove: PrunePlan["remove"] = [];
+export function hostSweepPlan(images: ObservedImage[], keep: Iterable<string>): HostSweepPlan {
+  const reachable = keepSet(keep);
+  const remove: HostSweepPlan["remove"] = [];
+  let bytes = 0;
+  for (const image of images) {
+    if (!image.labeled) continue;
+    const garbage = image.tags.filter((t) => !reachable.has(normalizeRef(t)));
+    // No tags at all: a rebuilt tag left this id behind. No ref can ever name it, so it is garbage
+    // by construction — and it must be removed BY ID, since a ref-only sweep leaks exactly the
+    // iteration garbage the sweep exists for.
+    if (image.tags.length === 0) {
+      remove.push({ ref: image.id, id: image.id, bytes: image.bytes });
+      bytes += image.bytes;
+      continue;
+    }
+    // The bytes come back with the LAST tag, so they are credited to that one removal and to no
+    // other. Summing per tag would double count an id that carries two.
+    const last = garbage.length === image.tags.length;
+    for (const [i, ref] of garbage.entries()) {
+      const credited = last && i === garbage.length - 1 ? image.bytes : 0;
+      remove.push({ ref, id: image.id, bytes: credited });
+      bytes += credited;
+    }
+  }
+  return { remove, bytes };
+}
+
+/**
+ * The NODE policy: per ID, unchanged physics from ADR-0038's fix. `crictl rmi <tag>` resolves the
+ * tag to its image id and removes the whole image, every tag with it — CRI has no untag verb. So
+ * an id is removed (once) only when EVERY tag on it is unreachable, and an id carrying a tag some
+ * root still names is kept whole and reported. The mixed id is a real case, not a hypothetical:
+ * two instances whose `images/<x>` trees and harness ref are byte-identical produce the same image
+ * id under different tags, and one of them is still running.
+ */
+export function nodeSweepPlan(images: ObservedImage[], keep: Iterable<string>): NodeSweepPlan {
+  const reachable = keepSet(keep);
+  const remove: NodeSweepPlan["remove"] = [];
   const kept: string[] = [];
   for (const image of images) {
-    const tags = image.repoTags ?? [];
-    const matched = tags.filter(matches);
-    if (matched.length === 0) continue;
-    if (matched.length === tags.length) remove.push({ id: image.id, tags });
-    else kept.push(...matched);
+    if (!image.labeled) continue;
+    const garbage = image.tags.filter((t) => !reachable.has(normalizeRef(t)));
+    if (garbage.length === image.tags.length) remove.push({ id: image.id, tags: image.tags, bytes: image.bytes });
+    else kept.push(...garbage);
   }
   return { remove, kept };
+}
+
+/** What a sweep actually did — the one report `up`, `down`, and `gc` narrate. */
+export type SweepResult = {
+  /** Gone: the ref removed, or the id for an image that had no tags left to name it. */
+  removed: string[];
+  /** Unreachable tags deliberately left in place — a node id that also carries a reachable tag. */
+  kept: string[];
+  /** `ref (error)` per removal that failed. The loop continues past a failure rather than
+   * abandoning everything behind it (ADR-0039). */
+  failed: string[];
+  /** Bytes the removals gave back, counted once per image id. An UPPER BOUND, and narrated as the
+   * quantity the user feels rather than a count (ADR-0039): a wrapped image reports its base's
+   * layers as its own, so two images sharing layers each report the shared bytes in full. */
+  bytes: number;
+};
+
+const emptySweep = (): SweepResult => ({ removed: [], kept: [], failed: [], bytes: 0 });
+
+/**
+ * One report out of several — the host's and every node's, or several converges' (`mergeSweeps` is
+ * associative, so a caller can fold as it goes). Refs are de-duplicated AFTER {@link normalizeRef},
+ * because that is the only way the promise holds: the two stores spell one image differently
+ * (`j2-adapter:33a4` on the host, `docker.io/library/j2-adapter:33a4` on a node), so a raw-string
+ * set reports one image twice. The merged refs are the normalized spelling — the one the roots, and
+ * the user, name an image by.
+ *
+ * BYTES are summed, not de-duplicated, and that is not the same oversight: the host's copy and each
+ * node's copy are distinct bytes on the user's one disk, and removing both gives back both. Same
+ * rule as two nodes holding the same ref — two copies, two lots of disk (ADR-0039: bytes are the
+ * quantity the user feels). The count answers "how many images", the bytes "how much disk".
+ */
+export function mergeSweeps(...results: SweepResult[]): SweepResult {
+  const merged = emptySweep();
+  const removed = new Set<string>();
+  const kept = new Set<string>();
+  for (const r of results) {
+    for (const ref of r.removed) removed.add(normalizeRef(ref));
+    for (const ref of r.kept) kept.add(normalizeRef(ref));
+    merged.failed.push(...r.failed);
+    merged.bytes += r.bytes;
+  }
+  merged.removed = [...removed];
+  merged.kept = [...kept];
+  return merged;
+}
+
+/** "was already gone" is the goal state, however it was reached — the delete-if-present rule both
+ * stores need, since neither `docker rmi` nor `crictl rmi` is idempotent (both exit 1). */
+function isAlreadyGone(err: unknown): boolean {
+  return /no such image/i.test(err instanceof Error ? err.message : String(err));
+}
+
+/**
+ * Sweep the host daemon: every labeled ref no root names. `keep` is the caller's assembled keep
+ * set — the union of the cluster's live roots plus whatever this converge just resolved, which the
+ * commands layer owns because reachability is a question about Kubernetes, not about images.
+ *
+ * A failed removal is reported and skipped; nothing here throws for one image's sake.
+ */
+export async function sweepHost(
+  port: BuildPort,
+  opts: { keep: Iterable<string>; dryRun?: boolean },
+): Promise<SweepResult> {
+  const result = emptySweep();
+  const plan = hostSweepPlan(await port.hostImages(), opts.keep);
+  for (const entry of plan.remove) {
+    if (opts.dryRun) {
+      result.removed.push(entry.ref);
+      result.bytes += entry.bytes;
+      continue;
+    }
+    try {
+      await port.removeHostImage(entry.ref);
+      result.removed.push(entry.ref);
+      result.bytes += entry.bytes;
+    } catch (err) {
+      // Already gone counts as removed but frees nothing: something else took those bytes.
+      if (isAlreadyGone(err)) result.removed.push(entry.ref);
+      else result.failed.push(`${entry.ref} (${(err instanceof Error ? err.message : String(err)).split("\n")[0]})`);
+    }
+  }
+  return result;
+}
+
+/**
+ * Sweep every node of a kind cluster. Only kind: elsewhere the nodes pull from a registry, whose
+ * retention is the registry's business (ADR-0038's line, kept). One removal per image id, because
+ * that is the only granularity CRI offers.
+ *
+ * Nothing here believes an exit code. A node removal is confirmed by RE-LISTING the store and
+ * checking the id is gone, and only a confirmed one is counted as removed or credited with bytes.
+ * That is not defensive programming, it is this store's physics: `crictl rmi <id>` exits 0 having
+ * dropped only the names CRI knows, while a `kind load`ed image is ALSO held under an
+ * `import-<date>@<digest>` ref it does not (see {@link pnpmDockerBuild.removeNodeImage}) — so
+ * "exited 0" was, for the whole node half, compatible with reclaiming nothing and saying gigabytes.
+ * A ref-driven removal fixes that; the re-list is what makes the report true whatever the store
+ * does next.
+ */
+export async function sweepNodes(
+  port: BuildPort,
+  opts: { cluster: string; keep: Iterable<string>; dryRun?: boolean },
+): Promise<SweepResult> {
+  const result = emptySweep();
+  /** One attempted removal, awaiting the re-list that says whether it happened. */
+  const attempted: Array<{ node: string; id: string; names: string[]; bytes: number; error?: string }> = [];
+  for (const { node, images } of await port.nodeImages(opts.cluster)) {
+    const plan = nodeSweepPlan(images, opts.keep);
+    result.kept.push(...plan.kept);
+    for (const entry of plan.remove) {
+      // What the report names: the tags if it has any, else the id — a tagless leftover has no
+      // other name, and "removed sha256:abc…" is still the truth about a disk.
+      const names = entry.tags.length ? entry.tags : [entry.id];
+      if (opts.dryRun) {
+        result.removed.push(...names);
+        result.bytes += entry.bytes;
+        continue;
+      }
+      const attempt = { node, id: entry.id, names, bytes: entry.bytes, error: undefined as string | undefined };
+      try {
+        await port.removeNodeImage(opts.cluster, node, entry.id);
+      } catch (err) {
+        // Already gone counts as removed but frees nothing: something else took those bytes.
+        if (isAlreadyGone(err)) attempt.bytes = 0;
+        else attempt.error = (err instanceof Error ? err.message : String(err)).split("\n")[0];
+      }
+      attempted.push(attempt);
+    }
+  }
+  if (attempted.length === 0) return result;
+
+  let survivors: Map<string, Set<string>> | undefined;
+  try {
+    survivors = new Map(
+      (await port.nodeImages(opts.cluster)).map(({ node, images }) => [node, new Set(images.map((i) => i.id))]),
+    );
+  } catch (err) {
+    // The removals happened; what cannot be established is whether they took. Unverified goes in
+    // `failed`, which is the conservative half of the truth — it costs a re-plan next sweep, where
+    // claiming the bytes would cost the user their trust in the one number this prints.
+    const why = (err instanceof Error ? err.message : String(err)).split("\n")[0];
+    for (const a of attempted) result.failed.push(`${a.names[0]} (could not verify the removal: ${why})`);
+    return result;
+  }
+  for (const a of attempted) {
+    if (survivors.get(a.node)?.has(a.id)) {
+      result.failed.push(`${a.names[0]} (${a.error ?? "the node still holds it after the removal"})`);
+    } else {
+      result.removed.push(...a.names);
+      result.bytes += a.bytes;
+    }
+  }
+  return result;
+}
+
+/** `swept 4 image(s) (2.1 GB)` — the narration is bytes, because disk is the quantity the user
+ * feels (ADR-0039). SI units, matching what docker and crictl print. */
+export function formatBytes(bytes: number): string {
+  const units = ["B", "kB", "MB", "GB", "TB"];
+  let n = bytes;
+  let unit = 0;
+  while (n >= 1000 && unit < units.length - 1) {
+    n /= 1000;
+    unit += 1;
+  }
+  return `${unit === 0 ? n : n.toFixed(1)} ${units[unit]}`;
 }
 
 /** ADR-0037's preflight, verbatim: git present · `$HOME` writable as uid 1000 · glibc new enough
@@ -470,8 +783,9 @@ export const pnpmDockerBuild: BuildPort = {
     await exec("pnpm", ["--filter", pkg.name, "--prod", "deploy", "--legacy", outDir], { cwd: instanceDir });
   },
 
-  async build({ tag, context, dockerfile, dockerfileContent }) {
+  async build({ tag, context, dockerfile, dockerfileContent, labels }) {
     const args = ["build", "-t", tag];
+    for (const [k, v] of Object.entries(labels ?? {})) args.push("--label", `${k}=${v}`);
     if (dockerfile) args.push("-f", dockerfile);
     if (dockerfileContent) args.push("-f", "-");
     args.push(context);
@@ -487,10 +801,6 @@ export const pnpmDockerBuild: BuildPort = {
     return stdout;
   },
 
-  async untag(tag) {
-    await exec("docker", ["rmi", tag], BIG);
-  },
-
   async push(tag) {
     await exec("docker", ["push", tag], BIG);
   },
@@ -499,39 +809,203 @@ export const pnpmDockerBuild: BuildPort = {
     await exec("kind", ["load", "docker-image", tag, "--name", cluster], BIG);
   },
 
-  async kindPrune(cluster, prefixes) {
+  async hostImages() {
+    // Two calls, and neither is optional: `docker image ls` reports no labels and formats its size
+    // for humans ("4.45MB"), while `docker image inspect` gives exact bytes, every tag, and the
+    // labels — but has no filter of its own. So the daemon narrows by label key, then inspect
+    // answers about the survivors. `-q` prints one line per TAG, hence the de-duplication.
+    const { stdout: idOut } = await exec(
+      "docker",
+      ["image", "ls", "-q", "--no-trunc", "--filter", `label=${LABEL_IMAGE_KIND}`],
+      BIG,
+    );
+    const ids = [
+      ...new Set(
+        idOut
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    ];
+    if (ids.length === 0) return [];
+    const { stdout } = await exec(
+      "docker",
+      ["image", "inspect", "--format", "{{.Id}}\t{{.Size}}\t{{json .RepoTags}}\t{{json .Config.Labels}}", ...ids],
+      BIG,
+    );
+    const images: ObservedImage[] = [];
+    for (const line of stdout.split("\n").filter((l) => l.trim())) {
+      const [id, size, tags, labels] = line.split("\t");
+      const parsedLabels = (JSON.parse(labels ?? "null") ?? {}) as Record<string, string>;
+      images.push({
+        id: id!,
+        // `<none>:<none>` is how a tagless image sometimes spells its absence of a name; it is not
+        // a ref, and treating it as one would send `docker rmi <none>:<none>` at the daemon.
+        tags: ((JSON.parse(tags ?? "[]") ?? []) as string[]).filter((t) => t && !t.startsWith("<none>")),
+        bytes: Number(size) || 0,
+        labeled: LABEL_IMAGE_KIND in parsedLabels,
+      });
+    }
+    return images;
+  },
+
+  async removeHostImage(ref) {
+    await exec("docker", ["rmi", ref], BIG);
+  },
+
+  async nodeImages(cluster) {
     const { stdout: nodeList } = await exec("kind", ["get", "nodes", "--name", cluster]);
     const nodes = nodeList
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
-    const removed = new Set<string>();
-    const kept = new Set<string>();
-    const failed: string[] = [];
+    const out: NodeImages[] = [];
     // The images live in each node's containerd, not the host daemon — `kind load` imported them
     // there — so the reach is `docker exec <node> crictl`, per node.
     for (const node of nodes) {
       const { stdout: raw } = await exec("docker", ["exec", node, "crictl", "images", "-o", "json"], BIG);
-      const images = (JSON.parse(raw) as { images?: NodeImage[] }).images ?? [];
-      const plan = prunePlan(images, prefixes);
-      for (const tag of plan.kept) kept.add(tag);
-      // ONE `rmi` per image id (see prunePlan): `crictl rmi` takes the whole image, so a second
-      // call for a sibling tag dies `no such image` — which is also why "no such image" counts as
-      // removed rather than failed: absent IS the goal state, however it got there.
-      for (const entry of plan.remove) {
-        try {
-          await exec("docker", ["exec", node, "crictl", "rmi", entry.tags[0]!], BIG);
-          for (const tag of entry.tags) removed.add(tag);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (/no such image/i.test(message)) for (const tag of entry.tags) removed.add(tag);
-          else failed.push(`${entry.tags[0]} (${message.split("\n")[0]})`);
-        }
-      }
+      const listed = (JSON.parse(raw) as { images?: CriImage[] }).images ?? [];
+      // CRI's list is a VIEW, and it can outlive what containerd holds: a removal that goes
+      // through `ctr` leaves the CRI image store still answering for an id whose refs and content
+      // are gone. Such a row is not an image — nothing can run from it and nothing can be
+      // reclaimed by taking it again — so containerd's own ref list, not CRI's, decides what is
+      // here. Without this, every id the sweep took would come back on the next plan, forever.
+      const held = await containerdRefs(node);
+      const rows = listed.filter((r) => criRefs(r).some((ref) => held.has(normalizeRef(ref))));
+      const labels = await crictlLabels(
+        node,
+        rows.map((r) => r.id),
+        async (batch) => {
+          const { stdout } = await exec("docker", ["exec", node, "crictl", "inspecti", "-o", "json", ...batch], BIG);
+          return stdout;
+        },
+      );
+      out.push({
+        node,
+        images: rows.map((r) => ({
+          id: r.id,
+          tags: r.repoTags ?? [],
+          // containerd reports its byte count as a STRING.
+          bytes: Number(r.size ?? 0) || 0,
+          labeled: LABEL_IMAGE_KIND in (labels.get(r.id) ?? {}),
+        })),
+      });
     }
-    return { removed: [...removed], kept: [...kept], failed };
+    return out;
+  },
+
+  async removeNodeImage(_cluster, node, id) {
+    // The refs BEFORE the removal: `crictl rmi` reports none of them back, and afterwards the id
+    // may no longer be answerable at all.
+    const refs = await criRefsOf(node, id);
+    // CRI first, because it is the one path that also updates crictl's own view of the node.
+    await exec("docker", ["exec", node, "crictl", "rmi", id], BIG);
+    // Then the names CRI never knew. `kind load docker-image` hands containerd an OCI archive, so
+    // the image is held under `import-<date>@sha256:<digest>` as well as under its tag; `crictl
+    // rmi` drops the tag, the import ref keeps the image alive, and the id stays on disk — which
+    // is why removing by id alone reclaimed nothing on a kind node while exiting 0. `ctr` is the
+    // only reach to those refs, and it is delete-if-present (a missing name warns and exits 0).
+    // Both spellings go, because containerd holds a tag fully qualified and an import ref bare.
+    const names = [...new Set(refs.flatMap((ref) => [ref, normalizeRef(ref)]))];
+    if (names.length > 0)
+      await exec("docker", ["exec", node, "ctr", "-n", CONTAINERD_K8S_NS, "images", "rm", ...names], BIG);
   },
 };
+
+/** One row of `crictl images -o json`. `repoDigests` matters as much as `repoTags` here: a
+ * `kind load`ed image often has no tag left and is named only by its `import-<date>@<digest>`. */
+type CriImage = { id: string; repoTags?: string[]; repoDigests?: string[]; size?: string };
+
+/** The containerd namespace Kubernetes' images live in — the one `crictl` talks to, and the one
+ * `ctr` must be pointed at, since its default (`default`) holds nothing of ours. */
+const CONTAINERD_K8S_NS = "k8s.io";
+
+/** Every name CRI knows one image by, its id included (containerd holds a `sha256:<id>` ref for
+ * images it pulled itself). */
+function criRefs(image: CriImage): string[] {
+  return [...(image.repoTags ?? []), ...(image.repoDigests ?? []), image.id];
+}
+
+/** Every ref containerd itself holds on a node, normalized — the truth CRI's list only mirrors. */
+async function containerdRefs(node: string): Promise<Set<string>> {
+  const { stdout } = await exec("docker", ["exec", node, "ctr", "-n", CONTAINERD_K8S_NS, "images", "ls", "-q"], BIG);
+  return new Set(
+    stdout
+      .split("\n")
+      .map((s) => normalizeRef(s.trim()))
+      .filter(Boolean),
+  );
+}
+
+/** The refs one image is named by, asked of CRI. An id it cannot answer for is already gone, which
+ * is the goal state: no refs to take. */
+async function criRefsOf(node: string, id: string): Promise<string[]> {
+  try {
+    const { stdout } = await exec("docker", ["exec", node, "crictl", "inspecti", "-o", "json", id], BIG);
+    const parsed = JSON.parse(stdout) as { status?: { repoTags?: string[]; repoDigests?: string[] } };
+    return [...(parsed.status?.repoTags ?? []), ...(parsed.status?.repoDigests ?? [])];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The ownership read on a node: CRI's image LIST carries no labels and offers no label filter, so
+ * provenance costs an `inspecti`, whose `-o json` puts it at `info.imageSpec.config.Labels`.
+ * `inspecti` is variadic and answers a whole batch as one JSON array — one subprocess per node
+ * rather than one per image — but it is fatal on the first id it cannot find, so a listing that
+ * raced a removal falls back to asking one at a time. ONE id nobody answers for reads as unlabeled,
+ * which is the safe direction: unlabeled is invisible, and invisible is never swept.
+ *
+ * NO id answered for is a different fact and gets a different answer: it means the label read
+ * itself is broken (no `crictl` on this node image, an unreachable containerd socket, a `docker
+ * exec` the daemon refused), and the safe-direction rule then turns the WHOLE node sweep into a
+ * no-op that narrates success — a permanently dead collector indistinguishable from a clean
+ * cluster. So it throws, like the roots read, and says which node and why.
+ *
+ * `inspect` is the batch read, injected so the failure shapes above are testable without a node.
+ */
+export async function crictlLabels(
+  node: string,
+  ids: string[],
+  inspect: (batch: string[]) => Promise<string>,
+): Promise<Map<string, Record<string, string>>> {
+  const out = new Map<string, Record<string, string>>();
+  if (ids.length === 0) return out;
+  type Inspected = {
+    status?: { id?: string };
+    info?: { imageSpec?: { config?: { Labels?: Record<string, string> } } };
+  };
+  const read = async (batch: string[]): Promise<void> => {
+    const parsed = JSON.parse(await inspect(batch)) as Inspected | Inspected[];
+    // One id answers with an object, several with an array.
+    for (const entry of Array.isArray(parsed) ? parsed : [parsed]) {
+      const id = entry.status?.id;
+      if (id) out.set(id, entry.info?.imageSpec?.config?.Labels ?? {});
+    }
+  };
+  let firstFailure: unknown;
+  try {
+    await read(ids);
+  } catch (err) {
+    firstFailure = err;
+    for (const id of ids) {
+      try {
+        await read([id]);
+      } catch {
+        // Gone, or unreadable: leave it out of the map, which reads as unlabeled.
+      }
+    }
+  }
+  if (out.size === 0) {
+    throw new Error(
+      `no image on node "${node}" would say who built it ` +
+        `(${(firstFailure instanceof Error ? firstFailure.message : String(firstFailure)).split("\n")[0]}) — ` +
+        `every image would read as unlabeled, so the node sweep would take nothing and report success`,
+    );
+  }
+  return out;
+}
 
 /** Run a command with a string on stdin (`docker build -f -`). */
 async function execStdin(argv: string[], stdin: string): Promise<void> {
