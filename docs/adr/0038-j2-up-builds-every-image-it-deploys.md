@@ -40,7 +40,9 @@ of build-it-yourself-first image on top of that.
 - **One transport branch for all of them**, the one the instance image already uses: `registry` configured → push; kind
   context → `kind load`; neither → fail loudly naming `registry`. `j2 up` records the converged name→ref map as an
   annotation on the Orchestrator Deployment and diffs it, so a steady-state converge spends a directory walk and no
-  docker at all.
+  docker at all. **Amended by [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)**: when the record
+  is silent (a fresh namespace), the host daemon's own labeled listing answers the _build_ question — the seal below is
+  what made "present implies current" true enough to ask it — while the record keeps answering the delivery one.
 - **The resolved name→ref map reaches the Orchestrator as a ConfigMap, read per provision — never as Deployment env.**
   Env is a pod-template change, so every Dockerfile edit would roll the Orchestrator and put every live run through
   snapshot restore ([ADR-0007](0007-durable-machine-state.md)) for a change that affects only _future_ Sandboxes. The

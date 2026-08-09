@@ -144,3 +144,5 @@ owning the base it runs on.
   the `@kind` tier serial rather than `--parallel` ([ADR-0010](0010-bdd-acceptance-tests.md), with the measurements).
   The fix is a per-converge-unique intermediate name: it is never delivered, never registry-prefixed, and untagged on
   success, so uniqueness costs no documented property — but it is a naming decision and is deliberately not taken here.
+  **Taken by [ADR-0040](0040-the-wraps-intermediate-is-scratch-a-converge-names-its-own.md)**, which names the base per
+  converge and unlocks `--parallel` for the `@kind` tier (the wired degree is ADR-0010's).
