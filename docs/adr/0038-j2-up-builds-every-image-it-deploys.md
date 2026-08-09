@@ -46,9 +46,11 @@ of build-it-yourself-first image on top of that.
   (`kubectl get sandboxes`, no new state) and stops: _"2 running workspaces keep `…:9c1e02`; new workspaces use
   `:4a77b1`; delete these runs to re-image."_
 - **`j2 down` prunes this instance's images from kind nodes by default**, scoped to `j2-instance-<name>:*` and
-  `j2-workspace-<name>-*:*`. Content addressing means ten Dockerfile iterations leave ten full images in the node's
-  containerd, invisible to `kubectl` and on the developer's own disk. **Kit images are never pruned** — they are shared
-  by every instance on the cluster — and neither are registry-pushed tags.
+  `j2-sandbox-<name>-*:*` (matched after stripping containerd's `docker.io/library/` namespace, which `kind load`
+  normalizes local tags into — and nothing else, so a registry-pushed tag keeps its host and stays unmatched). Content
+  addressing means ten Dockerfile iterations leave ten full images in the node's containerd, invisible to `kubectl` and
+  on the developer's own disk. **Kit images are never pruned** — they are shared by every instance on the cluster — and
+  neither are registry-pushed tags.
 - **No `repos`, no Sandbox Image builds.** A non-empty `repos` is already the data-plane switch (ADR-0012/0031): a
   workspace-less instance has no Sandboxes, so it must not pay a docker build for a scaffolded `images/default/` it can
   never use.

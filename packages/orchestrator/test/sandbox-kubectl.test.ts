@@ -43,7 +43,7 @@ async function mkImages(refs: unknown): Promise<string> {
 const REFS = {
   harness: "j2-harness:h00",
   adapter: "j2-adapter:a00",
-  sandbox: { default: "j2-workspace-inst-default:d00", rust: "j2-workspace-inst-rust:r00" },
+  sandbox: { default: "j2-sandbox-inst-default:d00", rust: "j2-sandbox-inst-rust:r00" },
 };
 
 /** Everything a provision needs beyond the images map: the Adapter is always injected now, so its
@@ -71,7 +71,7 @@ test("provision applies the labeled CR with the RO repos mount, gates on Ready",
   assert.equal(applied.metadata.name, "sb-1");
   assert.deepEqual(applied.metadata.labels, { "j2.dev/run": "run-9", "j2.dev/workflow": "coding" });
   // No name on the spec → `images/default` (ADR-0037's middle leg), resolved from the map.
-  assert.equal(applied.spec.image, "j2-workspace-inst-default:d00");
+  assert.equal(applied.spec.image, "j2-sandbox-inst-default:d00");
   // The repos volume is RO; the worktree root is a writable POD volume. Proven necessary on kind:
   // the operator runs the Harness as an unprivileged uid, so a work dir owned by the image (or
   // absent) makes every `attach` fail with "mkdir /work: permission denied" — and `/work` is the
@@ -96,8 +96,8 @@ test("the Sandbox Image chain: spec name → images/default → the stock Harnes
     return crOf(calls).spec.image;
   };
 
-  assert.equal(await provisionWith(REFS, "rust"), "j2-workspace-inst-rust:r00", "the spec's name wins");
-  assert.equal(await provisionWith(REFS), "j2-workspace-inst-default:d00", "no name → images/default");
+  assert.equal(await provisionWith(REFS, "rust"), "j2-sandbox-inst-rust:r00", "the spec's name wins");
+  assert.equal(await provisionWith(REFS), "j2-sandbox-inst-default:d00", "no name → images/default");
   // The last leg comes out of the MAP, not a `j2-harness:<kitversion>` literal: in a kit checkout
   // the Harness is a content-addressed tag (ADR-0038) and a literal would name nothing built.
   assert.equal(
@@ -131,13 +131,13 @@ test("the map is re-read PER provision, so a converge reaches the next Sandbox w
   const port = kubectlSandbox({ imagesPath, ...provisionable, exec });
 
   await port.provision({ name: "sb-a", runId: "r", workflow: "w" });
-  await writeFile(imagesPath, JSON.stringify({ ...REFS, sandbox: { default: "j2-workspace-inst-default:d99" } }));
+  await writeFile(imagesPath, JSON.stringify({ ...REFS, sandbox: { default: "j2-sandbox-inst-default:d99" } }));
   await port.provision({ name: "sb-b", runId: "r", workflow: "w" });
 
   const images = calls
     .filter((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))
     .map((c) => (JSON.parse(c.input!) as { spec: { image: string } }).spec.image);
-  assert.deepEqual(images, ["j2-workspace-inst-default:d00", "j2-workspace-inst-default:d99"]);
+  assert.deepEqual(images, ["j2-sandbox-inst-default:d00", "j2-sandbox-inst-default:d99"]);
 });
 
 test("an absent or malformed image map fails the provision pointing at `j2 up`, never a published tag", async () => {

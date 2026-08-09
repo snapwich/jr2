@@ -10,7 +10,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { down } from "../src/commands/down.ts";
-import type { BuildPort } from "../src/build.ts";
+import { prunableTags, type BuildPort } from "../src/build.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { Io } from "../src/output.ts";
 
@@ -37,7 +37,9 @@ function mkKube(
 }
 
 /** A build port whose only live verb is `kindPrune` — everything else fails, because `down` must
- * never build, push, or load. `nodeTags` is what containerd on the cluster's nodes holds. */
+ * never build, push, or load. `nodeTags` is what containerd on the cluster's nodes holds, and the
+ * fake answers through the REAL matcher: the seam used to sit above it, which is how a prune that
+ * matched nothing ever shipped green (the tags containerd holds are namespaced, ADR-0038). */
 function mkPrune(
   nodeTags: string[],
   fails = false,
@@ -53,7 +55,10 @@ function mkPrune(
     kindPrune: async (cluster: string, prefixes: string[]) => {
       port.calls.push({ cluster, prefixes });
       if (fails) throw new Error("crictl: connection refused");
-      return nodeTags.filter((t) => prefixes.some((p) => t.startsWith(p)));
+      return prunableTags(
+        nodeTags.map((tag, i) => ({ id: `sha256:${i}`, repoTags: [tag] })),
+        prefixes,
+      );
     },
   };
   return port;
@@ -104,24 +109,26 @@ test("down deletes the instance's namespace; --all takes the operator too", asyn
 test("down prunes this instance's images off kind nodes — and only this instance's", async () => {
   const kube = mkKube(ownNs);
   // What a kind node's containerd actually holds after a few converges: this instance's images,
-  // ANOTHER instance's, the shared kit's, and a registry-pushed copy of this instance's own.
+  // ANOTHER instance's, the shared kit's, and a registry-pushed copy of this instance's own. The
+  // local ones wear containerd's `docker.io/library/` namespace, because that is what `kind load`
+  // normalizes an unqualified tag into — the fact the matching used to miss entirely.
   const prune = mkPrune([
-    "j2-instance-myinst:aa11bb22cc33",
-    "j2-instance-myinst:dd44ee55ff66",
-    "j2-workspace-myinst-default:99aa88bb77cc",
-    "j2-instance-other:112233445566",
-    "j2-workspace-other-default:665544332211",
-    "j2-harness:0f1e2d3c4b5a",
-    "j2-adapter:5a4b3c2d1e0f",
+    "docker.io/library/j2-instance-myinst:aa11bb22cc33",
+    "docker.io/library/j2-instance-myinst:dd44ee55ff66",
+    "docker.io/library/j2-sandbox-myinst-default:99aa88bb77cc",
+    "docker.io/library/j2-instance-other:112233445566",
+    "docker.io/library/j2-sandbox-other-default:665544332211",
+    "docker.io/library/j2-harness:0f1e2d3c4b5a",
+    "docker.io/library/j2-adapter:5a4b3c2d1e0f",
     "reg.example.com/j2-instance-myinst:aa11bb22cc33",
   ]);
   const w = await mkWorld(kube, true, prune);
   assert.equal(await down([], w.io), 0);
 
-  assert.deepEqual(prune.calls, [{ cluster: "test", prefixes: ["j2-instance-myinst:", "j2-workspace-myinst-"] }]);
+  assert.deepEqual(prune.calls, [{ cluster: "test", prefixes: ["j2-instance-myinst:", "j2-sandbox-myinst-"] }]);
   const line = w.err.join("\n");
   assert.match(line, /pruned 3 image\(s\)/);
-  assert.match(line, /j2-workspace-myinst-default:99aa88bb77cc/, "every content-addressed iteration goes");
+  assert.match(line, /j2-sandbox-myinst-default:99aa88bb77cc/, "every content-addressed iteration goes");
   // Kit images are shared by every instance on the cluster; another instance's are not ours; and a
   // registry-pushed tag is the registry's business — all three fall out of ANCHORED prefixes.
   assert.ok(!/j2-harness|j2-adapter/.test(line));

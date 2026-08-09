@@ -120,7 +120,7 @@ function fakeBuild(
     build: async ({ tag, context, dockerfile, dockerfileContent }) => {
       record.push(`build ${tag}`);
       if (dockerfile) record.push(`build-with -f ${dockerfile} ctx ${context}`);
-      else if (dockerfileContent?.startsWith("FROM j2-workspace")) record.push(`build-with wrap ${tag}`);
+      else if (dockerfileContent?.startsWith("FROM j2-sandbox")) record.push(`build-with wrap ${tag}`);
       else if (dockerfileContent) record.push(`build-with stdin ${tag}`);
       else record.push(`build-with context-default ${tag}`);
     },
@@ -421,9 +421,9 @@ test("a Sandbox Image is two builds off one hash, preflighted, and only with rep
   assert.equal(await up(["--yes"], w.io), 0);
 
   const ref = imagesOf(w).sandbox.default as string;
-  assert.match(ref, /^j2-workspace-myinst-default:[0-9a-f]{12}$/);
+  assert.match(ref, /^j2-sandbox-myinst-default:[0-9a-f]{12}$/);
   const hash = ref.split(":")[1]!;
-  const base = `j2-workspace-myinst-default-base:${hash}`;
+  const base = `j2-sandbox-myinst-default-base:${hash}`;
   // Two builds off ONE hash: the user's own Dockerfile (its directory IS the context), then the
   // kit-owned wrap on top of the result. The user's file is never rewritten.
   assert.ok(w.built.includes(`build ${base}`), `the user's Dockerfile builds first (got: ${w.built.join(", ")})`);
@@ -448,7 +448,7 @@ test("a Sandbox Image is two builds off one hash, preflighted, and only with rep
   const norepos = await withImage(await mkInstance(`export default { name: "n" };\n`, "n"), "default");
   const w2 = mkWorld(norepos, { kitDir: kit });
   assert.equal(await up(["--yes"], w2.io), 0);
-  assert.ok(!w2.built.some((b) => b.includes("j2-workspace-")));
+  assert.ok(!w2.built.some((b) => b.includes("j2-sandbox-")));
   assert.match(w2.err.join("\n"), /sandbox images: skipped \(no `repos`/);
   assert.deepEqual(imagesOf(w2).sandbox, {});
 });
@@ -461,7 +461,7 @@ test("a failing preflight refuses the converge, naming the fix", async () => {
   );
   const w = mkWorld(root, { kitDir: kit, preflightFails: true });
   await assert.rejects(() => up(["--yes"], w.io), /failed the preflight.*alpine\/musl.*shell-free base/s);
-  assert.ok(!w.built.some((b) => b.startsWith("kind-load j2-workspace-")), "a failed image is never delivered");
+  assert.ok(!w.built.some((b) => b.startsWith("kind-load j2-sandbox-")), "a failed image is never delivered");
 });
 
 test("live workspaces on an older image are reported, and nothing re-images them", async () => {
@@ -470,11 +470,11 @@ test("live workspaces on an older image are reported, and nothing re-images them
   );
   const w = mkWorld(root);
   w.kube.sandboxes = [
-    { metadata: { name: "ws-1" }, spec: { image: "j2-workspace-myinst-default:0ldc0ntent" } },
-    { metadata: { name: "ws-2" }, spec: { image: "j2-workspace-myinst-default:0ldc0ntent" } },
+    { metadata: { name: "ws-1" }, spec: { image: "j2-sandbox-myinst-default:0ldc0ntent" } },
+    { metadata: { name: "ws-2" }, spec: { image: "j2-sandbox-myinst-default:0ldc0ntent" } },
   ];
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.match(w.err.join("\n"), /2 running workspace\(s\) keep `j2-workspace-myinst-default:0ldc0ntent`/);
+  assert.match(w.err.join("\n"), /2 running workspace\(s\) keep `j2-sandbox-myinst-default:0ldc0ntent`/);
   assert.match(w.err.join("\n"), /delete those runs to re-image/);
   assert.ok(!w.kube.deleted.some((d) => d.includes("ws-")), "a running Workspace is never touched (ADR-0021)");
 

@@ -32,12 +32,12 @@ test("the map is nested, so a user image named `harness` cannot collide with the
     JSON.stringify({
       harness: "j2-harness:h00",
       adapter: "j2-adapter:a00",
-      sandbox: { harness: "j2-workspace-inst-harness:u00", default: "j2-workspace-inst-default:d00" },
+      sandbox: { harness: "j2-sandbox-inst-harness:u00", default: "j2-sandbox-inst-default:d00" },
     }),
   );
   const map = await readImageRefs(path);
   assert.equal(map.harness, "j2-harness:h00", "the kit's stock Harness is untouched");
-  assert.equal(resolveSandboxImage(map, "harness"), "j2-workspace-inst-harness:u00", "the user's image wins its name");
+  assert.equal(resolveSandboxImage(map, "harness"), "j2-sandbox-inst-harness:u00", "the user's image wins its name");
 });
 
 test("readImageRefs: an absent map names the path and `j2 up`, and never falls back to a tag", async () => {

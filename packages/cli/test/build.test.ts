@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIT_VERSION } from "@j2/orchestrator";
@@ -14,6 +14,7 @@ import {
   detectKitCheckout,
   kitImageBuild,
   kitImageRefs,
+  prunableTags,
   publishedKitRefs,
   sandboxImageHash,
   sandboxWrapDockerfile,
@@ -110,9 +111,9 @@ test("the wrap injects the Harness at /opt/j2, appends PATH, and gives uid 1000 
   //   - a PREPENDED PATH shadows the toolchain the user pinned — and interpolating `${PATH}` in
   //     the generator emits `PATH=":/opt/j2/bin"`, deleting it outright;
   //   - no writable $HOME for uid 1000 fails every attach with `fatal: $HOME not set`, mid-turn.
-  const wrap = sandboxWrapDockerfile("j2-workspace-inst-default-base:abc123", "j2-harness:9f1e02c4d5a6");
+  const wrap = sandboxWrapDockerfile("j2-sandbox-inst-default-base:abc123", "j2-harness:9f1e02c4d5a6");
 
-  assert.match(wrap, /^FROM j2-workspace-inst-default-base:abc123$/m);
+  assert.match(wrap, /^FROM j2-sandbox-inst-default-base:abc123$/m);
   assert.match(wrap, /^COPY --from=j2-harness:9f1e02c4d5a6 \/opt\/j2 \/opt\/j2$/m);
   assert.ok(!wrap.includes("/app"), "the injected runtime lives at /opt/j2, never /app");
 
@@ -206,4 +207,81 @@ test("a packages/harness edit moves the harness ref AND, through the wrap salt, 
     await sandboxImageHash(image, before.harness),
     "a Dockerfile edit moves it too",
   );
+});
+
+test("a Sandbox Image's hash covers its WHOLE directory — node_modules and dist are image content", async () => {
+  // The under-hashing defect: `images/<name>/` IS the build context (ADR-0037) and has no
+  // `.dockerignore`, so docker COPYs `node_modules/` and `dist/` in. Hashing it with the kit's
+  // exclude set (which describes the KIT's own `.dockerignore`) meant editing `images/x/dist/foo`
+  // changed the image at an unchanged tag — the silent-stale-image bug ADR-0038 exists to delete.
+  // Over-hashing is that ADR's stated direction; under-hashing is the defect.
+  const harness = "j2-harness:0f1e2d3c4b5a";
+  const dirOf = (a: string, b: string) =>
+    mkTree(
+      {
+        "images/x/Dockerfile": "FROM node:24-slim\nCOPY . /srv\n",
+        "images/x/node_modules/a.txt": a,
+        "images/x/dist/b.txt": b,
+      },
+      "j2-image-tree-",
+    ).then((root) => join(root, "images", "x"));
+
+  const base = await sandboxImageHash(await dirOf("a1", "b1"), harness);
+  assert.equal(await sandboxImageHash(await dirOf("a1", "b1"), harness), base, "same bytes, same address");
+  assert.notEqual(await sandboxImageHash(await dirOf("a2", "b1"), harness), base, "node_modules/ is hashed");
+  assert.notEqual(await sandboxImageHash(await dirOf("a1", "b2"), harness), base, "dist/ is hashed");
+});
+
+test("`images/` never enters the instance bundle, so a Dockerfile edit cannot roll the Orchestrator", async () => {
+  // ADR-0038 rejects Deployment env for the ref map because a Dockerfile edit would otherwise roll
+  // the Orchestrator and put every live run through snapshot restore. `pnpm deploy` bundles the
+  // package whole, so `images/` rode into the image and the INSTANCE tag moved anyway — the
+  // rationale was false in fact. `discoverImages` is host-side only (the CLI calls it; the
+  // Orchestrator resolves refs from the `j2-images` ConfigMap), so the tree is pure dead weight.
+  const port = (dockerfile: string) =>
+    stagingPort(() => ({
+      "package.json": `{"name":"inst"}`,
+      "workflows/build.ts": "export const machine = 1;\n",
+      "images/default/Dockerfile": dockerfile,
+    }));
+
+  assert.equal(
+    await hashOf(port("FROM node:24-slim\nRUN apt-get install -y cargo\n")),
+    await hashOf(port("FROM node:24-slim\n")),
+    "editing images/default/Dockerfile leaves the instance image's address alone",
+  );
+
+  const scratchRoot = await mkdtemp(join(tmpdir(), "j2-build-"));
+  const staged = await stageInstanceBundle(port("FROM node:24-slim\n"), scratchRoot);
+  try {
+    await assert.rejects(stat(join(staged.dir, "images")), "the staged bundle carries no images/ at all");
+    assert.ok(await stat(join(staged.dir, "workflows")), "…and everything the Orchestrator DOES read stays");
+  } finally {
+    await staged.dispose();
+  }
+});
+
+test("the kind prune matches containerd's names, and removes by tag rather than by image id", async () => {
+  // The dead-code defect: `kind load` imports into containerd, which NORMALIZES a local tag to
+  // `docker.io/library/<name>:<tag>`. Matching bare prefixes with `startsWith` therefore matched
+  // nothing ever — a real `j2 down` left 28 of this instance's images on the node and reported
+  // "no images to prune". Stripping exactly that one namespace fixes it while keeping the property
+  // the anchoring existed for: a registry-pushed ref keeps its host and is still spared (ADR-0038).
+  const listing = `{"images":[
+    {"id":"sha256:aaa","repoTags":["docker.io/library/j2-instance-myinst:aa11bb22cc33"],"size":"412000000"},
+    {"id":"sha256:bbb","repoTags":["reg.example.com/j2-instance-myinst:aa11bb22cc33"],"size":"412000000"},
+    {"id":"sha256:ccc","repoTags":["docker.io/library/j2-harness:0f1e2d3c4b5a"],"size":"238000000"}
+  ]}`;
+  const images = (JSON.parse(listing) as { images: Parameters<typeof prunableTags>[0] }).images;
+
+  assert.deepEqual(
+    prunableTags(images, ["j2-instance-myinst:", "j2-sandbox-myinst-"]),
+    ["docker.io/library/j2-instance-myinst:aa11bb22cc33"],
+    "the local tag goes; the registry's copy and the shared kit image stay",
+  );
+
+  // One id can carry several tags, which is why removal is by TAG: `crictl rmi <id>` would take
+  // the kit tag below with it — an image every other instance on the cluster still needs.
+  const shared = [{ id: "sha256:ddd", repoTags: ["docker.io/library/j2-sandbox-myinst-x:99aa", "j2-harness:0f1e"] }];
+  assert.deepEqual(prunableTags(shared, ["j2-sandbox-myinst-"]), ["docker.io/library/j2-sandbox-myinst-x:99aa"]);
 });

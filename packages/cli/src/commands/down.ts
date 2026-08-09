@@ -68,12 +68,13 @@ export async function down(args: string[], io: Io): Promise<number> {
   // the registry's business, and anchoring the match at the start of the ref is what excludes it
   // (`reg.example.com/j2-instance-x:h` does not start with `j2-instance-x:`) rather than a second
   // check that could disagree. Kit tags are NEVER pruned: every instance on the cluster shares
-  // them (ADR-0038).
+  // them (ADR-0038). The prefixes are the LOCAL names — `prunableTags` strips containerd's
+  // `docker.io/library/` namespace before matching, and nothing else, so the anchor still holds.
   if (context.startsWith("kind-")) {
     const cluster = context.slice("kind-".length);
     const build = io.build ?? pnpmDockerBuild;
     try {
-      const removed = await build.kindPrune(cluster, [`j2-instance-${name}:`, `j2-workspace-${name}-`]);
+      const removed = await build.kindPrune(cluster, [`j2-instance-${name}:`, `j2-sandbox-${name}-`]);
       activity(io, removed.length ? `pruned ${removed.length} image(s): ${removed.join(", ")}` : "no images to prune");
     } catch (err) {
       // A warning, never a non-zero exit: the instance IS removed, which is what `down` promised.

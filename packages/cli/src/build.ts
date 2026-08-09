@@ -74,14 +74,22 @@ export type BuildPort = {
 const HASH_EXCLUDE = new Set([".modules.yaml", ".bin"]);
 
 /**
- * The exclude set for hashing a SOURCE directory (a kit package, the operator tree, a Sandbox
- * Image's folder) rather than a staged bundle. Each entry is something the repo's `.dockerignore`
- * or `.gitignore` already keeps out of a build context, so hashing it would move a tag without
- * moving the image — and `operator/bin` alone is ~400 MB of downloaded tooling, which would make
- * every converge walk it. Everything else is hashed deliberately, tests included (ADR-0038: a
- * hand-derived file list desynchronizes silently the first time someone adds a `COPY`).
+ * The exclude set for hashing a KIT source directory (a kit package, the operator tree) — and
+ * NOTHING else. Each entry is a path the KIT's own root `.dockerignore` really drops, so hashing it
+ * would move a tag without moving the image, and `operator/bin` alone is ~400 MB of downloaded
+ * tooling every converge would then walk. Everything else is hashed deliberately, tests included
+ * (ADR-0038: a hand-derived file list desynchronizes silently the first time someone adds a `COPY`).
+ *
+ * Named `KIT_` so it cannot be reached for a USER directory by accident. A Sandbox Image's folder
+ * IS its build context (ADR-0037) and carries no `.dockerignore`, so docker copies `dist/` and
+ * `node_modules/` straight in; excluding them there under-hashes, and an edit under `images/x/dist`
+ * would change the image at an unchanged tag — the silent-stale-image bug ADR-0038 exists to
+ * delete. Over-hashing is that ADR's stated direction; under-hashing is the defect.
  */
-const SOURCE_EXCLUDE = new Set(["node_modules", ".git", "bin", "testbin", "dist", "cover.out"]);
+const KIT_SOURCE_EXCLUDE = new Set(["node_modules", ".git", "bin", "testbin", "dist", "cover.out"]);
+
+/** Hash everything: the only honest exclude set for a directory j2 does not own (see above). */
+const NO_EXCLUDE: Set<string> = new Set();
 
 /**
  * A short content hash over `paths` (files and/or directories, sorted walk), salted with `salt`.
@@ -272,7 +280,7 @@ export async function kitImageRefs(kitRoot: string, registry?: string): Promise<
     const hash = await contentHash(
       image.sources.map((s) => join(kitRoot, s)),
       `kit:${image.repo}`,
-      SOURCE_EXCLUDE,
+      KIT_SOURCE_EXCLUDE,
     );
     refs[name] = `${registry ? `${registry}/` : ""}${image.repo}:${hash}`;
   }
@@ -292,23 +300,29 @@ export function kitImageBuild(kitRoot: string, name: KitImageName, tag: string):
  * in the same text does, which is the point (ADR-0038). */
 const WRAP_SALT_BASE = "<base>";
 
-/** `[<registry>/]j2-workspace-<instance>-<name>:<hash>` — the wrapped image a Sandbox runs, and
- * what `j2 down` prunes by prefix. */
+/** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>` — the wrapped image a Sandbox runs, and what
+ * `j2 down` prunes by prefix. `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and
+ * the image is the POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). */
 export function sandboxImageTag(instance: string, name: string, hash: string, registry?: string): string {
-  return `${registry ? `${registry}/` : ""}j2-workspace-${instance}-${name}:${hash}`;
+  return `${registry ? `${registry}/` : ""}j2-sandbox-${instance}-${name}:${hash}`;
 }
 
 /** The intermediate tag the USER's Dockerfile builds to, before the wrap. Never delivered, never
  * registry-prefixed, and untagged once the wrap succeeds. */
 export function sandboxBaseTag(instance: string, name: string, hash: string): string {
-  return `j2-workspace-${instance}-${name}-base:${hash}`;
+  return `j2-sandbox-${instance}-${name}-base:${hash}`;
 }
 
-/** The content address of a Sandbox Image: everything in its directory (which IS its build
- * context, ADR-0037), salted with the wrap — so the resolved harness ref is an input and editing
- * `packages/harness/src` re-tags every Sandbox Image rather than leaving pods on the old runtime. */
+/** The content address of a Sandbox Image: everything in its directory, with NO exclusions, salted
+ * with the wrap — so the resolved harness ref is an input and editing `packages/harness/src`
+ * re-tags every Sandbox Image rather than leaving pods on the old runtime.
+ *
+ * No exclusions is the whole point: that directory IS the build context (ADR-0037) and carries no
+ * `.dockerignore`, so a `dist/` or `node_modules/` beside the Dockerfile is image content and must
+ * be image address. `KIT_SOURCE_EXCLUDE` describes the KIT's `.dockerignore` and is a lie about
+ * anyone else's tree. */
 export function sandboxImageHash(dir: string, harnessRef: string): Promise<string> {
-  return contentHash([dir], sandboxWrapDockerfile(WRAP_SALT_BASE, harnessRef), SOURCE_EXCLUDE);
+  return contentHash([dir], sandboxWrapDockerfile(WRAP_SALT_BASE, harnessRef), NO_EXCLUDE);
 }
 
 /** Two builds off one hash (ADR-0037): the user's Dockerfile, then the kit-owned wrap on top of
@@ -326,6 +340,44 @@ export async function buildSandboxImage(
   // The wrapped image holds the layers; dropping the `-base` tag only stops the host daemon
   // accumulating one dangling tag per iteration of a Dockerfile.
   await port.untag(opts.baseTag);
+}
+
+// --- the kind prune (ADR-0038) -----------------------------------------------------------------
+
+/** One entry of `crictl images -o json` on a kind node — containerd's view, not the host daemon's. */
+export type NodeImage = { id: string; repoTags?: string[] };
+
+/**
+ * The namespace containerd gives a local, unqualified tag. `kind load` imports into containerd,
+ * which NORMALIZES `j2-instance-x:h` to `docker.io/library/j2-instance-x:h` — so the bare prefixes
+ * `j2 down` prunes by matched nothing at all, and a real run left 28 of this instance's images on
+ * the node while reporting "no images to prune".
+ */
+const CONTAINERD_LOCAL_NS = "docker.io/library/";
+
+/**
+ * Which repoTags on a node belong to this instance (`j2 down`, ADR-0038) — the whole matching rule,
+ * pure and exported because it is the part that was wrong, and the port around it is unfakeable.
+ *
+ * Exactly ONE normalization: strip `docker.io/library/`, then match anchored prefixes. Stripping
+ * only that namespace is what preserves the property the anchoring existed for — a registry-pushed
+ * `reg.example.com/j2-instance-x:h` keeps its host, so it never matches and stays the registry's
+ * business — while `docker.io/library/j2-instance-x:h` matches, which is the whole point. Kit tags
+ * (`j2-harness`, `j2-adapter`, `j2-operator`) match no prefix: every instance on the cluster shares
+ * them.
+ *
+ * Returns the tags AS CONTAINERD NAMES them, because those are what `crictl rmi` is given: removing
+ * by image ID would delete every OTHER tag on the same id with it.
+ */
+export function prunableTags(images: NodeImage[], prefixes: string[]): string[] {
+  const matched: string[] = [];
+  for (const image of images) {
+    for (const tag of image.repoTags ?? []) {
+      const local = tag.startsWith(CONTAINERD_LOCAL_NS) ? tag.slice(CONTAINERD_LOCAL_NS.length) : tag;
+      if (prefixes.some((p) => local.startsWith(p))) matched.push(tag);
+    }
+  }
+  return matched;
 }
 
 /** ADR-0037's preflight, verbatim: git present · `$HOME` writable as uid 1000 · glibc new enough
@@ -408,12 +460,12 @@ export const pnpmDockerBuild: BuildPort = {
     // there — so the reach is `docker exec <node> crictl`, per node.
     for (const node of nodes) {
       const { stdout: raw } = await exec("docker", ["exec", node, "crictl", "images", "-o", "json"], BIG);
-      const images = (JSON.parse(raw) as { images?: Array<{ id: string; repoTags?: string[] }> }).images ?? [];
-      for (const image of images) {
-        const mine = (image.repoTags ?? []).filter((t) => prefixes.some((p) => t.startsWith(p)));
-        if (mine.length === 0) continue;
-        await exec("docker", ["exec", node, "crictl", "rmi", image.id], BIG);
-        removed.push(...mine);
+      const images = (JSON.parse(raw) as { images?: NodeImage[] }).images ?? [];
+      // By TAG, never by `image.id`: `crictl rmi <id>` drops every tag on that id, including ones
+      // no prefix matched — a kit tag sharing an id with an instance tag would go with it.
+      for (const tag of prunableTags(images, prefixes)) {
+        await exec("docker", ["exec", node, "crictl", "rmi", tag], BIG);
+        removed.push(tag);
       }
     }
     return removed;
@@ -457,6 +509,13 @@ export async function stageInstanceBundle(port: BuildPort, instanceDir: string):
   const dir = join(scratch, "bundle");
   try {
     await port.bundle(instanceDir, dir);
+    // `images/` is HOST-SIDE ONLY (ADR-0037): `discoverImages` is called by `j2 up` alone, and the
+    // Orchestrator resolves every Sandbox Image from the `j2-images` ConfigMap it never scans a
+    // filesystem for. Dropped BEFORE the hash because leaving it in falsified ADR-0038's own
+    // rationale for that ConfigMap: editing only `images/default/Dockerfile` moved the INSTANCE
+    // tag, which is a pod-template change, which rolled the Orchestrator and put every live run
+    // through snapshot restore — the exact cost the map-not-env decision was taken to avoid.
+    await rm(join(dir, "images"), { recursive: true, force: true });
     return {
       dir,
       hash: await contentHash([dir], INSTANCE_DOCKERFILE),
