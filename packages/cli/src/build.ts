@@ -80,8 +80,9 @@ export type BuildPort = {
    * garbage). */
   hostImages(): Promise<ObservedImage[]>;
   /** Drop one host ref (`docker rmi <tag|id>`). Two callers, one subprocess: the wrap's
-   * intermediate `-base` tag, and the host sweep — which removes per TAG precisely because
-   * `docker rmi` untags, and the bytes come back only with an id's last tag. Delete-if-present. */
+   * per-converge intermediate `-base` tag (ADR-0040), and the host sweep — which removes per TAG
+   * precisely because `docker rmi` untags, and the bytes come back only with an id's last tag.
+   * Delete-if-present. */
   removeHostImage(ref: string): Promise<void>;
 
   /** What each of a kind cluster's nodes holds, per node: containerd's own view (`crictl images`),
@@ -386,9 +387,9 @@ export function kitImageBuild(kitRoot: string, name: KitImageName, tag: string):
 
 // --- Sandbox Images (ADR-0037) ---------------------------------------------------------------
 
-/** The base-tag stand-in inside the hash SALT. The real base ref is derived from the hash this
- * salt produces, so it carries no information the hash does not already have — but the harness ref
- * in the same text does, which is the point (ADR-0038). */
+/** The base-tag stand-in inside the hash SALT. The real base ref is scratch — the hash this salt
+ * produces plus a per-converge nonce (ADR-0040) — so it must never enter the hash; the harness ref
+ * in the same text is a real input and must, which is the point (ADR-0038). */
 const WRAP_SALT_BASE = "<base>";
 
 /** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>` — the wrapped image a Sandbox runs. Names are
@@ -400,9 +401,14 @@ export function sandboxImageTag(instance: string, name: string, hash: string, re
 }
 
 /** The intermediate tag the USER's Dockerfile builds to, before the wrap. Never delivered, never
- * registry-prefixed, and untagged once the wrap succeeds. */
-export function sandboxBaseTag(instance: string, name: string, hash: string): string {
-  return `j2-sandbox-${instance}-${name}-base:${hash}`;
+ * registry-prefixed, recorded in no map, and untagged once the wrap succeeds — SCRATCH, not an
+ * address (ADR-0040), which is why it carries `nonce` beside the hash: a converge names its own,
+ * the way `mkdtemp` names the staging bundle's. A content-hash-only name was a shared global, and
+ * one concurrent converge's untag failed the other's wrap mid-`FROM`. The nonce is drawn by the
+ * caller (tests pass a fixed one), and it cannot leak into the wrapped image or its address: a
+ * `FROM` resolves to content, and the hash is salted at the `<base>` stand-in, never the real tag. */
+export function sandboxBaseTag(instance: string, name: string, hash: string, nonce: string): string {
+  return `j2-sandbox-${instance}-${name}-base:${hash}-${nonce}`;
 }
 
 /** The content address of a Sandbox Image: everything in its directory, with NO exclusions, salted
@@ -433,16 +439,16 @@ export async function buildSandboxImage(
     dockerfileContent: sandboxWrapDockerfile(opts.baseTag, opts.harnessRef),
     labels,
   });
-  // The wrapped image holds the layers; dropping the `-base` tag only stops the host daemon
-  // accumulating one dangling tag per iteration of a Dockerfile. What it leaves behind — a labeled
-  // image with no tags — is the sweep's, by id (ADR-0039). Delete-if-present, like the sweep's
-  // removal: the tag is a content address, so two converges of one checkout build the SAME `-base`
-  // and whichever untags second finds it gone.
-  //
-  // This makes the LOSER of the untag benign. It does not make the shared name safe: an untag that
-  // lands while another converge's wrap is still resolving `FROM <baseTag>` fails that build
-  // outright, which is why concurrent converges of one checkout are not supported and the `@kind`
-  // tier runs serially (ADR-0010, ADR-0037's shared-intermediate consequence).
+  // The wrapped image holds the layers; dropping the `-base` tag keeps the converge's own scratch
+  // out of the sweep's story — left in place, the end-of-run sweep would collect it and narrate the
+  // base's full size as reclaimed disk for layers the wrapped image still holds. What the untag
+  // leaves behind — a labeled image with no tags — is the sweep's, by id (ADR-0039). The tag is
+  // per-converge (ADR-0040), so each converge untags only its own and none can pull the base out
+  // from under another's `FROM` — the shared-name failure that kept the `@kind` tier serial.
+  // Delete-if-present still: a concurrent sweep is free to have taken it first (ADR-0039's
+  // in-flight-is-not-a-root limit), and "already gone" is the goal state. A converge that FAILS
+  // before this line leaves its base tagged — labeled, unreachable, named for a human — which any
+  // later sweep collects.
   await port.removeHostImage(opts.baseTag).catch((err: unknown) => {
     if (!isAlreadyGone(err)) throw err;
   });

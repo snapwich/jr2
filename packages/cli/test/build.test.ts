@@ -24,6 +24,7 @@ import {
   mergeSweeps,
   nodeSweepPlan,
   publishedKitRefs,
+  sandboxBaseTag,
   sandboxImageHash,
   sandboxWrapDockerfile,
   stageInstanceBundle,
@@ -451,6 +452,17 @@ test("`images/` never enters the instance bundle, so a Dockerfile edit cannot ro
 });
 
 // --- ownership + the sweep (ADR-0039) ----------------------------------------------------------
+
+test("the wrap's intermediate is per-converge scratch: same content, two converges, two names (ADR-0040)", () => {
+  // The delivered tag is an address and must be a pure function of content; the `-base` tag is
+  // scratch and must NOT be shared — a content-hash-only intermediate was a global name, and one
+  // concurrent converge's untag failed the other's wrap mid-`FROM`. The nonce is the caller's, so
+  // a test that wants determinism has it.
+  const a = sandboxBaseTag("inst", "default", "99aa", "0a1b2c3d");
+  const b = sandboxBaseTag("inst", "default", "99aa", "4e5f6071");
+  assert.equal(a, "j2-sandbox-inst-default-base:99aa-0a1b2c3d");
+  assert.notEqual(a, b, "two converges of one checkout never share the intermediate");
+});
 
 test("every image j2 builds is stamped, so ownership is read off the image and never off its name", async () => {
   // The primitive ADR-0039 deletes is parsing names: `j2-sandbox-<instance>-<name>` has no reserved

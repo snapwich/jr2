@@ -13,7 +13,10 @@
 // docker at all. There is no `images` config block and no env escape hatch — nobody gets to point a
 // real cluster at a hand-picked Harness (ADR-0027's no-eject-hatch, enforced rather than stated).
 // The converged name→ref map is stamped on the Orchestrator Deployment and diffed on the next run,
-// so a steady-state converge spends directory walks and no docker.
+// so a steady-state converge spends directory walks and no docker. When that record is silent (a
+// fresh namespace), the host daemon's labeled listing answers the BUILD question instead
+// (ADR-0041): a tag is a content address, so a host-held ref skips its build — never its delivery,
+// and never a Sandbox Image's preflight.
 //
 // Content addressing also MAKES garbage — iterating on a Dockerfile while up leaves one full image
 // per iteration — so a converge that fully succeeded ends by sweeping every labeled image no live
@@ -45,6 +48,7 @@ import {
   instanceImageLabels,
   kitImageBuild,
   kitImageRefs,
+  normalizeRef,
   preflightSandboxImage,
   pnpmDockerBuild,
   publishedKitRefs,
@@ -171,6 +175,27 @@ export async function up(args: string[], io: Io): Promise<number> {
     if (!registry && !cluster) throw undeliverable(context);
   };
 
+  // The host daemon's answer to the BUILD question, for when the cluster's record is silent
+  // (ADR-0041): a labeled image whose tag equals the resolved ref IS the build — the tag is a
+  // content address of the same inputs, so on the host that built it, present implies current
+  // (ADR-0038's seal is what made that true). Read lazily and at most once per converge, so a
+  // steady-state converge still spends no docker at all; label-filtered, so a hand-built image
+  // wearing the right name is invisible and the build proceeds — what j2 did not stamp, j2 does
+  // not trust. The disk never answers the DELIVERY question: a disk-skip still delivers (`kind
+  // load` skips a node already holding the id; a push is idempotent), and a record hit still
+  // skips both.
+  // A listing that FAILS reads as "holds nothing": this check may only ever save a build, never
+  // add a failure mode — a truly dead daemon fails at the build that follows, with docker's own
+  // error naming it (the sweep makes the same read later and degrades to its own warning).
+  let hostHeldOnce: Promise<Set<string>> | undefined;
+  const hostHeld = (): Promise<Set<string>> =>
+    (hostHeldOnce ??= build
+      .hostImages()
+      .then((images) => new Set(images.flatMap((i) => i.tags.map(normalizeRef))))
+      .catch(() => new Set<string>()));
+  const hostBuilt = async (ref: string): Promise<boolean> =>
+    values.force !== true && (await hostHeld()).has(normalizeRef(ref));
+
   /** Build + deliver one kit image, unless the cluster's record already names this exact ref.
    * Installed from npm there is nothing to build: the published tag is the answer. */
   const ensureKitImage = async (which: KitImageName): Promise<string> => {
@@ -179,11 +204,17 @@ export async function up(args: string[], io: Io): Promise<number> {
     if (previous?.[which] === ref && values.force !== true) {
       // A claim about the CLUSTER'S RECORD, not the node's disk: a `docker rmi` or a `kind load`
       // that never happened leaves a ref recorded but absent, which surfaces as ImagePullBackOff.
-      // `--force` is the way back.
+      // `--force` is the way back. The record is never audited against the disk (ADR-0041) — it
+      // vouches for the cluster, and the cluster was delivered.
       activity(io, `${which} image: ${ref} (fresh — build skipped; --force to rebuild anyway)`);
       return ref;
     }
     assertDeliverable();
+    if (await hostBuilt(ref)) {
+      activity(io, `${which} image: ${ref} (host-built — build skipped, delivering; --force to rebuild)`);
+      await deliver(ref);
+      return ref;
+    }
     activity(io, `${which} image: building ${ref}${values.force === true ? " (--force)" : ""}`);
     await build.build(kitImageBuild(kitRoot, which, ref));
     await deliver(ref);
@@ -249,14 +280,19 @@ export async function up(args: string[], io: Io): Promise<number> {
       activity(io, `image: ${tag} (fresh — build skipped; --force to rebuild anyway)`);
     } else {
       assertDeliverable();
-      activity(io, `image: building ${tag}${values.force === true ? " (--force)" : ""}`);
-      await build.build({
-        tag,
-        context: staged.dir,
-        dockerfileContent: INSTANCE_DOCKERFILE,
-        labels: instanceImageLabels(name),
-      });
-      await deliver(tag);
+      if (await hostBuilt(tag)) {
+        activity(io, `image: ${tag} (host-built — build skipped, delivering; --force to rebuild)`);
+        await deliver(tag);
+      } else {
+        activity(io, `image: building ${tag}${values.force === true ? " (--force)" : ""}`);
+        await build.build({
+          tag,
+          context: staged.dir,
+          dockerfileContent: INSTANCE_DOCKERFILE,
+          labels: instanceImageLabels(name),
+        });
+        await deliver(tag);
+      }
     }
   } finally {
     await staged.dispose();
@@ -280,18 +316,29 @@ export async function up(args: string[], io: Io): Promise<number> {
       if (previous?.sandbox?.[image.name] === ref && values.force !== true) {
         // Unlike the instance image there is no rollout to verify a Sandbox Image against, so a
         // recorded-but-absent ref only shows up as ImagePullBackOff at the next provision —
-        // `--force` rebuilds and re-delivers it.
+        // `--force` rebuilds and re-delivers it. No preflight either: recorded means a successful
+        // converge already proved this exact image (ADR-0041's invariant).
         activity(io, `sandbox image "${image.name}": ${ref} (fresh — build skipped; --force to rebuild anyway)`);
       } else {
         assertDeliverable();
-        activity(io, `sandbox image "${image.name}": building ${ref}`);
-        await buildSandboxImage(build, {
-          dir: image.dir,
-          tag: ref,
-          baseTag: sandboxBaseTag(name, image.name, imageHash),
-          harnessRef: refs.harness,
-          instance: name,
-        });
+        if (await hostBuilt(ref)) {
+          // The disk-skip MUST still preflight (ADR-0041): a converge that failed AT the preflight
+          // left this exact ref on the host, and trusting the disk without re-proving it would
+          // deliver the image the previous converge refused.
+          activity(io, `sandbox image "${image.name}": ${ref} (host-built — build skipped; --force to rebuild)`);
+        } else {
+          activity(io, `sandbox image "${image.name}": building ${ref}`);
+          await buildSandboxImage(build, {
+            dir: image.dir,
+            tag: ref,
+            // The base is SCRATCH (ADR-0040): the converge draws the nonce, so concurrent
+            // converges of one checkout each untag their own intermediate and nobody's wrap loses
+            // its `FROM` — the failure that kept the `@kind` tier serial.
+            baseTag: sandboxBaseTag(name, image.name, imageHash, randomBytes(4).toString("hex")),
+            harnessRef: refs.harness,
+            instance: name,
+          });
+        }
         // Before transport, because it is a `docker run` against the LOCAL daemon — and before
         // the converge, because a Sandbox Image that cannot run git or node fails inside a turn,
         // as a tool error the model has to interpret (ADR-0037).
