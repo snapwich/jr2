@@ -101,11 +101,16 @@ and is not decided here.
   they come into existence, and that a call which never got an answer has learned nothing worth acting on. Any new
   j2→Service call made at a lifecycle edge starts with that exposure until someone decides otherwise.
 - The retry is invisible to the workflow by construction (ADR-0016's absorption principle): no new event, no new budget
-  on the authoring surface, no bookkeeping in Machine context. **That invisibility is the one thing here worth
-  regretting.** The tier can no longer SEE this class: if routability got twice as slow tomorrow, all 88 scenarios would
-  still pass, a little slower, silently — and being unseeable is precisely how the defect survived three sessions.
-  Absorbing a fault and measuring it are not in conflict; the tier asserting an attempt budget it currently only
-  benefits from is the obvious follow-up, and is not done here.
+  on the authoring surface, no bookkeeping in Machine context. **But absorbed is not the same as unmeasured, and the
+  difference is load-bearing.** Absorption alone would leave the tier benefiting from a window it cannot see: if
+  routability got twice as slow tomorrow, all 88 scenarios would still pass, a little slower, in silence, until the day
+  the window finally closed and the suite went red as a fresh mystery. Being unseeable is precisely how this class
+  survived three sessions, so each seat emits ONE line when a retry actually cost something —
+  `j2.routability seat=… attempts=… ms=… url=…` — and the `@kind` tier holds a budget against it (4 attempts), judged
+  once per worker in `AfterAll`. A log line, not a run-feed event: the authoring surface is untouched, so nothing above
+  contradicts itself. What the tier now asserts is not that the retry worked — the scenarios already assert that — but
+  **how much of the window is being spent**, which is what turns 90s from a number read off two GitHub issues into a
+  measurement of the cluster in front of us.
 - **This is the ecosystem's answer, not a j2 workaround**, which is worth recording because "retry" reads as a patch.
   [kind#2280](https://github.com/kubernetes-sigs/kind/issues/2280) is this defect exactly — EndpointSlices populated,
   connection still refused, up to 77s — and it establishes that waiting for the EndpointSlice is NOT sufficient, which

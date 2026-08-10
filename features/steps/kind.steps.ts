@@ -15,7 +15,7 @@
 // moving) happens inside the cluster. If this file opened an MCP client, the pod would never
 // originate a connection and the leg under test would not be tested.
 
-import { After, Given, Then, When, type ITestCaseHookParameter } from "@cucumber/cucumber";
+import { After, AfterAll, Given, Then, When, type ITestCaseHookParameter } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -807,6 +807,70 @@ async function allPodLogs(world: E2EWorld): Promise<string> {
   return chunks.join("\n");
 }
 
+// --- The routability budget (ADR-0042) -------------------------------------------------------
+//
+// The two calls a turn starts with retry a Service that is not routable yet, and ADR-0016 says
+// that retry is ABSORBED: no event, no budget on the authoring surface. Right — and it leaves this
+// tier benefiting from a window it cannot see. If routability got twice as slow tomorrow, all 88
+// scenarios would still pass, a little slower, in silence, until one day the 90s window closed and
+// the suite went red as a fresh mystery. Being unseeable is how this class survived three sessions,
+// so the fix must not be shipped unwatched.
+//
+// So the product emits one line per retry that COST something, and the tier holds a budget against
+// it. What is asserted is not "the retry worked" — the scenarios already assert that — but how much
+// of the window it is spending. That converts 90s from a number read off two GitHub issues into a
+// measurement of THIS cluster, with a regression test around it.
+
+/** The marker the product emits. A contract: `@j2/orchestrator`'s wire client and `@j2/adapter`
+ * both format it, and neither import can enforce the agreement — the tests on each side quote this
+ * exact shape, and a rename made in only one place checks nothing while still passing. */
+const ROUTABILITY_MARKER = "j2.routability";
+
+/** How many attempts one seat may spend before the tier calls it a regression. A healthy crossing
+ * is one or two: kube-proxy programs the EndpointSlice in well under a second, and the ladder
+ * starts at 250ms. Four leaves room for a loaded node without leaving room for a trend. */
+const ROUTABILITY_BUDGET_ATTEMPTS = 4;
+
+type RoutabilityRetry = { seat: string; attempts: number; ms: number; url: string; scenario: string };
+
+/** Every retry this WORKER's scenarios paid for. Under `--parallel` each worker is its own process
+ * and so keeps its own list, which is right: any worker over budget fails the run. */
+const routabilityObserved: RoutabilityRetry[] = [];
+
+/** Pull the marker's `k=v` tail out of a log line, whatever `kubectl` prefixed it with. `url` is
+ * split on the FIRST `=` so a query string survives intact. */
+function parseRoutability(text: string, scenario: string): RoutabilityRetry[] {
+  const found: RoutabilityRetry[] = [];
+  for (const line of text.split("\n")) {
+    const at = line.indexOf(ROUTABILITY_MARKER);
+    if (at < 0) continue;
+    const fields = new Map(
+      line
+        .slice(at + ROUTABILITY_MARKER.length)
+        .trim()
+        .split(/\s+/)
+        .filter((pair) => pair.includes("="))
+        .map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)] as const),
+    );
+    found.push({
+      seat: fields.get("seat") ?? "?",
+      attempts: Number(fields.get("attempts") ?? 0),
+      ms: Number(fields.get("ms") ?? 0),
+      url: fields.get("url") ?? "?",
+      scenario,
+    });
+  }
+  return found;
+}
+
+/** Read this scenario's retries out of the cluster, before the namespace goes. */
+async function collectRoutability(world: E2EWorld, scenario: string): Promise<void> {
+  // ONE source, not two: `allPodLogs` already enumerates every pod in the namespace — the
+  // Orchestrator's, which owns the admission seat, and the Sandbox's, whose Adapter container owns
+  // the surface seat. Adding `deployment/j2-orchestrator` beside it would count admissions twice.
+  routabilityObserved.push(...parseRoutability(await probe(() => allPodLogs(world)), scenario));
+}
+
 /** Everything a failed @kind scenario can still be asked, written to one folder. */
 async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promise<void> {
   const slug = scenarioName.replace(/[^A-Za-z0-9]+/g, "-").slice(0, 60);
@@ -863,6 +927,10 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
 // Cucumber imports after `hooks.ts`, so (After hooks run in reverse) this runs BEFORE the namespace
 // is deleted — which is what makes the diagnostics dump above possible at all.
 After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHookParameter): Promise<void> {
+  // Every scenario, not only the failures: the point of the budget is to see the window being
+  // spent while everything still passes. Read-only, and it swallows its own errors — a diagnostic
+  // that fails the teardown destroys the evidence it exists to collect.
+  await collectRoutability(this, scenario.pickle.name).catch(() => {});
   if (scenario.result?.status === "FAILED") {
     await dumpKindDiagnostics(this, scenario.pickle.name).catch((err: unknown) => {
       console.error(`[kind] diagnostics dump failed:`, err);
@@ -879,4 +947,32 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
   }
   if (!this.runId) return;
   await kubectl(this, ["delete", "sandbox", "-l", `j2.dev/run=${this.runId}`, "--ignore-not-found"]).catch(() => {});
+});
+
+/**
+ * The budget, judged once for the whole worker.
+ *
+ * Deliberately NOT thrown from the `After` hook above. That hook is what unsticks Sandboxes and
+ * removes planted images before the namespace goes, and a throw partway through it would trade a
+ * leaked cluster for a clearer error message. Here nothing is left to tear down, the whole
+ * distribution is in hand rather than one scenario's slice, and Cucumber still exits non-zero.
+ *
+ * Empty is the expected result and says nothing: no line means no call ever had to retry.
+ */
+AfterAll(function (): void {
+  if (routabilityObserved.length === 0) return;
+  const worst = routabilityObserved.reduce((a, b) => (b.attempts > a.attempts ? b : a));
+  console.error(
+    `[kind] routability: ${routabilityObserved.length} retried call(s), worst ${worst.attempts} attempts / ${worst.ms}ms\n` +
+      routabilityObserved.map((r) => `  ${r.seat} attempts=${r.attempts} ms=${r.ms} — ${r.scenario}`).join("\n"),
+  );
+  if (worst.attempts > ROUTABILITY_BUDGET_ATTEMPTS) {
+    throw new Error(
+      `routability budget exceeded: the ${worst.seat} seat spent ${worst.attempts} attempts (${worst.ms}ms) ` +
+        `reaching ${worst.url}, over a budget of ${ROUTABILITY_BUDGET_ATTEMPTS}. Every scenario may well have ` +
+        `PASSED — ADR-0042's retry absorbs this, and a suite that only notices when the 90s window finally ` +
+        `closes notices as a mystery. Either this cluster got slower, or something upstream of the Service is ` +
+        `taking longer to become routable; the window is the last line of defence, not the measurement.`,
+    );
+  }
 });

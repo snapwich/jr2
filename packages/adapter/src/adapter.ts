@@ -77,6 +77,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * The marker the `@kind` tier greps for, and therefore a CONTRACT — duplicated verbatim in
+ * `@j2/orchestrator`'s wire client (the two packages share no runtime dependency) and matched in
+ * `features/steps/kind.steps.ts`. Renaming it on one side breaks no build; it silently turns the
+ * tier's routability budget into a check that passes because it matches nothing.
+ */
+const ROUTABILITY_MARKER = "j2.routability";
+
+/**
+ * What a retry at a lifecycle edge COST, emitted once, only when there was a cost.
+ *
+ * ADR-0042 absorbs these retries, and absorption is right — but a fault absorbed and never measured
+ * is how "Ready is not routable" stayed invisible for three sessions. This is a log line, not a
+ * run-feed event, so the workflow surface is untouched while the `@kind` tier gets a number it can
+ * hold a budget against.
+ */
+function routabilityLine(seat: "admission" | "surface", url: string, attempts: number, ms: number): string {
+  return `${ROUTABILITY_MARKER} seat=${seat} attempts=${attempts} ms=${ms} url=${url}`;
+}
+
+/**
  * One rung of the ladder, drawn from its TOP HALF (equal jitter). Duplicated from the
  * Orchestrator's client on purpose — the two packages share no runtime dependency, and this is one
  * line of arithmetic, not a contract.
@@ -132,6 +152,9 @@ export type OrchestratorOptions = {
   retryInitialMs?: number;
   retryMaxMs?: number;
   retryWindowMs?: number;
+  /** Where the routability line goes when a surface read had to retry — see `routabilityLine`.
+   * Default `console.warn`; tests capture it. */
+  log?: (line: string) => void;
 };
 
 /** The Orchestrator, as the Adapter uses it: read this turn's surface, deliver this turn's pick. */
@@ -142,6 +165,7 @@ export class OrchestratorClient {
   private readonly retryInitialMs: number;
   private readonly retryMaxMs: number;
   private readonly retryWindowMs: number;
+  private readonly log: (line: string) => void;
 
   constructor(opts: OrchestratorOptions) {
     this.url = opts.url.replace(/\/+$/, "");
@@ -150,6 +174,7 @@ export class OrchestratorClient {
     this.retryInitialMs = opts.retryInitialMs ?? 250;
     this.retryMaxMs = opts.retryMaxMs ?? 5_000;
     this.retryWindowMs = opts.retryWindowMs ?? 90_000;
+    this.log = opts.log ?? ((line: string) => console.warn(line));
   }
 
   /**
@@ -173,11 +198,17 @@ export class OrchestratorClient {
    */
   async surface(instanceId: string): Promise<Surface> {
     const url = `${this.url}/agents/${encodeURIComponent(instanceId)}/surface`;
-    const deadline = Date.now() + this.retryWindowMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + this.retryWindowMs;
     let backoffMs = this.retryInitialMs;
+    let attempts = 0;
     for (;;) {
+      attempts += 1;
       try {
         const res = await this.fetchImpl(url, { headers: { authorization: `Bearer ${this.token}` } });
+        // Before the status is read: the measurement is about CONNECTING, and a 404 that took four
+        // attempts to reach is the same routability cost as a 200 that did.
+        if (attempts > 1) this.log(routabilityLine("surface", url, attempts, Date.now() - startedAt));
         if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}"`);
         return (await this.ok(res)) as Surface;
       } catch (err) {

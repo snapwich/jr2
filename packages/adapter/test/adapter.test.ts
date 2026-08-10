@@ -247,6 +247,43 @@ test("a surface read that never connected is retried — an Orchestrator Service
   );
 });
 
+test("a retried surface read reports what it cost, and a first-time connect stays silent", async () => {
+  // The same contract the Orchestrator's admission emits, from the other seat — parsed by
+  // features/steps/kind.steps.ts to hold the tier's routability budget.
+  const lines: string[] = [];
+  let attempts = 0;
+  const fetchImpl: typeof globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw new TypeError("fetch failed", {
+        cause: Object.assign(new Error("connect ECONNREFUSED 10.96.0.7:4000"), {
+          code: "ECONNREFUSED",
+          syscall: "connect",
+        }),
+      });
+    }
+    return Response.json(REVIEW_SURFACE);
+  };
+  const opts = { url: "http://orchestrator.invalid", token: TOKEN, retryInitialMs: 1, retryMaxMs: 2 };
+  const client = new OrchestratorClient({ ...opts, fetch: fetchImpl, log: (line) => lines.push(line) });
+
+  await client.surface("iid-1");
+  assert.equal(lines.length, 1);
+  assert.match(
+    lines[0]!,
+    /^j2\.routability seat=surface attempts=2 ms=\d+ url=http:\/\/orchestrator\.invalid\/agents\/iid-1\/surface$/,
+  );
+
+  // A second client whose very first attempt connects says nothing at all.
+  const quiet: string[] = [];
+  await new OrchestratorClient({
+    ...opts,
+    fetch: async () => Response.json(REVIEW_SURFACE),
+    log: (line) => quiet.push(line),
+  }).surface("iid-1");
+  assert.deepEqual(quiet, []);
+});
+
 test("a surface read whose window closes names the address, not `fetch failed`", async () => {
   const fetchImpl: typeof globalThis.fetch = async () => {
     throw new TypeError("fetch failed", {

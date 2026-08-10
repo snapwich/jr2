@@ -113,6 +113,47 @@ test("an admission that never left the host is retried — a Service with no bac
   assert.deepEqual(adm, admission);
 });
 
+test("a retry that SUCCEEDED still says what it cost — an absorbed fault must not be an unmeasured one", async () => {
+  // ADR-0042 absorbs the retry (ADR-0016: no event, no budget on the authoring surface), which is
+  // right and is also how this whole class stayed invisible for three sessions. The line is the
+  // compromise: not a run-feed event, just a number the `@kind` tier can hold a budget against.
+  const lines: string[] = [];
+  const { fetch } = scriptedFetch([
+    () => Promise.reject(transportError("ECONNREFUSED", "connect")),
+    () => new Response(JSON.stringify(admission), { status: 200 }),
+  ]);
+  const measured = createHarnessClient({
+    baseUrl: "http://h.test",
+    fetch,
+    backoffInitialMs: 1,
+    backoffMaxMs: 2,
+    log: (line) => lines.push(line),
+  });
+
+  await measured.send("coder", "inst-1", { message: "do the thing" });
+
+  assert.equal(lines.length, 1);
+  // This shape is a CONTRACT with features/steps/kind.steps.ts, which parses it for the tier's
+  // routability budget — a rename here that is not made there fails nothing and checks nothing.
+  assert.match(
+    lines[0]!,
+    /^j2\.routability seat=admission attempts=2 ms=\d+ url=http:\/\/h\.test\/agents\/coder\/inst-1$/,
+  );
+});
+
+test("an admission that connects first time is silent — a line existing at all is the signal", async () => {
+  const lines: string[] = [];
+  const { fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
+
+  await createHarnessClient({ baseUrl: "http://h.test", fetch, log: (line) => lines.push(line) }).send(
+    "coder",
+    "inst-1",
+    { message: "do the thing" },
+  );
+
+  assert.deepEqual(lines, []);
+});
+
 test("a transport failure that may have reached the Harness is NOT retried — a re-POST is a second turn", async () => {
   // Admission is accept-and-queue (ADR-0027): a POST the Harness received but could not answer
   // has already queued a Submission, so re-sending it would run the turn twice. Only a failure

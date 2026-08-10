@@ -86,6 +86,9 @@ export type HarnessClientOptions = {
    * reasoned from the mechanism alone, and cleared neither. Tests shrink it.
    */
   admitWindowMs?: number;
+  /** Where the routability line goes when an admission had to retry — see `routabilityLine`.
+   * Default `console.warn`; tests capture it. */
+  log?: (line: string) => void;
 };
 
 /** A Submission that settled `failed`/`aborted` — or whose conversation the Harness no longer
@@ -107,6 +110,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   const backoffInitialMs = options.backoffInitialMs ?? 250;
   const backoffMaxMs = options.backoffMaxMs ?? 5_000;
   const admitWindowMs = options.admitWindowMs ?? 90_000;
+  const log = options.log ?? ((line: string) => console.warn(line));
 
   const conversationUrl = (agentName: string, instanceId: string) =>
     new URL(`/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`, baseUrl).toString();
@@ -135,13 +139,18 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
    * never answers is a fault this call has to name itself.
    */
   const postAdmission = async (url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> => {
-    const deadline = Date.now() + admitWindowMs;
+    const startedAt = Date.now();
+    const deadline = startedAt + admitWindowMs;
     let backoffMs = backoffInitialMs;
     let attempts = 0;
     for (;;) {
       attempts += 1;
       try {
-        return await fetchImpl(url, init);
+        const res = await fetchImpl(url, init);
+        // Only when it actually cost something. A window that is never approached should be silent,
+        // so that a line appearing at all is already the signal (see `routabilityLine`).
+        if (attempts > 1) log(routabilityLine("admission", url, attempts, Date.now() - startedAt));
+        return res;
       } catch (err) {
         // A local abandon propagates untranslated, exactly as in `wait` — the stopped actor
         // swallows it, and it is not a fault.
@@ -391,6 +400,29 @@ function toSettlement(event: SubmissionSettledEvent): Settlement {
 async function errorDetail(res: Response): Promise<string> {
   const body = (await res.json().catch(() => undefined)) as { error?: unknown } | undefined;
   return typeof body?.error === "string" ? body.error : res.statusText || "no detail";
+}
+
+/**
+ * The marker the `@kind` tier greps for, and therefore a CONTRACT — duplicated verbatim in
+ * `@j2/adapter` (the two packages share no runtime dependency) and matched in
+ * `features/steps/kind.steps.ts`. Renaming it on one side does not break a build; it silently turns
+ * the tier's routability budget into a check that passes because it matches nothing.
+ */
+const ROUTABILITY_MARKER = "j2.routability";
+
+/**
+ * What a retry at a lifecycle edge COST, emitted once, only when there was a cost.
+ *
+ * ADR-0042 absorbs these retries (ADR-0016's principle: no event, no budget on the authoring
+ * surface), and absorption is the right call — but a fault that is absorbed and never measured is
+ * how "Ready is not routable" stayed invisible for three sessions. Absorbing and measuring are not
+ * in conflict: this is a log line, not a run-feed event, so nothing about the workflow surface
+ * changes and the `@kind` tier can still assert a budget on the window it currently only benefits
+ * from. Scoped deliberately to the two hops ADR-0042 is about — `wait`'s reconnect is a live
+ * stream re-attaching, not a Service coming into existence, and does not belong in this number.
+ */
+function routabilityLine(seat: "admission" | "surface", url: string, attempts: number, ms: number): string {
+  return `${ROUTABILITY_MARKER} seat=${seat} attempts=${attempts} ms=${ms} url=${url}`;
 }
 
 /**

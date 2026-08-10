@@ -54,12 +54,15 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   windows more often, which is exactly why the flake was degree-independent and serial runs never hit it. Measured after
   both: **degree 4 → 8 consecutive runs, 88/88 scenarios, 1m30–1m43s each** on a sealed tree, against a ~1-in-3 loss
   rate before. **The wired default is now `--parallel 4`** (in the `kind` profile, so a direct
-  `npx cucumber-js --profile kind` gets it too); pass `--parallel 1` to bisect a suspected isolation bug. Two tier
-  changes came out of the hunt and stay: a FAILED `@kind` scenario dumps its evidence (the provider's request count,
+  `npx cucumber-js --profile kind` gets it too); pass `--parallel 1` to bisect a suspected isolation bug. Three tier
+  changes came out of the hunt and stay. A FAILED `@kind` scenario dumps its evidence (the provider's request count,
   `j2 status`, the Harness's `?view=history`, every pod log with timestamps, events, EndpointSlices) to
-  `features/.tmp/kind-failures/` before its namespace is deleted, and the tier's own workflow ROUTES `agent.fault`
-  instead of ignoring it — an ignored terminal fault is an invisible one, and a tier that hangs where it could name the
-  reason is a tier that costs a session per defect.
+  `features/.tmp/kind-failures/` before its namespace is deleted. The tier's own workflow ROUTES `agent.fault` instead
+  of ignoring it — an ignored terminal fault is an invisible one, and a tier that hangs where it could name the reason
+  is a tier that costs a session per defect. And **every** scenario, passing or not, is now scraped for what ADR-0042's
+  retries COST (`j2.routability seat=… attempts=…`), with a budget of 4 attempts judged per worker in `AfterAll`. That
+  last one is the tier watching the fix rather than merely enjoying it: the retry is absorbed by design, so without it a
+  cluster drifting toward the 90s window would keep passing — slightly slower, silently — until the day it did not.
 - **An opt-in `@console` tier for the Console's UX** (added with
   [ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)). The Console's risky behavior is interaction —
   token-mode switching, the frame-triggered gate inbox, selection vs. folding — which no reducer test sees and no CLI
