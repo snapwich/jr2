@@ -106,11 +106,19 @@ and is not decided here.
   routability got twice as slow tomorrow, all 88 scenarios would still pass, a little slower, in silence, until the day
   the window finally closed and the suite went red as a fresh mystery. Being unseeable is precisely how this class
   survived three sessions, so each seat emits ONE line when a retry actually cost something —
-  `j2.routability seat=… attempts=… ms=… url=…` — and the `@kind` tier holds a budget against it (4 attempts), judged
-  once per worker in `AfterAll`. A log line, not a run-feed event: the authoring surface is untouched, so nothing above
+  `j2.routability seat=… attempts=… ms=… last=… url=…` — and the `@kind` tier holds a budget against it, judged once per
+  worker in `AfterAll`. A log line, not a run-feed event: the authoring surface is untouched, so nothing above
   contradicts itself. What the tier now asserts is not that the retry worked — the scenarios already assert that — but
   **how much of the window is being spent**, which is what turns 90s from a number read off two GitHub issues into a
   measurement of the cluster in front of us.
+- **The first live reading immediately corrected this ADR, which is the argument for having taken it.** The budget was
+  going to be attempts alone. The tier's first measurement was **2 attempts costing 10667ms** — one dropped SYN sitting
+  on undici's 10s connect timeout, not a ladder being climbed. So the refusal that dominates the cost here is a DROP,
+  not the kube-proxy REJECT this ADR leads with; both are real, and they cost in opposite currencies. A REJECT is
+  instant, so it spends attempts and almost no time. A DROP spends time and almost no attempts. An attempts-only budget
+  of 4 would therefore have waved through ~40s of a 90s window without a word. The budget is now **30s or 4 attempts**,
+  whichever trips first, and the line carries the final errno so nobody has to infer which mode they are looking at from
+  the arithmetic.
 - **This is the ecosystem's answer, not a j2 workaround**, which is worth recording because "retry" reads as a patch.
   [kind#2280](https://github.com/kubernetes-sigs/kind/issues/2280) is this defect exactly — EndpointSlices populated,
   connection still refused, up to 77s — and it establishes that waiting for the EndpointSlice is NOT sufficient, which

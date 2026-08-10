@@ -91,9 +91,28 @@ const ROUTABILITY_MARKER = "j2.routability";
  * is how "Ready is not routable" stayed invisible for three sessions. This is a log line, not a
  * run-feed event, so the workflow surface is untouched while the `@kind` tier gets a number it can
  * hold a budget against.
+ *
+ * `attempts` and `ms` measure different refusals and are both needed: a REJECT spends attempts and
+ * almost no time, a dropped SYN spends time and almost no attempts (the tier's first live reading
+ * was 2 attempts costing 10667ms — one connect timeout). `last` names which.
  */
-function routabilityLine(seat: "admission" | "surface", url: string, attempts: number, ms: number): string {
-  return `${ROUTABILITY_MARKER} seat=${seat} attempts=${attempts} ms=${ms} url=${url}`;
+function routabilityLine(
+  seat: "admission" | "surface",
+  url: string,
+  attempts: number,
+  ms: number,
+  lastCode: string,
+): string {
+  return `${ROUTABILITY_MARKER} seat=${seat} attempts=${attempts} ms=${ms} last=${lastCode} url=${url}`;
+}
+
+/** The errno of a transport rejection, read structurally down the cause chain. */
+function transportCode(err: unknown, depth = 0): string {
+  if (depth > 4 || typeof err !== "object" || err === null) return "?";
+  const { code, cause, errors } = err as { code?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof code === "string") return code;
+  const nested = Array.isArray(errors) ? errors[0] : cause;
+  return nested === undefined || nested === null ? "?" : transportCode(nested, depth + 1);
 }
 
 /**
@@ -202,19 +221,21 @@ export class OrchestratorClient {
     const deadline = startedAt + this.retryWindowMs;
     let backoffMs = this.retryInitialMs;
     let attempts = 0;
+    let lastCode = "?";
     for (;;) {
       attempts += 1;
       try {
         const res = await this.fetchImpl(url, { headers: { authorization: `Bearer ${this.token}` } });
         // Before the status is read: the measurement is about CONNECTING, and a 404 that took four
         // attempts to reach is the same routability cost as a 200 that did.
-        if (attempts > 1) this.log(routabilityLine("surface", url, attempts, Date.now() - startedAt));
+        if (attempts > 1) this.log(routabilityLine("surface", url, attempts, Date.now() - startedAt, lastCode));
         if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}"`);
         return (await this.ok(res)) as Surface;
       } catch (err) {
         // An answered request is an answer, however unwelcome: a 404 is ADR-0026's turn-is-over,
         // and a 403 is a scope refusal. Only a request that never got one is worth re-asking.
         if (err instanceof NoSurfaceError || !isTransportFailure(err)) throw err;
+        lastCode = transportCode(err);
         if (Date.now() >= deadline) {
           throw new Error(`the Orchestrator never answered ${url}: ${transportDetail(err)}`, { cause: err });
         }

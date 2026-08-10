@@ -137,7 +137,7 @@ test("a retry that SUCCEEDED still says what it cost — an absorbed fault must 
   // routability budget — a rename here that is not made there fails nothing and checks nothing.
   assert.match(
     lines[0]!,
-    /^j2\.routability seat=admission attempts=2 ms=\d+ url=http:\/\/h\.test\/agents\/coder\/inst-1$/,
+    /^j2\.routability seat=admission attempts=2 ms=\d+ last=ECONNREFUSED url=http:\/\/h\.test\/agents\/coder\/inst-1$/,
   );
 });
 

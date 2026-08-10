@@ -271,7 +271,7 @@ test("a retried surface read reports what it cost, and a first-time connect stay
   assert.equal(lines.length, 1);
   assert.match(
     lines[0]!,
-    /^j2\.routability seat=surface attempts=2 ms=\d+ url=http:\/\/orchestrator\.invalid\/agents\/iid-1\/surface$/,
+    /^j2\.routability seat=surface attempts=2 ms=\d+ last=ECONNREFUSED url=http:\/\/orchestrator\.invalid\/agents\/iid-1\/surface$/,
   );
 
   // A second client whose very first attempt connects says nothing at all.

@@ -143,15 +143,17 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
     const deadline = startedAt + admitWindowMs;
     let backoffMs = backoffInitialMs;
     let attempts = 0;
+    let lastCode = "?";
     for (;;) {
       attempts += 1;
       try {
         const res = await fetchImpl(url, init);
         // Only when it actually cost something. A window that is never approached should be silent,
         // so that a line appearing at all is already the signal (see `routabilityLine`).
-        if (attempts > 1) log(routabilityLine("admission", url, attempts, Date.now() - startedAt));
+        if (attempts > 1) log(routabilityLine("admission", url, attempts, Date.now() - startedAt, lastCode));
         return res;
       } catch (err) {
+        lastCode = transportCode(err);
         // A local abandon propagates untranslated, exactly as in `wait` — the stopped actor
         // swallows it, and it is not a fault.
         if (signal?.aborted) throw err;
@@ -420,9 +422,31 @@ const ROUTABILITY_MARKER = "j2.routability";
  * changes and the `@kind` tier can still assert a budget on the window it currently only benefits
  * from. Scoped deliberately to the two hops ADR-0042 is about — `wait`'s reconnect is a live
  * stream re-attaching, not a Service coming into existence, and does not belong in this number.
+ *
+ * `attempts` and `ms` are BOTH here because they measure different refusals, and the tier's first
+ * live reading proved it: 2 attempts costing 10667ms, which is one dropped SYN sitting on undici's
+ * 10s connect timeout, not a ladder being climbed. A REJECT (kube-proxy with no ready backend)
+ * spends attempts and almost no time; a DROP spends time and almost no attempts. `last` carries the
+ * errno of the final failure so the line says WHICH without anyone having to do that arithmetic.
  */
-function routabilityLine(seat: "admission" | "surface", url: string, attempts: number, ms: number): string {
-  return `${ROUTABILITY_MARKER} seat=${seat} attempts=${attempts} ms=${ms} url=${url}`;
+function routabilityLine(
+  seat: "admission" | "surface",
+  url: string,
+  attempts: number,
+  ms: number,
+  lastCode: string,
+): string {
+  return `${ROUTABILITY_MARKER} seat=${seat} attempts=${attempts} ms=${ms} last=${lastCode} url=${url}`;
+}
+
+/** The errno of a transport rejection, read structurally down the cause chain (`transportDetail`
+ * gives the prose; this gives the one token worth aggregating on). */
+function transportCode(err: unknown, depth = 0): string {
+  if (depth > 4 || typeof err !== "object" || err === null) return "?";
+  const { code, cause, errors } = err as { code?: unknown; cause?: unknown; errors?: unknown };
+  if (typeof code === "string") return code;
+  const nested = Array.isArray(errors) ? errors[0] : cause;
+  return nested === undefined || nested === null ? "?" : transportCode(nested, depth + 1);
 }
 
 /**

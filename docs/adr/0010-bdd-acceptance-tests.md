@@ -60,9 +60,11 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   `features/.tmp/kind-failures/` before its namespace is deleted. The tier's own workflow ROUTES `agent.fault` instead
   of ignoring it — an ignored terminal fault is an invisible one, and a tier that hangs where it could name the reason
   is a tier that costs a session per defect. And **every** scenario, passing or not, is now scraped for what ADR-0042's
-  retries COST (`j2.routability seat=… attempts=…`), with a budget of 4 attempts judged per worker in `AfterAll`. That
-  last one is the tier watching the fix rather than merely enjoying it: the retry is absorbed by design, so without it a
-  cluster drifting toward the 90s window would keep passing — slightly slower, silently — until the day it did not.
+  retries COST (`j2.routability seat=… attempts=… ms=… last=…`), against a budget of 30s or 4 attempts judged per worker
+  in `AfterAll` — two meters because a REJECT spends attempts and a dropped SYN spends time, and the tier's first
+  reading was the latter (2 attempts, 10667ms, one connect timeout). That last one is the tier watching the fix rather
+  than merely enjoying it: the retry is absorbed by design, so without it a cluster drifting toward the 90s window would
+  keep passing — slightly slower, silently — until the day it did not.
 - **An opt-in `@console` tier for the Console's UX** (added with
   [ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)). The Console's risky behavior is interaction —
   token-mode switching, the frame-triggered gate inbox, selection vs. folding — which no reducer test sees and no CLI

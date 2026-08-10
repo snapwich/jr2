@@ -826,12 +826,30 @@ async function allPodLogs(world: E2EWorld): Promise<string> {
  * exact shape, and a rename made in only one place checks nothing while still passing. */
 const ROUTABILITY_MARKER = "j2.routability";
 
-/** How many attempts one seat may spend before the tier calls it a regression. A healthy crossing
- * is one or two: kube-proxy programs the EndpointSlice in well under a second, and the ladder
- * starts at 250ms. Four leaves room for a loaded node without leaving room for a trend. */
+/**
+ * TWO budgets, because a Service refuses in two ways that cost differently — and the first live
+ * reading is what proved one number insufficient.
+ *
+ * A REJECT (kube-proxy, no ready backend) fails instantly, so it spends ATTEMPTS and almost no
+ * time. A dropped SYN sits on undici's 10s connect timeout, so it spends TIME and almost no
+ * attempts: the first crossing this tier ever measured was 2 attempts costing 10667ms, which an
+ * attempts-only budget of 4 would have waved through at up to ~40s of a 90s window.
+ *
+ * 30s is a third of the window: room for two connect timeouts and a ladder, and nowhere near the
+ * 10.7s that is normal here.
+ */
 const ROUTABILITY_BUDGET_ATTEMPTS = 4;
+const ROUTABILITY_BUDGET_MS = 30_000;
 
-type RoutabilityRetry = { seat: string; attempts: number; ms: number; url: string; scenario: string };
+type RoutabilityRetry = {
+  seat: string;
+  attempts: number;
+  ms: number;
+  /** The final errno — `ECONNREFUSED` for a REJECT, `UND_ERR_CONNECT_TIMEOUT` for a drop. */
+  last: string;
+  url: string;
+  scenario: string;
+};
 
 /** Every retry this WORKER's scenarios paid for. Under `--parallel` each worker is its own process
  * and so keeps its own list, which is right: any worker over budget fails the run. */
@@ -856,6 +874,7 @@ function parseRoutability(text: string, scenario: string): RoutabilityRetry[] {
       seat: fields.get("seat") ?? "?",
       attempts: Number(fields.get("attempts") ?? 0),
       ms: Number(fields.get("ms") ?? 0),
+      last: fields.get("last") ?? "?",
       url: fields.get("url") ?? "?",
       scenario,
     });
@@ -961,18 +980,33 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
  */
 AfterAll(function (): void {
   if (routabilityObserved.length === 0) return;
-  const worst = routabilityObserved.reduce((a, b) => (b.attempts > a.attempts ? b : a));
+  const slowest = routabilityObserved.reduce((a, b) => (b.ms > a.ms ? b : a));
+  const busiest = routabilityObserved.reduce((a, b) => (b.attempts > a.attempts ? b : a));
   console.error(
-    `[kind] routability: ${routabilityObserved.length} retried call(s), worst ${worst.attempts} attempts / ${worst.ms}ms\n` +
-      routabilityObserved.map((r) => `  ${r.seat} attempts=${r.attempts} ms=${r.ms} — ${r.scenario}`).join("\n"),
+    `[kind] routability: ${routabilityObserved.length} retried call(s), worst ${slowest.ms}ms / ` +
+      `${busiest.attempts} attempts\n` +
+      routabilityObserved
+        .map((r) => `  ${r.seat} attempts=${r.attempts} ms=${r.ms} last=${r.last} — ${r.scenario}`)
+        .join("\n"),
   );
-  if (worst.attempts > ROUTABILITY_BUDGET_ATTEMPTS) {
+  const over =
+    (slowest.ms > ROUTABILITY_BUDGET_MS && {
+      r: slowest,
+      was: `${slowest.ms}ms`,
+      budget: `${ROUTABILITY_BUDGET_MS}ms`,
+    }) ||
+    (busiest.attempts > ROUTABILITY_BUDGET_ATTEMPTS && {
+      r: busiest,
+      was: `${busiest.attempts} attempts`,
+      budget: `${ROUTABILITY_BUDGET_ATTEMPTS} attempts`,
+    });
+  if (over) {
     throw new Error(
-      `routability budget exceeded: the ${worst.seat} seat spent ${worst.attempts} attempts (${worst.ms}ms) ` +
-        `reaching ${worst.url}, over a budget of ${ROUTABILITY_BUDGET_ATTEMPTS}. Every scenario may well have ` +
-        `PASSED — ADR-0042's retry absorbs this, and a suite that only notices when the 90s window finally ` +
-        `closes notices as a mystery. Either this cluster got slower, or something upstream of the Service is ` +
-        `taking longer to become routable; the window is the last line of defence, not the measurement.`,
+      `routability budget exceeded: the ${over.r.seat} seat spent ${over.was} (budget ${over.budget}, ` +
+        `last errno ${over.r.last}) reaching ${over.r.url}. Every scenario may well have PASSED — ADR-0042's ` +
+        `retry absorbs this, and a suite that only notices when the 90s window finally closes notices as a ` +
+        `mystery. Either this cluster got slower or something upstream of the Service is taking longer to ` +
+        `become routable; the window is the last line of defence, not the measurement.`,
     );
   }
 });
