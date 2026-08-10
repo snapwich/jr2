@@ -832,13 +832,18 @@ const ROUTABILITY_MARKER = "j2.routability";
  *
  * A REJECT (kube-proxy, no ready backend) fails instantly, so it spends ATTEMPTS and almost no
  * time. A dropped SYN sits on undici's 10s connect timeout, so it spends TIME and almost no
- * attempts: the first crossing this tier ever measured was 2 attempts costing 10667ms, which an
- * attempts-only budget of 4 would have waved through at up to ~40s of a 90s window.
+ * attempts. Both have now been measured here, one per run: `2 attempts / 10667ms` (a drop) and
+ * `3 attempts / 502ms / ECONNREFUSED` (a reject). Neither meter sees the other's mode, so an
+ * attempts-only budget would have waved ~40s of a 90s window through without a word, and a
+ * ms-only budget would let a Service reject for fifteen seconds unremarked.
  *
- * 30s is a third of the window: room for two connect timeouts and a ladder, and nowhere near the
- * 10.7s that is normal here.
+ * The two are calibrated to trip at about the same severity, which is what keeps them from being
+ * one meter written twice. Against a 250ms→5s jittered ladder, 8 attempts is ~9–18s of refusal;
+ * 30s is a third of the window, or three connect timeouts. Both sit far enough above what this
+ * cluster actually does (3 attempts, 10.7s) to be a signal rather than a coin flip — the first
+ * draft budgeted 4 attempts against an observed 3, which is not a budget, it is a flake.
  */
-const ROUTABILITY_BUDGET_ATTEMPTS = 4;
+const ROUTABILITY_BUDGET_ATTEMPTS = 8;
 const ROUTABILITY_BUDGET_MS = 30_000;
 
 type RoutabilityRetry = {

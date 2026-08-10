@@ -116,9 +116,13 @@ and is not decided here.
   on undici's 10s connect timeout, not a ladder being climbed. So the refusal that dominates the cost here is a DROP,
   not the kube-proxy REJECT this ADR leads with; both are real, and they cost in opposite currencies. A REJECT is
   instant, so it spends attempts and almost no time. A DROP spends time and almost no attempts. An attempts-only budget
-  of 4 would therefore have waved through ~40s of a 90s window without a word. The budget is now **30s or 4 attempts**,
-  whichever trips first, and the line carries the final errno so nobody has to infer which mode they are looking at from
-  the arithmetic.
+  of 4 would therefore have waved through ~40s of a 90s window without a word. The very next run measured the other mode
+  — **3 attempts, 502ms, `ECONNREFUSED`** — which settled the shape: neither meter sees the other's failure, so the
+  budget is **30s or 8 attempts**, whichever trips first, and the line carries the final errno so nobody has to infer
+  the mode from the arithmetic. The two are calibrated to trip at comparable severity, which is what stops them being
+  one meter written twice: against the jittered 250ms→5s ladder, 8 attempts is ~9–18s of refusal, and 30s is three
+  connect timeouts. The first draft budgeted 4 attempts against an observed 3 — which is not a budget, it is a flake —
+  and only the second reading showed it.
 - **This is the ecosystem's answer, not a j2 workaround**, which is worth recording because "retry" reads as a patch.
   [kind#2280](https://github.com/kubernetes-sigs/kind/issues/2280) is this defect exactly — EndpointSlices populated,
   connection still refused, up to 77s — and it establishes that waiting for the EndpointSlice is NOT sufficient, which
