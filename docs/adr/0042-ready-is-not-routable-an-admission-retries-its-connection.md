@@ -50,11 +50,21 @@ windows more often. That is why the flake was degree-independent and serial runs
 - **The window is bounded, where `wait`'s is not.** `wait` may reconnect forever because its Submission is already
   admitted, so the lease owns the reporting ([ADR-0021](0021-workspace-continuity-is-a-lease-that-answers-back.md)'s
   `workspace.lost`). Nothing is admitted yet at this seat, so there is no turn for a lease to be about: an address that
-  never answers is a fault this call must name itself, and it names the address it kept trying. **60 seconds**, chosen
-  to outlast both ways a just-Ready Service refuses: kube-proxy programming the EndpointSlice (sub-second), and a
-  cluster-DNS negative answer cached from a lookup made a moment too early — CoreDNS's default TTL is 30s, so a 30s
-  window could expire exactly at the boundary and reproduce the defect at a longer period. `fetch failed` does not say
-  which of the two happened, so the bound covers both rather than betting on one.
+  never answers is a fault this call must name itself, and it names the address it kept trying. **90 seconds — a
+  measurement, not a derivation.** The mechanism argues for far less: kube-proxy programs the EndpointSlice in well
+  under a second, and CoreDNS's 30s negative TTL is the only other obvious floor. Reasoning from the mechanism alone is
+  how this ADR first arrived at 60s, and 60s clears neither number the field has actually recorded —
+  [kubernetes#88986](https://github.com/kubernetes/kubernetes/issues/88986) measures **63s** on bare metal (a
+  SYN-retransmit ladder, 1-2-4-8-16-32, so those packets were DROPPED rather than refused), and
+  [kind#2280](https://github.com/kubernetes-sigs/kind/issues/2280) measures **up to 77s** with the EndpointSlices
+  already populated. The bound covers both. Its cost is paid only by an address that is genuinely wrong, and that one
+  faults with the address in hand either way.
+- **The ladder is jittered, because the callers arrive together.** Sandboxes that converge together cross the same
+  window together, and every Adapter in the cluster dials the same Orchestrator Service — so an un-jittered ladder does
+  not merely fail to help, it organizes the callers into a herd that retries and misses in lockstep. Each sleep is drawn
+  from the TOP HALF of its rung (equal jitter). The random half decorrelates them; the half that stays a floor is the
+  deliberate part, and it is what full jitter would give away — it is what still holds four clients off a Service that
+  is genuinely down.
 - **A transport failure says what it was.** `fetch` reports every one of them as the same three words, and
   `reason: "fetch failed"` on a run is a diagnosis of nothing — the errno one level down (`connect ECONNREFUSED …`,
   `getaddrinfo ENOTFOUND …`) is the whole answer. Both the admission fault and the echo's log line now carry it.
@@ -91,4 +101,18 @@ and is not decided here.
   they come into existence, and that a call which never got an answer has learned nothing worth acting on. Any new
   j2→Service call made at a lifecycle edge starts with that exposure until someone decides otherwise.
 - The retry is invisible to the workflow by construction (ADR-0016's absorption principle): no new event, no new budget
-  on the authoring surface, no bookkeeping in Machine context.
+  on the authoring surface, no bookkeeping in Machine context. **That invisibility is the one thing here worth
+  regretting.** The tier can no longer SEE this class: if routability got twice as slow tomorrow, all 88 scenarios would
+  still pass, a little slower, silently — and being unseeable is precisely how the defect survived three sessions.
+  Absorbing a fault and measuring it are not in conflict; the tier asserting an attempt budget it currently only
+  benefits from is the obvious follow-up, and is not done here.
+- **This is the ecosystem's answer, not a j2 workaround**, which is worth recording because "retry" reads as a patch.
+  [kind#2280](https://github.com/kubernetes-sigs/kind/issues/2280) is this defect exactly — EndpointSlices populated,
+  connection still refused, up to 77s — and it establishes that waiting for the EndpointSlice is NOT sufficient, which
+  retires gating the CR's `phase: Ready` on it as a narrowing rather than a fix. Knative's activator arrives at the same
+  place from the other side: it
+  [probes the pod itself and treats its own successful probe as authoritative](https://knative.dev/blog/articles/demystifying-activator-on-path/)
+  regardless of what Kubernetes says, exactly so traffic can start before the control plane catches up. j2's version is
+  that with one fewer moving part — the first real request IS the probe — which is only safe because `neverDelivered` is
+  what makes it re-sendable. A separate probe would add a round trip and put the race back (probe succeeds, the rule
+  changes, the real request lands).

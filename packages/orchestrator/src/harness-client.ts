@@ -68,17 +68,22 @@ export type HarnessClientOptions = {
   baseUrl: string;
   /** Injectable for socket-free tests. Default: global `fetch`. */
   fetch?: typeof fetch;
-  /** Reconnect backoff floor/ceiling (capped exponential; network failures only — an answered
-   * long-poll re-polls immediately). Defaults 250ms → 5s; tests shrink them. */
+  /** Reconnect backoff floor/ceiling (capped exponential, jittered per rung — see `jittered`;
+   * network failures only, an answered long-poll re-polls immediately). Defaults 250ms → 5s; tests
+   * shrink them. */
   backoffInitialMs?: number;
   backoffMaxMs?: number;
   /**
    * How long `send` keeps re-POSTing an admission that never reached the Harness. See
    * `postAdmission` for why this window exists and why it is BOUNDED where `wait`'s reconnect is
-   * not. Default 60s: wide enough to outlast BOTH ways a just-Ready Service refuses — kube-proxy
-   * programming the EndpointSlice (sub-second) and a cluster DNS negative answer cached from a
-   * lookup made too early (CoreDNS's default TTL is 30s, so a 30s window could expire exactly at
-   * the boundary). Tests shrink it.
+   * not.
+   *
+   * Default 90s, taken from the longest delays anyone has MEASURED rather than from the mechanism.
+   * The mechanism argues for much less — kube-proxy programs the EndpointSlice in well under a
+   * second, and CoreDNS's 30s negative TTL is the only other obvious floor — but kubernetes#88986
+   * records 63s on bare metal (a SYN-retransmit ladder, 1-2-4-8-16-32: dropped, not refused) and
+   * kind#2280 records up to 77s with the EndpointSlices already populated. This started at 60s,
+   * reasoned from the mechanism alone, and cleared neither. Tests shrink it.
    */
   admitWindowMs?: number;
 };
@@ -101,7 +106,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   const fetchImpl = options.fetch ?? fetch;
   const backoffInitialMs = options.backoffInitialMs ?? 250;
   const backoffMaxMs = options.backoffMaxMs ?? 5_000;
-  const admitWindowMs = options.admitWindowMs ?? 60_000;
+  const admitWindowMs = options.admitWindowMs ?? 90_000;
 
   const conversationUrl = (agentName: string, instanceId: string) =>
     new URL(`/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`, baseUrl).toString();
@@ -149,7 +154,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             { cause: err },
           );
         }
-        await sleep(backoffMs, signal);
+        await sleep(jittered(backoffMs), signal);
         backoffMs = Math.min(backoffMs * 2, backoffMaxMs);
       }
     }
@@ -214,7 +219,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
           // offset, forever, backing off to the cap.
           if (signal?.aborted) throw err;
           if (err instanceof SettlementFault) throw err;
-          await sleep(backoffMs, signal);
+          await sleep(jittered(backoffMs), signal);
           backoffMs = Math.min(backoffMs * 2, backoffMaxMs);
           continue;
         }
@@ -386,6 +391,20 @@ function toSettlement(event: SubmissionSettledEvent): Settlement {
 async function errorDetail(res: Response): Promise<string> {
   const body = (await res.json().catch(() => undefined)) as { error?: unknown } | undefined;
   return typeof body?.error === "string" ? body.error : res.statusText || "no detail";
+}
+
+/**
+ * One rung of the ladder, drawn from its TOP HALF (equal jitter).
+ *
+ * The ladder on its own is synchronized, and the callers arrive together by construction: Sandboxes
+ * that converge together cross the same routability window together, so their retries land
+ * together, miss together, and re-land together — the ladder turns one late Service into a
+ * lockstep herd. Randomizing half the interval decorrelates them. Keeping the other half as a floor
+ * is the part worth stating: it is what still holds four clients off a Service that is genuinely
+ * down, which full jitter (uniform over the whole interval) would trade away.
+ */
+function jittered(ms: number): number {
+  return ms / 2 + Math.random() * (ms / 2);
 }
 
 /** An abortable pause — the reconnect backoff. Rejects with the signal's reason, untranslated. */

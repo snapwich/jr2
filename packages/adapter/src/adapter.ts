@@ -77,6 +77,20 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * One rung of the ladder, drawn from its TOP HALF (equal jitter). Duplicated from the
+ * Orchestrator's client on purpose — the two packages share no runtime dependency, and this is one
+ * line of arithmetic, not a contract.
+ *
+ * Every Adapter in the cluster dials the SAME Orchestrator Service, so a restart puts all of them
+ * on the same ladder at the same instant: un-jittered, they retry in lockstep and miss in lockstep.
+ * The random half decorrelates them; the floor that remains is what keeps them off a Service that
+ * is genuinely down.
+ */
+function jittered(ms: number): number {
+  return ms / 2 + Math.random() * (ms / 2);
+}
+
+/**
  * Did this request fail without the Orchestrator answering at all? `fetch` rejects on transport
  * failure and resolves on every HTTP status, so the rejection itself is the whole test — an
  * answered request never lands here. `this.ok`'s throws are ordinary `Error`s and must NOT be
@@ -113,8 +127,8 @@ export type OrchestratorOptions = {
   token: string;
   /** Injectable for tests. Defaults to global `fetch`. */
   fetch?: typeof globalThis.fetch;
-  /** Surface-read retry ladder and window (ADR-0042) — see `surface`. Defaults 250ms → 5s over
-   * 60s; tests shrink them. */
+  /** Surface-read retry ladder and window (ADR-0042) — see `surface`. Defaults 250ms → 5s
+   * (jittered per rung) over 90s; tests shrink them. */
   retryInitialMs?: number;
   retryMaxMs?: number;
   retryWindowMs?: number;
@@ -135,7 +149,7 @@ export class OrchestratorClient {
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.retryInitialMs = opts.retryInitialMs ?? 250;
     this.retryMaxMs = opts.retryMaxMs ?? 5_000;
-    this.retryWindowMs = opts.retryWindowMs ?? 60_000;
+    this.retryWindowMs = opts.retryWindowMs ?? 90_000;
   }
 
   /**
@@ -173,7 +187,7 @@ export class OrchestratorClient {
         if (Date.now() >= deadline) {
           throw new Error(`the Orchestrator never answered ${url}: ${transportDetail(err)}`, { cause: err });
         }
-        await sleep(backoffMs);
+        await sleep(jittered(backoffMs));
         backoffMs = Math.min(backoffMs * 2, this.retryMaxMs);
       }
     }
