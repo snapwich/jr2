@@ -357,9 +357,12 @@ export const body = j2Setup({
 
 // No `input` schema: this wrapper is a pool WORKER, fed per-item by `itemInput` below and never
 // by a caller (ADR-0033 — the pool declares the run's door), so there is no door to declare here.
-// The mapper's parameter is annotated instead.
+// Permissive means j2 knows nothing about what starts it (`unknown`), so the mapper's parameter
+// states what the pool feeds it — a claim about a private seam, not a door anything serves. State
+// it in full: this is `itemInput`'s result below, which is also what `body` is fed, so a partial
+// annotation would describe a seam neither end actually has.
 const feature = workspace(body, {
-  spec: ({ input }: { input: { feature: Ticket } }) => ({
+  spec: ({ input }: { input: { feature: Ticket; reviewRounds: number } }) => ({
     repos: [{ name: "app", baseRef: input.feature.baseRef }],
     branch: input.feature.branch,
   }),
@@ -370,6 +373,14 @@ const feature = workspace(body, {
 // ready" (tk's re-queried ready-set — never materialized); pool owns spawn/collect/wake/drain,
 // finals when the source is drained and children settled (jr exit 0), and reports deadlock
 // (open-but-never-ready work) distinctly from healthy parking.
+
+// The door (ADR-0033): jr's two env knobs, declared once on the machine a caller actually starts
+// — served as JSON Schema, enforced at the door, and the source of the mapper types below. Both
+// stay optional so a bare `j2 run` keeps jr's defaults.
+const runInput = z.object({
+  maxConcurrent: z.number().int().positive().optional().describe("Features worked at once. Default: 3."),
+  reviewRounds: z.number().int().positive().optional().describe("Coder⇄reviewer rounds per task. Default: 5."),
+});
 
 const readyFeatures = source<Ticket>({
   next: fromPromise<Ticket | null, { active: string[] }>(async ({ input }) => {
@@ -383,10 +394,12 @@ const readyFeatures = source<Ticket>({
 
 export const machine = pool(feature, {
   id: "coding",
+  input: runInput,
   source: readyFeatures,
   itemId: (t: Ticket) => t.id,
-  cap: ({ input }: { input: { maxConcurrent?: number } }) => input.maxConcurrent ?? 3, // JR_MAX_CONCURRENT
-  itemInput: (t: Ticket, { input }: { input: { reviewRounds?: number } }) => ({
+  // Both mappers read the PARSED door — inferred from the schema, annotated nowhere.
+  cap: ({ input }) => input.maxConcurrent ?? 3, // JR_MAX_CONCURRENT
+  itemInput: (t: Ticket, { input }) => ({
     feature: t,
     reviewRounds: input.reviewRounds ?? 5, // JR_REVIEW_ROUNDS
   }),

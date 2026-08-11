@@ -13,8 +13,9 @@ Three workflows on the settled ADR-0015..0019 surface:
   in the default `pnpm -r test` gate, cluster-free.
 - **`workflows/jr.ts`** — [jr](https://github.com/snapwich/jr)'s `start-work` orchestration as a j2 Machine (machine id
   `coding`). The j2 side is done; the workflow-owned side (tk actors, `openPr`/`pushBranch`) is sketched. Read it as the
-  reference for a full-scale workflow shape: Pool over a tk Source, architect review, escalation parking. Its notes are
-  at the bottom of that file.
+  reference for a full-scale workflow shape: Pool over a tk Source, architect review, escalation parking. Its door is
+  the Pool's — `maxConcurrent`, `reviewRounds`, both optional (jr's `JR_*` env knobs) — and it types `cap`/`itemInput`.
+  Its notes are at the bottom of that file.
 
 ## task-with-review
 
@@ -121,9 +122,10 @@ per-cluster operator too.
   turn up or down without changing who the Agent is (ADR-0018). Sessions are fresh by default; endpoint and Sandbox
   resolve ambiently from the enclosing `workspace()`; the workflow sees ONE terminal `agent.fault { reason }`.
 - **`workspace(body, { input, spec })` owns Sandbox lifecycle only** and hands the body `{ workdir, repos, branch }` on
-  top of the run input — `Workspaced<RunInput>`. `input` is the wrapper's own declared door (ADR-0033), and it types
-  `spec`; the body never declares the door, because what the body receives is the door plus handles nobody can send. A
-  body that parks keeps its Sandbox alive — that _is_ the retain policy.
+  top of the run input — `Workspaced<RunInput>`. `input` is the wrapper's own declared door (ADR-0033); it types `spec`
+  and checks the body, which may not demand more than the door plus the handles (demanding less is fine). The body never
+  declares the door — what it receives is the door plus handles nobody can send — and one that tries is refused. A body
+  that parks keeps its Sandbox alive — that _is_ the retain policy.
 - **`j2.config.ts` `repos` is the catalog**: the boot reconcile clones each entry onto the in-cluster source volume
   (`repos/<name>/default`, read-only in pods — ADR-0004); the workflow's `workspace()` spec picks which entries a run
   mounts — task-with-review takes the name as run input.

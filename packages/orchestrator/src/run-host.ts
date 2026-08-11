@@ -471,6 +471,11 @@ export class RunHost {
     const record: RunRecord = { runId, workflow, instanceId };
 
     const machine = this.assemble(def, instanceId);
+    // The root machine gets the parsed door PLUS what the host injects beside it —
+    // `HostInjectedInput` (vocabulary.ts): the seed Instance ID, added after the parse because no
+    // caller sends it and nothing serves it (ADR-0033). Only the root: a machine invoked below is
+    // fed by its parent, which is why the type is placement-dependent and `workspace()`'s body
+    // guard counts those keys as provided rather than claiming to know where the wrapper sits.
     const actor = this.spawn(machine, { input: { ...runInput, instanceId } }, record, def);
     actor.start();
     return { runId, instanceId };

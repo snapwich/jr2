@@ -15,7 +15,7 @@ import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { j2Setup } from "../src/setup.ts";
 import { pool, source } from "../src/pool.ts";
-import { workspace, type SandboxPort } from "../src/workspace.ts";
+import { workspace, type SandboxPort, type Workspaced } from "../src/workspace.ts";
 import { inputSchemaOf, vocabularyOf } from "../src/vocabulary.ts";
 import { EventValidationError } from "../src/registration.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
@@ -39,6 +39,19 @@ const titledTemplate = j2Setup({
 function titledDef(): WorkflowDef {
   return { name: "titled", machine: titledTemplate, provide: () => ({}) };
 }
+
+/** A workspace BODY: no schema of its own (the door belongs to the wrapper), and its input is the
+ * door plus the handles the wrapper injects — `Workspaced<…>`, the composition the wrapper's
+ * declared door is checked against. */
+const wsBody = j2Setup({
+  types: {} as { context: { repo: string }; input: Workspaced<{ repo: string; branch: string }> },
+  events: [approveDef],
+}).createMachine({
+  id: "wsbody",
+  context: ({ input }) => ({ repo: input.repo }),
+  initial: "idle",
+  states: { idle: { on: { approve: "done" } }, done: { type: "final" } },
+});
 
 /** A Sandbox backend that never answers: the wrapper stays at `provisioning`, which is all this
  * suite needs — the resolved spec is already in its context, and no pod is anyone's business here. */
@@ -116,14 +129,14 @@ test("the declared schema is exposed as JSON Schema; unknown workflow is undefin
 test("workspace(): the body's schema is NOT the door — the wrapper declares its own via `input`", async () => {
   // The body is fed the run input PLUS the injected `workspace` handles, so its contract is the
   // door plus a field no caller can send. Propagating it would 400 every valid start.
-  const bare = workspace(titledTemplate, {
+  const bare = workspace(wsBody, {
     spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }),
   });
   assert.equal(inputSchemaOf(bare), undefined);
-  assert.equal(vocabularyOf(bare), vocabularyOf(titledTemplate)); // vocabulary still propagates
+  assert.equal(vocabularyOf(bare), vocabularyOf(wsBody)); // vocabulary still propagates
 
   const door = z.object({ repo: z.string(), branch: z.string().default("feat-1") });
-  const declared = workspace(titledTemplate, {
+  const declared = workspace(wsBody, {
     input: door,
     // `input` is inferred from the schema — nothing here annotates a shape by hand.
     spec: ({ input }) => ({ repos: [{ name: input.repo, baseRef: "main" }], branch: input.branch }),
@@ -149,6 +162,18 @@ test("workspace(): the body's schema is NOT the door — the wrapper declares it
   assert.deepEqual(ctx.spec, { repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" });
 });
 
+test("workspace(): wrapping a body that declares its own input fails loudly, naming the fix", () => {
+  // A schema on the body is a DEAD declaration: the wrapper serves its own door, so nothing would
+  // ever validate against this one — and what the body is actually fed (the door plus the handles)
+  // is not what it describes. Silence would leave an author trusting a contract that does not
+  // exist, which is the exact drift ADR-0033 closes.
+  assert.throws(
+    () => workspace(titledTemplate, { spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b" }) }),
+    (err: Error) =>
+      /declares its own run input/.test(err.message) && /workspace\(body, \{ input, spec \}\)/.test(err.message),
+  );
+});
+
 test("pool(): the worker's schema is NOT the door — the pool declares its own via `spec.input`", async () => {
   const worker = j2Setup({ events: [approveDef] }).createMachine({
     id: "worker",
@@ -168,7 +193,8 @@ test("pool(): the worker's schema is NOT the door — the pool declares its own 
     input: poolInput,
     source: parked,
     itemId: () => "i",
-    cap: ({ input }) => (input as { maxWorkers: number }).maxWorkers,
+    // Inferred from the declared schema, like `workspace()`'s spec mapper — nothing casts here.
+    cap: ({ input }) => input.maxWorkers,
   });
   assert.equal(inputSchemaOf(capped), poolInput);
 

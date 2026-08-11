@@ -296,9 +296,11 @@ export const machine = j2Setup({
     working: {
       invoke: {
         src: "work",
-        // The wrapper is AnyStateMachine (its input is untyped at this seam), so the mapper
-        // names its own context type.
-        input: ({ context }: { context: TopCtx }) => ({
+        // Checked by the compiler in both directions: the mapper's result must satisfy the
+        // wrapper's declared door (ADR-0033 — `codeRouteInput`, so forgetting `reason` here is a
+        // build error), and the wrapper's output is the body's, verbatim (ADR-0012), so `onDone`
+        // arrives typed with no cast.
+        input: ({ context }) => ({
           prompt: context.prompt,
           repo: context.repo,
           branch: context.branch,
@@ -308,9 +310,7 @@ export const machine = j2Setup({
         }),
         onDone: {
           target: "done",
-          // The wrapper's output is the body's, verbatim (ADR-0012); untyped on the wire, so the
-          // one cast names the body's own output type.
-          actions: assign({ outcome: ({ event }) => (event.output as BodyOutput).outcome }),
+          actions: assign({ outcome: ({ event }) => event.output.outcome }),
         },
       },
     },

@@ -36,6 +36,11 @@ than coupling to coding-shaped ones.
 The wrapper's `input` beside it is the door the spec maps FROM — the wrapper's own declared run-input schema, which also
 types the mapping ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)). It sits on the wrapper and not on
 the body precisely because of the injection above: the body's input is the door plus `workspace`, which no caller sends.
+That same composition is what the door checks the body against, one way only — the body may not demand more than the
+wrapper hands it; demanding less is safe — so the injection is a compile-time contract, not just a comment. The host's
+own injection into a root machine's input (`instanceId`) counts as handed over for that check, because whether it
+actually reaches this body depends on where the wrapper sits and no type can see that
+([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)).
 
 ## There is no retain policy: parking is retention
 

@@ -22,11 +22,27 @@
 // commits are gone, so it delivers `workspace.lost` INTO the restored body (same channel as
 // `agent.fault`) and the body's policy decides. Never silently re-provision.
 
-import { assign, createMachine, fromCallback, fromPromise, sendTo, type AnyStateMachine } from "xstate";
+import {
+  assign,
+  createMachine,
+  fromCallback,
+  fromPromise,
+  sendTo,
+  type AnyStateMachine,
+  type InputFrom,
+  type OutputFrom,
+  type StateMachine,
+} from "xstate";
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
-import { attachInputSchema, attachVocabulary, vocabularyOf } from "./vocabulary.ts";
+import {
+  attachInputSchema,
+  attachVocabulary,
+  inputSchemaOf,
+  vocabularyOf,
+  type HostInjectedInput,
+} from "./vocabulary.ts";
 
 /** Lease cadence when the backend names none. Well inside the 30m default idle timeout, so a
  * few missed renewals in a row are survivable; also the worst-case detection latency for a
@@ -76,6 +92,11 @@ export type WorkspaceHandles = {
  * may send, and no caller can send `workspace` (the handles do not exist until a Sandbox is
  * provisioned and attached). Naming it here keeps the body from hand-copying
  * {@link WorkspaceHandles}, which drifts.
+ *
+ * The wrapper passes its input through UNTOUCHED, so a ROOT-placed wrapper's body also receives
+ * what the host injected beside the door — `HostInjectedInput` today (the run's `instanceId`).
+ * That is outside this type on purpose: it depends on where the wrapper sits, and `Workspaced` is
+ * the composition the WRAPPER makes.
  */
 export type Workspaced<TInput> = TInput & { workspace: WorkspaceHandles };
 
@@ -182,42 +203,127 @@ type WsContext = {
 };
 
 /**
- * What the `spec` mapper is handed. With a declared door it is the PARSED run input, inferred
- * from the schema — no call site annotates the shape by hand. Without one the door is permissive
- * (ADR-0033: absence accepts anything), so j2 has nothing to infer from and says so with `any`,
- * exactly as `PoolSpec.cap`/`itemInput` do: annotate the parameter at the call site if you want a
- * check there, but the honest fix is to declare `input`.
+ * What `workspace()` returns: a Machine erased to the two parameters that carry meaning across
+ * the seam — the door a run of it starts with, and the body's output, which the wrapper forwards
+ * verbatim (ADR-0012). Everything else is the wrapper's own business, so it stays `any`: a
+ * generic `setup()` over the body does not infer (report-xstate.md §3), which is why the
+ * implementation is loosely typed and only the public signature is precise.
  */
-type Door<TInput extends z.ZodObject | undefined> = TInput extends z.ZodObject ? z.infer<TInput> : any;
+export type WorkspaceMachine<TInput, TOutput> = StateMachine<
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  any,
+  TInput,
+  TOutput,
+  any,
+  any,
+  any
+>;
 
 /**
- * How a Workspace is configured (ADR-0012, ADR-0033) — the wrapper's own door, and the mapping
- * from what comes through it to workspace vocabulary.
+ * The door CONSTRAINS the body (ADR-0033), in one direction only: the body may not demand more
+ * than the wrapper will hand it, which is the door plus the injected handles ({@link Workspaced}).
+ * A body that demands LESS is safe — it is fed a superset — so this is an assignability test, not
+ * an equality one.
+ *
+ * {@link HostInjectedInput} is added to the PROVIDED side, not subtracted from the demanded one.
+ * `RunHost.start` hands the ROOT machine `{ ...runInput, instanceId }` and the wrapper passes its
+ * input through untouched, so a root-placed wrapper feeds its body that field too — while a nested
+ * one does not, and no type can see which. Of the two answers a type can give, this takes the
+ * permissive one: holding the body to the door alone rejects one that declares the field honestly
+ * (`features/kind-instance/workflows/*.ts` do) with a diagnostic telling the author to widen the
+ * door — the wrong fix, since the field is host-supplied, never sent, and never served as JSON
+ * Schema (ADR-0033).
+ *
+ * Widening the provided side is what keeps the carve-out from becoming a hole. SUBTRACTING the
+ * keys instead (`Omit<InputFrom<TBody>, keyof HostInjectedInput>`) drops them from the comparison
+ * entirely, which loses two cases claim 1 owns: a body declaring `instanceId: number` passes,
+ * because the key it got wrong is the key that was removed; and a body whose input is a UNION is
+ * checked against the union's SHARED keys only, so every member could demand a field the door
+ * never carries and still compile. Stated on the provided side, both are rejected, and the admit
+ * set is otherwise identical.
+ *
+ * The failure is spelled as an object type whose single key is the sentence to read: TypeScript
+ * prints the key of the property it could not satisfy, so the diagnostic on a rejected body names
+ * the fix instead of a structural diff. Pinning the body's TInput slot instead would NOT work —
+ * `StateMachine`'s members include methods, and method parameters are bivariant, so a body
+ * demanding MORE than the door provides compiles. Both directions are pinned by
+ * `test/door-types.test.ts`, which the typecheck gate runs.
  */
-export type WorkspaceOptions<TInput extends z.ZodObject | undefined = undefined> = {
+type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor> =
+  Workspaced<TDoor> & HostInjectedInput extends InputFrom<TBody>
+    ? unknown
+    : { "the body's declared input must accept the door plus the injected handles": Workspaced<TDoor> };
+
+/**
+ * How a Workspace with a declared door is configured (ADR-0012, ADR-0033) — the wrapper's own
+ * run-input schema, and the mapping from what comes through it to workspace vocabulary.
+ */
+export type WorkspaceOptions<TSchema extends z.ZodObject> = {
   /** The wrapper's OWN declared run input (ADR-0033) — what a caller sends to start a run of it,
-   * and what types `spec`'s `input`. Deliberately NOT the body's schema: the body is fed the run
-   * input PLUS the injected `workspace` handles ({@link Workspaced}), which no caller can send, so
-   * the body's contract is the door plus something that does not exist yet. Symmetric with
-   * `PoolSpec.input`. Omitted → the door stays permissive. */
-  input?: TInput;
+   * what types `spec`'s `input`, and what the body is checked against. Deliberately NOT the body's
+   * schema: the body is fed the run input PLUS the injected `workspace` handles
+   * ({@link Workspaced}), which no caller can send, so the body's contract is the door plus
+   * something that does not exist yet. Symmetric with `PoolSpec.input`. */
+  input: TSchema;
   /** Map what came through the door to the workspace-domain spec: what to attach, on what ref,
    * on which branch (ADR-0012's boundary — workflow configuration never enters it). */
-  spec: (args: { input: Door<TInput> }) => WorkspaceSpec;
+  spec: (args: { input: z.infer<TSchema> }) => WorkspaceSpec;
+};
+
+/**
+ * How a Workspace with NO declared door is configured: absence is permissive (ADR-0033), so j2
+ * has nothing to infer from and says `unknown` rather than `any` — an honest "j2 does not know",
+ * which the mapper must narrow before it reads a field. A wrapper that is fed by something other
+ * than a caller — a pool worker, a nested invoke — may state what it is fed by annotating the
+ * parameter (`spec: ({ input }: { input: Item }) => …`), which types the wrapper's input too. For
+ * anything a caller starts, the honest fix is to declare `input`.
+ */
+export type PermissiveWorkspaceOptions<TInput = unknown> = {
+  /** Never present on this path. Spelled out so a declared schema can never fall through to the
+   * permissive overload, where the body would go unchecked. */
+  input?: never;
+  spec: (args: { input: TInput }) => WorkspaceSpec;
 };
 
 /**
  * Wrap a body Machine in Sandbox lifecycle (ADR-0012). `spec` maps the wrapper's input to the
  * workspace-domain spec; the body receives the wrapper's input plus `workspace` (the handles) —
- * `Workspaced<TInput>`. The wrapper's output is the body's output. A body ERROR is deliberately
- * unhandled: it faults the run loudly (RunStatus.fault) and leaves the Sandbox to the operator's
- * idle-timeout GC — the trail stays inspectable, and silent cleanup would destroy the evidence.
+ * `Workspaced<TInput>`, which is also what the declared door checks the body against. The
+ * wrapper's output is the body's output. A body ERROR is deliberately unhandled: it faults the run
+ * loudly (RunStatus.fault) and leaves the Sandbox to the operator's idle-timeout GC — the trail
+ * stays inspectable, and silent cleanup would destroy the evidence.
  */
-export function workspace<TInput extends z.ZodObject | undefined = undefined>(
+export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMachine>(
+  body: TBody & BodyAcceptsDoor<TBody, z.infer<TSchema>>,
+  options: WorkspaceOptions<TSchema>,
+): WorkspaceMachine<z.infer<TSchema>, OutputFrom<TBody>>;
+export function workspace<TBody extends AnyStateMachine, TInput = unknown>(
+  body: TBody,
+  options: PermissiveWorkspaceOptions<TInput>,
+): WorkspaceMachine<TInput, OutputFrom<TBody>>;
+export function workspace(
   body: AnyStateMachine,
-  options: WorkspaceOptions<TInput>,
+  options: { input?: z.ZodObject; spec: (args: { input: any }) => WorkspaceSpec },
 ): AnyStateMachine {
-  const wrapper = buildWorkspaceMachine(body, options.spec as (args: { input: any }) => WorkspaceSpec);
+  // A body that still declares its own run input is a dead declaration under the door design: the
+  // wrapper never serves it, never validates against it, and feeds the body something it does not
+  // describe. Silence would leave an author believing a contract that nothing enforces (ADR-0033).
+  if (inputSchemaOf(body)) {
+    throw new Error(
+      `workspace(): the body "${body.id}" declares its own run input, which nothing will ever ` +
+        "serve or enforce — the wrapper feeds the body the run input PLUS the injected `workspace` " +
+        "handles, so the body's schema is not the door. Move it to the wrapper: " +
+        "workspace(body, { input, spec }) (ADR-0033).",
+    );
+  }
+  const wrapper = buildWorkspaceMachine(body, options.spec);
   // Propagate the body's vocabulary onto the wrapper (ADR-0015): a workflow whose ROOT is this
   // wrapper still registers its defs — discovery reads the vocabulary off the exported machine.
   const vocab = vocabularyOf(body);

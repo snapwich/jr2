@@ -52,3 +52,22 @@ export function attachInputSchema(machine: AnyStateMachine, schema: z.ZodObject)
 export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined {
   return inputSchemas.get(machine);
 }
+
+/**
+ * What the HOST adds to the input of the machine a run STARTS with, beside the door
+ * (`RunHost.start`). One field today: the run's seed Instance ID, minted with the run and
+ * reported by `j2 status`, so an external caller can address the run's first conversation.
+ *
+ * It is deliberately NOT door material (ADR-0033): no caller sends it — `start` overwrites
+ * whatever arrived, after the parse — and it is never served as JSON Schema, so putting it in a
+ * door schema would publish it and demand of every caller a field the host supplies anyway.
+ *
+ * It is also PLACEMENT-DEPENDENT: only the ROOT machine is started with it. A machine invoked
+ * further down is fed by its parent, which passes what it chooses. No type can see where a machine
+ * sits, so the one contract that must reason about this — `workspace()`'s body guard — takes the
+ * permissive answer and counts these keys as PROVIDED, which lets a body declare the field
+ * honestly. Counting them as provided (rather than subtracting them from what the body demands)
+ * is what keeps their TYPE checked: `instanceId` is a string, and a body asking for anything else
+ * is still rejected.
+ */
+export type HostInjectedInput = { instanceId: string };

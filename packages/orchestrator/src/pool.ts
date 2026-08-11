@@ -60,20 +60,28 @@ export function source<T>(spec: SourceSpec<T>): SourceSpec<T> {
 /** How a pool run ends (its machine output). `items` maps itemId → the worker's output. */
 export type PoolOutput = { status: "drained" | "deadlocked"; items: Record<string, unknown> };
 
-export type PoolSpec<T> = {
+/**
+ * How a pool is configured (ADR-0017, ADR-0033). `TInput` is what came through the pool's door:
+ * the PARSED schema when `input` declares one, and `unknown` when it does not — absence is
+ * permissive, so j2 knows nothing and says so, exactly as `workspace()`'s door-less path does.
+ * A pool that is fed by something other than a caller may state what it is fed by annotating the
+ * mapper's parameter; for anything a caller starts, the honest fix is to declare `input`.
+ */
+export type PoolSpec<T, TInput = unknown> = {
   /** The machine id (the workflow's name in the Console). Default "pool". */
   id?: string;
-  /** The pool's OWN declared run input (ADR-0033) — what `cap` and `itemInput` read off the door.
-   * The WORKER's schema is deliberately not the door: workers are fed per-ITEM (the source item,
-   * or `itemInput`'s result), never the run body, so it describes nothing a starter sends. */
+  /** The pool's OWN declared run input (ADR-0033) — what `cap` and `itemInput` read off the door,
+   * and what types their `input`. The WORKER's schema is deliberately not the door: workers are
+   * fed per-ITEM (the source item, or `itemInput`'s result), never the run body, so it describes
+   * nothing a starter sends. */
   input?: z.ZodObject;
   source: SourceSpec<T>;
   /** Stable child identity: the spawn id, the active-set entry, the outcome key. */
   itemId: (item: T) => string;
   /** Max concurrent workers — a number, or derived from run input. Default 1. */
-  cap?: number | ((args: { input: any }) => number);
+  cap?: number | ((args: { input: TInput }) => number);
   /** Map an item (+ run input) to the worker's input. Default: the item itself. */
-  itemInput?: (item: T, args: { input: any }) => unknown;
+  itemInput?: (item: T, args: { input: TInput }) => unknown;
   /** Terminal policy when the source runs dry and children settle. Only "final" exists today
    * (jr semantics: runs END); a parking policy can be added when a workflow needs one. */
   onDrained?: "final";
@@ -110,7 +118,15 @@ function normalizeClaim(output: unknown): Claim {
  * vocabulary (plus the wake def) is propagated onto it, so discovery reads the full set off the
  * exported machine (ADR-0015).
  */
-export function pool(worker: AnyStateMachine, spec: PoolSpec<any>): AnyStateMachine {
+export function pool<TSchema extends z.ZodObject>(
+  worker: AnyStateMachine,
+  spec: PoolSpec<any, z.infer<TSchema>> & { input: TSchema },
+): AnyStateMachine;
+export function pool<TInput = unknown>(
+  worker: AnyStateMachine,
+  spec: PoolSpec<any, TInput> & { input?: never },
+): AnyStateMachine;
+export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStateMachine {
   const wake = spec.source.wake;
   const claimOf = (event: unknown): Claim => normalizeClaim((event as { output: unknown }).output);
   const itemIdOf = (event: unknown): string => spec.itemId(claimOf(event).item as never);
