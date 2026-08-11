@@ -18,7 +18,25 @@
 
 import { assign, emit } from "xstate";
 import { z } from "zod";
-import { defineEvent, j2Setup, workspace } from "@j2/orchestrator";
+import { defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
+
+// ---------------------------------------------------------------------------------------------
+// The door (ADR-0033): what a caller sends to start a run. Declared on the TOP machine here —
+// the workspace is nested behind triage, so the run's root is the j2Setup machine below. One
+// source of truth: the types derive from it and the Console's start form generates from it.
+
+const runInput = z.object({
+  prompt: z.string().describe("The task or question, in prose. Triage decides whether it needs code."),
+  repo: z.string().describe("A repo name from the instance's j2.config.ts catalog."),
+  branch: z.string().describe("The branch to cut and work on, if the task is routed to code."),
+  baseRef: z.string().optional().describe("What the branch is cut from and reviewed against. Default: main."),
+  reviewRounds: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Coder⇄reviewer rounds before the run parks for a human. Default: 3."),
+});
 
 // ---------------------------------------------------------------------------------------------
 // Vocabulary (ADR-0015). ONE list serves both machines: the exported (top) machine's vocabulary
@@ -77,19 +95,15 @@ const requestChanges = defineEvent({
 
 // ---------------------------------------------------------------------------------------------
 // The body — task-with-review's loop with the triager's "assess" seat between coder and
-// reviewer. `workspace()` appends `workspace: { workdir, repos, branch }` to the run input.
+// reviewer. It runs INSIDE the workspace, so its input is the workspace's input plus the injected
+// handles: `Workspaced<...>`. The workspace here is NOT the run's root (triage happens before
+// it), so what reaches it is the door plus what the triage state added — `reason`.
 
-type BodyInput = {
-  prompt: string;
-  repo: string;
-  branch: string;
-  baseRef?: string;
-  reviewRounds?: number;
+const codeRouteInput = runInput.extend({
   /** Why the triager routed here — frames the coder's task alongside the prompt. */
-  reason: string;
-  workspace: { workdir: string; repos: Record<string, string>; branch: string };
-};
-type BodyCtx = BodyInput & {
+  reason: z.string(),
+});
+type BodyCtx = Workspaced<z.infer<typeof codeRouteInput>> & {
   rounds: number;
   /** The coder's request_review summary — what the assess turn reports to the triager. */
   summary?: string;
@@ -103,7 +117,7 @@ type BodyOutput = { outcome: "approved" | "lost"; branch: string };
 /** Exported for the mechanics test (jr precedent): the body is drivable under a fake Sandbox
  * port with a mock agent port, which the wrapped export's baked-in slots cannot offer. */
 export const body = j2Setup({
-  types: {} as { context: BodyCtx; input: BodyInput; output: BodyOutput },
+  types: {} as { context: BodyCtx; input: Workspaced<z.infer<typeof codeRouteInput>>; output: BodyOutput },
   events: [requestReview, ship, review, reviewVerdict, approve, requestChanges],
   guards: {
     underReviewCap: ({ context }: { context: BodyCtx }) => context.rounds < (context.reviewRounds ?? 3),
@@ -213,18 +227,22 @@ export const body = j2Setup({
   output: ({ context }) => ({ outcome: context.outcome ?? "approved", branch: context.workspace.branch }),
 });
 
-// Workspace: the repo is run input (must match the instance's `j2.config.ts` catalog).
-const work = workspace(body, ({ input }: { input: { repo: string; branch: string; baseRef?: string } }) => ({
-  repos: [{ name: input.repo, baseRef: input.baseRef ?? "main" }],
-  branch: input.branch,
-}));
+// Workspace: the repo is run input (must match the instance's `j2.config.ts` catalog). A machine
+// declares the input that STARTS it (ADR-0033) — for this wrapper that is what triage hands down,
+// which types the spec mapper; the run's door is the top machine's, below.
+const work = workspace(body, {
+  input: codeRouteInput,
+  spec: ({ input }) => ({
+    repos: [{ name: input.repo, baseRef: input.baseRef ?? "main" }],
+    branch: input.branch,
+  }),
+});
 
 // ---------------------------------------------------------------------------------------------
 // The top machine: triage OUTSIDE the workspace() — no Sandbox exists until the triager says
 // the task needs one, and the "answer" route never provisions anything at all.
 
-type RunInput = { prompt: string; repo: string; branch: string; baseRef?: string; reviewRounds?: number };
-type TopCtx = RunInput & {
+type TopCtx = z.infer<typeof runInput> & {
   answer?: string;
   reason?: string;
   outcome?: "answered" | "approved" | "lost" | "triage-fault";
@@ -233,7 +251,7 @@ type TopCtx = RunInput & {
 export const machine = j2Setup({
   types: {} as {
     context: TopCtx;
-    input: RunInput;
+    input: z.infer<typeof runInput>;
     output: { outcome: "answered" | "approved" | "lost" | "triage-fault"; answer?: string; branch: string };
     emitted: { type: "triage.decided"; route: "answer" | "code"; reason?: string };
   },
@@ -241,6 +259,7 @@ export const machine = j2Setup({
   actors: { work },
 }).createMachine({
   id: "triaged-task",
+  input: runInput,
   context: ({ input }) => ({ ...input }),
   initial: "triage",
   states: {
@@ -307,7 +326,7 @@ export const machine = j2Setup({
 
 // --- Prompts (personas live in the Agent definitions; these are per-turn task framings) ------
 
-function triagePrompt(c: RunInput): string {
+function triagePrompt(c: z.infer<typeof runInput>): string {
   return (
     `Triage this task for repo ${c.repo}:\n\n${c.prompt}\n\n` +
     `If it can be answered outright — a question, a lookup, a judgment call — call answer with ` +

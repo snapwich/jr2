@@ -1,6 +1,6 @@
-// `workspace(body, spec)` (ADR-0012): the j2-owned wrapper Machine that owns ONLY Sandbox
-// lifecycle — provision the Sandbox + attach repos/worktrees, run the author's body Machine
-// inside it with `{ workspace: { workdir, repos, branch } }` appended to its input (the
+// `workspace(body, { input, spec })` (ADR-0012): the j2-owned wrapper Machine that owns ONLY
+// Sandbox lifecycle — provision the Sandbox + attach repos/worktrees, run the author's body
+// Machine inside it with `{ workspace: { workdir, repos, branch } }` appended to its input (the
 // mechanism-facing endpoint/sandbox are published ambiently — ADR-0016, ambient.ts), and
 // destroy the Sandbox when the body reaches a final state. Teardown lives INSIDE the
 // wrapper's own states because an xstate stop is synchronous — multi-step async cleanup must be
@@ -23,9 +23,10 @@
 // `agent.fault`) and the body's policy decides. Never silently re-provision.
 
 import { assign, createMachine, fromCallback, fromPromise, sendTo, type AnyStateMachine } from "xstate";
+import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
-import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
+import { attachInputSchema, attachVocabulary, vocabularyOf } from "./vocabulary.ts";
 
 /** Lease cadence when the backend names none. Well inside the 30m default idle timeout, so a
  * few missed renewals in a row are survivable; also the worst-case detection latency for a
@@ -67,6 +68,16 @@ export type WorkspaceHandles = {
    * `reviewSha`. The reviewer's seat: hand one of these as its cwd/prompt frame. */
   review?: Record<string, string>;
 };
+
+/**
+ * A body's input under a Workspace: the run input the wrapper passes through, PLUS the handles it
+ * injects. The composition is the whole reason the door is declared on the wrapper and not on the
+ * body (ADR-0033) — `Workspaced<RunInput>` is what the body receives, `RunInput` is what a caller
+ * may send, and no caller can send `workspace` (the handles do not exist until a Sandbox is
+ * provisioned and attached). Naming it here keeps the body from hand-copying
+ * {@link WorkspaceHandles}, which drifts.
+ */
+export type Workspaced<TInput> = TInput & { workspace: WorkspaceHandles };
 
 /**
  * What a renewal learned about the workspace it just stamped (ADR-0021).
@@ -171,22 +182,51 @@ type WsContext = {
 };
 
 /**
- * Wrap a body Machine in Sandbox lifecycle (ADR-0012). `spec` maps the wrapper's input to the
- * workspace-domain spec; the body receives the wrapper's input plus `workspace` (the handles).
- * The wrapper's output is the body's output. A body ERROR is deliberately unhandled: it faults
- * the run loudly (RunStatus.fault) and leaves the Sandbox to the operator's idle-timeout GC —
- * the trail stays inspectable, and silent cleanup would destroy the evidence.
+ * What the `spec` mapper is handed. With a declared door it is the PARSED run input, inferred
+ * from the schema — no call site annotates the shape by hand. Without one the door is permissive
+ * (ADR-0033: absence accepts anything), so j2 has nothing to infer from and says so with `any`,
+ * exactly as `PoolSpec.cap`/`itemInput` do: annotate the parameter at the call site if you want a
+ * check there, but the honest fix is to declare `input`.
  */
-export function workspace(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
-  const wrapper = buildWorkspaceMachine(body, spec);
+type Door<TInput extends z.ZodObject | undefined> = TInput extends z.ZodObject ? z.infer<TInput> : any;
+
+/**
+ * How a Workspace is configured (ADR-0012, ADR-0033) — the wrapper's own door, and the mapping
+ * from what comes through it to workspace vocabulary.
+ */
+export type WorkspaceOptions<TInput extends z.ZodObject | undefined = undefined> = {
+  /** The wrapper's OWN declared run input (ADR-0033) — what a caller sends to start a run of it,
+   * and what types `spec`'s `input`. Deliberately NOT the body's schema: the body is fed the run
+   * input PLUS the injected `workspace` handles ({@link Workspaced}), which no caller can send, so
+   * the body's contract is the door plus something that does not exist yet. Symmetric with
+   * `PoolSpec.input`. Omitted → the door stays permissive. */
+  input?: TInput;
+  /** Map what came through the door to the workspace-domain spec: what to attach, on what ref,
+   * on which branch (ADR-0012's boundary — workflow configuration never enters it). */
+  spec: (args: { input: Door<TInput> }) => WorkspaceSpec;
+};
+
+/**
+ * Wrap a body Machine in Sandbox lifecycle (ADR-0012). `spec` maps the wrapper's input to the
+ * workspace-domain spec; the body receives the wrapper's input plus `workspace` (the handles) —
+ * `Workspaced<TInput>`. The wrapper's output is the body's output. A body ERROR is deliberately
+ * unhandled: it faults the run loudly (RunStatus.fault) and leaves the Sandbox to the operator's
+ * idle-timeout GC — the trail stays inspectable, and silent cleanup would destroy the evidence.
+ */
+export function workspace<TInput extends z.ZodObject | undefined = undefined>(
+  body: AnyStateMachine,
+  options: WorkspaceOptions<TInput>,
+): AnyStateMachine {
+  const wrapper = buildWorkspaceMachine(body, options.spec as (args: { input: any }) => WorkspaceSpec);
   // Propagate the body's vocabulary onto the wrapper (ADR-0015): a workflow whose ROOT is this
   // wrapper still registers its defs — discovery reads the vocabulary off the exported machine.
   const vocab = vocabularyOf(body);
   if (vocab) attachVocabulary(wrapper, vocab);
-  // Same propagation for the body's declared run input (ADR-0033): the wrapper passes its own
-  // input to the body untouched (`runInput`), so the body's contract IS the wrapper's door.
-  const inputSchema = inputSchemaOf(body);
-  if (inputSchema) attachInputSchema(wrapper, inputSchema);
+  // The door does NOT propagate from the body (ADR-0033): the wrapper hands the body the run
+  // input plus the injected `workspace` field, so the body's declared input would be the door
+  // plus a field no caller can send — declaring it there 400s every valid start. The wrapper
+  // declares its own, exactly as a pool does.
+  if (options.input) attachInputSchema(wrapper, options.input);
   return wrapper;
 }
 

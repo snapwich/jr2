@@ -181,10 +181,12 @@ test("inside the body: the assess Turn CONTINUES the triage conversation on the 
     actors: { agentRun: agentRunActorWith((endpoint) => (endpoints.push(endpoint), port)) },
   });
   attachVocabulary(provided, vocabularyOf(body)!);
-  const wrapped = workspace(provided, ({ input }: { input: { repo: string; branch: string } }) => ({
-    repos: [{ name: input.repo, baseRef: "main" }],
-    branch: input.branch,
-  }));
+  const wrapped = workspace(provided, {
+    spec: ({ input }: { input: { repo: string; branch: string } }) => ({
+      repos: [{ name: input.repo, baseRef: "main" }],
+      branch: input.branch,
+    }),
+  });
 
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox, agentWorkspace, instanceHarness: INSTANCE_HARNESS });

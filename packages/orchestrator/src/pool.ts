@@ -225,11 +225,12 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any>): AnyStateMach
     merged.set(wake.name, wake);
   }
   if (merged.size) attachVocabulary(machine, merged);
-  // The run input does NOT propagate from the worker (ADR-0033 as amended): unlike `workspace`,
-  // whose wrapper hands the run input to its body untouched, the pool never passes the run body
-  // to a worker — workers get items. Propagating the worker's schema would demand fields at the
-  // door the pool never uses, and zod's unknown-key stripping would silently DROP the pool-level
-  // fields `cap`/`itemInput` actually read. A pool with a contract declares `spec.input`.
+  // The run input does NOT propagate from the worker (ADR-0033): a wrapper declares its own door,
+  // because what it feeds its child is not what a caller sends. Here it is sharpest — the pool
+  // never passes the run body to a worker at all, workers get items — so propagating the worker's
+  // schema would demand fields at the door the pool never uses, and zod's unknown-key stripping
+  // would silently DROP the pool-level fields `cap`/`itemInput` actually read. `workspace` is the
+  // milder case of the same species. A pool with a contract declares `spec.input`.
   if (spec.input) attachInputSchema(machine, spec.input);
   return machine;
 }

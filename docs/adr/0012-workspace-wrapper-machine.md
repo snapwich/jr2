@@ -1,9 +1,9 @@
 # `workspace()` wraps a body Machine and owns only Sandbox lifecycle
 
-j2 provides Workspaces as a helper so workflows never provision Sandboxes themselves: `workspace(body, spec)` is a
-statically-imported factory (per [ADR-0011](0011-workflow-defined-events.md)'s import doctrine) returning a Machine that
-provisions a Sandbox and its worktrees, runs the author's **body** Machine inside it, and tears the Sandbox down when
-the body finishes. This makes CONTEXT.md's "Workspace = child Machine bound to a unit of work" concrete.
+j2 provides Workspaces as a helper so workflows never provision Sandboxes themselves: `workspace(body, { input, spec })`
+is a statically-imported factory (per [ADR-0011](0011-workflow-defined-events.md)'s import doctrine) returning a Machine
+that provisions a Sandbox and its worktrees, runs the author's **body** Machine inside it, and tears the Sandbox down
+when the body finishes. This makes CONTEXT.md's "Workspace = child Machine bound to a unit of work" concrete.
 
 ```
 provisioning:  create Sandbox CR → await phase: Ready → attach repos/worktrees (post-Ready, ADR-0004)
@@ -32,6 +32,10 @@ Sandbox: `{ workdir, repos, branch }`. The Harness `endpoint` and the Sandbox na
 — `agentRun` resolves them **ambiently** from the enclosing wrapper (a registrar actor co-invoked in `running`,
 ADR-0016), so the body cannot mis-thread them. Keeping this boundary is what lets one helper serve any workflow rather
 than coupling to coding-shaped ones.
+
+The wrapper's `input` beside it is the door the spec maps FROM — the wrapper's own declared run-input schema, which also
+types the mapping ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)). It sits on the wrapper and not on
+the body precisely because of the injection above: the body's input is the door plus `workspace`, which no caller sends.
 
 ## There is no retain policy: parking is retention
 

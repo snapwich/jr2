@@ -91,7 +91,7 @@ const body = j2Setup({
   output: ({ event }) => (event as { output?: unknown }).output,
 });
 
-const wrapped = workspace(body, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }));
+const wrapped = workspace(body, { spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }) });
 
 function wsDef(): WorkflowDef {
   return { name: "ws", machine: wrapped, provide: () => ({}) };
@@ -184,10 +184,12 @@ test("a spec deriving undefined fields (missing run input) faults BEFORE any pod
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   // The task-with-review shape: the mapping reads input fields this `j2 run --input` never carried.
-  const sloppy = workspace(body, ({ input }: { input: { repo?: string; branch?: string } }) => ({
-    repos: [{ name: input.repo as string, baseRef: "main" }],
-    branch: input.branch as string,
-  }));
+  const sloppy = workspace(body, {
+    spec: ({ input }: { input: { repo?: string; branch?: string } }) => ({
+      repos: [{ name: input.repo as string, baseRef: "main" }],
+      branch: input.branch as string,
+    }),
+  });
   host.register({ name: "sloppy", machine: sloppy, provide: () => ({}) });
 
   const { runId } = await host.start("sloppy", { prompt: "fix it" }); // no repo, no branch
@@ -210,7 +212,9 @@ test("spec.image: the NAME reaches the port untouched; a malformed one faults be
   // lands in a snapshot.
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
-  const named = workspace(body, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b", image: "rust" }));
+  const named = workspace(body, {
+    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b", image: "rust" }),
+  });
   host.register({ name: "named", machine: named, provide: () => ({}) });
 
   const { runId } = await host.start("named");
@@ -221,11 +225,9 @@ test("spec.image: the NAME reaches the port untouched; a malformed one faults be
   // so that failure belongs to provision.
   const bad = new FakeSandbox();
   const host2 = new RunHost({ store: await mkStore(), sandbox: bad });
-  const empty = workspace(body, () => ({
-    repos: [{ name: "app", baseRef: "main" }],
-    branch: "b",
-    image: "" as string,
-  }));
+  const empty = workspace(body, {
+    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b", image: "" as string }),
+  });
   host2.register({ name: "empty", machine: empty, provide: () => ({}) });
   const run2 = await host2.start("empty");
   await waitFor(() => host2.status(run2.runId) === undefined);
@@ -375,7 +377,9 @@ test("ambient resolution (ADR-0016): agentRun inside a workspace finds endpoint 
       done: { type: "final" },
     },
   });
-  const wrappedAmbient = workspace(ambientBody, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "amb" }));
+  const wrappedAmbient = workspace(ambientBody, {
+    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "amb" }),
+  });
 
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });

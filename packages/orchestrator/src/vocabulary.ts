@@ -39,9 +39,10 @@ export function vocabularyOf(machine: AnyStateMachine): Map<string, EventDef> | 
 const inputSchemas = new WeakMap<AnyStateMachine, z.ZodObject>();
 
 /** Attach a machine's declared run-input schema. j2-internal: `j2Setup.createMachine({ input })`
- * attaches it, and the machine factories (`workspace`, `pool`) PROPAGATE it onto the wrapper
- * they return exactly as they propagate the vocabulary — so a workflow whose root is a wrapper
- * still declares its door. */
+ * attaches it, and the machine factories (`workspace`, `pool`) attach their OWN — the `input` in
+ * their options. Unlike the vocabulary, the door deliberately does NOT propagate up from a body
+ * or a worker (ADR-0033): a wrapper feeds its child something other than the run input (the
+ * injected `workspace` handles; a source item), so the child's contract is not the door's. */
 export function attachInputSchema(machine: AnyStateMachine, schema: z.ZodObject): void {
   inputSchemas.set(machine, schema);
 }

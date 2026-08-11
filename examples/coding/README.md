@@ -28,7 +28,9 @@ humanReview ──request_changes {notes}──▶ coding                [fresh 
 ```
 
 Input (`--input` JSON): `prompt` (the task), `repo` (a catalog name from `j2.config.ts`), `branch` — all required;
-`baseRef` (default `main`), `reviewRounds` (default 3).
+`baseRef` (default `main`), `reviewRounds` (default 3). The workflow declares this door itself (ADR-0033), so a bad
+`--input` is a 400 naming the shape, `GET /workflows/task-with-review` serves it as JSON Schema, and the Console renders
+typed fields instead of a raw-JSON textarea.
 
 **The Gate park is the inspection window.** While `humanReview` is open the Sandbox stays alive: exec in, read the diff,
 and push it if the work should outlive the run — `approve` reaches the final state, which tears the Workspace down, and
@@ -118,8 +120,10 @@ per-cluster operator too.
 - **`agentRun` takes `{ agent, prompt }`** — plus the optional dials `model` and `thinkingLevel`, which turn this ONE
   turn up or down without changing who the Agent is (ADR-0018). Sessions are fresh by default; endpoint and Sandbox
   resolve ambiently from the enclosing `workspace()`; the workflow sees ONE terminal `agent.fault { reason }`.
-- **`workspace(body, spec)` owns Sandbox lifecycle only** and hands the body `{ workdir, repos, branch }`. A body that
-  parks keeps its Sandbox alive — that _is_ the retain policy.
+- **`workspace(body, { input, spec })` owns Sandbox lifecycle only** and hands the body `{ workdir, repos, branch }` on
+  top of the run input — `Workspaced<RunInput>`. `input` is the wrapper's own declared door (ADR-0033), and it types
+  `spec`; the body never declares the door, because what the body receives is the door plus handles nobody can send. A
+  body that parks keeps its Sandbox alive — that _is_ the retain policy.
 - **`j2.config.ts` `repos` is the catalog**: the boot reconcile clones each entry onto the in-cluster source volume
   (`repos/<name>/default`, read-only in pods — ADR-0004); the workflow's `workspace()` spec picks which entries a run
   mounts — task-with-review takes the name as run input.

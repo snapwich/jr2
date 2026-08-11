@@ -2,10 +2,10 @@
 // `createMachine({ input: z.object(...) })` — riding the machine object beside the vocabulary
 // (ADR-0015's WeakMap pattern). A declared schema is enforced at the door with gate-delivery
 // parity (400/EventValidationError naming what is accepted, the PARSED shape starts the run);
-// no schema stays permissive (today's wire); `workspace` propagates the body's contract onto the
-// wrapper it returns (the wrapper hands run input to the body untouched), while `pool` declares
-// its OWN door (workers are fed items, not the run body); and the schema is served as JSON
-// Schema — structure, open band.
+// no schema stays permissive (today's wire); a WRAPPER declares its own door — `workspace` via
+// its options' `input`, `pool` via `PoolSpec.input` — because neither hands its child the run
+// input as-is (a body also gets the injected `workspace` handles; a worker gets an item); and
+// the schema is served as JSON Schema — structure, open band.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { j2Setup } from "../src/setup.ts";
 import { pool, source } from "../src/pool.ts";
-import { workspace } from "../src/workspace.ts";
+import { workspace, type SandboxPort } from "../src/workspace.ts";
 import { inputSchemaOf, vocabularyOf } from "../src/vocabulary.ts";
 import { EventValidationError } from "../src/registration.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
@@ -39,6 +39,15 @@ const titledTemplate = j2Setup({
 function titledDef(): WorkflowDef {
   return { name: "titled", machine: titledTemplate, provide: () => ({}) };
 }
+
+/** A Sandbox backend that never answers: the wrapper stays at `provisioning`, which is all this
+ * suite needs — the resolved spec is already in its context, and no pod is anyone's business here. */
+const parkedSandbox = (): SandboxPort => ({
+  provision: () => new Promise(() => {}),
+  attach: () => new Promise(() => {}),
+  renew: async () => ({ present: true }),
+  destroy: async () => {},
+});
 
 const jsonPost = (body: unknown): RequestInit => ({
   method: "POST",
@@ -104,9 +113,40 @@ test("the declared schema is exposed as JSON Schema; unknown workflow is undefin
   assert.equal(host.inputSchema("nope"), undefined);
 });
 
-test("workspace() propagates the body's input schema onto the wrapper, beside the vocabulary", () => {
-  const wrapped = workspace(titledTemplate, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }));
-  assert.equal(inputSchemaOf(wrapped), startInput);
+test("workspace(): the body's schema is NOT the door — the wrapper declares its own via `input`", async () => {
+  // The body is fed the run input PLUS the injected `workspace` handles, so its contract is the
+  // door plus a field no caller can send. Propagating it would 400 every valid start.
+  const bare = workspace(titledTemplate, {
+    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }),
+  });
+  assert.equal(inputSchemaOf(bare), undefined);
+  assert.equal(vocabularyOf(bare), vocabularyOf(titledTemplate)); // vocabulary still propagates
+
+  const door = z.object({ repo: z.string(), branch: z.string().default("feat-1") });
+  const declared = workspace(titledTemplate, {
+    input: door,
+    // `input` is inferred from the schema — nothing here annotates a shape by hand.
+    spec: ({ input }) => ({ repos: [{ name: input.repo, baseRef: "main" }], branch: input.branch }),
+  });
+  assert.equal(inputSchemaOf(declared), door);
+
+  // Through the door for real: the wrapper's schema is what `GET /workflows/:name` serves and
+  // what `start` enforces, and the PARSED input is what reaches the spec mapper.
+  const host = new RunHost({ store: await mkStore(), sandbox: parkedSandbox() });
+  host.register({ name: "wsdoor", machine: declared, provide: () => ({}) });
+
+  const schema = host.inputSchema("wsdoor") as { properties?: Record<string, unknown>; required?: string[] };
+  assert.ok(schema?.properties?.repo);
+  assert.deepEqual(schema?.required, ["repo"]); // branch has a default — not required at the door
+  assert.ok(!schema?.properties?.workspace, "the door never asks for the injected handles");
+
+  await assert.rejects(
+    host.start("wsdoor", {}),
+    (err: Error) => err instanceof EventValidationError && /invalid input for workflow "wsdoor"/.test(err.message),
+  );
+  const { runId } = await host.start("wsdoor", { repo: "app" });
+  const ctx = host.status(runId)?.context as { spec: { repos: Array<{ name: string }>; branch: string } };
+  assert.deepEqual(ctx.spec, { repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" });
 });
 
 test("pool(): the worker's schema is NOT the door — the pool declares its own via `spec.input`", async () => {

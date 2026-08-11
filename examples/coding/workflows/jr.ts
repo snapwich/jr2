@@ -355,10 +355,15 @@ export const body = j2Setup({
 // ---------------------------------------------------------------------------------------------
 // Workspace: j2 owns Sandbox lifecycle; the spec speaks workspace vocabulary only.
 
-const feature = workspace(body, ({ input }: { input: { feature: Ticket } }) => ({
-  repos: [{ name: "app", baseRef: input.feature.baseRef }],
-  branch: input.feature.branch,
-}));
+// No `input` schema: this wrapper is a pool WORKER, fed per-item by `itemInput` below and never
+// by a caller (ADR-0033 — the pool declares the run's door), so there is no door to declare here.
+// The mapper's parameter is annotated instead.
+const feature = workspace(body, {
+  spec: ({ input }: { input: { feature: Ticket } }) => ({
+    repos: [{ name: "app", baseRef: input.feature.baseRef }],
+    branch: input.feature.branch,
+  }),
+});
 
 // ---------------------------------------------------------------------------------------------
 // The run: one feature body per ready item, at most `cap` at once. The source owns "what's

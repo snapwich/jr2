@@ -69,7 +69,7 @@ owning the base it runs on.
   git present · `$HOME` writable as uid 1000 · glibc + libstdc++ · ripgrep. The error names the fix, because "node did
   not execute" is not actionable.
 
-- **`workspace(body, spec)` names the image; resolution is: spec `image` → `images/default` → stock
+- **A `workspace()` spec names the image; resolution is: spec `image` → `images/default` → stock
   `j2-harness:<kitversion>`.** `j2 init` scaffolds `images/default/Dockerfile`, which is what makes the fallback a
   visible convention rather than magic. An unknown name fails loudly at provision, listing what was discovered — a
   converge-time check is impossible because workflow internals are not statically recoverable

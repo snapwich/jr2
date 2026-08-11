@@ -63,7 +63,6 @@ const body = j2Setup({
   },
 });
 
-export const machine = workspace(body, () => ({
-  repos: [{ name: "app", baseRef: "main" }],
-  branch: "feat-e2e",
-}));
+export const machine = workspace(body, {
+  spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-e2e" }),
+});

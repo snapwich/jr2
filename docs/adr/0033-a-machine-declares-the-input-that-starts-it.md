@@ -12,12 +12,24 @@ machine is the one piece of its vocabulary that pattern missed.
 ## Decision
 
 - **The schema rides the machine object, like the rest of the vocabulary.** `j2Setup.createMachine` accepts an `input`
-  (a zod object) and attaches it the same way event defs ride today (WeakMap-keyed on the machine object). `workspace`
-  propagates the body's schema onto the wrapper it returns, exactly as it propagates vocabulary — its wrapper hands the
-  run input to the body untouched, so the body's contract IS the door's. `pool` does not (amended): a worker is fed
-  per-item, never the run body, so propagating its schema would demand fields the pool never passes and strip the
-  pool-level fields `cap`/`itemInput` read; a pool declares its own door via `PoolSpec.input`. `input` is deliberately
-  xstate's own word for what a machine receives at creation — the authoring surface teaches nothing new.
+  (a zod object) and attaches it the same way event defs ride today (WeakMap-keyed on the machine object). `input` is
+  deliberately xstate's own word for what a machine receives at creation — the authoring surface teaches nothing new.
+- **A wrapper declares its own door; it never borrows its child's.** `workspace(body, { input, spec })` and
+  `pool(worker, { input, … })` each take an `input` of their own, and neither propagates one upward. The reason is the
+  same in both, at different strengths: a wrapper does not feed its child what a caller sent. `pool` is the sharp case —
+  a worker is fed per-item, never the run body, so propagating its schema would demand fields the pool never passes and
+  strip the pool-level fields `cap`/`itemInput` read. `workspace` is the mild one — its body gets the run input _plus_
+  the injected `workspace` handles, so the body's contract is the door PLUS a field no caller can send (the handles do
+  not exist until a Sandbox is provisioned and attached). Propagating it would make `createMachine({ input })` mean "my
+  input" on a bare machine and "my input minus what my wrapper injects" on a wrapped body — a context-dependent
+  contract, and a trap: a body that declared its input honestly, handles included, would 400 every valid run start.
+  Vocabulary still propagates, because events _are_ the same run's vocabulary wherever they are handled; the door is
+  not. The composition the body needs a name for is exported instead:
+  `Workspaced<T> = T & { workspace: WorkspaceHandles }`.
+- **The door types the mapping.** `WorkspaceOptions.spec` reads its `input` from the declared schema (`z.infer`), so a
+  workflow states its shape once and the workspace mapping is checked against it — the drift this ADR exists to close,
+  closed in the one place that used to re-declare the shape by hand. With no schema declared the door is permissive, so
+  there is nothing to infer and the mapper's argument is `any`, as `PoolSpec.cap`/`itemInput` already are.
 - **The schema is structure, so it is open.** Workflow-detail JSON (`GET /workflows/:name`, the address ADR-0032's
   negotiation kept) serves it as JSON Schema — same band as the Machine doc, and what drives the Console's start form
   before any token is entered. The _submit_ stays `authenticated`; schema open, trigger guarded.
@@ -28,8 +40,13 @@ machine is the one piece of its vocabulary that pattern missed.
 ## Considered options
 
 - **`export const input` beside `export const machine`.** Rejected: it re-opens what ADR-0015 closed — a workflow's
-  self-description split across module exports, and the factories would have nothing to propagate for a wrapped machine
-  whose input contract belongs to its body.
+  self-description split across module exports, when the machine object already carries every other piece of the
+  workflow's self-description.
+- **`workspace` propagates its body's schema onto the wrapper** (the shape this ADR first took, before `pool` forced the
+  question and `workspace` turned out to be the same species). Rejected: the wrapper's pass-through is not the body's
+  input — the body also gets the injected `workspace` field — so the propagated schema is right only for a body that
+  under-declares its own contract. Two ways to declare one door also cost more than the line of ceremony they save: an
+  author reading a wrapped workflow could not tell, without opening the factory, which declaration the runtime serves.
 - **Derive from xstate's `types.input`.** Impossible: TypeScript types are erased; there is nothing at runtime to serve
   or validate with.
 - **Require a schema on every workflow.** Rejected: it taxes the zero-ceremony hello-world for a guarantee only

@@ -96,7 +96,7 @@ function echoDef(client: MockFlueClient): WorkflowDef {
       finished: { type: "final" },
     },
   });
-  const wrapped = workspace(body, () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }));
+  const wrapped = workspace(body, { spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }) });
   return { name: "echoed", machine: wrapped, provide: () => ({}) };
 }
 

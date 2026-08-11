@@ -3,8 +3,8 @@
 // turns, derived menus/accepts, Gate delivery, teardown-on-final) without jr.ts's Pool/Source/tk
 // surface — the workflow-shaped equivalent of a smoke test. Filename → workflow "task-with-review".
 //
-// Input (all run input; repo must name a `j2.config.ts` catalog entry):
-//   { prompt: string, repo: string, branch: string, baseRef?: string, reviewRounds?: number }
+// Input: the `runInput` schema below IS the contract — declared once, served as JSON Schema at
+// `GET /workflows/task-with-review`, enforced at the door, and the source of every type here.
 //
 // Shape: coder ⇄ reviewer under a round cap, everything funneling into ONE `humanReview` Gate —
 // the reviewer's approval, the cap running out, and a terminal agent.fault all park there (the
@@ -14,7 +14,27 @@
 
 import { assign } from "xstate";
 import { z } from "zod";
-import { defineEvent, j2Setup, workspace } from "@j2/orchestrator";
+import { defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
+
+// ---------------------------------------------------------------------------------------------
+// The door (ADR-0033): what a caller sends to start a run, declared on the `workspace()` that is
+// this workflow's root. One source of truth — the TypeScript types below derive from it, the
+// Console generates its start form from it, and it types the spec mapper. `workspace` is
+// deliberately absent: the handles are injected by the wrapper and no caller can send them.
+
+const runInput = z.object({
+  prompt: z.string().describe("The task for the coder, in prose."),
+  repo: z.string().describe("A repo name from the instance's j2.config.ts catalog."),
+  branch: z.string().describe("The branch to cut and work on."),
+  baseRef: z.string().optional().describe("What the branch is cut from and reviewed against. Default: main."),
+  reviewRounds: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Coder⇄reviewer rounds before the run parks for a human. Default: 3."),
+});
+type RunInput = z.infer<typeof runInput>;
 
 // ---------------------------------------------------------------------------------------------
 // Vocabulary: agent events become the invoking state's tool menu; external events become the
@@ -46,17 +66,14 @@ const requestChanges = defineEvent({
 });
 
 // ---------------------------------------------------------------------------------------------
-// The body. `workspace()` appends `workspace: { workdir, repos, branch }` to the run input.
+// The body. It receives the run input PLUS the handles `workspace()` injects — that composition
+// is `Workspaced<RunInput>`, and it is exactly why the door is declared on the wrapper.
+//
+// `branch` appears on both halves and they are not the same claim: the door's is what the caller
+// ASKED for, `workspace.branch` is the branch the attach actually made. The body reads
+// `workspace.branch`, always — it is the fact.
 
-type BodyInput = {
-  prompt: string;
-  repo: string;
-  branch: string;
-  baseRef?: string;
-  reviewRounds?: number;
-  workspace: { workdir: string; repos: Record<string, string>; branch: string };
-};
-type BodyCtx = BodyInput & {
+type BodyCtx = Workspaced<RunInput> & {
   rounds: number;
   reviewNotes?: string;
   /** Why the run is parked at humanReview — rides the gate's meta. */
@@ -65,7 +82,11 @@ type BodyCtx = BodyInput & {
 };
 
 const body = j2Setup({
-  types: {} as { context: BodyCtx; input: BodyInput; output: { outcome: "approved" | "lost"; branch: string } },
+  types: {} as {
+    context: BodyCtx;
+    input: Workspaced<RunInput>;
+    output: { outcome: "approved" | "lost"; branch: string };
+  },
   events: [requestReview, reviewVerdict, approve, requestChanges],
   guards: {
     underReviewCap: ({ context }: { context: BodyCtx }) => context.rounds < (context.reviewRounds ?? 3),
@@ -160,13 +181,18 @@ const body = j2Setup({
 });
 
 // ---------------------------------------------------------------------------------------------
-// Workspace: the repo is run input (must match the instance's `j2.config.ts` catalog); a name
-// with no `repos/<name>/default` volume fails at attach, not silently.
+// Workspace: the wrapper is this workflow's root, so its `input` is the run's door (ADR-0033) and
+// `spec`'s argument is typed by it — nothing here restates a shape. The repo must match the
+// instance's `j2.config.ts` catalog; a name with no `repos/<name>/default` volume fails at attach,
+// not silently.
 
-export const machine = workspace(body, ({ input }: { input: { repo: string; branch: string; baseRef?: string } }) => ({
-  repos: [{ name: input.repo, baseRef: input.baseRef ?? "main" }],
-  branch: input.branch,
-}));
+export const machine = workspace(body, {
+  input: runInput,
+  spec: ({ input }) => ({
+    repos: [{ name: input.repo, baseRef: input.baseRef ?? "main" }],
+    branch: input.branch,
+  }),
+});
 
 // --- Prompts (personas live in the Agent definitions; these are per-turn task framings) ------
 
