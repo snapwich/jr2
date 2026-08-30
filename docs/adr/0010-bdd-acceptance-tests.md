@@ -33,30 +33,22 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is the product's own path
   (ADR-0019): one shared VANILLA kind cluster and nothing else, then **`j2 up` per scenario into a fresh namespace** —
   which since ADR-0038 builds and loads every image it deploys, so no image is pre-loaded by hand. Namespace-as-identity
-  makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster. **The tier defaulted to
-  serial for a long time, and the serial bound moved twice.** `--parallel` was expected to be bounded only by cluster
-  capacity, and was instead bound by one shared name — the Sandbox Image wrap's intermediate `-base` tag (ADR-0037), a
-  content address, so concurrent converges of one checkout built and untagged the _same_ image. Measured then (11
-  scenarios, sealed tree): 4 workers → 7/11, 3 → 9/11, 2 → 9/11, serial → 11/11 in ~5m — degree 2 produced ZERO capacity
-  timeouts and still lost two scenarios, which is what proved the name, not capacity, was the bound.
-  [ADR-0040](0040-the-wraps-intermediate-is-scratch-a-converge-names-its-own.md) deleted that bound (the intermediate is
-  per-converge scratch) and [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) made a warm scenario's
-  converge build nothing (~13s fresh-namespace converge, every build disk-skipped). Measured on that tree: serial →
-  11/11 in 5m01s; **degree 4 → 11/11 in ~1m30–1m45s in 8 of 10 runs**, and sixteen parallel runs across degrees 2–4
-  produced ZERO converge or image failures — the shared-name class is verifiably gone, and the scenario isolation this
-  ADR designed was intact throughout (own namespace, own scripted model port). What parallelism surfaced instead was a
-  second bound, and it turned out not to be a test-tier problem at all: roughly one run in three lost a scenario whose
-  first turn never reached the scripted model, which was misread as first-turn LATENCY because the run simply sat there.
-  It was a lost turn. [ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md) has the diagnosis —
-  a Sandbox CR at `phase: Ready` is not yet ROUTABLE, and the run's single unretried admission POST was the first thing
-  ever to dial that Service — and the fix; the Adapter's Menu read turned out to be a second instance of the same
-  defect, found only because fixing the first let the tier run far enough to expose it. Parallelism only samples those
-  windows more often, which is exactly why the flake was degree-independent and serial runs never hit it. Measured after
-  both: **degree 4 → 8 consecutive runs, 88/88 scenarios, 1m30–1m43s each** on a sealed tree, against a ~1-in-3 loss
-  rate before. **The wired default is now `--parallel 4`** (in the `kind` profile, so a direct
-  `npx cucumber-js --profile kind` gets it too); pass `--parallel 1` to bisect a suspected isolation bug. Three tier
-  changes came out of the hunt and stay. A FAILED `@kind` scenario dumps its evidence (the provider's request count,
-  `j2 status`, the Harness's `?view=history`, every pod log with timestamps, events, EndpointSlices) to
+  makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster. **The tier runs parallel,
+  and three properties are what make that safe.** Scenario isolation (own namespace, own scripted model port); no shared
+  mutable image name between concurrent converges of one checkout — a Sandbox Image builds straight to its content tag,
+  with no intermediate, because the Harness arrives by volume at pod time
+  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)) — while
+  [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) makes a warm scenario's converge build nothing
+  (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the two seats that dial a Sandbox
+  before anything else ever has — [ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md) has the
+  diagnosis (a Sandbox CR at `phase: Ready` is not yet ROUTABLE, so an unretried first dial is a lost turn; the
+  Adapter's Menu read was a second instance of the same defect). Parallelism does not create those windows, it only
+  samples them more often — which is why any tier flake that vanishes at `--parallel 1` should be read as a
+  routability-class defect first, not as an isolation bug. Measured: **degree 4 → 8 consecutive runs, 88/88 scenarios,
+  1m30–1m43s each** on a sealed tree (serial: ~5m). **The wired default is now `--parallel 4`** (in the `kind` profile,
+  so a direct `npx cucumber-js --profile kind` gets it too); pass `--parallel 1` to bisect a suspected isolation bug.
+  Three tier changes came out of the hunt and stay. A FAILED `@kind` scenario dumps its evidence (the provider's request
+  count, `j2 status`, the Harness's `?view=history`, every pod log with timestamps, events, EndpointSlices) to
   `features/.tmp/kind-failures/` before its namespace is deleted. The tier's own workflow ROUTES `agent.fault` instead
   of ignoring it — an ignored terminal fault is an invisible one, and a tier that hangs where it could name the reason
   is a tier that costs a session per defect. And **every** scenario, passing or not, is now scraped for what ADR-0042's

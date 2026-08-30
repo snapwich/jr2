@@ -49,9 +49,8 @@ reading the fact the record only ever approximated.
 ## Consequences
 
 - **The `@kind` tier's per-scenario converge stops paying the build tax.** A fresh namespace on a warm host skips all
-  five builds; the measured savings ride ADR-0010's numbers. This also shrinks
-  [ADR-0040](0040-the-wraps-intermediate-is-scratch-a-converge-names-its-own.md)'s residual race to nearly nothing: a
-  converge that skips `buildSandboxImage` never creates the in-flight `-base` the sweeper-vs-builder window needs.
+  five builds; the measured savings ride ADR-0010's numbers. It also narrows ADR-0039's sweeper-vs-builder window: a
+  converge that skips its builds holds nothing in flight for a sweep to take.
 - **The ADR-0039 hole is not widened.** The vulnerable window — a ref present on the host that no live root names,
   between the skip decision and delivery — is the same window that already existed between a _build_ and its delivery,
   and it fails the same way (the delivery fails loudly; re-run). In the `@kind` tier the delivered refs are identical

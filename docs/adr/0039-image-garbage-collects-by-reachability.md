@@ -87,17 +87,13 @@ parsing names.
   without that filter every id the sweep took would come back on the next plan, forever. The residual rows are cosmetic
   (nothing can run from them, nothing is reclaimed by taking them again) and clear on a containerd restart; j2 ignores
   them by construction rather than reporting them.
-- The wrapped Sandbox Image inherits its base's labels through the image config — harmless (same owner), noted so nobody
-  "fixes" the duplication.
 - **A converge in flight is not a root.** An image is needed iff a LIVE root names it — and a converge that has resolved
   its refs but not yet applied them names them nowhere the cluster can see, so a sweep finishing in another namespace
-  can take a ref between its build and its delivery. In the `@kind` tier under `--parallel` this is mostly out of reach
-  for the _delivered_ refs: every scenario converges the same checkout, so each worker's own `extraKeep` already holds
-  the identical refs the others are building — but the wrap's `-base` intermediate rides no keep set, so a sweep can
-  take one mid-wrap ([ADR-0040](0040-the-wraps-intermediate-is-scratch-a-converge-names-its-own.md) records this as the
-  residual its renaming does not close; [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)'s build
-  skip makes the window vanish on warm runs by never creating the intermediate at all). It bites two instances on one
-  cluster, or one instance converged twice across a source edit. Recorded as a known limit; the fix — a claim the
-  converge publishes BEFORE it builds, making an in-flight ref a root like any other — is not taken here.
+  can take a ref between its build and its delivery. In the `@kind` tier under `--parallel` this is mostly out of reach:
+  every scenario converges the same checkout, so each worker's own `extraKeep` already holds the identical refs the
+  others are building ([ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)'s build skip narrows the
+  window further — a warm converge builds nothing). It bites two instances on one cluster, or one instance converged
+  twice across a source edit. Recorded as a known limit; the fix — a claim the converge publishes BEFORE it builds,
+  making an in-flight ref a root like any other — is not taken here.
 - ADR-0038's `j2 down` prune clause is **superseded by this ADR**; its `imagePullPolicy`/content-address reasoning
   stands untouched, and ADR-0038's seal is what finally makes it true of the instance image.

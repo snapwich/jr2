@@ -116,10 +116,11 @@ j2 ssh <workspace>                # exec into the Sandbox's harness container (A
 j2 logs <workspace>   j2 rm <workspace>
 ```
 
-`j2 ssh` originally read "exec into the User Container (ADR-0005)", **superseded by
-[ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)**: the User Container is deleted, so
-the human's seat is `kubectl exec -c harness` into the wrapped Sandbox Image — the agent's own tools, worktrees, and
-filesystem. The verb is unchanged; only what it exec's into is.
+`j2 ssh` is `kubectl exec -c harness` into the Sandbox Image
+([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)) — the inspect seat: the agent's own
+tools, worktrees, and filesystem. The optional User Container ([ADR-0005](0005-sandbox-pod-composition.md)) is reached
+by its own front door (its sshd, or `kubectl exec -c user`), not by this verb — its point is sessions and services the
+agent's container must not host.
 
 The CLI is the everyday surface; HTTP is the machine-to-machine one. The workspace verbs make the orchestrator feel like
 `kubectl` for agents: the run↔workspace link rides on the CR's labels (`j2.dev/run`, `j2.dev/workflow`), so `j2 ls` can

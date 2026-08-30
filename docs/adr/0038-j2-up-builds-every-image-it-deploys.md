@@ -15,7 +15,9 @@ of build-it-yourself-first image on top of that.
   naming `@j2/harness`. In a checkout it builds the Harness, Adapter, and operator images; installed from npm those
   paths do not resolve, so a real instance takes the published-`<kitversion>` path and never needs docker for kit
   images. **The checkout is the signal** — no flag, no config key, no env. The `just` recipes survive as shortcuts for
-  building one image without a converge, never as prerequisites.
+  building one image without a converge, never as prerequisites. A registry-ref Sandbox Image (ADR-0037) is the one
+  deployed image whose source is nobody's here: never built, labeled, or delivered by j2 — the cluster pulls it, and its
+  tag discipline is its owner's.
 - **Every tag is a content address.** Instance, Sandbox, Harness, Adapter, operator — each hashed over its own inputs.
   Three things follow: `imagePullPolicy: IfNotPresent` becomes _correct_ rather than lucky (a unique tag per content
   means "present" implies "current"), which is what makes kind and a real cluster behave identically instead of needing
@@ -24,7 +26,8 @@ of build-it-yourself-first image on top of that.
 - **Over-hash deliberately.** A kit image is hashed over its whole source directory, tests included, not over the exact
   file list its Dockerfile copies. Deriving the list by hand means a new `COPY` silently desynchronizes it, which is the
   invisible-stale-image bug being deleted; a needless rebuild in kit dev costs cached-layer seconds. **A Sandbox Image's
-  hash includes the resolved harness ref**, because its wrap is `COPY --from=<harness>` (ADR-0037).
+  hash covers its `images/<name>/` directory alone** — the Harness rides the pod's `/opt/j2` volume (ADR-0037), so a kit
+  edit moves the harness image's own tag and touches no Sandbox Image tag.
 - **A staged bundle records nothing about where or when it was staged.** The instance image's tag addresses the
   materialized bundle, so anything in that bundle that names its own scratch directory — or the minute it was written —
   makes one tag name many images, and "present implies current" stops being true for the one image every Instance runs.
@@ -50,9 +53,9 @@ of build-it-yourself-first image on top of that.
   one kubelet propagation after `j2 up`, and that two workspaces provisioned seconds apart can straddle a change — which
   was already true across a roll.
 - **The `images` config block is deleted outright — no key, no env escape hatch.** Its `harness`/`adapter`/`operator`
-  entries were kit-dev overrides that auto-build now covers; its `user` entry died with the User Container (ADR-0037).
-  Nobody should be able to run a patched Harness against a real cluster: that is ADR-0027's "no eject hatch" enforced
-  rather than merely stated.
+  entries were kit-dev overrides that auto-build now covers; the User Container is composed per Workspace by the
+  `workspace()` spec, not by config (ADR-0005), so no `user` entry belongs here either. Nobody should be able to run a
+  patched Harness against a real cluster: that is ADR-0027's "no eject hatch" enforced rather than merely stated.
 - **`j2 up` reports live workspaces on an older image; it never re-images one.** Provision is create-if-absent, so a
   running Sandbox keeps the image its CR was created with — the only safe behavior, since replacing the pod takes the
   worktrees and unpushed commits with it, which is precisely the Continuity break
