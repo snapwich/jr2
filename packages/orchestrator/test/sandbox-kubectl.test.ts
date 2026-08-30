@@ -246,9 +246,9 @@ test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH plac
 });
 
 test("the pod carries the work group: fsGroup = spec.workGroup ?? 2000", async () => {
-  // ADR-0005's j2-owned half of cross-uid sharing on `/work` (the Harness's `umask 002` is the
-  // other). The override exists for a BROUGHT image, which cannot take the two setup lines its
-  // own half needs — pointing the work group at a gid its sessions already hold costs no rebuild.
+  // ADR-0005's ownership half of cross-uid sharing on `/work` (the attach's default ACL is the
+  // writability half). The override exists for the image whose sessions already hold a gid of
+  // their own — pointing the work group at it costs no rebuild.
   const fsGroupFor = async (workGroup?: number): Promise<number> => {
     const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
     const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
@@ -619,6 +619,11 @@ test("attach execs the idempotent ADR-0004 script in the harness container", asy
   // The clone SOURCE is the RO volume the orchestrator's uid wrote — git's dubious-ownership
   // guard refuses it without this (safe.directory is honored from global config only, never -c).
   assert.match(script, /^umask 002\ngit config --global safe\.directory '\*'/, "trusts the pod's j2-owned paths first");
+  // ADR-0005's default ACL: stamped on the repo root AFTER the mkdir that makes it and BEFORE the
+  // clone that fills it — inheritance happens at creation, never retroactively. This ordering is
+  // the whole cross-uid promise ("zero umask lines in any image"), so it is pinned per repo.
+  assert.match(script, /mkdir -p '\/work\/app'\n\/opt\/j2\/bin\/work-acl '\/work\/app'\n\[ -d '\/work\/app\/default/);
+  assert.match(script, /mkdir -p '\/work\/infra'\n\/opt\/j2\/bin\/work-acl '\/work\/infra'\n/);
 });
 
 test("attachScript with a reviewSha adds the detached review worktree beside every branch worktree", () => {

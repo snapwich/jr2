@@ -33,28 +33,34 @@ worktree — the pod's credential holder has no business in the working tree.
 ## Sharing `/work` across uids
 
 j2 sets `runAsUser` nowhere — each image's own `USER` decides its seat's uid — so the two writing seats may disagree,
-and POSIX permissions would then make the other seat's files read-only. j2 closes that with the two knobs it happens to
+and plain POSIX modes would then make the other seat's files read-only. j2 closes that with two mechanisms it happens to
 own, unconditionally (both are inert when the uids already match):
 
 - **The pod carries `fsGroup` — the work group, default `2000`.** The default is convention; the one override lives on
   the `WorkspaceSpec` (`workGroup?: number`, beside `image` and `user` — pod composition is the spec's business,
-  ADR-0037), because a _brought_ image (a registry ref) cannot take the two setup lines below — its whole value is zero
-  rebuild — so its escape is pointing the work group at a gid its session users already hold, which also shrinks the
-  image's half of the setup to the umask alone. Never a config key. Any value is safe for the j2 seats: Kubernetes
-  grants the fsGroup as a supplemental group to every container process, so the Harness writes `/work` whatever the
-  number, and no image's `/etc/group` needs to know it — group _names_ matter only to sshd logins, which rebuild their
-  groups from the file. fsGroup puts a setgid group on `/work`'s root, and setgid propagates to every directory created
-  under it.
-- **The Harness runs at `umask 002`**, itself and every tool child, so everything the Agent writes lands group-writable
-  (664/775) for the work group all the way down — fsGroup without the umask half is group-_read_, which is the trap.
+  ADR-0037), for the image whose session users already hold a gid of their own. Never a config key. Any value is safe
+  for the j2 seats: Kubernetes grants the fsGroup as a supplemental group to every container process, so the Harness
+  writes `/work` whatever the number, and no image's `/etc/group` needs to know it. fsGroup puts a setgid group on
+  `/work`'s root, and setgid propagates down, so everything either seat creates is group-_owned_ by the work group.
+- **The attach stamps a default ACL on every repo root it creates** — `u::rwx,g::rwx,o::r-x`, set by `work-acl`, a
+  static helper on the runtime volume (part of ADR-0037's published `/opt/j2` surface, static for the same reason `rg`
+  is: it executes on a libc j2 does not control). A default ACL is inherited by everything created beneath it, and POSIX
+  ignores the process umask where one is present — so every file either seat writes under a repo tree lands
+  group-writable (664/775), with **zero lines in any image**: no umask in a login shell, no j2 knowledge in a brought
+  User Container. Ownership without writability was the trap — fsGroup alone leaves the other seat group-_read_. On a
+  filesystem without POSIX ACL support the helper warns and changes nothing, and sharing degrades to the umask fallback
+  below.
 
-A User Container whose sessions run a different uid then needs two lines in its own image, documented and never
-enforced: put the session user in gid 2000 (`groupadd -g 2000 work && usermod -aG work <user>` — membership must be in
-`/etc/group`, because a login wipes inherited supplemental groups) and set `umask 002` in the login shell, which covers
-the reverse direction: files the human creates that the Agent must edit. Same-uid seats need nothing. Two umask caveats,
-both edge-shaped: sshd's `StrictModes` refuses logins over a group-writable `~/.ssh`, so it bites only a session that
-_regenerates_ those files from a loosened shell; and the shell line belongs scoped to the pod
-(`[ -d /work ] && umask 002`), not unconditionally in dotfiles that also stow onto other machines.
+Group _membership_ is the one thing an image can still owe. `kubectl exec` sessions and a non-root sshd's logins hold
+the work group automatically — both inherit the container's supplemental groups, where Kubernetes put the fsGroup. A
+**root** sshd is the exception: the logins it setuids rebuild their groups from `/etc/group`, so that image puts its
+session user in the work group itself (`groupadd -g 2000 work && usermod -aG work <user>`) — or the spec points
+`workGroup` at a gid its users already hold.
+
+**The promise is scoped to repo trees.** An ad-hoc path at `/work`'s top level — either seat's `mkdir /work/scratch` —
+carries no default ACL, so files there fall back to the writer's umask. The Harness runs at `umask 002` (itself and
+every tool child) and the attach script opens with the same line, so j2's own writes are group-writable even there; what
+a User Container session writes outside a repo tree is its own business.
 
 ## Constraints on the seat
 
@@ -111,6 +117,20 @@ human session — with its edges stated plainly:
 - **A truly minimal Harness** (agent loop only, tools executed in a sibling container) — would need a cross-container
   execution transport j2 does not have. Not blocking: the agent toolchain lives in the Sandbox Image; revisit only if
   that ever becomes a real cost (ADR-0037 records the same rejection from the image side).
+- **umask discipline as the sharing mechanism** (fsGroup + `umask 002` in every writer). Rejected as what the promise
+  rests on: the Harness's half is one startup line j2 controls, but the User Container's half is a line every image must
+  remember (`[ -d /work ] && umask 002` in a login shell) — a gotcha, and a silent one: forgetting it costs nothing
+  until the Agent cannot edit a human's file, and the failure reads as the Agent's. It also cuts the other way — a
+  session's deliberate `umask 077` under a repo tree would break the sharing the pod exists for; under a default ACL,
+  `/work`'s repo trees are definitionally shared. The umask survives as defence in depth, not contract.
+- **A root init container stamping the ACL on `/work`'s own root** — complete coverage (no repo-tree scoping), owner
+  rights with every capability dropped, kit code only, the standard volume-permissions idiom. Rejected: it puts a
+  `runAsNonRoot: false` container in _every_ pod, so no j2 pod could satisfy the Pod Security "restricted" profile —
+  today that is forfeited only by a User Container that chooses root, and that choice belongs to the user, not to the
+  composition. The attach already owns the only place repo roots are born, so the narrower stamp costs one script line.
+- **Unifying uids across seats** (document "make both images run the same `USER`"). Rejected: it makes the uid a
+  cross-image contract — every pairing of Sandbox Image and User Container must agree forever, which is exactly the
+  coupling the zero-contract seat exists to remove.
 
 ## Consequences
 
@@ -120,9 +140,11 @@ human session — with its edges stated plainly:
 - j2 does not gate readiness on the User Container and never restarts the pod for it; it lives and dies by the pod's own
   policy.
 - **Operator**: `runAsNonRoot` moves from the pod level to the two j2-owned containers; the hardened-by-default rule for
-  sidecar specs exempts the `user` container; the pod gains `fsGroup` (`spec.workGroup ?? 2000`). **Harness**: sets
-  `umask 002` at startup. `shareProcessNamespace` stays off — ever — because the credential-visibility boundary depends
-  on it.
+  sidecar specs exempts the `user` container; the pod gains `fsGroup` (`spec.workGroup ?? 2000`). **Orchestrator**: the
+  attach script stamps the default ACL on each repo root _before_ the clone that fills it — inheritance happens at
+  creation, never retroactively. **Harness image**: vendors the static `work-acl` into `/opt/j2/bin` (ADR-0037's
+  surface). **Harness**: sets `umask 002` at startup. `shareProcessNamespace` stays off — ever — because the
+  credential-visibility boundary depends on it.
 - The Harness container's `/work` writes being group-writable widens nothing: every process that could abuse group
   access already runs in the same trust domain, and the work group exists only inside this pod.
 - **Routable access is a follow-up, deliberately untaken**: the operator's Service serves the Harness at `:8080`, and a

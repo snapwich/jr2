@@ -18,7 +18,7 @@
 #      baked on their own registry is runnable without j2 ever touching it.
 #
 # So **/opt/j2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/init-copy · lib/*.so · src/ · node_modules/ · package.json
+#   bin/node · bin/rg · bin/work-acl · bin/init-copy · lib/*.so · src/ · node_modules/ · package.json
 # — is copied verbatim onto a volume that lands in a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
 # this repo never sees. `/opt/j2` and not `/app`, because a user's base may already use /app and a
@@ -89,6 +89,21 @@ RUN set -eux; \
     cp -L /usr/lib/*-linux-gnu/libstdc++.so.6 /usr/lib/*-linux-gnu/libgcc_s.so.1 /opt/j2/lib/; \
     patchelf --set-rpath '$ORIGIN/../lib' /opt/j2/bin/node; \
     /opt/j2/bin/node -e ''
+
+# work-acl, compiled here and STATIC for the same reason rg is vendored static: the attach script
+# runs it inside the USER'S image (it stamps ADR-0005's default ACL on each repo root), on a libc
+# j2 does not control. It writes the ACL xattr itself, so there is no libacl to link and glibc's
+# `-static` is clean (nothing here touches NSS). The smoke test proves the hand-built blob is one
+# the KERNEL accepts — setxattr validates it — and that getfacl reads it back as ADR-0005's line;
+# `acl` is installed for that check alone and discarded with the stage.
+COPY deploy/harness/work-acl.c /tmp/work-acl.c
+RUN set -eux; \
+    apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev acl \
+ && rm -rf /var/lib/apt/lists/*; \
+    gcc -Os -static -o /opt/j2/bin/work-acl /tmp/work-acl.c; \
+    mkdir /tmp/acl-smoke; \
+    /opt/j2/bin/work-acl /tmp/acl-smoke; \
+    getfacl -d --omit-header /tmp/acl-smoke | grep -qx 'group::rwx'
 
 # ---------------------------------------------------------------------------------------------
 # The image itself.

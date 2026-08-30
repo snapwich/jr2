@@ -165,6 +165,20 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
       And a human's shell in the Sandbox lands in "/srv/j2-e2e" with the image's own toolchain
 
+  Rule: a repo tree is group-writable for the work group, whatever the writer's umask
+    ADR-0005. The attach stamps a default ACL on each repo root before the clone fills it, and
+    POSIX ignores the process umask where a default ACL exists — so cross-uid sharing on /work
+    needs zero umask lines in any image: no login-shell discipline in a User Container, nothing.
+    Only a real pod can prove it: ACL inheritance is filesystem physics, invisible to every
+    socket-free test.
+
+    Scenario: a file created under a hostile umask still lands group-writable
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
+      And a file created under umask 077 in repo "app" branch "feat-e2e" is group-writable
+
   Rule: the sweep takes a node image no live root names, and leaves the ones a root does
     ADR-0039. Reachability is decided from Kubernetes, but the removal happens in a node's
     containerd — the one store no socket-free test can hold. Its physics are why: CRI cannot untag,

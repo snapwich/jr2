@@ -7,9 +7,9 @@
 // what the process holds (`execFile(file, args, { cwd, signal })` passes no env, working-tools.ts).
 // Three settings, each with a reason a comment must survive:
 //
-//   - `umask 002`, so everything the Agent writes on `/work` lands group-writable for the pod's
-//     work group — j2's half of cross-uid sharing with the User Container (ADR-0005). fsGroup
-//     without the umask is group-READ, which is the trap. Inert when no second uid ever writes.
+//   - `umask 002`, so even what the Agent writes OUTSIDE a repo tree lands group-writable for the
+//     pod's work group. Inside the trees the attach's default ACL governs creation and the umask
+//     is ignored (ADR-0005) — this is the defence-in-depth layer, inert when no second uid writes.
 //   - `/opt/j2/bin` APPENDED to PATH, never prepended (ADR-0037): the image's own `node`, `rg`, and
 //     toolchain win where present and j2's vendored ones are the fallback. Prepending would
 //     silently shadow a pinned toolchain inside the user's own image.

@@ -325,7 +325,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    *
    * `/work` read-write is the single exception, and it is not an injection but the point: this
    * seat and the Harness mount ONE worktree, so the human and the Agent see identical files —
-   * which is also why ADR-0005's cross-uid pair (the pod's `fsGroup`, the Harness's `umask 002`)
+   * which is also why ADR-0005's cross-uid pair (the pod's `fsGroup`, the attach's default ACL)
    * exists at all. The Adapter is deliberately not given `/work`: it reads no worktree, and it is
    * the container holding the pod's only credential, so it gets the narrowest mount set that
    * works. It also carries no
@@ -472,10 +472,11 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // default is what makes that possible — the operator hardens only what says nothing.
         securityContext: seat.securityContext,
         idleTimeout: opts.idleTimeout ?? "30m",
-        // The work group (ADR-0005), the j2-owned half of cross-uid sharing on `/work`. Kubernetes
-        // grants it as a supplemental group to every container, and puts a setgid group on the
-        // volume root that propagates down; the Harness's `umask 002` is the other half, without
-        // which fsGroup gives group-READ, which is the trap. Both are inert when the uids match.
+        // The work group (ADR-0005), the ownership half of cross-uid sharing on `/work`.
+        // Kubernetes grants it as a supplemental group to every container, and puts a setgid
+        // group on the volume root that propagates down; the WRITABILITY half is the default ACL
+        // the attach stamps on each repo root (attachScript below), without which fsGroup gives
+        // group-READ, which is the trap. Both are inert when the uids match.
         fsGroup: req.workGroup ?? DEFAULT_WORK_GROUP,
         // Ordered, and before any container starts: populate `/opt/j2`, then prove the image on it.
         initContainers: initContainersFor(refs, seat),
@@ -731,9 +732,9 @@ export function attachScript(
   // source. safe.directory is only honored from global/system config (never `-c`), and inside
   // the pod every path is j2-owned — trusting them all is the honest scope.
   // The attach runs via exec, not as a child of the Harness process, so it does NOT inherit the
-  // Harness's `umask 002` — without its own, every dir it creates is 755 and the work group can
-  // edit files but never CREATE one, which breaks ADR-0005's cross-uid write promise for the
-  // User Container seat.
+  // Harness's `umask 002` — without its own, the repo roots it mkdirs land 755 and the work group
+  // could never create a file at a tree's top. INSIDE the trees the umask stops mattering: the
+  // default ACL stamped below governs everything created beneath a repo root (ADR-0005).
   const lines: string[] = [`umask 002`, `git config --global safe.directory '*'`];
   const branchDir = spec.branch.replace(/\//g, "-");
   for (const repo of spec.repos) {
@@ -742,6 +743,11 @@ export function attachScript(
     repos[repo.name] = worktree;
     lines.push(
       `mkdir -p ${sq(`${paths.workRoot}/${repo.name}`)}`,
+      // BEFORE the clone fills it: a default ACL is inherited at creation, never retrofitted, so
+      // the stamp must exist while the tree is still empty. From here down, both seats' files land
+      // group-writable with zero umask lines in any image (ADR-0005); on a filesystem without
+      // POSIX ACLs the helper warns and exits 0, degrading to the umask sharing above.
+      `/opt/j2/bin/work-acl ${sq(`${paths.workRoot}/${repo.name}`)}`,
       `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared --no-checkout ${sq(`${paths.reposMount}/${repo.name}/default`)} ${sq(dflt)}`,
       `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.baseRef)}`,
     );

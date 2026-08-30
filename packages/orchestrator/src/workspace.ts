@@ -71,10 +71,11 @@ export type WorkspaceSpec = {
   user?: string;
   /** The pod's work group (ADR-0005): `fsGroup`, default 2000. The two writing seats may run
    * different uids — each image's own `USER` decides — and POSIX would then make the other seat's
-   * files read-only; fsGroup plus the Harness's `umask 002` closes that, and both halves are inert
-   * when the uids already match. The override exists for a BROUGHT image, which cannot take the
-   * two setup lines its half needs: pointing the work group at a gid its sessions already hold
-   * costs it no rebuild. Never a config key — pod composition is the spec's business. */
+   * files read-only; fsGroup (group ownership) plus the default ACL the attach stamps on each
+   * repo root (group writability, umask-proof) closes that, both inert when the uids already
+   * match. The override exists for the image whose sessions already hold a gid of their own —
+   * a root sshd's logins rebuild groups from `/etc/group`, so pointing the work group at one
+   * they have costs no rebuild. Never a config key — pod composition is the spec's business. */
   workGroup?: number;
   /** Attach the detached review worktree at this sha (ADR-0028): `<branchDir>-review`, a sibling
    * of the branch worktree, forced to exactly this sha on every attach. Creation-time seat only;

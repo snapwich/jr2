@@ -39,9 +39,10 @@ and promotes incidental image properties into contract items.
   itself, and Working tools spawn without an env override (`execFile(file, args, { cwd, signal })`), so children inherit
   it: the image's `node`, `rg`, and toolchain win where present and j2's are the fallback; prepending would silently
   shadow a pinned toolchain inside the user's own image. The same process-level discipline carries `umask 002`: the
-  Harness sets it at startup so everything the Agent writes on `/work` is group-writable for the pod's work group — the
-  j2-owned half of cross-uid sharing with the User Container ([ADR-0005](0005-sandbox-pod-composition.md)), inert when
-  no other uid ever writes.
+  Harness sets it at startup so even what it writes _outside_ a repo tree stays group-writable for the pod's work group.
+  Inside the repo trees the umask stops mattering — the attach stamps a default ACL on each repo root and POSIX ignores
+  the umask where one exists ([ADR-0005](0005-sandbox-pod-composition.md)); this is the defence-in-depth layer, inert
+  when no other uid ever writes.
 - **The contract is the floor, and the preflight proves it.** What is inherent to "j2's runtime in your filesystem" and
   nothing more: a **glibc** base no older than the one j2's node was built against (musl is out entirely), **`git`** on
   the system PATH (relocating git means `/usr/lib/git-core`, templates, `git-remote-https` → curl + openssl + CA store —

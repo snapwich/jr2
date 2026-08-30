@@ -446,9 +446,9 @@ Then("the model was shown the tool result {string}", async function (this: E2EWo
  * `exec` shell inherits neither and the image carries no j2 `ENV` at all (ADR-0037). Each needs an
  * observation that can actually see it:
  *   - umask 002 is kernel state, so `/proc/1/status` reports it live (PID 1 is the Harness — the
- *     container's command, and `shareProcessNamespace` stays off, ADR-0005). j2's half of
- *     cross-uid sharing on /work with the User Container; fsGroup without it is group-READ, which
- *     is the trap. The supplemental gid proves the other half arrived.
+ *     container's command, and `shareProcessNamespace` stays off, ADR-0005). Defence in depth
+ *     behind the attach's default ACL: outside a repo tree only the umask keeps j2's writes
+ *     group-writable. The supplemental gid proves the ownership half (fsGroup) arrived.
  *   - PATH must be APPENDED, so the image's own toolchain wins and j2's vendored bin is the
  *     fallback — prepending would silently shadow a toolchain someone pinned in their own image.
  *     `/proc/1/environ` CANNOT see this: it is frozen at execve and never reflects an in-process
@@ -484,7 +484,7 @@ Then("the Harness container satisfies the injection contracts", async function (
       .find((line) => line.startsWith(`${key}=`))
       ?.slice(key.length + 1) ?? "";
 
-  assert.equal(read("umask"), "0002", "the Harness runs at umask 002, so /work writes stay group-writable");
+  assert.equal(read("umask"), "0002", "the Harness runs at umask 002 — ADR-0005's defence in depth outside repo trees");
 
   const nodePath = read("node");
   assert.notEqual(nodePath, "/opt/j2/bin/node", `the image's own node is what a shell resolves; resolved: ${nodePath}`);
@@ -533,6 +533,23 @@ Then(
     const [landed, toolchain] = out.trim().split("\n");
     assert.equal(landed, workdir, "exec lands in the image's own WORKDIR — j2 overrides only the command");
     assert.equal(toolchain, "j2-toolchain-ok", "the human gets the Sandbox Image's own tools, not j2's");
+  },
+);
+
+/**
+ * ADR-0005: the attach stamped a default ACL on the repo root before the clone filled it, and a
+ * default ACL makes POSIX IGNORE the creating process's umask — so a file born under the most
+ * hostile umask there is still lands 664, group-writable for the work group. This is the whole
+ * "zero umask lines in any image" promise, and only a real filesystem can prove the inheritance.
+ */
+Then(
+  "a file created under umask 077 in repo {string} branch {string} is group-writable",
+  async function (this: E2EWorld, repo: string, branch: string): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const probe = `/work/${repo}/${branch}/.j2-acl-probe`;
+    const script = `umask 077; rm -f '${probe}'; touch '${probe}'; stat -c %a '${probe}'; rm -f '${probe}'`;
+    const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script]);
+    assert.equal(out.trim(), "664", "the default ACL governs creation modes, not the writer's umask (ADR-0005)");
   },
 );
 
