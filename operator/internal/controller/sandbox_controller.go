@@ -216,7 +216,7 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox) *corev1.Pod 
 		EnvFrom:         sandbox.Spec.EnvFrom,
 		VolumeMounts:    sandbox.Spec.VolumeMounts,
 		ReadinessProbe:  readinessProbeFor(sandbox),
-		SecurityContext: hardenedContainerSecurityContext(),
+		SecurityContext: containerSecurityContextFor(sandbox),
 		Ports: []corev1.ContainerPort{{
 			Name:          "http",
 			ContainerPort: portFor(sandbox),
@@ -225,10 +225,12 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox) *corev1.Pod 
 	}
 
 	// Sidecars (Agents) are untrusted; default each to the same hardened
-	// container baseline unless it declares its own securityContext.
+	// container baseline unless it declares its own securityContext — EXCEPT
+	// the User Container (ADR-0005), which is exempt entirely. See
+	// userContainerName.
 	sidecars := make([]corev1.Container, len(sandbox.Spec.Sidecars))
 	for i, c := range sandbox.Spec.Sidecars {
-		if c.SecurityContext == nil {
+		if c.SecurityContext == nil && c.Name != userContainerName {
 			c.SecurityContext = hardenedContainerSecurityContext()
 		}
 		sidecars[i] = c
@@ -245,14 +247,20 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox) *corev1.Pod 
 			// Bare pod, long-lived and interactive: no Deployment-style
 			// resurrection (ADR-0001); restart crashed containers in place.
 			RestartPolicy: corev1.RestartPolicyAlways,
-			Containers:    containers,
-			Volumes:       sandbox.Spec.Volumes,
+			// Verbatim, in order, before any container starts. The operator adds
+			// nothing here — not even the hardened default — because an init
+			// step is composed by whoever built the spec (ADR-0037's runtime
+			// injection is two of them), and it must be able to state its own
+			// context.
+			InitContainers: sandbox.Spec.InitContainers,
+			Containers:     containers,
+			Volumes:        sandbox.Spec.Volumes,
 			// Isolation north star: an untrusted Agent must not reach the
-			// Kubernetes API. Don't mount the SA token, and run the pod
-			// non-root under the default seccomp profile. (Egress
+			// Kubernetes API. Don't mount the SA token, and run every j2-owned
+			// container non-root under the default seccomp profile. (Egress
 			// NetworkPolicy is the next isolation layer — see ADR-0001.)
 			AutomountServiceAccountToken: ptr.To(false),
-			SecurityContext:              hardenedPodSecurityContext(),
+			SecurityContext:              podSecurityContextFor(sandbox),
 		},
 	}
 }
@@ -271,13 +279,44 @@ func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 	}
 }
 
-// hardenedPodSecurityContext is the pod-level security baseline shared by every
-// container in the Sandbox: run as non-root under the default seccomp profile.
-func hardenedPodSecurityContext() *corev1.PodSecurityContext {
+// podSecurityContextFor is the pod-level context: the default seccomp profile
+// for everything in the pod, plus the fsGroup when the spec names one.
+//
+// runAsNonRoot is deliberately NOT here. A pod-level runAsNonRoot binds every
+// container including the ones j2 does not own, and the User Container
+// (ADR-0005) must be able to run root — a root sshd that binds :22 and setuids
+// sessions down to its login user is the standard managed-access shape. Non-root
+// is asserted per container instead, on the seats j2 owns, which says the same
+// thing about them without saying anything about the seat it does not.
+func podSecurityContextFor(sandbox *corev1alpha1.Sandbox) *corev1.PodSecurityContext {
 	return &corev1.PodSecurityContext{
-		RunAsNonRoot:   ptr.To(true),
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		// Shared-volume ownership across uids (ADR-0005's work group). Passed
+		// through, never defaulted: what number to use is the spec author's
+		// call, and an operator-invented gid would silently disagree with the
+		// one an image's session user actually holds.
+		FSGroup: sandbox.Spec.FSGroup,
 	}
+}
+
+// userContainerName is the one sidecar name the operator treats specially, and
+// only by leaving it alone: the User Container (ADR-0005). It gets no hardened
+// default — root and the default capability set are allowed — because the seat
+// exists precisely as the place j2 injects, probes, and overrides nothing. A
+// platform that wants it hardened hardens its own image or the namespace's Pod
+// Security profile.
+const userContainerName = "user"
+
+// containerSecurityContextFor is the primary container's context: the spec's
+// own when it states one, otherwise the hardened default. The same rule the
+// sidecar loop follows — harden what says nothing about itself, and step aside
+// for what does, because only the composer of a spec knows facts the operator
+// cannot (whether the primary image declares a USER, ADR-0037).
+func containerSecurityContextFor(sandbox *corev1alpha1.Sandbox) *corev1.SecurityContext {
+	if sandbox.Spec.SecurityContext != nil {
+		return sandbox.Spec.SecurityContext
+	}
+	return hardenedContainerSecurityContext()
 }
 
 // hardenedContainerSecurityContext drops all Linux capabilities and blocks

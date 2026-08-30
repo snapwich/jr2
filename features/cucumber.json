@@ -5,7 +5,7 @@
     "tags": "not @kind and not @console"
   },
   "kind": {
-    "//": "Parallel by default (ADR-0010 has the measurements: ~1m35 at degree 4 against ~5m serial). Two bounds had to fall first — ADR-0040 made the wrap's `-base` intermediate per-converge scratch, and ADR-0042 stopped a just-Ready Sandbox Service losing the run's first turn to one unretried admission. `parallel` lives HERE rather than in the package script so a human running `npx cucumber-js --profile kind` from `features/` gets it too; add `--parallel 1` to bisect a suspected isolation bug.",
+    "//": "Parallel by default (ADR-0010 has the measurements: ~1m35 at degree 4 against ~5m serial). Two bounds had to fall first — no Sandbox Image build shares a mutable image name any more (ADR-0040 made the retired wrap's `-base` intermediate per-converge scratch; ADR-0037 deleted the intermediate outright, so a build goes straight to its content tag), and ADR-0042 stopped a just-Ready Sandbox Service losing the run's first turn to one unretried admission. `parallel` lives HERE rather than in the package script so a human running `npx cucumber-js --profile kind` from `features/` gets it too; add `--parallel 1` to bisect a suspected isolation bug.",
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
     "tags": "@kind",

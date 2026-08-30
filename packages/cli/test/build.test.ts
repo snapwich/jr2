@@ -1,8 +1,8 @@
 // The image build seam (ADR-0019/0038). Every tag `j2 up` deploys is a content address, so these
 // tests pin the properties that make one usable as a cache key at all: the same sources hash the
 // same every time, different sources do not, and the inputs each hash covers are the ones the ADRs
-// name — including the one nothing else can see, a Sandbox Image's dependence on the resolved
-// harness ref.
+// name — including the one that is now deliberately ABSENT, a Sandbox Image's dependence on the
+// resolved harness ref (ADR-0037: the runtime arrives on a pod volume, so it addresses nothing).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -24,9 +24,8 @@ import {
   mergeSweeps,
   nodeSweepPlan,
   publishedKitRefs,
-  sandboxBaseTag,
   sandboxImageHash,
-  sandboxWrapDockerfile,
+  sandboxImageTag,
   stageInstanceBundle,
   sweepHost,
   sweepNodes,
@@ -41,7 +40,7 @@ function nullPort(): BuildPort {
   return {
     bundle: async () => {},
     build: async () => {},
-    run: async () => "",
+    imageUser: async () => "",
     push: async () => {},
     kindLoad: async () => {},
     hostImages: async () => [],
@@ -269,29 +268,6 @@ test("the bundle hash tracks the kit — a dependency's sources are image conten
   assert.equal(await hashOf(kit("export const renew = () => 1;\n")), before);
 });
 
-test("the wrap injects the Harness at /opt/j2, appends PATH, and gives uid 1000 a home", async () => {
-  // Three claims that are SILENTLY wrong at runtime if inverted, on a base image no test here can
-  // see, so nothing downstream catches them (ADR-0037):
-  //   - `/app` instead of `/opt/j2` shadows an /app the user's own base already uses;
-  //   - a PREPENDED PATH shadows the toolchain the user pinned — and interpolating `${PATH}` in
-  //     the generator emits `PATH=":/opt/j2/bin"`, deleting it outright;
-  //   - no writable $HOME for uid 1000 fails every attach with `fatal: $HOME not set`, mid-turn.
-  const wrap = sandboxWrapDockerfile("j2-sandbox-inst-default-base:abc123", "j2-harness:9f1e02c4d5a6");
-
-  assert.match(wrap, /^FROM j2-sandbox-inst-default-base:abc123$/m);
-  assert.match(wrap, /^COPY --from=j2-harness:9f1e02c4d5a6 \/opt\/j2 \/opt\/j2$/m);
-  assert.ok(!wrap.includes("/app"), "the injected runtime lives at /opt/j2, never /app");
-
-  // The literal `${PATH}` must survive into the emitted Dockerfile, and j2's bin must FOLLOW it.
-  assert.match(wrap, /^ENV HOME=\/home\/j2 PATH="\$\{PATH\}:\/opt\/j2\/bin"$/m);
-
-  assert.match(wrap, /^RUN mkdir -p \/home\/j2 && chown 1000:0 \/home\/j2 && chmod 0775 \/home\/j2$/m);
-  assert.ok(
-    wrap.trimEnd().endsWith(`CMD ["/opt/j2/bin/node", "/opt/j2/src/main.ts"]`),
-    "absolute CMD, WORKDIR-independent",
-  );
-});
-
 test("installed from npm, the kit three resolve to the published <kitversion> tags", () => {
   // These were `j2.config.ts`'s `images` defaults; the block is gone (ADR-0038), so they live here
   // as the not-a-kit-checkout branch — and as the last leg of ADR-0037's Sandbox Image chain.
@@ -370,33 +346,25 @@ test("kit hashes exclude only what each context's OWN .dockerignore drops", asyn
   assert.equal(withTooling.operator, base.operator, "operator's non-go tooling and coverage stay excluded");
 });
 
-test("a packages/harness edit moves the harness ref AND, through the wrap salt, every Sandbox Image ref", async () => {
-  // ADR-0037's consequence, and the only place it is checkable: a Sandbox Image is
-  // `COPY --from=<harness>`, so without the harness ref in its hash, editing packages/harness/src
-  // leaves every Sandbox Image tag unchanged and pods keep running the old runtime.
+test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", async () => {
+  // The inversion ADR-0037 decided: the wrap made every Sandbox Image `COPY --from=<harness>`, so a
+  // kit source edit re-tagged, rebuilt, and re-delivered every user image on the cluster. The
+  // runtime rides the pod's /opt/j2 volume now, so the harness ref moves alone and future pods pick
+  // it up — the only way an image the user merely BROUGHT could ever follow a kit update at all.
   const before = await kitImageRefs(await mkTree(kitFiles("export const x = 1;\n")));
   const after = await kitImageRefs(await mkTree(kitFiles("export const x = 2;\n")));
   assert.notEqual(after.harness, before.harness, "the harness ref moves with its sources");
   assert.equal(after.adapter, before.adapter, "…and only its own — the Adapter is untouched");
 
   const image = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y cargo\n" }, "j2-image-");
-  assert.notEqual(
-    await sandboxImageHash(image, after.harness),
-    await sandboxImageHash(image, before.harness),
-    "the same Dockerfile against a new Harness is a new image",
-  );
   assert.equal(
-    await sandboxImageHash(image, before.harness),
-    await sandboxImageHash(image, before.harness),
-    "…and the same inputs are the same address",
+    await sandboxImageHash(image),
+    await sandboxImageHash(image),
+    "the same directory is the same address, and the harness ref is not an input to ask about",
   );
 
   const edited = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y rustc\n" }, "j2-image-");
-  assert.notEqual(
-    await sandboxImageHash(edited, before.harness),
-    await sandboxImageHash(image, before.harness),
-    "a Dockerfile edit moves it too",
-  );
+  assert.notEqual(await sandboxImageHash(edited), await sandboxImageHash(image), "a Dockerfile edit moves it");
 });
 
 test("a Sandbox Image's hash covers its WHOLE directory — node_modules and dist are image content", async () => {
@@ -405,7 +373,6 @@ test("a Sandbox Image's hash covers its WHOLE directory — node_modules and dis
   // exclude set (which describes the KIT's own `.dockerignore`) meant editing `images/x/dist/foo`
   // changed the image at an unchanged tag — the silent-stale-image bug ADR-0038 exists to delete.
   // Over-hashing is that ADR's stated direction; under-hashing is the defect.
-  const harness = "j2-harness:0f1e2d3c4b5a";
   const dirOf = (a: string, b: string) =>
     mkTree(
       {
@@ -416,10 +383,10 @@ test("a Sandbox Image's hash covers its WHOLE directory — node_modules and dis
       "j2-image-tree-",
     ).then((root) => join(root, "images", "x"));
 
-  const base = await sandboxImageHash(await dirOf("a1", "b1"), harness);
-  assert.equal(await sandboxImageHash(await dirOf("a1", "b1"), harness), base, "same bytes, same address");
-  assert.notEqual(await sandboxImageHash(await dirOf("a2", "b1"), harness), base, "node_modules/ is hashed");
-  assert.notEqual(await sandboxImageHash(await dirOf("a1", "b2"), harness), base, "dist/ is hashed");
+  const base = await sandboxImageHash(await dirOf("a1", "b1"));
+  assert.equal(await sandboxImageHash(await dirOf("a1", "b1")), base, "same bytes, same address");
+  assert.notEqual(await sandboxImageHash(await dirOf("a2", "b1")), base, "node_modules/ is hashed");
+  assert.notEqual(await sandboxImageHash(await dirOf("a1", "b2")), base, "dist/ is hashed");
 });
 
 test("`images/` never enters the instance bundle, so a Dockerfile edit cannot roll the Orchestrator", async () => {
@@ -453,42 +420,33 @@ test("`images/` never enters the instance bundle, so a Dockerfile edit cannot ro
 
 // --- ownership + the sweep (ADR-0039) ----------------------------------------------------------
 
-test("the wrap's intermediate is per-converge scratch: same content, two converges, two names (ADR-0040)", () => {
-  // The delivered tag is an address and must be a pure function of content; the `-base` tag is
-  // scratch and must NOT be shared — a content-hash-only intermediate was a global name, and one
-  // concurrent converge's untag failed the other's wrap mid-`FROM`. The nonce is the caller's, so
-  // a test that wants determinism has it.
-  const a = sandboxBaseTag("inst", "default", "99aa", "0a1b2c3d");
-  const b = sandboxBaseTag("inst", "default", "99aa", "4e5f6071");
-  assert.equal(a, "j2-sandbox-inst-default-base:99aa-0a1b2c3d");
-  assert.notEqual(a, b, "two converges of one checkout never share the intermediate");
-});
-
-test("every image j2 builds is stamped, so ownership is read off the image and never off its name", async () => {
-  // The primitive ADR-0039 deletes is parsing names: `j2-sandbox-<instance>-<name>` has no reserved
-  // delimiter, so `my` + `extra-default` and `my-extra` + `default` are one repo, and deleting an
-  // `images/<x>/` folder orphaned its tags because nothing derived their names any more. A stamp
-  // answers both — but only for images that carry one, so an unstamped build is a permanent leak.
+test("a Sandbox Image is ONE build to its content tag: no intermediate name, no generated Dockerfile", async () => {
+  // The wrap needed a mutable tag between the user's build and its own, which serialized concurrent
+  // converges of one checkout (one converge's untag failed the other's `FROM`) — a problem space
+  // that existed only because the wrap did. With the runtime arriving at pod time there is exactly
+  // one build, its context is the user's own directory, and nothing j2 generated is fed to docker.
   const requests: BuildRequest[] = [];
-  const port: BuildPort = { ...nullPort(), build: async (req) => void requests.push(req) };
+  const removed: string[] = [];
+  const port: BuildPort = {
+    ...nullPort(),
+    build: async (req) => void requests.push(req),
+    removeHostImage: async (ref) => void removed.push(ref),
+  };
 
-  await buildSandboxImage(port, {
-    dir: "/tmp/images/default",
+  const tag = sandboxImageTag("inst", "default", "99aa");
+  await buildSandboxImage(port, { dir: "/tmp/images/default", tag, instance: "inst" });
+
+  assert.equal(requests.length, 1, `one docker build (got: ${requests.map((r) => r.tag).join(", ")})`);
+  assert.equal(requests[0]!.dockerfileContent, undefined, "the user's own Dockerfile, never a generated one");
+  assert.equal(requests[0]!.dockerfile, undefined, "…found where docker looks by default, in its own context");
+  // Stamped on the command line — ownership is read off the image, never parsed out of its name
+  // (ADR-0039), and the user's Dockerfile keeps zero j2 knowledge.
+  assert.deepEqual(requests[0], {
     tag: "j2-sandbox-inst-default:99aa",
-    baseTag: "j2-sandbox-inst-default-base:99aa",
-    harnessRef: "j2-harness:0f1e",
-    instance: "inst",
+    context: "/tmp/images/default",
+    labels: { "j2.dev/kind": "sandbox", "j2.dev/instance": "inst" },
   });
-
-  // BOTH builds, not just the wrap: the `-base` tag is dropped straight after, and the labeled id
-  // it leaves behind is only collectable because it was stamped.
-  assert.deepEqual(
-    requests.map((r) => [r.tag, r.labels]),
-    [
-      ["j2-sandbox-inst-default-base:99aa", { "j2.dev/kind": "sandbox", "j2.dev/instance": "inst" }],
-      ["j2-sandbox-inst-default:99aa", { "j2.dev/kind": "sandbox", "j2.dev/instance": "inst" }],
-    ],
-  );
+  assert.deepEqual(removed, [], "nothing to untag: there is no intermediate to leave behind");
 });
 
 test("the sweep matches containerd's names, and a registry copy is a different ref", () => {

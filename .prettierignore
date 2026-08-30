@@ -15,4 +15,3 @@ operator/
 # Generated from operator/config by `just operator-manifest` (kubectl kustomize). Reformatting
 # them makes the next render show a spurious diff.
 packages/cli/manifests/operator.yaml
-packages/cli/assets/sandbox-crd.yaml

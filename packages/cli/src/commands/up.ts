@@ -15,8 +15,7 @@
 // The converged name→ref map is stamped on the Orchestrator Deployment and diffed on the next run,
 // so a steady-state converge spends directory walks and no docker. When that record is silent (a
 // fresh namespace), the host daemon's labeled listing answers the BUILD question instead
-// (ADR-0041): a tag is a content address, so a host-held ref skips its build — never its delivery,
-// and never a Sandbox Image's preflight.
+// (ADR-0041): a tag is a content address, so a host-held ref skips its build — never its delivery.
 //
 // Content addressing also MAKES garbage — iterating on a Dockerfile while up leaves one full image
 // per iteration — so a converge that fully succeeded ends by sweeping every labeled image no live
@@ -49,10 +48,8 @@ import {
   kitImageBuild,
   kitImageRefs,
   normalizeRef,
-  preflightSandboxImage,
   pnpmDockerBuild,
   publishedKitRefs,
-  sandboxBaseTag,
   sandboxImageHash,
   sandboxImageTag,
   stageInstanceBundle,
@@ -154,7 +151,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // image's content hash (a label) and the previous name→ref map (an annotation, ADR-0038).
   const orch = await kube.getJson({ kind: "deployment", name: ORCHESTRATOR_SERVICE, namespace, ...ctx });
   const previous = previousImages(orch);
-  const converged: ConvergedImages = { harness: refs.harness, adapter: refs.adapter, sandbox: {} };
+  const converged: ConvergedImages = { harness: refs.harness, adapter: refs.adapter, sandbox: {}, sandboxUser: {} };
 
   // ONE transport branch for every image (ADR-0038), so instance, kit, and Sandbox Images cannot
   // drift into three delivery stories.
@@ -262,8 +259,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
 
   // --- the kit's own runtime images (ADR-0038) ---------------------------------------------------
-  // Built here rather than lazily beside their consumers: the Harness ref salts every Sandbox
-  // Image's hash below, and the Adapter is deployed into every Sandbox this instance provisions.
+  // Built here rather than lazily beside their consumers. The Harness is the injection source
+  // (ADR-0037): the pod's `runtime` init step copies `/opt/j2` out of this exact ref onto the
+  // volume the Sandbox Image mounts. The Adapter is deployed into every Sandbox this instance
+  // provisions. Neither is a hash input for a Sandbox Image — the runtime rides the pod's volume,
+  // so a kit edit re-images future pods and re-tags nothing of the user's.
   await ensureKitImage("harness");
   await ensureKitImage("adapter");
 
@@ -308,42 +308,45 @@ export async function up(args: string[], io: Io): Promise<number> {
       activity(io, "sandbox images: none authored (add images/<name>/Dockerfile — Sandboxes run the stock Harness)");
     }
     for (const image of images) {
-      // The wrap text salts the hash, so the resolved harness ref is an input: editing
-      // packages/harness/src re-tags every Sandbox Image instead of leaving pods on the old
-      // runtime (ADR-0037's consequence, ADR-0038's rule).
-      const imageHash = await sandboxImageHash(image.dir, refs.harness);
+      // The hash covers `images/<name>/` and nothing else (ADR-0037/0038). The harness ref is NOT
+      // an input any more: the runtime rides the pod's volume, so a kit edit re-images future
+      // pods and leaves every Sandbox Image tag — and every delivered layer — where it was.
+      const imageHash = await sandboxImageHash(image.dir);
       const ref = sandboxImageTag(name, image.name, imageHash, registry);
-      if (previous?.sandbox?.[image.name] === ref && values.force !== true) {
+      // A record is only worth skipping on when it is COMPLETE: the ref AND the seat the image
+      // declared. A record from a kit that predates `sandboxUser` names the right image and
+      // silently drops the fallback fact, which surfaces as a pod that will not start — so it reads
+      // as stale here and the image is re-inspected (the host skip below then spends no build).
+      const remembered = previous?.sandboxUser?.[image.name];
+      if (previous?.sandbox?.[image.name] === ref && remembered !== undefined && values.force !== true) {
         // Unlike the instance image there is no rollout to verify a Sandbox Image against, so a
         // recorded-but-absent ref only shows up as ImagePullBackOff at the next provision —
-        // `--force` rebuilds and re-delivers it. No preflight either: recorded means a successful
-        // converge already proved this exact image (ADR-0041's invariant).
+        // `--force` rebuilds and re-delivers it. The seat is carried forward from the same record:
+        // the tag is a content address, so the image the record names declares what it declared.
         activity(io, `sandbox image "${image.name}": ${ref} (fresh — build skipped; --force to rebuild anyway)`);
+        converged.sandboxUser[image.name] = remembered;
       } else {
         assertDeliverable();
         if (await hostBuilt(ref)) {
-          // The disk-skip MUST still preflight (ADR-0041): a converge that failed AT the preflight
-          // left this exact ref on the host, and trusting the disk without re-proving it would
-          // deliver the image the previous converge refused.
+          // A tag is a content address, so a host-held ref is this Dockerfile already built
+          // (ADR-0041). Delivery still happens below — the disk answers the build question only.
           activity(io, `sandbox image "${image.name}": ${ref} (host-built — build skipped; --force to rebuild)`);
         } else {
           activity(io, `sandbox image "${image.name}": building ${ref}`);
-          await buildSandboxImage(build, {
-            dir: image.dir,
-            tag: ref,
-            // The base is SCRATCH (ADR-0040): the converge draws the nonce, so concurrent
-            // converges of one checkout each untag their own intermediate and nobody's wrap loses
-            // its `FROM` — the failure that kept the `@kind` tier serial.
-            baseTag: sandboxBaseTag(name, image.name, imageHash, randomBytes(4).toString("hex")),
-            harnessRef: refs.harness,
-            instance: name,
-          });
+          // ONE build of the user's own Dockerfile, straight to its content tag — no wrap, no
+          // intermediate tag, so two converges of one checkout share no mutable image name and
+          // the `@kind` tier's `--parallel` rides on it (ADR-0037).
+          await buildSandboxImage(build, { dir: image.dir, tag: ref, instance: name });
         }
-        // Before transport, because it is a `docker run` against the LOCAL daemon — and before
-        // the converge, because a Sandbox Image that cannot run git or node fails inside a turn,
-        // as a tool error the model has to interpret (ADR-0037).
-        await preflightSandboxImage(build, image.name, ref);
-        activity(io, `  preflight ok — git, $HOME, node, and rg all answer as uid 1000`);
+        // The image's own `USER`, read while the image is certainly on this daemon (it was just
+        // built, or the host holds it). Recorded because a provision cannot inspect an image, and
+        // it is what decides ADR-0037's uid-1000 fallback and what the kubelet will refuse. This
+        // is a fact ABOUT the image, not a judgement of it: the ADR-0037 floor is a Harness-seat
+        // obligation and this directory may be destined for the User Container seat instead
+        // (ADR-0005), which owes no floor — a distinction only the provision can make (ADR-0031).
+        const user = await build.imageUser(ref);
+        converged.sandboxUser[image.name] = user;
+        activity(io, `  ${user ? `USER ${user}` : "no USER declared — the pod's uid-1000 fallback applies"}`);
         await deliver(ref);
       }
       converged.sandbox[image.name] = ref;
@@ -487,11 +490,23 @@ export async function up(args: string[], io: Io): Promise<number> {
   return 0;
 }
 
-/** Every image ref one converge resolved. The Orchestrator reads `harness`/`adapter`/`sandbox`
- * from the mounted map (`ImageRefs`); `operator` rides the same JSON because the record `j2 up`
- * diffs must cover every image it builds, and one map is what keeps the record it diffs and the
- * map pods read from ever disagreeing (ADR-0038). */
-type ConvergedImages = ImageRefs & { operator?: string };
+/**
+ * Every image ref one converge resolved. The Orchestrator reads `harness`/`adapter`/`sandbox` from
+ * the mounted map (`ImageRefs`); `operator` rides the same JSON because the record `j2 up` diffs
+ * must cover every image it builds, and one map is what keeps the record it diffs and the map pods
+ * read from ever disagreeing (ADR-0038).
+ *
+ * `sandboxUser` is the same map's answer to a question a provision cannot ask: an image that
+ * declares no `USER` runs as uid 1000 with `HOME=/home/j2` on an emptyDir (ADR-0037), and only the
+ * host that BUILT the image can see which case it is (`docker inspect` at converge is free; the
+ * cluster has no such reach). So the fact travels with the ref, in the same JSON, keyed by the same
+ * `images/<name>` dirname: `""` means "declares none — apply the fallback", a non-empty value is
+ * the declared user, and an ABSENT key means unknown, which is the only honest reading for an image
+ * j2 did not build. A registry ref is exactly that absent case by construction — it is never built,
+ * never inspected, never in this map — so it runs as whatever its own `USER` says, and one that
+ * would run as root fails the Harness container's `runAsNonRoot` at provision.
+ */
+type ConvergedImages = ImageRefs & { operator?: string; sandboxUser: Record<string, string> };
 
 /** The map the LAST converge recorded, off the Orchestrator Deployment's annotation. Anything
  * unreadable (absent, hand-edited, a foreign shape) reads as "no record", which costs a rebuild —

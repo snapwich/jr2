@@ -95,7 +95,7 @@ function mkSweep(
     listed: [] as string[],
     bundle: async () => assert.fail("down bundles nothing"),
     build: async () => assert.fail("down builds nothing"),
-    run: async () => assert.fail("down runs nothing") as never,
+    imageUser: async () => assert.fail("down inspects nothing") as never,
     push: async () => assert.fail("down pushes nothing"),
     kindLoad: async () => assert.fail("down loads nothing"),
     hostImages: async () => {

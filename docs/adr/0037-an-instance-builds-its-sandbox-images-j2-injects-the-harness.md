@@ -29,9 +29,12 @@ and promotes incidental image properties into contract items.
   no j2 knowledge inside it. Its own `USER` and `HOME` are respected — the human who execs in lands in the environment
   the image's author built, dotfiles included; its `ENTRYPOINT`/`CMD` simply do not run, because a container has one
   command and the Harness must own it (its death must be the container's death — the Ready probe and restart semantics
-  are the operator's contract at `:8080`). An image that declares no user runs as uid 1000 with `HOME=/home/j2` on an
-  emptyDir as the fallback. A process the image _wants_ running is not lost — it has its own seat, the User Container
-  ([ADR-0005](0005-sandbox-pod-composition.md)).
+  are the operator's contract at `:8080`). A **built** image that declares no user runs as uid 1000 with `HOME=/home/j2`
+  on an emptyDir as the fallback — j2 learns "declares none" for free at build time (`docker inspect`) and records it
+  beside the ref. A **brought** ref is never inspected — that is the point of refs — so the fallback cannot apply: a ref
+  must declare a numeric non-root `USER` itself, and one that would run as root fails at provision with an error that
+  names that line (never as the kubelet's silent `CreateContainerConfigError`). A process the image _wants_ running is
+  not lost — it has its own seat, the User Container ([ADR-0005](0005-sandbox-pod-composition.md)).
 - **PATH is appended at the process level, never prepended.** The Harness exports `PATH="${PATH}:/opt/j2/bin"` for
   itself, and Working tools spawn without an env override (`execFile(file, args, { cwd, signal })`), so children inherit
   it: the image's `node`, `rg`, and toolchain win where present and j2's are the fallback; prepending would silently
@@ -46,11 +49,14 @@ and promotes incidental image properties into contract items.
   writes `$HOME/.gitconfig`, and any real toolchain needs `~/.npm`, `~/.cargo`, `~/.cache`), and `/opt/j2`, `/work`,
   `:8080` unclaimed. j2 vendors the rest: **ripgrep** as its official static-musl binary and node's
   `libstdc++.so.6`/`libgcc_s.so.1` into `/opt/j2/lib`. The probe is one command —
-  `git config --global safe.directory "*" && /opt/j2/bin/node -e "" && rg --version` — and it runs where the image runs:
-  `j2 up` runs it against every image it builds and refuses to converge on failure (the error names the fix, because
-  "node did not execute" is not actionable), and every Sandbox runs it as an init step in the **user's own image** with
-  `/opt/j2` mounted, before the Harness starts — which is what proves a registry ref, whose first appearance is a
-  provision, with the same named error instead of a mid-turn tool failure.
+  `git config --global safe.directory "*" && /opt/j2/bin/node -e "" && rg --version` — and it runs **only where the seat
+  is known: as an init step in the user's own image**, `/opt/j2` mounted, before the Harness starts. It cannot run at
+  converge: the floor is a Harness-seat obligation, a built `images/<name>` may equally be destined for the User
+  Container seat — which owes no floor at all (ADR-0005) — and which seat a directory serves is workflow-internal and
+  statically unrecoverable (ADR-0031, the same line that puts unknown names at provision). So a broken toolchain image
+  surfaces at its first provision, in the `preflight` init container's log, with an error that names the fix (because
+  "node did not execute" is not actionable) — never as a mid-turn tool failure, and never as a converge refusal for a
+  contract the image was not under.
 - **A `workspace()` spec names the image; workflow configuration never enters the spec, but pod composition does** —
   what the Sandbox is _made of_ is the wrapper's business in the same way its worktrees are. The User Container rides
   the same rule and the same resolution as one more string beside `image` (`user?: string`,

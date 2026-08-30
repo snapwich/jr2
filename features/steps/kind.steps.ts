@@ -231,8 +231,9 @@ When(
 );
 
 /** The Agent reaches for its own toolchain (ADR-0027/0037): the model answers with the `bash`
- * WORKING tool, which the Harness executes in its own container — which IS the wrapped Sandbox
- * Image. No Menu tool is picked, so the Machine does not move; what moves is the conversation. */
+ * WORKING tool, which the Harness executes in its own container — the Sandbox Image itself, run
+ * byte-for-byte with j2's runtime mounted at /opt/j2. No Menu tool is picked, so the Machine does
+ * not move; what moves is the conversation. */
 When(
   "the Agent runs {string} through its bash Working tool",
   async function (this: E2EWorld, command: string): Promise<void> {
@@ -267,8 +268,9 @@ When(
     assert.ok(url, "the Adapter container carries the Orchestrator's address (the Harness does not)");
 
     // node, not curl: it is what the image has, and it is what a bash Working tool would use.
-    // Still resolvable after the ADR-0037 wrap because PATH is APPENDED — the Sandbox Image's own
-    // node answers here, and j2's relocated one at /opt/j2/bin is merely the fallback.
+    // Resolvable in an `exec` shell because the IMAGE carries it — the Harness's PATH append is a
+    // process-level setting (startup.ts) that no exec inherits, and j2 writes nothing into the
+    // image's env (ADR-0037).
     const probe =
       `fetch(${JSON.stringify(`${url}/agents/${iid}/events`)},{method:"POST",` +
       `headers:{"content-type":"application/json"},` +
@@ -432,48 +434,104 @@ Then("the model was shown the tool result {string}", async function (this: E2EWo
 });
 
 /**
- * ADR-0037's wrap, proved in the pod it was built for — the only tier that can. Each line is a
+ * ADR-0037's composition, proved in the pod it was assembled for — the only tier that can. Nothing
+ * here is a build any more: the runtime came off a volume an init container populated, the uid and
+ * the home came from the pod spec, and the umask and PATH came from the Harness PROCESS. Each is a
  * separate silent failure: no `git` and every attach fails; no writable `$HOME` and the attach's
  * `git config --global` dies with `fatal: $HOME not set` INSIDE a turn; a relocated node that
- * cannot find its C++ runtime and the container never serves; no `rg` and the grep Working tool
- * degrades to plain `grep` with nobody the wiser. PATH is the subtle one: it must be APPENDED, so
- * the USER's node wins and j2's is only the fallback — prepending would silently shadow a pinned
- * toolchain inside someone's own image.
+ * cannot find its C++ runtime through $ORIGIN/../lib and the container never serves; no `rg` and
+ * the grep Working tool degrades to plain `grep` with nobody the wiser.
+ *
+ * Two of the contracts are process-level settings of the Harness itself, made AFTER execve, so an
+ * `exec` shell inherits neither and the image carries no j2 `ENV` at all (ADR-0037). Each needs an
+ * observation that can actually see it:
+ *   - umask 002 is kernel state, so `/proc/1/status` reports it live (PID 1 is the Harness — the
+ *     container's command, and `shareProcessNamespace` stays off, ADR-0005). j2's half of
+ *     cross-uid sharing on /work with the User Container; fsGroup without it is group-READ, which
+ *     is the trap. The supplemental gid proves the other half arrived.
+ *   - PATH must be APPENDED, so the image's own toolchain wins and j2's vendored bin is the
+ *     fallback — prepending would silently shadow a toolchain someone pinned in their own image.
+ *     `/proc/1/environ` CANNOT see this: it is frozen at execve and never reflects an in-process
+ *     setenv. What the append exists for is inheritance — Working tools spawn with no env override
+ *     — so the honest observation is a CHILD's: a scripted bash turn prints `$PATH`, and the tool
+ *     result on the next provider request is what the child saw. (The append itself is
+ *     unit-covered in `packages/harness/test/startup.test.ts`; this pins the inheritance leg.)
+ * The uid and `$HOME` pin the no-`USER` fallback: images/default declares no user, so the pod must
+ * supply uid 1000 and an emptyDir home — the one branch of the composition no image can prove
+ * about itself.
  */
-Then("the Harness container satisfies the wrap's contracts", async function (this: E2EWorld): Promise<void> {
+Then("the Harness container satisfies the injection contracts", async function (this: E2EWorld): Promise<void> {
   const pod = (await waitForReadySandbox(this)).metadata.name;
   const script = [
     `git --version >/dev/null`,
+    `[ "$(id -u)" = 1000 ]`,
     `[ "$HOME" = /home/j2 ]`,
     `touch "$HOME/.j2-home-probe"`,
+    // The work group reached the pod as fsGroup, so every container process holds it (ADR-0005).
+    `id -G | tr ' ' '\\n' | grep -qx 2000`,
+    // Absolute, both of them: the vendored pair lives ONLY on the mounted volume, and this shell's
+    // PATH is the image's own — which is exactly the point.
     `/opt/j2/bin/node -e ''`,
-    `rg --version >/dev/null`,
-    `command -v node`,
+    `/opt/j2/bin/rg --version >/dev/null`,
+    `printf 'umask=%s\\n' "$(sed -n 's/^Umask:[[:space:]]*//p' /proc/1/status)"`,
+    `printf 'node=%s\\n' "$(command -v node)"`,
   ].join("\n");
-  const nodePath = (await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script])).trim();
-  assert.notEqual(
-    nodePath,
-    "/opt/j2/bin/node",
-    `PATH is APPENDED, so the image's own node wins (ADR-0037); resolved: ${nodePath}`,
-  );
+  const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script]);
+  const read = (key: string): string =>
+    out
+      .trim()
+      .split("\n")
+      .find((line) => line.startsWith(`${key}=`))
+      ?.slice(key.length + 1) ?? "";
+
+  assert.equal(read("umask"), "0002", "the Harness runs at umask 002, so /work writes stay group-writable");
+
+  const nodePath = read("node");
+  assert.notEqual(nodePath, "/opt/j2/bin/node", `the image's own node is what a shell resolves; resolved: ${nodePath}`);
   assert.ok(nodePath, "the image's own node is on PATH");
+
+  // The PATH append, observed where it exists: in a CHILD. The marker literal never appears in
+  // the command itself (`%s` splits it), so the only place the regex can match is the tool
+  // RESULT — the output of a bash Working tool the Harness spawned, env-inherited (ADR-0037).
+  await waitForAttached(this); // the turn cannot exist before the workspace finished attaching
+  assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+  const provider = this.provider;
+  await provider.release("bash", { command: `printf 'j2-path-%s\\n' "probe:$PATH"` });
+  let childPath = "";
+  for (let i = 0; i < 240 && !childPath; i++) {
+    for (const c of provider.calls) {
+      const m = c.stream ? /j2-path-probe:([^"\\]+)/.exec(c.raw) : null;
+      if (m) childPath = m[1]!;
+    }
+    if (!childPath) await sleep(500);
+  }
+  assert.ok(childPath, `no provider request ever carried the PATH probe (${provider.calls.length} recorded)`);
+  assert.ok(
+    childPath.endsWith(":/opt/j2/bin"),
+    `the Harness APPENDS /opt/j2/bin and its tool children inherit it; the child saw "${childPath}"`,
+  );
+  assert.ok(
+    !childPath.startsWith("/opt/j2/bin"),
+    `…and never prepends it — the image's toolchain must come first; the child saw "${childPath}"`,
+  );
 });
 
 /**
- * The deleted User Container's promise, now delivered by the image (ADR-0037/0005): `kubectl exec`
- * into the harness container lands a human in the worktree root and hands them the agent's tools
- * and the agent's files — the same container, so "human and agent see identical files" is not a
- * shared volume any more, it is an identity.
+ * ADR-0037/0005: `kubectl exec -c harness` hands a human the agent's tools, worktrees, and files —
+ * and, because j2 overrides the container's COMMAND and nothing else, the environment the image's
+ * author built. images/default's WORKDIR is /srv/j2-e2e, which the retired wrap could not have
+ * produced (it forced /work), so where the shell lands is the assertion that the image ran
+ * byte-for-byte.
  */
 Then(
   "a human's shell in the Sandbox lands in {string} with the image's own toolchain",
   async function (this: E2EWorld, workdir: string): Promise<void> {
     const pod = (await waitForReadySandbox(this)).metadata.name;
-    // No `-w`: the landing directory is the image's WORKDIR, which is what the wrap sets for
-    // exactly this reason (it has no effect on the Agent — every Working tool carries its own cwd).
+    // No `-w`: the landing directory is the IMAGE's WORKDIR. It has no effect on the Agent — every
+    // Working tool carries its own cwd — which is why the image is free to choose it.
     const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", "pwd && j2-toolchain"]);
     const [landed, toolchain] = out.trim().split("\n");
-    assert.equal(landed, workdir, "exec lands in the wrap's WORKDIR — the worktree root");
+    assert.equal(landed, workdir, "exec lands in the image's own WORKDIR — j2 overrides only the command");
     assert.equal(toolchain, "j2-toolchain-ok", "the human gets the Sandbox Image's own tools, not j2's");
   },
 );
@@ -662,14 +720,17 @@ async function nodeCriRefs(node: string): Promise<Set<string>> {
   return new Set(listed.flatMap((i) => i.repoTags ?? []).map(shortRef));
 }
 
-/** Every ref this instance's image map names — the root that says what future Sandboxes will run. */
+/** Every ref this instance's image map names — the root that says what future Sandboxes will run.
+ * The KEYS that hold refs are named, not discovered: the map also carries `sandboxUser` (built
+ * images' `USER` strings, where `""` is data — "declares none", ADR-0037), and a shape-blind
+ * flatten would read those as refs and demand the node hold an image named `""`. */
 async function imageMapRefs(world: E2EWorld): Promise<string[]> {
   const out = await kubectl(world, ["get", "configmap", IMAGES_CONFIGMAP, "-o", "json"]);
   const raw = (JSON.parse(out) as { data?: Record<string, string> }).data?.[IMAGES_KEY];
   assert.ok(raw, `the ${IMAGES_CONFIGMAP} ConfigMap carries ${IMAGES_KEY} (ADR-0038)`);
-  const parsed = JSON.parse(raw) as Record<string, unknown>;
-  return Object.values(parsed).flatMap((v) =>
-    typeof v === "string" ? [v] : Object.values(v as Record<string, string>).filter((n) => typeof n === "string"),
+  const parsed = JSON.parse(raw) as { harness?: string; adapter?: string; sandbox?: Record<string, string> };
+  return [parsed.harness, parsed.adapter, ...Object.values(parsed.sandbox ?? {})].filter(
+    (n): n is string => typeof n === "string" && n !== "",
   );
 }
 

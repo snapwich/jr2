@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { attachScript, kubectlSandbox } from "../src/sandbox-kubectl.ts";
+import { attachScript, kubectlSandbox, rootImageFault } from "../src/sandbox-kubectl.ts";
 import type { KubectlExec } from "../src/sandbox-kubectl.ts";
 
 type Call = { args: string[]; input?: string };
@@ -20,8 +20,16 @@ function fakeExec(handlers: Record<string, (call: Call) => string>) {
   const exec: KubectlExec = async (args, opts) => {
     const call = { args, input: opts?.input };
     calls.push(call);
-    const handler = handlers[args[0]!];
-    if (!handler) throw new Error(`unexpected kubectl ${args[0]}`);
+    // A `get` is not one question any more: the provision loop reads the POD as well as the CR,
+    // for a fault the Sandbox's phase cannot express. An unregistered pod read answers NotFound —
+    // the shape every provision has for its first moment, and what every test not about the fault
+    // wants, since the port must read "absent" as "too early", never as "healthy".
+    const key = args[0] === "get" && args[1] === "pod" ? "get pod" : args[0]!;
+    const handler = handlers[key];
+    if (!handler) {
+      if (key === "get pod") throw new Error(`pods "${args[2]}" not found`);
+      throw new Error(`unexpected kubectl ${args[0]}`);
+    }
     return { stdout: handler(call), stderr: "" };
   };
   return { exec, calls };
@@ -73,19 +81,183 @@ test("provision applies the labeled CR with the RO repos mount, gates on Ready",
   // No name on the spec → `images/default` (ADR-0037's middle leg), resolved from the map.
   assert.equal(applied.spec.image, "j2-sandbox-inst-default:d00");
   // The repos volume is RO; the worktree root is a writable POD volume. Proven necessary on kind:
-  // the operator runs the Harness as an unprivileged uid, so a work dir owned by the image (or
-  // absent) makes every `attach` fail with "mkdir /work: permission denied" — and `/work` is the
-  // wrap's WORKDIR (ADR-0037), where a human's `kubectl exec` lands on the same worktrees.
+  // every j2-owned seat runs as an unprivileged uid, so a work dir owned by the image (or absent)
+  // makes every `attach` fail with "mkdir /work: permission denied" — and `/work` is what all
+  // three containers share (ADR-0005), so a human's `kubectl exec` sees the Agent's own files.
   assert.deepEqual(applied.spec.volumeMounts, [
     { name: "repos", mountPath: "/repos", readOnly: true },
     { name: "work", mountPath: "/work" },
+    // j2's runtime, read-only in the container where the Agent has code execution.
+    { name: "runtime", mountPath: "/opt/j2", readOnly: true },
   ]);
   assert.deepEqual(applied.spec.volumes, [
     // The in-cluster source volume (ADR-0004/0019): the PVC the boot reconcile writes — no
     // hostPath, nothing kind-special.
     { name: "repos", persistentVolumeClaim: { claimName: "j2-repos", readOnly: true } },
     { name: "work", emptyDir: {} },
+    { name: "runtime", emptyDir: {} },
   ]);
+});
+
+test("the Harness arrives at POD time: an /opt/j2 volume, an init copy, and a command override", async () => {
+  // ADR-0037's whole mechanism, in one CR. There is NO build-time wrap: the primary container runs
+  // the user's image byte-for-byte, and everything j2 needs from it arrives beside it.
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  await port.provision({ name: "sb-inj", runId: "r", workflow: "w", image: "rust" });
+
+  const applied = crOf(calls);
+  // The one thing j2 takes from the image. A container has one command and it must be the
+  // Harness's, or the operator's Ready probe and restart semantics are lies.
+  assert.deepEqual(applied.spec.command, ["/opt/j2/bin/node", "/opt/j2/src/main.ts"]);
+
+  const [runtime, preflight] = applied.spec.initContainers;
+  // Populate first, prove second — the preflight mounts what the copy wrote.
+  assert.equal(runtime.name, "runtime");
+  assert.equal(runtime.image, "j2-harness:h00", "the runtime rides the KIT's image, not the user's");
+  assert.deepEqual(runtime.command, ["/opt/j2/bin/init-copy", "/mnt/j2"]);
+  assert.deepEqual(
+    runtime.volumeMounts,
+    [{ name: "runtime", mountPath: "/mnt/j2" }],
+    "never /opt/j2: it is the source",
+  );
+
+  // The probe runs in the USER'S image — that is what proves a registry ref, whose first
+  // appearance is this provision, before the Harness container starts rather than mid-turn.
+  assert.equal(preflight.name, "preflight");
+  assert.equal(preflight.image, "j2-sandbox-inst-rust:r00");
+  assert.deepEqual(preflight.volumeMounts, [{ name: "runtime", mountPath: "/opt/j2", readOnly: true }]);
+  const script = preflight.command.at(-1);
+  assert.match(script, /git config --global safe\.directory "\*"/, "git on PATH and a writable HOME");
+  assert.match(script, /\/opt\/j2\/bin\/node -e ""/, "the glibc floor — where musl dies");
+  assert.match(script, /\brg --version/, "UNQUALIFIED: it proves rg resolves through PATH");
+  assert.match(script, /export PATH="\$PATH:\/opt\/j2\/bin"/, "APPENDED, never prepended");
+  assert.match(script, /ADR-0037/, "the failure names the fix, not `node did not execute`");
+
+  // Both j2-owned init steps carry the hardened context themselves: the operator schedules init
+  // containers verbatim (ADR-0001), so nothing else would supply one.
+  for (const c of applied.spec.initContainers) {
+    assert.equal(c.securityContext.runAsNonRoot, true, `${c.name} runs non-root`);
+    assert.deepEqual(c.securityContext.capabilities, { drop: ["ALL"] });
+  }
+});
+
+test("a registry ref is deployed-never-built: it passes through verbatim, in either seat", async () => {
+  // ADR-0037's second origin. j2 never built it, so j2 has no ref to look up — and never labels,
+  // sweeps, or preflights it at converge. Its pull is the cluster's own.
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  await port.provision({
+    name: "sb-ref",
+    runId: "r",
+    workflow: "w",
+    image: "ghcr.io/acme/toolchain:2024-11",
+    user: "ghcr.io/acme/sshd:1",
+  });
+
+  const applied = crOf(calls);
+  assert.equal(applied.spec.image, "ghcr.io/acme/toolchain:2024-11");
+  // The preflight still runs against it — that is the whole point: a ref's first appearance is a
+  // provision, so this is the only moment the floor can be proven at all.
+  assert.equal(applied.spec.initContainers[1].image, "ghcr.io/acme/toolchain:2024-11");
+  assert.equal(applied.spec.sidecars[1].image, "ghcr.io/acme/sshd:1");
+});
+
+test("the User Container is the zero-contract seat: own entrypoint, /work, and NOTHING else", async () => {
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    exec,
+    caBundle: true,
+    env: [{ name: "MODEL", value: "x" }],
+    envFrom: [{ secretRef: { name: "anthropic" } }],
+  });
+  await port.provision({ name: "sb-user", runId: "r", workflow: "w", user: "rust" });
+
+  const applied = crOf(calls);
+  const user = applied.spec.sidecars.find((s: { name: string }) => s.name === "user");
+  // Everything j2 could have forwarded and deliberately did not (ADR-0005): every key would be a
+  // crack in "j2 puts nothing in it". No command, so the image's own entrypoint runs untouched.
+  assert.deepEqual(user, {
+    name: "user",
+    image: "j2-sandbox-inst-rust:r00",
+    volumeMounts: [{ name: "work", mountPath: "/work" }],
+  });
+  // And no securityContext, which is how the operator reads the exemption: root is allowed here.
+  assert.ok(!("securityContext" in user), "the seat j2 does not own is not hardened by j2");
+
+  // Absent → two containers, exactly as before the seat existed.
+  const { exec: e2, calls: c2 } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  await kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec: e2 }).provision({
+    name: "sb-nouser",
+    runId: "r",
+    workflow: "w",
+  });
+  assert.deepEqual(
+    crOf(c2).spec.sidecars.map((s: { name: string }) => s.name),
+    ["adapter"],
+    "no default User Container — the seat's identity is what j2 does not own",
+  );
+});
+
+test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH places it runs", async () => {
+  // The recorded `""` is what the converge's `docker inspect` saw (images.ts) — a fact a provision
+  // cannot ask for itself. j2 supplies a uid ONLY here: everywhere else the image's own USER
+  // decides its seat (ADR-0005), and this is the one case where the image chose nothing and the
+  // alternative is root, which the hardened context refuses.
+  const bare = { ...REFS, sandbox: { ...REFS.sandbox, bare: "j2-sandbox-inst-bare:b00" }, sandboxUser: { bare: "" } };
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  await kubectlSandbox({ imagesPath: await mkImages(bare), ...provisionable, exec }).provision({
+    name: "sb-bare",
+    runId: "r",
+    workflow: "w",
+    image: "bare",
+  });
+
+  const applied = crOf(calls);
+  assert.equal(applied.spec.securityContext.runAsUser, 1000);
+  assert.equal(applied.spec.securityContext.runAsNonRoot, true, "the fallback is a uid, not a loosening");
+  // A writable HOME is part of ADR-0037's floor, and uid 1000 on a stranger's base has no home at
+  // all — so j2 supplies one as a pod volume rather than expecting a layer for it.
+  assert.deepEqual(applied.spec.env[0], { name: "HOME", value: "/home/j2" });
+  assert.ok(applied.spec.volumes.some((v: { name: string }) => v.name === "home"));
+  assert.deepEqual(applied.spec.volumeMounts.at(-1), { name: "home", mountPath: "/home/j2" });
+
+  // The probe runs in the SAME seat, or it proved a different uid's $HOME and proved nothing.
+  const preflight = applied.spec.initContainers[1];
+  assert.equal(preflight.securityContext.runAsUser, 1000);
+  assert.deepEqual(preflight.env, [{ name: "HOME", value: "/home/j2" }]);
+  assert.deepEqual(preflight.volumeMounts.at(-1), { name: "home", mountPath: "/home/j2" });
+
+  // And an image that DID declare one keeps its own environment, dotfiles included: no uid, no
+  // HOME, no home volume anywhere in the CR.
+  const { exec: e2, calls: c2 } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  await kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec: e2 }).provision({
+    name: "sb-own",
+    runId: "r",
+    workflow: "w",
+    image: "rust",
+  });
+  const own = crOf(c2);
+  assert.equal(own.spec.securityContext.runAsUser, undefined, "j2 sets runAsUser nowhere else");
+  assert.ok(!own.spec.env.some((e: { name: string }) => e.name === "HOME"));
+  assert.ok(!own.spec.volumes.some((v: { name: string }) => v.name === "home"));
+});
+
+test("the pod carries the work group: fsGroup = spec.workGroup ?? 2000", async () => {
+  // ADR-0005's j2-owned half of cross-uid sharing on `/work` (the Harness's `umask 002` is the
+  // other). The override exists for a BROUGHT image, which cannot take the two setup lines its
+  // own half needs — pointing the work group at a gid its sessions already hold costs no rebuild.
+  const fsGroupFor = async (workGroup?: number): Promise<number> => {
+    const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+    const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+    await port.provision({ name: "sb", runId: "r", workflow: "w", ...(workGroup !== undefined ? { workGroup } : {}) });
+    return crOf(calls).spec.fsGroup;
+  };
+
+  assert.equal(await fsGroupFor(), 2000, "the default is convention, never a config key");
+  assert.equal(await fsGroupFor(4000), 4000);
 });
 
 test("the Sandbox Image chain: spec name → images/default → the stock Harness", async () => {
@@ -121,6 +293,123 @@ test("an unknown image name fails the provision with NOTHING applied, listing wh
   );
   // Read-first is what buys this: no token Secret, no CR, nothing for anyone to clean up.
   assert.deepEqual(calls, []);
+});
+
+test("a recorded USER the kubelet would refuse fails the provision by NAME, not by timeout", async () => {
+  // The failure this replaces is the worst-shaped one j2 has: `runAsNonRoot` with no `runAsUser`
+  // makes the kubelet resolve the image's USER itself, a non-numeric or root one is
+  // CreateContainerConfigError on the `preflight` init container, and a container that never
+  // starts has no logs — so the timeout hint dead-ends and 120s burn before anything is said. The
+  // converge already recorded the string, so the read-first provision can say it up front.
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const named = { ...REFS, sandbox: { ...REFS.sandbox, dev: "j2-sandbox-inst-dev:v00" }, sandboxUser: { dev: "dev" } };
+  const port = kubectlSandbox({ imagesPath: await mkImages(named), ...provisionable, exec });
+
+  await assert.rejects(
+    () => port.provision({ name: "sb", runId: "r", workflow: "w", image: "dev" }),
+    (err: Error) => {
+      assert.match(err.message, /`USER dev`/);
+      assert.match(err.message, /USER 1000/, "the message names the one-line fix in the caller's Dockerfile");
+      return true;
+    },
+  );
+  assert.deepEqual(calls, [], "nothing applied: no token Secret, no CR, nothing to clean up");
+
+  // Root is the same refusal for the other reason, and `uid:gid` is judged on the uid half only.
+  const rooted = kubectlSandbox({
+    imagesPath: await mkImages({ ...named, sandboxUser: { dev: "0" } }),
+    ...provisionable,
+    exec,
+  });
+  await assert.rejects(() => rooted.provision({ name: "sb", runId: "r", workflow: "w", image: "dev" }), /`USER 0`/);
+
+  const paired = kubectlSandbox({
+    imagesPath: await mkImages({ ...named, sandboxUser: { dev: "1000:2000" } }),
+    ...provisionable,
+    exec,
+  });
+  await paired.provision({ name: "sb", runId: "r", workflow: "w", image: "dev" });
+});
+
+/** A pod whose named container sits in `waiting`, as `kubectl get pod -o json` prints it. */
+const waitingPod = (container: string, reason: string, message: string, seat = "initContainerStatuses") =>
+  JSON.stringify({
+    status: {
+      [seat]: [
+        { name: "runtime", state: { terminated: { exitCode: 0 } } },
+        { name: container, state: { waiting: { reason, message } } },
+      ],
+    },
+  });
+
+/** The kubelet's actual wording for the fault, which is the only evidence this case ever leaves. */
+const RUNS_AS_ROOT = "container has runAsNonRoot and image will run as root";
+
+test("a BROUGHT ref that runs as root fails the provision by name, not as the preflight's timeout", async () => {
+  // The one seat-fault a converge cannot see coming (ADR-0037): a registry ref is never built and
+  // never inspected, so nothing recorded its `USER` and `unrunnableUser` has nothing to judge. The
+  // kubelet refuses it against the hardened seat, the `preflight` init container never STARTS, and
+  // a container that never started has no logs — so the pod is the only witness, and without this
+  // read the 120s timeout blames a probe that never ran.
+  const { exec } = fakeExec({
+    apply: () => "ok",
+    patch: () => "ok",
+    get: () => JSON.stringify({ status: { phase: "Pending" } }),
+    "get pod": () => waitingPod("preflight", "CreateContainerConfigError", RUNS_AS_ROOT),
+  });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+
+  await assert.rejects(
+    () => port.provision({ name: "sb-root", runId: "r", workflow: "w", image: "ghcr.io/acme/toolchain:2024-11" }),
+    (err: Error) => {
+      assert.match(err.message, /runs as ROOT/);
+      assert.match(err.message, /`USER <uid>`/, "the fix is a line in the image, not a j2 setting");
+      assert.match(err.message, /USER 1000/);
+      assert.match(err.message, /numeric/, "…and numeric, because the kubelet cannot resolve a name");
+      assert.match(err.message, /brought registry ref/, "…and it says WHY j2 supplied no uid itself");
+      assert.match(err.message, /preflight/, "the container the kubelet named is quoted back");
+      assert.ok(!/never reached Ready/.test(err.message), "it replaces the timeout, it does not follow it");
+      return true;
+    },
+  );
+});
+
+test("only THAT waiting shape is the root fault; every other pod passes through", async () => {
+  // CreateContainerConfigError is also what an absent Secret key produces, and that has a different
+  // fix — so the reason alone must not be enough. A name with no evidence behind it is worse than
+  // the timeout it replaces, because it sends the reader to edit the wrong file.
+  assert.equal(
+    rootImageFault(JSON.parse(waitingPod("harness", "CreateContainerConfigError", `secret "j2-sb" not found`))),
+    undefined,
+  );
+  assert.equal(rootImageFault(JSON.parse(waitingPod("preflight", "PodInitializing", RUNS_AS_ROOT))), undefined);
+  assert.equal(
+    rootImageFault(JSON.parse(waitingPod("preflight", "ImagePullBackOff", "pull access denied"))),
+    undefined,
+  );
+  assert.equal(rootImageFault({ status: {} }), undefined, "a pod with no statuses yet is not a fault");
+  assert.equal(rootImageFault({}), undefined);
+  assert.equal(rootImageFault(null), undefined, "…nor is an unreadable answer");
+
+  // The primary containers are read too: the same image sits in the `harness` seat, which is
+  // hardened identically, so the fault can surface there when the preflight is not what ran first.
+  assert.match(
+    rootImageFault(JSON.parse(waitingPod("harness", "CreateContainerConfigError", RUNS_AS_ROOT, "containerStatuses")))!,
+    /container "harness"/,
+  );
+
+  // And end to end: a pod that is merely slow still reaches Ready, with the pod read costing it
+  // nothing but a look.
+  let gets = 0;
+  const { exec } = fakeExec({
+    apply: () => "ok",
+    patch: () => "ok",
+    get: () => (++gets < 3 ? JSON.stringify({ status: { phase: "Pending" } }) : readyStatus),
+    "get pod": () => waitingPod("preflight", "PodInitializing", "waiting to start"),
+  });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const { endpoint } = await port.provision({ name: "sb-slow", runId: "r", workflow: "w" });
+  assert.equal(endpoint, "http://sb-1.default.svc:8080");
 });
 
 test("the map is re-read PER provision, so a converge reaches the next Sandbox without a roll", async () => {
@@ -192,8 +481,8 @@ test("the Adapter is UNCONDITIONAL and is the pod's only credential holder", asy
   await port.provision({ name: "sb-env2", runId: "r", workflow: "w" });
 
   const applied = crOf(calls);
-  // One sidecar, always. With the ref in the map there is no "no adapter configured" state left to
-  // branch on — and the User Container is gone (ADR-0037), so this list is exactly the Adapter.
+  // With the ref in the map there is no "no adapter configured" state left to branch on, and no
+  // User Container was named — so this list is exactly the Adapter.
   assert.deepEqual(
     applied.spec.sidecars.map((s: { name: string; image: string }) => [s.name, s.image]),
     [["adapter", "j2-adapter:a00"]],
@@ -315,15 +604,21 @@ test("attach execs the idempotent ADR-0004 script in the harness container", asy
 
   const argv = calls[0]!.args;
   assert.deepEqual(argv.slice(0, 2), ["exec", "pod/sb-3"]);
-  // Still `harness`, and still right after ADR-0037: the wrapped Sandbox Image IS that container.
+  // Still `harness`, and still right after ADR-0037: the primary container IS the Sandbox Image,
+  // run unmodified with j2's runtime beside it on a volume — so the agent's own worktrees, tools,
+  // and `$HOME` are what this attach touches.
   assert.ok(argv.includes("harness"), "targets the harness container");
   const script = argv[argv.length - 1]!;
   assert.match(script, /git clone --shared --no-checkout '\/repos\/app\/default' '\/work\/app\/default'/);
   assert.match(script, /worktree add '\/work\/infra\/feat-login' -b 'feat\/login' 'v2'/);
   assert.match(script, /\[ -d '\/work\/app\/default\/\.git' \] \|\|/, "clone is guarded (idempotent re-run)");
+  // The attach execs in — it is NOT a child of the Harness process — so it must set the work
+  // group's umask itself or every dir it creates is 755 and the User Container seat can never
+  // CREATE a file in the worktree (ADR-0005's cross-uid write promise).
+  assert.match(script, /^umask 002\n/, "the exec'd attach carries its own umask");
   // The clone SOURCE is the RO volume the orchestrator's uid wrote — git's dubious-ownership
   // guard refuses it without this (safe.directory is honored from global config only, never -c).
-  assert.match(script, /^git config --global safe\.directory '\*'/, "trusts the pod's j2-owned paths first");
+  assert.match(script, /^umask 002\ngit config --global safe\.directory '\*'/, "trusts the pod's j2-owned paths first");
 });
 
 test("attachScript with a reviewSha adds the detached review worktree beside every branch worktree", () => {

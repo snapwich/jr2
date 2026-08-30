@@ -138,30 +138,32 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the branch ref of repo "app" branch "feat-e2e" is unmoved
       And the coder's worktree for repo "app" branch "feat-e2e" is untouched
 
-  Rule: j2 injects its runtime into the user's image, and every line of the wrap holds
-    ADR-0037. A Sandbox Image is the user's Dockerfile — zero j2 knowledge, any base — plus a
-    kit-owned wrap that copies /opt/j2 in, creates a writable home, appends PATH, and points
-    WORKDIR at the worktree root. Each of those is a SILENT failure when wrong: it surfaces inside
-    a turn, as a tool error the model has to interpret. Only a real pod can prove they hold.
+  Rule: j2 mounts its runtime into the user's image, and the floor holds inside the pod
+    ADR-0037. A Sandbox Image is the user's Dockerfile — zero j2 knowledge, any base — run
+    byte-for-byte: an init container publishes /opt/j2 onto a volume the primary container mounts,
+    and only the container's COMMAND is overridden. So the floor is a composition, not a build, and
+    every line of it is a SILENT failure when wrong: it surfaces inside a turn, as a tool error the
+    model has to interpret. Only a real pod can prove the pieces met.
 
-    Scenario: the wrapped image gives the pod git, a home, node, rg, and an APPENDED PATH
+    Scenario: the mounted runtime gives the pod git, a home, node, rg, and an APPENDED PATH
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      And the Harness container satisfies the wrap's contracts
+      And the Harness container satisfies the injection contracts
 
-  Rule: exec into the Harness container is the human's shell
-    ADR-0037 deletes the User Container: a Sandbox Image is the user's tools PLUS the Harness, so
-    `kubectl exec -c harness` gives a human the agent's tools, worktrees, and filesystem. ADR-0005's
-    promise — human and agent see identical files — is delivered by the image rather than by a
-    second container sharing a volume with it, so it is now an identity, not a mount.
+  Rule: exec into the Harness container lands in the image's own environment
+    ADR-0037/0005. `kubectl exec -c harness` gives a human the agent's tools, worktrees, and
+    filesystem — and, because j2 overrides the command and NOTHING else, the environment the
+    image's author built: its own WORKDIR, its own tools. images/default puts WORKDIR at
+    /srv/j2-e2e precisely because the retired wrap forced /work, so landing there is proof j2 built
+    no stage on top of this image.
 
-    Scenario: a human execs in, lands in the worktree root, and has the image's own tools
+    Scenario: a human execs in, lands in the image's own WORKDIR, and has the image's own tools
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
-      And a human's shell in the Sandbox lands in "/work" with the image's own toolchain
+      And a human's shell in the Sandbox lands in "/srv/j2-e2e" with the image's own toolchain
 
   Rule: the sweep takes a node image no live root names, and leaves the ones a root does
     ADR-0039. Reachability is decided from Kubernetes, but the removal happens in a node's
@@ -180,10 +182,10 @@ Feature: a workspace() run drives a real Sandbox on kind
       And every node still holds the images this instance's map names
 
   Rule: the Agent's Working tools reach the Sandbox Image's own toolchain
-    ADR-0027/0037. Working tools execute in the Harness container, and that container IS the
-    wrapped Sandbox Image — which is the entire feature: what an Agent can DO stops being bounded
-    by whatever the stock image happened to carry. `j2-toolchain` exists only in this instance's
-    `images/default/Dockerfile`.
+    ADR-0027/0037. Working tools execute in the Harness container, and that container runs the
+    Sandbox Image itself with j2's runtime mounted beside it — which is the entire feature: what an
+    Agent can DO stops being bounded by whatever the stock image happened to carry. `j2-toolchain`
+    exists only in this instance's `images/default/Dockerfile`.
 
     Scenario: a bash Working tool runs a binary only images/default carries
       Given the kind instance is serving

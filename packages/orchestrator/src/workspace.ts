@@ -56,11 +56,26 @@ const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
 export type WorkspaceSpec = {
   repos: Array<{ name: string; baseRef: string }>;
   branch: string;
-  /** The Sandbox Image (ADR-0037): an `images/<name>` DIRNAME, never a ref. Resolution to a ref is
-   * the port's, which keeps the Machine cluster-agnostic and — the load-bearing half — keeps a
-   * content-addressed tag out of the persisted snapshot, where it would outlive the image it
-   * names. Absent → `images/default`, then the stock Harness. */
+  /** The Sandbox Image (ADR-0037), in either of its two origins: an `images/<name>` DIRNAME the
+   * instance builds, or a registry REF its owner baked and hosts. The two are told apart by shape
+   * — a ref contains `/` or `:`, a dirname cannot — and resolution to a concrete ref is the
+   * port's, which keeps the Machine cluster-agnostic. A ref is safe to persist for the same reason
+   * a dirname is: both are stable NAMES. What must never reach a snapshot is a resolved
+   * content-addressed tag, which would outlive the image it names — and that only ever exists on
+   * the port's side of the seam. Absent → `images/default`, then the stock Harness. */
   image?: string;
+  /** The User Container's image (ADR-0005), same two origins and the same resolution as `image`.
+   * Absent → the pod has no third container: there is no default, because the seat's whole
+   * identity is "what j2 does not own" and j2 has nothing to put there. One string is the entire
+   * authoring surface — env, ports, and resources are deliberately not forwarded. */
+  user?: string;
+  /** The pod's work group (ADR-0005): `fsGroup`, default 2000. The two writing seats may run
+   * different uids — each image's own `USER` decides — and POSIX would then make the other seat's
+   * files read-only; fsGroup plus the Harness's `umask 002` closes that, and both halves are inert
+   * when the uids already match. The override exists for a BROUGHT image, which cannot take the
+   * two setup lines its half needs: pointing the work group at a gid its sessions already hold
+   * costs it no rebuild. Never a config key — pod composition is the spec's business. */
+  workGroup?: number;
   /** Attach the detached review worktree at this sha (ADR-0028): `<branchDir>-review`, a sibling
    * of the branch worktree, forced to exactly this sha on every attach. Creation-time seat only;
    * the per-round refresh verb (the sha moves between review rounds) is a later, workflow-driven
@@ -120,13 +135,16 @@ export type Continuity = { present: false } | { present: true; identity?: string
 export interface SandboxPort {
   /** Ensure the Sandbox CR exists (labeled with its run for `j2 ls`) and await `phase: Ready`;
    * resolve with the Harness endpoint the orchestrator can reach, and the identity the lease
-   * will hold this workspace to. `image` is the spec's Sandbox Image NAME (ADR-0037) — the port
-   * resolves it to a ref, and an unknown name fails here rather than converge-time. */
+   * will hold this workspace to. `image`/`user` are the spec's image NAMES (ADR-0037/0005) —
+   * dirname or registry ref, the port resolves both, and an unknown dirname fails here rather
+   * than converge-time. `workGroup` is the pod's `fsGroup`; the port owns the default. */
   provision(req: {
     name: string;
     runId: string;
     workflow: string;
     image?: string;
+    user?: string;
+    workGroup?: number;
   }): Promise<{ endpoint: string; identity?: string }>;
   /** Post-Ready attach (ADR-0004): per repo, `git clone --shared --no-checkout` from the RO
    * `default/` volume, then a branch worktree sibling — and, with `spec.reviewSha`, the detached
@@ -354,11 +372,21 @@ function assertSpec(spec: WorkspaceSpec): void {
     });
   if (spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
     bad.push(`reviewSha (got ${JSON.stringify(spec?.reviewSha)})`);
-  // Shape only. Whether the NAME exists is unanswerable here — the image map lives in the cluster
-  // and this runs before any port call — so an unknown name fails at provision (ADR-0037), loudly
-  // and listing what was discovered.
+  // Shape only, for both image names. Whether a DIRNAME exists is unanswerable here — the image
+  // map lives in the cluster and this runs before any port call — so an unknown one fails at
+  // provision (ADR-0037), loudly and listing what was discovered. A REF is not checkable anywhere
+  // on this side: it is deployed-never-built, and its pull is the cluster's own.
   if (spec?.image !== undefined && (typeof spec.image !== "string" || !spec.image))
     bad.push(`image (got ${JSON.stringify(spec?.image)})`);
+  if (spec?.user !== undefined && (typeof spec.user !== "string" || !spec.user))
+    bad.push(`user (got ${JSON.stringify(spec?.user)})`);
+  // A gid, so an integer — a float or a negative becomes a pod the API server rejects at
+  // admission, which surfaces as "never reached Ready" with nothing pointing back at the spec.
+  if (
+    spec?.workGroup !== undefined &&
+    (typeof spec.workGroup !== "number" || !Number.isInteger(spec.workGroup) || spec.workGroup < 0)
+  )
+    bad.push(`workGroup (got ${JSON.stringify(spec?.workGroup)}; want a gid)`);
   if (bad.length) {
     throw new Error(
       `workspace spec invalid: ${bad.join("; ")} — the spec derives from run input; does ` +
@@ -376,8 +404,11 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
         name: workspaceName(binding.runId, input.wsId),
         runId: binding.runId,
         workflow: binding.workflow,
-        // The NAME, straight through (ADR-0037) — the port owns resolution.
+        // The NAMES, straight through (ADR-0037/0005) — the port owns resolution, and the
+        // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
         ...(input.spec.image !== undefined ? { image: input.spec.image } : {}),
+        ...(input.spec.user !== undefined ? { user: input.spec.user } : {}),
+        ...(input.spec.workGroup !== undefined ? { workGroup: input.spec.workGroup } : {}),
       });
     },
   );

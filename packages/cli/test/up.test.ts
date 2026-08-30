@@ -122,14 +122,16 @@ class FakeCluster implements KubeAdmin {
  * `node_modules/.pnpm` (the resolved dependency, workspace-linked or registry-fetched alike).
  *
  * Every verb records distinguishably, because ADR-0038's layers differ in exactly HOW they build:
- * a kit image is `-f <committed Dockerfile>` against another context, the instance image and the
- * wrap are generated Dockerfiles on stdin, and the preflight is a `docker run` against a tag. The
- * tag alone is recorded on the `build ` line so the address stays extractable from it. */
+ * a kit image is `-f <committed Dockerfile>` against another context, the instance image is a
+ * generated Dockerfile on stdin, and a Sandbox Image is its own directory and nothing else. The tag
+ * alone is recorded on the `build ` line so the address stays extractable from it. */
 function fakeBuild(
   record: string[],
   opts: {
     files?: Record<string, string>;
-    preflightFails?: boolean;
+    /** What `docker inspect` says a Sandbox Image declares as its `USER` — `""` (the default) is
+     * the interesting case: no USER, so the pod's uid-1000 fallback applies (ADR-0037). */
+    imageUser?: string;
     /** What the two stores hold when the post-converge sweep looks (ADR-0039). Empty by default,
      * so a test that is not about the sweep sees one narrated line and no removals. */
     hostImages?: ObservedImage[];
@@ -153,14 +155,12 @@ function fakeBuild(
       // no sweep can ever collect, which is invisible in every other assertion here.
       record.push(`stamp ${tag} ${JSON.stringify(labels ?? null)}`);
       if (dockerfile) record.push(`build-with -f ${dockerfile} ctx ${context}`);
-      else if (dockerfileContent?.startsWith("FROM j2-sandbox")) record.push(`build-with wrap ${tag}`);
       else if (dockerfileContent) record.push(`build-with stdin ${tag}`);
       else record.push(`build-with context-default ${tag}`);
     },
-    run: async (image, argv) => {
-      record.push(`run ${image} ${argv.join(" ")}`);
-      if (opts.preflightFails) throw new Error("exit 127: rg: not found");
-      return "";
+    imageUser: async (image) => {
+      record.push(`inspect-user ${image}`);
+      return opts.imageUser ?? "";
     },
     push: async (tag) => void record.push(`push ${tag}`),
     kindLoad: async (tag, cluster) => void record.push(`kind-load ${tag} → ${cluster}`),
@@ -234,7 +234,7 @@ function mkWorld(
      * is NOT a checkout — so every test stays in installed-kit mode unless it says otherwise, and
      * none of them detect the real repo the suite happens to run inside. */
     kitDir?: string;
-    preflightFails?: boolean;
+    imageUser?: string;
     hostImages?: ObservedImage[];
     nodeImages?: ObservedImage[];
     sweepFails?: boolean;
@@ -253,7 +253,7 @@ function mkWorld(
     kubeAdmin: kube,
     build: fakeBuild(built, {
       files: over.bundleFiles,
-      preflightFails: over.preflightFails,
+      imageUser: over.imageUser,
       hostImages: over.hostImages,
       nodeImages: over.nodeImages,
       sweepFails: over.sweepFails,
@@ -458,6 +458,24 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   for (const ref of [images.harness, images.adapter, images.operator, images.sandbox.default]) {
     assert.ok(forced.built.includes(`build ${ref}`), `--force rebuilds ${ref} (got: ${forced.built.join(", ")})`);
   }
+
+  // A record that names the ref but NOT the seat it was proved in — what a kit predating ADR-0037's
+  // uid-1000 fallback wrote — is incomplete, not fresh. Skipping on it would converge a map with no
+  // `sandboxUser` entry, and a userless image would then be admitted as root and refused by the
+  // Harness container's runAsNonRoot. So the image is re-proved and the fact re-read.
+  const { sandboxUser: _dropped, ...partial } = images;
+  const stale = mkWorld(root, { kitDir: kit });
+  stale.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  stale.kube.set("myinst", "deployment", "j2-orchestrator", {
+    metadata: {
+      name: "j2-orchestrator",
+      labels: { "j2.dev/content-hash": deployment.metadata.labels["j2.dev/content-hash"] },
+      annotations: { "j2.dev/images": JSON.stringify(partial, null, 2) },
+    },
+  });
+  assert.equal(await up([], stale.io), 0);
+  assert.ok(stale.built.includes(`inspect-user ${images.sandbox.default}`), "the seat is read again");
+  assert.deepEqual(imagesOf(stale).sandboxUser, { default: "" }, "…and the record converges complete");
 });
 
 test("a silent record consults the host daemon: host-built refs skip their builds, never their delivery (ADR-0041)", async () => {
@@ -488,19 +506,14 @@ test("a silent record consults the host daemon: host-built refs skip their build
       `${t} is still delivered — the disk answers the build question only`,
     );
   }
-  // The disk-skip still preflights: a converge that failed AT the preflight leaves this exact ref
-  // on the host, and trusting the disk without re-proving it would deliver a refused image.
+  // The skip proves the BUILD, not the floor (ADR-0041): a converge holds no preflight obligation
+  // at all, so nothing here re-proves anything — but the seat is still re-read, because the map the
+  // provision depends on has to carry it whether the build was spent or skipped.
   assert.ok(
-    fresh.built.some((b) => b.startsWith(`run ${images.sandbox.default}`)),
-    "the host-held Sandbox Image is re-proved",
+    fresh.built.includes(`inspect-user ${images.sandbox.default}`),
+    "the host-held Sandbox Image is still inspected for its USER",
   );
   assert.deepEqual(imagesOf(fresh), images, "…and the map converges to the same refs");
-
-  // A host-held Sandbox Image that fails the preflight fails the converge again — the disk never
-  // launders an image a previous converge refused.
-  const refused = mkWorld(root, { kitDir: kit, hostImages: held, preflightFails: true });
-  await assert.rejects(() => up(["--yes"], refused.io), /failed the preflight/);
-  assert.ok(!refused.built.some((b) => b.startsWith("kind-load j2-sandbox-")), "the refused image is never delivered");
 
   // --force ignores the disk exactly as it ignores the record.
   const forced = mkWorld(root, { kitDir: kit, hostImages: held });
@@ -512,7 +525,7 @@ test("a silent record consults the host daemon: host-built refs skip their build
 
 // --- Sandbox Images (ADR-0037) -----------------------------------------------------------------
 
-test("a Sandbox Image is two builds off one hash, preflighted, and only with repos to work on", async () => {
+test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only with repos to work on", async () => {
   const kit = await mkKit();
   const root = await withImage(
     await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
@@ -524,53 +537,52 @@ test("a Sandbox Image is two builds off one hash, preflighted, and only with rep
 
   const ref = imagesOf(w).sandbox.default as string;
   assert.match(ref, /^j2-sandbox-myinst-default:[0-9a-f]{12}$/);
-  const hash = ref.split(":")[1]!;
-  // The intermediate is SCRATCH (ADR-0040): the hash plus a nonce this converge drew, recovered
-  // from the build record because nothing else can derive it — which is the point of a scratch
-  // name. The delivered ref above carries no trace of it.
-  const base = w.built.find((b) => b.startsWith("build j2-sandbox-myinst-default-base:"))?.slice("build ".length);
-  assert.ok(base, `the user's Dockerfile builds first (got: ${w.built.join(", ")})`);
-  assert.match(base, new RegExp(`^j2-sandbox-myinst-default-base:${hash}-[0-9a-f]{8}$`));
-  assert.ok(w.built.includes(`build-with context-default ${base}`), "…against its own directory");
-  assert.ok(w.built.includes(`build-with wrap ${ref}`), "…then the generated wrap, on stdin");
-  assert.ok(w.built.includes(`rmi-host ${base}`), "the intermediate tag does not accumulate");
-  // Both builds are stamped (ADR-0039): the `-base` tag is dropped straight after, and the labeled
-  // image it leaves behind is collectable only because it was stamped.
-  const stamp = JSON.stringify({ "j2.dev/kind": "sandbox", "j2.dev/instance": "myinst" });
-  assert.ok(w.built.includes(`stamp ${base} ${stamp}`), "the user's build carries the ownership label");
-  assert.ok(w.built.includes(`stamp ${ref} ${stamp}`), "…and so does the wrap");
-  // ADR-0037's preflight, verbatim, against the LOCAL daemon — hence before transport.
-  const preflight = w.built.find((b) => b.startsWith(`run ${ref}`))!;
-  assert.match(preflight, /git config --global safe\.directory "\*" && \/opt\/j2\/bin\/node -e "" && rg --version/);
-  assert.ok(
-    w.built.indexOf(preflight) < w.built.indexOf(`kind-load ${ref} → test`),
-    "preflight, then deliver — a broken image never reaches the cluster",
+  // ONE build, of the user's own directory (ADR-0037). No `-base` intermediate exists any more:
+  // that mutable shared name was the wrap's, and it serialized concurrent converges of one checkout.
+  assert.deepEqual(
+    w.built.filter((b) => b.startsWith("build j2-sandbox-")),
+    [`build ${ref}`],
   );
+  assert.ok(!w.built.some((b) => b.includes("-base:")), `no intermediate tag anywhere (got: ${w.built.join(", ")})`);
+  assert.ok(w.built.includes(`build-with context-default ${ref}`), "the user's Dockerfile, its directory the context");
+  const stamp = JSON.stringify({ "j2.dev/kind": "sandbox", "j2.dev/instance": "myinst" });
+  assert.ok(w.built.includes(`stamp ${ref} ${stamp}`), "stamped on the command line (ADR-0039)");
 
-  // A Sandbox Image's hash includes the RESOLVED harness ref (ADR-0038), so a kit edit re-tags it.
+  // The converge INSPECTS the image and proves nothing about it. The ADR-0037 floor is a
+  // Harness-seat obligation, and this same directory may be destined for the User Container seat,
+  // which owes no floor (ADR-0005) — which seat it serves is workflow-internal and statically
+  // unrecoverable (ADR-0031). So there is no `docker run` on this path at all: the one prover is
+  // the `preflight` init step at provision, where the seat is known.
+  const harnessRef = imagesOf(w).harness as string;
+  assert.ok(w.built.includes(`inspect-user ${ref}`), "the seat comes off the image itself");
+  assert.ok(!w.built.some((b) => b.startsWith("run ")), `no probe container at converge (got: ${w.built.join(", ")})`);
+  assert.ok(!w.built.some((b) => b.startsWith("extract ")), "…and no runtime is staged to mount into one");
+  // The map carries what a provision cannot ask for (ADR-0037): "" = declares no USER, so the pod
+  // applies uid 1000 + HOME=/home/j2 on an emptyDir.
+  assert.deepEqual(imagesOf(w).sandboxUser, { default: "" });
+
+  // A Sandbox Image's hash covers its directory ALONE (ADR-0037/0038): a kit edit moves the harness
+  // ref and re-images future pods, and re-tags, rebuilds, and re-delivers nothing of the user's.
   await writeFile(join(kit, "packages", "harness", "main.ts"), "export const x = 2;\n");
   const afterKitEdit = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], afterKitEdit.io), 0);
-  assert.notEqual(imagesOf(afterKitEdit).sandbox.default, ref, "editing the Harness re-tags every Sandbox Image");
+  assert.notEqual(imagesOf(afterKitEdit).harness, harnessRef, "the kit edit did move the harness ref");
+  assert.equal(imagesOf(afterKitEdit).sandbox.default, ref, "…and the Sandbox Image tag stands still");
+
+  // An image that declares its own USER records that string instead — the fallback's trigger is a
+  // recorded `""`, so the two cases have to stay distinguishable in the map.
+  const declared = mkWorld(root, { kitDir: kit, imageUser: "app" });
+  assert.equal(await up(["--yes", "--force"], declared.io), 0);
+  assert.deepEqual(imagesOf(declared).sandboxUser, { default: "app" });
 
   // No repos, no Sandbox Image build — said out loud, not skipped silently.
   const norepos = await withImage(await mkInstance(`export default { name: "n" };\n`, "n"), "default");
   const w2 = mkWorld(norepos, { kitDir: kit });
   assert.equal(await up(["--yes"], w2.io), 0);
   assert.ok(!w2.built.some((b) => b.includes("j2-sandbox-")));
+  assert.ok(!w2.built.some((b) => b.startsWith("extract ")));
   assert.match(w2.err.join("\n"), /sandbox images: skipped \(no `repos`/);
   assert.deepEqual(imagesOf(w2).sandbox, {});
-});
-
-test("a failing preflight refuses the converge, naming the fix", async () => {
-  const kit = await mkKit();
-  const root = await withImage(
-    await mkInstance(`export default { name: "p2", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`, "p2"),
-    "default",
-  );
-  const w = mkWorld(root, { kitDir: kit, preflightFails: true });
-  await assert.rejects(() => up(["--yes"], w.io), /failed the preflight.*alpine\/musl.*shell-free base/s);
-  assert.ok(!w.built.some((b) => b.startsWith("kind-load j2-sandbox-")), "a failed image is never delivered");
 });
 
 test("live workspaces on an older image are reported, and nothing re-images them", async () => {

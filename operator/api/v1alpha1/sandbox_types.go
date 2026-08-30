@@ -50,6 +50,18 @@ type SandboxSpec struct {
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
 
+	// SecurityContext overrides the primary container's security context. Unset
+	// takes the operator's hardened default (non-root, no privilege escalation,
+	// all capabilities dropped) — the same rule sidecars follow: the operator
+	// hardens what says nothing about itself and steps aside for what does.
+	//
+	// It exists because only the composer of a spec can know things the operator
+	// cannot: whether the primary image declares a USER at all, and therefore
+	// whether a uid must be supplied for it (ADR-0037). Overriding is verbatim,
+	// not a merge — a half-applied security context is worse than either.
+	// +optional
+	SecurityContext *corev1.SecurityContext `json:"securityContext,omitempty"`
+
 	// ReadinessProbe overrides the primary container's readiness probe. When
 	// unset the operator injects a TCPSocket probe on Port so phase Ready means
 	// "the Harness accepts connections", not merely "the container started".
@@ -58,8 +70,33 @@ type SandboxSpec struct {
 
 	// Sidecars are generic Kubernetes container fragments scheduled alongside
 	// the primary container. Agents live here, but the operator stays agnostic.
+	//
+	// One name is special, and only as an EXEMPTION: a sidecar named "user" is
+	// scheduled exactly as written — no hardened securityContext default. It is
+	// the User Container (ADR-0005), the seat whose identity is "what j2 does
+	// not own", so hardening it would be an opinion the operator has no standing
+	// to hold. Root is allowed there; the credential boundary never depended on
+	// that seat being unprivileged, only on the Agent executing nothing in it.
 	// +optional
 	Sidecars []corev1.Container `json:"sidecars,omitempty"`
+
+	// InitContainers are generic Kubernetes container fragments run to
+	// completion, in order, before the primary container and sidecars start.
+	// Scheduled verbatim — the operator adds nothing to them, not even the
+	// hardened securityContext default it gives sidecars, because an init step
+	// is composed by whoever built the spec and it must be able to say exactly
+	// what it needs. This is how j2's runtime reaches a Sandbox (ADR-0037): one
+	// step populates an /opt/j2 volume, a second proves the primary image on it.
+	// +optional
+	InitContainers []corev1.Container `json:"initContainers,omitempty"`
+
+	// FSGroup is the pod-level fsGroup: a supplemental group granted to every
+	// container process, and the group that owns pod volumes (setgid, so it
+	// propagates to everything created under them). It exists so two containers
+	// running different uids can both write one shared volume — the work group
+	// of ADR-0005. Unset leaves volume ownership to the images' own uids.
+	// +optional
+	FSGroup *int64 `json:"fsGroup,omitempty"`
 
 	// Volumes are pod-level volumes available to the primary container and any
 	// sidecars (mounted via their own volumeMounts).

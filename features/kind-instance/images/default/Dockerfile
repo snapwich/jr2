@@ -1,7 +1,7 @@
 # The @kind tier's Sandbox Image (ADR-0037). Zero j2 knowledge, exactly like a user's: no ARG, no
-# FROM j2-harness, no USER/CMD/WORKDIR — `j2 up` builds this, then builds the kit-owned wrap on top
-# (COPY --from=<harness> /opt/j2 /opt/j2, HOME, PATH, WORKDIR, USER 1000, CMD). Its presence makes
-# every @kind bring-up exercise the two-stage build and the preflight.
+# `FROM j2-harness`, nothing about /opt/j2. `j2 up` builds this file ONCE, straight to its content
+# tag — there is no wrap stage any more — and the runtime arrives at pod time on a volume. Its
+# presence makes every @kind bring-up exercise the build, the preflight, and the injection.
 #
 # The build context is THIS directory (ADR-0037), so nothing outside it can be COPY'd in.
 #
@@ -10,9 +10,9 @@
 # letting it surface as a tool failure mid-turn.
 FROM node:24-slim
 
-# git is the one USER contract the wrap does not vendor (relocating git means /usr/lib/git-core,
-# templates, and git-remote-https): the post-Ready attach runs `git clone --shared` +
-# `git worktree add` INSIDE this container (ADR-0004), and the agent wants the git you chose.
+# git is the one floor item j2 does not vendor (relocating git means /usr/lib/git-core, templates,
+# and git-remote-https): the post-Ready attach runs `git clone --shared` + `git worktree add`
+# INSIDE this container (ADR-0004), and the agent wants the git you chose.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -22,3 +22,14 @@ RUN apt-get update \
 # execute in THIS image (ADR-0027/0037) rather than in something j2 chose.
 RUN printf '#!/bin/sh\necho j2-toolchain-ok\n' > /usr/local/bin/j2-toolchain \
     && chmod 0755 /usr/local/bin/j2-toolchain
+
+# Deliberately NOT /work, and deliberately present: WORKDIR is the image author's, and j2 overrides
+# the container's command and nothing else (ADR-0037). A human's `kubectl exec` lands here, which
+# the retired wrap — it forced WORKDIR /work — could not have produced. It has no effect on the
+# Agent: every Working tool carries its own cwd.
+RUN mkdir -p /srv/j2-e2e
+WORKDIR /srv/j2-e2e
+
+# No USER on purpose: this is the no-USER FALLBACK image (ADR-0037), so the pod must run it as uid
+# 1000 with HOME=/home/j2 on an emptyDir. A scenario asserts exactly that — it is the one branch of
+# the composition that no image can prove about itself.

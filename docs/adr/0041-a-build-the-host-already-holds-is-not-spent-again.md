@@ -12,20 +12,18 @@ reading the fact the record only ever approximated.
 ## Decision
 
 - **Two records, each answering the question it can vouch for.** The cluster's annotation answers for the _cluster_: a
-  ref it names was built, preflighted, and delivered by a converge that fully succeeded — skip the build **and** the
-  delivery, exactly as before. When the record is silent, the host daemon answers for the _host_: a labeled image whose
-  tag equals the resolved ref IS the build (the tag is a content address of the same inputs) — skip the build, **run the
-  delivery**. Only when both are silent is docker spent. `--force` overrides both, unchanged in meaning: rebuild and
-  redeliver regardless of what anything claims.
+  ref it names was built and delivered by a converge that fully succeeded — skip the build **and** the delivery, exactly
+  as before. When the record is silent, the host daemon answers for the _host_: a labeled image whose tag equals the
+  resolved ref IS the build (the tag is a content address of the same inputs) — skip the build, **run the delivery**.
+  Only when both are silent is docker spent. `--force` overrides both, unchanged in meaning: rebuild and redeliver
+  regardless of what anything claims.
 - **The disk answers the build question only, never the delivery one.** Delivery is already cheap-idempotent on both
   transports — `kind load` skips a node holding the image id, and a push of layers the registry holds is a no-op per
   layer — so the skip that would need _node_ or _registry_ observation buys seconds at the cost of a second stale-state
   channel. The record keeps that job.
-- **A disk-skipped Sandbox Image is still preflighted.** The record could skip the preflight because recorded implies a
-  successful converge ran it; the disk cannot: a converge that _failed at preflight_ leaves the ref on the host, and an
-  unchanged re-run that trusted the disk without preflighting would deliver the exact image the previous converge
-  refused. So the disk path re-proves the contracts (one `docker run`, sub-second) and the invariant holds: **every ref
-  a converge records passed the preflight on some converge.**
+- **The skip proves the build, not the floor.** The ADR-0037 floor is proven where the seat is known — the `preflight`
+  init step at provision, in the user's own image — so a converge, skipped or not, holds no preflight obligation and the
+  disk path re-proves nothing beyond tag-equals-content.
 - **One read, lazy, and advisory.** The daemon is asked once per converge at most (`hostImages()` — the same labeled
   listing the sweep reads, ~13ms against the ~7.4s it saves), and only when some record check missed. A steady-state
   converge still spends directory walks and no docker at all; ADR-0038's bullet stands. A listing that _fails_ reads as

@@ -97,3 +97,8 @@ parsing names.
   making an in-flight ref a root like any other — is not taken here.
 - ADR-0038's `j2 down` prune clause is **superseded by this ADR**; its `imagePullPolicy`/content-address reasoning
   stands untouched, and ADR-0038's seal is what finally makes it true of the instance image.
+- **Docker label inheritance makes derived images sweepable.** An image built `FROM` a j2-labeled base inherits the
+  `j2.dev/*` labels through the image config, so the sweep treats it as j2's own — observed live with a brought ref
+  layered on a built Sandbox Image, collected by the next `j2 gc`. A truly foreign brought image carries no such labels
+  and is untouchable as designed; one derived from a j2 build should clear them (`LABEL j2.dev/kind=`) or accept being
+  swept when no live root names it.

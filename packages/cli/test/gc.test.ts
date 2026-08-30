@@ -60,7 +60,7 @@ function mkBuild(images: { host?: ObservedImage[]; node?: ObservedImage[] } = {}
     removed: [] as string[],
     bundle: async () => assert.fail("gc bundles nothing"),
     build: async () => assert.fail("gc builds nothing"),
-    run: async () => assert.fail("gc runs nothing") as never,
+    imageUser: async () => assert.fail("gc inspects nothing") as never,
     push: async () => assert.fail("gc pushes nothing"),
     kindLoad: async () => assert.fail("gc loads nothing"),
     hostImages: async () => [...host],

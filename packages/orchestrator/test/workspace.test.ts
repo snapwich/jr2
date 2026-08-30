@@ -26,15 +26,20 @@ class FakeSandbox implements SandboxPort {
 
   /** The Sandbox Image NAME each provision was asked for (ADR-0037) — resolution is the port's. */
   images: Array<string | undefined> = [];
+  /** The pod-composition fields the spec carries beside it (ADR-0005), same passthrough rule. */
+  composition: Array<{ user?: string; workGroup?: number }> = [];
 
   async provision(req: {
     name: string;
     runId: string;
     workflow: string;
     image?: string;
+    user?: string;
+    workGroup?: number;
   }): Promise<{ endpoint: string; identity?: string }> {
     this.calls.push(`provision:${req.name}`);
     this.images.push(req.image);
+    this.composition.push({ user: req.user, workGroup: req.workGroup });
     this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
     return { endpoint: "http://sandbox.test", identity: this.identity };
   }
@@ -232,6 +237,42 @@ test("spec.image: the NAME reaches the port untouched; a malformed one faults be
   const run2 = await host2.start("empty");
   await waitFor(() => host2.status(run2.runId) === undefined);
   assert.match((await host2.read(run2.runId))?.fault ?? "", /workspace spec invalid: image \(got ""\)/);
+  assert.deepEqual(bad.calls, [], "a bad spec never costs a pod");
+});
+
+test("pod composition rides the spec: `user` and `workGroup` reach the port, malformed ones fault first", async () => {
+  // ADR-0005/0037: what the Sandbox is MADE OF is the wrapper's business in the same way its
+  // worktrees are — workflow configuration still never enters the spec. A registry REF is as
+  // persistable as a dirname: both are stable NAMES, and only a resolved content-addressed tag
+  // (which lives on the port's side) would outlive the image it names.
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const composed = workspace(body, {
+    spec: () => ({
+      repos: [{ name: "app", baseRef: "main" }],
+      branch: "b",
+      image: "ghcr.io/acme/toolchain:2024-11",
+      user: "sshd",
+      workGroup: 4000,
+    }),
+  });
+  host.register({ name: "composed", machine: composed, provide: () => ({}) });
+  const { runId } = await host.start("composed");
+  await waitFor(() => host.gates(runId).length === 1);
+  assert.deepEqual(sandbox.images, ["ghcr.io/acme/toolchain:2024-11"]);
+  assert.deepEqual(sandbox.composition, [{ user: "sshd", workGroup: 4000 }]);
+
+  // A gid that is not an integer becomes a pod the API server rejects at admission — which
+  // surfaces as "never reached Ready" with nothing pointing back at the run input.
+  const bad = new FakeSandbox();
+  const host2 = new RunHost({ store: await mkStore(), sandbox: bad });
+  const wrong = workspace(body, {
+    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b", workGroup: 2000.5 }),
+  });
+  host2.register({ name: "wrong", machine: wrong, provide: () => ({}) });
+  const run2 = await host2.start("wrong");
+  await waitFor(() => host2.status(run2.runId) === undefined);
+  assert.match((await host2.read(run2.runId))?.fault ?? "", /workGroup \(got 2000\.5; want a gid\)/);
   assert.deepEqual(bad.calls, [], "a bad spec never costs a pod");
 });
 

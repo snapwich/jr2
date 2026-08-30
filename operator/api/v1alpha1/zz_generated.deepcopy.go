@@ -98,6 +98,11 @@ func (in *SandboxSpec) DeepCopyInto(out *SandboxSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.SecurityContext != nil {
+		in, out := &in.SecurityContext, &out.SecurityContext
+		*out = new(v1.SecurityContext)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.ReadinessProbe != nil {
 		in, out := &in.ReadinessProbe, &out.ReadinessProbe
 		*out = new(v1.Probe)
@@ -109,6 +114,18 @@ func (in *SandboxSpec) DeepCopyInto(out *SandboxSpec) {
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
+	}
+	if in.InitContainers != nil {
+		in, out := &in.InitContainers, &out.InitContainers
+		*out = make([]v1.Container, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+	if in.FSGroup != nil {
+		in, out := &in.FSGroup, &out.FSGroup
+		*out = new(int64)
+		**out = **in
 	}
 	if in.Volumes != nil {
 		in, out := &in.Volumes, &out.Volumes

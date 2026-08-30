@@ -89,12 +89,14 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(pod.Spec.Containers[1].Name).To(Equal("agent"))
 			Expect(pod.OwnerReferences).To(HaveLen(1))
 
-			By("hardening the pod for isolation: no API token, non-root, default seccomp")
+			By("hardening the pod for isolation: no API token, default seccomp — and NOT pod-level non-root")
 			Expect(pod.Spec.AutomountServiceAccountToken).NotTo(BeNil())
 			Expect(*pod.Spec.AutomountServiceAccountToken).To(BeFalse())
 			Expect(pod.Spec.SecurityContext).NotTo(BeNil())
-			Expect(pod.Spec.SecurityContext.RunAsNonRoot).To(HaveValue(BeTrue()))
 			Expect(pod.Spec.SecurityContext.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+			// Non-root moved to the containers (ADR-0005): a pod-level assertion binds every
+			// container including the User Container, which must be able to run root.
+			Expect(pod.Spec.SecurityContext.RunAsNonRoot).To(BeNil())
 
 			By("hardening every container: non-root, no privilege escalation, drop ALL caps")
 			for _, c := range pod.Spec.Containers {

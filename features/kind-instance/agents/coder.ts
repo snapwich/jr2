@@ -15,9 +15,9 @@ import { defineAgent } from "@j2/orchestrator";
 export default defineAgent({
   model: "fake/model-x",
   description: "The @kind tier's worker: works in its Workspace worktree and picks from its Menu.",
-  // Explicit, though `/work` is also the default (ADR-0037): it is the worktree root the wrap's
-  // WORKDIR points at, and every Working tool takes its cwd from here rather than from the
-  // Harness process's own.
+  // Explicit, though `/work` is also the default (ADR-0037): it is the worktree volume's root, and
+  // every Working tool takes its cwd from HERE rather than from the Harness process's own — which
+  // is why the image is free to put its WORKDIR wherever its author wants.
   cwd: "/work",
   instructions: `You are the worker on a small autonomous team. Each conversation names a
 worktree and a branch to work in.

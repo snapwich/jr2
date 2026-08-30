@@ -1,14 +1,28 @@
-// The stock Harness image's PID 1 (ADR-0018/0027): env → spec → serve. Runtime construction,
-// not codegen — the retired boot assembly and its readiness lag are gone; binding :8080 is the
-// pod's Ready signal. Everything here is wiring: validation lives in `spec.ts`, the wire in
-// `app.ts`, the turn in `turn.ts`. Fatal errors land in the pod log by throwing.
+// The Harness process's PID 1 (ADR-0018/0027): process → env → spec → serve. Runtime
+// construction, not codegen — the retired boot assembly and its readiness lag are gone; binding
+// :8080 is the pod's Ready signal. Everything here is wiring: validation lives in `spec.ts`, the
+// wire in `app.ts`, the turn in `turn.ts`. Fatal errors land in the pod log by throwing.
+//
+// It is the container's command in BOTH placements: the stock image's own `CMD` (the Instance
+// Harness, ADR-0031), and the command the operator overrides a Sandbox Image with, where j2's
+// runtime is mounted at `/opt/j2` and nothing about this process came from the image (ADR-0037).
 
 import { createHash } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { harnessApp } from "./app.ts";
 import { dialFault, modelsFor, validateSpecModels } from "./provider.ts";
 import { loadSpec } from "./spec.ts";
+import { prepareProcess } from "./startup.ts";
 import { runSubmissionFor } from "./turn.ts";
+
+// FIRST, before anything reads the environment or writes a file: umask 002, PATH appended with
+// /opt/j2/bin, HOME defaulted. In a Sandbox the image is the user's and carries none of these, and
+// every Working tool child inherits them from here (startup.ts, ADR-0037/ADR-0005).
+// "First" is first STATEMENT, not first code: the imports above are ESM, so their module bodies run
+// ahead of this line. That holds only because none of them touches PATH, HOME, the umask, or spawns
+// a child at module scope — they declare constants and schemas (verified). A module that ever needs
+// the conditioned environment at import time must read it inside a function, not at its top level.
+prepareProcess();
 
 function required(name: string, why: string): string {
   const value = process.env[name];

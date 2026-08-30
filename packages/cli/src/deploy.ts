@@ -93,9 +93,11 @@ export function instanceObjects(opts: {
   /** The private-CA PEM bundle (`harness.caBundle` file contents, read by `up` — ADR-0020). */
   caBundle?: string;
   /** Every image ref THIS converge resolved (ADR-0037/0038): `{ harness, adapter, operator?,
-   * sandbox: { <name>: ref } }`. It lands twice, deliberately as one JSON so the record `up` diffs
-   * and the map pods read can never disagree: as the `j2-images` ConfigMap the Orchestrator reads
-   * per provision, and as an annotation on the Deployment's own metadata. */
+   * sandbox: { <name>: ref }, sandboxUser: { <name>: user } }`. It lands twice, deliberately as one
+   * JSON so the record `up` diffs and the map pods read can never disagree: as the `j2-images`
+   * ConfigMap the Orchestrator reads per provision, and as an annotation on the Deployment's own
+   * metadata. `sandboxUser` rides along because a provision cannot inspect an image and the pod's
+   * uid-1000 fallback turns on whether the image declares a `USER` (up.ts, ADR-0037). */
   imageRefs: Record<string, unknown>;
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "j2" };
@@ -332,7 +334,7 @@ const ADAPTER_PORT = 8081;
  * minus the Workspace: the stock Harness image plus the Adapter sidecar, the same definitions
  * ConfigMap and env/envFrom/CA wiring a Sandbox's Harness container gets — and NO `/work` volume,
  * no attach step. It runs the STOCK image permanently: `workspace: "none"` withholds the whole
- * Working toolset (ADR-0028), so there are no tools to carry and no Sandbox Image to wrap
+ * Working toolset (ADR-0028), so there are no tools to carry and no Sandbox Image to resolve
  * (ADR-0037). No config key names, sizes, addresses, or enables it: the definition scan is the
  * entire surface.
  */

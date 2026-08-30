@@ -1,19 +1,22 @@
 // The image build seam (ADR-0019/0038): `j2 up` builds EVERY image it deploys. There are three
 // kinds — the instance's own (engine + this instance's workflows baked, ADR-0008), the instance's
-// Sandbox Images (`images/<name>/Dockerfile` + the kit-owned wrap, ADR-0037), and — only when the
-// CLI is running out of a kit CHECKOUT — the Harness, Adapter, and operator images. Installed from
-// npm those kit sources do not resolve, so a real instance takes the published-`<kitversion>` path
-// and never needs docker for them. The checkout IS the signal: no flag, no config key, no env.
+// Sandbox Images (`images/<name>/Dockerfile`, ADR-0037), and — only when the CLI is running out of
+// a kit CHECKOUT — the Harness, Adapter, and operator images. Installed from npm those kit sources
+// do not resolve, so a real instance takes the published-`<kitversion>` path and never needs docker
+// for them. The checkout IS the signal: no flag, no config key, no env.
 //
 // Every tag is a content address of its own inputs. That is what makes `imagePullPolicy:
 // IfNotPresent` correct rather than lucky (a unique tag per content means "present" implies
 // "current"), what lets a converge skip exactly what has not moved, and what makes the tag-equality
 // check in `verifyRunningImage` sound for every layer instead of only the instance's.
 //
-// One mechanism is worth naming twice: `sandboxWrapDockerfile` already embeds the resolved harness
-// ref, so salting a Sandbox Image's hash with the wrap text satisfies ADR-0038's "a Sandbox Image's
-// hash must include the resolved harness ref" for free — the same trick `stageInstanceBundle` plays
-// with `INSTANCE_DOCKERFILE`, and one less mechanism than a second, hand-maintained input list.
+// A Sandbox Image is ONE `docker build` of the user's own Dockerfile straight to its content tag
+// (ADR-0037): no kit-owned second stage, no intermediate tag, and the resolved harness ref is NOT
+// one of its hash inputs. The Harness arrives at POD time instead — an init container populates an
+// `/opt/j2` volume from the kit's harness image — so the runtime's version rides the volume, a kit
+// edit re-images future pods without moving one Sandbox Image tag, and an image the user merely
+// BROUGHT (a registry ref) is possible at all. Refs are deployed-never-built: nothing in this file
+// ever sees one.
 //
 // Content addressing also MAKES garbage — ten Dockerfile iterations leave ten full images — so the
 // same seam owns the collector (ADR-0039). Two facts shape it: every image j2 builds is STAMPED
@@ -28,7 +31,7 @@
 
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,9 +50,10 @@ export type BuildRequest = {
   /** `-f <path>`: a Dockerfile COMMITTED in the repo, whose context is somewhere else (the kit
    * images build from the kit root; a Sandbox Image's own Dockerfile is its context's default). */
   dockerfile?: string;
-  /** `-f -`: a Dockerfile j2 GENERATES (the instance image, the wrap). Fed on stdin rather than
-   * written into the context, so a generated file can never be mistaken for a user's own and can
-   * never perturb the content hash of the directory it is built from. */
+  /** `-f -`: a Dockerfile j2 GENERATES (the instance image — the only one left, now that a Sandbox
+   * Image is the user's file alone). Fed on stdin rather than written into the context, so a
+   * generated file can never be mistaken for a user's own and can never perturb the content hash
+   * of the directory it is built from. */
   dockerfileContent?: string;
   /** `--label k=v`: who built this image (ADR-0039). Stamped at BUILD time, never written into a
    * Dockerfile — the user's file keeps zero j2 knowledge (ADR-0037) and the committed kit
@@ -65,9 +69,11 @@ export type BuildPort = {
   bundle(instanceDir: string, outDir: string): Promise<void>;
   /** `docker build` one image. */
   build(req: BuildRequest): Promise<void>;
-  /** `docker run --rm --user 1000 <image> <argv…>` → stdout. The Sandbox Image preflight
-   * (ADR-0037) is the one caller: it needs the LOCAL daemon, so it runs before transport. */
-  run(image: string, argv: string[]): Promise<string>;
+  /** The image's own declared `USER` (`docker inspect`), `""` when it declares none. The converge is
+   * the ONLY place this is knowable — a provision cannot inspect an image — so the resolved map
+   * records it and the port answers two questions off that record: whether ADR-0037's uid-1000
+   * fallback applies, and whether the kubelet will refuse the seat outright. */
+  imageUser(image: string): Promise<string>;
   /** `docker push` — the registry delivery (ADR-0019). */
   push(tag: string): Promise<void>;
   /** `kind load docker-image` — the no-registry delivery onto a kind cluster's nodes. */
@@ -79,9 +85,9 @@ export type BuildPort = {
    * `<none>:<none>`, still labeled, reachable by no ref — the bulk of an iteration session's
    * garbage). */
   hostImages(): Promise<ObservedImage[]>;
-  /** Drop one host ref (`docker rmi <tag|id>`). Two callers, one subprocess: the wrap's
-   * per-converge intermediate `-base` tag (ADR-0040), and the host sweep — which removes per TAG
-   * precisely because `docker rmi` untags, and the bytes come back only with an id's last tag.
+  /** Drop one host ref (`docker rmi <tag|id>`). The host sweep is now the only caller — with the
+   * wrap gone there is no intermediate tag to untag (ADR-0037) — and it removes per TAG precisely
+   * because `docker rmi` untags, the bytes coming back only with an id's last tag.
    * Delete-if-present. */
   removeHostImage(ref: string): Promise<void>;
 
@@ -186,44 +192,6 @@ EXPOSE 4000
 CMD ["tsx", "node_modules/@j2/orchestrator/bin/server.ts"]
 `;
 
-/**
- * The **wrap** (ADR-0037): the second, kit-owned stage `j2 up` builds on top of whatever
- * `images/<name>/Dockerfile` produced. The user's file has zero j2 knowledge and is never
- * rewritten — this is the entire j2 half of a Sandbox Image, and every line is load-bearing:
- *
- * - `COPY --from=<harness> /opt/j2 /opt/j2` — the injected runtime, verbatim from the stock
- *   Harness image (`deploy/harness/Dockerfile` publishes that tree). `/opt/j2`, not `/app`, so a
- *   base that already uses `/app` is not shadowed. `bin/` and `lib/` arrive as siblings, which is
- *   what makes node's `$ORIGIN/../lib` rpath resolve on a base with no libstdc++ of its own.
- * - `HOME=/home/j2`, created at **build** — an image layer, not a volume, so a mount never shadows
- *   dotfiles the user baked in. The attach's first act writes `$HOME/.gitconfig`, and uid 1000 on
- *   a minimal base has neither a passwd entry nor a home; without this every attach dies with
- *   `fatal: $HOME not set`, inside a turn, as a tool error the model has to interpret.
- * - `PATH` is **appended**, never prepended. Working tools spawn with no env override, so children
- *   inherit this PATH — appending lets the user's pinned `node`/`rg`/toolchain win and leaves j2's
- *   as the fallback. Note the escaped `\${PATH}`: the *emitted* Dockerfile must contain the literal
- *   `${PATH}` for the shell-free `ENV` form to expand it at build. Interpolating it here would
- *   emit `PATH=":/opt/j2/bin"` and delete the user's toolchain — the exact failure the
- *   append-never-prepend rule exists to prevent, arriving silently.
- * - `WORKDIR /work` is for the human: with the User Container gone it is where `kubectl exec`
- *   lands. It has no effect on the Agent — every Working tool takes an explicit cwd.
- * - `CMD` is absolute for that reason, identical to the stock image's.
- *
- * The returned text is also the salt for the Sandbox Image's content hash, which is how "the hash
- * must include the resolved harness ref" (ADR-0038) is satisfied without a second mechanism.
- */
-export function sandboxWrapDockerfile(baseRef: string, harnessRef: string): string {
-  return `FROM ${baseRef}
-COPY --from=${harnessRef} /opt/j2 /opt/j2
-USER root
-RUN mkdir -p /home/j2 && chown 1000:0 /home/j2 && chmod 0775 /home/j2
-ENV HOME=/home/j2 PATH="\${PATH}:/opt/j2/bin"
-WORKDIR /work
-USER 1000
-CMD ["/opt/j2/bin/node", "/opt/j2/src/main.ts"]
-`;
-}
-
 // --- ownership: who built this image (ADR-0039) ------------------------------------------------
 
 /**
@@ -253,10 +221,10 @@ export function instanceImageLabels(instance: string): Record<string, string> {
   return { [LABEL_IMAGE_KIND]: "instance", [LABEL_INSTANCE]: instance };
 }
 
-/** A Sandbox Image — the user's Dockerfile plus the kit-owned wrap (ADR-0037). Stamped on BOTH
- * builds: the wrap inherits these through `FROM <base>` anyway (harmless, same owner), but the
- * intermediate `-base` id survives its own untag as a labeled dangling image, and only a stamp
- * makes it collectable rather than invisible garbage forever. */
+/** A Sandbox Image — the user's Dockerfile, built once, straight to its content tag (ADR-0037).
+ * The stamp is applied on the command line, never written into the Dockerfile: the file stays the
+ * user's, with zero j2 knowledge in it (ADR-0039). A ref the user merely BROUGHT is never stamped,
+ * because j2 never builds it — and what j2 did not stamp, j2 does not sweep. */
 export function sandboxImageLabels(instance: string): Record<string, string> {
   return { [LABEL_IMAGE_KIND]: "sandbox", [LABEL_INSTANCE]: instance };
 }
@@ -289,7 +257,12 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     repo: "j2-harness",
     dockerfile: "deploy/harness/Dockerfile",
     context: ".",
-    sources: ["packages/harness", "deploy/harness/Dockerfile"],
+    // The whole `deploy/harness/` directory, not just its Dockerfile: since ADR-0037 the image also
+    // ships `init-copy`, the script the init container runs to publish /opt/j2 onto a Sandbox's
+    // volume. Naming the two files by hand is the desynchronization this over-hash rule exists to
+    // delete — an init-copy edit would move no tag, and `j2 up` would report convergence onto pods
+    // injecting the previous script. The directory covers whatever the next `COPY` adds.
+    sources: ["packages/harness", "deploy/harness"],
     exclude: KIT_PACKAGE_EXCLUDE,
   },
   adapter: {
@@ -356,9 +329,10 @@ async function isKitRoot(dir: string): Promise<boolean> {
 }
 
 /** Address each kit image by its own sources: `[<registry>/]j2-<x>:<hash>`. A `packages/harness`
- * edit moves the harness ref with no bookkeeping — and, through the wrap salt, every Sandbox Image
- * ref with it (ADR-0037's consequence). The registry prefix rides here because a built kit image is
- * delivered down the same transport branch as everything else. */
+ * edit moves the harness ref with no bookkeeping — and NO Sandbox Image ref with it: the runtime
+ * arrives on the pod's `/opt/j2` volume, so future pods take the new one and every user image keeps
+ * its tag, its layers, and its delivery (ADR-0037). The registry prefix rides here because a built
+ * kit image is delivered down the same transport branch as everything else. */
 export async function kitImageRefs(kitRoot: string, registry?: string): Promise<KitImageRefs> {
   const refs = {} as KitImageRefs;
   for (const name of Object.keys(KIT_IMAGES) as KitImageName[]) {
@@ -387,71 +361,49 @@ export function kitImageBuild(kitRoot: string, name: KitImageName, tag: string):
 
 // --- Sandbox Images (ADR-0037) ---------------------------------------------------------------
 
-/** The base-tag stand-in inside the hash SALT. The real base ref is scratch — the hash this salt
- * produces plus a per-converge nonce (ADR-0040) — so it must never enter the hash; the harness ref
- * in the same text is a real input and must, which is the point (ADR-0038). */
-const WRAP_SALT_BASE = "<base>";
+/** The hash's domain separator, and the whole of it. A Sandbox Image's build is `docker build` of
+ * the user's own directory with no generated text anywhere in it (ADR-0037), so — unlike the
+ * instance image, whose generated Dockerfile is image content the context never holds — there is
+ * nothing to salt WITH. The constant only keeps this hash's domain apart from the bundle's. */
+const SANDBOX_HASH_SALT = "sandbox";
 
-/** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>` — the wrapped image a Sandbox runs. Names are
- * for humans and for content addressing only: nothing reads ownership out of this string any more
- * (ADR-0039). `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and the image is the
- * POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). */
+/** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>` — the image a Sandbox's primary container
+ * runs. Names are for humans and for content addressing only: nothing reads ownership out of this
+ * string any more (ADR-0039). `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and
+ * the image is the POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). */
 export function sandboxImageTag(instance: string, name: string, hash: string, registry?: string): string {
   return `${registry ? `${registry}/` : ""}j2-sandbox-${instance}-${name}:${hash}`;
 }
 
-/** The intermediate tag the USER's Dockerfile builds to, before the wrap. Never delivered, never
- * registry-prefixed, recorded in no map, and untagged once the wrap succeeds — SCRATCH, not an
- * address (ADR-0040), which is why it carries `nonce` beside the hash: a converge names its own,
- * the way `mkdtemp` names the staging bundle's. A content-hash-only name was a shared global, and
- * one concurrent converge's untag failed the other's wrap mid-`FROM`. The nonce is drawn by the
- * caller (tests pass a fixed one), and it cannot leak into the wrapped image or its address: a
- * `FROM` resolves to content, and the hash is salted at the `<base>` stand-in, never the real tag. */
-export function sandboxBaseTag(instance: string, name: string, hash: string, nonce: string): string {
-  return `j2-sandbox-${instance}-${name}-base:${hash}-${nonce}`;
-}
-
-/** The content address of a Sandbox Image: everything in its directory, with NO exclusions, salted
- * with the wrap — so the resolved harness ref is an input and editing `packages/harness/src`
- * re-tags every Sandbox Image rather than leaving pods on the old runtime.
+/**
+ * The content address of a Sandbox Image: everything in its `images/<name>/` directory, with NO
+ * exclusions — and NOTHING else (ADR-0037/0038). The resolved harness ref is deliberately NOT an
+ * input: the Harness arrives on a pod volume, so a kit edit moves the harness image's own tag and
+ * re-images future pods while every Sandbox Image tag stands still. Coupling the two was the wrap's
+ * doing (`COPY --from=<harness>` made it a real input), and it re-tagged, rebuilt, and re-delivered
+ * every user image on the cluster for a kit source edit.
  *
- * No exclusions is the whole point: that directory IS the build context (ADR-0037) and carries no
+ * No exclusions is the other half: that directory IS the build context, and it carries no
  * `.dockerignore`, so a `dist/` or `node_modules/` beside the Dockerfile is image content and must
  * be image address. The `KIT_*_EXCLUDE` sets describe the KIT's own ignore files and are a lie
- * about anyone else's tree. */
-export function sandboxImageHash(dir: string, harnessRef: string): Promise<string> {
-  return contentHash([dir], sandboxWrapDockerfile(WRAP_SALT_BASE, harnessRef), NO_EXCLUDE);
+ * about anyone else's tree.
+ */
+export function sandboxImageHash(dir: string): Promise<string> {
+  return contentHash([dir], SANDBOX_HASH_SALT, NO_EXCLUDE);
 }
 
-/** Two builds off one hash (ADR-0037): the user's Dockerfile, then the kit-owned wrap on top of
- * the result. The user's file is never rewritten and never even read by j2 — which is exactly why
- * `instance` is a parameter: the stamp both builds carry is applied on the command line, so the
- * Dockerfile stays the user's (ADR-0039). */
+/**
+ * ONE build (ADR-0037): the user's Dockerfile, its own directory as the context, straight to its
+ * content tag. No second stage, no intermediate tag — the mutable shared name that used to
+ * serialize concurrent converges of one checkout existed only because the wrap did, and there is
+ * no wrap. j2 never reads the file, which is exactly why `instance` is a parameter: the ownership
+ * stamp is applied on the command line, so the Dockerfile stays the user's (ADR-0039).
+ */
 export async function buildSandboxImage(
   port: BuildPort,
-  opts: { dir: string; tag: string; baseTag: string; harnessRef: string; instance: string },
+  opts: { dir: string; tag: string; instance: string },
 ): Promise<void> {
-  const labels = sandboxImageLabels(opts.instance);
-  await port.build({ tag: opts.baseTag, context: opts.dir, labels });
-  await port.build({
-    tag: opts.tag,
-    context: opts.dir,
-    dockerfileContent: sandboxWrapDockerfile(opts.baseTag, opts.harnessRef),
-    labels,
-  });
-  // The wrapped image holds the layers; dropping the `-base` tag keeps the converge's own scratch
-  // out of the sweep's story — left in place, the end-of-run sweep would collect it and narrate the
-  // base's full size as reclaimed disk for layers the wrapped image still holds. What the untag
-  // leaves behind — a labeled image with no tags — is the sweep's, by id (ADR-0039). The tag is
-  // per-converge (ADR-0040), so each converge untags only its own and none can pull the base out
-  // from under another's `FROM` — the shared-name failure that kept the `@kind` tier serial.
-  // Delete-if-present still: a concurrent sweep is free to have taken it first (ADR-0039's
-  // in-flight-is-not-a-root limit), and "already gone" is the goal state. A converge that FAILS
-  // before this line leaves its base tagged — labeled, unreachable, named for a human — which any
-  // later sweep collects.
-  await port.removeHostImage(opts.baseTag).catch((err: unknown) => {
-    if (!isAlreadyGone(err)) throw err;
-  });
+  await port.build({ tag: opts.tag, context: opts.dir, labels: sandboxImageLabels(opts.instance) });
 }
 
 // --- the sweep (ADR-0039) ----------------------------------------------------------------------
@@ -603,8 +555,8 @@ export type SweepResult = {
    * abandoning everything behind it (ADR-0039). */
   failed: string[];
   /** Bytes the removals gave back, counted once per image id. An UPPER BOUND, and narrated as the
-   * quantity the user feels rather than a count (ADR-0039): a wrapped image reports its base's
-   * layers as its own, so two images sharing layers each report the shared bytes in full. */
+   * quantity the user feels rather than a count (ADR-0039): an image reports every layer it holds
+   * as its own, so two images sharing a base each report the shared bytes in full. */
   bytes: number;
 };
 
@@ -759,32 +711,16 @@ export function formatBytes(bytes: number): string {
   return `${unit === 0 ? n : n.toFixed(1)} ${units[unit]}`;
 }
 
-/** ADR-0037's preflight, verbatim: git present · `$HOME` writable as uid 1000 · glibc new enough
- * for j2's node (with the relocated libstdc++) · the vendored ripgrep. */
-export const SANDBOX_PREFLIGHT = 'git config --global safe.directory "*" && /opt/j2/bin/node -e "" && rg --version';
-
 /**
- * Prove the two contracts a Sandbox Image must satisfy, once per CHANGED image, after the wrap and
- * before transport (it needs the local daemon). "node did not execute" is not actionable, so the
- * error names every fix — including the one that is not a fix at all: a shell-free base cannot be
- * wrapped, because the preflight, the attach script (ADR-0004), and every bash Working tool all
- * need `sh`.
+ * The floor a Sandbox Image owes (ADR-0037) is NOT proven here, and the absence is the decision.
+ * The floor is a HARNESS-SEAT obligation; a built `images/<name>` may equally be destined for the
+ * User Container seat, which owes no floor at all (ADR-0005) — and which seat a directory serves is
+ * workflow-internal and statically unrecoverable (ADR-0031, the same line that puts an unknown image
+ * name at provision). So a converge cannot know what to hold an image to. The probe lives at the one
+ * place the seat IS known: the `preflight` init step at provision, in the user's own image, on the
+ * mounted `/opt/j2` (sandbox-kubectl.ts owns it). That is also the only thing that can ever prove a
+ * registry ref, which no converge sees at all — so one prover, not two that can disagree.
  */
-export async function preflightSandboxImage(port: BuildPort, name: string, ref: string): Promise<void> {
-  try {
-    await port.run(ref, ["sh", "-c", SANDBOX_PREFLIGHT]);
-  } catch (err) {
-    throw new Error(
-      `Sandbox Image "${name}" (${ref}) failed the preflight (ADR-0037): ` +
-        `${err instanceof Error ? err.message : String(err)}\n` +
-        `  - \`git\` must be installed in YOUR base — j2 does not relocate it (the agent wants the git you chose)\n` +
-        `  - the base needs glibc no older than j2's node was built against; alpine/musl cannot run it at all\n` +
-        `  - \`$HOME\` (/home/j2) must be writable by uid 1000 — the attach's first act is \`git config --global\`\n` +
-        `  - \`rg\` is VENDORED at /opt/j2/bin, so its absence means the wrap did not apply, not a missing package\n` +
-        `  - a shell-free base (distroless, scratch) cannot be a Sandbox Image: the attach and the bash tool need \`sh\``,
-    );
-  }
-}
 
 // --- the real port ----------------------------------------------------------------------------
 
@@ -809,12 +745,11 @@ export const pnpmDockerBuild: BuildPort = {
     else await exec("docker", args, BIG);
   },
 
-  async run(image, argv) {
-    // --user 1000 is the preflight's whole point on the Sandbox path: the operator sets
-    // RunAsNonRoot with no runAsUser, so the image's own `USER 1000` is what satisfies it, and
-    // "works as root" proves nothing about the pod.
-    const { stdout } = await exec("docker", ["run", "--rm", "--user", "1000", image, ...argv], BIG);
-    return stdout;
+  async imageUser(image) {
+    // `docker inspect` answers `""` for an image that declares no USER, which is the exact fact
+    // the fallback turns on — so the empty string is DATA here, never a missing value.
+    const { stdout } = await exec("docker", ["image", "inspect", "--format", "{{.Config.User}}", image], BIG);
+    return stdout.trim();
   },
 
   async push(tag) {

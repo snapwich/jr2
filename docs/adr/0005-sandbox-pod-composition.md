@@ -27,7 +27,8 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
     private mount namespace, where the Agent executes nothing. The human sshs in with agent forwarding, works, and the
     socket is gone on disconnect; at no point does it share a filesystem with code the Agent runs.
 
-All three mount `/work` read-write, so human and agent see identical files.
+The Harness and User containers mount `/work` read-write, so human and agent see identical files. The Adapter mounts no
+worktree — the pod's credential holder has no business in the working tree.
 
 ## Sharing `/work` across uids
 

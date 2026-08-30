@@ -7,29 +7,38 @@
 # That exact path is load-bearing beyond this comment: ADR-0038's kit-checkout detection resolves
 # it from the CLI's own module URL, so moving this file changes when `j2 up` builds kit images.
 #
-# It is ALSO the source of the wrap (ADR-0037). A Sandbox Image is the user's own Dockerfile, then
-# a second kit-owned stage on top of it whose first act is
-#   COPY --from=<this image> /opt/j2 /opt/j2
-# so **/opt/j2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · lib/*.so · src/ · node_modules/ · package.json
-# — is copied verbatim into every Sandbox Image. Moving anything inside it (or making bin/ and lib/
-# non-siblings, see the rpath below) breaks every wrapped image, on a base this repo never sees.
-# `/opt/j2` and not `/app`, here and in the wrap, because a user's base may already use /app and a
+# It has THREE placements, and every line below serves all three:
+#   1. the Instance Harness deployment (ADR-0031) and the fallback Sandbox Image — the image runs
+#      as itself, on its own CMD;
+#   2. the INJECTION SOURCE (ADR-0037): an init container runs it as `/opt/j2/bin/init-copy <dir>`
+#      to publish /opt/j2 into a pod volume that the primary container — the USER'S Sandbox Image,
+#      byte-for-byte, no j2 layers — mounts at /opt/j2 with its command overridden to this CMD.
+#   3. nothing else. There is NO build-time wrap any more: j2 never builds a stage on top of a
+#      user's image, so a Sandbox Image's tag is not coupled to this image's, and an image the user
+#      baked on their own registry is runnable without j2 ever touching it.
+#
+# So **/opt/j2 is a published surface**, not an implementation detail. Its shape —
+#   bin/node · bin/rg · bin/init-copy · lib/*.so · src/ · node_modules/ · package.json
+# — is copied verbatim onto a volume that lands in a stranger's filesystem. Moving anything inside
+# it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
+# this repo never sees. `/opt/j2` and not `/app`, because a user's base may already use /app and a
 # WORKDIR there would shadow it — one layout for both placements, never two.
 #
 # Image-level contracts (the operator's hardened pod imposes them, ADR-0001):
-#   - runAsNonRoot with a NUMERIC uid — kubelet refuses a named USER, so `USER 1000`.
+#   - runAsNonRoot with a NUMERIC uid — kubelet refuses a named USER, so `USER 1000`. It applies to
+#     the j2-owned seats per container (ADR-0005); the User Container is exempt.
 #   - the serving port is TCP-probed for readiness: binding 0.0.0.0:8080 IS `phase: Ready` —
 #     and with no build step before listen, Ready no longer lags container start (ADR-0027).
 #   - git in the runtime image: the post-Ready attach execs `git clone --shared` + `git worktree
-#     add` INSIDE this container (ADR-0004), and the coder commits with it. It stays apt-installed
-#     HERE and remains a USER contract for a Sandbox Image (ADR-0037): relocating git means
-#     /usr/lib/git-core, the template dir, and git-remote-https → curl + openssl + a CA store. j2
-#     vendors what is self-contained (a static rg, node's two C++ libs) and asks for the rest.
+#     add` INSIDE the primary container (ADR-0004), and the coder commits with it. It stays
+#     apt-installed HERE and remains a USER contract for a Sandbox Image (ADR-0037): relocating git
+#     means /usr/lib/git-core, the template dir, and git-remote-https → curl + openssl + a CA store.
+#     j2 vendors what is self-contained (a static rg, node's two C++ libs) and asks for the rest.
 #   - ripgrep in the runtime image: the grep Working tool shells out to `rg` (ADR-0027). It is no
-#     longer apt's — it is the vendored static-musl binary at /opt/j2/bin/rg, reachable here only
-#     because PATH APPENDS /opt/j2/bin below. Dropping apt's ripgrep without that append does not
-#     fail loudly: grep silently falls through to plain `grep` (working-tools.ts).
+#     longer apt's — it is the vendored static-musl binary at /opt/j2/bin/rg, reachable because the
+#     HARNESS PROCESS appends /opt/j2/bin to PATH at startup (startup.ts). Dropping apt's ripgrep
+#     does not fail loudly without that append: grep silently falls through to plain `grep`
+#     (working-tools.ts).
 #
 # Secrets: NONE are baked. Agent creds arrive at runtime via the Sandbox spec's env/envFrom;
 # the Adapter's token never touches this container (ADR-0013).
@@ -72,8 +81,8 @@ RUN set -eux; \
 #     into an image where its target does not exist.
 #   - the rpath is load-bearing: without it, this node on a base lacking libstdc++ dies with
 #     "error while loading shared libraries: libstdc++.so.6"; with it, the same binary runs. That
-#     is also why /opt/j2/lib must stay a SIBLING of /opt/j2/bin — the wrap copies the whole tree,
-#     so $ORIGIN/../lib is the one form that survives relocation into a stranger's image.
+#     is also why /opt/j2/lib must stay a SIBLING of /opt/j2/bin — init-copy publishes the whole
+#     tree, so $ORIGIN/../lib is the one form that survives landing in a stranger's image.
 RUN set -eux; \
     mkdir -p /opt/j2/bin /opt/j2/lib; \
     cp /usr/local/bin/node /opt/j2/bin/node; \
@@ -105,28 +114,38 @@ RUN node -e 'const f="package.json",j=JSON.parse(require("fs").readFileSync(f));
 # ADR-0010). Nothing writes under /opt/j2 at runtime, so no chown: the worktree root is a pod volume.
 COPY packages/harness/src ./src
 
-# $HOME, created at build as an image layer — the same three lines the wrap emits, so the stock
-# image and a wrapped one are one layout. node:24-slim already owns uid 1000 as `node` with
-# /home/node; adopting that would diverge from the wrap, where uid 1000 on a stranger's base has no
-# home at all. The attach's first act is `git config --global safe.directory '*'`, which writes
-# $HOME/.gitconfig, and an agent's toolchain wants ~/.npm, ~/.cargo, ~/.cache regardless.
+# The injection command (ADR-0037). Mode 0755 and inside the published tree on purpose: the init
+# container has no other way to name it, and a volume populated by `cp -a` carries it along, so the
+# script that publishes the runtime is itself part of what was published.
+COPY --chmod=0755 deploy/harness/init-copy /opt/j2/bin/init-copy
+
+# $HOME, created at build as an image layer. This is the STOCK image's own home; a Sandbox Image
+# brings its own (ADR-0037 respects the image's USER and HOME), and one that declares neither gets
+# uid 1000 with an emptyDir at /home/j2 from the operator — which is the value startup.ts falls
+# back to, so the two placements name one path. node:24-slim already owns uid 1000 as `node` with
+# /home/node; adopting that would make the stock image the odd one out. The attach's first act is
+# `git config --global safe.directory '*'`, which writes $HOME/.gitconfig, and an agent's toolchain
+# wants ~/.npm, ~/.cargo, ~/.cache regardless.
 RUN mkdir -p /home/j2 && chown 1000:0 /home/j2 && chmod 0775 /home/j2
 ENV HOME=/home/j2
 
-# APPENDED, never prepended (ADR-0037). Working tools spawn without an env override, so children
-# inherit this PATH; appending means the user's own toolchain wins inside a wrapped image and j2's
-# is the fallback. Here in the stock image the append is what makes the vendored `rg` resolvable
-# at all, now that apt's ripgrep is gone.
+# APPENDED, never prepended (ADR-0037), and here for the HUMAN: an interactive `exec` shell in this
+# image inherits the image's env, which no process-level setting can reach. The Harness process
+# does the same append for itself and its tool children (startup.ts) — that is the copy that counts
+# in a Sandbox, where none of this image's env is present. Both may apply at once; the append is
+# idempotent.
 ENV PATH="${PATH}:/opt/j2/bin"
 
 USER 1000
 ENV PORT=8080
 EXPOSE 8080
 
-# Last, and for the HUMAN on `kubectl exec` — with the User Container deleted (ADR-0037) this is
-# where a shell lands. It has no effect on the Agent: every Working tool takes an explicit cwd from
-# the definition (`def.cwd ?? "/work"`, spec.ts) and the Harness process's own cwd is never read.
+# Last, and for the HUMAN on `kubectl exec` — where a shell lands in this image. It has no effect
+# on the Agent: every Working tool takes an explicit cwd from the definition (`def.cwd ?? "/work"`,
+# spec.ts) and the Harness process's own cwd is never read.
 WORKDIR /work
 
-# Absolute, and byte-identical to the wrap's, so it never depends on WORKDIR.
+# Absolute, so it never depends on WORKDIR — and byte-identical to the command the operator
+# overrides a Sandbox Image's primary container with, because both start the same process from the
+# same /opt/j2.
 CMD ["/opt/j2/bin/node", "/opt/j2/src/main.ts"]
