@@ -34,10 +34,6 @@ export default defineConfig({
   name: "coding",
   repos: [{ name: "obsidian-tasks.nvim", url: "https://github.com/snapwich/obsidian-tasks.nvim.git" }],
   harness: {
-    // The endpoint's cert chains to a private CA (committed here — CA certs are public data).
-    // `j2 up` materializes it into the j2-ca ConfigMap; the Harness container and the provider
-    // preflight trust it via NODE_EXTRA_CA_CERTS (ADR-0020).
-    caBundle: "ca.crt",
     provider: vllm
       ? {
           id: "vllm",

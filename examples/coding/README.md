@@ -59,11 +59,8 @@ just kind-up
 #    vLLM must run with --enable-auto-tool-choice and the matching --tool-call-parser; `j2 up`
 #    preflights both from inside the cluster (one trivial tool-call completion per model) and
 #    fails loudly if the endpoint, the model id, or the parser is wrong.
-#    An HTTPS endpoint signed by a private CA: commit the PEM beside the config and point
-#    `harness.caBundle` at it (this instance does — `ca.crt`); pods and the preflight trust it
-#    via NODE_EXTRA_CA_CERTS (ADR-0020). Token limits for the served model are committed in
-#    j2.config.ts (`provider.models` — the Harness resolves them per model id; unset would mean 0,
-#    starving auto-compaction).
+#    Token limits for the served model are committed in j2.config.ts (`provider.models` — the
+#    Harness resolves them per model id; unset would mean 0, starving auto-compaction).
 #    (Anthropic instead: point each definition's `model` at anthropic/claude-sonnet-4-6, create
 #    the `anthropic` Secret, and add `envFrom: [{ secretRef: { name: "anthropic" } }]` to
 #    `harness` in j2.config.ts. Two committed files, not one .env line — the cost of the model
