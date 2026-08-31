@@ -6,13 +6,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIT_VERSION } from "@j2/orchestrator";
 import {
   buildSandboxImage,
+  bundleInstance,
   contentHash,
   crictlLabels,
   detectKitCheckout,
@@ -21,6 +22,7 @@ import {
   kitImageBuild,
   kitImageLabels,
   kitImageRefs,
+  lockfileInstall,
   mergeSweeps,
   nodeSweepPlan,
   publishedKitRefs,
@@ -32,6 +34,7 @@ import {
   type BuildPort,
   type BuildRequest,
   type ObservedImage,
+  type RunCommand,
 } from "../src/build.ts";
 
 /** Every verb, inert. Each test overrides the two or three it is about; the rest answering with
@@ -120,15 +123,19 @@ function kitFiles(harnessSrc: string): Record<string, string> {
  * where `os.tmpdir()` is `/var/folders/…` and `/var` is a symlink to `/private/var` — so a seal
  * that knows only the returned form leaves the random `mkdtemp` component behind in the resolved
  * one. The ancestor rungs carry it too: on macOS the per-boot `/var/folders/<xy>/<random>` sits
- * ABOVE the bundle. `.modules.yaml` is nothing but a record of where and when. */
-function pnpmStagingPort(prunedAt: string): BuildPort {
+ * ABOVE the bundle. `.modules.yaml` and `.pnpm-workspace-state.json` are nothing but records of
+ * where and when — the second one written by `pnpm install` (the standalone branch, ADR-0043)
+ * rather than by `pnpm deploy`, and carrying a millisecond stamp, so two identical installs from
+ * one lockfile differ by it alone. */
+function pnpmStagingPort(stamp: string): BuildPort {
   return stagingPort((out) => {
     const real = realpathSync(out);
     const chain = (pkg: string): string =>
       `${real}/node_modules/.pnpm/${pkg}/node_modules:${out}/node_modules/.pnpm/node_modules:${dirname(real)}/node_modules:/node_modules`;
     return {
       "package.json": `{"name":"inst"}`,
-      "node_modules/.modules.yaml": `prunedAt: Mon, 20 Jul 2026 00:04:${prunedAt} GMT\nvirtualStoreDir: ${out}/node_modules/.pnpm\n`,
+      "node_modules/.modules.yaml": `prunedAt: Mon, 20 Jul 2026 00:04:${stamp} GMT\nvirtualStoreDir: ${out}/node_modules/.pnpm\n`,
+      "node_modules/.pnpm-workspace-state.json": `{"lastValidatedTimestamp":17881413000${stamp}}`,
       "node_modules/.bin/tsx": `export NODE_PATH="${chain("tsx@4")}"\nexec node "$basedir/../tsx/dist/cli.mjs" "$@"\n`,
       "node_modules/.bin/which": `export NODE_PATH="${chain("which@4")}"\n`,
       "node_modules/.pnpm/tsx@4/node_modules/tsx/dist/cli.mjs": "export const cli = 1;\n",
@@ -189,6 +196,10 @@ test("one Instance staged twice is byte-identical: the bundle records neither wh
         `/node_modules:/node_modules"\nexec node "$basedir/../tsx/dist/cli.mjs" "$@"\n`,
     );
     await assert.rejects(stat(join(a.dir, "node_modules", ".modules.yaml")), "a record of where and when, deleted");
+    await assert.rejects(
+      stat(join(a.dir, "node_modules", ".pnpm-workspace-state.json")),
+      "…and so is the install's own timestamp",
+    );
   } finally {
     await dispose();
   }
@@ -730,4 +741,162 @@ test("bytes are the narration, because disk is the quantity the user feels", () 
   assert.equal(formatBytes(940), "940 B");
   assert.equal(formatBytes(4_445_841), "4.4 MB");
   assert.equal(formatBytes(2_100_000_000), "2.1 GB");
+});
+
+// --- the bundle's install (ADR-0043) -----------------------------------------------------------
+
+/** The exec seam, recording. No package manager is ever spawned here: the claims are which argv a
+ * lockfile selects and where it runs, and both are decidable from the Instance's own bytes. */
+function recordingRun(): { calls: Array<{ command: string; args: string[]; cwd: string }>; run: RunCommand } {
+  const calls: Array<{ command: string; args: string[]; cwd: string }> = [];
+  return { calls, run: async (command, args, cwd) => void calls.push({ command, args, cwd }) };
+}
+
+/** A scratch `outDir` that does NOT exist yet — the shape `stageInstanceBundle` hands the port. */
+async function bundleOut(): Promise<string> {
+  return join(await mkdtemp(join(tmpdir(), "j2-bundle-")), "bundle");
+}
+
+test("each lockfile selects the package manager that speaks it, frozen and production-only", async () => {
+  // ADR-0043's dispatch, whole. Lockfiles are proprietary formats, so "supporting a PM" is nothing
+  // but invoking the binary that wrote the lockfile — the binary whose presence the lockfile itself
+  // guarantees. pnpm carries `node-linker=hoisted` so the bundle is flat real files whatever wrote
+  // it; bun's two spellings are one row, since `bun.lockb` is the format `bun.lock` replaced.
+  const table: Array<[string, string[]]> = [
+    ["package-lock.json", ["npm", "ci", "--omit=dev"]],
+    ["pnpm-lock.yaml", ["pnpm", "install", "--prod", "--frozen-lockfile", "--config.node-linker=hoisted"]],
+    ["bun.lock", ["bun", "install", "--production", "--frozen-lockfile"]],
+    ["bun.lockb", ["bun", "install", "--production", "--frozen-lockfile"]],
+  ];
+  for (const [lockfile, argv] of table) {
+    const instance = await mkTree({ "package.json": `{"name":"inst"}`, [lockfile]: "lock\n" }, "j2-instance-");
+    const out = await bundleOut();
+    const { calls, run } = recordingRun();
+    await bundleInstance(instance, out, run);
+    assert.deepEqual(
+      calls,
+      [{ command: argv[0]!, args: argv.slice(1), cwd: out }],
+      `${lockfile} installs with ${argv[0]}, in the staged bundle`,
+    );
+  }
+});
+
+test("a standalone instance is staged from its committed bytes, never from its node_modules", async () => {
+  // The lockfile — not the user's `node_modules/` — is the input, and that is forced (ADR-0043):
+  // the GitOps/CI path runs from a clean checkout where no `node_modules` exists, and a copied tree
+  // bakes in accidents rather than declarations. ADR-0019's derivability rule, applied to deps.
+  // `.j2/` is CLI-local state and `.git/` is history: neither is image content.
+  //
+  // `.env*` and `.npmrc` are the sharper case, and the reason this asserts the WHOLE listing: they
+  // are where a user is told to keep credentials (`j2 init` gitignores `.env` in those words), and
+  // `j2 up` reads `.env` host-side into the Orchestrator's Secret. Copied, an API key would sit in
+  // an image layer and in the content address naming it — so rotating the key alone would re-tag
+  // the image and roll the Orchestrator.
+  const instance = await mkTree(
+    {
+      "package.json": `{"name":"inst"}`,
+      "package-lock.json": "lock\n",
+      "workflows/feature.ts": "export const machine = 1;\n",
+      "node_modules/left-pad/index.js": "module.exports = 1;\n",
+      ".j2/state.json": `{"token":"…"}`,
+      ".git/HEAD": "ref: refs/heads/main\n",
+      ".env": "ANTHROPIC_API_KEY=sk-secret\n",
+      ".env.local": "J2_GIT_TOKEN=ghp-secret\n",
+      ".npmrc": `//registry.npmjs.org/:_authToken=npm-secret\n`,
+    },
+    "j2-instance-",
+  );
+  const out = await bundleOut();
+  await bundleInstance(instance, out, recordingRun().run);
+
+  assert.deepEqual((await readdir(out)).sort(), ["package-lock.json", "package.json", "workflows"]);
+  assert.equal(await readFile(join(out, "workflows", "feature.ts"), "utf8"), "export const machine = 1;\n");
+});
+
+test("the instance's own shape decides the bundle, not the CLI's provenance", async () => {
+  // Keyed on a `pnpm-workspace.yaml` above the INSTANCE, never on `detectKitCheckout()`: a checkout
+  // CLI can legitimately drive a standalone instance (a developer's /tmp folder), and `pnpm deploy`
+  // would fail there — its job, materializing workspace symlinks, only exists in a workspace. This
+  // test process runs out of the kit checkout, which is what makes the case real rather than
+  // hypothetical.
+  assert.ok(await detectKitCheckout(), "the CLI under test IS a kit checkout");
+  const standalone = await mkTree({ "package.json": `{"name":"inst"}`, "pnpm-lock.yaml": "lock\n" }, "j2-instance-");
+  const { calls, run } = recordingRun();
+  await bundleInstance(standalone, await bundleOut(), run);
+  assert.equal(calls[0]?.args[0], "install", "the standalone instance still installs from its lockfile");
+
+  // The mirror case: a workspace member takes `pnpm deploy --legacy` unchanged, and needs no
+  // lockfile of its own — the workspace root holds it (examples/*, in this checkout).
+  const root = await mkTree(
+    { "pnpm-workspace.yaml": "packages:\n  - examples/*\n", "examples/starter/package.json": `{"name":"starter"}` },
+    "j2-workspace-",
+  );
+  const member = join(root, "examples", "starter");
+  const out = await bundleOut();
+  const member_ = recordingRun();
+  await bundleInstance(member, out, member_.run);
+  assert.deepEqual(member_.calls, [
+    { command: "pnpm", args: ["--filter", "starter", "--prod", "deploy", "--legacy", out], cwd: member },
+  ]);
+  await assert.rejects(stat(out), "pnpm deploy writes the bundle itself — nothing is staged for it");
+});
+
+test("no lockfile, two package managers, and yarn are each a named refusal", async () => {
+  // The lockfile is part of the instance contract (ADR-0043), so every miss says what to do. Two
+  // managers means two dependency graphs, and a precedence rule would silently deploy the one the
+  // user stopped maintaining. Yarn is deliberately out for v1: one filename hides two incompatible
+  // generations, and berry defaults to PnP — no `node_modules` at all, which the image's resolution
+  // model cannot host.
+  const none = await mkTree({ "package.json": `{"name":"inst"}` }, "j2-instance-");
+  await assert.rejects(
+    lockfileInstall(none),
+    /no lockfile.*npm \(package-lock\.json\), pnpm \(pnpm-lock\.yaml\), bun \(bun\.lock or bun\.lockb\)/s,
+  );
+
+  const two = await mkTree(
+    { "package.json": `{"name":"inst"}`, "package-lock.json": "lock\n", "pnpm-lock.yaml": "lock\n" },
+    "j2-instance-",
+  );
+  await assert.rejects(
+    lockfileInstall(two),
+    /more than one package manager \(npm: package-lock\.json; pnpm: pnpm-lock\.yaml\)/,
+  );
+
+  const yarn = await mkTree({ "package.json": `{"name":"inst"}`, "yarn.lock": "lock\n" }, "j2-instance-");
+  await assert.rejects(lockfileInstall(yarn), /yarn is not supported — use npm, pnpm, or bun/);
+
+  // Both bun spellings is a migration, not an ambiguity: one manager, one command.
+  const bun = await mkTree(
+    { "package.json": `{"name":"inst"}`, "bun.lock": "lock\n", "bun.lockb": "bin\n" },
+    "j2-instance-",
+  );
+  assert.deepEqual(await lockfileInstall(bun), {
+    command: "bun",
+    args: ["install", "--production", "--frozen-lockfile"],
+  });
+
+  // And the refusal comes BEFORE the copy: an instance with no lockfile fails on the cheap half.
+  const out = await bundleOut();
+  await assert.rejects(bundleInstance(none, out, recordingRun().run));
+  await assert.rejects(stat(out), "nothing was staged");
+});
+
+test("the seal leaves an npm-shaped bundle alone — its shims name no absolute path", async () => {
+  // The seal exists for `pnpm deploy`, which bakes the scratch directory into every `.bin` shim's
+  // NODE_PATH (ADR-0038). npm and bun write `$basedir`-relative shims, so the rewrite finds
+  // nothing — and the standalone bundle is already a function of its inputs. Asserted rather than
+  // assumed: the same hash twice is what makes `IfNotPresent` correct for the instance image.
+  const npmBundle = stagingPort(() => ({
+    "package.json": `{"name":"inst"}`,
+    "package-lock.json": `{"lockfileVersion":3}`,
+    "node_modules/.bin/tsx": `#!/bin/sh\nbasedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")\nexec node "$basedir/../tsx/dist/cli.mjs" "$@"\n`,
+    "node_modules/tsx/dist/cli.mjs": "export const cli = 1;\n",
+  }));
+  const { a, b, dispose } = await stageTwice(npmBundle);
+  try {
+    assert.equal(a.hash, b.hash, "two stagings, one address");
+    assert.match(await readFile(join(a.dir, "node_modules", ".bin", "tsx"), "utf8"), /\$basedir/);
+  } finally {
+    await dispose();
+  }
 });

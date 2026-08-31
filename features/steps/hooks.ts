@@ -1,7 +1,9 @@
 // Per-scenario lifecycle: allocate a fresh isolated instance before each scenario, and guarantee
 // teardown after — even on failure — so a crashed step never leaks a server process or temp folder.
+// One thing here is suite-scoped rather than per-scenario, and says so: @dist's published kit.
 
-import { Before, After, setDefaultTimeout } from "@cucumber/cucumber";
+import { Before, After, AfterAll, setDefaultTimeout } from "@cucumber/cucumber";
+import { closeInstalledKit, installedKit } from "./dist-kit.ts";
 import { E2EWorld } from "./world.ts";
 
 // Cucumber's 5s default is a unit-test budget. Real steps here wait on real infrastructure — a pod
@@ -10,7 +12,7 @@ import { E2EWorld } from "./world.ts";
 // the timeout is only the backstop for a step that hangs outright.
 setDefaultTimeout(120_000);
 
-Before({ tags: "not @kind" }, async function (this: E2EWorld): Promise<void> {
+Before({ tags: "not @kind and not @dist" }, async function (this: E2EWorld): Promise<void> {
   await this.setup();
 });
 
@@ -18,6 +20,14 @@ Before({ tags: "not @kind" }, async function (this: E2EWorld): Promise<void> {
 // World.setupKind), so it opts out of the mkdtemp above rather than getting a folder of its own.
 Before({ tags: "@kind" }, async function (this: E2EWorld): Promise<void> {
   await this.setupKind();
+});
+
+// The dist tier (@dist, ADR-0043) opts out of the mkdtemp above for the opposite reason to @kind:
+// its instance must be OUTSIDE this checkout — no workspace, no git repo — so it makes its folder in
+// the OS temp dir instead. The kit it drives is the suite-wide one: published, installed, and paid
+// for by whichever scenario asks first (the timeout covers a publish plus three docker builds).
+Before({ tags: "@dist", timeout: 900_000 }, async function (this: E2EWorld): Promise<void> {
+  await this.setupDist(await installedKit());
 });
 
 After(async function (this: E2EWorld): Promise<void> {
@@ -41,4 +51,11 @@ After({ tags: "@console" }, async function (this: E2EWorld): Promise<void> {
   await this.browser?.close();
   this.page = undefined;
   this.browser = undefined;
+});
+
+// The one SUITE-scoped teardown: the published kit @dist scenarios share. Untagged, because
+// Cucumber's global hooks take no tags — and inert unless a @dist scenario actually ran, which is
+// what keeps the default profile from ever standing up a registry.
+AfterAll({ timeout: 120_000 }, async function (): Promise<void> {
+  await closeInstalledKit();
 });

@@ -7,6 +7,10 @@
 // It runs the real `init()` into a temp dir rather than reaching into the consts, which makes it the
 // only coverage of the scaffold's FILE LIST too — that `tsconfig.json` is written at all, and that a
 // fresh instance is typecheckable by construction.
+//
+// Since the manifest pins @j2/* at KIT_VERSION (ADR-0043), the package.json comparison is also the
+// version-bump tripwire: bumping the kit renders a new literal and fails here until the starter is
+// re-rendered to match.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +18,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { KIT_VERSION } from "@j2/orchestrator";
 import { init } from "../src/commands/init.ts";
 import type { Io } from "../src/output.ts";
 
@@ -62,7 +67,24 @@ test("init's package.json matches the starter's but for name and description", a
   delete model.name;
   delete model.description;
 
-  assert.deepEqual(scaffolded, model, "the scaffolded package.json has drifted from examples/starter");
+  assert.deepEqual(
+    scaffolded,
+    model,
+    `the scaffolded package.json has drifted from examples/starter/package.json — if this kit's ` +
+      `version just changed, re-render the starter: its @j2/* deps must read "${KIT_VERSION}" (ADR-0043)`,
+  );
+});
+
+test("the scaffold pins @j2/* at the exact kit version — exact, not caret (0.x minors break)", async (t) => {
+  const dir = await scaffold();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
+  assert.equal(pkg.dependencies["@j2/orchestrator"], KIT_VERSION);
+  assert.equal(pkg.devDependencies["@j2/cli"], KIT_VERSION);
+  // One template for both modes (ADR-0043): no `workspace:*` only the kit's own workspace resolves,
+  // and no `packageManager` field — the scaffold names no package manager.
+  assert.equal(pkg.packageManager, undefined);
 });
 
 test("a scaffolded instance can typecheck: tsconfig extends the base shipped by @j2/orchestrator", async (t) => {
@@ -76,4 +98,12 @@ test("a scaffolded instance can typecheck: tsconfig extends the base shipped by 
   assert.equal(pkg.scripts.typecheck, "tsc --noEmit");
   // `node:` imports in a workflow (and in the orchestrator source the program pulls in) need these.
   assert.ok(pkg.devDependencies["@types/node"]);
+  // And the compiler itself, or the script names a tool the folder does not declare: in an
+  // INSTALLED instance `tsc` then resolves to `@j2/cli`'s transitive `ts-blank-space` →
+  // `typescript`, which floats across majors — the instance checks the kit's own `.ts` sources
+  // (zero-build: `exports` point at source) with a compiler the kit never ran. Read back from the
+  // kit's OWN range rather than restated, so a kit that moves compilers and leaves the scaffold
+  // behind fails here instead of shipping instances checked by a compiler the gate never ran.
+  const kit = JSON.parse(await readFile(fileURLToPath(new URL("../../../package.json", import.meta.url)), "utf8"));
+  assert.equal(pkg.devDependencies.typescript, kit.devDependencies.typescript);
 });

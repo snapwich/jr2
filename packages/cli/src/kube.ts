@@ -218,30 +218,50 @@ export const kubectlAdmin: KubeAdmin = {
     const command = caPem
       ? ["sh", "-ec", 'echo "$J2_CA_B64" | base64 -d > /tmp/j2-ca.crt && exec node -e "$1"', "sh", script]
       : ["node", "-e", script];
-    const { stdout } = await exec(
-      "kubectl",
-      [
-        ...ctxArgs(context),
-        ...nsArgs(namespace),
-        "run",
-        name,
-        "--rm",
-        "--attach",
-        "--restart=Never",
-        "--quiet",
-        "--image=node:24-slim",
-        ...(caPem
-          ? [`--env=J2_CA_B64=${Buffer.from(caPem).toString("base64")}`, "--env=NODE_EXTRA_CA_CERTS=/tmp/j2-ca.crt"]
-          : []),
-        "--command",
-        "--",
-        ...command,
-      ],
-      { timeout: 180_000 },
-    );
-    return stdout;
+    try {
+      const { stdout } = await exec(
+        "kubectl",
+        [
+          ...ctxArgs(context),
+          ...nsArgs(namespace),
+          "run",
+          name,
+          "--rm",
+          "--attach",
+          "--restart=Never",
+          "--quiet",
+          "--image=node:24-slim",
+          ...(caPem
+            ? [`--env=J2_CA_B64=${Buffer.from(caPem).toString("base64")}`, "--env=NODE_EXTRA_CA_CERTS=/tmp/j2-ca.crt"]
+            : []),
+          "--command",
+          "--",
+          ...command,
+        ],
+        { timeout: 180_000 },
+      );
+      return stdout;
+    } catch (err) {
+      throw oneShotFailure(err);
+    }
   },
 };
+
+/**
+ * A one-shot probe's failure, made readable. `kubectl run --attach` streams the POD's own output
+ * on ITS stdout, and kubectl writes only its verdict ("pod … terminated (Error)") to stderr — so
+ * the one line that says WHY (a stack, a DNS error, an HTTP status) is exactly what execFile's
+ * error message drops, since that message carries stderr alone. The provider preflight (ADR-0019)
+ * exists to be the cheapest diagnosis available; without the pod's own words it can only report
+ * that something in the cluster exited non-zero, and the caller is back to reproducing the probe
+ * by hand. So the attached output leads, and the kubectl verdict follows it.
+ */
+export function oneShotFailure(err: unknown): Error {
+  const attached = typeof (err as { stdout?: unknown })?.stdout === "string" ? (err as { stdout: string }).stdout : "";
+  const base = err instanceof Error ? err.message : String(err);
+  const trimmed = attached.trim();
+  return trimmed ? new Error(`${trimmed}\n${base}`) : err instanceof Error ? err : new Error(base);
+}
 
 /** Run a command feeding `stdin`, surfacing stderr in the thrown error (kubectl's messages are the
  * useful part of an apply failure). */

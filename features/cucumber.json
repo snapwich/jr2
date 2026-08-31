@@ -2,7 +2,7 @@
   "default": {
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
-    "tags": "not @kind and not @console"
+    "tags": "not @kind and not @console and not @dist"
   },
   "kind": {
     "//": "Parallel by default (ADR-0010 has the measurements: ~1m35 at degree 4 against ~5m serial). Two bounds had to fall first — no Sandbox Image build shares a mutable image name any more (ADR-0040 made the retired wrap's `-base` intermediate per-converge scratch; ADR-0037 deleted the intermediate outright, so a build goes straight to its content tag), and ADR-0042 stopped a just-Ready Sandbox Service losing the run's first turn to one unretried admission. `parallel` lives HERE rather than in the package script so a human running `npx cucumber-js --profile kind` from `features/` gets it too; add `--parallel 1` to bisect a suspected isolation bug.",
@@ -15,5 +15,11 @@
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
     "tags": "@console"
+  },
+  "dist": {
+    "//": "Deliberately SERIAL — no `parallel` key (ADR-0043). The suite fixture publishes the kit and installs it ONCE per run, and cucumber's parallel workers are separate PROCESSES: each would stand up its own verdaccio on the one port `publishConfig` allows. Scenarios still isolate the way @kind's do — a fresh namespace and a temp instance folder each — so the serialization costs the publish, not the runs.",
+    "paths": ["*.feature"],
+    "import": ["steps/**/*.ts"],
+    "tags": "@dist"
   }
 }

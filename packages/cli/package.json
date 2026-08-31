@@ -1,10 +1,13 @@
 {
   "name": "@j2/cli",
   "version": "0.0.0",
-  "private": true,
+  "private": false,
+  "publishConfig": {
+    "registry": "http://localhost:4873"
+  },
   "type": "module",
   "bin": {
-    "j2": "bin/j2.ts"
+    "j2": "bin/j2.js"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -18,7 +21,8 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@j2/orchestrator": "workspace:*"
+    "@j2/orchestrator": "workspace:*",
+    "ts-blank-space": "^0.9.0"
   },
   "devDependencies": {
     "@types/node": "^26.0.1",

@@ -1,7 +1,10 @@
 {
   "name": "@j2/orchestrator",
   "version": "0.0.0",
-  "private": true,
+  "private": false,
+  "publishConfig": {
+    "registry": "http://localhost:4873"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
@@ -26,5 +29,11 @@
   "devDependencies": {
     "@j2/harness": "workspace:*",
     "@types/node": "^26.0.1"
-  }
+  },
+  "files": [
+    "bin",
+    "console",
+    "src",
+    "tsconfig.instance.json"
+  ]
 }

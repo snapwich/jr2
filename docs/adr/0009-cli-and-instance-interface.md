@@ -177,10 +177,15 @@ since prefix probing on an open route would be a run-id enumeration oracle.
 **`j2 init` (v1).** Scaffolds the minimum runnable instance: `j2.config.ts` (root marker), `package.json` (deps on
 `@j2/*` + xstate), one starter `workflows/<name>.ts`, and `.gitignore` (`.j2/`, `.env`, `node_modules/`). `[dir]`
 positional (default cwd); `--force` to overwrite an existing `j2.config.ts`. `agents/`, `manifests/`, and `.env` are
-added by their later slices. No auto-install — it prints the `pnpm install && j2 up` next step.
+added by their later slices. No auto-install — it prints the next step, ~~`pnpm install && j2 up`~~ **as amended by
+[ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)** naming no package manager, since
+the instance's lockfile is what picks one.
 
 ## Consequences
 
-- All `packages/*` publish to npm under `@j2/*`; instances depend on them. The CLI ships as the `j2` bin (`npx j2`).
+- ~~All `packages/*` publish to npm under `@j2/*`; instances depend on them.~~ **Amended by
+  [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: the instance-facing packages
+  (`@j2/cli`, `@j2/orchestrator`, `@j2/agent-protocol`) publish to npm; `@j2/harness`/`@j2/adapter` ship inside Kit
+  images, never via npm. The CLI ships as the `j2` bin (`npx j2`).
 - Workspaces are a first-class CLI resource backed by the operator's `Sandbox` CRs, label-linked to their runs.
 - Dynamic third-party workflow/plugin loading stays deferred (ADR-0008); discovery is over the instance's own code.

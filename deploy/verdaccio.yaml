@@ -1,0 +1,32 @@
+# The local npm the release loop publishes into (ADR-0043). Only the REGISTRY is local; the
+# publish, the resolution, and the install are the real machinery, so the branch users run is the
+# branch the loop executes.
+#
+# Storage is WIPED before every run (see scripts/dist-registry.sh). That is load-bearing, not
+# tidiness: an ephemeral registry is what lets 0.0.0 publish cleanly forever, so the loop needs no
+# -dev.N stamping and edits no manifest before publishing. The path below is never used in
+# practice: both faces of the loop set VERDACCIO_STORAGE_PATH to their own state dir, which lives
+# outside the checkout so the throwaway global install beside it cannot resolve the kit sources.
+storage: ../tmp/dist/registry
+listen: localhost:4873
+
+# No `auth:` block at all, so no htpasswd plugin is loaded and every request arrives anonymous;
+# `$all` on the kit's own scope is what lets an anonymous publish land. A localhost stand-in that
+# is torn down per run has no secret worth guarding, and a credential it never holds is one it
+# cannot leak. (npm still refuses to publish without SOME token — the loop's npmrc carries a fake.)
+packages:
+  "@j2/*":
+    access: $all
+    publish: $all
+    unpublish: $all
+  "**":
+    access: $all
+    proxy: npmjs
+
+# An instance installs @j2/* from here and everything else from real npm through this uplink —
+# same as a user whose only unusual setting is a registry.
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+
+log: { type: stdout, format: pretty, level: warn }

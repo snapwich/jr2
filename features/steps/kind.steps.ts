@@ -34,8 +34,8 @@ type SandboxCR = { metadata: { name: string }; status?: { phase?: string } };
 
 /** Run kubectl in the scenario's namespace (the isolation unit — ADR-0010/0019). */
 async function kubectl(world: E2EWorld, args: string[]): Promise<string> {
-  assert.ok(world.kindNamespace, "a @kind scenario has its namespace set in setupKind");
-  const { stdout } = await exec("kubectl", ["--namespace", world.kindNamespace, ...args], {
+  assert.ok(world.namespace, "a @kind scenario has its namespace set in setupKind");
+  const { stdout } = await exec("kubectl", ["--namespace", world.namespace, ...args], {
     maxBuffer: 8 * 1024 * 1024,
   });
   return stdout;
@@ -48,8 +48,8 @@ async function withPodForward(
   port: number,
   fn: (localUrl: string) => Promise<void>,
 ): Promise<void> {
-  assert.ok(world.kindNamespace, "a @kind scenario has its namespace set");
-  const child = spawn("kubectl", ["--namespace", world.kindNamespace, "port-forward", `pod/${pod}`, `:${port}`]);
+  assert.ok(world.namespace, "a @kind scenario has its namespace set");
+  const child = spawn("kubectl", ["--namespace", world.namespace, "port-forward", `pod/${pod}`, `:${port}`]);
   try {
     const local = await new Promise<string>((resolve, reject) => {
       let out = "";
@@ -95,7 +95,7 @@ async function waitForReadySandbox(world: E2EWorld): Promise<SandboxCR> {
   throw new Error(
     `no Sandbox for run ${world.runId} reached Ready — \`j2 up\` builds and loads every image ` +
       `itself (ADR-0038), so check the operator (kubectl -n j2-system get pods) and the pod's ` +
-      `own events: kubectl -n ${world.kindNamespace} describe sandbox`,
+      `own events: kubectl -n ${world.namespace} describe sandbox`,
   );
 }
 
@@ -772,7 +772,7 @@ Given(
         "--label",
         "j2.dev/kind=sandbox",
         "--label",
-        `j2.dev/instance=${this.kindNamespace}`,
+        `j2.dev/instance=${this.namespace}`,
         dir,
       ]);
     } finally {
@@ -976,7 +976,7 @@ async function collectRoutability(world: E2EWorld, scenario: string): Promise<vo
 /** Everything a failed @kind scenario can still be asked, written to one folder. */
 async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promise<void> {
   const slug = scenarioName.replace(/[^A-Za-z0-9]+/g, "-").slice(0, 60);
-  const dir = join(FAILURE_DIR, `${world.kindNamespace}-${slug}`);
+  const dir = join(FAILURE_DIR, `${world.namespace}-${slug}`);
   await mkdir(dir, { recursive: true });
 
   const status = await probe(async () => (await world.runCli(["status", world.runId ?? ""])).stdout);

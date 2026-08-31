@@ -34,12 +34,15 @@ of build-it-yourself-first image on top of that.
   `pnpm deploy` writes both: each `.bin` shim bakes the staging path into `NODE_PATH`, and `node_modules/.modules.yaml`
   is nothing but a record of where and when. So the bundle is **sealed** before it is hashed — the staging path is
   rewritten to `/instance`, the `WORKDIR` the image actually holds it at, so the shims go from _wrong_ to _correct_
-  rather than merely stable; `.modules.yaml` is deleted, beside the `images/` deletion that already precedes the hash. A
-  non-UTF-8 file holding the path is a loud failure, never a blind rewrite. **Nothing is excluded from the hash any
-  more.** The old exclude set named exactly the files that varied, so the tag stood still while the bytes moved and the
-  mechanism that should have exposed the drift was the one hiding it; with an empty set the failure inverts — a bundle
-  that ever varies again re-tags on every converge, in the open, where a rebuild-and-reload every single time is
-  impossible to miss.
+  rather than merely stable; `.modules.yaml` is deleted, beside the `images/` deletion that already precedes the hash.
+  (**Amended by [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: the bundle is
+  `pnpm deploy`'s only for a workspace-member instance; a standalone one is a staged copy plus a frozen lockfile
+  install, whose shims name no absolute path — but whose pnpm branch leaves a second where-and-when record,
+  `node_modules/.pnpm-workspace-state.json`, deleted with `.modules.yaml`.) A non-UTF-8 file holding the path is a loud
+  failure, never a blind rewrite. **Nothing is excluded from the hash any more.** The old exclude set named exactly the
+  files that varied, so the tag stood still while the bytes moved and the mechanism that should have exposed the drift
+  was the one hiding it; with an empty set the failure inverts — a bundle that ever varies again re-tags on every
+  converge, in the open, where a rebuild-and-reload every single time is impossible to miss.
 - **One transport branch for all of them**, the one the instance image already uses: `registry` configured → push; kind
   context → `kind load`; neither → fail loudly naming `registry`. `j2 up` records the converged name→ref map as an
   annotation on the Orchestrator Deployment and diffs it, so a steady-state converge spends a directory walk and no
@@ -136,6 +139,9 @@ of build-it-yourself-first image on top of that.
 - **`j2 up` leans on `pnpm deploy`, which pnpm still labels experimental**, at `--legacy`. The seal does not deepen that
   exposure — no flag changes — but the assumption that staging is otherwise deterministic is now held by a test that
   stages one Instance into two directories and compares hashes, rather than by trust. A pnpm upgrade that bakes a path
-  somewhere new fails that test instead of silently shipping two images under one tag.
+  somewhere new fails that test instead of silently shipping two images under one tag. (**Amended by
+  [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: only a workspace-member
+  instance leans on it. A standalone instance invokes whichever package manager wrote its lockfile, and `pnpm deploy` is
+  never reached.)
 - **`just` recipes stop being load-bearing**, and the `images:` lines in `features/kind-instance/j2.config.ts` and
   `examples/coding/j2.config.ts` are deleted with the block.

@@ -1,9 +1,16 @@
 # operator/ is a Go module, not a pnpm package — intentionally excluded.
+
+# The scaffold pins @j2/* at the exact KIT_VERSION (ADR-0043), so the checkout's own instances must
+# resolve that literal to the local packages rather than to npm.
+linkWorkspacePackages: true
+
 packages:
   - packages/*
-  # Model instance folders (ADR-0009): npm packages that depend on @j2/* via workspace:* so
-  # `j2 dev` resolves the local engine. Not kit packages — they ship no build of their own
-  # (example-coding does carry a cluster-free mechanics test in the default gate).
+  # Model instance folders (ADR-0009): npm packages whose @j2/* deps resolve to this checkout's
+  # packages through `linkWorkspacePackages` above — whether they spell the dep `workspace:*`
+  # (examples/coding) or as the exact version the scaffold writes (examples/starter, ADR-0043). Not
+  # kit packages — they ship no build of their own (example-coding does carry a cluster-free
+  # mechanics test in the default gate).
   - examples/*
   # System e2e acceptance suite (ADR-0010): black-box Cucumber.js specs that drive the real `j2`
   # binary. A package so it owns its own `xstate`/cucumber deps (scaffolded instances resolve them).

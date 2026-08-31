@@ -31,7 +31,7 @@
 
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,7 +65,9 @@ export type BuildRequest = {
 };
 
 export type BuildPort = {
-  /** Materialize the instance package (+ resolved deps) into `outDir` (`pnpm deploy`). */
+  /** Materialize the instance package (+ resolved prod deps) into `outDir` — `pnpm deploy` for a
+   * workspace member, a staged copy plus a frozen lockfile install for a standalone Instance
+   * (ADR-0043; {@link bundleInstance}). */
   bundle(instanceDir: string, outDir: string): Promise<void>;
   /** `docker build` one image. */
   build(req: BuildRequest): Promise<void>;
@@ -722,18 +724,169 @@ export function formatBytes(bytes: number): string {
  * registry ref, which no converge sees at all — so one prover, not two that can disagree.
  */
 
+// --- the bundle's install (ADR-0043) -----------------------------------------------------------
+
+/** One package manager's frozen, production install — the command that materializes the bundle. */
+export type InstallCommand = { command: string; args: string[] };
+
+/**
+ * The whole supported set, one row per package manager, keyed by the lockfile that selects it. The
+ * "dependency matrix" collapses to nothing (ADR-0043): a lockfile is a proprietary format, so
+ * supporting a package manager means invoking the binary that speaks its lockfile — and that
+ * binary's presence is guaranteed by the very thing that selects it, since the user wrote the
+ * lockfile with it. j2 itself depends on no package manager.
+ *
+ * pnpm gets `node-linker=hoisted` so the bundle is flat REAL files whichever PM wrote it: one
+ * image shape to seal, hash, and resolve from, instead of one per manager.
+ *
+ * bun's two spellings are ONE row — `bun.lockb` is the binary format `bun.lock` replaced — so an
+ * instance holding both is mid-migration, not ambiguous: one manager, one command, bun's own
+ * precedence.
+ */
+const LOCKFILE_INSTALLS: Array<{ manager: string; lockfiles: string[]; install: InstallCommand }> = [
+  { manager: "npm", lockfiles: ["package-lock.json"], install: { command: "npm", args: ["ci", "--omit=dev"] } },
+  {
+    manager: "pnpm",
+    lockfiles: ["pnpm-lock.yaml"],
+    install: { command: "pnpm", args: ["install", "--prod", "--frozen-lockfile", "--config.node-linker=hoisted"] },
+  },
+  {
+    manager: "bun",
+    lockfiles: ["bun.lock", "bun.lockb"],
+    install: { command: "bun", args: ["install", "--production", "--frozen-lockfile"] },
+  },
+];
+
+/** Deliberately out for v1 (ADR-0043): one filename hides two incompatible generations (classic
+ * `--frozen-lockfile` vs berry `--immutable`), and berry defaults to PnP — no `node_modules` at
+ * all, which the image's resolution model cannot host. A named rejection, never a silent fallback;
+ * adding yarn later is one row above plus its tests. */
+const YARN_LOCKFILE = "yarn.lock";
+
+/**
+ * Which install this Instance's committed bytes name. The lockfile — not the user's
+ * `node_modules/` — is the input, and that is forced rather than stylistic: the GitOps/CI path
+ * runs from a clean checkout where no `node_modules` exists, a copied tree bakes in accidents
+ * instead of declarations, and prod-pruning a copied tree means reimplementing resolution. It is
+ * ADR-0019's derivability rule applied to dependencies — the deployed bundle is a function of what
+ * `up` can see committed — so the lockfile is part of the instance contract: none is a hard error
+ * naming the supported three, and two managers is an ambiguity error rather than a guess.
+ */
+export async function lockfileInstall(instanceDir: string): Promise<InstallCommand> {
+  const present = new Set(await readdir(instanceDir));
+  const found = LOCKFILE_INSTALLS.filter((row) => row.lockfiles.some((f) => present.has(f)));
+  const names = [
+    ...found.map((row) => `${row.manager}: ${row.lockfiles.filter((f) => present.has(f)).join(", ")}`),
+    ...(present.has(YARN_LOCKFILE) ? [`yarn: ${YARN_LOCKFILE}`] : []),
+  ];
+  // Ambiguity is asked FIRST, and about managers rather than files: two managers' lockfiles say two
+  // different dependency graphs, and picking one by precedence would deploy the graph the user
+  // stopped maintaining.
+  if (names.length > 1) {
+    throw new Error(
+      `${instanceDir} holds lockfiles from more than one package manager (${names.join("; ")}) — ` +
+        `delete the stale one, so the bundle installs the dependency graph the instance really uses`,
+    );
+  }
+  if (found.length === 1) return found[0]!.install;
+  if (present.has(YARN_LOCKFILE)) {
+    throw new Error(`${instanceDir} has a ${YARN_LOCKFILE}, and yarn is not supported — use npm, pnpm, or bun`);
+  }
+  throw new Error(
+    `${instanceDir} has no lockfile — j2 installs the instance's dependencies from ` +
+      `${LOCKFILE_INSTALLS.map((row) => `${row.manager} (${row.lockfiles.join(" or ")})`).join(", ")}; ` +
+      `run your package manager's install and commit the lockfile it writes`,
+  );
+}
+
+/**
+ * What a staged copy of the Instance leaves behind. `node_modules/` because the lockfile is the
+ * input (above); `.j2/` because it is CLI-local state; `.git/` because history is not image
+ * content; `.env`/`.env.*` and `.npmrc` because those are the two files a user keeps credentials
+ * in — `j2 init` writes `.env` into the scaffold's `.gitignore` saying exactly that, and `j2 up`
+ * reads it HOST-side into the Orchestrator's Secret (ADR-0019). Copied, they would bake a
+ * credential into an image layer AND into the content address that names it, so rotating a key
+ * would re-tag and roll the Orchestrator. The workspace branch already drops both: `pnpm deploy`
+ * filters through npm-packlist. A registry the frozen install needs reaches it the way a
+ * deployment-varying value should — the environment (`npm_config_registry`) or the user-level
+ * npmrc — neither of which is image content.
+ *
+ * Matched by name at any depth: a nested one of these is the same kind of thing.
+ */
+const BUNDLE_STAGE_EXCLUDE = new Set(["node_modules", ".j2", ".git", ".env", ".npmrc"]);
+
+function excludedFromStage(name: string): boolean {
+  return BUNDLE_STAGE_EXCLUDE.has(name) || name.startsWith(".env.");
+}
+
+/** Run one subprocess in `cwd`. The seam the dispatch is tested through: a unit test asserts the
+ * exact argv a lockfile selects without a package manager anywhere near it. */
+export type RunCommand = (command: string, args: string[], cwd: string) => Promise<void>;
+
+const execCommand: RunCommand = async (command, args, cwd) => {
+  await exec(command, args, { cwd, ...BIG });
+};
+
+/**
+ * Materialize the Instance into `outDir` (ADR-0043, as amended there). Two shapes, and the key is
+ * the INSTANCE's own: walk up for a `pnpm-workspace.yaml`, because that — not
+ * {@link detectKitCheckout} — is what says whether `pnpm deploy` can run at all. A checkout CLI can
+ * legitimately drive a standalone instance (the developer's `/tmp` folder), and keying on the CLI's
+ * own provenance would send that instance down a path whose job — materializing workspace symlinks
+ * — only exists in a workspace. The mirror holds too: an INSTALLED kit driving an instance nested
+ * in the user's own pnpm monorepo takes `pnpm deploy`, because that instance carries no lockfile of
+ * its own — the workspace root holds it.
+ *
+ * - Workspace member (the kit checkout's `examples/*`): `pnpm deploy --legacy`, unchanged. pnpm is
+ *   a contributor prerequisite, like go for the operator, never a product dependency.
+ * - Standalone: stage a copy ({@link BUNDLE_STAGE_EXCLUDE}) and run a frozen production install
+ *   from the committed lockfile ({@link lockfileInstall}) inside it.
+ */
+export async function bundleInstance(
+  instanceDir: string,
+  outDir: string,
+  run: RunCommand = execCommand,
+): Promise<void> {
+  if (await pnpmWorkspaceRoot(instanceDir)) {
+    const pkg = JSON.parse(await readFile(join(instanceDir, "package.json"), "utf8")) as { name?: string };
+    if (!pkg.name) throw new Error(`${instanceDir}/package.json has no "name" — needed to bundle the instance`);
+    // --legacy: materialize (copy) workspace deps into the bundle rather than linking them.
+    await run("pnpm", ["--filter", pkg.name, "--prod", "deploy", "--legacy", outDir], instanceDir);
+    return;
+  }
+  // Asked before the copy: an instance with no lockfile must fail on the cheap half.
+  const { command, args } = await lockfileInstall(instanceDir);
+  await cp(instanceDir, outDir, {
+    recursive: true,
+    filter: (src) => src === instanceDir || !excludedFromStage(basename(src)),
+  });
+  await run(command, args, outDir);
+}
+
+/** The nearest `pnpm-workspace.yaml` at or above `dir`, i.e. "is this instance a workspace member".
+ * A file test, not a manifest parse: pnpm's own membership rule starts here, and a `packages:` glob
+ * that excluded this directory would leave `pnpm deploy --filter` failing loudly by name. */
+async function pnpmWorkspaceRoot(dir: string): Promise<string | undefined> {
+  let d = resolve(dir);
+  for (;;) {
+    try {
+      await stat(join(d, "pnpm-workspace.yaml"));
+      return d;
+    } catch {
+      const parent = dirname(d);
+      if (parent === d) return undefined;
+      d = parent;
+    }
+  }
+}
+
 // --- the real port ----------------------------------------------------------------------------
 
 const BIG = { maxBuffer: 64 * 1024 * 1024 };
 
 /** The real build port: pnpm + docker + kind + crictl subprocesses. */
 export const pnpmDockerBuild: BuildPort = {
-  async bundle(instanceDir, outDir) {
-    const pkg = JSON.parse(await readFile(join(instanceDir, "package.json"), "utf8")) as { name?: string };
-    if (!pkg.name) throw new Error(`${instanceDir}/package.json has no "name" — needed to bundle the instance`);
-    // --legacy: materialize (copy) workspace deps into the bundle rather than linking them.
-    await exec("pnpm", ["--filter", pkg.name, "--prod", "deploy", "--legacy", outDir], { cwd: instanceDir });
-  },
+  bundle: (instanceDir, outDir) => bundleInstance(instanceDir, outDir),
 
   async build({ tag, context, dockerfile, dockerfileContent, labels }) {
     const args = ["build", "-t", tag];
@@ -1101,10 +1254,15 @@ export async function stageInstanceBundle(port: BuildPort, instanceDir: string):
     // tag, which is a pod-template change, which rolled the Orchestrator and put every live run
     // through snapshot restore — the exact cost the map-not-env decision was taken to avoid.
     await rm(join(dir, "images"), { recursive: true, force: true });
-    // `.modules.yaml` is nothing but a record of where and when this staging happened (a `prunedAt`
-    // stamp and the scratch paths), and the image reads it never. It goes beside `images/`; the
-    // rest of the where-and-when — the shims' baked `NODE_PATH` — the seal corrects.
-    await rm(join(dir, "node_modules", ".modules.yaml"), { force: true });
+    // pnpm leaves two files that are nothing but a record of where and when this staging happened
+    // — `.modules.yaml` (a `prunedAt` stamp and the scratch paths, written by `pnpm deploy`) and
+    // `.pnpm-workspace-state.json` (a `lastValidatedTimestamp`, written by `pnpm install`) — and
+    // the image reads neither. Both go beside `images/`: the timestamp alone re-addressed every
+    // pnpm bundle on every converge, which is a pod-template change on a no-op `up`. The rest of
+    // the where-and-when — the shims' baked `NODE_PATH` — the seal corrects.
+    for (const record of [".modules.yaml", ".pnpm-workspace-state.json"]) {
+      await rm(join(dir, "node_modules", record), { force: true });
+    }
     await sealInstanceBundle(dir);
     return {
       dir,

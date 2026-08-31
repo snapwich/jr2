@@ -7,12 +7,19 @@
 //
 // Templates mirror `examples/starter/` verbatim (that folder is the model instance) — byte-for-byte
 // except package.json's `name`/`description`, which are per-instance. `test/init.test.ts` enforces
-// that; without it the two drift silently. Existing files are left untouched (init is additive);
-// created paths are reported on stderr.
+// that; without it the two drift silently, and since the manifest carries KIT_VERSION that same test
+// is the version-bump tripwire (bump the kit, re-render the starter). Existing files are left
+// untouched (init is additive); created paths are reported on stderr.
+//
+// ONE template serves both checkout and installed mode (ADR-0043) — a branch there would mean the
+// tested output and the shipped output diverge. So the scaffold names no package manager, and pins
+// @j2/* at the exact running KIT_VERSION: 0.x minors break, and the checkout resolves that literal
+// to its own packages via `linkWorkspacePackages: true`.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { KIT_VERSION } from "@j2/orchestrator";
 import { activity, type Io } from "../output.ts";
 
 export async function init(args: string[], io: Io): Promise<number> {
@@ -46,7 +53,7 @@ export async function init(args: string[], io: Io): Promise<number> {
     await writeFile(full, file.content);
     activity(io, `  create ${file.path}`);
   }
-  activity(io, "done — `pnpm install && j2 up` to deploy it, then `j2 run ping`");
+  activity(io, "done — install dependencies (npm, pnpm, or bun), then `j2 up` and `j2 run ping`");
   return 0;
 }
 
@@ -59,6 +66,15 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+// The scaffold declares the tool every script it writes runs. `typescript` is the one that had to
+// be learned the hard way: the scaffold ships a `typecheck` script but named no compiler, so `tsc`
+// resolved to whatever happened to be hoisted — in an installed instance that is `@j2/cli`'s own
+// transitive `ts-blank-space` → `typescript`, which floats across MAJORS. A scaffolded folder
+// checked its kit's sources with a compiler the kit never ran, and reported ~120 errors in
+// @j2/orchestrator that the kit's own gate does not see. The range is the kit's own (ADR-0043's
+// rule for `@j2/*`, applied to the checker): the instance's PROGRAM includes the kit's `.ts`
+// sources — zero-build, `exports` point at source — so the compiler is part of the contract, not
+// the user's choice, and it moves when the kit moves.
 function packageJson(name: string): string {
   return `${JSON.stringify(
     {
@@ -67,8 +83,8 @@ function packageJson(name: string): string {
       private: true,
       type: "module",
       scripts: { typecheck: "tsc --noEmit" },
-      dependencies: { "@j2/orchestrator": "workspace:*", xstate: "^5.18.0" },
-      devDependencies: { "@j2/cli": "workspace:*", "@types/node": "^26.0.1" },
+      dependencies: { "@j2/orchestrator": KIT_VERSION, xstate: "^5.18.0" },
+      devDependencies: { "@j2/cli": KIT_VERSION, "@types/node": "^26.0.1", typescript: "^5.6.0" },
     },
     null,
     2,

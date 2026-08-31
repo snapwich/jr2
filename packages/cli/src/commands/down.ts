@@ -31,6 +31,7 @@ export async function down(args: string[], io: Io): Promise<number> {
     strict: false,
     options: {
       all: { type: "boolean" },
+      yes: { type: "boolean" },
       namespace: { type: "string", short: "n" },
       context: { type: "string" },
     },
@@ -57,10 +58,12 @@ export async function down(args: string[], io: Io): Promise<number> {
   }
 
   const scope = values.all ? " AND the per-cluster operator" : "";
-  const ok = await confirmOrBail(
-    io,
-    `remove instance "${name}" from context ${context} (delete namespace "${namespace}"${scope})?`,
-  );
+  const ok =
+    values.yes === true ||
+    (await confirmOrBail(
+      io,
+      `remove instance "${name}" from context ${context} (delete namespace "${namespace}"${scope})?`,
+    ));
   if (!ok) {
     activity(io, "aborted — nothing was changed");
     return 1;
