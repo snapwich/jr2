@@ -1,18 +1,21 @@
-// Steps for the @dist tier (ADR-0043): the kit as a user installs it. There are only three of them,
-// and that is the shape of the claim — a user's whole path is `j2 init`, their own package manager,
-// `j2 up`. Nothing here reaches past what their shell would see (ADR-0010).
+// Steps for the @dist tier (ADR-0043/0044): the kit as a user installs it. Three of them are the
+// user's whole path — `j2 init`, their own package manager, `j2 up` — and that shape is the claim.
+// The fourth reaches into the cluster with `kubectl`, for the one thing the path cannot show from
+// outside: that the Kit images came off a registry by PULL (ADR-0044). Nothing here reaches past
+// what a user's own shell could see (ADR-0010).
 //
 // Everything after `j2 up` is already covered by the run-control steps (`I run … with message …`,
 // `stdout is the terminal status with reply …`), and they work here unchanged because the World
 // decides WHICH binary `runCli` spawns. That reuse is the point: the assertions are the same
 // claims the other tiers make, and only the delivery of the kit differs.
 
-import { Given, When } from "@cucumber/cucumber";
+import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
+import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@j2/orchestrator";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -38,7 +41,33 @@ Given("a standalone instance scaffolded by the installed j2", async function (th
   }
   const r = await this.runCli(["init"], { namespaced: false });
   assert.equal(r.code, 0, `j2 init failed: ${r.stderr}`);
+
+  // The one edit a self-hosting user makes to the scaffold (ADR-0044): this cluster pulls its Kit
+  // images from a mirror, not from the canonical home. It rides `.env` + `process.env` rather than
+  // a literal because it is deployment-varying — which also means the instance's config file is
+  // byte-identical to what any other self-hoster writes, and the fixture's address stays out of it.
+  const kitRegistry = this.dist?.kitRegistry;
+  assert.ok(kitRegistry, "a @dist scenario has its installed kit");
+  await writeFile(join(this.dir, ".env"), `J2_KIT_REGISTRY=${kitRegistry}\n`);
+  await writeFile(join(this.dir, "j2.config.ts"), KIT_REGISTRY_CONFIG_TS);
 });
+
+/**
+ * The scaffold's own `j2.config.ts` plus the mirror key — written whole rather than patched, so the
+ * step never depends on the template's exact bytes (`j2 init` owns those, and `init.test.ts` guards
+ * them). `repos: []` is kept: these scenarios run `ping`, which touches no Workspace at all.
+ *
+ * `.env` reaches the CLI and stops there. It is one of the credential files a bundle stage drops
+ * (ADR-0043), so nothing about the mirror is baked into the instance image — and nothing needs to
+ * be: `kitRegistry` is answered at converge time, when the pod spec's image refs are composed.
+ */
+const KIT_REGISTRY_CONFIG_TS = `import { defineConfig } from "@j2/orchestrator";
+
+export default defineConfig({
+  repos: [],
+  kitRegistry: process.env.J2_KIT_REGISTRY,
+});
+`;
 
 // --- when ----------------------------------------------------------------------------------------
 
@@ -69,13 +98,95 @@ When("I install its dependencies with {string}", async function (this: E2EWorld,
 });
 
 // The converge, in installed mode: no kit sources resolve, so the Harness, Adapter, and operator
-// come from the published `<kitversion>` tags the suite fixture loaded (ADR-0038), and the instance
-// image is bundled from the lockfile above.
+// come from the published `<kitRegistry>/j2-<x>:<kitversion>` tags the suite fixture PUSHED, pulled
+// by the nodes themselves (ADR-0038/0044), and the instance image is bundled from the lockfile
+// above — built here, and still delivered by `kind load`, because this converge is the one that
+// builds it.
 When("I converge it onto the cluster", { timeout: 900_000 }, async function (this: E2EWorld): Promise<void> {
   const r = await this.runCli(["up", "--yes"]);
   assert.equal(r.code, 0, `j2 up failed: ${r.stderr}`);
   assert.match(r.stderr, /images: installed kit/, "the installed CLI took installed mode, not checkout mode");
 });
+
+// --- then ----------------------------------------------------------------------------------------
+
+/**
+ * The claim ADR-0044 adds to this tier: the Kit images this cluster runs came out of a REGISTRY.
+ *
+ * Two halves, because one of them alone would prove less than it looks. The refs say the CLI
+ * re-homed the published tags onto `kitRegistry` (the Harness and the Adapter have no pod in a
+ * `ping` scenario — the instance's own image map is where they are nameable at all); the RUNNING
+ * operator pod says a node resolved that address, pulled the bytes and unpacked them, which is the
+ * exact leg `kind load` at the published names used to skip.
+ *
+ * Spelled the way a user's `kubectl` would (ADR-0010), namespace and selector included — they are
+ * `OPERATOR_NAMESPACE`/`OPERATOR_SELECTOR` in packages/cli/src/deploy.ts, and a black-box step is
+ * not entitled to import them from the kit it is testing at arm's length.
+ */
+Then("the cluster pulled its Kit images from the local registry", async function (this: E2EWorld): Promise<void> {
+  const kitRegistry = this.dist?.kitRegistry;
+  assert.ok(kitRegistry, "a @dist scenario has its installed kit");
+  assert.ok(this.namespace, "a @dist scenario has its namespace set in setupDist");
+
+  const map = await kubectlOut(["--namespace", this.namespace, "get", "configmap", IMAGES_CONFIGMAP, "-o", "json"]);
+  const raw = (JSON.parse(map) as { data?: Record<string, string> }).data?.[IMAGES_KEY];
+  assert.ok(raw, `the ${IMAGES_CONFIGMAP} ConfigMap carries ${IMAGES_KEY} (ADR-0038)`);
+  const refs = JSON.parse(raw) as { harness?: string; adapter?: string };
+  for (const [which, ref] of Object.entries({ harness: refs.harness, adapter: refs.adapter })) {
+    assert.ok(
+      ref?.startsWith(`${kitRegistry}/j2-${which}:`),
+      `the ${which} ref is ${ref} — an installed kit pointed at a mirror deploys ${kitRegistry}/j2-${which}:<ver>`,
+    );
+  }
+
+  // The operator's declared image first: a pod could otherwise be a survivor of some earlier
+  // converge, and "something running out of the mirror" is not the claim.
+  const declared = (
+    await kubectlOut([
+      "--namespace",
+      "j2-system",
+      "get",
+      "deployment",
+      "j2-controller-manager",
+      "-o",
+      "jsonpath={.spec.template.spec.containers[0].image}",
+    ])
+  ).trim();
+  assert.ok(
+    declared.startsWith(`${kitRegistry}/j2-operator:`),
+    `the operator Deployment declares ${declared}, not a ${kitRegistry} ref`,
+  );
+
+  // Then a pod actually RUNNING it. `Running` is the whole assertion: the kubelet reaches that
+  // phase only after containerd resolved `localhost:<port>/…` through the node's hosts.toml, pulled
+  // the manifest and unpacked the layers. A rollout leaves the previous pod terminating, so this
+  // asks whether ANY running pod carries the declared ref rather than that every one does.
+  const pods = await kubectlOut([
+    "--namespace",
+    "j2-system",
+    "get",
+    "pods",
+    "-l",
+    "control-plane=controller-manager",
+    "-o",
+    `jsonpath={range .items[*]}{.status.phase}{"\\t"}{.spec.containers[*].image}{"\\n"}{end}`,
+  ]);
+  const running = pods
+    .split("\n")
+    .map((line) => line.split("\t"))
+    .filter(([phase]) => phase === "Running")
+    .map(([, image]) => image ?? "");
+  assert.ok(
+    running.includes(declared),
+    `no operator pod is running ${declared} — the node never pulled it. Pods:\n${pods}`,
+  );
+});
+
+/** kubectl, verbatim, for the claims that reach past the instance's own namespace. */
+async function kubectlOut(args: string[]): Promise<string> {
+  const { stdout } = await exec("kubectl", args, { maxBuffer: BIG });
+  return stdout;
+}
 
 /**
  * The environment a USER's shell has. This suite is launched by `pnpm --filter`, and pnpm exports

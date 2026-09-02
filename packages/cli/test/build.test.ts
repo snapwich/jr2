@@ -31,6 +31,7 @@ import {
   stageInstanceBundle,
   sweepHost,
   sweepNodes,
+  KIT_IMAGE_HOME,
   type BuildPort,
   type BuildRequest,
   type ObservedImage,
@@ -279,15 +280,29 @@ test("the bundle hash tracks the kit — a dependency's sources are image conten
   assert.equal(await hashOf(kit("export const renew = () => 1;\n")), before);
 });
 
-test("installed from npm, the kit three resolve to the published <kitversion> tags", () => {
+test("installed from npm, the kit three resolve to the published <kitversion> tags at the canonical home", () => {
   // These were `j2.config.ts`'s `images` defaults; the block is gone (ADR-0038), so they live here
-  // as the not-a-kit-checkout branch — and as the last leg of ADR-0037's Sandbox Image chain.
-  // Deliberately NOT registry-prefixed: kit refs for a mirror-only cluster is a deferred mechanism.
+  // as the not-a-kit-checkout branch — and as the last leg of ADR-0037's Sandbox Image chain. The
+  // home is BAKED (ADR-0044): a bare `j2-harness:0.0.0` resolves to `docker.io/library/`, where
+  // nothing is, so the zero-plumbing `npm i -g @j2/cli && j2 init && j2 up` needs a real host here.
   assert.deepEqual(publishedKitRefs(), {
-    harness: `j2-harness:${KIT_VERSION}`,
-    adapter: `j2-adapter:${KIT_VERSION}`,
-    operator: `j2-operator:${KIT_VERSION}`,
+    harness: `${KIT_IMAGE_HOME}/j2-harness:${KIT_VERSION}`,
+    adapter: `${KIT_IMAGE_HOME}/j2-adapter:${KIT_VERSION}`,
+    operator: `${KIT_IMAGE_HOME}/j2-operator:${KIT_VERSION}`,
   });
+  assert.equal(KIT_IMAGE_HOME, "ghcr.io/snapwich");
+});
+
+test("kitRegistry re-homes the published refs — the same tags, a self-hosted mirror (ADR-0044)", () => {
+  // REPLACES the home rather than nesting under it: a mirror holds the same three tags under its
+  // own name, seeded deliberately by `j2 kit push`, never by a converge.
+  assert.deepEqual(publishedKitRefs("zot.example.test"), {
+    harness: `zot.example.test/j2-harness:${KIT_VERSION}`,
+    adapter: `zot.example.test/j2-adapter:${KIT_VERSION}`,
+    operator: `zot.example.test/j2-operator:${KIT_VERSION}`,
+  });
+  // The version is the CLI's own either way: re-homing says where the tags live, not which ones.
+  assert.ok(Object.values(publishedKitRefs("localhost:5000/j2")).every((r) => r.endsWith(`:${KIT_VERSION}`)));
 });
 
 test("a kit checkout needs BOTH markers — either alone is somebody else's tree", async () => {

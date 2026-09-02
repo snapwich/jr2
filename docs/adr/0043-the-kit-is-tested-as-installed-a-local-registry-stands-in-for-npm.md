@@ -47,7 +47,10 @@ an absence-of-flag accident.
 
 In the loop, Kit images need no registry at all on kind: build from the checkout, tag with the published names
 (`j2-harness:<version>`), `kind load` — the same delivery checkout mode already uses. Registry-prefixed kit refs for
-non-kind clusters stay deferred (ADR-0038).
+non-kind clusters stay deferred (ADR-0038). (**Amended by
+[ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)**: `kind load` bypassed the pull path, so
+the mode users run had no tier — the `@dist` bring-up now adds a local OCI registry, seeds it with `just kit-push`, and
+scenarios pull Kit images through `kitRegistry` like any self-host.)
 
 ## The binary is the kit's one `.js` file
 

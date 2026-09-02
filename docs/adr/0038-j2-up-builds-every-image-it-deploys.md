@@ -18,11 +18,12 @@ of build-it-yourself-first image on top of that.
   building one image without a converge, never as prerequisites. A registry-ref Sandbox Image (ADR-0037) is the one
   deployed image whose source is nobody's here: never built, labeled, or delivered by j2 — the cluster pulls it, and its
   tag discipline is its owner's.
-- **Every tag is a content address.** Instance, Sandbox, Harness, Adapter, operator — each hashed over its own inputs.
-  Three things follow: `imagePullPolicy: IfNotPresent` becomes _correct_ rather than lucky (a unique tag per content
-  means "present" implies "current"), which is what makes kind and a real cluster behave identically instead of needing
-  `Never` on one and `Always` on the other; a kit source edit moves its own image's tag with no bookkeeping; and
-  skipping is exact.
+- **Every tag is a content address.** Instance, Sandbox, Harness, Adapter, operator — each addressed by its own inputs
+  and its platform set, the platform as a visible tag suffix
+  ([ADR-0045](0045-the-platform-joins-the-image-address-and-the-cluster-chooses-it.md)). Three things follow:
+  `imagePullPolicy: IfNotPresent` becomes _correct_ rather than lucky (a unique tag per content means "present" implies
+  "current"), which is what makes kind and a real cluster behave identically instead of needing `Never` on one and
+  `Always` on the other; a kit source edit moves its own image's tag with no bookkeeping; and skipping is exact.
 - **Over-hash deliberately.** A kit image is hashed over its whole source directory, tests included, not over the exact
   file list its Dockerfile copies. Deriving the list by hand means a new `COPY` silently desynchronizes it, which is the
   invisible-stale-image bug being deleted; a needless rebuild in kit dev costs cached-layer seconds. **A Sandbox Image's
@@ -131,6 +132,8 @@ of build-it-yourself-first image on top of that.
   that is a first-converge cost, not a per-converge one.
 - **An air-gapped or mirror-only cluster still cannot pull published kit images.** The answer is a registry _prefix_ for
   kit refs, not per-image overrides — a different mechanism, deliberately deferred while nothing is published.
+  (**Resolved by [ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)**: the prefix is
+  `kitRegistry`, re-homing refs from the canonical `ghcr.io/snapwich` home, fed by a deliberate instance-less mirror.)
 - **The seal deletes garbage at its source.** Before it, every converge built a new image id under an unchanged tag, so
   each one orphaned a whole instance image — 465 MB on the `@kind` instance — which ADR-0039's sweep then collected.
   That was garbage produced by the builder on every run, not by iteration, and the collector was doing work that should

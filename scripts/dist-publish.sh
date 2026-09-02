@@ -2,30 +2,30 @@
 #
 # The release loop's publish (ADR-0043): the kit, delivered the way a user receives it.
 #
-#   1. the three instance-facing packages → the local registry
-#   2. the three Kit images at their PUBLISHED tags → the cluster
+#   1. the three instance-facing packages → the local npm registry
+#   2. the three Kit images at their PUBLISHED tags → the local image registry the nodes pull from
 #   3. the `j2` binary → a throwaway global npm prefix
 #
-# The registry must already be up (scripts/dist-registry.sh up). This is a script rather than lines
-# inside `just dist-up` because the @dist e2e tier runs the same bring-up unattended: one loop with
-# two faces (ADR-0043), not two loops that drift.
+# Both registries must already be up (scripts/dist-registry.sh up, scripts/dist-image-registry.sh
+# up). This is a script rather than lines inside `just dist-up` because the @dist e2e tier runs the
+# same bring-up unattended: one loop with two faces (ADR-0043), not two loops that drift.
 #
 # Step 2 is not redundant with `j2 up`. An INSTALLED kit builds no Kit image at all — it deploys the
-# published `<repo>:<kitversion>` refs (ADR-0038) — so something has to play the release that would
-# have pushed them. On kind that needs no registry: build from the checkout, tag with the published
-# name, `kind load`, which is the delivery checkout mode already uses.
+# published `<kitRegistry>/<repo>:<kitversion>` refs (ADR-0038/0044) — so something has to play the
+# release that would have pushed them, and the push is the whole point: the node PULLS.
 #
 # `--packages-only` stops after step 1, because steps 2 and 3 are the INSTALLED kit's half and only
 # its half: they exist so a binary that builds no image and resolves no source can still find both.
 # A CHECKOUT CLI needs neither — it builds every image it deploys (ADR-0038) and runs from the
 # checkout — but it cannot conjure `@j2/*` for a STANDALONE instance, whose bundle is a frozen
 # install from its own lockfile (ADR-0043). That instance is a real shape a developer drives (the
-# `/tmp` folder ADR-0043 names), and on a cluster where installed mode cannot yet reach — its kit
-# refs carry no registry prefix (ADR-0038, deferred) — step 1 alone is the whole of what the kit
-# owes it. The guard below still runs: publishing locally is exactly what must stay guarded.
+# `/tmp` folder ADR-0043 names), and it is driven by a binary that supplies every image it deploys
+# itself — so step 1 alone is the whole of what the kit owes it. The guard below still runs:
+# publishing locally is exactly what must stay guarded.
 #
 # Env: J2_DIST_DIR (runtime state, default <tmp>/j2-dist — outside the checkout, see the guard
-# below), J2_DIST_PORT (default 4873 — the port the packages' publishConfig names).
+# below), J2_DIST_PORT (default 4873 — the port the packages' publishConfig names),
+# J2_DIST_IMAGE_PORT (default 5001 — read through scripts/dist-image-registry.sh, never here).
 set -euo pipefail
 
 packages_only=""
@@ -92,23 +92,19 @@ if [[ -n "$packages_only" ]]; then
   exit 0
 fi
 
-# One release train (ADR-0019): the image tag IS the npm version.
-ver="$(node -p 'require("./packages/orchestrator/package.json").version')"
-docker build -f deploy/harness/Dockerfile -t "j2-harness:$ver" .
-docker build -f deploy/adapter/Dockerfile -t "j2-adapter:$ver" .
-docker build -t "j2-operator:$ver" operator
-
-# The cluster is whatever the CURRENT kube context names — the same address `j2 up` resolves moments
-# later (ADR-0019), never a name written down here.
-context="$(kubectl config current-context 2>/dev/null || true)"
-case "$context" in
-  kind-*)
-    kind load docker-image "j2-harness:$ver" "j2-adapter:$ver" "j2-operator:$ver" --name "${context#kind-}"
-    ;;
-  *)
-    echo "warning: kube context ${context:-<none>} is not a kind cluster — images built, not loaded" >&2
-    ;;
-esac
+# The Kit images, PUSHED to the loop's stand-in home and pulled from there by the nodes (ADR-0044).
+# The registry must already be up (scripts/dist-image-registry.sh up), like verdaccio above.
+#
+# `kind load` at the published names used to stand here, and it was a lie shaped like a delivery: the
+# bytes landed on the node without a pull, so `kitRegistry`, the hosts.toml, the pod's registry-
+# prefixed ref — the whole path an installed kit actually takes to a Kit image — executed in no tier.
+# Only the registry is faked now, which is the same rule this loop applies to npm (ADR-0043).
+#
+# ONE platform, the host's own: multi-arch is `just kit-push`'s default because a self-host mirrors
+# whatever it finds, but this registry serves one local kind cluster and a qemu build for the arch it
+# will never run is minutes spent on nothing.
+kit_registry="$("$root/scripts/dist-image-registry.sh" address)"
+"$root/scripts/kit-push.sh" "$kit_registry" "linux/$(docker version -f '{{.Server.Arch}}')"
 
 # A prefix of its own, never the real global one: a loop that installs into the developer's npm owes
 # them an uninstall, and this one should owe nothing.

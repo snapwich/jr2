@@ -284,18 +284,34 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
 };
 
 /**
- * What an INSTALLED kit deploys: the published `<kitversion>` tags, one release train with the npm
- * version (ADR-0019). These constants used to live in `j2.config.ts`'s `images` block as its
- * defaults; they belong here instead, because a config key would be an override seat — and
- * "nobody runs a patched Harness against a real cluster" is ADR-0027's no-eject-hatch enforced
- * rather than merely stated. Deliberately NOT registry-prefixed: an air-gapped cluster needs a
- * registry prefix for kit refs, which is a different mechanism ADR-0038 defers.
+ * Where the published Kit images live (ADR-0044). A bare `j2-harness:<kitversion>` resolves against
+ * `docker.io/library/` on a node, where nothing is — so the canonical home is BAKED, not configured:
+ * only a home every user's nodes can pull from makes `npm i -g @j2/cli && j2 init && j2 up` work
+ * with zero image plumbing. Public GHCR egress is GitHub's cost, so the project can afford one.
  */
-export function publishedKitRefs(): KitImageRefs {
+export const KIT_IMAGE_HOME = "ghcr.io/snapwich";
+
+/**
+ * What an INSTALLED kit deploys: the published `<kitversion>` tags at the canonical home
+ * ({@link KIT_IMAGE_HOME}), one release train with the npm version (ADR-0019/0044). These constants
+ * used to live in `j2.config.ts`'s `images` block as its defaults; they belong here instead, because
+ * a config key would be an override seat — and "nobody runs a patched Harness against a real
+ * cluster" is ADR-0027's no-eject-hatch enforced rather than merely stated.
+ *
+ * `kitRegistry` re-homes them — `<kitRegistry>/j2-harness:<kitversion>` — for a self-hosted,
+ * air-gapped, or mirror-only cluster, which is ADR-0038's deferred edge, now closed. It replaces the
+ * home rather than nesting under it: a mirror holds the same tags under its own name, seeded
+ * deliberately (`j2 kit push`) and never by a converge. It is NOT `config.registry`: that key says
+ * where images this converge BUILDS go, and prefixing both with one key would make every
+ * private-registry user mirror three images they could have pulled from the home. The version is
+ * still the CLI's own — re-homing says where the tags live, never which ones.
+ */
+export function publishedKitRefs(kitRegistry?: string): KitImageRefs {
+  const home = kitRegistry ?? KIT_IMAGE_HOME;
   return {
-    harness: `j2-harness:${KIT_VERSION}`,
-    adapter: `j2-adapter:${KIT_VERSION}`,
-    operator: `j2-operator:${KIT_VERSION}`,
+    harness: `${home}/j2-harness:${KIT_VERSION}`,
+    adapter: `${home}/j2-adapter:${KIT_VERSION}`,
+    operator: `${home}/j2-operator:${KIT_VERSION}`,
   };
 }
 

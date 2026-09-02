@@ -14,6 +14,7 @@ import { send } from "./commands/send.ts";
 import { up } from "./commands/up.ts";
 import { down } from "./commands/down.ts";
 import { gc } from "./commands/gc.ts";
+import { kit } from "./commands/kit.ts";
 
 const USAGE = `j2 — orchestrate agentic workflows (ADR-0009)
 
@@ -23,6 +24,7 @@ usage: j2 <command> [args]
   up [--yes] [--force]              converge the current kube context to this instance (ADR-0019)
   down [--all]                      remove the instance from the cluster (--all: operator too)
   gc [--dry-run]                    remove j2's images that no live instance names (ADR-0039)
+  kit push <registry>               mirror the published kit images into a registry (ADR-0044)
   run <workflow> [--input <json>]   start a run; stream activity, print terminal result
        [--detach]                   ...or just print the runId and return
   runs                              list live runs
@@ -82,6 +84,8 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await down(rest, io);
       case "gc":
         return await gc(rest, io);
+      case "kit":
+        return await kit(rest, io);
       case "help":
       case "--help":
       case "-h":

@@ -79,6 +79,22 @@ operator-image:
     docker build -t j2-operator:local operator
     kind load docker-image j2-operator:local --name {{ cluster }}
 
+# --- the Kit images at their PUBLISHED names (ADR-0044; requires docker + buildx) ---
+#
+# The checkout arm of ADR-0044, and NOT a `j2 up` shortcut like the recipes above: these are the
+# real published tags (`<registry>/j2-<x>:<kitversion>`), the ones an INSTALLED kit deploys and
+# never builds. This is how the canonical home gets its images at release —
+#
+#     just kit-push ghcr.io/snapwich
+#
+# — and how a self-host or a dev-loop registry gets images the home does not have yet. Multi-arch by
+# default because a mirror (`j2 kit push`) copies whatever it finds, deficiencies included; a caller
+# who knows its target's architecture passes one platform and skips qemu.
+
+# build the three Kit images multi-arch and push them at their published names
+kit-push registry platforms="linux/amd64,linux/arm64":
+    scripts/kit-push.sh {{ registry }} {{ platforms }}
+
 # --- operator (requires kubebuilder; see operator/README.md) ---
 
 # install the Sandbox CRD into the current kube context
@@ -97,18 +113,18 @@ operator-test:
 sandbox-sample:
     kubectl apply -f operator/config/samples/core_v1alpha1_sandbox.yaml
 
-# --- the manual release loop (ADR-0043; requires docker + kind, and network every run) ---
+# --- the manual release loop (ADR-0043/0044; requires docker + kind, and network every run) ---
 #
-# EVERY run, not just the first: the registry's storage is wiped on each `up` — that wipe is what
+# EVERY run, not just the first: the npm registry's storage is wiped on each `up` — that wipe is what
 # lets 0.0.0 republish without stamping a version — so verdaccio's uplink cache is cold again and
 # the whole dependency tree resolves through npmjs.
 #
-# The kit as a USER gets it: packages resolved from a registry, the `j2` binary installed globally,
-# an instance folder that lives nowhere near this checkout. Only the registry is local — the same
-# rule ADR-0038 applies to the model provider — so installed mode, the branch every other tier
-# skips, is the branch that runs. `dist-up` leaves the registry and the throwaway global install
-# standing so a developer can play; `dist-down` puts the port back. The @dist e2e tier drives this
-# same loop unattended.
+# The kit as a USER gets it: packages resolved from a registry, Kit images PULLED from a registry,
+# the `j2` binary installed globally, an instance folder that lives nowhere near this checkout. Only
+# the two registries are local — the same rule ADR-0038 applies to the model provider — so installed
+# mode, the branch every other tier skips, is the branch that runs. `dist-up` leaves both registries
+# and the throwaway global install standing so a developer can play; `dist-down` puts both ports
+# back. The @dist e2e tier drives this same loop unattended.
 
 # Outside the checkout, and that is load-bearing: the installed CLI decides checkout vs installed
 # mode by walking up from its own real path, so a global prefix under the kit root would run the
@@ -116,15 +132,18 @@ sandbox-sample:
 dist_dir := env_var_or_default("TMPDIR", "/tmp") / "j2-dist"
 dist_registry := "http://localhost:4873"
 
-# publish the kit locally, build its images at the published tags, install the CLI globally
+# publish the kit locally, push its images at the published tags, install the CLI globally
 dist-up:
     #!/usr/bin/env bash
     set -euo pipefail
     scripts/dist-registry.sh up
+    # The stand-in Kit image home (ADR-0044). Up BEFORE the publish, which pushes into it.
+    scripts/dist-image-registry.sh up
     # The publish, the Kit images, and the global install are a SCRIPT because the @dist e2e tier
     # runs the identical bring-up unattended — the two faces of one loop cannot drift.
     scripts/dist-publish.sh
     ver="$(node -p 'require("./packages/orchestrator/package.json").version')"
+    kit_registry="$(scripts/dist-image-registry.sh address)"
 
     cat <<MSG
 
@@ -136,9 +155,13 @@ dist-up:
 
       j2 init /tmp/demo && cd /tmp/demo
       npm install --registry {{ dist_registry }}
+      # an installed kit BUILDS no Kit image — it pulls the published tags, so point the cluster at
+      # the loop's stand-in home instead of ghcr.io/snapwich (ADR-0044):
+      #   kitRegistry: process.env.J2_KIT_REGISTRY  →  j2.config.ts
+      #   J2_KIT_REGISTRY=$kit_registry             →  .env
       j2 up
 
-    \`just dist-down\` stops the registry.
+    \`just dist-down\` stops both registries.
     MSG
 
 # The loop's third face, and the only one that reaches a real (non-kind) cluster today: installed
@@ -176,17 +199,30 @@ dist-packages:
     \`just dist-down\` stops the registry — after the last \`j2 up\`, not after the install.
     MSG
 
-# stop the loop's registry (the throwaway global install stays; it is inert without the registry)
+# stop the loop's registries (the throwaway global install stays; it is inert without them)
 dist-down:
-    scripts/dist-registry.sh down
+    #!/usr/bin/env bash
+    # Not `set -e`: a registry that refuses to stop must not leave the OTHER one standing — each
+    # port is freed independently, and the recipe still fails if either did.
+    set -uo pipefail
+    rc=0
+    scripts/dist-registry.sh down || rc=$?
+    scripts/dist-image-registry.sh down || rc=$?
+    exit $rc
 
-# --- the @dist e2e tier (ADR-0043; the same loop, unattended) ---
+# --- the @dist e2e tier (ADR-0043/0044; the same loop, unattended) ---
 #
-# The only setup a human owes it is a cluster: the tier's own suite fixture stands up the registry,
-# publishes the kit, builds the Kit images at their published tags, and installs the `j2` binary
-# into a throwaway prefix — once per suite run, in a temp dir of its own, so it borrows no state
-# from `dist-up` and leaves none behind. The PORT is the exception, because the packages'
-# publishConfig fixes it: the tier refuses to start while a manual loop holds it (`just dist-down`).
+# The only setup a human owes it is a cluster: the tier's own suite fixture stands up both
+# registries, publishes the kit, pushes the Kit images at their published tags, and installs the
+# `j2` binary into a throwaway prefix — once per suite run, in a temp dir of its own, so it borrows
+# no state from `dist-up` and leaves none behind. The PORTS are the exception, because the packages'
+# publishConfig fixes one of them: the tier refuses to start while a manual loop holds it
+# (`just dist-down`).
+#
+# The cluster is vanilla but not featureless since ADR-0044 — deploy/kind.yaml tells containerd that
+# per-registry config exists, which is what lets the fixture point the nodes at its own registry. A
+# cluster created before that patch is refused by name at bring-up, not diagnosed later as a pull
+# failure.
 
 # a VANILLA kind cluster for the @dist tier (the same one @kind uses — safe to run either)
 e2e-dist-up:

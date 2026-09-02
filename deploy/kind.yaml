@@ -6,3 +6,12 @@ apiVersion: kind.x-k8s.io/v1alpha4
 name: j2
 nodes:
   - role: control-plane
+# The one exception to "vanilla", and it converges nothing and names nobody: it only tells
+# containerd that per-registry configuration EXISTS, at the path the upstream kind local-registry
+# pattern uses. Without it a `hosts.toml` written onto a node is read by nothing, and the @dist
+# tier's nodes would resolve `localhost:5001/j2-harness:<ver>` against themselves (ADR-0044). With
+# it and no `certs.d` entry — every other tier — nothing resolves differently at all.
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"

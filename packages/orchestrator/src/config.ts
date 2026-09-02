@@ -119,6 +119,16 @@ export type J2Config = {
   /** Image registry prefix (deployment-varying — resolve from env). Absent → images are
    * `kind load`-ed; present → pushed. A non-kind cluster without one fails loudly (ADR-0019). */
   registry?: string;
+  /** Where this cluster pulls the PUBLISHED Kit images from (deployment-varying — resolve from
+   * env). Absent → the canonical home, `ghcr.io/snapwich/j2-harness:<kitversion>` and friends;
+   * present → the same tags re-homed to a self-hosted mirror, `<kitRegistry>/j2-harness:<ver>`,
+   * for a self-hosted, air-gapped, or mirror-only cluster (ADR-0044). Seeding that mirror is a
+   * deliberate, instance-less act (`j2 kit push`), never a side effect of `j2 up`.
+   *
+   * Separate from `registry` on purpose: `registry` addresses images THIS converge builds,
+   * `kitRegistry` addresses artifacts the kit already published. One key for both would make every
+   * private-registry user mirror three images they could have pulled from the home. */
+  kitRegistry?: string;
   /** Operator-layer overrides — kit development territory (ADR-0019). */
   operator?: {
     /** `false` = `j2 up` skips the operator layer (run the controller loop yourself). */

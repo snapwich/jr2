@@ -327,12 +327,15 @@ test("operator: the applied version is waited for and verified, like every other
     `the operator rollout is waited for (got: ${w.kube.rollouts.join(", ")})`,
   );
   const operatorApply = w.kube.applied.find((m) => m.includes("controller-manager"))!;
-  assert.match(operatorApply, new RegExp(`image: j2-operator:`));
+  assert.match(operatorApply, new RegExp(`image: ghcr.io/snapwich/j2-operator:`));
   assert.ok(!operatorApply.includes("controller:latest"), "the placeholder image ref was substituted");
 
   const drifted = mkWorld(root);
   drifted.kube.podImages = { "control-plane=controller-manager": "j2-operator:ancient" };
-  await assert.rejects(() => up(["--yes"], drifted.io), /operator.*j2-operator:ancient.*expected j2-operator:/s);
+  await assert.rejects(
+    () => up(["--yes"], drifted.io),
+    /operator.*j2-operator:ancient.*expected ghcr\.io\/snapwich\/j2-operator:/s,
+  );
 });
 
 test("operator: manage:false skips the layer — and the image build with it", async () => {
@@ -379,9 +382,46 @@ test("a kit checkout builds the Harness, Adapter, and operator; installed from n
     !installed.built.some((b) => /^build j2-(harness|adapter|operator):/.test(b)),
     `installed from npm, kit images are pulled, never built (got: ${installed.built.join(", ")})`,
   );
-  // The published <kitversion> refs are what the map names, and what the Instance Harness runs.
-  assert.equal(imagesOf(installed).harness, "j2-harness:0.0.0");
-  assert.equal(imagesOf(installed).adapter, "j2-adapter:0.0.0");
+  // The published <kitversion> refs are what the map names, and what the Instance Harness runs —
+  // at the canonical home, because a bare tag is `docker.io/library/` and nothing is there
+  // (ADR-0044).
+  assert.equal(imagesOf(installed).harness, "ghcr.io/snapwich/j2-harness:0.0.0");
+  assert.equal(imagesOf(installed).adapter, "ghcr.io/snapwich/j2-adapter:0.0.0");
+});
+
+test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come from the home (ADR-0044)", async () => {
+  // The self-hosted / air-gapped cluster: the mirror was seeded deliberately (`j2 kit push`), and
+  // the converge's only job is to NAME it — nothing is pushed or built here, since installed mode
+  // has no Kit sources at all.
+  const mirrored = await mkInstance(`export default { name: "m", kitRegistry: "zot.example.test" };\n`, "m");
+  const w = mkWorld(mirrored);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const images = imagesOf(w);
+  assert.equal(images.harness, "zot.example.test/j2-harness:0.0.0");
+  assert.equal(images.adapter, "zot.example.test/j2-adapter:0.0.0");
+  assert.equal(images.operator, "zot.example.test/j2-operator:0.0.0");
+  assert.match(w.err.join("\n"), /zot\.example\.test/, "the mirror is narrated, never silently used");
+  assert.ok(
+    !w.built.some((b) => /^(build|push) (zot|ghcr)/.test(b)),
+    `a published Kit image is pulled, never built or mirrored by a converge (got: ${w.built.join(", ")})`,
+  );
+  // `registry` answers a different question — where THIS converge's builds go (ADR-0044) — so it
+  // must not re-home the published three, and `kitRegistry` must not re-home the instance image.
+  const both = await mkInstance(
+    `export default { name: "b", registry: "reg.example.com/j2", kitRegistry: "zot.example.test" };\n`,
+    "b",
+  );
+  const w2 = mkWorld(both);
+  assert.equal(await up(["--yes"], w2.io), 0);
+  assert.equal(imagesOf(w2).harness, "zot.example.test/j2-harness:0.0.0");
+  assert.ok(
+    w2.built.some((b) => b.startsWith("push reg.example.com/j2/j2-instance-b:")),
+    `the instance image still goes to registry (got: ${w2.built.join(", ")})`,
+  );
+
+  const home = mkWorld(await mkInstance(`export default { name: "h" };\n`, "h"));
+  assert.equal(await up(["--yes"], home.io), 0);
+  assert.equal(imagesOf(home).harness, "ghcr.io/snapwich/j2-harness:0.0.0");
 });
 
 test("a registry pushes every layer; a non-kind context without one fails BEFORE any build", async () => {
@@ -915,8 +955,9 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   // Same wiring a Sandbox's Harness container gets: the definitions ConfigMap + the env Secret.
   const harness = podSpec.containers[0];
   // This world is NOT a kit checkout (mkWorld's default kitDir is the instance folder), so the
-  // resolved ref is the published one — the branch a real instance takes (ADR-0038).
-  assert.equal(harness.image, "j2-harness:0.0.0", "the stock image at the kit version");
+  // resolved ref is the published one — the branch a real instance takes (ADR-0038), at the
+  // canonical home (ADR-0044).
+  assert.equal(harness.image, "ghcr.io/snapwich/j2-harness:0.0.0", "the stock image at the kit version");
   assert.deepEqual(harness.env[0], {
     name: "J2_AGENTS_JSON",
     valueFrom: { configMapKeyRef: { name: "j2-agents", key: "agents.json" } },

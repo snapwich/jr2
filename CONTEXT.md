@@ -75,10 +75,10 @@ terms it is the MCP dialect adapter, relocated into the Sandbox. _Avoid_: shim, 
 shape, not what it is), MCP server
 
 **Kit image**: One of the three j2-owned images an Instance deploys but never authors — `j2-harness`, `j2-adapter`,
-`j2-operator`. Built from the checkout in checkout mode, pulled at published `<kitversion>` tags when the kit is
-installed (ADR-0038); one release train with the npm packages (ADR-0019). The kit's second distribution channel: what
-users don't get from npm, they get as these images (ADR-0043). _Avoid_: system image, base image, j2 image (ambiguous
-with the instance image `j2 up` bakes)
+`j2-operator`. Built from the checkout in checkout mode; installed, pulled at published `<kitversion>` tags from the
+canonical home (`ghcr.io/snapwich`) or from a self-hosted mirror of it (`kitRegistry`, ADR-0044); one release train with
+the npm packages (ADR-0019, ADR-0038). The kit's second distribution channel: what users don't get from npm, they get as
+these images (ADR-0043). _Avoid_: system image, base image, j2 image (ambiguous with the instance image `j2 up` bakes)
 
 **Sandbox Image**: A user-owned image a Sandbox's primary container runs — the tools an Agent's Working tools can reach,
 and the shell a human gets on `exec`. Built by the Instance from `images/<name>/Dockerfile`, or brought as a registry

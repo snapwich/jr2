@@ -54,6 +54,7 @@ import {
   sandboxImageTag,
   stageInstanceBundle,
   INSTANCE_DOCKERFILE,
+  KIT_IMAGE_HOME,
   type BuildPort,
   type KitImageName,
   type KitImageRefs,
@@ -139,12 +140,16 @@ export async function up(args: string[], io: Io): Promise<number> {
   // The CHECKOUT is the signal — no flag, no config key, no env (ADR-0038). `io.kitDir` exists so
   // tests can drive both worlds from a temp dir instead of detecting the repo they run inside.
   const kitRoot = await detectKitCheckout(io.kitDir);
-  const refs: KitImageRefs = kitRoot ? await kitImageRefs(kitRoot, registry) : publishedKitRefs();
+  // Two registries, two questions (ADR-0044): a BUILT kit ref goes wherever this converge delivers
+  // (`registry`), while a PUBLISHED one is pulled from the canonical home or from the mirror this
+  // cluster was pointed at (`kitRegistry`). So each branch takes the key that answers its own.
+  const refs: KitImageRefs = kitRoot ? await kitImageRefs(kitRoot, registry) : publishedKitRefs(config.kitRegistry);
   activity(
     io,
     kitRoot
       ? `images: kit checkout at ${kitRoot} — building the Harness, Adapter, and operator from source`
-      : `images: installed kit — the published v${KIT_VERSION} Harness, Adapter, and operator`,
+      : `images: installed kit — the published v${KIT_VERSION} Harness, Adapter, and operator, pulled from ` +
+          `${config.kitRegistry ? `${config.kitRegistry} (kitRegistry)` : KIT_IMAGE_HOME}`,
   );
 
   // Read the Orchestrator Deployment ONCE: it carries both convergence records — the instance
