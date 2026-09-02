@@ -46,11 +46,12 @@ cost; it buys nothing else and costs real machinery, so it is not built.
 ## Refresh is fetch-in-place; the config is the catalog
 
 `ensureRepos` reconciles the source volume at every Orchestrator boot: `config.repos[]` entries are cloned when missing
-and fetched when present (`fetch` only **adds** objects — safe under the invariant by nature). The Orchestrator runs
-in-cluster (ADR-0019), so the reconcile does too: every catalogued repo must be **fetchable from the cluster** (an HTTPS
-token or deploy-key Secret for private ones — ADR-0019); a working copy that exists only on someone's host is not a
-valid source. A checkout found on the volume without a config entry is left alone but not refreshed — the config is the
-single catalog.
+and fetched when present (`fetch` only **adds** objects — safe under the invariant by nature). A repo that fails to sync
+degrades that repo, never the boot — the server serves and the reconcile retries
+([ADR-0048](0048-the-orchestrator-boots-without-its-repos.md)). The Orchestrator runs in-cluster (ADR-0019), so the
+reconcile does too: every catalogued repo must be **fetchable from the cluster** (an HTTPS token or deploy-key Secret
+for private ones — ADR-0019); a working copy that exists only on someone's host is not a valid source. A checkout found
+on the volume without a config entry is left alone but not refreshed — the config is the single catalog.
 
 ## Storage shape: one model, two backings
 

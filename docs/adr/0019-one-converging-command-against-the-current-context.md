@@ -42,8 +42,10 @@ loudly narrated, safe to re-run:
   j2's contract is "a Secret named X exists", however it got there.
 - **Repos**: the boot reconcile (ADR-0004) clones `repos[]` from config into the in-cluster source volume. The host
   `repos/` catalog directory is gone. Private repos: an HTTPS token from `.env` is the default path; for ssh URLs with
-  no `j2-git-ssh` Secret, `up` _offers_ to generate a fresh in-cluster deploy keypair and prints the public key —
-  declining bails. Personal keys never enter a cluster.
+  no `j2-git-ssh` Secret, `up` asks where the key comes from — a fresh in-cluster deploy keypair (the recommended
+  default, public key printed to register), a local key, or one pasted on stdin
+  ([ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)) — declining bails. A personal key never enters a
+  cluster silently: only by that explicit, warned choice.
 - **Provider preflight**: when a custom model provider is configured (ADR-0018's `harness` section), `up` probes the
   `baseUrl` _from inside the cluster_ — including one trivial tool-call completion — so an unreachable endpoint or a
   vLLM missing `--enable-auto-tool-choice` fails at converge time, not as `agent.fault` mid-run. Reachability itself is

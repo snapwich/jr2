@@ -14,9 +14,12 @@ reading the fact the record only ever approximated.
 - **Two records, each answering the question it can vouch for.** The cluster's annotation answers for the _cluster_: a
   ref it names was built and delivered by a converge that fully succeeded — skip the build **and** the delivery, exactly
   as before. When the record is silent, the host daemon answers for the _host_: a labeled image whose tag equals the
-  resolved ref IS the build (the tag is a content address of the same inputs) — skip the build, **run the delivery**.
-  Only when both are silent is docker spent. `--force` overrides both, unchanged in meaning: rebuild and redeliver
-  regardless of what anything claims.
+  resolved ref IS the build (the tag is a content address of the same inputs and platform set —
+  [ADR-0045](0045-the-platform-joins-the-image-address-and-the-cluster-chooses-it.md); an address silent about platform
+  let a daemon-default flip make one tag name two artifacts) — skip the build, **run the delivery**. A multi-arch ref
+  never lands in the daemon (buildx pushes straight to the registry), so the host skip cannot answer for it and that
+  build is spent. Only when both records are silent is docker spent. `--force` overrides both, unchanged in meaning:
+  rebuild and redeliver regardless of what anything claims.
 - **The disk answers the build question only, never the delivery one.** Delivery is already cheap-idempotent on both
   transports — `kind load` skips a node holding the image id, and a push of layers the registry holds is a no-op per
   layer — so the skip that would need _node_ or _registry_ observation buys seconds at the cost of a second stale-state
