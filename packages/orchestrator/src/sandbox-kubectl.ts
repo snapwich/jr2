@@ -779,7 +779,9 @@ export function attachScript(
       // POSIX ACLs the helper warns and exits 0, degrading to the umask sharing above.
       `/opt/j2/bin/work-acl ${sq(`${paths.workRoot}/${repo.name}`)}`,
       `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared --no-checkout ${sq(`${paths.reposMount}/${repo.name}/default`)} ${sq(dflt)}`,
-      `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.baseRef)}`,
+      // No baseRef → the repo's own default branch: this clone's `origin/HEAD` tracks the volume
+      // checkout's HEAD, which the reconcile's clone pointed at the remote's default (ADR-0004).
+      `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.baseRef ?? "origin/HEAD")}`,
     );
     if (spec.reviewSha) {
       // The reviewer's seat (ADR-0028): a DETACHED HEAD at the sha under review, so a rogue write

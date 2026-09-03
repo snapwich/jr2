@@ -238,6 +238,26 @@ test("spec.image: the NAME reaches the port untouched; a malformed one faults be
   await waitFor(() => host2.status(run2.runId) === undefined);
   assert.match((await host2.read(run2.runId))?.fault ?? "", /workspace spec invalid: image \(got ""\)/);
   assert.deepEqual(bad.calls, [], "a bad spec never costs a pod");
+
+  // baseRef is OPTIONAL (absent → the repo's own default branch, resolved at attach) but
+  // present-and-empty is still the derives-from-input bug assertSpec exists to catch.
+  const ok = new FakeSandbox();
+  const host3 = new RunHost({ store: await mkStore(), sandbox: ok });
+  const noRef = workspace(body, { spec: () => ({ repos: [{ name: "app" }], branch: "b" }) });
+  host3.register({ name: "noRef", machine: noRef, provide: () => ({}) });
+  const run3 = await host3.start("noRef");
+  await waitFor(() => host3.gates(run3.runId).length === 1);
+
+  const bad4 = new FakeSandbox();
+  const host4 = new RunHost({ store: await mkStore(), sandbox: bad4 });
+  const emptyRef = workspace(body, {
+    spec: () => ({ repos: [{ name: "app", baseRef: "" as string }], branch: "b" }),
+  });
+  host4.register({ name: "emptyRef", machine: emptyRef, provide: () => ({}) });
+  const run4 = await host4.start("emptyRef");
+  await waitFor(() => host4.status(run4.runId) === undefined);
+  assert.match((await host4.read(run4.runId))?.fault ?? "", /baseRef \(got ""\)/);
+  assert.deepEqual(bad4.calls, [], "a bad spec never costs a pod");
 });
 
 test("pod composition rides the spec: `user` and `workGroup` reach the port, malformed ones fault first", async () => {

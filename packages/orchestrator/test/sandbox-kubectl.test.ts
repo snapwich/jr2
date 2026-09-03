@@ -611,6 +611,15 @@ test("attach execs the idempotent ADR-0004 script in the harness container", asy
   const script = argv[argv.length - 1]!;
   assert.match(script, /git clone --shared --no-checkout '\/repos\/app\/default' '\/work\/app\/default'/);
   assert.match(script, /worktree add '\/work\/infra\/feat-login' -b 'feat\/login' 'v2'/);
+  // No baseRef → the repo's OWN default branch, via the clone's origin/HEAD — never a hardcoded
+  // guess like `main` against a `master` repo.
+  const defaulted = await port.attach({
+    name: "sb-3",
+    spec: { repos: [{ name: "app" }], branch: "feat/login" },
+  });
+  assert.equal(defaulted.workdir, "/work/app/feat-login");
+  const defaultedScript = calls[calls.length - 1]!.args.at(-1)!;
+  assert.match(defaultedScript, /worktree add '\/work\/app\/feat-login' -b 'feat\/login' 'origin\/HEAD'/);
   assert.match(script, /\[ -d '\/work\/app\/default\/\.git' \] \|\|/, "clone is guarded (idempotent re-run)");
   // The attach execs in — it is NOT a child of the Harness process — so it must set the work
   // group's umask itself or every dir it creates is 755 and the User Container seat can never

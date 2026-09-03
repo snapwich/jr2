@@ -54,7 +54,10 @@ const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
  * Workflow configuration still never enters the spec; pod composition is admitted because it is
  * the wrapper's business in exactly the way its worktrees are. */
 export type WorkspaceSpec = {
-  repos: Array<{ name: string; baseRef: string }>;
+  /** `baseRef` absent → the repo's OWN default branch: the attach bases the worktree on
+   * `origin/HEAD`, which the reconcile's clone pointed at the remote's default (ADR-0004) — so
+   * nothing anywhere hardcodes a guess like `main` against a `master` repo. */
+  repos: Array<{ name: string; baseRef?: string }>;
   branch: string;
   /** The Sandbox Image (ADR-0037), in either of its two origins: an `images/<name>` DIRNAME the
    * instance builds, or a registry REF its owner baked and hosts. The two are told apart by shape
@@ -368,7 +371,9 @@ function assertSpec(spec: WorkspaceSpec): void {
   else
     spec.repos.forEach((r, i) => {
       if (typeof r?.name !== "string" || !r.name) bad.push(`repos[${i}].name (got ${JSON.stringify(r?.name)})`);
-      if (typeof r?.baseRef !== "string" || !r.baseRef)
+      // Optional: absent means "the repo's own default branch" (origin/HEAD, resolved in the
+      // attach). Present-but-empty is still the derives-from-input bug this guard exists for.
+      if (r?.baseRef !== undefined && (typeof r.baseRef !== "string" || !r.baseRef))
         bad.push(`repos[${i}].baseRef (got ${JSON.stringify(r?.baseRef)})`);
     });
   if (spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
