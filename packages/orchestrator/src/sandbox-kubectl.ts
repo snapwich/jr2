@@ -277,6 +277,19 @@ export type KubectlSandboxOptions = {
   /** Await-Ready budget. Default 120s, polled every second. */
   readyTimeoutMs?: number;
   pollMs?: number;
+  /**
+   * The last sync error for one source-volume repo, or undefined when its last sync succeeded
+   * (ADR-0048) — the supervised reconcile's `errorFor`. The attach is where the degradation bites:
+   * it clones `<reposMount>/<name>/default`, so a repo that has not synced is a checkout that is
+   * absent or stale, and the run that needs it is the one that must hear about it. Absent (no
+   * reconcile wired — tests, a hand-built port) means "nothing known", which asserts nothing.
+   *
+   * It may ANSWER LATE, and the deployed one does: the boot no longer waits for the first pass, so
+   * the entrypoint's implementation waits for it here instead. A run that starts while its repo is
+   * still cloning then waits for the clone rather than racing it into an empty volume — the wait
+   * the boot used to do, moved to the only caller that actually needs it.
+   */
+  repoError?: (name: string) => string | undefined | Promise<string | undefined>;
   /** Process seam, injectable for tests. Defaults shell to the `kubectl` on PATH. */
   exec?: KubectlExec;
 };
@@ -673,6 +686,23 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     },
 
     async attach(req) {
+      // Before the exec (ADR-0048): every repo this attach is about to clone must have synced.
+      // A failed sync leaves either no checkout at all or last boot's objects, and both attach
+      // "successfully" into a Sandbox whose worktrees are wrong — a silent, much later failure.
+      // Named here instead: the repo, and git's own reason, to the run that owns the consequence.
+      const unsynced = (
+        await Promise.all(
+          req.spec.repos.map(async (repo) => ({ name: repo.name, error: await opts.repoError?.(repo.name) })),
+        )
+      ).filter((r): r is { name: string; error: string } => r.error !== undefined);
+      if (unsynced.length) {
+        throw new Error(
+          `Sandbox "${req.name}" cannot attach ${unsynced.map((r) => `repo "${r.name}" (${r.error})`).join("; ")} — ` +
+            "the source volume's sync for it has not succeeded, so its read-only `default/` checkout is absent or " +
+            "stale. The reconcile keeps retrying (ADR-0048); `j2 status` lists every repo that is not synced, and " +
+            "the fix is on the git side — register the deploy key (ADR-0047), correct the url, or grant the token.",
+        );
+      }
       const { script, workdir, repos, review } = attachScript(req.spec, { reposMount: "/repos", workRoot });
       // `-c harness` is unchanged and still correct after ADR-0037: the primary container runs the
       // Sandbox Image, so `git` here is the git the user chose. Never `-c user` — that seat is

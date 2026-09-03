@@ -12,8 +12,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { KIT_VERSION } from "@j2/orchestrator";
 import {
+  assertEmulation,
   buildSandboxImage,
   bundleInstance,
+  choosePlatforms,
   contentHash,
   crictlLabels,
   detectKitCheckout,
@@ -23,8 +25,10 @@ import {
   kitImageLabels,
   kitImageRefs,
   lockfileInstall,
+  manifestListUser,
   mergeSweeps,
   nodeSweepPlan,
+  platformSuffix,
   publishedKitRefs,
   sandboxImageHash,
   sandboxImageTag,
@@ -32,6 +36,7 @@ import {
   sweepHost,
   sweepNodes,
   KIT_IMAGE_HOME,
+  SUPPORTED_PLATFORMS,
   type BuildPort,
   type BuildRequest,
   type ObservedImage,
@@ -51,8 +56,13 @@ function nullPort(): BuildPort {
     removeHostImage: async () => {},
     nodeImages: async () => [],
     removeNodeImage: async () => {},
+    buildablePlatforms: async () => [...SUPPORTED_PLATFORMS],
   };
 }
+
+/** The everyday platform set (ADR-0045): a cluster whose schedulable nodes are all one arch, which
+ * is what every test here builds for unless it is about the multi-arch branch itself. */
+const AMD64: readonly string[] = ["linux/amd64"];
 
 /** A port that materializes `files(out)` — what `pnpm deploy` would have written into the bundle.
  * `out` is the real scratch dir `stageInstanceBundle` chose, so a fake can bake it into the bundle
@@ -326,27 +336,36 @@ test("a kit checkout needs BOTH markers — either alone is somebody else's tree
   assert.equal(await detectKitCheckout(wrongName), undefined);
 });
 
-test("each kit image addresses its own sources; the registry prefixes a built ref", async () => {
+test("each kit image addresses its own sources and platform set; the registry prefixes a built ref", async () => {
   const kit = await mkTree(kitFiles("export const x = 1;\n"));
-  const refs = await kitImageRefs(kit);
+  const refs = await kitImageRefs(kit, { platforms: AMD64 });
   for (const [name, ref] of Object.entries(refs)) {
-    assert.match(ref, new RegExp(`^j2-${name}:[0-9a-f]{12}$`), `${name} is content-addressed`);
+    // `<hash>-<arch>` (ADR-0045): the bytes are a function of (inputs × platform), so the address
+    // says which — a tag that named only the inputs delivered an amd64 image to an arm64 cluster.
+    assert.match(ref, new RegExp(`^j2-${name}:[0-9a-f]{12}-amd64$`), `${name} is content-addressed`);
   }
-  assert.deepEqual(await kitImageRefs(kit), refs, "same sources, same addresses");
+  assert.deepEqual(await kitImageRefs(kit, { platforms: AMD64 }), refs, "same sources, same addresses");
 
-  const pushed = await kitImageRefs(kit, "reg.example.com/j2");
+  const both = await kitImageRefs(kit, { platforms: ["linux/arm64", "linux/amd64"] });
+  assert.match(both.harness, /^j2-harness:[0-9a-f]{12}-amd64-arm64$/, "a multi-platform build says so, sorted");
+  assert.notEqual(both.harness, refs.harness, "…and never collides with the single-platform address");
+
+  const pushed = await kitImageRefs(kit, { platforms: AMD64, registry: "reg.example.com/j2" });
   assert.equal(pushed.harness, `reg.example.com/j2/${refs.harness}`);
 
   // The build is the committed Dockerfile against its own context — the harness/adapter build from
   // the kit ROOT (the packages ship as source), the operator from `operator/`.
-  assert.deepEqual(kitImageBuild(kit, "harness", refs.harness), {
+  assert.deepEqual(kitImageBuild(kit, "harness", refs.harness, AMD64), {
     tag: refs.harness,
+    // Explicit on every build (ADR-0045): the daemon default and DOCKER_DEFAULT_PLATFORM steer
+    // nothing, which is what deletes the manual step whose forgetting was the failure.
+    platforms: AMD64,
     context: kit,
     dockerfile: join(kit, "deploy", "harness", "Dockerfile"),
     // Stamped on the command line, because the committed Dockerfile stays plain (ADR-0039).
     labels: { "j2.dev/kind": "kit" },
   });
-  assert.equal(kitImageBuild(kit, "operator", refs.operator).context, join(kit, "operator"));
+  assert.equal(kitImageBuild(kit, "operator", refs.operator, AMD64).context, join(kit, "operator"));
 });
 
 test("kit hashes exclude only what each context's OWN .dockerignore drops", async () => {
@@ -358,16 +377,21 @@ test("kit hashes exclude only what each context's OWN .dockerignore drops", asyn
   // invisible there, so they must NOT move the ref (and the ~400 MB of downloaded tooling under
   // operator/bin stays off the converge walk).
   const src = "export const x = 1;\n";
-  const base = await kitImageRefs(await mkTree(kitFiles(src)));
+  const base = await kitImageRefs(await mkTree(kitFiles(src)), { platforms: AMD64 });
 
-  const withBin = await kitImageRefs(await mkTree({ ...kitFiles(src), "packages/harness/bin/tool": "#!/bin/sh\n" }));
+  const withBin = await kitImageRefs(await mkTree({ ...kitFiles(src), "packages/harness/bin/tool": "#!/bin/sh\n" }), {
+    platforms: AMD64,
+  });
   assert.notEqual(withBin.harness, base.harness, "packages/harness/bin is context-visible, so it is hashed");
 
-  const withNm = await kitImageRefs(await mkTree({ ...kitFiles(src), "packages/harness/node_modules/x.js": "1;" }));
+  const withNm = await kitImageRefs(await mkTree({ ...kitFiles(src), "packages/harness/node_modules/x.js": "1;" }), {
+    platforms: AMD64,
+  });
   assert.equal(withNm.harness, base.harness, "**/node_modules is dockerignored, so it stays excluded");
 
   const withTooling = await kitImageRefs(
     await mkTree({ ...kitFiles(src), "operator/bin/etcd": "ELF…", "operator/cover.out": "mode: set\n" }),
+    { platforms: AMD64 },
   );
   assert.equal(withTooling.operator, base.operator, "operator's non-go tooling and coverage stay excluded");
 });
@@ -377,8 +401,8 @@ test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", a
   // kit source edit re-tagged, rebuilt, and re-delivered every user image on the cluster. The
   // runtime rides the pod's /opt/j2 volume now, so the harness ref moves alone and future pods pick
   // it up — the only way an image the user merely BROUGHT could ever follow a kit update at all.
-  const before = await kitImageRefs(await mkTree(kitFiles("export const x = 1;\n")));
-  const after = await kitImageRefs(await mkTree(kitFiles("export const x = 2;\n")));
+  const before = await kitImageRefs(await mkTree(kitFiles("export const x = 1;\n")), { platforms: AMD64 });
+  const after = await kitImageRefs(await mkTree(kitFiles("export const x = 2;\n")), { platforms: AMD64 });
   assert.notEqual(after.harness, before.harness, "the harness ref moves with its sources");
   assert.equal(after.adapter, before.adapter, "…and only its own — the Adapter is untouched");
 
@@ -444,6 +468,106 @@ test("`images/` never enters the instance bundle, so a Dockerfile edit cannot ro
   }
 });
 
+// --- the platform set (ADR-0045) ---------------------------------------------------------------
+
+test("the tag names the platform set, sorted, in the address itself", () => {
+  // In the TAG, not the salt: the triggering failure — an amd64 image delivered to an arm64 cluster
+  // — was invisible precisely because the tag did not say. Sorted, so one set has one spelling.
+  assert.equal(platformSuffix(["linux/arm64"]), "-arm64");
+  assert.equal(platformSuffix(["linux/arm64", "linux/amd64"]), "-amd64-arm64");
+  assert.equal(platformSuffix(["linux/amd64", "linux/arm64"]), platformSuffix(["linux/arm64", "linux/amd64"]));
+  // The supported set is what the kit RELEASES for — `scripts/kit-push.sh` builds the same list, and
+  // kit-push.test.ts fails the gate if the two drift.
+  assert.deepEqual([...SUPPORTED_PLATFORMS], ["linux/amd64", "linux/arm64"]);
+});
+
+test("the cluster's nodes choose the platform set; an unpublished arch is reported and skipped", () => {
+  // A singleton is not an assumption — it is the cluster stating what it can run.
+  assert.deepEqual(choosePlatforms({ nodeArches: ["arm64", "arm64", "arm64"] }), {
+    platforms: ["linux/arm64"],
+    skipped: [],
+    source: "nodes",
+  });
+  // Mixed: build for both rather than guess which node the pod lands on.
+  assert.deepEqual(choosePlatforms({ nodeArches: ["arm64", "amd64"] }), {
+    platforms: ["linux/amd64", "linux/arm64"],
+    skipped: [],
+    source: "nodes",
+  });
+  // An arch the kit publishes no Kit image for is dead weight: nothing could sit beside the instance
+  // image in that pod, so it is reported and never built for.
+  assert.deepEqual(choosePlatforms({ nodeArches: ["amd64", "s390x"] }), {
+    platforms: ["linux/amd64"],
+    skipped: ["s390x"],
+    source: "nodes",
+  });
+});
+
+test("no supported platform at all is a loud error naming what was found and the way out", () => {
+  // The empty intersection, and the read that found no node at all (an autoscaled-to-zero pool):
+  // both are the same fact — nothing to build for — and both point at the one key that overrides it.
+  assert.throws(() => choosePlatforms({ nodeArches: ["s390x", "ppc64le"] }), /ppc64le, s390x[\s\S]*`platforms`/);
+  assert.throws(() => choosePlatforms({ nodeArches: [] }), /no architecture at all[\s\S]*`platforms`/);
+});
+
+test("`platforms` is absolute — derivation is skipped, and an unpublished entry is the same error", () => {
+  // The escape hatch for what derivation cannot see: a pool with no nodes yet, or a polluted set
+  // whose second arch would cost a needless qemu cross-build.
+  assert.deepEqual(choosePlatforms({ nodeArches: ["amd64", "arm64"], configured: ["linux/arm64"] }), {
+    platforms: ["linux/arm64"],
+    skipped: [],
+    source: "config",
+  });
+  // NOT additive or subtractive, and never quietly trimmed: a key the user typed is a claim, so an
+  // unsupported entry fails by name rather than building something other than what was asked for.
+  assert.throws(
+    () => choosePlatforms({ nodeArches: ["amd64"], configured: ["linux/amd64", "linux/s390x"] }),
+    /`platforms` names linux\/s390x/,
+  );
+  assert.throws(() => choosePlatforms({ nodeArches: ["amd64"], configured: [] }), /an empty list/);
+});
+
+test("a foreign platform with no emulation fails BEFORE any build, naming the fix", async () => {
+  // Without qemu binfmt, a foreign `RUN` dies minutes in with `exec format error` — the very
+  // symptom this ADR exists to delete. So the question is asked first, and the answer is a command.
+  const amd64Only: BuildPort = { ...nullPort(), buildablePlatforms: async () => ["linux/amd64", "linux/386"] };
+  await assert.rejects(
+    () => assertEmulation(amd64Only, ["linux/arm64"]),
+    /cannot build for linux\/arm64[\s\S]*tonistiigi\/binfmt --install arm64/,
+  );
+  await assert.doesNotReject(() => assertEmulation(amd64Only, ["linux/amd64"]));
+
+  // A port that cannot answer has no opinion: this check may only ever turn a late cryptic failure
+  // into an early named one, never invent a failure of its own.
+  const noDocker: BuildPort = {
+    ...nullPort(),
+    buildablePlatforms: async () => {
+      throw new Error("Cannot connect to the Docker daemon");
+    },
+  };
+  await assert.doesNotReject(() => assertEmulation(noDocker, ["linux/arm64"]));
+});
+
+test("imageUser follows the artifact: a manifest list answers per platform, and must answer once", () => {
+  // A multi-platform build never lands in the daemon (buildx pushes it), so the seat is read off the
+  // registry with `buildx imagetools inspect`, whose `{{json .Image}}` is keyed by platform.
+  const list = JSON.stringify({
+    "linux/amd64": { config: { User: "app" } },
+    "linux/arm64": { config: { User: "app" } },
+  });
+  assert.equal(manifestListUser("reg/x:1-amd64-arm64", list), "app");
+  // A single-platform index answers with the bare config; no USER is the empty string, which is
+  // DATA (ADR-0037's uid-1000 fallback turns on it) rather than a missing value.
+  assert.equal(manifestListUser("reg/x:1-amd64", JSON.stringify({ config: {} })), "");
+  // One image, one seat: the map a provision reads carries a single `sandboxUser` per image, so a
+  // per-platform disagreement is a fact the record cannot hold — it says so instead of picking one.
+  const split = JSON.stringify({
+    "linux/amd64": { config: { User: "app" } },
+    "linux/arm64": { config: { User: "root" } },
+  });
+  assert.throws(() => manifestListUser("reg/x:1-amd64-arm64", split), /different USER per platform/);
+});
+
 // --- ownership + the sweep (ADR-0039) ----------------------------------------------------------
 
 test("a Sandbox Image is ONE build to its content tag: no intermediate name, no generated Dockerfile", async () => {
@@ -459,8 +583,8 @@ test("a Sandbox Image is ONE build to its content tag: no intermediate name, no 
     removeHostImage: async (ref) => void removed.push(ref),
   };
 
-  const tag = sandboxImageTag("inst", "default", "99aa");
-  await buildSandboxImage(port, { dir: "/tmp/images/default", tag, instance: "inst" });
+  const tag = sandboxImageTag("inst", "default", "99aa", { platforms: AMD64 });
+  await buildSandboxImage(port, { dir: "/tmp/images/default", tag, instance: "inst", platforms: AMD64 });
 
   assert.equal(requests.length, 1, `one docker build (got: ${requests.map((r) => r.tag).join(", ")})`);
   assert.equal(requests[0]!.dockerfileContent, undefined, "the user's own Dockerfile, never a generated one");
@@ -468,7 +592,8 @@ test("a Sandbox Image is ONE build to its content tag: no intermediate name, no 
   // Stamped on the command line — ownership is read off the image, never parsed out of its name
   // (ADR-0039), and the user's Dockerfile keeps zero j2 knowledge.
   assert.deepEqual(requests[0], {
-    tag: "j2-sandbox-inst-default:99aa",
+    tag: "j2-sandbox-inst-default:99aa-amd64",
+    platforms: AMD64,
     context: "/tmp/images/default",
     labels: { "j2.dev/kind": "sandbox", "j2.dev/instance": "inst" },
   });

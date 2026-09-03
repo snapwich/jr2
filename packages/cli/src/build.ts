@@ -43,8 +43,14 @@ const exec = promisify(execFile);
 
 /** One `docker build`. Exactly one of `dockerfile`/`dockerfileContent` may be set. */
 export type BuildRequest = {
-  /** The tag to build — always a content address (ADR-0038). */
+  /** The tag to build — always a content address of (inputs × platform set), ADR-0038/0045. */
   tag: string;
+  /** `--platform`: what the bytes are FOR, always explicit (ADR-0045). Never empty, and never
+   * left to the daemon default or to a remembered `DOCKER_DEFAULT_PLATFORM` — an implicit platform
+   * is what let one tag name an amd64 image on one host and an arm64 image on another. A singleton
+   * set is a plain `docker build`; more than one is `docker buildx build --push`, which delivers
+   * itself (see {@link pnpmDockerBuild.build}). */
+  platforms: readonly string[];
   /** The build context directory. */
   context: string;
   /** `-f <path>`: a Dockerfile COMMITTED in the repo, whose context is somewhere else (the kit
@@ -71,11 +77,22 @@ export type BuildPort = {
   bundle(instanceDir: string, outDir: string): Promise<void>;
   /** `docker build` one image. */
   build(req: BuildRequest): Promise<void>;
-  /** The image's own declared `USER` (`docker inspect`), `""` when it declares none. The converge is
-   * the ONLY place this is knowable — a provision cannot inspect an image — so the resolved map
-   * records it and the port answers two questions off that record: whether ADR-0037's uid-1000
-   * fallback applies, and whether the kubelet will refuse the seat outright. */
-  imageUser(image: string): Promise<string>;
+  /** The image's own declared `USER`, `""` when it declares none. The converge is the ONLY place
+   * this is knowable — a provision cannot inspect an image — so the resolved map records it and the
+   * port answers two questions off that record: whether ADR-0037's uid-1000 fallback applies, and
+   * whether the kubelet will refuse the seat outright.
+   *
+   * `platforms` says WHERE the artifact is, not which variant to read (ADR-0045): a singleton build
+   * is on the host daemon (`docker inspect`), while a multi-platform one went straight to the
+   * registry as a manifest list the daemon never held (`docker buildx imagetools inspect`). */
+  imageUser(image: string, platforms: readonly string[]): Promise<string>;
+
+  /** What this host can build for: its own platform, plus every foreign one binfmt emulation
+   * registers (`docker buildx inspect`'s `Platforms:` line). The converge's binfmt preflight
+   * (ADR-0045, {@link assertEmulation}) is the only caller — a foreign `RUN` step without qemu
+   * fails mid-build with the same cryptic `exec format error` that ADR exists to delete, so the
+   * question is asked before any build is spent rather than diagnosed after. */
+  buildablePlatforms(): Promise<string[]>;
   /** `docker push` — the registry delivery (ADR-0019). */
   push(tag: string): Promise<void>;
   /** `kind load docker-image` — the no-registry delivery onto a kind cluster's nodes. */
@@ -231,6 +248,120 @@ export function sandboxImageLabels(instance: string): Record<string, string> {
   return { [LABEL_IMAGE_KIND]: "sandbox", [LABEL_INSTANCE]: instance };
 }
 
+// --- the platform set (ADR-0045) ---------------------------------------------------------------
+
+/**
+ * The platforms the kit RELEASES for — the supported set, and the only architectures j2 will build
+ * an image for. One constant, because `scripts/kit-push.sh` builds the published Kit images from the
+ * same list: two hand-kept copies desynchronize silently, so `test/kit-push.test.ts` reads the
+ * script's default and fails the gate when they drift.
+ *
+ * An arch outside this set is never built for. An instance image for `s390x` is dead weight: no Kit
+ * image could sit beside it in the pod, so the Sandbox would fail at the Adapter or the Harness
+ * instead of at the image nobody published.
+ */
+export const SUPPORTED_PLATFORMS: readonly string[] = ["linux/amd64", "linux/arm64"];
+
+/** `linux/arm64` → `arm64` — the short name a node reports, a tag suffix carries, and `binfmt
+ * --install` takes. */
+export function platformArch(platform: string): string {
+  return platform.slice(platform.lastIndexOf("/") + 1);
+}
+
+/**
+ * The platform half of an image address: `-arm64`, or `-amd64-arm64` for a multi-platform build
+ * (ADR-0045). It goes in the TAG rather than the hash salt, and that is the decision: the bytes are
+ * a function of (inputs × platform), so a tag that named only the inputs was a lie — and the failure
+ * it produced (an amd64 image delivered to an arm64 cluster, surfacing as a rollout timeout) was
+ * invisible precisely because the tag did not say. Sorted, so one platform set has one spelling.
+ */
+export function platformSuffix(platforms: readonly string[]): string {
+  return [...platforms]
+    .map(platformArch)
+    .sort()
+    .map((arch) => `-${arch}`)
+    .join("");
+}
+
+/** What one converge builds for, and how it was decided (ADR-0045). */
+export type PlatformChoice = {
+  /** The build set: non-empty, sorted, and a subset of {@link SUPPORTED_PLATFORMS}. */
+  platforms: string[];
+  /** Node architectures reported and skipped — outside the supported set, so never built for.
+   * Reported rather than swallowed: a silently ignored node is a pod that will never schedule. */
+  skipped: string[];
+  /** `nodes` = derived from the cluster; `config` = the `platforms` key spoke instead. */
+  source: "config" | "nodes";
+};
+
+/**
+ * The cluster's nodes choose the platform set (ADR-0045): the schedulable nodes'
+ * `.status.nodeInfo.architecture`, mapped to `linux/<arch>` and intersected with the supported set.
+ * Reading a singleton set is not an assumption — it is the cluster stating what it can run; only a
+ * non-singleton set involves judgement, and that case builds for both rather than guessing.
+ *
+ * `configured` is the one escape hatch, and it is ABSOLUTE: when set, derivation is skipped entirely.
+ * It exists for the two cases derivation cannot see — autoscale-from-zero (the target pool has no
+ * nodes yet) and set pollution (an amd64 GPU pool beside arm64 workers costs a needless qemu build).
+ * Not additive or subtractive: cleverness the rare case does not earn. An entry outside the
+ * supported set is an ERROR rather than a skip, unlike a node's — a key the user typed is a claim,
+ * and quietly dropping half of it would build something other than what it asked for.
+ */
+export function choosePlatforms(opts: { nodeArches: string[]; configured?: string[] }): PlatformChoice {
+  const supported = new Set(SUPPORTED_PLATFORMS);
+  if (opts.configured !== undefined) {
+    const asked = [...new Set(opts.configured)].sort();
+    const unsupported = asked.filter((p) => !supported.has(p));
+    if (asked.length === 0 || unsupported.length > 0) throw noSupportedPlatform(unsupported, "config");
+    return { platforms: asked, skipped: [], source: "config" };
+  }
+  const arches = [...new Set(opts.nodeArches)].sort();
+  const platforms = arches.map((a) => `linux/${a}`).filter((p) => supported.has(p));
+  const skipped = arches.filter((a) => !supported.has(`linux/${a}`));
+  if (platforms.length === 0) throw noSupportedPlatform(arches, "nodes");
+  return { platforms, skipped, source: "nodes" };
+}
+
+/** The empty-intersection error, named: what was found, what the kit publishes, and the one key that
+ * overrides the answer. Loud on purpose — the alternative is building for a platform whose pod could
+ * never be assembled, and discovering it as a rollout timeout. */
+function noSupportedPlatform(found: string[], source: "config" | "nodes"): Error {
+  const what =
+    source === "config"
+      ? `\`platforms\` names ${found.join(", ") || "an empty list"}`
+      : `this cluster's schedulable nodes report ${found.join(", ") || "no architecture at all"}`;
+  return new Error(
+    `${what} — the kit releases images for ${SUPPORTED_PLATFORMS.join(", ")} and nothing else, so an ` +
+      `image built for anything else could not be joined by a Kit image in the same pod. ` +
+      `Set \`platforms\` in j2.config.ts (docker platform strings, e.g. "linux/arm64") to name the ` +
+      `set to build for.`,
+  );
+}
+
+/**
+ * The binfmt preflight (ADR-0045): a foreign platform's `RUN` steps are EMULATED, and without qemu
+ * registered docker fails minutes into the build with the same cryptic `exec format error` this
+ * whole ADR exists to delete. So the question is asked before any build is spent, and the answer
+ * names the fix.
+ *
+ * A port that cannot answer at all reads as "no opinion" and the preflight stands aside: this check
+ * may only ever turn a late cryptic failure into an early named one, never invent a failure of its
+ * own — a docker too broken to list its builder's platforms fails at the build that follows, with
+ * docker's own error naming it.
+ */
+export async function assertEmulation(port: BuildPort, platforms: readonly string[]): Promise<void> {
+  const buildable = await port.buildablePlatforms().catch((): string[] => []);
+  if (buildable.length === 0) return;
+  const missing = platforms.filter((p) => !buildable.includes(p));
+  if (missing.length === 0) return;
+  throw new Error(
+    `this host cannot build for ${missing.join(", ")}: a foreign architecture's RUN steps need qemu ` +
+      `binfmt emulation, and none is registered (this builder targets ${buildable.join(", ")}). ` +
+      `Install it, then re-run:\n` +
+      `  docker run --privileged --rm tonistiigi/binfmt --install ${missing.map(platformArch).join(",")}`,
+  );
+}
+
 // --- the kit images (ADR-0038) --------------------------------------------------------------
 
 /** The three images the KIT owns. An instance deploys them but never authors them. */
@@ -346,13 +477,18 @@ async function isKitRoot(dir: string): Promise<boolean> {
   }
 }
 
-/** Address each kit image by its own sources: `[<registry>/]j2-<x>:<hash>`. A `packages/harness`
- * edit moves the harness ref with no bookkeeping — and NO Sandbox Image ref with it: the runtime
- * arrives on the pod's `/opt/j2` volume, so future pods take the new one and every user image keeps
- * its tag, its layers, and its delivery (ADR-0037). The registry prefix rides here because a built
- * kit image is delivered down the same transport branch as everything else. */
-export async function kitImageRefs(kitRoot: string, registry?: string): Promise<KitImageRefs> {
+/** Address each kit image by its own sources and the platform set it is built for:
+ * `[<registry>/]j2-<x>:<hash>-<arch>` (ADR-0038/0045). A `packages/harness` edit moves the harness
+ * ref with no bookkeeping — and NO Sandbox Image ref with it: the runtime arrives on the pod's
+ * `/opt/j2` volume, so future pods take the new one and every user image keeps its tag, its layers,
+ * and its delivery (ADR-0037). The registry prefix rides here because a built kit image is delivered
+ * down the same transport branch as everything else. */
+export async function kitImageRefs(
+  kitRoot: string,
+  opts: { platforms: readonly string[]; registry?: string },
+): Promise<KitImageRefs> {
   const refs = {} as KitImageRefs;
+  const suffix = platformSuffix(opts.platforms);
   for (const name of Object.keys(KIT_IMAGES) as KitImageName[]) {
     const image = KIT_IMAGES[name];
     const hash = await contentHash(
@@ -360,17 +496,24 @@ export async function kitImageRefs(kitRoot: string, registry?: string): Promise<
       `kit:${image.repo}`,
       image.exclude,
     );
-    refs[name] = `${registry ? `${registry}/` : ""}${image.repo}:${hash}`;
+    refs[name] = `${opts.registry ? `${opts.registry}/` : ""}${image.repo}:${hash}${suffix}`;
   }
   return refs;
 }
 
-/** The `docker build` for one kit image: its committed Dockerfile against its own context, stamped
- * `j2.dev/kind=kit` on the command line — the committed Dockerfiles stay plain (ADR-0039). */
-export function kitImageBuild(kitRoot: string, name: KitImageName, tag: string): BuildRequest {
+/** The `docker build` for one kit image: its committed Dockerfile against its own context, for an
+ * explicit platform set (ADR-0045), stamped `j2.dev/kind=kit` on the command line — the committed
+ * Dockerfiles stay plain (ADR-0039). */
+export function kitImageBuild(
+  kitRoot: string,
+  name: KitImageName,
+  tag: string,
+  platforms: readonly string[],
+): BuildRequest {
   const image = KIT_IMAGES[name];
   return {
     tag,
+    platforms,
     context: join(kitRoot, image.context),
     dockerfile: join(kitRoot, image.dockerfile),
     labels: kitImageLabels(),
@@ -385,12 +528,20 @@ export function kitImageBuild(kitRoot: string, name: KitImageName, tag: string):
  * nothing to salt WITH. The constant only keeps this hash's domain apart from the bundle's. */
 const SANDBOX_HASH_SALT = "sandbox";
 
-/** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>` — the image a Sandbox's primary container
- * runs. Names are for humans and for content addressing only: nothing reads ownership out of this
- * string any more (ADR-0039). `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and
- * the image is the POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). */
-export function sandboxImageTag(instance: string, name: string, hash: string, registry?: string): string {
-  return `${registry ? `${registry}/` : ""}j2-sandbox-${instance}-${name}:${hash}`;
+/** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>-<arch>` — the image a Sandbox's primary
+ * container runs, addressed by its directory and the platform set it was built for (ADR-0045).
+ * Names are for humans and for content addressing only: nothing reads ownership out of this string
+ * any more (ADR-0039). `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and the image
+ * is the POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). A ref the user merely BROUGHT takes no
+ * suffix and never passes here — j2 never builds it, so its platforms are the registry's business. */
+export function sandboxImageTag(
+  instance: string,
+  name: string,
+  hash: string,
+  opts: { platforms: readonly string[]; registry?: string },
+): string {
+  const suffix = platformSuffix(opts.platforms);
+  return `${opts.registry ? `${opts.registry}/` : ""}j2-sandbox-${instance}-${name}:${hash}${suffix}`;
 }
 
 /**
@@ -419,9 +570,14 @@ export function sandboxImageHash(dir: string): Promise<string> {
  */
 export async function buildSandboxImage(
   port: BuildPort,
-  opts: { dir: string; tag: string; instance: string },
+  opts: { dir: string; tag: string; instance: string; platforms: readonly string[] },
 ): Promise<void> {
-  await port.build({ tag: opts.tag, context: opts.dir, labels: sandboxImageLabels(opts.instance) });
+  await port.build({
+    tag: opts.tag,
+    platforms: opts.platforms,
+    context: opts.dir,
+    labels: sandboxImageLabels(opts.instance),
+  });
 }
 
 // --- the sweep (ADR-0039) ----------------------------------------------------------------------
@@ -904,8 +1060,29 @@ const BIG = { maxBuffer: 64 * 1024 * 1024 };
 export const pnpmDockerBuild: BuildPort = {
   bundle: (instanceDir, outDir) => bundleInstance(instanceDir, outDir),
 
-  async build({ tag, context, dockerfile, dockerfileContent, labels }) {
-    const args = ["build", "-t", tag];
+  /**
+   * `--platform` is always explicit (ADR-0045), and the platform set picks the mechanism:
+   *
+   * - ONE platform: plain `docker build`, landing on the host daemon, delivered by the caller's
+   *   transport branch (`docker push` or `kind load`) exactly as before.
+   * - MORE than one: `docker buildx build --push`, which is `just kit-push`'s mechanism. It PUSHES
+   *   ITSELF — a manifest list cannot live in the daemon and `kind load` cannot carry one — so the
+   *   caller's deliver() step must not push again. This path only ever runs where it can deliver, by
+   *   construction: a mixed-arch node set is never kind (kind nodes are containers on one host), and
+   *   the non-kind branch already requires a `registry`.
+   *
+   * The multi-platform build needs a builder of its own: the default `docker` driver builds only the
+   * host's platform and cannot push a manifest list at all. It is the SAME named builder
+   * `scripts/kit-push.sh` creates, so the two share one cache. `--provenance=false` keeps the pushed
+   * index to the platforms asked for — attestation manifests ride an index as extra
+   * `unknown/unknown` entries, read by nothing here.
+   */
+  async build({ tag, platforms, context, dockerfile, dockerfileContent, labels }) {
+    const args =
+      platforms.length > 1
+        ? ["buildx", "build", "--builder", await ensureMultiArchBuilder(), "--provenance=false", "--push"]
+        : ["build"];
+    args.push("--platform", platforms.join(","), "-t", tag);
     for (const [k, v] of Object.entries(labels ?? {})) args.push("--label", `${k}=${v}`);
     if (dockerfile) args.push("-f", dockerfile);
     if (dockerfileContent) args.push("-f", "-");
@@ -914,11 +1091,33 @@ export const pnpmDockerBuild: BuildPort = {
     else await exec("docker", args, BIG);
   },
 
-  async imageUser(image) {
+  async imageUser(image, platforms) {
+    // A multi-platform build went straight to the registry (`buildx --push`), so the daemon holds
+    // nothing to inspect — `imagetools` reads the manifest list where it actually is (ADR-0045).
+    if (platforms.length > 1) {
+      const { stdout } = await exec(
+        "docker",
+        ["buildx", "imagetools", "inspect", image, "--format", "{{json .Image}}"],
+        BIG,
+      );
+      return manifestListUser(image, stdout);
+    }
     // `docker inspect` answers `""` for an image that declares no USER, which is the exact fact
     // the fallback turns on — so the empty string is DATA here, never a missing value.
     const { stdout } = await exec("docker", ["image", "inspect", "--format", "{{.Config.User}}", image], BIG);
     return stdout.trim();
+  },
+
+  async buildablePlatforms() {
+    // `docker buildx inspect` prints one `Platforms:` line per builder node, listing the host's own
+    // platform and every foreign one binfmt registered. A `*` marks the preferred entry.
+    const { stdout } = await exec("docker", ["buildx", "inspect"], BIG);
+    return [...stdout.matchAll(/^Platforms:\s*(.+)$/gm)].flatMap((m) =>
+      m[1]!
+        .split(",")
+        .map((p) => p.trim().replace(/\*$/, ""))
+        .filter(Boolean),
+    );
   },
 
   async push(tag) {
@@ -1031,6 +1230,63 @@ export const pnpmDockerBuild: BuildPort = {
       await exec("docker", ["exec", node, "ctr", "-n", CONTAINERD_K8S_NS, "images", "rm", ...names], BIG);
   },
 };
+
+/** The builder a multi-platform build runs on (ADR-0045). The default `docker` driver can build
+ * only the host's own platform and cannot push a manifest list, so a container driver is required —
+ * and it is `scripts/kit-push.sh`'s builder by name, so a converge and a release push share one
+ * cache. `network=host` is what makes `localhost:<port>` mean the HOST's registry: buildkit runs in
+ * a container of its own, where `localhost` would otherwise be that container. */
+const MULTI_ARCH_BUILDER = "j2-kit";
+
+/** Create-if-absent, because a converge that needed the builder and did not have one would fail
+ * with buildx's own driver error — the class of manual step j2 deletes. */
+async function ensureMultiArchBuilder(): Promise<string> {
+  try {
+    await exec("docker", ["buildx", "inspect", MULTI_ARCH_BUILDER], BIG);
+  } catch {
+    await exec(
+      "docker",
+      [
+        "buildx",
+        "create",
+        "--name",
+        MULTI_ARCH_BUILDER,
+        "--driver",
+        "docker-container",
+        "--driver-opt",
+        "network=host",
+      ],
+      BIG,
+    );
+  }
+  return MULTI_ARCH_BUILDER;
+}
+
+/**
+ * The declared `USER` of a manifest list, out of `docker buildx imagetools inspect --format
+ * "{{json .Image}}"`: an object keyed by platform, each value that platform's image config (a
+ * single-platform index answers with the bare config instead).
+ *
+ * One image, one seat: the map a provision reads carries ONE `sandboxUser` per image (ADR-0037), so
+ * two platforms declaring different users is not a value this layer may average — it is a fact the
+ * record cannot hold, and it says so instead of picking the entry it happened to read first.
+ */
+export function manifestListUser(image: string, json: string): string {
+  type Config = { config?: { User?: string } };
+  const parsed = JSON.parse(json) as Record<string, unknown>;
+  const byPlatform = "config" in parsed ? { "": parsed } : (parsed as Record<string, Config>);
+  const users = Object.entries(byPlatform).map(
+    ([platform, entry]) => [platform, (entry as Config)?.config?.User ?? ""] as const,
+  );
+  const distinct = new Set(users.map(([, user]) => user));
+  if (distinct.size > 1) {
+    throw new Error(
+      `${image} declares a different USER per platform (${users.map(([p, u]) => `${p}: ${u || "none"}`).join(", ")}) — ` +
+        `a Sandbox Image's seat is one fact in the image map, so the same USER must hold for every platform built`,
+    );
+  }
+  return users[0]?.[1] ?? "";
+}
 
 /** One row of `crictl images -o json`. `repoDigests` matters as much as `repoTags` here: a
  * `kind load`ed image often has no tag left and is named only by its `import-<date>@<digest>`. */

@@ -24,8 +24,13 @@
 set -euo pipefail
 
 registry="${1:-}"
-# Both of the architectures a j2 cluster runs on today (the home cluster's nodes are arm64, this
-# checkout's dev box is amd64) — see docs/adr/0044.
+# The platforms the kit RELEASES for — both of the architectures a j2 cluster runs on today (the home
+# cluster's nodes are arm64, this checkout's dev box is amd64); see docs/adr/0044, docs/adr/0045.
+#
+# MIRRORS `SUPPORTED_PLATFORMS` in packages/cli/src/build.ts, the set a checkout `j2 up` intersects
+# its cluster's node architectures with. Two lists, one truth — packages/cli/test/kit-push.test.ts
+# reads this default and fails the unit gate if the two ever disagree: a published set narrower than
+# the supported one is a cluster that resolves a Kit image it cannot run.
 platforms="${2:-linux/amd64,linux/arm64}"
 if [[ -z "$registry" ]]; then
   echo "usage: $(basename "$0") <registry> [platforms]   e.g. $(basename "$0") ghcr.io/snapwich" >&2

@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { KIT_VERSION } from "../src/config.ts";
+import type { RepoState } from "../src/repos.ts";
 import { codingDef, gatedDef, mkStore, waitFor } from "./_fixtures.ts";
 
 /** A host + app pair with the `coding` workflow registered. */
@@ -244,4 +245,28 @@ test("GET /runs/resolve truncates rather than dumping the table", async () => {
   const body = (await res.json()) as { runIds: string[]; truncated: boolean };
   assert.equal(body.runIds.length, 10);
   assert.equal(body.truncated, true);
+});
+
+test("GET /repos serves the source volume's sync state — synced, and failed with git's own error", async () => {
+  // ADR-0048's observability half: the reconcile keeps retrying, so this is read per request off
+  // the live reconcile, never a boot-time snapshot. A workspace-less instance (no reconcile wired,
+  // which is what `mkApp` builds) answers an empty catalog rather than 404.
+  const host = new RunHost({ store: await mkStore() });
+  const state: RepoState[] = [
+    { name: "app", synced: false, error: "git clone failed: Permission denied (publickey).", attempts: 3 },
+    { name: "infra", synced: true, action: "fetched" },
+  ];
+  const app = createApp(host, undefined, { repos: () => state });
+
+  const res = await app.request("/repos");
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), state);
+
+  // Mutating the reconcile's answer (a retry that finally succeeded) shows on the NEXT read.
+  state[0] = { name: "app", synced: true, action: "cloned" };
+  const after = (await (await app.request("/repos")).json()) as Array<{ name: string; synced: boolean }>;
+  assert.equal(after[0]!.synced, true);
+
+  const none = await (await mkApp()).app.request("/repos");
+  assert.deepEqual(await none.json(), []);
 });

@@ -179,3 +179,31 @@ test("send resolves before it writes — an unresolvable id never reaches CANCEL
   assert.equal(await main(["send", runId.slice(0, 8), "--event", "CANCEL"], real.io), 0);
   assert.match(real.err(), new RegExp(`sent CANCEL to ${runId}`), "the message names the run it actually hit");
 });
+
+test("`j2 status` with no run reports the instance's repos, unsynced ones with git's own error", async () => {
+  // ADR-0048's third claim: the reconcile degrades a repo instead of the daemon, so the way to
+  // learn a repo never synced is to ask the instance — not to tail pod logs for a boot line.
+  const repos = [
+    { name: "app", synced: false, error: "git clone failed: Permission denied (publickey).", attempts: 4 },
+    { name: "infra", synced: true, action: "fetched" },
+  ];
+  const asked: string[] = [];
+  const { io, out, err } = mkIo({
+    env: { J2_URL: "http://test" },
+    fetch: (url) => {
+      asked.push(String(url));
+      return Promise.resolve(Response.json(repos));
+    },
+  });
+
+  assert.equal(await main(["status"], io), 0, "a degraded repo is a report, not a failure of asking");
+  assert.ok(
+    asked.some((u) => u.endsWith("/repos")),
+    "no run named → the instance's own status",
+  );
+  assert.deepEqual(JSON.parse(out().trim()), { repos }, "an object on stdout: the instance has more to say later");
+  assert.match(err(), /repo "app" is not synced \(attempt 4\)/);
+  assert.match(err(), /Permission denied \(publickey\)\./, "git's own error, verbatim");
+  assert.doesNotMatch(err(), /"infra"/, "a synced repo needs no line");
+  assert.match(err(), /keeps retrying/, "…and the way out: register the key, the reconcile closes the window");
+});

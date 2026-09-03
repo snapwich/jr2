@@ -25,6 +25,7 @@ import type { AnyStateMachine } from "xstate";
 import { loadAgents } from "./agent.ts";
 import { createEchoPush } from "./harness-client.ts";
 import { createApp } from "./http.ts";
+import type { RepoReconcile } from "./repos.ts";
 import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
@@ -46,6 +47,10 @@ export type InstanceOptions = {
   /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller
    * (wired when `config.repos` is non-empty); absent = a workspace-less instance. */
   sandbox?: SandboxPort;
+  /** The supervised source-volume reconcile (ADR-0048), started by the caller and never awaited:
+   * its per-repo state is what `GET /repos` serves, and `close()` stops its retry loop. Absent =
+   * a workspace-less instance, which reconciles nothing and reports no repos. */
+  repos?: RepoReconcile;
   /** The Instance Harness base URL (ADR-0031) — where a `workspace: "none"` Turn is admitted.
    * The entrypoint derives it from the pod's namespace (deterministic Service DNS); absent,
    * such a Turn without an explicit `endpoint` faults pointedly. */
@@ -76,6 +81,9 @@ export type RunningInstance = {
   instanceToken: string;
   /** Names of the workflows discovered + registered from `<dir>/workflows`. */
   workflows: string[];
+  /** The supervised source-volume reconcile this instance serves (ADR-0048), when it has one —
+   * handed back so a caller can read its state or await its first pass without a second handle. */
+  repos?: RepoReconcile;
   /** What this boot did with the runs it found persisted (ADR-0007, ADR-0030) — resumed, given up
    * on, refused because their Machine changed shape, or errored (left for the next boot to retry).
    * The entrypoint announces everything but the resumed ones. */
@@ -165,7 +173,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // Adapters still bear tokens this key signed. The Instance token is per-boot; the key is not.
   const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));
   const auth = createAuthenticator({ instanceToken, signingKey });
-  const app = createApp(host, auth);
+  // The reconcile's state is read PER REQUEST, never snapshotted here: a repo synced by a retry
+  // minutes after boot must show as synced the next time anyone asks (ADR-0048).
+  const app = createApp(host, auth, { repos: opts.repos ? () => opts.repos!.state() : undefined });
   const server = serve({ fetch: app.fetch, port: opts.port ?? 0, hostname });
   const port = await new Promise<number>((resolve) => {
     server.once("listening", () => resolve((server.address() as AddressInfo).port));
@@ -176,6 +186,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     url: `http://${hostname}:${port}`,
     instanceToken,
     workflows: host.workflows(),
+    repos: opts.repos,
     restored,
     reload: async () => {
       importGen++;
@@ -190,6 +201,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       return { added, updated, removed, workflows: host.workflows() };
     },
     close: async () => {
+      // The retry loop first (ADR-0048): it outlives every request, so nothing else stops it —
+      // and a fixture that closed its instance must not have git running behind it.
+      opts.repos?.stop();
       // Before `server.close()`, not after: it waits for in-flight requests, and an observation
       // feed is in-flight until its watcher goes away. `host.close()` is what makes them go away.
       await host.close();

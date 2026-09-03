@@ -29,6 +29,7 @@ function mkKube(listing: Listing = {}, context = "kind-j2"): KubeAdmin {
     deleteObject: async () => assert.fail("gc deletes no objects — images are not objects"),
     deleteManifest: async () => assert.fail("gc deletes no objects"),
     waitRollout: async () => assert.fail("gc waits for nothing"),
+    logs: async () => assert.fail("gc reads no logs") as never,
     runOneShot: async () => assert.fail("gc probes nothing") as never,
     listJson: async <T>(o: { kind: string }): Promise<T[]> => {
       if (listing.fails) throw new Error("Unable to connect to the server");
@@ -61,6 +62,7 @@ function mkBuild(images: { host?: ObservedImage[]; node?: ObservedImage[] } = {}
     bundle: async () => assert.fail("gc bundles nothing"),
     build: async () => assert.fail("gc builds nothing"),
     imageUser: async () => assert.fail("gc inspects nothing") as never,
+    buildablePlatforms: async () => assert.fail("gc builds nothing, so it asks no platform") as never,
     push: async () => assert.fail("gc pushes nothing"),
     kindLoad: async () => assert.fail("gc loads nothing"),
     hostImages: async () => [...host],

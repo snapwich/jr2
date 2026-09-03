@@ -42,6 +42,7 @@ function mkKube(listing: Listing): KubeAdmin & { queries: string[] } {
     deleteObject: async () => assert.fail("the sweep deletes no objects"),
     deleteManifest: async () => assert.fail("the sweep deletes no objects"),
     waitRollout: async () => assert.fail("the sweep waits for nothing"),
+    logs: async () => assert.fail("the sweep reads no logs") as never,
     runOneShot: async () => assert.fail("the sweep probes nothing") as never,
     listJson: async <T>(o: { kind: string; selector?: string; fieldSelector?: string; allNamespaces?: boolean }) => {
       kube.queries.push(`${o.kind}${o.selector ? ` -l ${o.selector}` : ""}${o.allNamespaces ? " -A" : ""}`);

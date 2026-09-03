@@ -5,13 +5,19 @@
 // (ADR-0031: converged by convention when any definition declares `workspace: "none"`, deleted when
 // none does) → a report of live workspaces still on an older image. Repos reconcile onto the
 // in-cluster source volume at orchestrator boot (ADR-0004); a configured custom provider is
-// preflighted from inside the cluster.
+// preflighted from inside the cluster. ssh repos ask where their key comes from (ADR-0047), and a
+// converge that GENERATED one ends by saying so — the key is dead until a human registers it.
 //
-// Images (ADR-0038): `j2 up` builds every image it deploys, and every tag is a content address of
-// its own inputs. In a kit CHECKOUT that includes the Harness, Adapter, and operator; installed
-// from npm those sources do not resolve and the published `<kitversion>` refs are used with no
-// docker at all. There is no `images` config block and no env escape hatch — nobody gets to point a
-// real cluster at a hand-picked Harness (ADR-0027's no-eject-hatch, enforced rather than stated).
+// Images (ADR-0038, as amended by ADR-0045): `j2 up` builds every image it deploys, and every tag is
+// a content address of (its own inputs × the platform set it was built for) — `<hash>-<arch>`, with
+// `--platform` passed explicitly on every build. The cluster's schedulable nodes choose that set
+// (`platforms` in the config overrides absolutely), so the daemon default and
+// `DOCKER_DEFAULT_PLATFORM` steer nothing any more. In a kit CHECKOUT the built set includes the
+// Harness, Adapter, and operator; installed from npm those sources do not resolve and the published
+// `<kitversion>` refs are used with no docker at all (they are multi-arch manifest lists, so they
+// take no suffix and never had this hole). There is no `images` config block and no env escape
+// hatch — nobody gets to point a real cluster at a hand-picked Harness (ADR-0027's no-eject-hatch,
+// enforced rather than stated).
 // The converged name→ref map is stamped on the Orchestrator Deployment and diffed on the next run,
 // so a steady-state converge spends directory walks and no docker. When that record is silent (a
 // fresh namespace), the host daemon's labeled listing answers the BUILD question instead
@@ -29,7 +35,8 @@
 // (`--yes` for CI); objects labeled as a DIFFERENT instance → refuse.
 
 import { createHash, randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { open, readdir, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -42,12 +49,15 @@ import {
   type J2Config,
 } from "@j2/orchestrator";
 import {
+  assertEmulation,
   buildSandboxImage,
+  choosePlatforms,
   detectKitCheckout,
   instanceImageLabels,
   kitImageBuild,
   kitImageRefs,
   normalizeRef,
+  platformSuffix,
   pnpmDockerBuild,
   publishedKitRefs,
   sandboxImageHash,
@@ -76,8 +86,15 @@ import {
   operatorManifest,
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
-import { kubectlAdmin, ORCHESTRATOR_SERVICE, type KubeAdmin, type KubeObject } from "../kube.ts";
-import { activity, confirmOrBail, type Io } from "../output.ts";
+import {
+  kubectlAdmin,
+  rolloutFailure,
+  ORCHESTRATOR_SERVICE,
+  type KubeAdmin,
+  type KubeObject,
+  type RolloutTarget,
+} from "../kube.ts";
+import { activity, chooseOrBail, confirmOrBail, promptLine, readSecretInput, type Io } from "../output.ts";
 import { kindCluster, sweepImages } from "../sweep.ts";
 
 export async function up(args: string[], io: Io): Promise<number> {
@@ -137,13 +154,62 @@ export async function up(args: string[], io: Io): Promise<number> {
   const build = io.build ?? pnpmDockerBuild;
   const registry = config.registry;
   const cluster = kindCluster(context);
+
+  // The CLUSTER chooses what every image is built for (ADR-0045): the schedulable nodes'
+  // architectures, intersected with the platforms the kit releases for. The set then rides the tag
+  // of every image this converge builds, because the bytes are a function of (inputs × platform) —
+  // hashing the inputs alone made one tag name an amd64 image on one host and an arm64 image on
+  // another, and delivered the wrong one as an opaque rollout timeout. The read is `kubectl get
+  // nodes`, and it THROWS on failure like every other converge claim: guessing a platform is how
+  // this failure class started. `platforms` skips DERIVATION, so it skips the read too — the key
+  // exists for the cases the nodes cannot answer (a pool scaled to zero, a set to trim), and a
+  // converge that was told the answer must not still need permission to ask the question.
+  const schedulable =
+    config.platforms === undefined
+      ? (await kube.listJson<NodeObject>({ kind: "node", ...ctx })).filter((n) => n.spec?.unschedulable !== true)
+      : [];
+  const {
+    platforms,
+    skipped,
+    source: platformSource,
+  } = choosePlatforms({
+    nodeArches: schedulable.map((n) => n.status?.nodeInfo?.architecture ?? "").filter(Boolean),
+    configured: config.platforms,
+  });
+  activity(
+    io,
+    `platforms: ${platforms.join(", ")} ` +
+      (platformSource === "config"
+        ? "(the `platforms` key — derivation skipped)"
+        : `(from ${schedulable.length} schedulable node(s))`),
+  );
+  for (const arch of skipped) {
+    activity(io, `  skipping node arch ${arch} — the kit publishes no Kit image for it, so no pod there could run`);
+  }
+  // A multi-platform build is `docker buildx build --push`: it delivers by pushing, and there is
+  // nowhere to push without a registry. By CONSTRUCTION this never fires — a mixed-arch cluster is
+  // never kind (kind nodes are containers on one host, one arch), and the non-kind transport branch
+  // already requires `registry` — but the code must not assume its own construction silently.
+  if (platforms.length > 1 && !registry) {
+    throw new Error(
+      `this cluster needs a ${platforms.join(" + ")} build, which docker buildx delivers by PUSHING a ` +
+        `manifest list (kind load cannot carry one) — set \`registry\` in j2.config.ts, or name a single ` +
+        `platform with \`platforms\``,
+    );
+  }
+
   // The CHECKOUT is the signal — no flag, no config key, no env (ADR-0038). `io.kitDir` exists so
   // tests can drive both worlds from a temp dir instead of detecting the repo they run inside.
   const kitRoot = await detectKitCheckout(io.kitDir);
   // Two registries, two questions (ADR-0044): a BUILT kit ref goes wherever this converge delivers
   // (`registry`), while a PUBLISHED one is pulled from the canonical home or from the mirror this
   // cluster was pointed at (`kitRegistry`). So each branch takes the key that answers its own.
-  const refs: KitImageRefs = kitRoot ? await kitImageRefs(kitRoot, registry) : publishedKitRefs(config.kitRegistry);
+  // A BUILT kit ref carries this converge's platform suffix; a PUBLISHED one carries none — the
+  // released tags are multi-arch manifest lists, mirrored whole (ADR-0044), so they were never
+  // exposed to the hole ADR-0045 closes.
+  const refs: KitImageRefs = kitRoot
+    ? await kitImageRefs(kitRoot, { platforms, registry })
+    : publishedKitRefs(config.kitRegistry);
   activity(
     io,
     kitRoot
@@ -161,6 +227,14 @@ export async function up(args: string[], io: Io): Promise<number> {
   // ONE transport branch for every image (ADR-0038), so instance, kit, and Sandbox Images cannot
   // drift into three delivery stories.
   const deliver = async (tag: string): Promise<void> => {
+    // A multi-platform build already pushed (ADR-0045): `docker buildx build --push` IS the
+    // delivery, and pushing again would push a tag the daemon never held. Sound at every call site
+    // because the only other way here is the host-held skip, and a manifest list never lands in the
+    // daemon to be held.
+    if (platforms.length > 1) {
+      activity(io, `  pushed by buildx → ${registry}`);
+      return;
+    }
     if (registry) {
       activity(io, `  push → ${registry}`);
       await build.push(tag);
@@ -189,6 +263,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   // A listing that FAILS reads as "holds nothing": this check may only ever save a build, never
   // add a failure mode — a truly dead daemon fails at the build that follows, with docker's own
   // error naming it (the sweep makes the same read later and degrades to its own warning).
+  //
+  // A MULTI-platform ref is invisible here by construction (ADR-0045): buildx pushes it straight to
+  // the registry, so the daemon never holds it, the tag-equality question has no answer, and the
+  // skip simply misses — a record-silent mixed-arch converge rebuilds. The accepted cost;
+  // ADR-0041's rejection of registry-truth HEAD checks stands.
   let hostHeldOnce: Promise<Set<string>> | undefined;
   const hostHeld = (): Promise<Set<string>> =>
     (hostHeldOnce ??= build
@@ -197,6 +276,12 @@ export async function up(args: string[], io: Io): Promise<number> {
       .catch(() => new Set<string>()));
   const hostBuilt = async (ref: string): Promise<boolean> =>
     values.force !== true && (await hostHeld()).has(normalizeRef(ref));
+
+  // The binfmt preflight (ADR-0045), paid at most once and only when a build is really about to be
+  // spent: a steady-state converge must still spend no docker at all, and a foreign-arch build must
+  // fail BEFORE minutes of docker rather than mid-`RUN` with `exec format error`.
+  let emulationOnce: Promise<void> | undefined;
+  const ensureEmulation = (): Promise<void> => (emulationOnce ??= assertEmulation(build, platforms));
 
   /** Build + deliver one kit image, unless the cluster's record already names this exact ref.
    * Installed from npm there is nothing to build: the published tag is the answer. */
@@ -218,7 +303,8 @@ export async function up(args: string[], io: Io): Promise<number> {
       return ref;
     }
     activity(io, `${which} image: building ${ref}${values.force === true ? " (--force)" : ""}`);
-    await build.build(kitImageBuild(kitRoot, which, ref));
+    await ensureEmulation();
+    await build.build(kitImageBuild(kitRoot, which, ref, platforms));
     await deliver(ref);
     return ref;
   };
@@ -248,7 +334,12 @@ export async function up(args: string[], io: Io): Promise<number> {
         labels: { [LABEL_VERSION]: KIT_VERSION },
         ...ctx,
       });
-      await kube.waitRollout({ deployment: OPERATOR_DEPLOYMENT, namespace: OPERATOR_NAMESPACE, ...ctx });
+      await awaitRollout(kube, {
+        deployment: OPERATOR_DEPLOYMENT,
+        namespace: OPERATOR_NAMESPACE,
+        selector: OPERATOR_SELECTOR,
+        ...ctx,
+      });
       // Sound for every layer now that EVERY tag is a content address (ADR-0038): a source edit
       // moves the ref, which moves the pod template, which rolls. The old hole — kit dev pinning a
       // static `:local` tag, so a rebuild left the template identical and nothing rolled — closed
@@ -276,7 +367,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   // Stage first, THEN decide: the hash is over the materialized bundle — the actual image inputs,
   // kit included — so the tag is a content address rather than a guess about what changed.
   const staged = await stageInstanceBundle(build, root);
-  const hash = staged.hash;
+  // The content address covers (inputs × platform set), ADR-0045 — so the platform rides the HASH
+  // this layer records, not just the tag composed from it. That is what keeps the staleness key and
+  // the tag one fact: a converge whose platform set moved must not read the recorded hash as fresh,
+  // skip the build, and then apply a tag nothing ever delivered.
+  const hash = `${staged.hash}${platformSuffix(platforms)}`;
   const tag = registry ? `${registry}/j2-instance-${name}:${hash}` : `j2-instance-${name}:${hash}`;
   try {
     if (orch?.metadata.labels?.[LABEL_HASH] === hash && values.force !== true) {
@@ -290,8 +385,10 @@ export async function up(args: string[], io: Io): Promise<number> {
         await deliver(tag);
       } else {
         activity(io, `image: building ${tag}${values.force === true ? " (--force)" : ""}`);
+        await ensureEmulation();
         await build.build({
           tag,
+          platforms,
           context: staged.dir,
           dockerfileContent: INSTANCE_DOCKERFILE,
           labels: instanceImageLabels(name),
@@ -317,7 +414,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       // an input any more: the runtime rides the pod's volume, so a kit edit re-images future
       // pods and leaves every Sandbox Image tag — and every delivered layer — where it was.
       const imageHash = await sandboxImageHash(image.dir);
-      const ref = sandboxImageTag(name, image.name, imageHash, registry);
+      const ref = sandboxImageTag(name, image.name, imageHash, { platforms, registry });
       // A record is only worth skipping on when it is COMPLETE: the ref AND the seat the image
       // declared. A record from a kit that predates `sandboxUser` names the right image and
       // silently drops the fallback fact, which surfaces as a pod that will not start — so it reads
@@ -341,7 +438,8 @@ export async function up(args: string[], io: Io): Promise<number> {
           // ONE build of the user's own Dockerfile, straight to its content tag — no wrap, no
           // intermediate tag, so two converges of one checkout share no mutable image name and
           // the `@kind` tier's `--parallel` rides on it (ADR-0037).
-          await buildSandboxImage(build, { dir: image.dir, tag: ref, instance: name });
+          await ensureEmulation();
+          await buildSandboxImage(build, { dir: image.dir, tag: ref, instance: name, platforms });
         }
         // The image's own `USER`, read while the image is certainly on this daemon (it was just
         // built, or the host holds it). Recorded because a provision cannot inspect an image, and
@@ -349,7 +447,9 @@ export async function up(args: string[], io: Io): Promise<number> {
         // is a fact ABOUT the image, not a judgement of it: the ADR-0037 floor is a Harness-seat
         // obligation and this directory may be destined for the User Container seat instead
         // (ADR-0005), which owes no floor — a distinction only the provision can make (ADR-0031).
-        const user = await build.imageUser(ref);
+        // `platforms` says where to look, not which variant to read (ADR-0045): a singleton build is
+        // on this daemon, a multi-platform one is the manifest list buildx just pushed.
+        const user = await build.imageUser(ref, platforms);
         converged.sandboxUser[image.name] = user;
         activity(io, `  ${user ? `USER ${user}` : "no USER declared — the pod's uid-1000 fallback applies"}`);
         await deliver(ref);
@@ -414,8 +514,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   // touches the file (the path may not exist there); consumers get the ConfigMap.
   const caPem = await readCaBundle(root, config);
 
-  // --- git over ssh: the deploy-key offer (ADR-0019) ---------------------------------------------
-  await ensureGitSsh(io, kube, config, namespace, ctx, values.yes === true);
+  // --- git over ssh: where the key comes from (ADR-0019, ADR-0047) -------------------------------
+  // Runs BEFORE the apply, because a missing key source is a converge that must not start, and the
+  // notice it hands back is owed to the END of the converge — a generated key is dead until a human
+  // registers it, and by then this line has scrolled away.
+  const gitSsh = await ensureGitSsh(io, kube, config, namespace, ctx, values.yes === true);
 
   // --- provider preflight (ADR-0019): probe the endpoint FROM INSIDE the cluster ----------------
   await preflightProvider(io, kube, config, agents, namespace, ctx, caPem);
@@ -438,7 +541,12 @@ export async function up(args: string[], io: Io): Promise<number> {
     ...ctx,
   });
   activity(io, "orchestrator: waiting for rollout");
-  await kube.waitRollout({ deployment: ORCHESTRATOR_SERVICE, namespace, ...ctx });
+  await awaitRollout(kube, {
+    deployment: ORCHESTRATOR_SERVICE,
+    namespace,
+    selector: `app=${ORCHESTRATOR_SERVICE}`,
+    ...ctx,
+  });
   await verifyRunningImage(io, kube, {
     layer: "orchestrator",
     namespace,
@@ -474,7 +582,12 @@ export async function up(args: string[], io: Io): Promise<number> {
       }),
       ...ctx,
     });
-    await kube.waitRollout({ deployment: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
+    await awaitRollout(kube, {
+      deployment: INSTANCE_HARNESS_SERVICE,
+      namespace,
+      selector: `app=${INSTANCE_HARNESS_SERVICE}`,
+      ...ctx,
+    });
     await verifyRunningImage(io, kube, {
       layer: "instance harness",
       namespace,
@@ -492,6 +605,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   await sweepAfterConverge(io, { build, kube, context, ctx, converged, instanceImage: tag, previous });
   noteDeferred(io, config);
   activity(io, `converged — \`j2 run <workflow>\` when ready`);
+  // LAST, after the success line (ADR-0047): the converge succeeded and the repos still cannot be
+  // fetched, so the one thing left to do belongs at the bottom of the scroll, not in the middle.
+  if (gitSsh) reportGeneratedKey(io, gitSsh);
   return 0;
 }
 
@@ -625,6 +741,25 @@ async function reportOlderWorkspaces(
 }
 
 /**
+ * One rollout wait, with the pods' own words in front of kubectl's verdict when it fails
+ * (ADR-0046). Every layer waits through here, because every layer was equally blind: `kubectl
+ * rollout status` reports `timed out waiting for the condition` and drops the line that says why,
+ * so the user went and read the pods by hand — the step this deletes.
+ *
+ * A WRAPPER rather than a fatter `waitRollout`, so the port keeps saying one thing (wait for this
+ * Deployment) and the diagnosis is driven through the same injected KubeAdmin the tests fake:
+ * evidence gathering that hid inside the kubectl port could never be exercised without a cluster.
+ */
+async function awaitRollout(kube: KubeAdmin, target: RolloutTarget): Promise<void> {
+  const { deployment, namespace, context } = target;
+  try {
+    await kube.waitRollout({ deployment, namespace, ...(context ? { context } : {}) });
+  } catch (err) {
+    throw await rolloutFailure(kube, err, target);
+  }
+}
+
+/**
  * Convergence is a claim about the CLUSTER, so it is checked against the cluster (ADR-0019): after
  * a rollout, the pod actually serving must carry the image this run intended. Without this, `up`
  * reported success off the content-hash label it had just written — and a Deployment whose pod
@@ -669,11 +804,37 @@ type PodObject = {
   spec: { containers: Array<{ name?: string; image: string }> };
 };
 
+/** A cluster node, read for the one fact that decides what every image is built for (ADR-0045):
+ * the architecture it runs. `spec.unschedulable` is the cordon — a node nothing can be placed on is
+ * not a platform this instance needs images for. */
+type NodeObject = {
+  metadata: { name: string };
+  spec?: { unschedulable?: boolean };
+  status?: { nodeInfo?: { architecture?: string } };
+};
+
+/** What a converge that GENERATED a keypair owes its own last line (ADR-0047): the key nobody has
+ * registered yet, and the repos that stay unsynced until somebody does. A supplied key produces
+ * none of this — it is registered already. */
+type GitSshNotice = { publicKey: string; repos: string[] };
+
+/** Where the git ssh key comes from — the three sources ADR-0047 offers, as a pick. */
+type GitSshSource = { kind: "generate" } | { kind: "file"; path: string } | { kind: "paste" };
+
 /**
- * ssh repo urls need a key the CLUSTER holds (ADR-0019): personal keys never enter a cluster, so
- * with no `j2-git-ssh` Secret present, `up` OFFERS to generate a fresh in-cluster deploy keypair
- * and prints the public key to register with the git host. Declining bails — the reconcile would
- * only hang on an unauthenticated fetch later.
+ * ssh repo urls need a key the CLUSTER holds, and the USER chooses which one (ADR-0047). With no
+ * `j2-git-ssh` Secret present, `up` offers three sources: a fresh in-cluster deploy keypair
+ * (recommended, listed first, and the only thing `--yes` will ever take), a local key — the
+ * `~/.ssh` candidates plus a path typed in — or one pasted with echo off. Declining bails, as
+ * before: the reconcile would only fail on an unauthenticated fetch later.
+ *
+ * ADR-0019's flat "personal keys never enter a cluster" is demoted to a DEFAULT, not deleted: a git
+ * host allows one deploy key on exactly one repo, so the invariant charged a multi-repo instance N
+ * registrations and pushed users into hand-rolled Secrets anyway. j2 still never lifts a personal
+ * key silently — only by this explicit, warned pick, and never from a flag (`--yes` generates; the
+ * scripted supplied-key path is `kubectl create secret generic j2-git-ssh --from-file=key=…`).
+ *
+ * Returns the notice a generated keypair owes the end of the converge; a supplied key returns none.
  */
 async function ensureGitSsh(
   io: Io,
@@ -682,38 +843,181 @@ async function ensureGitSsh(
   namespace: string,
   ctx: { context?: string },
   yes: boolean,
-): Promise<void> {
+): Promise<GitSshNotice | undefined> {
   const sshUrls = (config.repos ?? []).filter((r) => /^(git@|ssh:\/\/)/.test(r.url));
-  if (sshUrls.length === 0) return;
-  if (await kube.getJson({ kind: "secret", name: GIT_SSH_SECRET, namespace, ...ctx })) return;
+  if (sshUrls.length === 0) return undefined;
+  if (await kube.getJson({ kind: "secret", name: GIT_SSH_SECRET, namespace, ...ctx })) return undefined;
+  const repos = sshUrls.map((r) => r.name);
 
-  const ok =
-    yes ||
-    (await confirmOrBail(
-      io,
-      `repos ${sshUrls.map((r) => r.name).join(", ")} use ssh urls and no "${GIT_SSH_SECRET}" Secret exists — ` +
-        `generate a fresh in-cluster deploy keypair? (personal keys never enter a cluster)`,
-    ));
-  if (!ok) {
+  // Non-interactive is GENERATE, always (ADR-0047): the dangerous option is never a default, so
+  // there is nothing to ask and nothing a script can silently answer with a personal key.
+  const source: GitSshSource | undefined = yes ? { kind: "generate" } : await chooseGitSshSource(io, repos, namespace);
+  if (!source) {
     throw new Error(
-      `ssh repos need a "${GIT_SSH_SECRET}" Secret — accept the generated deploy key, create the Secret ` +
-        `yourself, or switch the repo urls to https (+ J2_GIT_TOKEN in .env)`,
+      `ssh repos need a "${GIT_SSH_SECRET}" Secret — re-run and pick a key source, create the Secret yourself ` +
+        `(kubectl -n ${namespace} create secret generic ${GIT_SSH_SECRET} --from-file=key=<path>), ` +
+        `or switch the repo urls to https (+ J2_GIT_TOKEN in .env)`,
     );
   }
 
-  const { privateKey, publicKey } = await (io.sshKeygen ?? sshKeygen)();
+  if (source.kind === "generate") {
+    const { privateKey, publicKey } = await (io.sshKeygen ?? sshKeygen)();
+    await applyGitSshSecret(kube, namespace, ctx, privateKey, publicKey);
+    activity(io, `generated deploy key ${sshFingerprint(publicKey)} — register this PUBLIC key (read access):`);
+    activity(io, `  ${publicKey.trim()}`);
+    // The pause sits exactly where the user must act anyway (ADR-0047): the printed key is useless
+    // until it is registered, and the converge that follows will roll out an Orchestrator whose
+    // first reconcile fails on every one of these repos. `--yes` has nobody to wait for.
+    if (!yes) {
+      await promptLine(io, `register this public key with your git host, then press enter to continue: `);
+    }
+    return { publicKey: publicKey.trim(), repos };
+  }
+
+  // A key the USER handed over. Read it, derive `key.pub`, and refuse a passphrase-protected one
+  // BEFORE anything is applied (ADR-0047) — the in-cluster clone runs unattended and can answer no
+  // passphrase, and storing a decrypted copy would strip protection the user chose to have.
+  const where = source.kind === "file" ? source.path : "the pasted key";
+  const privateKey =
+    source.kind === "file"
+      ? await readSuppliedKey(source.path)
+      : await readSecretInput(io, `paste the private key (input hidden), ending with its -----END … ----- line:`);
+  if (privateKey.trim() === "") {
+    throw new Error(`no key was read from ${where} — nothing was applied; re-run \`j2 up\` to pick a key source`);
+  }
+  let publicKey: string;
+  try {
+    publicKey = await (io.sshPublicKey ?? sshPublicKey)(privateKey);
+  } catch (err) {
+    throw new Error(`refusing the key from ${where}: ${err instanceof Error ? err.message : err}`);
+  }
+  await applyGitSshSecret(kube, namespace, ctx, privateKey, publicKey);
+  // The FINGERPRINT, never the material — not the private half, and not the public one either:
+  // this key is the user's own, and its public half identifies them wherever it is registered.
+  activity(io, `git ssh: "${GIT_SSH_SECRET}" applied from ${where} — ${sshFingerprint(publicKey)}`);
+  return undefined;
+}
+
+/** The choice itself, warning first (ADR-0047): a Secret is not a vault, and the two supplied-key
+ * options differ from the generated one in exactly how much a reader of it gets. */
+async function chooseGitSshSource(io: Io, repos: string[], namespace: string): Promise<GitSshSource | undefined> {
+  const candidates = await discoverSshKeys(io);
+  activity(io, `repos ${repos.join(", ")} use ssh urls and no "${GIT_SSH_SECRET}" Secret exists.`);
+  activity(io, `  whichever key you pick lands in a Secret in namespace "${namespace}" — readable by anyone with`);
+  activity(io, `  Secret read there, and at rest in etcd. A deploy key leaks read access to the repos you`);
+  activity(io, `  register it on; a personal key leaks everything it can reach.`);
+  const options = [
+    "generate a fresh in-cluster deploy keypair (recommended — one registration per repo)",
+    ...candidates.map((path) => `use ${path}`),
+    "use another local key (type a path)",
+    "paste a private key (input hidden)",
+  ];
+  const pick = await chooseOrBail(io, `where should the git ssh key come from?`, options);
+  // An out-of-range answer reads as a decline, not as a neighbouring option: this menu's entries
+  // are not interchangeable, and bailing is the safe end of it.
+  if (pick === undefined || pick < 0 || pick >= options.length) return undefined;
+  if (pick === 0) return { kind: "generate" };
+  if (pick <= candidates.length) return { kind: "file", path: candidates[pick - 1]! };
+  if (pick === candidates.length + 1) {
+    const typed = await promptLine(io, `path to the private key: `);
+    return typed === "" ? undefined : { kind: "file", path: expandHome(io, typed) };
+  }
+  return { kind: "paste" };
+}
+
+/** The `~/.ssh` private keys to offer by name. A candidate is a plain file that is not a `.pub`
+ * and whose first bytes are a PEM private-key header — cheaper and truer than a name convention
+ * (`id_*` misses a key called `work`, and `known_hosts` is not a key however it is named). Only the
+ * head is read: this directory also holds `known_hosts`, which can be large and is never a key. */
+async function discoverSshKeys(io: Io): Promise<string[]> {
+  const dir = join(io.env.HOME ?? homedir(), ".ssh");
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return []; // no ~/.ssh — the local-key options still stand, typed or pasted
+  }
+  const found: string[] = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isFile() || entry.name.endsWith(".pub")) continue;
+    const path = join(dir, entry.name);
+    let head = "";
+    try {
+      const fh = await open(path, "r");
+      try {
+        const buf = Buffer.alloc(64);
+        const { bytesRead } = await fh.read(buf, 0, 64, 0);
+        head = buf.subarray(0, bytesRead).toString("utf8");
+      } finally {
+        await fh.close();
+      }
+    } catch {
+      continue; // unreadable → not a candidate to offer
+    }
+    if (/^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(head)) found.push(path);
+  }
+  return found;
+}
+
+/** `~/…` as the shell would have expanded it, since this path is typed at j2's prompt, not the
+ * shell's — the one expansion a user reasonably expects to still work here. */
+function expandHome(io: Io, path: string): string {
+  return path.startsWith("~/") ? join(io.env.HOME ?? homedir(), path.slice(2)) : path;
+}
+
+/** Read a supplied key file, naming the path when it cannot be read — the alternative is a
+ * ssh-keygen failure about a temp file the user never heard of. */
+async function readSuppliedKey(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (err) {
+    throw new Error(`${path} is not readable (${err instanceof Error ? err.message : err}) — nothing was applied`);
+  }
+}
+
+/** The Secret both key sources converge on: `key` is what the in-cluster clone authenticates with,
+ * `key.pub` rides along so the cluster can say which key it holds without holding it up to a
+ * human. Trailing newline enforced — ssh refuses a key file that lacks one. */
+async function applyGitSshSecret(
+  kube: KubeAdmin,
+  namespace: string,
+  ctx: { context?: string },
+  privateKey: string,
+  publicKey: string,
+): Promise<void> {
   await kube.apply({
     manifest: JSON.stringify({
       apiVersion: "v1",
       kind: "Secret",
       metadata: { name: GIT_SSH_SECRET, namespace },
       type: "Opaque",
-      stringData: { key: privateKey, "key.pub": publicKey },
+      stringData: { key: newlineTerminated(privateKey), "key.pub": newlineTerminated(publicKey) },
     }),
     ...ctx,
   });
-  activity(io, `generated deploy key — register this PUBLIC key with your git host (read access):`);
-  activity(io, `  ${publicKey.trim()}`);
+}
+
+function newlineTerminated(s: string): string {
+  return s.endsWith("\n") ? s : `${s}\n`;
+}
+
+/** OpenSSH's own fingerprint form (`SHA256:<unpadded base64>` of the wire blob), computed here
+ * rather than shelled out for: it is a hash of the public half, so it needs no key on disk and no
+ * subprocess to fake in tests. */
+function sshFingerprint(publicKey: string): string {
+  const blob = publicKey.trim().split(/\s+/)[1] ?? "";
+  if (blob === "") return "SHA256:(unreadable)";
+  return `SHA256:${createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`;
+}
+
+/** The last word of a converge that generated a keypair (ADR-0047): the key, what stays broken
+ * until it is registered, and who fixes it — the reconcile, on its own (ADR-0048), so nobody
+ * re-runs `j2 up` looking for a button. */
+function reportGeneratedKey(io: Io, notice: GitSshNotice): void {
+  activity(io, `git ssh: a deploy key was generated this converge and nothing has registered it yet:`);
+  activity(io, `  ${notice.publicKey}`);
+  activity(io, `  until it is registered, ${notice.repos.join(", ")} will not sync (the Orchestrator serves anyway)`);
+  activity(io, `  the boot reconcile retries on its own — \`j2 status\` reports each repo's last sync error`);
 }
 
 /** Generate an ed25519 keypair with ssh-keygen (no passphrase — it lives only in the Secret). */
@@ -730,6 +1034,44 @@ async function sshKeygen(): Promise<{ privateKey: string; publicKey: string }> {
       privateKey: await readFile(join(dir, "key"), "utf8"),
       publicKey: await readFile(join(dir, "key.pub"), "utf8"),
     };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Derive `key.pub` from a supplied private key — and, in the same call, decide whether j2 will
+ * take it at all (ADR-0047). `-P ""` supplies an EMPTY passphrase, so an encrypted key fails here,
+ * by name, before any Secret is applied; prompting for the passphrase and storing the decrypted
+ * key would silently strip protection the user chose to have.
+ *
+ * The key is written to a private temp file because `ssh-keygen -y` reads a file, not stdin — mode
+ * 0600 both because ssh-keygen refuses a group/world-readable key and because the material must not
+ * be exposed on this host for the seconds it takes to read one line out of it.
+ */
+async function sshPublicKey(privateKey: string): Promise<string> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "j2-ssh-"));
+  const file = join(dir, "key");
+  try {
+    await writeFile(file, newlineTerminated(privateKey), { mode: 0o600 });
+    try {
+      const { stdout } = await promisify(execFile)("ssh-keygen", ["-y", "-P", "", "-f", file]);
+      return newlineTerminated(stdout.trim());
+    } catch (err) {
+      const detail = `${(err as { stderr?: string }).stderr ?? (err instanceof Error ? err.message : "")}`.trim();
+      if (/passphrase/i.test(detail)) {
+        throw new Error(
+          `it is passphrase-protected. The in-cluster clone runs unattended and cannot answer a passphrase, ` +
+            `and j2 will not store a decrypted copy — use an unencrypted key, or let j2 generate a deploy key`,
+        );
+      }
+      throw new Error(`ssh-keygen could not read it as a private key (${detail || "no output"})`);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

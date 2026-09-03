@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { KIT_IMAGES, type KitImageName } from "../src/build.ts";
+import { KIT_IMAGES, SUPPORTED_PLATFORMS, type KitImageName } from "../src/build.ts";
 
 const REPO = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -38,6 +38,17 @@ test("kit-push.sh pushes exactly the images j2 up builds, from the same files", 
     KIT_IMAGES[name].context,
   ]);
   assert.deepEqual(await scriptImages(), expected);
+});
+
+test("kit-push.sh publishes exactly the platforms the kit supports (ADR-0045)", async () => {
+  // The same two-lists-one-truth rule as the images above, applied to `SUPPORTED_PLATFORMS` — the
+  // set a checkout `j2 up` intersects its cluster's node architectures with. A release that pushed
+  // a narrower set than the CLI is willing to derive gives some cluster a Kit image it cannot run,
+  // and the failure would land on a user's pod, not on this gate.
+  const script = await readFile(join(REPO, "scripts", "kit-push.sh"), "utf8");
+  const fallback = /^platforms="\$\{2:-(.+?)\}"$/m.exec(script);
+  assert.ok(fallback, "scripts/kit-push.sh defaults its platform list in one place");
+  assert.deepEqual(fallback[1]!.split(","), [...SUPPORTED_PLATFORMS]);
 });
 
 test("kit-push.sh tags at <registry>/<repo>:<version>, read from the manifests", async () => {

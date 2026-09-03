@@ -218,3 +218,13 @@ test("/runs/resolve is Instance-only — a prefix search is a run-id enumeration
   assert.equal((await app.request(`/runs/resolve?prefix=${prefix}`, get(sandboxToken(KEY, "ws-mine")))).status, 403);
   assert.equal((await app.request(`/runs/resolve?prefix=${prefix}`, get(INSTANCE_TOKEN))).status, 200);
 });
+
+test("the repo sync report is Instance-band: a repo name plus git's error is state, not structure", async () => {
+  // ADR-0048 puts per-repo sync state on the status surface, and ADR-0014 says where that lands:
+  // the rows name this instance's sources and carry git's own error text — the same class of thing
+  // the open observation projections strip out of a RunStatus.
+  const { app } = await mkApp();
+  assert.equal((await app.request("/repos")).status, 401);
+  assert.equal((await app.request("/repos", get(sandboxToken(KEY, "ws-mine")))).status, 403);
+  assert.equal((await app.request("/repos", get(INSTANCE_TOKEN))).status, 200);
+});

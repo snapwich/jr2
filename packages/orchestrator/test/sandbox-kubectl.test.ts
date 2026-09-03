@@ -680,3 +680,70 @@ test("attachScript quotes hostile refs and rejects an empty repo list", () => {
     /no repos/,
   );
 });
+
+test("attach refuses a repo whose sync has not succeeded, naming it and git's own error (ADR-0048)", async () => {
+  // The moment the degradation bites: the attach clones `/repos/<name>/default`, so a repo the
+  // reconcile could not sync is a checkout that is absent or stale. The run that needs it is the
+  // one that hears about it — not the boot, which serves everything else correctly.
+  const { exec, calls } = fakeExec({ exec: () => "" });
+  const port = kubectlSandbox({
+    exec,
+    repoError: (name) => (name === "app" ? "git clone failed: Permission denied (publickey)." : undefined),
+  });
+
+  await assert.rejects(
+    () =>
+      port.attach({
+        name: "sb-4",
+        spec: {
+          repos: [
+            { name: "app", baseRef: "main" },
+            { name: "infra", baseRef: "main" },
+          ],
+          branch: "feat/login",
+        },
+      }),
+    (err: Error) => {
+      assert.match(err.message, /repo "app"/, "names the repo");
+      assert.match(err.message, /Permission denied \(publickey\)\./, "carries git's own error");
+      assert.match(err.message, /j2 status/, "points at where every unsynced repo is listed");
+      assert.ok(!err.message.includes('repo "infra"'), "the synced repo is not implicated");
+      return true;
+    },
+  );
+  assert.equal(calls.length, 0, "nothing is exec'd into the pod on a repo that cannot be there");
+});
+
+test("attach proceeds when every spec repo has synced — and when no reconcile is wired at all", async () => {
+  const spec = { repos: [{ name: "app", baseRef: "main" }], branch: "feat/login" };
+  const synced = fakeExec({ exec: () => "" });
+  await kubectlSandbox({ exec: synced.exec, repoError: () => undefined }).attach({ name: "sb-5", spec });
+  assert.equal(synced.calls.length, 1);
+
+  // "Nothing known" asserts nothing: a port built without the seam attaches exactly as before.
+  const bare = fakeExec({ exec: () => "" });
+  await kubectlSandbox({ exec: bare.exec }).attach({ name: "sb-6", spec });
+  assert.equal(bare.calls.length, 1);
+});
+
+test("attach waits for a late answer: a run that starts mid-clone does not race the reconcile", async () => {
+  // The boot no longer waits for the first reconcile pass (ADR-0048), so the wait moved to the one
+  // caller that needs it. Racing it instead would clone from a `default/` that does not exist yet.
+  const { exec, calls } = fakeExec({ exec: () => "" });
+  let synced!: () => void;
+  const firstPass = new Promise<void>((resolve) => (synced = resolve));
+  const port = kubectlSandbox({
+    exec,
+    repoError: async () => {
+      await firstPass;
+      return undefined;
+    },
+  });
+
+  const attaching = port.attach({ name: "sb-7", spec: { repos: [{ name: "app", baseRef: "main" }], branch: "b" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.length, 0, "nothing is exec'd into the pod while the checkout is still being made");
+  synced();
+  await attaching;
+  assert.equal(calls.length, 1, "…and the attach proceeds the moment the repo is there");
+});

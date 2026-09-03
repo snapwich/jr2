@@ -129,6 +129,16 @@ export type J2Config = {
    * `kitRegistry` addresses artifacts the kit already published. One key for both would make every
    * private-registry user mirror three images they could have pulled from the home. */
   kitRegistry?: string;
+  /** What `j2 up` builds its images FOR — docker platform strings, e.g. `["linux/arm64"]`
+   * (deployment-varying — resolve from env). Absent → derived from the cluster's schedulable nodes
+   * and intersected with the platforms the kit releases for, which is the answer for every ordinary
+   * cluster (ADR-0045). Present → ABSOLUTE: derivation is skipped and this is the build set (still
+   * intersected, so an unpublished platform is a named error, never a silent build).
+   *
+   * The escape hatch for the two cases derivation cannot see: a pool that autoscales from zero (no
+   * nodes to read yet), and a polluted set (an amd64 GPU pool beside arm64 workers, where the
+   * derived pair would cost a needless qemu cross-build). Not additive or subtractive. */
+  platforms?: string[];
   /** Operator-layer overrides — kit development territory (ADR-0019). */
   operator?: {
     /** `false` = `j2 up` skips the operator layer (run the controller loop yourself). */

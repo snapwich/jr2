@@ -22,6 +22,19 @@ export type RunStatus = {
   reason?: string;
 };
 
+/**
+ * One source-volume repo as the reconcile knows it (`GET /repos`) — mirrors the orchestrator's
+ * `RepoState` (repos.ts). A repo whose sync failed carries git's own error and the attempt count;
+ * the reconcile keeps retrying it, so this is a snapshot of a moving thing (ADR-0048).
+ */
+export type RepoState = {
+  name: string;
+  synced: boolean;
+  action?: "cloned" | "fetched" | "adopted";
+  error?: string;
+  attempts?: number;
+};
+
 /** One item on a run's observation feed — mirrors the orchestrator's `RunFeedEvent`. */
 export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
@@ -110,6 +123,13 @@ export class J2Client {
   async list(): Promise<RunStatus[]> {
     const res = await this.fetchImpl(`${this.baseUrl}/runs`, { headers: this.headers() });
     return (await this.json(res, "/runs")) as RunStatus[];
+  }
+
+  /** `GET /repos` — the source volume's per-repo sync state (ADR-0048): what synced, and what did
+   * not, with git's own error. What `j2 status` reports when it is given no run. */
+  async repos(): Promise<RepoState[]> {
+    const res = await this.fetchImpl(`${this.baseUrl}/repos`, { headers: this.headers() });
+    return (await this.json(res, "/repos")) as RepoState[];
   }
 
   /** `GET /runs/resolve?prefix=` — run ids sharing a prefix, live and settled. The wire half of

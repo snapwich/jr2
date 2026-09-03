@@ -33,7 +33,7 @@ import {
   INSTANCE_HARNESS_SERVICE,
   ORCHESTRATOR_SERVICE,
 } from "./names.ts";
-import { ensureRepos } from "./repos.ts";
+import { startRepoReconcile, type RepoReconcile } from "./repos.ts";
 import { kubectlSandbox } from "./sandbox-kubectl.ts";
 import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
@@ -69,16 +69,43 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // volume, then wire the kubectl Sandbox backend — a Workspace needs repos. Empty/absent → a
   // workspace-less instance (workspace() invocations fault pointedly).
   let sandbox: SandboxPort | undefined;
+  let repos: RepoReconcile | undefined;
   if (config?.repos?.length) {
     const reposDir = env.J2_REPOS_DIR ?? join(opts.dir, "repos");
     const sshKeyPath = join(GIT_SSH_MOUNT, "key");
-    const synced = await ensureRepos(config, reposDir, undefined, {
-      tokenEnv: env.J2_GIT_TOKEN !== undefined ? "J2_GIT_TOKEN" : undefined,
-      sshKeyPath: existsSync(sshKeyPath) ? sshKeyPath : undefined,
+    // Started, NOT awaited (ADR-0048). A repo that cannot clone — an unregistered deploy key
+    // (ADR-0047), a wrong url, a git host outage — used to throw here, exit the container, and
+    // crash-loop the daemon that hosts every Workflow, including the ones that never touch a repo.
+    // The same blast pattern as the images ConfigMap below: degrade the capability, not the
+    // daemon. Each pass announces per repo (git's own error on a failure) and the loop keeps
+    // retrying the failed ones, so the window a converge opened closes on its own.
+    repos = startRepoReconcile({
+      config,
+      reposDir,
+      creds: {
+        tokenEnv: env.J2_GIT_TOKEN !== undefined ? "J2_GIT_TOKEN" : undefined,
+        sshKeyPath: existsSync(sshKeyPath) ? sshKeyPath : undefined,
+      },
+      onSync: (sync) =>
+        opts.announce(
+          JSON.stringify(
+            sync.error === undefined
+              ? { repo: sync.name, action: sync.action }
+              : { repo: sync.name, error: sync.error },
+          ),
+        ),
     });
-    for (const repo of synced) opts.announce(JSON.stringify({ repo: repo.name, action: repo.action }));
 
     sandbox = kubectlSandbox({
+      // What a repo's sync last did (ADR-0048): the attach reads `<reposDir>/<name>/default` off
+      // the source volume, so a repo that never synced is the moment the degradation bites — and
+      // the run that owns the consequence is the one that hears about it, by name and with git's
+      // own error. The wait for the first pass moved HERE from the boot: an attach that arrives
+      // while the clone is still running waits for it, instead of racing it into an empty volume.
+      repoError: async (name) => {
+        await repos!.first;
+        return repos!.errorFor(name);
+      },
       // Named here the same way AGENTS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
       // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
       // buys: the map is read per provision, so an instance whose `j2-images` ConfigMap is not yet
@@ -118,6 +145,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     instanceToken,
     signingKey,
     sandbox,
+    // The supervised reconcile (ADR-0048): its per-repo state rides the status surface, and the
+    // instance's `close()` stops its retry loop.
+    repos,
     // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
     // `j2 up` converges the Deployment behind it whenever any definition declares
     // `workspace: "none"`, so deployed, the address exists exactly when it is needed.

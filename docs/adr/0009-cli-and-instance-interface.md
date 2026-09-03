@@ -57,8 +57,10 @@ export default defineConfig({ name: "my-orchestrator", sandbox: {} });
 - **The snapshot store defaults to sqlite** on a PVC in the instance's namespace (zero setup); **Postgres** is opt-in
   via `DATABASE_URL` — j2 points at a database you provide, it never deploys or operates one (the single-table,
   single-writer snapshot fits sqlite, and `replicas: 1` keeps it single-writer).
-- Git credentials for private repos: an HTTPS token from `.env`, or a `j2-git-ssh` deploy-key Secret `j2 up` offers to
-  generate (ADR-0019). Kube target: the current `kubectl` context (`--context` to override).
+- Git credentials for private repos: an HTTPS token from `.env`, or a `j2-git-ssh` Secret holding the key `j2 up` asked
+  the user to choose — a generated in-cluster deploy keypair (the recommended default), a local key, or one pasted on
+  stdin (ADR-0019, [ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)). Kube target: the current `kubectl`
+  context (`--context` to override).
 
 ## Agents ship as npm; instances compose or override
 
@@ -85,9 +87,16 @@ GET  /runs/resolve?prefix=<p>          # run ids sharing a prefix, live + settle
 GET  /runs/:runId/events               # SSE: status replay + live deltas                [instance]
 POST /runs/:runId/events               # run-level infra interrupt: CANCEL               [instance]
 POST /runs/:runId/gates/:gate/events   # deliver a workflow event to an open gate        [instance]
+GET  /repos                            # per-repo source-volume sync state (ADR-0048)     [instance]
 GET  /agents/:iid/surface   POST /agents/:iid/events   # the Adapter's surface           [sandbox]
 GET  /healthz   GET /readyz
 ```
+
+`GET /repos` is [ADR-0048](0048-the-orchestrator-boots-without-its-repos.md)'s observability half: a failed clone
+degrades the repo, not the boot, so the reconcile's per-repo state (synced, or git's own error plus the attempt count)
+is a thing to ask the instance for. `j2 status` with **no** run id renders it — the place ADR-0047's "register the key,
+the reconcile retries" points at. Instance band, not open: a row names a repo and carries git's error text, exactly the
+class of author/deployment detail the open projections strip (ADR-0014).
 
 Gates are the human/webhook/CI seam (ADR-0011): a gated state registers `{ gate, accepts, meta }`; `GET /runs/:runId`
 lists the open gates (with schemas + `meta`), and the gate POST validates the body against the named event schema and
@@ -106,7 +115,7 @@ j2 down [--all]                   # remove the instance from the cluster (--all:
 
 # runs / workflows (wrap the HTTP API)
 j2 run <workflow> [--input <json>] [--detach]
-j2 runs   j2 status <runId|abbrev>   j2 logs <runId|abbrev> [-f]
+j2 runs   j2 status [runId|abbrev]   j2 logs <runId|abbrev> [-f]   # bare `status` = the instance's repos (ADR-0048)
 j2 send <runId|abbrev> --event CANCEL
 j2 send <runId|abbrev> --gate <gate> --event <name> [--input <json>]
 

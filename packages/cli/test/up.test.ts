@@ -48,8 +48,24 @@ class FakeCluster implements KubeAdmin {
   async deleteManifest(): Promise<void> {
     this.deleted.push("(manifest)");
   }
+  /** Rollouts scripted to time out, keyed `"<namespace>/<deployment>"` — what `kubectl rollout
+   * status` does when a pod never comes up, and the only thing it says about it (ADR-0046). */
+  rolloutFails = new Set<string>();
   async waitRollout(opts: { deployment: string; namespace: string }): Promise<void> {
     this.rollouts.push(`${opts.namespace}/${opts.deployment}`);
+    if (this.rolloutFails.has(`${opts.namespace}/${opts.deployment}`)) {
+      throw new Error("error: timed out waiting for the condition");
+    }
+  }
+  /** The pods a failed rollout leaves behind, per selector — the evidence the diagnosis reads
+   * instead of the honest cluster's "one pod running whatever was applied". */
+  failedPods: Record<string, unknown[]> = {};
+  /** The namespace's events, as the diagnosis lists them. */
+  events: unknown[] = [];
+  /** A container's log tail, by pod name. */
+  podLogs: Record<string, string> = {};
+  async logs(opts: { pod: string }): Promise<string> {
+    return this.podLogs[opts.pod] ?? "";
   }
   /** Drift injection, per selector: the image that layer's pod carries when it must differ from
    * the applied one. Unset → an HONEST cluster, reporting a pod running whatever was last applied. */
@@ -62,6 +78,13 @@ class FakeCluster implements KubeAdmin {
    * `j2-images` maps, and every pod in them. Empty by default — a cluster holding nothing but this
    * converge, which is what every test that is not about the sweep wants. */
   instanceNamespaces: Array<{ metadata: { name: string } }> = [];
+  /** The cluster's nodes, as ADR-0045's platform derivation reads them: one schedulable amd64 node,
+   * the everyday single-arch cluster, so every test that is not about platforms builds `-amd64`. */
+  nodes: Array<{
+    metadata: { name: string };
+    spec?: { unschedulable?: boolean };
+    status?: { nodeInfo?: { architecture?: string } };
+  }> = [{ metadata: { name: "kind-test-control-plane" }, status: { nodeInfo: { architecture: "amd64" } } }];
   imageMaps: Array<{ metadata: { name: string; namespace?: string }; data?: Record<string, string> }> = [];
   clusterPods: Array<{
     metadata: { name: string; namespace?: string };
@@ -78,13 +101,17 @@ class FakeCluster implements KubeAdmin {
       if (this.sandboxListFails) throw new Error("the server doesn't have a resource type sandboxes");
       return this.sandboxes as T[];
     }
+    if (opts.kind === "node") return this.nodes as T[];
     if (opts.kind === "namespace") return this.instanceNamespaces as T[];
     if (opts.kind === "configmap") return this.imageMaps as T[];
     // The cluster-wide pod read is the sweep's; the selected one is a layer's image verification.
     // Distinguished explicitly, because falling through to the verification branch would answer a
     // keep-set question with whatever the last apply happened to name.
     if (opts.kind === "pod" && opts.allNamespaces) return this.clusterPods as T[];
+    if (opts.kind === "event") return this.events as T[];
     if (opts.kind !== "pod") return [];
+    const failed = this.failedPods[opts.selector ?? ""];
+    if (failed) return failed as T[];
     const image = this.podImages[opts.selector ?? ""] ?? this.lastAppliedImage(opts.selector ?? "");
     if (!image) return [];
     return [{ metadata: { name: "pod-1" }, spec: { containers: [{ image }] } }] as T[];
@@ -138,6 +165,10 @@ function fakeBuild(
     nodeImages?: ObservedImage[];
     /** `true` → the host listing throws, as it does with no docker daemon reachable. */
     sweepFails?: boolean;
+    /** What the host can build for (ADR-0045's binfmt preflight). Both supported platforms by
+     * default — an emulation-equipped host, so a test that is not about the preflight never trips
+     * over it. */
+    buildable?: string[];
   } = {},
 ): BuildPort {
   const files = opts.files ?? { "package.json": "{}" };
@@ -149,8 +180,11 @@ function fakeBuild(
         await writeFile(join(out, rel), content);
       }
     },
-    build: async ({ tag, context, dockerfile, dockerfileContent, labels }) => {
+    build: async ({ tag, platforms, context, dockerfile, dockerfileContent, labels }) => {
       record.push(`build ${tag}`);
+      // Explicit on every build (ADR-0045), recorded on its own line so the platform set stays
+      // assertable without disturbing the tag-shaped assertions above it.
+      record.push(`platform ${tag} ${platforms.join(",")}`);
       // The ownership stamp is recorded on its own line (ADR-0039): an unstamped build is an image
       // no sweep can ever collect, which is invisible in every other assertion here.
       record.push(`stamp ${tag} ${JSON.stringify(labels ?? null)}`);
@@ -158,8 +192,10 @@ function fakeBuild(
       else if (dockerfileContent) record.push(`build-with stdin ${tag}`);
       else record.push(`build-with context-default ${tag}`);
     },
-    imageUser: async (image) => {
-      record.push(`inspect-user ${image}`);
+    imageUser: async (image, platforms) => {
+      // The verb follows the artifact (ADR-0045): a singleton build is on this daemon, a manifest
+      // list is in the registry buildx pushed it to — two reads, recorded as two lines.
+      record.push(`${platforms.length > 1 ? "imagetools" : "inspect-user"} ${image}`);
       return opts.imageUser ?? "";
     },
     push: async (tag) => void record.push(`push ${tag}`),
@@ -169,6 +205,10 @@ function fakeBuild(
       return opts.hostImages ?? [];
     },
     removeHostImage: async (ref) => void record.push(`rmi-host ${ref}`),
+    buildablePlatforms: async () => {
+      record.push("buildable-check");
+      return opts.buildable ?? ["linux/amd64", "linux/arm64"];
+    },
     nodeImages: async (cluster) => [{ node: `${cluster}-control-plane`, images: opts.nodeImages ?? [] }],
     removeNodeImage: async (_cluster, node, id) => void record.push(`rmi-node ${node} ${id}`),
   };
@@ -222,12 +262,16 @@ async function mkKit(): Promise<string> {
   return kit;
 }
 
-type World = { io: Io; kube: FakeCluster; built: string[]; err: string[]; confirms: string[] };
+type World = { io: Io; kube: FakeCluster; built: string[]; err: string[]; confirms: string[]; choices: string[][] };
 
 function mkWorld(
   root: string,
   over: {
     confirm?: boolean;
+    /** What the multiple-choice prompt answers (ADR-0047's key-source menu) — an index, or a
+     * function of the offered options. Unset means "none of these", which is a DECLINE: the
+     * dangerous options sit on this menu, so a test that never mentions it must not pick one. */
+    choose?: number | ((options: string[]) => number | undefined);
     env?: Record<string, string>;
     bundleFiles?: Record<string, string>;
     /** A kit checkout root, when the world is meant to be one. Default: the instance folder, which
@@ -238,12 +282,14 @@ function mkWorld(
     hostImages?: ObservedImage[];
     nodeImages?: ObservedImage[];
     sweepFails?: boolean;
+    buildable?: string[];
   } = {},
 ): World {
   const kube = new FakeCluster();
   const built: string[] = [];
   const err: string[] = [];
   const confirms: string[] = [];
+  const choices: string[][] = [];
   const io: Io = {
     stdout: () => {},
     stderr: (s) => err.push(s),
@@ -257,13 +303,18 @@ function mkWorld(
       hostImages: over.hostImages,
       nodeImages: over.nodeImages,
       sweepFails: over.sweepFails,
+      buildable: over.buildable,
     }),
     confirm: async (q) => {
       confirms.push(q);
       return over.confirm ?? true;
     },
+    choose: async (_q, options) => {
+      choices.push(options);
+      return typeof over.choose === "function" ? over.choose(options) : over.choose;
+    },
   };
-  return { io, kube, built, err, confirms };
+  return { io, kube, built, err, confirms, choices };
 }
 
 /** The `j2-images` map this converge applied — the ConfigMap the Orchestrator reads per provision
@@ -338,6 +389,45 @@ test("operator: the applied version is waited for and verified, like every other
   );
 });
 
+test("a rollout that times out carries the pods' evidence, not just kubectl's verdict", async () => {
+  // The failure that produced ADR-0045 surfaced as `timed out waiting for the condition` and
+  // nothing else; the cause was found by hand with `kubectl get pods` + `kubectl logs`. Every
+  // rollout wait now does that reading itself (ADR-0046).
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  w.kube.rolloutFails.add("myinst/j2-orchestrator");
+  w.kube.set("", "node", "kind-worker", { status: { nodeInfo: { architecture: "arm64" } } });
+  w.kube.failedPods["app=j2-orchestrator"] = [
+    {
+      metadata: { name: "j2-orchestrator-77d-abc" },
+      spec: { nodeName: "kind-worker", containers: [{ name: "orchestrator", image: "j2-instance-myinst:abc-amd64" }] },
+      status: {
+        phase: "Pending",
+        containerStatuses: [
+          {
+            name: "orchestrator",
+            ready: false,
+            state: { waiting: { reason: "CrashLoopBackOff", message: "back-off 40s restarting failed container" } },
+            lastState: { terminated: { reason: "StartError", exitCode: 128, message: "exec format error" } },
+          },
+        ],
+      },
+    },
+  ];
+
+  await assert.rejects(
+    () => up(["--yes"], w.io),
+    (err: Error) => {
+      assert.match(err.message, /j2-orchestrator: rollout did not complete in namespace myinst/);
+      assert.match(err.message, /exec format error/, "the pod's own words are carried");
+      assert.match(err.message, /diagnosis: .* built for another platform/);
+      assert.match(err.message, /kind-worker runs arm64/);
+      assert.match(err.message, /timed out waiting for the condition/, "kubectl's verdict is kept, not replaced");
+      return true;
+    },
+  );
+});
+
 test("operator: manage:false skips the layer — and the image build with it", async () => {
   const kit = await mkKit();
   const skipRoot = await mkInstance(`export default { name: "a", operator: { manage: false } };\n`, "a");
@@ -366,7 +456,11 @@ test("a kit checkout builds the Harness, Adapter, and operator; installed from n
     const built = checkout.built.find((b) => b.startsWith(`build ${repo}:`))!;
     assert.ok(built, `${repo} is built (got: ${checkout.built.join(", ")})`);
     const ref = built.slice("build ".length);
-    assert.match(ref, new RegExp(`^${repo}:[0-9a-f]{12}$`), "…at a content address, never a moving tag");
+    assert.match(
+      ref,
+      new RegExp(`^${repo}:[0-9a-f]{12}-amd64$`),
+      "…at a content address of (inputs × platform), never a moving tag",
+    );
     // The SAME transport branch the instance image uses — one story, no per-layer drift.
     assert.ok(checkout.built.includes(`kind-load ${ref} → test`), `${repo} is delivered by kind load`);
     assert.ok(
@@ -563,6 +657,150 @@ test("a silent record consults the host daemon: host-built refs skip their build
   }
 });
 
+// --- the platform set (ADR-0045): the cluster chooses, the tag says ------------------------------
+
+test("the cluster's schedulable nodes choose the platform set, and every built tag says so", async () => {
+  // The hole in ADR-0038's invariant: the bytes are a function of (inputs × platform), no build
+  // passed `--platform`, and the tag named only the inputs — so one tag meant an amd64 image on one
+  // host and an arm64 image on another, and the wrong one arrived as an opaque rollout timeout.
+  const kit = await mkKit();
+  const root = await withImage(
+    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    "default",
+  );
+  const w = mkWorld(root, { kitDir: kit });
+  w.kube.nodes = [
+    { metadata: { name: "cp" }, status: { nodeInfo: { architecture: "arm64" } } },
+    { metadata: { name: "w1" }, status: { nodeInfo: { architecture: "arm64" } } },
+    // Cordoned: nothing can be placed there, so it is not a platform this instance owes an image.
+    { metadata: { name: "old" }, spec: { unschedulable: true }, status: { nodeInfo: { architecture: "amd64" } } },
+  ];
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const builds = w.built.filter((b) => b.startsWith("build ")).map((b) => b.slice("build ".length));
+  assert.ok(builds.length >= 4, `every layer was built (got: ${builds.join(", ")})`);
+  for (const ref of builds) {
+    assert.match(ref, /:[0-9a-f]{12}-arm64$/, `${ref} names the platform it holds`);
+    assert.ok(w.built.includes(`platform ${ref} linux/arm64`), `${ref} was built with an explicit --platform`);
+  }
+  assert.match(w.err.join("\n"), /platforms: linux\/arm64 \(from 2 schedulable node\(s\)\)/);
+
+  // The same instance against an amd64 cluster addresses different bytes at a different tag — the
+  // whole point of putting the platform IN the address rather than in the salt.
+  const amd = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], amd.io), 0);
+  assert.notEqual(imagesOf(amd).harness, imagesOf(w).harness);
+  assert.match(imagesOf(amd).harness, /-amd64$/);
+});
+
+test("a node arch the kit publishes nothing for is skipped; no supported arch at all is loud", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const mixed = mkWorld(root);
+  mixed.kube.nodes = [
+    { metadata: { name: "a" }, status: { nodeInfo: { architecture: "amd64" } } },
+    { metadata: { name: "z" }, status: { nodeInfo: { architecture: "s390x" } } },
+  ];
+  assert.equal(await up(["--yes"], mixed.io), 0);
+  // Reported and skipped, never built for: no Kit image could sit beside an s390x instance image in
+  // the pod, so building one would be dead weight discovered at provision.
+  assert.match(mixed.err.join("\n"), /skipping node arch s390x/);
+  assert.ok(
+    mixed.built.filter((b) => b.startsWith("platform ")).every((b) => b.endsWith("linux/amd64")),
+    `nothing was built for the unsupported arch (got: ${mixed.built.join(", ")})`,
+  );
+
+  const nowhere = mkWorld(root);
+  nowhere.kube.nodes = [{ metadata: { name: "z" }, status: { nodeInfo: { architecture: "s390x" } } }];
+  await assert.rejects(() => up(["--yes"], nowhere.io), /s390x[\s\S]*`platforms`/);
+  assert.deepEqual(nowhere.built, [], "and nothing was spent finding out");
+});
+
+test("`platforms` overrides the cluster absolutely, and an unpublished entry is refused by name", async () => {
+  // The escape hatch for what derivation cannot see: a pool that autoscales from zero, or a set
+  // polluted by an amd64 GPU pool beside arm64 workers, whose derived pair costs a needless qemu
+  // cross-build. Absolute: the key is the build set, not an addition to the derived one.
+  const pinned = await mkInstance(`export default { name: "p", platforms: ["linux/arm64"] };\n`, "p");
+  const w = mkWorld(pinned);
+  w.kube.nodes = [
+    { metadata: { name: "a" }, status: { nodeInfo: { architecture: "amd64" } } },
+    { metadata: { name: "b" }, status: { nodeInfo: { architecture: "arm64" } } },
+  ];
+  // Skipping derivation skips the QUESTION: a converge that was told its platforms must not still
+  // need permission to read nodes (a pool scaled to zero cannot answer, and RBAC may forbid asking).
+  const listJson = w.kube.listJson.bind(w.kube);
+  w.kube.listJson = (async (opts: Parameters<typeof listJson>[0]) => {
+    if (opts.kind === "node") throw new Error("nodes is forbidden");
+    return listJson(opts);
+  }) as typeof w.kube.listJson;
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join("\n"), /platforms: linux\/arm64 \(the `platforms` key/);
+  assert.ok(
+    w.built.filter((b) => b.startsWith("platform ")).every((b) => b.endsWith("linux/arm64")),
+    `the key decided alone (got: ${w.built.join(", ")})`,
+  );
+
+  const bad = await mkInstance(`export default { name: "b", platforms: ["linux/s390x"] };\n`, "b");
+  const w2 = mkWorld(bad);
+  await assert.rejects(() => up(["--yes"], w2.io), /`platforms` names linux\/s390x/);
+});
+
+test("a mixed-arch node set is built once by buildx, which delivers by pushing", async () => {
+  // ADR-0045's non-singleton case: build for both rather than guess which node a pod lands on.
+  // `docker buildx build --push` IS the delivery — a manifest list cannot live in the daemon and
+  // `kind load` cannot carry one — so nothing may push it a second time.
+  const root = await withImage(
+    await mkInstance(
+      `export default { name: "m", registry: "reg.example.com/j2", repos: [{ name: "a", url: "https://e.test/a.git" }] };\n`,
+      "m",
+    ),
+    "default",
+  );
+  const w = mkWorld(root);
+  w.kube.nodes = [
+    { metadata: { name: "a" }, status: { nodeInfo: { architecture: "amd64" } } },
+    { metadata: { name: "b" }, status: { nodeInfo: { architecture: "arm64" } } },
+  ];
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const sandboxRef = imagesOf(w).sandbox.default as string;
+  assert.match(sandboxRef, /^reg\.example\.com\/j2\/j2-sandbox-m-default:[0-9a-f]{12}-amd64-arm64$/);
+  assert.ok(w.built.includes(`platform ${sandboxRef} linux/amd64,linux/arm64`), "one build, both platforms");
+  assert.ok(!w.built.some((b) => b.startsWith("push ")), `buildx already pushed (got: ${w.built.join(", ")})`);
+  assert.ok(!w.built.some((b) => b.startsWith("kind-load")), "…and a manifest list is never kind-loaded");
+  // The seat is read where the artifact IS: the registry, not this daemon, which never held it.
+  assert.ok(w.built.includes(`imagetools ${sandboxRef}`));
+  assert.ok(!w.built.includes(`inspect-user ${sandboxRef}`));
+});
+
+test("a mixed-arch cluster with nowhere to push fails before any build", async () => {
+  // By construction this cannot happen — a kind cluster's nodes are containers on one host, one
+  // arch — but the code must not assume its own construction silently.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  w.kube.nodes = [
+    { metadata: { name: "a" }, status: { nodeInfo: { architecture: "amd64" } } },
+    { metadata: { name: "b" }, status: { nodeInfo: { architecture: "arm64" } } },
+  ];
+  await assert.rejects(() => up(["--yes"], w.io), /buildx delivers by PUSHING[\s\S]*`registry`/);
+  assert.deepEqual(w.built, []);
+});
+
+test("a foreign-arch build is preflighted for binfmt — once, before any build is spent", async () => {
+  // Without qemu the foreign `RUN` step dies minutes in with `exec format error`, the same symptom
+  // ADR-0045 exists to delete. So emulation is proved first, and the error is a command to run.
+  const root = await mkInstance(`export default { name: "f", platforms: ["linux/arm64"] };\n`, "f");
+  const w = mkWorld(root, { buildable: ["linux/amd64"] });
+  await assert.rejects(() => up(["--yes"], w.io), /tonistiigi\/binfmt --install arm64/);
+  assert.ok(!w.built.some((b) => b.startsWith("build ")), `no build was spent (got: ${w.built.join(", ")})`);
+
+  // Paid once, and only when a build is really about to happen: a steady-state converge still
+  // spends no docker at all (the annotation test asserts the whole record is `["bundle"]`).
+  const ok = mkWorld(root);
+  assert.equal(await up(["--yes"], ok.io), 0);
+  assert.equal(ok.built.filter((b) => b === "buildable-check").length, 1);
+  assert.ok(ok.built.indexOf("buildable-check") < ok.built.findIndex((b) => b.startsWith("build ")));
+});
+
 // --- Sandbox Images (ADR-0037) -----------------------------------------------------------------
 
 test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only with repos to work on", async () => {
@@ -576,7 +814,7 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
   assert.equal(await up(["--yes"], w.io), 0);
 
   const ref = imagesOf(w).sandbox.default as string;
-  assert.match(ref, /^j2-sandbox-myinst-default:[0-9a-f]{12}$/);
+  assert.match(ref, /^j2-sandbox-myinst-default:[0-9a-f]{12}-amd64$/);
   // ONE build, of the user's own directory (ADR-0037). No `-base` intermediate exists any more:
   // that mutable shared name was the wrap's, and it serialized concurrent converges of one checkout.
   assert.deepEqual(
@@ -880,28 +1118,160 @@ test("provider preflight: configured but no Agent names its models → skipped, 
   assert.match(w.err.join("\n"), /no Agent names a "vllm\/…" model/);
 });
 
-test("ssh repo urls with no j2-git-ssh Secret: offer a deploy key — accept creates it, decline bails", async () => {
-  const config = `export default { name: "myinst", repos: [{ name: "app", url: "git@github.com:o/app" }] };\n`;
+// --- git over ssh: the key source is the user's choice (ADR-0047) --------------------------------
 
-  const accept = mkWorld(await mkInstance(config));
-  accept.io.confirm = async () => true;
-  accept.io.sshKeygen = async () => ({ privateKey: "PRIV", publicKey: "ssh-ed25519 AAAA j2-git-ssh" });
-  assert.equal(await up([], accept.io), 0);
-  const secretApply = accept.kube.applied.find((m) => m.includes("j2-git-ssh"))!;
-  assert.ok(secretApply, "the deploy-key Secret is applied");
-  assert.match(secretApply, /PRIV/);
-  assert.match(accept.err.join("\n"), /ssh-ed25519 AAAA/, "the PUBLIC key is printed for registration");
+const SSH_CONFIG = `export default { name: "myinst", repos: [{ name: "app", url: "git@github.com:o/app" }] };\n`;
+/** A private key as its file holds it — the PEM header is what makes a `~/.ssh` file a candidate. */
+const PRIVATE_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk=\n-----END OPENSSH PRIVATE KEY-----\n";
+const PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockMockMockMockMockMockMockMockMock user@host";
 
-  const decline = mkWorld(await mkInstance(config, "decl"));
-  decline.io.confirm = async (q) => !/deploy keypair/.test(q); // yes to first-contact, no to the key
+/** A HOME whose `~/.ssh` holds one real-looking private key beside the files that are NOT keys —
+ * the discovery has to tell them apart by content, since `known_hosts` is a file like any other. */
+async function mkSshHome(): Promise<{ home: string; keyPath: string }> {
+  const home = await mkdtemp(join(tmpdir(), "j2-home-"));
+  await mkdir(join(home, ".ssh"), { recursive: true });
+  await writeFile(join(home, ".ssh", "id_ed25519"), PRIVATE_KEY);
+  await writeFile(join(home, ".ssh", "id_ed25519.pub"), `${PUBLIC_KEY}\n`);
+  await writeFile(join(home, ".ssh", "known_hosts"), "github.com ssh-ed25519 AAAA\n");
+  await writeFile(join(home, ".ssh", "config"), "Host *\n  AddKeysToAgent yes\n");
+  return { home, keyPath: join(home, ".ssh", "id_ed25519") };
+}
+
+/** The Secret the git-ssh layer applied, parsed — or undefined when it applied none. */
+function gitSshSecret(w: World): { stringData: Record<string, string> } | undefined {
+  const manifest = w.kube.applied.find((m) => m.includes(`"name":"j2-git-ssh"`));
+  return manifest ? JSON.parse(manifest) : undefined;
+}
+
+test("git ssh source: generate — the menu leads with it, the key prints, and up pauses to register", async () => {
+  const { home } = await mkSshHome();
+  const w = mkWorld(await mkInstance(SSH_CONFIG), { choose: 0, env: { HOME: home } });
+  const pauses: string[] = [];
+  w.io.prompt = async (q) => {
+    pauses.push(q);
+    return "";
+  };
+  w.io.sshKeygen = async () => ({ privateKey: PRIVATE_KEY, publicKey: `${PUBLIC_KEY}\n` });
+  w.io.sshPublicKey = async () => assert.fail("a generated keypair derives nothing");
+
+  assert.equal(await up([], w.io), 0);
+  assert.equal(w.choices.length, 1, "asked exactly once");
+  assert.match(w.choices[0]![0]!, /generate/, "the recommended source is offered first");
+  assert.match(w.err.join("\n"), /readable by anyone with/, "the Secret's readability is warned at choice time");
+  assert.equal(gitSshSecret(w)!.stringData.key, PRIVATE_KEY);
+  assert.equal(gitSshSecret(w)!.stringData["key.pub"], `${PUBLIC_KEY}\n`);
+  assert.equal(pauses.length, 1, "the converge waits at the moment of truth");
+  assert.match(pauses[0]!, /register this public key.*press enter/i);
+
+  // The end of the converge repeats it: the key, what will not sync, and who retries (ADR-0048).
+  const tail = w.err.join("");
+  const notice = tail.slice(tail.indexOf("converged —"));
+  assert.match(notice, /ssh-ed25519 AAAAC3/, "the public key is repeated last");
+  assert.match(notice, /app will not sync/);
+  assert.match(notice, /reconcile retries on its own/);
+});
+
+test("git ssh source: a local key — discovered by content, applied, and only its fingerprint printed", async () => {
+  const { home, keyPath } = await mkSshHome();
+  const w = mkWorld(await mkInstance(SSH_CONFIG), {
+    env: { HOME: home },
+    choose: (options) => options.findIndex((o) => o.includes("id_ed25519")),
+  });
+  w.io.sshKeygen = async () => assert.fail("a supplied key generates nothing");
+  w.io.sshPublicKey = async (priv) => {
+    assert.equal(priv, PRIVATE_KEY, "the supplied key itself is what gets derived from");
+    return `${PUBLIC_KEY}\n`;
+  };
+
+  assert.equal(await up([], w.io), 0);
+  const offered = w.choices[0]!;
+  assert.ok(
+    offered.some((o) => o === `use ${keyPath}`),
+    `the ~/.ssh candidate is offered by path (offered: ${offered.join(" | ")})`,
+  );
+  assert.ok(
+    !offered.some((o) => /known_hosts|config|\.pub/.test(o)),
+    "only private keys are candidates — not known_hosts, config, or the public halves",
+  );
+  assert.equal(gitSshSecret(w)!.stringData.key, PRIVATE_KEY);
+  const err = w.err.join("\n");
+  assert.match(err, /SHA256:/, "the fingerprint identifies the key");
+  assert.ok(!err.includes("AAAAC3"), "key material is never printed");
+  assert.ok(!err.includes("BEGIN OPENSSH"), "the private half least of all");
+  assert.ok(!err.includes("will not sync"), "a supplied key is already registered — no closing notice");
+});
+
+test("git ssh source: another local key by typed path, and a key pasted with echo off", async () => {
+  const { home, keyPath } = await mkSshHome();
+
+  const typed = mkWorld(await mkInstance(SSH_CONFIG, "typed"), {
+    env: { HOME: home },
+    choose: (options) => options.findIndex((o) => /type a path/.test(o)),
+  });
+  typed.io.prompt = async () => keyPath;
+  typed.io.sshPublicKey = async () => `${PUBLIC_KEY}\n`;
+  assert.equal(await up([], typed.io), 0);
+  assert.equal(gitSshSecret(typed)!.stringData.key, PRIVATE_KEY);
+
+  const pasted = mkWorld(await mkInstance(SSH_CONFIG, "pasted"), {
+    env: { HOME: home },
+    choose: (options) => options.findIndex((o) => /paste/.test(o)),
+  });
+  const hidden: string[] = [];
+  pasted.io.readSecret = async (q) => {
+    hidden.push(q);
+    return "-----BEGIN OPENSSH PRIVATE KEY-----\ncGFzdGVk\n-----END OPENSSH PRIVATE KEY-----\n";
+  };
+  pasted.io.prompt = async () => assert.fail("a pasted key is read hidden, never as a visible line");
+  pasted.io.sshPublicKey = async () => `${PUBLIC_KEY}\n`;
+  assert.equal(await up([], pasted.io), 0);
+  assert.equal(hidden.length, 1);
+  assert.match(hidden[0]!, /hidden/);
+  assert.match(gitSshSecret(pasted)!.stringData.key!, /cGFzdGVk/);
+});
+
+test("git ssh: --yes generates — it never asks, never pauses, and still ends with the notice", async () => {
+  const { home } = await mkSshHome();
+  const w = mkWorld(await mkInstance(SSH_CONFIG), {
+    env: { HOME: home },
+    // A menu answer that would pick a personal key, to prove --yes never reaches the menu.
+    choose: (options) => options.findIndex((o) => o.includes("id_ed25519")),
+  });
+  w.io.prompt = async () => assert.fail("--yes has nobody to wait for");
+  w.io.sshPublicKey = async () => assert.fail("--yes never selects a personal key");
+  w.io.sshKeygen = async () => ({ privateKey: PRIVATE_KEY, publicKey: `${PUBLIC_KEY}\n` });
+
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.equal(w.choices.length, 0, "non-interactive means generate — the dangerous option is never a default");
+  assert.equal(gitSshSecret(w)!.stringData.key, PRIVATE_KEY);
+  assert.match(w.err.join("\n"), /will not sync/, "the closing notice does not depend on the pause");
+});
+
+test("git ssh: a passphrase-protected key is refused BY NAME, before anything is applied", async () => {
+  const { home } = await mkSshHome();
+  const w = mkWorld(await mkInstance(SSH_CONFIG), {
+    env: { HOME: home },
+    choose: (options) => options.findIndex((o) => o.includes("id_ed25519")),
+  });
+  w.io.sshPublicKey = async () => {
+    throw new Error("it is passphrase-protected. The in-cluster clone runs unattended…");
+  };
+  await assert.rejects(() => up([], w.io), /passphrase-protected/);
+  assert.equal(gitSshSecret(w), undefined, "no Secret may be applied on a key j2 refuses");
+});
+
+test("git ssh: declining every source bails; an existing Secret is never offered against", async () => {
+  const { home } = await mkSshHome();
+  const decline = mkWorld(await mkInstance(SSH_CONFIG, "decl"), { env: { HOME: home } }); // → none of these
   decline.io.sshKeygen = async () => assert.fail("declined — no key may be generated");
   await assert.rejects(() => up([], decline.io), /j2-git-ssh/);
+  assert.equal(gitSshSecret(decline), undefined);
 
-  // An existing Secret means no offer at all.
-  const has = mkWorld(await mkInstance(config, "has"));
+  const has = mkWorld(await mkInstance(SSH_CONFIG, "has"));
   has.kube.set("myinst", "secret", "j2-git-ssh", { metadata: { name: "j2-git-ssh" } });
   has.io.sshKeygen = async () => assert.fail("Secret exists — no key may be generated");
   assert.equal(await up(["--yes"], has.io), 0);
+  assert.equal(has.choices.length, 0);
 });
 
 // --- Instance Harness (ADR-0031): converged by convention, never by config -----------------------
@@ -1036,7 +1406,7 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
   assert.equal(await up(["--yes"], w.io), 0);
 
   const images = imagesOf(w);
-  assert.match(images.harness, /^j2-harness:[0-9a-f]{12}$/);
+  assert.match(images.harness, /^j2-harness:[0-9a-f]{12}-amd64$/);
   const { deployment } = findInstanceHarness(w);
   assert.equal(deployment!.spec.template.spec.containers[0].image, images.harness);
   assert.equal(deployment!.spec.template.spec.containers[1].image, images.adapter);
