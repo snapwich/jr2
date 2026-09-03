@@ -98,10 +98,10 @@ export function loadSpec(env: Record<string, string | undefined>): AgentsSpec {
     throw new Error(`J2_AGENTS_JSON is not JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // An EMPTY roster is valid (ADR-0018): a workflow that invokes no Agent — a `workspace()` body
+  // parking a Sandbox (ADR-0012) — still needs a serving Harness (binding :8080 is the pod's Ready
+  // signal), just no definitions. Any `agentRun` against it 404s at admission.
   const agents = spec?.agents ?? [];
-  if (agents.length === 0) {
-    throw new Error("no Agent definitions in the mounted spec — nothing to serve (ADR-0018)");
-  }
   const seen = new Set<string>();
   for (const a of agents) {
     if (!a?.name || !a.definition?.instructions) {
@@ -120,7 +120,8 @@ export function loadSpec(env: Record<string, string | undefined>): AgentsSpec {
       );
     }
   }
-  return spec;
+  // Normalized: a spec with no `agents` key serves as the empty roster, so callers never null-check.
+  return { ...spec, agents };
 }
 
 /** One Agent's definition off a loaded spec, defaults applied — the per-Submission read

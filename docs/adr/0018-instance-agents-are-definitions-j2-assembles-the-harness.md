@@ -82,7 +82,10 @@ check for the flexibility.
 - Because definitions are plain data, stock ones compose with no API: `@j2/agents` definitions are used by re-export
   (`export { coder as default } from "@j2/agents"` — filename-discovery stays the one registration mechanism) and
   extended by spread (ADR-0009).
-- Invalid definitions fail at pod boot, loudly, in the pod log: duplicate or zero agent names, a model no registry
-  resolves. Readiness is binding `:8080`, with no boot build ahead of it (ADR-0027).
+- Invalid definitions fail at pod boot, loudly, in the pod log: duplicate agent names, a model no registry resolves. An
+  **empty roster is not invalid**: an instance may define no Agents at all and still run workflows that invoke none (a
+  `workspace()` body parking a Sandbox, ADR-0012) — the Harness serves the empty roster, and any `agentRun` against it
+  404s at admission naming the missing definition. Readiness is binding `:8080`, with no boot build ahead of it
+  (ADR-0027).
 - The kit owns version compatibility: the Harness runtime and its exact pins are kit concerns (ADR-0027) — bumping them
   is a kit change, never an instance chore.

@@ -29,9 +29,10 @@ test("loadSpec: non-JSON fails loudly, naming the env var", () => {
   assert.throws(() => loadSpec({ J2_AGENTS_JSON: "{nope" }), /J2_AGENTS_JSON is not JSON/);
 });
 
-test("loadSpec: zero agents fails — nothing to serve", () => {
-  assert.throws(() => loadSpec(env({ agents: [] })), /no Agent definitions/);
-  assert.throws(() => loadSpec(env({})), /no Agent definitions/);
+test("loadSpec: an empty roster is valid — a workflow may invoke no Agent (ADR-0018)", () => {
+  assert.deepEqual(loadSpec(env({ agents: [] })).agents, []);
+  // No `agents` key normalizes to the empty roster, so callers never null-check.
+  assert.deepEqual(loadSpec(env({})).agents, []);
 });
 
 test("loadSpec: an entry without instructions is not a definition", () => {
