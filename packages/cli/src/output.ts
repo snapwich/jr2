@@ -89,10 +89,12 @@ export async function confirmOrBail(io: Io, question: string): Promise<boolean> 
 
 /**
  * Ask which of several offered options to take (ADR-0047: the git-ssh key source). The same
- * discipline as `confirmOrBail` — injectable, and a non-tty answers "none" rather than hanging —
- * with one addition: anything that is not a listed number is ALSO "none". A menu whose dangerous
- * entries sit beside the recommended one must never resolve a typo into a pick, and the caller's
- * decline path (bail with the manual instructions) is the safe answer to an unreadable one.
+ * discipline as `confirmOrBail` — injectable, and a non-tty answers "none" rather than hanging.
+ * Interactively it is an arrow-key menu: the highlight moves, ENTER commits it, and everything
+ * else that resolves (esc, q, ctrl-c) is "none". No keystroke but enter can pick, because this
+ * menu's entries are not interchangeable — the dangerous ones sit beside the recommended one, so
+ * a stray key must never resolve into a pick, and the caller's decline path (bail with the manual
+ * instructions) is the safe answer to an unreadable one.
  */
 export async function chooseOrBail(io: Io, question: string, options: string[]): Promise<number | undefined> {
   if (io.choose) return io.choose(question, options);
@@ -100,18 +102,69 @@ export async function chooseOrBail(io: Io, question: string, options: string[]):
     activity(io, `${question} — not a tty; pass --yes to take the recommended option non-interactively`);
     return undefined;
   }
-  const { createInterface } = await import("node:readline/promises");
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    // One question string, menu included: readline owns the line (see `confirmOrBail`), so a menu
-    // written to stderr beforehand would be erased by its first refresh.
-    const menu = options.map((o, i) => `  ${i + 1}) ${o}`).join("\n");
-    const answer = await rl.question(`${question}\n${menu}\n  (anything else cancels)\nchoice: `);
-    const pick = Number.parseInt(answer.trim(), 10);
-    return Number.isInteger(pick) && pick >= 1 && pick <= options.length ? pick - 1 : undefined;
-  } finally {
-    rl.close();
-  }
+  return menu(question, options);
+}
+
+/** The menu's own drawing and key handling. It writes to stderr directly rather than through
+ * `activity`, because cursor moves and highlights are not activity lines — the block is redrawn
+ * in place and then collapsed to the one line worth keeping in the scrollback. */
+async function menu(question: string, options: string[]): Promise<number | undefined> {
+  const input = process.stdin;
+  const out = process.stderr;
+  const color = !process.env.NO_COLOR;
+  const { emitKeypressEvents } = await import("node:readline");
+  emitKeypressEvents(input);
+  const wasRaw = input.isRaw === true;
+  input.setRawMode(true);
+  input.resume();
+  out.write(`${question}\n\u001b[?25l`); // question stays; cursor hidden while the block moves
+
+  let cursor = 0;
+  let drawn = false;
+  const hint = "  (↑/↓ move · enter selects · esc cancels)";
+  const draw = (): void => {
+    if (drawn) out.write(`\u001b[${options.length + 1}A`); // back to the block's first line
+    for (const [i, option] of options.entries()) {
+      const line = clip(i === cursor ? `❯ ${option}` : `  ${option}`, out.columns);
+      out.write(`\u001b[2K${color && i === cursor ? `\u001b[36m${line}\u001b[0m` : line}\n`);
+    }
+    out.write(`\u001b[2K${clip(hint, out.columns)}\n`);
+    drawn = true;
+  };
+
+  return new Promise<number | undefined>((resolve) => {
+    const finish = (pick: number | undefined): void => {
+      input.off("keypress", onKey);
+      if (!wasRaw) input.setRawMode(false);
+      input.pause();
+      // Collapse the block to its outcome: a menu that scrolled past should still say what was
+      // chosen, and a redrawn one must not leave N stale lines behind.
+      out.write(`\u001b[${options.length + 1}A\u001b[0J`);
+      out.write(`${pick === undefined ? "  (cancelled)" : clip(`  ❯ ${options[pick]}`, out.columns)}\n\u001b[?25h`);
+      resolve(pick);
+    };
+    const onKey = (str: string | undefined, key: { name?: string; ctrl?: boolean } | undefined): void => {
+      if (!key) return;
+      if (key.ctrl && (key.name === "c" || key.name === "d")) return finish(undefined);
+      if (key.name === "up" || key.name === "k") cursor = (cursor + options.length - 1) % options.length;
+      else if (key.name === "down" || key.name === "j") cursor = (cursor + 1) % options.length;
+      else if (str !== undefined && /^[1-9]$/.test(str) && Number(str) <= options.length) cursor = Number(str) - 1;
+      else if (key.name === "return" || key.name === "enter") return finish(cursor);
+      else if (key.name === "escape" || key.name === "q") return finish(undefined);
+      else return; // an unmapped key changes nothing — no redraw, no pick
+      draw();
+    };
+    input.on("keypress", onKey);
+    draw();
+  });
+}
+
+/** One rendered menu line, kept to one terminal row: a wrapped line would break the cursor
+ * arithmetic the redraw depends on. A width of 0 is a terminal that never reported one (a pty
+ * opened without a size), not a zero-wide screen — assume 80 rather than clip every line away. */
+function clip(line: string, columns: number | undefined): string {
+  const width = (columns && columns > 0 ? columns : 80) - 1;
+  return line.length <= width ? line : `${line.slice(0, Math.max(1, width - 1))}…`;
 }
 
 /** Read one visible line — a path to type, or the bare enter that ends a pause. A non-tty reads
