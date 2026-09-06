@@ -334,14 +334,19 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * no `command` (its own entrypoint runs, untouched), no `env`, no `envFrom`, no `/opt/j2`, no CA
    * bundle, no ports, no resources. Every key j2 forwarded would be a crack in "j2 puts nothing in
    * it", and widening the one authoring string to an object stays compatible if a concrete need
-   * ever argues its own way in.
+   * ever argues its own way in. (Git's dubious-ownership guard is the line's cost, accepted with
+   * eyes open — ADR-0005: safe.directory is honored only from files this seat's image owns, so an
+   * image whose sessions run git carries its own line.)
    *
-   * `/work` read-write is the single exception, and it is not an injection but the point: this
-   * seat and the Harness mount ONE worktree, so the human and the Agent see identical files —
-   * which is also why ADR-0005's cross-uid pair (the pod's `fsGroup`, the attach's default ACL)
-   * exists at all. The Adapter is deliberately not given `/work`: it reads no worktree, and it is
-   * the container holding the pod's only credential, so it gets the narrowest mount set that
-   * works. It also carries no
+   * `/work` read-write plus `/repos` read-only are the single exception, and they are not an
+   * injection but the point: this seat and the Harness mount ONE worktree, so the human and the
+   * Agent see identical files — which is also why ADR-0005's cross-uid pair (the pod's `fsGroup`,
+   * the attach's default ACL) exists at all. `/repos` rides along because it is half of the same
+   * files: the worktrees are `--shared` clones whose alternates resolve objects from
+   * `/repos/<name>/default` (ADR-0004), so a seat with `/work` alone holds checkouts whose every
+   * borrowed object is missing ("unable to normalize alternate object path"). The Adapter is
+   * deliberately not given either: it reads no worktree, and it is the container holding the
+   * pod's only credential, so it gets the narrowest mount set that works. It also carries no
    * `securityContext`, which the operator reads as the exemption — root is ALLOWED here, because
    * hardening a seat whose identity is "what j2 does not own" is an opinion, and the standard
    * managed-access shape (a root sshd that setuids sessions down) must run unmodified.
@@ -349,7 +354,10 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const userSidecar = (refs: ImageRefs, image: string) => ({
     name: "user",
     image: resolveUserImage(refs, image),
-    volumeMounts: [{ name: "work", mountPath: workRoot }],
+    volumeMounts: [
+      { name: "work", mountPath: workRoot },
+      { name: "repos", mountPath: "/repos", readOnly: true },
+    ],
   });
 
   /** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim). The
@@ -782,6 +790,14 @@ export function attachScript(
       // No baseRef → the repo's own default branch: this clone's `origin/HEAD` tracks the volume
       // checkout's HEAD, which the reconcile's clone pointed at the remote's default (ADR-0004).
       `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.baseRef ?? "origin/HEAD")}`,
+      // Fetch/push split (ADR-0005): `git fetch` stays on the volume (the hop the pod can make),
+      // `git push` goes to the REAL remote — read off the volume checkout's own origin, the same
+      // url the reconcile cloned, so nothing plumbs it and a config url change lands on the next
+      // attach. Push still succeeds only with a caller-supplied credential (a forwarded agent in
+      // the User Container); the pod itself holds none. Guarded: an adopted checkout may carry no
+      // origin url, and such a worktree just keeps volume-push (refused by the RO mount).
+      `url="$(git -C ${sq(`${paths.reposMount}/${repo.name}/default`)} config remote.origin.url || true)"; ` +
+        `[ -z "$url" ] || git -C ${sq(dflt)} remote set-url --push origin "$url"`,
     );
     if (spec.reviewSha) {
       // The reviewer's seat (ADR-0028): a DETACHED HEAD at the sha under review, so a rogue write

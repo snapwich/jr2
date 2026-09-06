@@ -27,8 +27,29 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
     private mount namespace, where the Agent executes nothing. The human sshs in with agent forwarding, works, and the
     socket is gone on disconnect; at no point does it share a filesystem with code the Agent runs.
 
-The Harness and User containers mount `/work` read-write, so human and agent see identical files. The Adapter mounts no
-worktree — the pod's credential holder has no business in the working tree.
+The Harness and User containers mount `/work` read-write **and `/repos` read-only**, so human and agent see identical
+files. `/repos` is not a second exception but half of the first: the worktrees are `--shared` clones whose alternates
+resolve objects from `/repos/<name>/default` (ADR-0004), so a seat holding `/work` alone holds checkouts whose every
+borrowed object is missing — git in the User Container dies on "unable to normalize alternate object path". The Adapter
+mounts neither — the pod's credential holder has no business in the working tree.
+
+One git wall stays the image's own: git's dubious-ownership guard fires in the User Container whenever its uid differs
+from the Harness's (the attach created the trees), and `safe.directory` is honored only from system/global config —
+files j2 does not own in this seat. Env-form config (`GIT_CONFIG_*` on the sidecar) was considered and rejected: it
+would crack "j2 puts nothing in it", and it does not even cover the seat's flagship access path — ssh login sessions
+scrub container env — so the image would still owe a line for sshd while carrying j2's env for exec sessions, two
+mechanisms where one honest one serves. A User Container image whose sessions run git carries its own
+`git config --global --add safe.directory '*'` (or ships it in `/etc/gitconfig`).
+
+The worktrees' remotes encode which hop each seat can make: `git fetch origin` reads the volume checkout (refreshed by
+the reconcile — the hop the pod can make), while origin's **push url** is the real remote — the attach copies it from
+the volume checkout's own `remote.origin.url`, the single source the reconcile cloned from, so nothing plumbs it. A push
+therefore succeeds exactly when a caller supplies the credential — a human's forwarded agent in the User Container — and
+never for the Agent, because the pod holds none (the credential-visibility story above, unchanged). Creating a pull
+request is a GitHub API call on top: the human's own `gh` login in their session. An UNATTENDED publish (workflow pushes
+a branch, opens a PR) is deliberately absent: it belongs to the Orchestrator, which already holds the git credential and
+can fetch a branch out of a pod without one (`ext::kubectl exec … git upload-pack`) — a future decision, not a
+pod-composition change.
 
 ## Sharing `/work` across uids
 

@@ -182,7 +182,13 @@ test("the User Container is the zero-contract seat: own entrypoint, /work, and N
   assert.deepEqual(user, {
     name: "user",
     image: "j2-sandbox-inst-rust:r00",
-    volumeMounts: [{ name: "work", mountPath: "/work" }],
+    // Both halves of the one exception: the worktrees, and the RO source their `--shared` clones
+    // resolve objects from (ADR-0004) — /work without /repos is a checkout with every borrowed
+    // object missing. No env: safe.directory stays the image's own line (ADR-0005).
+    volumeMounts: [
+      { name: "work", mountPath: "/work" },
+      { name: "repos", mountPath: "/repos", readOnly: true },
+    ],
   });
   // And no securityContext, which is how the operator reads the exemption: root is allowed here.
   assert.ok(!("securityContext" in user), "the seat j2 does not own is not hardened by j2");
@@ -611,6 +617,10 @@ test("attach execs the idempotent ADR-0004 script in the harness container", asy
   const script = argv[argv.length - 1]!;
   assert.match(script, /git clone --shared --no-checkout '\/repos\/app\/default' '\/work\/app\/default'/);
   assert.match(script, /worktree add '\/work\/infra\/feat-login' -b 'feat\/login' 'v2'/);
+  // The fetch/push split (ADR-0005): push goes to the REAL remote, read off the volume checkout's
+  // own origin url — guarded, so an adopted checkout without one keeps volume-push.
+  assert.match(script, /config remote\.origin\.url \|\| true/);
+  assert.match(script, /git -C '\/work\/app\/default' remote set-url --push origin "\$url"/);
   // No baseRef → the repo's OWN default branch, via the clone's origin/HEAD — never a hardcoded
   // guess like `main` against a `master` repo.
   const defaulted = await port.attach({
