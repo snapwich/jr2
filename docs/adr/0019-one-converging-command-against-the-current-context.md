@@ -20,11 +20,13 @@ baked mounts, no recorded pod→host route, no `.j2/dev.json` / `.j2/cluster.jso
 loudly narrated, safe to re-run:
 
 - **Operator** (per-cluster, shared): CRD + Deployment applied from manifests shipped _inside the installed npm
-  package_; the manifest references the published operator image whose tag equals the kit version (one release train:
-  npm version == image tag). `up` upgrades an older deployed operator and **never downgrades** — if another instance
-  upgraded it past this kit's pin, warn and leave it (CRD versioning is the skew contract). Kit development overrides
-  the image ref (locally built + `kind load`, justfile territory) or skips the layer (`operator.manage: false`) to run
-  the controller loop in the foreground.
+  package_. The image ref follows [ADR-0038](0038-j2-up-builds-every-image-it-deploys.md): in a kit checkout, `up`
+  builds the operator image and content-addresses it; installed from npm, the ref is the published `<kitversion>` tag at
+  the canonical home, re-homed by `kitRegistry`
+  ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)). `up` upgrades an older deployed
+  operator and **never downgrades** — if another instance upgraded it past this kit's pin, warn and leave it (CRD
+  versioning is the skew contract). `operator.manage: false` skips the layer to run the controller loop in the
+  foreground (kit development).
 - **Orchestrator** (per-instance): the one image an instance produces — engine + its `workflows/` baked (ADR-0008) —
   built by `up` and **content-addressed by its deploy bundle**: the tag is a hash of the materialized bundle, which is
   the actual image input. The kit is in there as resolved source, so a kit edit in a workspace checkout and a kit
@@ -32,9 +34,11 @@ loudly narrated, safe to re-run:
   Hashing the instance _folder_ instead — where the kit appears only as a version range — is what let `up` skip builds
   it needed. `--force` rebuilds against an unchanged hash. Delivery keys off config: no `registry` → `docker build` +
   `kind load`; `registry` set → build + push. Targeting a non-kind cluster without a registry fails loudly.
-- **Harness**: no per-instance image (ADR-0018). `up` publishes the instance's plain-data Agent definitions as a
-  ConfigMap consumed by the stock `j2-harness:<kitversion>` image; the Adapter image ref is pinned the same way as the
-  operator's.
+- **Harness**: no per-instance Harness image (ADR-0018). Harness and Adapter are Kit images, resolved like the
+  operator's (checkout-built or published, ADR-0038/0044); the Harness reaches each Sandbox as an `/opt/j2` volume
+  injected at pod time, over a Sandbox Image the instance builds or brings
+  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)). `up` delivers the instance's
+  plain-data Agent definitions to the Orchestrator (`J2_AGENTS_JSON`), which assembles each turn's harness spec.
 - **Secrets**: values declared in config (which may read `process.env`, populated from the uncommitted `.env`) are
   materialized into an instance-owned Secret. Referenced-but-unmanaged Secrets (`envFrom` refs, git credentials) are
   **preflighted**: `up` fails naming the missing Secret with the exact creation hint — converting the
@@ -97,13 +101,14 @@ committed (the instance repo is the GitOps unit, ADR-0008); everything deploymen
 
 ## Consequences
 
-- The everyday story is two commands ever: `j2 init`, `j2 up`. The full CLI: `init`, `up`, `down`, `run`, `runs`,
-  `status`, `logs`, `send`, `ls`, `ssh`, `rm`.
+- The everyday story is two commands ever: `j2 init`, `j2 up`. The full CLI: `init`, `up`, `down`, `gc` (ADR-0039),
+  `run`, `runs`, `status`, `logs`, `send`, `kit push` (ADR-0044), plus the workspace verbs `ls`, `ssh`, `rm` (ADR-0009;
+  decided, not yet in the binary).
 - **Simplification must not surprise**: `up` prompts exactly when meeting a cluster that isn't yet home, and run-verbs
   print the context they're talking to — the ambient-context magic stays visible.
 - The snapshot store (sqlite) moves onto a PVC in the instance's namespace; `.j2/` shrinks to scratch.
 - `j2 build` (build + push + render manifests, no apply — the pure-GitOps CI verb) is planned but deferred; `up` in CI
   covers the interim.
-- The e2e tier (ADR-0010) loses `j2 dev` as its per-scenario fixture and needs redesign against in-cluster
-  orchestrators.
+- The e2e tier (ADR-0010) loses `j2 dev` as its per-scenario fixture; the fixture boots the instance image's server
+  entrypoint as a host process instead — the same real server the cluster runs, no cluster, no user-facing verb.
 - The justfile returns to kit-repo development only; no instance operation appears in it.

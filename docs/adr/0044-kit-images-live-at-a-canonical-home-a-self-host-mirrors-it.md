@@ -30,7 +30,8 @@ never names it.
     platform and ship an amd64-only image to an arm64 cluster. A tag already present in the target is skipped and
     reported: published version tags never move, so present implies current. The binary has **no build arm**: the npm
     packages carry no Harness or Adapter source, and an installed CLI that could build Kit images is exactly the
-    patched-Harness eject hatch [ADR-0027](0027-the-agent-runtime-is-forked-in-not-wrapped.md)/ADR-0038 welded shut.
+    patched-Harness eject hatch [ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)/ADR-0038
+    welded shut.
   - **`just kit-push <registry>`** (in the checkout, for the kit developer and the release pipeline): build the three
     images from source **multi-arch** (`docker buildx build --platform linux/amd64,linux/arm64 --push`) at the published
     names into the given registry. This is how the canonical home gets its images at release — and how a dev-loop

@@ -12,6 +12,7 @@ my-orchestrator/
   j2.config.ts     # instance config — minimal; convention over configuration (see below)
   workflows/       # filename-discovered: workflows/review.ts (contract: export const machine) → "review"
   agents/          # filename-discovered plain-data Agent definitions (ADR-0018); j2 assembles the Harness
+  images/          # filename-discovered Sandbox Images: images/<name>/Dockerfile (ADR-0037); build context = that dir
   manifests/       # user-supplied objects applied by `j2 up` (e.g. SealedSecrets); optional
   .env             # local secrets + deployment-varying env; uncommitted
   .j2/             # scratch; nothing durable lives on the host (state is in-cluster, ADR-0019)
@@ -40,20 +41,20 @@ export default defineConfig({ name: "my-orchestrator", sandbox: {} });
 - **`repos[]` is the source catalog.** Each `{ name, url, ref? }` entry is cloned into the in-cluster source volume by
   the boot reconcile (ADR-0004); Sandboxes clone `--shared` against it. There is no host-side catalog directory — a repo
   pods should see must be fetchable from the cluster.
-- **A non-empty `repos` list is the data-plane switch** (as amended by ADR-0031): with it, the instance gets the kubectl
-  Sandbox backend; without it, the instance is workspace-less — a Workspace needs repos. ~~Image composition lives in
-  the `images` block: `images.harness`/`images.adapter`/`images.operator` default to the published `<kitversion>` tags
-  (every Sandbox gets an Adapter — an Agent without one cannot act, ADR-0013); `images.user` opts into the User
-  Container (ADR-0005).~~ **Superseded by [ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)**: the `images` block
-  is deleted outright, no key and no env escape hatch — `j2 up` builds every image it deploys and resolves each to a
-  content-addressed tag, and `images.user` died with the User Container
-  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)). An Adapter in every Sandbox is
-  unchanged; it is simply not configurable. Agent-runtime concerns live in `harness` (ADR-0018).
+- **A non-empty `repos` list is the data-plane switch** (ADR-0031): with it, the instance gets the kubectl Sandbox
+  backend; without it, the instance is workspace-less — a Workspace needs repos. There is **no `images` config block**:
+  `j2 up` builds every image it deploys and resolves each to a content-addressed tag
+  ([ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)). Image composition is per Workspace, not per instance — a
+  `workspace()` spec names its Sandbox Image (a discovered `images/<name>/` directory or a registry ref,
+  [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)) and opts into a User Container the
+  same way ([ADR-0005](0005-sandbox-pod-composition.md)). Every Sandbox gets an Adapter — an Agent without one cannot
+  act (ADR-0013) — and that is not configurable. Agent-runtime concerns live in `harness` (ADR-0018).
 - **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`) and the env/creds the Agents
   need (e.g. an Anthropic key, read from `process.env`/`.env` and materialized as a Secret by `j2 up`, or `envFrom` refs
   to Secrets you manage) — never which model to use; each definition names its own (ADR-0018).
 - **`registry`** (deployment-varying, resolve from env): absent → images are `kind load`-ed; present → pushed
-  (ADR-0019).
+  (ADR-0019). **`kitRegistry`** (also env) re-homes the published Kit image refs for self-hosted, air-gapped, or
+  mirror-only clusters ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)).
 - **The snapshot store defaults to sqlite** on a PVC in the instance's namespace (zero setup); **Postgres** is opt-in
   via `DATABASE_URL` — j2 points at a database you provide, it never deploys or operates one (the single-table,
   single-writer snapshot fits sqlite, and `replicas: 1` keeps it single-writer).
@@ -112,6 +113,10 @@ events POST is ambiguous. `CANCEL` is the one reserved run-level event; everythi
 j2 init [dir] [--name <n>]        # scaffold the minimum runnable instance
 j2 up [--yes]                     # converge the current context to this instance (ADR-0019)
 j2 down [--all]                   # remove the instance from the cluster (--all: operator too)
+j2 gc [--dry-run]                 # sweep unreachable labeled images — the same sweep up/down run (ADR-0039)
+
+# kit (instance-less)
+j2 kit push <registry>            # mirror the published Kit images into a self-hosted registry (ADR-0044)
 
 # runs / workflows (wrap the HTTP API)
 j2 run <workflow> [--input <json>] [--detach]
@@ -119,7 +124,7 @@ j2 runs   j2 status [runId|abbrev]   j2 logs <runId|abbrev> [-f]   # bare `statu
 j2 send <runId|abbrev> --event CANCEL
 j2 send <runId|abbrev> --gate <gate> --event <name> [--input <json>]
 
-# workspaces (kubectl-style, over the operator's Sandbox CRs)
+# workspaces (kubectl-style, over the operator's Sandbox CRs) — decided, not yet in the binary
 j2 ls                             # list workspaces + run + status + endpoint
 j2 ssh <workspace>                # exec into the Sandbox's harness container (ADR-0037)
 j2 logs <workspace>   j2 rm <workspace>
@@ -184,17 +189,17 @@ context, no gates — to keep that widening as small as the feature allows, and 
 since prefix probing on an open route would be a run-id enumeration oracle.
 
 **`j2 init` (v1).** Scaffolds the minimum runnable instance: `j2.config.ts` (root marker), `package.json` (deps on
-`@j2/*` + xstate), one starter `workflows/<name>.ts`, and `.gitignore` (`.j2/`, `.env`, `node_modules/`). `[dir]`
-positional (default cwd); `--force` to overwrite an existing `j2.config.ts`. `agents/`, `manifests/`, and `.env` are
-added by their later slices. No auto-install — it prints the next step, ~~`pnpm install && j2 up`~~ **as amended by
-[ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)** naming no package manager, since
-the instance's lockfile is what picks one.
+`@j2/*` + xstate), one starter `workflows/<name>.ts`, `images/default/Dockerfile` (the Sandbox Image every Workspace
+falls back to, ADR-0037), and `.gitignore` (`.j2/`, `.env`, `node_modules/`). `[dir]` positional (default cwd);
+`--force` to overwrite an existing `j2.config.ts`. `agents/`, `manifests/`, and `.env` are added by their later slices.
+No auto-install — it prints the next step, naming no package manager, since the instance's lockfile is what picks one
+([ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)).
 
 ## Consequences
 
-- ~~All `packages/*` publish to npm under `@j2/*`; instances depend on them.~~ **Amended by
-  [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: the instance-facing packages
-  (`@j2/cli`, `@j2/orchestrator`, `@j2/agent-protocol`) publish to npm; `@j2/harness`/`@j2/adapter` ship inside Kit
-  images, never via npm. The CLI ships as the `j2` bin (`npx j2`).
+- The instance-facing packages (`@j2/cli`, `@j2/orchestrator`, `@j2/agent-protocol`) publish to npm; `@j2/harness` and
+  `@j2/adapter` ship inside Kit images, never via npm
+  ([ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)). The CLI ships as the `j2` bin
+  (`npx j2`).
 - Workspaces are a first-class CLI resource backed by the operator's `Sandbox` CRs, label-linked to their runs.
 - Dynamic third-party workflow/plugin loading stays deferred (ADR-0008); discovery is over the instance's own code.
