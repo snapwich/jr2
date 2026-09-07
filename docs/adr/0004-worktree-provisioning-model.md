@@ -53,6 +53,14 @@ reconcile does too: every catalogued repo must be **fetchable from the cluster**
 for private ones — ADR-0019); a working copy that exists only on someone's host is not a valid source. A checkout found
 on the volume without a config entry is left alone but not refreshed — the config is the single catalog.
 
+A catalog entry is a url, or `{ name, url, ref }`. **The name defaults to the repository's own name** — the url's last
+path segment, minus a trailing `.git` — and two entries that derive the same name fail the load by naming both urls,
+since the explicit form exists for exactly that case. The default is recorded here rather than left to taste because the
+name is the directory on the volume (`repos/<name>/default`) and the handle every `workspace()` uses: a different
+derivation later orphans every checkout the old one made. Resolution happens once, where the config is loaded, and is
+the one place the entries' shape is validated at runtime — an instance is zero-build, so nothing typechecks a config
+before `j2 up` imports it, and a mis-shaped entry must fail there rather than silently read as `url: undefined`.
+
 ## Storage shape: one model, two backings
 
 The contract every Sandbox needs is narrow — _a read-only directory at `/repos` containing `<name>/default`_ — and the

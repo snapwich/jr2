@@ -12,8 +12,20 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { z } from "zod";
 
+/** A catalog entry as the author writes it (ADR-0004). `name` defaults to the repository's own
+ * name from the url; the string form is `{ url }`. Name one explicitly when two catalogued
+ * repositories share a name — that is the case the explicit form exists for. */
 export type RepoConfig = {
+  name?: string;
+  url: string;
+  ref?: string;
+};
+
+/** A Repo as the Instance runs with it: every name resolved, no shorthand left. What `loadConfig`
+ * hands every consumer — the reconcile, `j2 up`, the status surface. */
+export type Repo = {
   name: string;
   url: string;
   ref?: string;
@@ -113,7 +125,7 @@ export type J2Config = {
    * is also the data-plane switch (ADR-0012/0031): a Workspace needs repos, so with them the
    * instance gets the kubectl Sandbox backend, and without them it is workspace-less
    * (`workspace()` invocations fault pointedly). */
-  repos?: RepoConfig[];
+  repos?: (string | RepoConfig)[];
   /** Agent-runtime config for the stock Harness (see `HarnessConfig`). */
   harness?: HarnessConfig;
   /** Image registry prefix (deployment-varying — resolve from env). Absent → images are
@@ -151,15 +163,74 @@ export function defineConfig(c: J2Config): J2Config {
   return c;
 }
 
+/** The config as the Instance runs it: `J2Config` with its `repos` resolved to `Repo`s. */
+export type InstanceConfig = Omit<J2Config, "repos"> & { repos?: Repo[] };
+
 /**
  * Load an instance's `j2.config.ts` (default export). Absent file → undefined (an instance
  * can boot configless); a file that fails to IMPORT throws — a broken config must be loud,
- * never silently treated as "no config".
+ * never silently treated as "no config". The one resolution pass lives here, on the path the
+ * host CLI and the in-cluster Orchestrator share: `repos` shorthand becomes `Repo`s, and the
+ * entries' SHAPE is checked at runtime — an instance is zero-build, so nothing typechecks this
+ * file before Node strips its types and imports it (ADR-0004).
  */
-export async function loadConfig(dir: string): Promise<J2Config | undefined> {
+export async function loadConfig(dir: string): Promise<InstanceConfig | undefined> {
   const file = join(dir, "j2.config.ts");
   if (!existsSync(file)) return undefined;
   const mod = (await import(pathToFileURL(file).href)) as { default?: J2Config };
   if (!mod.default) throw new Error(`${file} has no default export (use \`export default defineConfig({…})\`)`);
-  return mod.default;
+  const { repos, ...rest } = mod.default;
+  return repos === undefined ? rest : { ...rest, repos: resolveRepos(repos, file) };
+}
+
+const RepoUrl = z.string().min(1);
+const RepoObject = z.object({ name: RepoUrl.optional(), url: RepoUrl, ref: RepoUrl.optional() }).strict();
+
+/**
+ * `repos` as written → `Repo`s (ADR-0004): a string is `{ url }`, and a missing `name` is the
+ * repository's own — the url's last path segment minus a trailing `.git`. Two entries deriving
+ * one name fail by naming both urls: the explicit form is the fix, and a silent second clone
+ * into the first one's directory is not. `where` names the file in every error.
+ */
+export function resolveRepos(repos: unknown, where: string): Repo[] {
+  if (!Array.isArray(repos)) throw new Error(`${where} at repos: expected an array — ${HINT}`);
+  const out: Repo[] = [];
+  const seen = new Map<string, string>();
+  for (const [i, entry] of repos.entries()) {
+    // Dispatched on the entry's own shape rather than a union, so a bad object names its FIELD
+    // (`repos[0].url`), not just the entry.
+    const parsed = typeof entry === "string" ? RepoUrl.safeParse(entry) : RepoObject.safeParse(entry);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const at = ["", ...(issue?.path ?? [])].map(String).join(".");
+      throw new Error(`${where} at repos[${i}]${at}: ${issue?.message ?? "invalid"} — ${HINT}`);
+    }
+    const config = typeof parsed.data === "string" ? { url: parsed.data } : parsed.data;
+    const name = config.name ?? repoName(config.url);
+    if (name === "")
+      throw new Error(`${where}: cannot derive a repo name from "${config.url}" — name it: { name, url }`);
+    const prior = seen.get(name);
+    if (prior !== undefined) {
+      throw new Error(
+        `${where}: repos "${prior}" and "${config.url}" both resolve to the name "${name}" — name one of them: { name, url }`,
+      );
+    }
+    seen.set(name, config.url);
+    out.push(config.ref === undefined ? { name, url: config.url } : { name, url: config.url, ref: config.ref });
+  }
+  return out;
+}
+
+const HINT = "an entry is a url string or { name?, url, ref? }";
+
+/** The repository's own name from its url: the last path segment, minus a trailing `.git`.
+ * `/` and `:` both end a segment, so scp-style `git@host:org/repo.git` derives like
+ * `ssh://git@host/org/repo.git`, `https://host/org/repo` and a local path alike. */
+export function repoName(url: string): string {
+  const segment =
+    url
+      .replace(/[/:]+$/, "")
+      .split(/[/:]/)
+      .pop() ?? "";
+  return segment.replace(/\.git$/, "");
 }

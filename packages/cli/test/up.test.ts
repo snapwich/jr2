@@ -1171,6 +1171,19 @@ test("git ssh source: generate — the menu leads with it, the key prints, and u
   assert.match(notice, /reconcile retries on its own/);
 });
 
+test("git ssh source: a url-string repo is seen as ssh under its derived name (ADR-0004 shorthand)", async () => {
+  const { home } = await mkSshHome();
+  const config = `export default { name: "myinst", repos: ["git@github.com:snapwich/richsnapp-new.git"] };\n`;
+  const w = mkWorld(await mkInstance(config), { choose: 0, env: { HOME: home } });
+  w.io.prompt = async () => "";
+  w.io.sshKeygen = async () => ({ privateKey: PRIVATE_KEY, publicKey: `${PUBLIC_KEY}\n` });
+
+  assert.equal(await up([], w.io), 0);
+  assert.equal(w.choices.length, 1, "the string entry is an ssh repo — the key source is asked for");
+  assert.match(w.err.join("\n"), /repos richsnapp-new use ssh urls/, "named after the repository, minus .git");
+  assert.ok(gitSshSecret(w), "the Secret is applied for it");
+});
+
 test("git ssh source: a local key — discovered by content, applied, and only its fingerprint printed", async () => {
   const { home, keyPath } = await mkSshHome();
   const w = mkWorld(await mkInstance(SSH_CONFIG), {

@@ -190,6 +190,12 @@ the name, and the endpoint while taking the clones, worktrees, and unpushed comm
 or replaced — is one `workspace.lost` event, and the body's policy decides (ADR-0021). _Avoid_: liveness (that is what
 the Lease asserts outward), health (a probe concept, about serving)
 
+**Repo**: An entry in the Instance's catalog — a git repository the Instance keeps a read-only checkout of, for
+Workspaces to worktree against. Identified by its name, which is the repository's own name from its url unless the entry
+says otherwise; naming one explicitly exists for two catalogued repositories that share a name. The name is the handle
+everywhere a Repo is referred to: the catalog, the source volume, a `workspace()`'s list, the Sandbox's record of what
+it holds. _Avoid_: project, source, remote
+
 **Project layout**: The `<repo>/default/` + sibling-worktrees convention (gwtmux's), used in two places: the in-cluster
 source volume's `repos/<name>/default` read-only checkouts, and inside a Sandbox, where the pod-local clone is the
 `default/` and branch Worktrees sit beside it — so worktree tooling works unchanged when you exec in. _Avoid_: directory

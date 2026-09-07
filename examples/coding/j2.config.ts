@@ -32,7 +32,7 @@ const vllm = process.env.VLLM_BASE_URL;
 
 export default defineConfig({
   name: "coding",
-  repos: [{ name: "obsidian-tasks.nvim", url: "https://github.com/snapwich/obsidian-tasks.nvim.git" }],
+  repos: ["https://github.com/snapwich/obsidian-tasks.nvim.git"],
   harness: {
     provider: vllm
       ? {

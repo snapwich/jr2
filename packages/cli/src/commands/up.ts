@@ -46,7 +46,7 @@ import {
   sandboxToken,
   type DiscoveredAgent,
   type ImageRefs,
-  type J2Config,
+  type InstanceConfig,
 } from "@j2/orchestrator";
 import {
   assertEmulation,
@@ -839,7 +839,7 @@ type GitSshSource = { kind: "generate" } | { kind: "file"; path: string } | { ki
 async function ensureGitSsh(
   io: Io,
   kube: KubeAdmin,
-  config: J2Config,
+  config: InstanceConfig,
   namespace: string,
   ctx: { context?: string },
   yes: boolean,
@@ -1082,7 +1082,7 @@ async function sshPublicKey(privateKey: string): Promise<string> {
  * alone. Loud on a missing file — a silently absent CA turns up later as a TLS failure inside a
  * pod, the exact hang-shaped outcome preflights exist to prevent.
  */
-async function readCaBundle(root: string, config: J2Config): Promise<string | undefined> {
+async function readCaBundle(root: string, config: InstanceConfig): Promise<string | undefined> {
   if (!config.harness?.caBundle) return undefined;
   const path = join(root, config.harness.caBundle);
   try {
@@ -1104,7 +1104,7 @@ async function readCaBundle(root: string, config: J2Config): Promise<string | un
 async function preflightProvider(
   io: Io,
   kube: KubeAdmin,
-  config: J2Config,
+  config: InstanceConfig,
   agents: DiscoveredAgent[],
   namespace: string,
   ctx: { context?: string },
@@ -1174,7 +1174,7 @@ function providerProbeScript(baseUrl: string, model: string, apiKey?: string): s
 }
 
 /** The layers this slice defers, said out loud rather than silently skipped. */
-function noteDeferred(io: Io, config: J2Config): void {
+function noteDeferred(io: Io, config: InstanceConfig): void {
   if (config.repos?.length) {
     activity(io, `repos: ${config.repos.map((r) => r.name).join(", ")} reconcile at orchestrator boot (in-cluster)`);
   }

@@ -32,7 +32,7 @@
 import { mkdir, readdir, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
-import type { J2Config } from "./config.ts";
+import type { InstanceConfig } from "./config.ts";
 
 /** Run one git invocation to completion (injectable seam). */
 export type GitRunner = (args: string[]) => Promise<void>;
@@ -88,7 +88,7 @@ function credArgs(creds?: GitCreds): string[] {
  * (and not re-announced) every time an unrelated one is retried.
  */
 export async function ensureRepos(
-  config: J2Config,
+  config: InstanceConfig,
   reposDir: string,
   git: GitRunner = defaultGit,
   creds?: GitCreds,
@@ -169,7 +169,7 @@ export type RepoReconcile = {
 };
 
 export type RepoReconcileOptions = {
-  config: J2Config;
+  config: InstanceConfig;
   reposDir: string;
   git?: GitRunner;
   creds?: GitCreds;
