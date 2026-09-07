@@ -1,8 +1,8 @@
 # j2
 
 A kit for building agentic workflows modeled as [xstate](https://stately.ai/docs) state machines. Provides composable,
-xstate-compatible pieces (an Actor backed by a Harness client, worktree creation, memory, etc.) that you assemble into a
-Machine for any workflow — coding or otherwise. The feature/task coding flow is one example Machine, not the
+xstate-compatible pieces (an Actor backed by a Harness client, worktree creation, pooling, gates) that you assemble into
+a Machine for any workflow — coding or otherwise. The feature/task coding flow is one example Machine, not the
 architecture. Agents run in isolated pods (host-level sandbox), coordinated by an Orchestrator running a Machine, on
 Kubernetes (kind locally).
 
