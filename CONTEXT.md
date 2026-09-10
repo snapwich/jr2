@@ -206,7 +206,15 @@ the Lease asserts outward), health (a probe concept, about serving)
 Workspaces to worktree against. Identified by its name, which is the repository's own name from its url unless the entry
 says otherwise; naming one explicitly exists for two catalogued repositories that share a name. The name is the handle
 everywhere a Repo is referred to: the catalog, the source volume, a `workspace()`'s list, the Sandbox's record of what
-it holds. _Avoid_: project, source, remote
+it holds. The one dependency a Machine names by string and cannot carry, so `j2.config.ts` declares it and registers the
+catalog back to the kit, which types every name in it (**RepoName**, ADR-0050). _Avoid_: project, source, remote
+
+**Register**: The interface `@j2/orchestrator` exports empty and an Instance's `j2.config.ts` augments with its own
+config type — the seam that lets the type system read a deployment fact (ADR-0050). Its one reader is `RepoName`, so a
+`workspace()` spec naming a repo the catalog does not hold is a compile error under `j2 up`'s typecheck gate. A program
+with no augmentation gets `string`, which is the honest answer for a Machine packaged for someone else's Instance; a
+config entry whose url is not a literal must carry a literal `name`, because widening to `string` would type-check every
+typo. _Avoid_: registry (that is where images live), manifest, declaration file
 
 **Project layout**: The `<repo>/default/` + sibling-worktrees convention (gwtmux's), used in two places: the in-cluster
 source volume's `repos/<name>/default` read-only checkouts, and inside a Sandbox, where the pod-local clone is the

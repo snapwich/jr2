@@ -54,7 +54,7 @@ import { join } from "node:path";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
 import { CA_CONFIGMAP, IMAGES_KEY, IMAGES_MOUNT, REPOS_PVC } from "./names.ts";
 import { sandboxToken } from "./tokens.ts";
-import type { HarnessEnvFromSource, HarnessEnvVar } from "./config.ts";
+import type { HarnessEnvFromSource, HarnessEnvVar, RepoName } from "./config.ts";
 import type { WorkspaceSpec, SandboxPort } from "./workspace.ts";
 
 /** Run one kubectl invocation to completion. `input` is piped to stdin (`apply -f -`). */
@@ -700,7 +700,11 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         await Promise.all(
           req.spec.repos.map(async (repo) => ({ name: repo.name, error: await opts.repoError?.(repo.name) })),
         )
-      ).filter((r): r is { name: string; error: string } => r.error !== undefined);
+      )
+        // `RepoName`, not `string`: in a registered program the spec's names ARE the catalog's
+        // literals (ADR-0050), and a predicate that widened them would not be assignable to what
+        // it narrows.
+        .filter((r): r is { name: RepoName; error: string } => r.error !== undefined);
       if (unsynced.length) {
         throw new Error(
           `Sandbox "${req.name}" cannot attach ${unsynced.map((r) => `repo "${r.name}" (${r.error})`).join("; ")} — ` +

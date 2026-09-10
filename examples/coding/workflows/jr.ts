@@ -27,7 +27,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assign, fromPromise } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, pool, source, workspace } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, pool, source, workspace, type RepoName } from "@j2/orchestrator";
 import { architect, coder, reviewer } from "./_agents.ts";
 
 const exec = promisify(execFile);
@@ -74,6 +74,10 @@ type Ticket = {
   title: string;
   body: string;
   assignee: string;
+  /** Which catalogued repo the work is in — a `RepoName`, so this instance's `j2.config.ts` types
+   * it (ADR-0050) and the `workspace()` spec below needs no re-check. A ticket source that hands
+   * back a plain string narrows it once, here, where the ticket is parsed. */
+  repo: RepoName;
   baseRef: string;
   branch: string;
 };
@@ -375,7 +379,7 @@ export const body = j2Setup({
 // annotation would describe a seam neither end actually has.
 const feature = workspace(body, {
   spec: ({ input }: { input: { feature: Ticket; reviewRounds: number } }) => ({
-    repos: [{ name: "app", baseRef: input.feature.baseRef }],
+    repos: [{ name: input.feature.repo, baseRef: input.feature.baseRef }],
     branch: input.feature.branch,
   }),
 });

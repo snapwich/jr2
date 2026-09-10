@@ -17,7 +17,7 @@
 
 import { defineConfig } from "@j2/orchestrator";
 
-export default defineConfig({
+const config = defineConfig({
   name: "j2-e2e-kind",
   repos: [{ name: "app", url: "/instance/seed/app.bundle" }],
   harness: {
@@ -35,3 +35,13 @@ export default defineConfig({
     },
   },
 });
+
+// The catalog registered back to the kit (ADR-0050): `RepoName` is "app" in this program, so the
+// tier's `workspace()` specs name the seed repo by a typed literal.
+declare module "@j2/orchestrator" {
+  interface Register {
+    config: typeof config;
+  }
+}
+
+export default config;

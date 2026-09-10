@@ -60,13 +60,25 @@ Given("a standalone instance scaffolded by the installed j2", async function (th
  * `.env` reaches the CLI and stops there. It is one of the credential files a bundle stage drops
  * (ADR-0043), so nothing about the mirror is baked into the instance image — and nothing needs to
  * be: `kitRegistry` is answered at converge time, when the pod spec's image refs are composed.
+ *
+ * The `declare module` block is the scaffold's (ADR-0050) and is kept deliberately: it names
+ * `@j2/orchestrator` by BARE specifier, so this tier is where it meets a genuinely npm-installed
+ * kit — both when Node type-strips this file and when `j2 up`'s gate compiles the folder.
  */
 const KIT_REGISTRY_CONFIG_TS = `import { defineConfig } from "@j2/orchestrator";
 
-export default defineConfig({
+const config = defineConfig({
   repos: [],
   kitRegistry: process.env.J2_KIT_REGISTRY,
 });
+
+declare module "@j2/orchestrator" {
+  interface Register {
+    config: typeof config;
+  }
+}
+
+export default config;
 `;
 
 // --- when ----------------------------------------------------------------------------------------

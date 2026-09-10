@@ -308,7 +308,7 @@ export type PlatformChoice = {
  * supported set is an ERROR rather than a skip, unlike a node's — a key the user typed is a claim,
  * and quietly dropping half of it would build something other than what it asked for.
  */
-export function choosePlatforms(opts: { nodeArches: string[]; configured?: string[] }): PlatformChoice {
+export function choosePlatforms(opts: { nodeArches: string[]; configured?: readonly string[] }): PlatformChoice {
   const supported = new Set(SUPPORTED_PLATFORMS);
   if (opts.configured !== undefined) {
     const asked = [...new Set(opts.configured)].sort();

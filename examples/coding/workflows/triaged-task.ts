@@ -8,8 +8,8 @@
 // the continuation sound: wherever the invocation sits, the Turn lands on the server that holds
 // the history (ADR-0031). Filename → workflow "triaged-task".
 //
-// Input (all run input; repo must name a `j2.config.ts` catalog entry):
-//   { prompt: string, repo: string, branch: string, baseRef?: string, reviewRounds?: number }
+// Input (all run input; `repo` is an enum over this instance's `j2.config.ts` catalog, ADR-0050):
+//   { prompt: string, repo: RepoName, branch: string, baseRef?: string, reviewRounds?: number }
 //
 // Shape: triage → answer (done, no Workspace) | code (enter the workspace() body). Body:
 // coder → assess (the triager again: ship | review) — ship goes straight to the humanReview
@@ -18,7 +18,8 @@
 
 import { assign, emit } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, repoNames, workspace, type Workspaced } from "@j2/orchestrator";
+import config from "../j2.config.ts";
 import { coder, reviewer, triager } from "./_agents.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -28,7 +29,9 @@ import { coder, reviewer, triager } from "./_agents.ts";
 
 const runInput = z.object({
   prompt: z.string().describe("The task or question, in prose. Triage decides whether it needs code."),
-  repo: z.string().describe("A repo name from the instance's j2.config.ts catalog."),
+  // The catalog itself, as an enum (ADR-0050): the Console's start form offers this instance's
+  // repos, and the value flows into the workspace() spec already typed as a `RepoName`.
+  repo: z.enum(repoNames(config)).describe("Which repo from this instance's j2.config.ts catalog to work in."),
   branch: z.string().describe("The branch to cut and work on, if the task is routed to code."),
   baseRef: z.string().optional().describe("What the branch is cut from and reviewed against. Default: main."),
   reviewRounds: z
@@ -232,9 +235,10 @@ export const body = j2Setup({
   output: ({ context }) => ({ outcome: context.outcome ?? "approved", branch: context.workspace.branch }),
 });
 
-// Workspace: the repo is run input (must match the instance's `j2.config.ts` catalog). A machine
-// declares the input that STARTS it (ADR-0033) — for this wrapper that is what triage hands down,
-// which types the spec mapper; the run's door is the top machine's, below.
+// Workspace: the repo is run input, already narrowed to a `RepoName` by the door's enum (ADR-0050),
+// so it drops into the spec with nothing to re-check. A machine declares the input that STARTS it
+// (ADR-0033) — for this wrapper that is what triage hands down, which types the spec mapper; the
+// run's door is the top machine's, below.
 const work = workspace(body, {
   input: codeRouteInput,
   spec: ({ input }) => ({

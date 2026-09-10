@@ -372,9 +372,9 @@ function imagesOf(w: World): Record<string, any> {
 test("the typecheck gate: a folder that does not compile converges nothing (ADR-0050)", async () => {
   // The FIRST layer, and a refusal rather than a warning: since ADR-0049 a Machine's Agent slots and
   // its composed Machines are typed, so a wrong name is a compile error here instead of an
-  // invoke-time failure mid-run — but only if nothing is spent before the compiler answers. (A repo
-  // name is NOT yet among them: ADR-0050's Register is decided and unbuilt, so a mistyped repo is
-  // still the runtime refusal at attach.)
+  // invoke-time failure mid-run — but only if nothing is spent before the compiler answers. Repo
+  // names are typed here too, through the Register the instance's own config fills (ADR-0050);
+  // what the gate itself claims is only that `j2 up` runs the compiler and refuses on its answer.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const errors = "workflows/task.ts(9,5): error TS2353: Object literal may only specify known properties";
   const bad = mkWorld(root, { typecheck: async () => ({ ok: false, output: errors }) });

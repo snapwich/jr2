@@ -116,12 +116,27 @@ const CONFIG_TS = `// Instance config (ADR-0009). Its presence at the folder roo
 //
 // Workspaces (ADR-0012) are opt-in by adding repos — a Workspace needs them (ADR-0031): the orchestrator
 // then reconciles \`repos/\` at boot and drives Sandbox CRs via kubectl in its own namespace (ADR-0019).
+//
+// The \`declare module\` block below is what makes those names TYPED (ADR-0050). A Repo is the one
+// thing a Machine names by string and cannot carry — Agents and Sandbox Images ride the Machine
+// itself (ADR-0049) — so the catalog is declared here and registered back to the kit. A
+// \`workspace()\` spec's \`repos[].name\` is then this catalog's names, and a typo is a compile error
+// that \`j2 up\` refuses on before it builds anything. Keep it beside the export: it is one line of
+// bookkeeping, and without it every repo name silently falls back to \`string\`.
 
 import { defineConfig } from "@j2/orchestrator";
 
-export default defineConfig({
+const config = defineConfig({
   repos: [],
 });
+
+declare module "@j2/orchestrator" {
+  interface Register {
+    config: typeof config;
+  }
+}
+
+export default config;
 `;
 
 // The scaffolded Sandbox Image (ADR-0037). Scaffolding it is the point: `images/default` is the

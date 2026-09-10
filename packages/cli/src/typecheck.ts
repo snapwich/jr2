@@ -3,9 +3,11 @@
 // strings are typed by xstate's own `src` typing and by the Machine's own parts. A type error is
 // therefore the EARLIEST place a wrong name can be caught, and until now `j2 up` walked straight
 // past it: the first sign of a mistyped slot was an invoke-time failure mid-run, after a bundle,
-// three image builds, and a rollout had been spent. Repo names are the one dependency still
-// untyped — ADR-0050's Register is decided and unbuilt — so a mistyped repo remains what it was:
-// the port's runtime refusal at attach.
+// three image builds, and a rollout had been spent. The one part a Machine CANNOT carry — the Repo,
+// a deployment fact — is typed the other way round: the instance's `j2.config.ts` registers its
+// catalog back to the kit, so `WorkspaceSpec.repos[].name` is that catalog's names and a typo is a
+// type error here too. The port's refusal at attach survives as the second check, for a Machine
+// whose program held no catalog.
 //
 // The compiler is the INSTANCE's, resolved from its own `node_modules` (ADR-0043): the instance's
 // program includes @j2/orchestrator's `.ts` sources (zero-build — `exports` point at source), so

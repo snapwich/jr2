@@ -34,10 +34,11 @@ humanReview ──approve──▶ done (final → Workspace teardown)
 humanReview ──request_changes {notes}──▶ coding                [fresh cycle]
 ```
 
-Input (`--input` JSON): `prompt` (the task), `repo` (a catalog name from `j2.config.ts`), `branch` — all required;
-`baseRef` (default `main`), `reviewRounds` (default 3). The workflow declares this door itself (ADR-0033), so a bad
-`--input` is a 400 naming the shape, `GET /workflows/task-with-review` serves it as JSON Schema, and the Console renders
-typed fields instead of a raw-JSON textarea.
+Input (`--input` JSON): `prompt` (the task), `repo` (an enum over `j2.config.ts`'s catalog —
+`z.enum(repoNames(config))`, ADR-0050, so the Console offers this instance's repos rather than a text box), `branch` —
+all required; `baseRef` (default `main`), `reviewRounds` (default 3). The workflow declares this door itself (ADR-0033),
+so a bad `--input` is a 400 naming the shape, `GET /workflows/task-with-review` serves it as JSON Schema, and the
+Console renders typed fields instead of a raw-JSON textarea.
 
 **The Gate park is the inspection window.** While `humanReview` is open the Sandbox stays alive: exec in, read the diff,
 and push it if the work should outlive the run — `approve` reaches the final state, which tears the Workspace down, and
@@ -133,7 +134,9 @@ per-cluster operator too.
   that parks keeps its Sandbox alive — that _is_ the retain policy.
 - **`j2.config.ts` `repos` is the catalog**: the boot reconcile clones each entry onto the in-cluster source volume
   (`repos/<name>/default`, read-only in pods — ADR-0004); the workflow's `workspace()` spec picks which entries a run
-  mounts — task-with-review takes the name as run input.
+  mounts — task-with-review takes the name as run input. The config's `declare module` block registers that catalog with
+  the type system (ADR-0050), so a spec's `repos[].name` is a `RepoName` and a typo refuses at `j2 up`'s typecheck gate
+  rather than at attach.
 
 ## workflows/\_agents.ts — the Agent definitions
 

@@ -30,7 +30,7 @@ import { defineConfig } from "@j2/orchestrator";
 
 const vllm = process.env.VLLM_BASE_URL;
 
-export default defineConfig({
+const config = defineConfig({
   name: "coding",
   repos: ["https://github.com/snapwich/obsidian-tasks.nvim.git"],
   harness: {
@@ -48,3 +48,14 @@ export default defineConfig({
       : undefined,
   },
 });
+
+// The catalog's names, registered back to the kit so the type system can read them (ADR-0050).
+// `RepoName` becomes "obsidian-tasks.nvim" here — the repository's own name from its url — which
+// is what `workspace()` specs and `repoNames(config)` doors in `workflows/` are typed by.
+declare module "@j2/orchestrator" {
+  interface Register {
+    config: typeof config;
+  }
+}
+
+export default config;

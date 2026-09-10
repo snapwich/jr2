@@ -18,7 +18,7 @@ it is a deployment fact and not a Machine's: the **Repo**, an entry in the Insta
   `declare module "@j2/orchestrator" { interface Register { config: typeof config } }` into `j2.config.ts`. `RepoName`
   derives from it by the same rule as `repoName()`, and `WorkspaceSpec.repos[].name` is typed by it. A repo entry whose
   url is not a literal must carry a literal `name`, enforced at `defineConfig`: an unregistered name is a compile error,
-  never a silent widening to `string`. A door that takes a repo name uses `z.enum(repoNames)`.
+  never a silent widening to `string`. A door that takes a repo name uses `z.enum(repoNames(config))`.
 - **`j2 up` typechecks the Instance before it builds anything**, and refuses on errors, naming them. The scaffold's
   `tsc --noEmit` and pinned compiler already exist (ADR-0043's rule for the checker); this makes them a gate instead of
   a script the user may run. A wrong slot name, a mistyped repo, a `customize()` of an Agent the Machine does not carry:

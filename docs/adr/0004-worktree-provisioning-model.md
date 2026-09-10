@@ -57,10 +57,12 @@ A catalog entry is a url, or `{ name, url, ref }`. **The name defaults to the re
 path segment, minus a trailing `.git` — and two entries that derive the same name fail the load by naming both urls,
 since the explicit form exists for exactly that case. The default is recorded here rather than left to taste because the
 name is the directory on the volume (`repos/<name>/default`) and the handle every `workspace()` uses: a different
-derivation later orphans every checkout the old one made. Resolution happens once, where the config is loaded, and is
-the one place the entries' shape is validated at runtime — `j2 up` typechecks the instance first (ADR-0050), but a
-runtime import can still see a shape the types did not, and a mis-shaped entry must fail there rather than silently read
-as `url: undefined`.
+derivation later orphans every checkout the old one made. The derivation is stated TWICE, once per side — `repoName()`
+at load and its type-level twin behind `RepoName` — because the Register makes the same rule a compile-time answer
+(ADR-0050), which is also why an entry whose url is not a literal must carry a literal `name`: there is no last path
+segment for the types to read. Resolution happens once, where the config is loaded, and is the one place the entries'
+shape is validated at runtime — `j2 up` typechecks the instance first (ADR-0050), but a runtime import can still see a
+shape the types did not, and a mis-shaped entry must fail there rather than silently read as `url: undefined`.
 
 ## Storage shape: one model, two backings
 

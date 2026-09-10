@@ -212,6 +212,15 @@ a self-hosted mirror (ADR-0044). Steady state spends a directory walk and no doc
 `j2 up` left unreachable (ADR-0039). Everything after converge is HTTP: the CLI starts runs, answers Gates, and reads
 status through the same routes the Console and any webhook use.
 
+What the gate can see is decided by where each name lives (ADR-0050). Agents and Sandbox Images ride the Machine, so
+xstate's own `src` typing and the Machine's parts check them. The Repo cannot ride it — it is a deployment fact — so
+`j2.config.ts` registers its catalog back to the kit
+(`declare module "@j2/orchestrator" { interface Register { config: typeof config } }`), `RepoName` derives the names
+from it by the same rule the loader applies, and `WorkspaceSpec.repos[].name` is typed by that. A door that takes a repo
+name writes `z.enum(repoNames(config))`, so the Console's start form offers the catalog instead of a text box. A config
+entry whose url is not a literal must carry a literal `name`: the alternative is widening to `string`, which would
+type-check every typo in the instance.
+
 **Answers**
 
 - **Local to shared** — the fork. One folder, two targets, no edit between them.

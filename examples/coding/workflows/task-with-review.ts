@@ -14,7 +14,8 @@
 
 import { assign } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, repoNames, workspace, type Workspaced } from "@j2/orchestrator";
+import config from "../j2.config.ts";
 import { coder, reviewer } from "./_agents.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -25,7 +26,9 @@ import { coder, reviewer } from "./_agents.ts";
 
 const runInput = z.object({
   prompt: z.string().describe("The task for the coder, in prose."),
-  repo: z.string().describe("A repo name from the instance's j2.config.ts catalog."),
+  // The catalog itself, as an enum (ADR-0050) — so the Console's start form offers the instance's
+  // repos rather than a free-text box, and a bad name is refused at the door, not at the attach.
+  repo: z.enum(repoNames(config)).describe("Which repo from this instance's j2.config.ts catalog to work in."),
   branch: z.string().describe("The branch to cut and work on."),
   baseRef: z.string().optional().describe("What the branch is cut from and reviewed against. Default: main."),
   reviewRounds: z
@@ -185,9 +188,9 @@ const body = j2Setup({
 
 // ---------------------------------------------------------------------------------------------
 // Workspace: the wrapper is this workflow's root, so its `input` is the run's door (ADR-0033) and
-// `spec`'s argument is typed by it — nothing here restates a shape. The repo must match the
-// instance's `j2.config.ts` catalog; a name with no `repos/<name>/default` volume fails at attach,
-// not silently.
+// `spec`'s argument is typed by it — nothing here restates a shape. `input.repo` is already a
+// `RepoName` (the door is `z.enum(repoNames(config))`), so it drops straight into the spec: the
+// catalog types both ends, and a name the catalog does not hold never compiles (ADR-0050).
 
 export const machine = workspace(body, {
   input: runInput,

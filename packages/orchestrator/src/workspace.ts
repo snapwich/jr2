@@ -36,6 +36,7 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
+import type { RepoName } from "./config.ts";
 import { attachSandboxParts, attachWrapperBody, sandboxPartsOf, type J2Wrapper, type WrapperActors } from "./parts.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInput } from "./vocabulary.ts";
@@ -51,10 +52,16 @@ const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
  * two IMAGES are NOT here (ADR-0049): `j2 up` must find them by walking the Machine, and no walk
  * can evaluate a function of run input. They are static `workspace()` options instead. */
 export type WorkspaceSpec = {
-  /** `baseRef` absent → the repo's OWN default branch: the attach bases the worktree on
+  /** Which catalogued repos to attach (ADR-0004). `name` is a {@link RepoName}: in a program whose
+   * `j2.config.ts` fills the {@link Register}, that is the catalog's own names, so a typo is a
+   * compile error under `j2 up`'s typecheck gate rather than an attach-time refusal (ADR-0050).
+   * Unregistered — this package's tests, a Machine packaged for someone else's Instance — it is
+   * `string`, and the port's runtime refusal is still the check.
+   *
+   * `baseRef` absent → the repo's OWN default branch: the attach bases the worktree on
    * `origin/HEAD`, which the reconcile's clone pointed at the remote's default (ADR-0004) — so
    * nothing anywhere hardcodes a guess like `main` against a `master` repo. */
-  repos: Array<{ name: string; baseRef?: string }>;
+  repos: Array<{ name: RepoName; baseRef?: string }>;
   branch: string;
   /** The pod's work group (ADR-0005): `fsGroup`, default 2000. The two writing seats may run
    * different uids — each image's own `USER` decides — and POSIX would then make the other seat's

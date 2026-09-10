@@ -16,6 +16,7 @@ import {
   type AgentAdmission,
   type AgentRunInput,
   type AgentRunPort,
+  type RepoName,
   type RunFeedEvent,
   type AgentDefinition,
   type SandboxPort,
@@ -86,7 +87,9 @@ async function waitFor(pred: () => boolean): Promise<void> {
   throw new Error("waitFor: predicate never became true");
 }
 
-const RUN_INPUT = { prompt: "Make the thing", repo: "app", branch: "task/t-1" };
+// `repo` is the instance catalog's own name (ADR-0050): the door is `z.enum(repoNames(config))`,
+// so anything else is refused at the door as well as by the compiler.
+const RUN_INPUT = { prompt: "Make the thing", repo: "obsidian-tasks.nvim" as const, branch: "task/t-1" };
 
 test("each Machine declares its OWN events; nothing is re-declared upward (ADR-0011, ADR-0049)", () => {
   // The top machine handles the two triage routes and no more — the body's six resolve against
@@ -185,7 +188,7 @@ test("inside the body: the assess Turn CONTINUES the triage conversation on the 
     },
   });
   const wrapped = workspace(provided, {
-    spec: ({ input }: { input: { repo: string; branch: string } }) => ({
+    spec: ({ input }: { input: { repo: RepoName; branch: string } }) => ({
       repos: [{ name: input.repo, baseRef: "main" }],
       branch: input.branch,
     }),

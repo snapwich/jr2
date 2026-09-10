@@ -132,9 +132,15 @@ async function mkInstalledInstance(): Promise<string> {
     join(root, "tsconfig.json"),
     `{ "extends": "@j2/orchestrator/tsconfig.instance.json", "include": ["**/*.ts"] }`,
   );
+  // The config carries the scaffold's `declare module` block (ADR-0050) — a BARE specifier, so
+  // this is also where "does the augmentation resolve the way npm laid the package out?" is
+  // answered; in the checkout it resolves through a pnpm link instead.
   await writeFile(
     join(root, "j2.config.ts"),
-    `import { defineConfig } from "@j2/orchestrator";\nexport default defineConfig({ repos: [] });\n`,
+    `import { defineConfig } from "@j2/orchestrator";\n` +
+      `const config = defineConfig({ repos: ["https://example.test/app.git"] });\n` +
+      `declare module "@j2/orchestrator" {\n  interface Register {\n    config: typeof config;\n  }\n}\n` +
+      `export default config;\n`,
   );
   await mkdir(join(root, "workflows"), { recursive: true });
   await writeFile(
@@ -146,6 +152,18 @@ async function mkInstalledInstance(): Promise<string> {
   return root;
 }
 
+/** A `workspace()` whose spec names one repo — the seat `RepoName` types (ADR-0050). */
+async function writeWorkspaceNaming(root: string, repo: string): Promise<void> {
+  await writeFile(
+    join(root, "workflows", "work.ts"),
+    `import { j2Setup, workspace } from "@j2/orchestrator";\n` +
+      `const body = j2Setup({ events: [] }).createMachine({\n` +
+      `  id: "body",\n  initial: "done",\n  states: { done: { type: "final" } },\n});\n` +
+      `export const machine = workspace(body, {\n` +
+      `  spec: () => ({ repos: [{ name: "${repo}" }], branch: "b" }),\n});\n`,
+  );
+}
+
 test("an instance staged as npm installs it typechecks — the kit's own sources included", async () => {
   // The gate is a converge REFUSAL (ADR-0050), so a published source that cannot compile in an
   // installed folder is `j2 up` returning 1 for every user, on `j2 init` → `npm i` → `j2 up`. The
@@ -154,4 +172,21 @@ test("an instance staged as npm installs it typechecks — the kit's own sources
   const root = await mkInstalledInstance();
 
   assert.deepEqual(await tscTypecheck(root), { ok: true, output: "" });
+});
+
+test("the Register reaches an INSTALLED instance: a mistyped repo is what the gate refuses (ADR-0050)", async () => {
+  // The whole claim in one folder, laid out the way npm lays it out — because the augmentation the
+  // scaffold writes names `@j2/orchestrator` by bare specifier, and a checkout's pnpm link is not
+  // proof that an installed tree resolves the same module to augment. Both directions, so the
+  // refusal cannot be an artifact of the folder failing to compile for some other reason.
+  const root = await mkInstalledInstance();
+
+  await writeWorkspaceNaming(root, "app");
+  assert.deepEqual(await tscTypecheck(root), { ok: true, output: "" }, "the catalog's own name compiles");
+
+  await writeWorkspaceNaming(root, "ap");
+  const typoed = await tscTypecheck(root);
+  assert.equal(typoed.ok, false, "a repo the catalog does not hold refuses before anything is built");
+  assert.match(typoed.output, /workflows\/work\.ts/, "and it names the file the author must fix");
+  assert.match(typoed.output, /"app"/, "quoting the catalog entry it should have been");
 });

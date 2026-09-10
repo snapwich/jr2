@@ -10,10 +10,10 @@
 //
 // The typecheck is FIRST and is a gate (ADR-0050): a Machine names its Agents and its composed
 // Machines by string, and since ADR-0049 those strings are typed, so a wrong name is a compile
-// error rather than an invoke-time failure mid-run. Repo names are NOT typed yet — ADR-0050's
-// Register is decided and unbuilt — so a mistyped repo still fails at attach, not here. Nothing is
-// built, and nothing on the cluster is touched, before the compiler has agreed the folder is
-// coherent.
+// error rather than an invoke-time failure mid-run. Repo names are typed too, through the Register
+// this instance's `j2.config.ts` fills, so a `workspace()` naming a repo the catalog does not hold
+// stops here as well. Nothing is built, and nothing on the cluster is touched, before the compiler
+// has agreed the folder is coherent.
 //
 // Images (ADR-0038, as amended by ADR-0045): `j2 up` builds every image it deploys, and every tag is
 // a content address of (its own inputs × the platform set it was built for) — `<hash>-<arch>`, with
@@ -138,8 +138,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // the names a Machine carries (an Agent slot, a composed Machine, a `customize()` of either) are
   // typed since ADR-0049, so the answer here is the same answer the author's editor gives — and a
   // converge that shipped a Machine the compiler rejects would surface it as an invoke-time failure
-  // mid-run, minutes and three image builds later. Repo names are not typed yet — ADR-0050's
-  // Register is decided and unbuilt — so a mistyped repo is still refused at attach, not here.
+  // mid-run, minutes and three image builds later. Repo names join them here (ADR-0050): the
+  // Register the config fills types `WorkspaceSpec.repos[].name`, so a typo is a compile error —
+  // and the port's refusal at attach stays the second check, for the Machine compiled elsewhere.
   activity(io, "typecheck: tsc --noEmit (the instance's own compiler)");
   const checked = await (io.typecheck ?? tscTypecheck)(root);
   if (!checked.ok) {
