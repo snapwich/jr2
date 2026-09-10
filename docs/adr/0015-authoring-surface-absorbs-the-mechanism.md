@@ -20,11 +20,13 @@ casts). It:
 - takes the defs **as values**, which lets it validate at `createMachine` time that every event key appearing anywhere
   in the machine maps to a def — closing xstate's nested-`on` typo hole (unknown keys in nested states typecheck
   silently upstream) with a load-time failure;
-- attaches the vocabulary to the machine object (`vocabularyOf(machine)`, a WeakMap — the returned machine stays
-  bit-identical). Discovery reads it there: **the `export const events` manifest retires**, and the workflow module
-  contract shrinks to `export const machine` (revising [ADR-0011](0011-workflow-defined-events.md)'s named-exports
-  contract). ADR-0011's anti-global-registry argument is preserved — attribution flows through the machine object,
-  per-workflow by construction.
+- attaches the vocabulary to the machine (`vocabularyOf(machine)`, a WeakMap keyed on `machine.config` — the object
+  xstate's `.provide()` passes through, so a clone keeps it, and the returned machine stays bit-identical). **The
+  `export const events` manifest retires**, and the workflow module contract shrinks to `export const machine` (revising
+  [ADR-0011](0011-workflow-defined-events.md)'s named-exports contract): the defs ride the Machine, and the actors that
+  need them resolve names off the Machine that INVOKED them (ADR-0011, ADR-0049) — the host copies nothing at
+  registration, and the only other reader is the Machine doc the Console renders. ADR-0011's anti-global-registry
+  argument is preserved — attribution flows through the machine, per-Machine by construction.
 
 ## Agent menus and gate accepts derive from the machine
 

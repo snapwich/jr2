@@ -336,11 +336,11 @@ const featureWorkspace = createMachine({
 
 /** The root: a coordinator that spawns a wrapper per feature and then just sits there — which is
  * the whole problem the child diagrams solve. Its `value` stays "discover" while the run works.
- * It declares `approve` for its own sake only: the gate two levels down resolves against the BODY
- * that invokes it (ADR-0049), which declares the name itself. */
+ * It declares NO events: the gate two levels down resolves against the BODY that invokes it
+ * (ADR-0049), which declares `approve` itself, so the root has no reason to name it. */
 export const pipelineTemplate = j2Setup({
   types: {} as { context: Record<string, never> },
-  events: [approveDef],
+  events: [],
   actors: { feature: featureWorkspace },
 }).createMachine({
   id: "pipeline",
@@ -390,10 +390,11 @@ const derivedWrapper = createMachine({
   states: { running: { invoke: { id: "body", src: derivedBody, input: ({ context }) => context } } },
 });
 
-/** Root: fans out two children running the SAME body code — the case authored ids get wrong. */
+/** Root: fans out two children running the SAME body code — the case authored ids get wrong.
+ * Declares no events of its own: `approve` belongs to the body that invokes the gate (ADR-0049). */
 export const derivedFanoutTemplate = j2Setup({
   types: {} as { context: Record<string, never> },
-  events: [approveDef],
+  events: [],
   actors: { feature: derivedWrapper },
 }).createMachine({
   id: "fanout",

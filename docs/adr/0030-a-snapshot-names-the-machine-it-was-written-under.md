@@ -82,5 +82,7 @@ reachable only by asking after a run id nobody knows to ask about.
 - **The digest is only as complete as the walk.** A state running `enqueueActions` can spawn children no static analysis
   recovers (`machine-doc.ts`'s `opaqueStates`); the opacity is folded into the hash, but what it hides is not. Drift
   inside such a subtree can go unnoticed.
-- **`fingerprintOf` is memoized per machine object**, as `vocabularyOf` is — `persist` runs on every snapshot microtask,
-  and a dev reload's fresh machine object correctly gets a fresh entry.
+- **`fingerprintOf` is memoized per machine object** — `persist` runs on every snapshot microtask, and a dev reload's
+  fresh machine object correctly gets a fresh entry. That is not `vocabularyOf`'s key, which is `machine.config` so a
+  `.provide()` clone keeps the defs it was built with (ADR-0011); a shape has nothing to keep, being derived from the
+  config alone, so a clone recomputes the identical digest.

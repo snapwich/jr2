@@ -97,8 +97,10 @@ export function isEventDef(value: unknown): value is EventDef {
 
 /**
  * Resolve a defs list into a name→def map, rejecting duplicates and non-defs. `j2Setup` calls
- * this once per machine (ADR-0015); the error names the workflow so an unlisted or double-listed
- * name fails loudly at machine-build time, not at delivery.
+ * this once per Machine (ADR-0015); the error names the Machine so an unlisted or double-listed
+ * name fails loudly at machine-build time, not at delivery. The scope is the MACHINE, not the
+ * Workflow: a nested Machine is reached by `import` and never carries the name `j2 run` addresses
+ * (ADR-0049), so naming it a workflow here would misreport where the bad def lives.
  *
  * `deferred` and `poll` are RESERVED, not implemented (ADR-0013): the wire leaves room for them —
  * a surface listing ships each def's `semantics`, a delivery returns an addressable receipt — but
@@ -108,16 +110,16 @@ export function isEventDef(value: unknown): value is EventDef {
  * downgrading it to `ack` would be worse than useless: the Agent would be handed a tool whose
  * contract — "this call returns the Machine's answer" — is a lie.
  */
-export function eventMap(workflow: string, events: readonly unknown[]): Map<string, EventDef> {
+export function eventMap(machine: string, events: readonly unknown[]): Map<string, EventDef> {
   const map = new Map<string, EventDef>();
   for (const def of events) {
     if (!isEventDef(def)) {
-      throw new Error(`workflow "${workflow}": \`events\` entry is not a defineEvent() def: ${JSON.stringify(def)}`);
+      throw new Error(`machine "${machine}": \`events\` entry is not a defineEvent() def: ${JSON.stringify(def)}`);
     }
-    if (map.has(def.name)) throw new Error(`workflow "${workflow}": duplicate event "${def.name}" in \`events\``);
+    if (map.has(def.name)) throw new Error(`machine "${machine}": duplicate event "${def.name}" in \`events\``);
     if (def.semantics !== "ack") {
       throw new Error(
-        `workflow "${workflow}": event "${def.name}" is \`${def.semantics}\`, which is reserved but ` +
+        `machine "${machine}": event "${def.name}" is \`${def.semantics}\`, which is reserved but ` +
           `NOT IMPLEMENTED (ADR-0013). Only \`ack\` events can be delivered today; there is nothing to ` +
           `answer a held call with, and degrading it to \`ack\` would hand the Agent a lying tool contract.`,
       );

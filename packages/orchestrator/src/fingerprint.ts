@@ -66,8 +66,11 @@ function shapeBody(body: MachineBodyDoc): ShapeBody {
   };
 }
 
-/** Memoized per machine OBJECT, as `vocabularyOf` is: `persist` runs on every snapshot microtask,
- * and a dev reload's fresh machine object correctly gets a fresh entry. */
+/** Memoized per machine OBJECT: `persist` runs on every snapshot microtask, and a dev reload's
+ * fresh machine object correctly gets a fresh entry. Deliberately NOT `vocabularyOf`'s key —
+ * that one is `machine.config`, because a `.provide()` clone must keep the defs it was built
+ * with (ADR-0011). A shape has nothing to keep: it is derived from the config alone, so a clone
+ * recomputes the identical digest and only pays for the walk once. */
 const cache = new WeakMap<AnyStateMachine, string>();
 
 /**

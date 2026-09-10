@@ -85,7 +85,7 @@ test("duplicate and reserved-semantics defs fail at createMachine, naming the ma
   const dupe = defineEvent({ name: "approve", input: z.object({ notes: z.string() }) });
   assert.throws(
     () => j2Setup({ events: [approve, dupe] }).createMachine({ id: "wf", initial: "a", states: { a: {} } }),
-    /workflow "wf": duplicate event "approve"/,
+    /machine "wf": duplicate event "approve"/,
   );
 
   // ADR-0013 reserves `deferred`/`poll`; degrading one to `ack` would hand the Agent a lying

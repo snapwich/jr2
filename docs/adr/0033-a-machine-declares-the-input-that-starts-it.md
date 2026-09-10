@@ -5,15 +5,16 @@ undescribed: the module contract is `export const machine` alone (ADR-0011/0015)
 of a given workflow should be started _with_. The Console's start form
 ([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)) forced the question, but the gap predates it —
 `j2 run` has the same blindness, and a typo'd input surfaces as a confusing mid-run failure instead of a refusal at the
-door. Meanwhile every event a machine _accepts_ already carries a zod schema, attached to the machine object itself
+door. Meanwhile every event a machine _accepts_ already carries a zod schema, attached to the machine itself
 ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)'s vocabulary-on-the-machine). The input that starts a
 machine is the one piece of its vocabulary that pattern missed.
 
 ## Decision
 
-- **The schema rides the machine object, like the rest of the vocabulary.** `j2Setup.createMachine` accepts an `input`
-  (a zod object) and attaches it the same way event defs ride today (WeakMap-keyed on the machine object). `input` is
-  deliberately xstate's own word for what a machine receives at creation — the authoring surface teaches nothing new.
+- **The schema rides the machine, like the rest of the vocabulary.** `j2Setup.createMachine` accepts an `input` (a zod
+  object) and attaches it the same way event defs ride today (WeakMap-keyed on `machine.config`, so a `.provide()` clone
+  keeps it — ADR-0011). `input` is deliberately xstate's own word for what a machine receives at creation — the
+  authoring surface teaches nothing new.
 - **A wrapper declares its own door; it never borrows its child's.** `workspace(body, { input, spec })` and
   `pool(worker, { input, … })` each take an `input` of their own, and neither propagates one upward. The reason is the
   same in both, at different strengths: a wrapper does not feed its child what a caller sent. `pool` is the sharp case —
@@ -22,9 +23,10 @@ machine is the one piece of its vocabulary that pattern missed.
   the injected `workspace` handles, so the body's contract is the door PLUS a field no caller can send (the handles do
   not exist until a Sandbox is provisioned and attached). Propagating it would make `createMachine({ input })` mean "my
   input" on a bare machine and "my input minus what my wrapper injects" on a wrapped body — a context-dependent
-  contract, and a trap: a body that declared its input honestly, handles included, would 400 every valid run start.
-  Vocabulary still propagates, because events _are_ the same run's vocabulary wherever they are handled; the door is
-  not. The composition the body needs a name for is exported instead:
+  contract, and a trap: a body that declared its input honestly, handles included, would 400 every valid run start. The
+  vocabulary does not propagate either — event names resolve against the Machine that invoked the actor, so a body keeps
+  its own defs and nothing is merged upward (ADR-0011, ADR-0049). The door is one more part a Machine carries and scopes
+  to itself. The composition the body needs a name for is exported instead:
   `Workspaced<T> = T & { workspace: WorkspaceHandles }`. A body that _still_ declares a schema is refused by
   `workspace()` with a message naming the fix: nothing would ever serve or validate it, and a contract nobody enforces
   is worse than none.

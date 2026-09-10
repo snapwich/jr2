@@ -265,10 +265,11 @@ each, and states that invoke `gate` to park on an outside decision. The events o
 `defineEvent` vocabulary; a state's outgoing agent events become its Menu, and a state's outgoing external events become
 its Gate's accepted set (ADR-0015). One Agent per state is what keeps each Turn on one task.
 
-Nesting is xstate's `invoke`, so a Workflow can import another Machine and run it as a child actor. Today the kit's
-wrappers, `workspace()` and `pool()`, are what carry the child's vocabulary up to the run; a plain invoke of an imported
-Machine does not, and the parent must re-declare the child's events. The same layering is where a memory piece would
-sit: a wrapper around `agentRun` that reads and writes beside the Turn, with the body unchanged.
+Nesting is xstate's `invoke`, so a Workflow can import another Machine and run it as a child actor. Vocabulary is
+per-Machine: the nested Machine keeps its own defs, the parent neither sees nor re-declares them, and the kit's
+wrappers, `workspace()` and `pool()`, propagate nothing (ADR-0011, ADR-0049) — which is what makes a plain invoke of an
+imported Machine enough. The same layering is where a memory piece would sit: a wrapper around `agentRun` that reads and
+writes beside the Turn, with the body unchanged.
 
 **Answers**
 

@@ -42,7 +42,7 @@ test("deferred requires an output schema (the held result IS the output)", () =>
   assert.equal(ok.semantics, "deferred");
 });
 
-test("eventMap resolves a manifest and rejects duplicates + non-defs, naming the workflow", () => {
+test("eventMap resolves a manifest and rejects duplicates + non-defs, naming the Machine", () => {
   const approve = defineEvent({ name: "approve", input: z.object({}) });
   const resume = defineEvent({ name: "resume", input: z.object({}) });
   const map = eventMap("coding", [approve, resume]);
@@ -50,7 +50,7 @@ test("eventMap resolves a manifest and rejects duplicates + non-defs, naming the
   assert.equal(map.size, 2);
 
   const dupe = defineEvent({ name: "approve", input: z.object({ notes: z.string() }) });
-  assert.throws(() => eventMap("coding", [approve, dupe]), /workflow "coding": duplicate event "approve"/);
+  assert.throws(() => eventMap("coding", [approve, dupe]), /machine "coding": duplicate event "approve"/);
   assert.throws(() => eventMap("coding", [{ name: "approve" }]), /not a defineEvent\(\) def/);
   assert.ok(isEventDef(approve));
   assert.ok(!isEventDef({ name: "approve" }));
