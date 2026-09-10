@@ -9,6 +9,7 @@
 // `j2Setup`, `workspace`, … all import from "@j2/orchestrator" — ADR-0015).
 export * from "@j2/agent-protocol";
 export * from "./agent.ts";
+export * from "./parts.ts";
 export * from "./ambient.ts";
 export * from "./config.ts";
 export * from "./pool.ts";

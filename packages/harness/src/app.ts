@@ -12,7 +12,13 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
 import { renderEchoEvent, type PrinterOut } from "./printer.ts";
-import type { AgentsSpec, TurnDials } from "./spec.ts";
+import {
+  definitionFault,
+  resolveDefinition,
+  type AgentDefinition,
+  type ResolvedDefinition,
+  type TurnDials,
+} from "./spec.ts";
 import {
   LIVE_LONG_POLL,
   STREAM_NEXT_OFFSET_HEADER,
@@ -31,24 +37,26 @@ export type ConversationSeat = {
 };
 
 export type HarnessAppDeps = {
-  spec: AgentsSpec;
   /** Build the turn executor for one conversation — `turn.ts`'s `runSubmissionFor` in
    * production (`main.ts` composes it), a stub in wire tests. */
   runSubmissionFor: (seat: ConversationSeat) => RunSubmission;
-  /** Reject an admission whose dials cannot run — the reason, or undefined to accept. A call-site
-   * model is invisible to the boot check (`main.ts`), so this is where an unresolvable one is
-   * caught: at ADMISSION, failing the invoke as the state is entered, rather than settling the
-   * Submission `failed` mid-run. Injected so this module stays pi-free (`main.ts` closes it over
-   * the model registry); omitted, dials are taken on faith — which is what wire tests want. */
-  checkDials?: (dials: TurnDials) => string | undefined;
+  /** Reject an admission the turn could not run — the reason, or undefined to accept. Takes the
+   * RESOLVED definition (this Submission's dials already layered on), because since ADR-0049 the
+   * definition and the dials arrive together and a turn runs the resolution of both: an
+   * unresolvable model is caught at ADMISSION, failing the invoke as the state is entered, rather
+   * than settling the Submission `failed` mid-run. Injected so this module stays pi-free
+   * (`main.ts` closes it over the model registry); omitted, the model is taken on faith — which is
+   * what wire tests want. The structural half of the check (`definitionFault`) needs no registry
+   * and always runs. */
+  checkAdmission?: (resolved: ResolvedDefinition) => string | undefined;
   /** How long a live long-poll parks before 204 "nothing yet". Default 25s (the stub's
    * cadence); short in tests. */
   longPollMs?: number;
   /**
    * Deployed as the Instance Harness (`J2_MENU_ONLY` — deploy.ts), this process admits Menu-only
-   * Agents ALONE. The wire is unauthenticated in-cluster and the mounted spec is the full
-   * agents.json (same ConfigMap, ADR-0031), so without this gate any in-cluster caller could POST
-   * a `workspace: "write"` definition here and be handed Working tools — code execution in the one
+   * Agents ALONE. The wire is unauthenticated in-cluster and the admission carries its own
+   * definition (ADR-0049), so without this gate any in-cluster caller could POST a
+   * `workspace: "write"` definition here and be handed Working tools — code execution in the one
    * pod ADR-0031 claims has none. Placement is definition-wins; a Turn this Harness refuses runs
    * on its Workspace's Harness or nowhere. Omitted (a Sandbox's Harness), every definition admits.
    */
@@ -87,37 +95,33 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   app.post("/agents/:name/:id", async (c) => {
     const agentName = c.req.param("name");
     const instanceId = c.req.param("id");
-    const submission = admissionRequest(await c.req.json().catch(() => undefined));
+    const sent = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    // The definition rides the admission (ADR-0049), so it is checked HERE, per Submission —
+    // there is no boot-time roster left to check it in. Loud and named: the 400 quotes the slot
+    // the Machine declared, which is the name the author wrote.
+    const fault = definitionFault(agentName, sent?.definition);
+    if (fault) return c.json({ error: fault }, 400);
+    const submission = admissionRequest(sent, sent?.definition as AgentDefinition);
+    const resolved = resolveDefinition(submission.definition, submission);
     // The Instance Harness placement gate (ADR-0031): identity precedes dials. Checked against
-    // the definition (default "write" — ADR-0028), not the conversation map, so the refusal
-    // holds from the very first POST and no non-"none" conversation can ever exist here. An
-    // unknown agent falls through to the 404 below.
-    if (deps.menuOnly) {
-      const definition = deps.spec.agents.find((a) => a.name === agentName)?.definition;
-      const access = definition?.workspace ?? "write";
-      if (definition && access !== "none") {
-        return c.json(
-          {
-            error:
-              `agent "${agentName}" has workspace: "${access}" — this is the Instance Harness, which ` +
-              `admits Menu-only Agents alone (ADR-0031); a "${access}" Turn runs on its Workspace's Harness`,
-          },
-          403,
-        );
-      }
+    // the definition this admission carries (default "write" — ADR-0028), so the refusal holds
+    // from the very first POST and no non-"none" conversation can ever exist here.
+    if (deps.menuOnly && resolved.workspace !== "none") {
+      return c.json(
+        {
+          error:
+            `agent "${agentName}" has workspace: "${resolved.workspace}" — this is the Instance Harness, which ` +
+            `admits Menu-only Agents alone (ADR-0031); a "${resolved.workspace}" Turn runs on its Workspace's Harness`,
+        },
+        403,
+      );
     }
     // Before the lookup on purpose: a rejected admission must not leave an empty conversation
     // (and therefore a live turn factory) behind for an iid that never ran.
-    const badDials = deps.checkDials?.(submission);
-    if (badDials) return c.json({ error: badDials }, 400);
+    const badRun = deps.checkAdmission?.(resolved);
+    if (badRun) return c.json({ error: `agent "${agentName}": ${badRun}` }, 400);
     let conversation = conversations.get(key(agentName, instanceId));
     if (!conversation) {
-      if (!deps.spec.agents.some((a) => a.name === agentName)) {
-        return c.json(
-          { error: `agent "${agentName}" is not in the mounted spec — no definition to serve (ADR-0018)` },
-          404,
-        );
-      }
       // The seam is circular by nature — the turn appends to the Conversation that pumps it —
       // so the closure reads the binding the next statement fills.
       let created: Conversation;
@@ -193,10 +197,13 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
 }
 
 /** The admit body, taken defensively: a missing/garbage `message` admits an empty prompt (the
- * pre-dials behavior), and a non-string dial is dropped rather than passed on as one. */
-function admissionRequest(body: unknown): AdmissionRequest {
+ * pre-dials behavior), and a non-string dial is dropped rather than passed on as one. The
+ * `definition` is passed in already validated (`definitionFault` ran first), because a turn cannot
+ * be defaulted into existence the way a missing prompt can. */
+function admissionRequest(body: unknown, definition: AgentDefinition): AdmissionRequest {
   const sent = (body ?? {}) as Record<string, unknown>;
   return {
+    definition,
     message: typeof sent.message === "string" ? sent.message : "",
     ...(typeof sent.model === "string" ? { model: sent.model } : {}),
     ...(typeof sent.thinkingLevel === "string"

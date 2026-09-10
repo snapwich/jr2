@@ -27,10 +27,10 @@ instance, many workflows.
 
 The Agent/Sandbox Harness is j2's own server, `@j2/harness` (ADR-0002/0018/0027) — and the Orchestrator is **not** a
 harness: its state is an xstate snapshot, not an agent session, and its loop is a deterministic state machine, not an
-LLM-in-harness. The two share ergonomics, not implementation: the instance folder convention (`j2.config.ts` +
-discovered `workflows/` and `agents/` dirs), the `j2` CLI as the primary interface, and an HTTP API shaped as "durable
-run addressed by id" (`POST` to start/feed, `GET /…/:id` for status, SSE for events) — so both sides of the system speak
-one protocol without sharing a runtime.
+LLM-in-harness. The two share ergonomics, not implementation: the instance folder convention (`j2.config.ts` + the
+discovered `workflows/` dir — the Agents ride the Machines it holds, ADR-0049), the `j2` CLI as the primary interface,
+and an HTTP API shaped as "durable run addressed by id" (`POST` to start/feed, `GET /…/:id` for status, SSE for events)
+— so both sides of the system speak one protocol without sharing a runtime.
 
 ## Consequences
 

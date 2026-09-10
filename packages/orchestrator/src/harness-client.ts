@@ -34,7 +34,7 @@
 // (the actor is stopped by then; see actor.ts).
 
 import { agentActorWith } from "./actor.ts";
-import type { AgentAdmission, AgentLogic, AgentRunInput, AgentRunPort } from "./actor.ts";
+import type { AgentAdmission, AgentAdmitOptions, AgentLogic, AgentRunInput, AgentRunPort } from "./actor.ts";
 import type { AgentDefinition, ThinkingLevel } from "./agent.ts";
 import type { EchoEvent, Settlement, StreamEvent, SubmissionSettledEvent } from "@j2/harness/wire";
 
@@ -48,13 +48,21 @@ const LIVE_LONG_POLL = "long-poll";
 /** The three-verb wire client (the injectable seam — structurally what `@flue/sdk`'s
  * `agents.{send,wait,abort}` was, minus the SDK). */
 export type HarnessClient = {
-  /** `POST /agents/:name/:id {message, model?, thinkingLevel?}` → the Admission, with `streamUrl`
-   * resolved absolute. The optional dials are this Submission's override layer (ADR-0018);
-   * omitted, the Harness runs the definition's own values. */
+  /** `POST /agents/:name/:id {message, definition, model?, thinkingLevel?}` → the Admission, with
+   * `streamUrl` resolved absolute. The DEFINITION is the slot's, carried by the Machine and sent
+   * with every admission (ADR-0049) — the Harness keeps no roster, so `:name` alone would name
+   * nothing there. The optional dials are this Submission's override layer (ADR-0018); omitted,
+   * the Harness runs the definition's own values. */
   send(
     agentName: string,
     instanceId: string,
-    options: { message: string; model?: string; thinkingLevel?: ThinkingLevel; signal?: AbortSignal },
+    options: {
+      message: string;
+      definition: AgentDefinition;
+      model?: string;
+      thinkingLevel?: ThinkingLevel;
+      signal?: AbortSignal;
+    },
   ): Promise<AgentAdmission>;
   /** Follow the stream to this Submission's Settlement: resolve on `completed`, reject with
    * `SettlementFault` on `failed`/`aborted`/404. */
@@ -181,6 +189,9 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             message: sendOptions.message,
+            // The Agent this Turn runs (ADR-0049) — plain data, validated at admission by the
+            // Harness, which 400s naming the slot rather than settling a Submission `failed`.
+            definition: sendOptions.definition,
             // Omitted when unset, so an admission with no dials is byte-identical to before.
             ...(sendOptions.model ? { model: sendOptions.model } : {}),
             ...(sendOptions.thinkingLevel ? { thinkingLevel: sendOptions.thinkingLevel } : {}),
@@ -262,15 +273,16 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
 /** Build an `AgentRunPort` over an injected wire client. Stateless — the admission IS the handle. */
 export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
   return {
-    async admit(input: AgentRunInput, opts?: { signal?: AbortSignal }): Promise<AgentAdmission> {
+    async admit(input: AgentRunInput, opts: AgentAdmitOptions): Promise<AgentAdmission> {
       if (input.prompt === undefined) {
         throw new Error("harness admit needs a prompt (a re-attach rides input.attach, set by the host on restore)");
       }
       return await client.send(input.agentName, input.instanceId, {
         message: input.prompt,
+        definition: opts.definition,
         model: input.model,
         thinkingLevel: input.thinkingLevel,
-        signal: opts?.signal,
+        signal: opts.signal,
       });
     },
 

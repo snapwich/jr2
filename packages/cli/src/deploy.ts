@@ -6,7 +6,6 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
-  AGENTS_CONFIGMAP,
   CA_CONFIGMAP,
   GIT_SSH_MOUNT,
   GIT_SSH_SECRET,
@@ -14,6 +13,8 @@ import {
   IMAGES_CONFIGMAP,
   IMAGES_KEY,
   IMAGES_MOUNT,
+  HARNESS_CONFIGMAP,
+  HARNESS_CONFIG_KEY,
   INSTANCE_HARNESS_PORT,
   INSTANCE_HARNESS_SERVICE,
   INSTANCE_SECRET,
@@ -22,13 +23,12 @@ import {
   ORCHESTRATOR_SERVICE,
   REPOS_PVC,
   STATE_PVC,
-  type DiscoveredAgent,
   type HarnessConfig,
 } from "@j2/orchestrator";
 
 export {
-  AGENTS_CONFIGMAP,
   GIT_SSH_SECRET,
+  HARNESS_CONFIGMAP,
   HARNESS_ENV_SECRET,
   INSTANCE_HARNESS_SERVICE,
   KIT_VERSION,
@@ -88,7 +88,6 @@ export function instanceObjects(opts: {
    * `secretData` by doctrine (ADR-0013): Agent code executes where this lands, so the Instance
    * token and signing key must never share a Secret with it. */
   harnessEnvData: Record<string, string>;
-  agents: DiscoveredAgent[];
   harness?: HarnessConfig;
   /** The private-CA PEM bundle (`harness.caBundle` file contents, read by `up` — ADR-0020). */
   caBundle?: string;
@@ -157,32 +156,31 @@ export function instanceObjects(opts: {
       subjects: [{ kind: "ServiceAccount", name: ORCHESTRATOR_SA, namespace: opts.namespace }],
     },
     {
-      // The Agent definitions + harness config, consumed by the stock Harness image at pod boot
-      // (ADR-0018). Definition edits reach pods as a ConfigMap update + pod restart — no image.
+      // What this instance can REACH (ADR-0018), consumed by every Harness container at pod boot.
+      // Deployment fact, so it is config (ADR-0050) — and it carries NO Agents: a Machine carries
+      // its own and the definition rides each admission (ADR-0049), so a provider edit is the only
+      // thing this ConfigMap + a pod restart still delivers.
       apiVersion: "v1",
       kind: "ConfigMap",
-      metadata: meta(AGENTS_CONFIGMAP),
+      metadata: meta(HARNESS_CONFIGMAP),
       data: {
-        "agents.json": JSON.stringify(
+        [HARNESS_CONFIG_KEY]: JSON.stringify(
           {
-            agents: opts.agents,
-            harness: {
-              // apiKey is deliberately dropped: it materializes into the Secret as
-              // J2_PROVIDER_API_KEY (`up`), and the generated app.ts reads it from env — a
-              // ConfigMap is not a place for a credential.
-              provider: opts.harness?.provider
-                ? {
-                    id: opts.harness.provider.id,
-                    api: opts.harness.provider.api,
-                    baseUrl: opts.harness.provider.baseUrl,
-                    // Token limits are model properties, not credentials — they ride the
-                    // ConfigMap so the generated app.ts can hand them to registerProvider.
-                    contextWindow: opts.harness.provider.contextWindow,
-                    maxTokens: opts.harness.provider.maxTokens,
-                    models: opts.harness.provider.models,
-                  }
-                : undefined,
-            },
+            // apiKey is deliberately dropped: it materializes into the Secret as
+            // J2_PROVIDER_API_KEY (`up`), and the Harness reads it from env — a ConfigMap is not
+            // a place for a credential.
+            provider: opts.harness?.provider
+              ? {
+                  id: opts.harness.provider.id,
+                  api: opts.harness.provider.api,
+                  baseUrl: opts.harness.provider.baseUrl,
+                  // Token limits are model properties, not credentials — they ride the ConfigMap
+                  // so the Harness can register the provider with them.
+                  contextWindow: opts.harness.provider.contextWindow,
+                  maxTokens: opts.harness.provider.maxTokens,
+                  models: opts.harness.provider.models,
+                }
+              : undefined,
           },
           null,
           2,
@@ -329,13 +327,13 @@ const ADAPTER_PORT = 8081;
 
 /**
  * The Instance Harness (ADR-0031): the per-instance Harness Deployment + Service `j2 up`
- * converges whenever any discovered Agent definition declares `workspace: "none"` — the placement
- * for every Menu-only Agent's Turn, regardless of any enclosing Workspace. The one Harness shape,
- * minus the Workspace: the stock Harness image plus the Adapter sidecar, the same definitions
- * ConfigMap and env/envFrom/CA wiring a Sandbox's Harness container gets — and NO `/work` volume,
- * no attach step. It runs the STOCK image permanently: `workspace: "none"` withholds the whole
+ * converges whenever an Agent a registered Machine CARRIES declares `workspace: "none"`
+ * (ADR-0049's walk) — the placement for every Menu-only Agent's Turn, regardless of any enclosing
+ * Workspace. The one Harness shape, minus the Workspace: the stock Harness image plus the Adapter
+ * sidecar, the same harness-config ConfigMap and env/envFrom/CA wiring a Sandbox's Harness
+ * container gets — and NO `/work` volume, no attach step. It runs the STOCK image permanently: `workspace: "none"` withholds the whole
  * Working toolset (ADR-0028), so there are no tools to carry and no Sandbox Image to resolve
- * (ADR-0037). No config key names, sizes, addresses, or enables it: the definition scan is the
+ * (ADR-0037). No config key names, sizes, addresses, or enables it: the Machine walk is the
  * entire surface.
  */
 export function instanceHarnessObjects(opts: {
@@ -381,18 +379,18 @@ export function instanceHarnessObjects(opts: {
     image: opts.harnessImage,
     imagePullPolicy: "IfNotPresent",
     ports: [{ containerPort: INSTANCE_HARNESS_PORT }],
-    // The same asymmetry the Sandbox pod builds (ADR-0013/0020): the mounted agents spec and the
-    // instance's valueFrom entries ride `env` (literal values live in the j2-harness-env Secret),
-    // the CA trust lands here and nowhere else, and no credential ever does.
+    // The same asymmetry the Sandbox pod builds (ADR-0013/0020): the mounted harness config and
+    // the instance's valueFrom entries ride `env` (literal values live in the j2-harness-env
+    // Secret), the CA trust lands here and nowhere else, and no credential ever does.
     env: [
       {
-        name: "J2_AGENTS_JSON",
-        valueFrom: { configMapKeyRef: { name: AGENTS_CONFIGMAP, key: "agents.json" } },
+        name: "J2_HARNESS_JSON",
+        valueFrom: { configMapKeyRef: { name: HARNESS_CONFIGMAP, key: HARNESS_CONFIG_KEY } },
       },
-      // The placement gate (ADR-0031): the mounted spec is the FULL agents.json (same ConfigMap,
-      // by decision) and the wire is unauthenticated in-cluster, so the Harness itself refuses
-      // any admission whose definition declares Workspace access — Menu-only Agents alone run
-      // here, which is what makes "no code execution in this pod" true rather than asserted.
+      // The placement gate (ADR-0031): every admission carries its own definition (ADR-0049) and
+      // the wire is unauthenticated in-cluster, so the Harness itself refuses any admission whose
+      // definition declares Workspace access — Menu-only Agents alone run here, which is what
+      // makes "no code execution in this pod" true rather than asserted.
       { name: "J2_MENU_ONLY", value: "1" },
       ...(opts.echoTokenSha256 ? [{ name: "J2_ECHO_TOKEN_SHA256", value: opts.echoTokenSha256 }] : []),
       ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),

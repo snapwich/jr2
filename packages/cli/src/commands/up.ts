@@ -1,9 +1,9 @@
 // `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
-// ownership → image resolution → operator → kit images → instance image → Sandbox Images → agents
-// ConfigMap → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance Harness
-// (ADR-0031: converged by convention when any definition declares `workspace: "none"`, deleted when
-// none does) → a report of live workspaces still on an older image. Repos reconcile onto the
+// ownership → image resolution → operator → kit images → instance image → Sandbox Images → the
+// Machine walk → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance Harness
+// (ADR-0031: converged by convention when a carried definition declares `workspace: "none"`,
+// deleted when none does) → a report of live workspaces still on an older image. Repos reconcile onto the
 // in-cluster source volume at orchestrator boot (ADR-0004); a configured custom provider is
 // preflighted from inside the cluster. ssh repos ask where their key comes from (ADR-0047), and a
 // converge that GENERATED one ends by saying so — the key is dead until a human registers it.
@@ -40,11 +40,12 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  agentsOf,
   discoverImages,
-  loadAgents,
   loadConfig,
+  loadWorkflows,
   sandboxToken,
-  type DiscoveredAgent,
+  type CarriedAgent,
   type ImageRefs,
   type InstanceConfig,
 } from "@j2/orchestrator";
@@ -460,9 +461,16 @@ export async function up(args: string[], io: Io): Promise<number> {
     activity(io, "sandbox images: skipped (no `repos` — a workspace-less instance provisions no Sandbox)");
   }
 
-  // --- agents + secrets --------------------------------------------------------------------------
-  const agents = await loadAgents(root);
-  activity(io, `agents: ${agents.map((a) => a.name).join(", ") || "(none)"}`);
+  // --- the Machine walk + secrets ----------------------------------------------------------------
+  // A Machine carries its Agents (ADR-0049), so this converge LOADS the instance's registered
+  // Workflows — the same discovery and module contract the Orchestrator boots with — and walks
+  // them for the definitions two later layers need: the models to preflight (ADR-0018) and any
+  // `workspace: "none"`, which converges the Instance Harness (ADR-0031). There is no roster to
+  // read and nothing about Agents to publish: the definition rides each Turn.
+  const workflows = await loadWorkflows(root);
+  const agents = agentsOf(workflows.map((w) => w.machine));
+  const carried = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
+  activity(io, `agents: ${carried} (carried by ${workflows.length} workflow machine(s))`);
 
   // Idempotence: the token + signing key persist across re-runs (live Sandboxes bear tokens the
   // key signed — ADR-0013), minted only on first converge.
@@ -492,7 +500,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // The HARNESS containers' env — a separate Secret (ADR-0013): Agent code executes where these
   // land, so the Instance token/signing key above must be unreachable from it. Values declared in
   // config (usually read off process.env/.env) materialize here (ADR-0019); so does the provider
-  // key — the ConfigMap'd agents spec carries the provider MINUS this (ADR-0018).
+  // key — the ConfigMap'd harness config carries the provider MINUS this (ADR-0018).
   const harnessEnvData: Record<string, string> = {};
   for (const v of config.harness?.env ?? []) if (v.value !== undefined) harnessEnvData[v.name] = v.value;
   if (config.harness?.provider?.apiKey) harnessEnvData.J2_PROVIDER_API_KEY = config.harness.provider.apiKey;
@@ -533,7 +541,6 @@ export async function up(args: string[], io: Io): Promise<number> {
       hash,
       secretData,
       harnessEnvData,
-      agents,
       harness: config.harness,
       caBundle: caPem,
       imageRefs: converged,
@@ -556,16 +563,17 @@ export async function up(args: string[], io: Io): Promise<number> {
   });
 
   // --- Instance Harness (ADR-0031): converged by convention, never by config ---------------------
-  // The scan is static and DEFINITION-level (the line ADR-0018 drew: workflow internals are not
-  // statically recoverable) — a declared-but-never-invoked `"none"` Agent over-deploys, erring
-  // toward "the convention works when you need it". No `"none"` definitions → nothing, and a
-  // stale Deployment from a definition that dropped its `"none"` is deleted: the layer converges
-  // toward the definitions like every other layer converges toward the config.
-  const menuOnly = agents.filter((a) => a.definition.workspace === "none");
+  // The scan is the Machine walk above, and it is DEFINITION-level (the line ADR-0018 drew:
+  // workflow internals are not statically recoverable) — a carried-but-never-invoked `"none"`
+  // Agent over-deploys, erring toward "the convention works when you need it". No `"none"`
+  // definitions → nothing, and a stale Deployment from a definition that dropped its `"none"` is
+  // deleted: the layer converges toward the Machines like every other layer converges toward the
+  // config.
+  const menuOnly = [...new Set(agents.filter((a) => a.definition.workspace === "none").map((a) => a.name))];
   if (menuOnly.length > 0) {
     activity(
       io,
-      `instance harness: converging (${menuOnly.map((a) => a.name).join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none")`,
+      `instance harness: converging (${menuOnly.join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none")`,
     );
     const harnessImage = refs.harness;
     await kube.apply({
@@ -1105,17 +1113,17 @@ async function preflightProvider(
   io: Io,
   kube: KubeAdmin,
   config: InstanceConfig,
-  agents: DiscoveredAgent[],
+  agents: CarriedAgent[],
   namespace: string,
   ctx: { context?: string },
   caPem?: string,
 ): Promise<void> {
   const provider = config.harness?.provider;
   if (!provider) return;
-  // The DEFINITIONS name the models (ADR-0018), so probe the ones that will actually
-  // run, not one instance-wide default. "vllm/Qwen/Qwen3-32B" → the endpoint's model id is
-  // everything after the provider prefix; a definition on a different provider is not this
-  // endpoint's business. A workflow's per-turn dial cannot be probed here — invoke `input` is a
+  // The DEFINITIONS name the models (ADR-0018) and the Machines carry the definitions (ADR-0049),
+  // so probe the ones that will actually run, not one instance-wide default.
+  // "vllm/Qwen/Qwen3-32B" → the endpoint's model id is everything after the provider prefix; a
+  // definition on a different provider is not this endpoint's business. A workflow's per-turn dial cannot be probed here — invoke `input` is a
   // function, so it is not statically recoverable; it is checked at admission instead.
   const prefix = `${provider.id}/`;
   const models = [
@@ -1127,7 +1135,10 @@ async function preflightProvider(
     ),
   ];
   if (models.length === 0) {
-    activity(io, `provider: ${provider.baseUrl} configured, but no Agent names a "${provider.id}/…" model — skipped`);
+    activity(
+      io,
+      `provider: ${provider.baseUrl} configured, but no carried Agent names a "${provider.id}/…" model — skipped`,
+    );
     return;
   }
   for (const model of models) {

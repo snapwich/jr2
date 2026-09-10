@@ -61,14 +61,15 @@ for the Kubernetes architecture — agents must not share host resources (ports,
 worker pod, container
 
 **Harness**: j2's own long-running server (`@j2/harness`), hosted in two placements: inside every Sandbox, and once per
-Instance as the Instance Harness (ADR-0031). Hosts the instance's Agents over the Harness wire (ADR-0027) and executes
-their Working tools. Ships both as the stock `j2-harness:<ver>` image and as the runtime j2 mounts into every Sandbox at
-`/opt/j2` at pod time — Working tools execute in this container, so the tools they can reach are the Sandbox Image's
-(ADR-0037). _Avoid_: flue agent, server, `local()`
+Instance as the Instance Harness (ADR-0031). Hosts conversations over the Harness wire (ADR-0027) and executes their
+Working tools; it holds no Agents of its own — each admission carries the definition it runs (ADR-0049). Ships both as
+the stock `j2-harness:<ver>` image and as the runtime j2 mounts into every Sandbox at `/opt/j2` at pod time — Working
+tools execute in this container, so the tools they can reach are the Sandbox Image's (ADR-0037). _Avoid_: flue agent,
+server, `local()`
 
-**Instance Harness**: The per-Instance Harness deployment `j2 up` converges when any Agent definition declares
-`workspace: "none"` — the placement for every Menu-only Agent's Turn, regardless of any enclosing Workspace, so a
-continued conversation always lands on the Harness that holds it (ADR-0031). Its pod pairs the Harness with an Adapter
+**Instance Harness**: The per-Instance Harness deployment `j2 up` converges when an Agent a registered Machine carries
+declares `workspace: "none"` — the placement for every Menu-only Agent's Turn, regardless of any enclosing Workspace, so
+a continued conversation always lands on the Harness that holds it (ADR-0031). Its pod pairs the Harness with an Adapter
 and mounts no worktree. _Avoid_: shared harness, global harness, dev harness
 
 **Adapter**: The j2-owned sidecar container in a Sandbox that serves the current turn's Menu to the Agent over MCP and

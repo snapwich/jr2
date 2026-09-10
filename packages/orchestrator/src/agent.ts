@@ -13,10 +13,6 @@
 // logic that carries it, so `j2Setup`'s menu derivation can recognize an Agent slot without
 // pulling the wire client onto its load path.
 
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { discoverModules } from "./instance.ts";
-
 /** j2's reasoning-effort scale (ADR-0027) — a strict subset of the runtime's, so every value
  * passes through unmapped; mirrored by `@j2/harness`'s spec contract. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -77,36 +73,4 @@ export function isAgent(logic: unknown): logic is AgentSlot {
   if (typeof definition !== "object" || definition === null) return false;
   const { model, instructions } = definition as Partial<AgentDefinition>;
   return typeof model === "string" && typeof instructions === "string";
-}
-
-/** A discovered instance Agent: filename stem = Agent name (the `:name` in the Harness wire's
- * routes — ADR-0027).
- *
- * TEMPORARY (ADR-0049): the `agents/` folder is retired, and a Machine carries its Agents. What
- * keeps this alive for now is the deployed Harness, which still resolves a definition from the
- * `J2_AGENTS_JSON` roster `j2 up` writes; the step that puts the definition on the Turn deletes
- * this function, its callers, and the folder with it. */
-export type DiscoveredAgent = { name: string; definition: AgentDefinition };
-
-/**
- * Discover + load `<dir>/agents/*.ts` (the same filename convention as workflow discovery —
- * `discoverModules`). Absent dir → empty (an instance without Agents is fine); a file that fails
- * to import or lacks a default export throws — a broken definition must be loud, never a silently
- * thinner Harness.
- */
-export async function loadAgents(dir: string): Promise<DiscoveredAgent[]> {
-  const agents: DiscoveredAgent[] = [];
-  for (const { name, file } of await discoverModules(join(dir, "agents"))) {
-    const mod = (await import(pathToFileURL(file).href)) as { default?: AgentDefinition };
-    const definition = mod.default;
-    if (!definition?.instructions || !definition.model) {
-      throw new Error(
-        `agent "${name}" (${file}) is not a definition — the contract (ADR-0018) is ` +
-          "`export default { model, instructions, … } satisfies AgentDefinition`, and BOTH are " +
-          "required (there is no instance-wide model default)",
-      );
-    }
-    agents.push({ name, definition });
-  }
-  return agents;
 }

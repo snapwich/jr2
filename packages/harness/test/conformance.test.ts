@@ -13,8 +13,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
 import type { Surface } from "@j2/adapter";
 import { harnessApp } from "../src/app.ts";
-import { dialFault, modelsFor, validateSpecModels } from "../src/provider.ts";
-import type { AgentsSpec } from "../src/spec.ts";
+import { admissionFault, modelsFor } from "../src/provider.ts";
+import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
 import { runSubmissionFor } from "../src/turn.ts";
 import type { HistoryView, Settlement, StreamEvent } from "../src/wire.ts";
 import {
@@ -49,6 +49,23 @@ function surfaceWith(...names: string[]): Surface {
   };
 }
 
+/** The Agents this suite runs, as the Machines that carry them would hand them over — every
+ * admission below carries one (ADR-0049); this process holds no roster. */
+const definitions: Record<string, AgentDefinition> = {
+  [AGENT]: {
+    model: "fake/model-x",
+    instructions: "Review what you are handed, then answer through the menu.",
+    cwd: tmpdir(),
+  },
+  // No cwd on purpose — it is moot for `workspace: "none"` (only Working tools consume it), so
+  // the /work default resolving to a directory that does not exist must not matter.
+  [DECISIONER]: {
+    model: "fake/model-x",
+    instructions: "Read the inputs, then pick the next event from the menu.",
+    workspace: "none",
+  },
+};
+
 let provider: FakeProvider;
 let sandbox: FakeSandbox;
 let app: Hono;
@@ -75,51 +92,27 @@ const onRejection = (reason: unknown) => rejections.push(reason);
 before(async () => {
   provider = await startFakeProvider();
   sandbox = await startAdapterOverFakeOrchestrator(surfaceWith("review_verdict"));
-  const spec: AgentsSpec = {
-    agents: [
-      {
-        name: AGENT,
-        definition: {
-          model: "fake/model-x",
-          instructions: "Review what you are handed, then answer through the menu.",
-          cwd: tmpdir(),
-        },
-      },
-      {
-        name: DECISIONER,
-        // No cwd on purpose — it is moot for `workspace: "none"` (only Working tools consume it),
-        // so the /work default resolving to a directory that does not exist must not matter.
-        definition: {
-          model: "fake/model-x",
-          instructions: "Read the inputs, then pick the next event from the menu.",
-          workspace: "none",
-        },
-      },
-    ],
-    harness: {
-      provider: {
-        id: "fake",
-        api: "openai-completions",
-        baseUrl: provider.url,
-        contextWindow: 200_000,
-        maxTokens: 8192,
-        // `model-zero` declares no window of its own (per-model 0 beats the provider default,
-        // `provider.ts`) — the shape ADR-0036 requires compaction to stay OFF for.
-        models: { "model-x": {}, "model-zero": { contextWindow: 0, maxTokens: 8192 } },
-      },
+  const harness: HarnessSpec = {
+    provider: {
+      id: "fake",
+      api: "openai-completions",
+      baseUrl: provider.url,
+      contextWindow: 200_000,
+      maxTokens: 8192,
+      // `model-zero` declares no window of its own (per-model 0 beats the provider default,
+      // `provider.ts`) — the shape ADR-0036 requires compaction to stay OFF for.
+      models: { "model-x": {}, "model-zero": { contextWindow: 0, maxTokens: 8192 } },
     },
   };
-  const models = modelsFor(spec.harness, {});
-  validateSpecModels(spec, models);
+  const models = modelsFor(harness, {});
   const appWith = (seams?: { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number }): Hono =>
     harnessApp({
-      spec,
       longPollMs: 250,
-      // The real composition (`main.ts`): admission rejects a dial the turn could not run.
-      checkDials: (dials) => dialFault(models, dials),
+      // The real composition (`main.ts`): admission rejects a definition (or dial) the turn
+      // could not run.
+      checkAdmission: (resolved) => admissionFault(models, resolved),
       runSubmissionFor: (seat) =>
         runSubmissionFor({
-          spec,
           models,
           adapterUrl: sandbox.url,
           // No provider-stream retries: a scripted failure must settle on the first attempt.
@@ -169,7 +162,9 @@ async function admit(
 ): Promise<{ offset: string; submissionId: string }> {
   const res = await via.request(conversationPath(iid, agent), {
     method: "POST",
-    body: JSON.stringify({ message, ...dials }),
+    // The definition rides every admission (ADR-0049) — the real turn loop reads the one it was
+    // handed, so this suite hands it the same one the Machine's slot would.
+    body: JSON.stringify({ message, definition: definitions[agent], ...dials }),
     headers: { "content-type": "application/json" },
   });
   assert.equal(res.status, 200);

@@ -132,15 +132,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // Bump per reload so `import()` re-reads a changed file rather than serving the ESM module cache.
   let importGen = 0;
   const registerFile = async (name: string, file: string): Promise<void> => {
-    const href = pathToFileURL(file).href + (importGen ? `?v=${importGen}` : "");
-    const mod: { machine?: unknown } = await import(href);
-    const machine = mod.machine as AnyStateMachine | undefined;
-    if (!machine) {
-      throw new Error(
-        `workflow "${name}" (${file}) has no \`machine\` named export ` +
-          `(module contract, ADR-0011/0015: \`export const machine\`)`,
-      );
-    }
+    const machine = await importMachine(name, file, importGen);
     host.register({
       name,
       machine,
@@ -209,11 +201,45 @@ async function discoverWorkflows(dir: string): Promise<Array<{ name: string; fil
   return discoverModules(join(dir, "workflows"));
 }
 
+/** Import one workflow module and take its Machine — the module contract (ADR-0011/0015):
+ * `export const machine`. `gen` cache-busts a reload; 0 imports the module URL untouched. */
+async function importMachine(name: string, file: string, gen = 0): Promise<AnyStateMachine> {
+  const href = pathToFileURL(file).href + (gen ? `?v=${gen}` : "");
+  const mod: { machine?: unknown } = await import(href);
+  const machine = mod.machine as AnyStateMachine | undefined;
+  if (!machine) {
+    throw new Error(
+      `workflow "${name}" (${file}) has no \`machine\` named export ` +
+        `(module contract, ADR-0011/0015: \`export const machine\`)`,
+    );
+  }
+  return machine;
+}
+
 /**
- * The instance module-discovery convention, shared by `workflows/` and `agents/` (they must never
- * drift): every `<moduleDir>/<name>.ts` except `_`-prefixed helpers and `.d.ts`, sorted, name =
- * filename stem. An ABSENT dir is empty; any other readdir failure (EACCES, ENOTDIR, …) throws —
- * a directory that exists but cannot be read must be loud, never "no modules".
+ * Discover + load every Workflow an instance folder registers — the same discovery and the same
+ * module contract `startInstance` boots with, without booting.
+ *
+ * `j2 up` is the caller (ADR-0049/0050): a Machine carries its Agents and its Sandbox Image, so
+ * the only way to know what a deployment must preflight and converge is to load the Machines and
+ * WALK them (`agentsOf`, parts.ts). It lives here, beside the discovery it shares, so the
+ * convention has one implementation rather than a second copy in the CLI that can drift.
+ */
+export async function loadWorkflows(dir: string): Promise<Array<{ name: string; machine: AnyStateMachine }>> {
+  const loaded: Array<{ name: string; machine: AnyStateMachine }> = [];
+  for (const { name, file } of await discoverWorkflows(dir)) {
+    loaded.push({ name, machine: await importMachine(name, file) });
+  }
+  return loaded;
+}
+
+/**
+ * The instance module-discovery convention: every `<moduleDir>/<name>.ts` except `_`-prefixed
+ * helpers and `.d.ts`, sorted, name = filename stem. `workflows/` is the one directory that uses
+ * it — the `agents/` folder it was also written for retired with ADR-0049 (an Agent is a part of a
+ * Machine, not a file the instance discovers), and {@link discoverImages} mirrors it for
+ * directories. An ABSENT dir is empty; any other readdir failure (EACCES, ENOTDIR, …) throws — a
+ * directory that exists but cannot be read must be loud, never "no modules".
  */
 export async function discoverModules(moduleDir: string): Promise<Array<{ name: string; file: string }>> {
   let entries: string[];
@@ -234,8 +260,8 @@ export async function discoverModules(moduleDir: string): Promise<Array<{ name: 
  * = the DIRNAME (the build context is that directory, so the image's content hash covers exactly
  * what its build can see). Same doctrine as {@link discoverModules} — filename discovery is the one
  * registration mechanism, an ABSENT dir is empty, `_`-prefixed entries are helpers, sorted — with
- * one difference: a subdirectory holding no `Dockerfile` THROWS, naming the missing path. Unlike
- * `agents/README.md`, a subdirectory of `images/` has no other reason to exist, so silence there
+ * one difference: a subdirectory holding no `Dockerfile` THROWS, naming the missing path. Unlike a
+ * stray `README.md`, a subdirectory of `images/` has no other reason to exist, so silence there
  * would be a Sandbox Image the author believes in and no converge ever builds.
  *
  * The Orchestrator process never calls this — refs reach it resolved, through the `j2-images`

@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { sandboxToken } from "@j2/orchestrator";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
@@ -219,21 +220,35 @@ function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
   return { tags: [], bytes: 0, labeled: true, ...over };
 }
 
-/** `agentModels` writes one `agents/<name>.ts` per entry — the definitions are what the provider
- * preflight probes now that there is no instance-wide model (ADR-0018). */
-async function mkInstance(config: string, name = "myinst", agentModels?: Record<string, string>): Promise<string> {
+/** The kit's own package by ABSOLUTE path. A fixture instance lives in the OS temp dir, where a
+ * bare `@j2/orchestrator` resolves to nothing — and these workflows must be the real thing, since
+ * `j2 up` now LOADS them and walks the Machines for the Agents they carry (ADR-0049). Node caches
+ * by resolved path, so this is the same module instance the CLI itself imported. */
+const KIT_SRC = pathToFileURL(
+  join(dirname(fileURLToPath(import.meta.url)), "..", "..", "orchestrator", "src", "index.ts"),
+).href;
+
+/** One Agent as a fixture Machine carries it. */
+type FixtureAgent = { model: string; workspace?: "write" | "read" | "none" };
+
+/** `agents` writes ONE workflow whose Machine carries them as actor slots (ADR-0049) — what the
+ * converge's walk finds, and therefore what the provider preflight probes (there is no
+ * instance-wide model — ADR-0018) and what the Instance Harness scan reads (ADR-0031). */
+async function mkInstance(config: string, name = "myinst", agents?: Record<string, FixtureAgent>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `j2-up-${name}-`));
   await writeFile(join(root, "j2.config.ts"), config);
   await writeFile(join(root, "package.json"), JSON.stringify({ name: `inst-${name}`, version: "0.0.0" }));
   await mkdir(join(root, "workflows"), { recursive: true });
-  if (agentModels) {
-    await mkdir(join(root, "agents"), { recursive: true });
-    for (const [agent, model] of Object.entries(agentModels)) {
-      await writeFile(
-        join(root, "agents", `${agent}.ts`),
-        `export default { model: ${JSON.stringify(model)}, instructions: "i" };\n`,
-      );
-    }
+  if (agents) {
+    const slots = Object.entries(agents)
+      .map(([slot, def]) => `${slot}: agent({ ...${JSON.stringify(def)}, instructions: "i" })`)
+      .join(", ");
+    await writeFile(
+      join(root, "workflows", "work.ts"),
+      `import { agent, j2Setup } from ${JSON.stringify(KIT_SRC)};\n` +
+        `export const machine = j2Setup({ events: [], actors: { ${slots} } })\n` +
+        `  .createMachine({ id: "work", initial: "idle", states: { idle: {} } });\n`,
+    );
   }
   return root;
 }
@@ -983,7 +998,7 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   assert.equal(harnessEnv.stringData.J2_INSTANCE_TOKEN, undefined, "the token never rides the harness Secret");
 });
 
-test("provider apiKey rides the Secret (J2_PROVIDER_API_KEY), never the agents ConfigMap", async () => {
+test("provider apiKey rides the Secret (J2_PROVIDER_API_KEY), never the harness ConfigMap", async () => {
   const root = await mkInstance(
     `export default { name: "myinst", harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1", apiKey: "sk-secret", contextWindow: 131072, maxTokens: 32768, models: { "qwen-x": { contextWindow: 40960 } } } } };\n`,
   );
@@ -995,14 +1010,17 @@ test("provider apiKey rides the Secret (J2_PROVIDER_API_KEY), never the agents C
   const secret = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-harness-env")!;
   assert.equal(secret.stringData.J2_PROVIDER_API_KEY, "sk-secret");
 
-  const cm = items.find((i) => i.kind === "ConfigMap")!;
-  assert.ok(!cm.data["agents.json"].includes("sk-secret"), "the key never lands in a ConfigMap");
-  assert.match(cm.data["agents.json"], /baseUrl/, "the rest of the provider config does ride the ConfigMap");
+  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-harness")!;
+  assert.ok(!cm.data["harness.json"].includes("sk-secret"), "the key never lands in a ConfigMap");
+  assert.match(cm.data["harness.json"], /baseUrl/, "the rest of the provider config does ride the ConfigMap");
   // Token limits are model properties, not credentials — they DO ride the ConfigMap.
-  const spec = JSON.parse(cm.data["agents.json"]) as { harness: { provider: Record<string, unknown> } };
-  assert.equal(spec.harness.provider.contextWindow, 131072);
-  assert.equal(spec.harness.provider.maxTokens, 32768);
-  assert.deepEqual(spec.harness.provider.models, { "qwen-x": { contextWindow: 40960 } });
+  const spec = JSON.parse(cm.data["harness.json"]) as { provider: Record<string, unknown>; agents?: unknown };
+  assert.equal(spec.provider.contextWindow, 131072);
+  assert.equal(spec.provider.maxTokens, 32768);
+  assert.deepEqual(spec.provider.models, { "qwen-x": { contextWindow: 40960 } });
+  // What this ConfigMap is NOT any more (ADR-0049): a roster. The definition rides each Turn, so
+  // deployment facts are all that is left to mount.
+  assert.equal(spec.agents, undefined, "no Agent roster rides the deployment");
 });
 
 test("caBundle: the PEM rides a j2-ca ConfigMap and the provider preflight; a missing file fails loudly", async () => {
@@ -1011,7 +1029,7 @@ test("caBundle: the PEM rides a j2-ca ConfigMap and the provider preflight; a mi
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.internal/v1" } } };\n`;
   const pem = "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n";
 
-  const root = await mkInstance(config, "myinst", { coder: "vllm/qwen-x" });
+  const root = await mkInstance(config, "myinst", { coder: { model: "vllm/qwen-x" } });
   await writeFile(join(root, "ca.crt"), pem);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
@@ -1081,13 +1099,13 @@ test("provider preflight: every definition's model probed from inside the cluste
   const config =
     `export default { name: "myinst", harness: { ` +
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } } };\n`;
-  // Two agents on the endpoint, one on another provider, and a repeat — the preflight probes the
-  // DISTINCT vllm models and leaves the anthropic one alone.
-  const agents = {
-    coder: "vllm/qwen-x",
-    reviewer: "vllm/qwen-small",
-    scribe: "vllm/qwen-x",
-    judge: "anthropic/claude-x",
+  // Four slots on ONE Machine — two on the endpoint, one repeat, one on another provider. The
+  // preflight probes the DISTINCT vllm models and leaves the anthropic one alone.
+  const agents: Record<string, FixtureAgent> = {
+    coder: { model: "vllm/qwen-x" },
+    reviewer: { model: "vllm/qwen-small" },
+    scribe: { model: "vllm/qwen-x" },
+    judge: { model: "anthropic/claude-x" },
   };
 
   const ok = mkWorld(await mkInstance(config, "myinst", agents));
@@ -1098,7 +1116,7 @@ test("provider preflight: every definition's model probed from inside the cluste
     "the probes target the configured baseUrl",
   );
   const probed = ok.kube.probes.join("\n");
-  assert.match(probed, /qwen-x/, "…with a definition's model (provider prefix stripped)");
+  assert.match(probed, /qwen-x/, "…with a carried definition's model (provider prefix stripped)");
   assert.match(probed, /qwen-small/, "…and the other one");
   assert.ok(!/claude-x/.test(probed), "a model on another provider is not this endpoint's business");
   assert.match(ok.kube.probes[0]!, /tool_calls/, "…and demands a tool-call completion (ADR-0019)");
@@ -1108,14 +1126,14 @@ test("provider preflight: every definition's model probed from inside the cluste
   await assert.rejects(() => up(["--yes"], bad.io), /provider.*enable-auto-tool-choice/s);
 });
 
-test("provider preflight: configured but no Agent names its models → skipped, not a silent pass", async () => {
+test("provider preflight: configured but no carried Agent names its models → skipped, not a silent pass", async () => {
   const config =
     `export default { name: "myinst", harness: { ` +
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } } };\n`;
-  const w = mkWorld(await mkInstance(config, "myinst", { judge: "anthropic/claude-x" }));
+  const w = mkWorld(await mkInstance(config, "myinst", { judge: { model: "anthropic/claude-x" } }));
   assert.equal(await up(["--yes"], w.io), 0);
   assert.equal(w.kube.probes.length, 0);
-  assert.match(w.err.join("\n"), /no Agent names a "vllm\/…" model/);
+  assert.match(w.err.join("\n"), /no carried Agent names a "vllm\/…" model/);
 });
 
 // --- git over ssh: the key source is the user's choice (ADR-0047) --------------------------------
@@ -1289,19 +1307,12 @@ test("git ssh: declining every source bails; an existing Secret is never offered
 
 // --- Instance Harness (ADR-0031): converged by convention, never by config -----------------------
 
-/** One `workspace: "none"` definition beside a plain one — the static scan's trigger. */
-async function withDecisioner(root: string): Promise<string> {
-  await mkdir(join(root, "agents"), { recursive: true });
-  await writeFile(
-    join(root, "agents", "decisioner.ts"),
-    `export default { model: "anthropic/claude-x", instructions: "pick", workspace: "none" };\n`,
-  );
-  await writeFile(
-    join(root, "agents", "coder.ts"),
-    `export default { model: "anthropic/claude-x", instructions: "code" };\n`,
-  );
-  return root;
-}
+/** A Machine carrying one `workspace: "none"` Agent beside a plain one — what the walk finds and
+ * the Instance Harness scan triggers on (ADR-0031/0049). */
+const DECISIONER_AGENTS: Record<string, FixtureAgent> = {
+  decisioner: { model: "anthropic/claude-x", workspace: "none" },
+  coder: { model: "anthropic/claude-x" },
+};
 
 function findInstanceHarness(w: World): { deployment?: Record<string, any>; service?: Record<string, any> } {
   for (const manifest of w.kube.applied) {
@@ -1316,8 +1327,10 @@ function findInstanceHarness(w: World): { deployment?: Record<string, any>; serv
 }
 
 test('a workspace: "none" definition converges the Instance Harness — Harness + Adapter, minus the Workspace', async () => {
-  const root = await withDecisioner(
-    await mkInstance(`export default { name: "myinst", harness: { env: [{ name: "K", value: "v" }] } };\n`),
+  const root = await mkInstance(
+    `export default { name: "myinst", harness: { env: [{ name: "K", value: "v" }] } };\n`,
+    "myinst",
+    DECISIONER_AGENTS,
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
@@ -1335,22 +1348,22 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   );
   assert.equal(podSpec.volumes, undefined, "no /work volume, no repos volume");
 
-  // Same wiring a Sandbox's Harness container gets: the definitions ConfigMap + the env Secret.
+  // Same wiring a Sandbox's Harness container gets: the harness-config ConfigMap + the env Secret.
   const harness = podSpec.containers[0];
   // This world is NOT a kit checkout (mkWorld's default kitDir is the instance folder), so the
   // resolved ref is the published one — the branch a real instance takes (ADR-0038), at the
   // canonical home (ADR-0044).
   assert.equal(harness.image, "ghcr.io/snapwich/j2-harness:0.0.0", "the stock image at the kit version");
   assert.deepEqual(harness.env[0], {
-    name: "J2_AGENTS_JSON",
-    valueFrom: { configMapKeyRef: { name: "j2-agents", key: "agents.json" } },
+    name: "J2_HARNESS_JSON",
+    valueFrom: { configMapKeyRef: { name: "j2-harness", key: "harness.json" } },
   });
   assert.ok(
     harness.envFrom.some((e: { secretRef?: { name: string } }) => e.secretRef?.name === "j2-harness-env"),
     "the Harness envFroms its own Secret",
   );
-  // The placement gate (ADR-0031): the mounted spec is the FULL agents.json, so the Harness
-  // itself must refuse any non-Menu-only admission — no code execution in this pod is a claim
+  // The placement gate (ADR-0031): every admission carries its own definition (ADR-0049), so the
+  // Harness itself must refuse any non-Menu-only one — no code execution in this pod is a claim
   // this env makes checkable.
   assert.ok(
     harness.env.some((e: { name: string; value?: string }) => e.name === "J2_MENU_ONLY" && e.value === "1"),
@@ -1368,7 +1381,7 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
 });
 
 test("both readiness probes set a period — a ~1s boot must not be billed as a 10s rollout wait", async () => {
-  const root = await withDecisioner(await mkInstance(`export default { name: "myinst" };\n`));
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
@@ -1396,7 +1409,9 @@ test("both readiness probes set a period — a ~1s boot must not be billed as a 
 
 test('no "none" definitions → nothing new deploys, and a stale Instance Harness is deleted on converge', async () => {
   // Agents exist, none of them Menu-only: the feature stays invisible (ADR-0031).
-  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", { coder: "anthropic/claude-x" });
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", {
+    coder: { model: "anthropic/claude-x" },
+  });
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
@@ -1414,7 +1429,7 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
   // The accepted asymmetry: this Deployment names its images in the pod template (it is SUPPOSED
   // to roll when they move), while a Sandbox's refs travel through the j2-images ConfigMap.
   const kit = await mkKit();
-  const root = await withDecisioner(await mkInstance(`export default { name: "myinst" };\n`));
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
   const w = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], w.io), 0);
 

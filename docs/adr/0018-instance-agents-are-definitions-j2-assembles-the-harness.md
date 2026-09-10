@@ -8,8 +8,8 @@ hands: the [ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md) Adapter leash
 sandbox geography (working tools execute in the Harness container against `/work`), the dependency pin that must match
 the Orchestrator's wire, and the image contracts the operator imposes (numeric uid, `:8080` = Ready, git present). The
 only content a user genuinely owns is the persona: model + instructions (+ someday tools/skills). CONTEXT.md already
-promised the split — an Agent is a definition j2 maps into the Harness, and an Instance is a folder of `workflows/` and
-`agents/`.
+promised the split — an Agent is a definition j2 maps into the Harness, and the Instance folder holds only what a
+Machine cannot carry (ADR-0049/0050: the definition is one of the things it can).
 
 ## Decision
 
@@ -57,12 +57,13 @@ The line that keeps this from becoming "re-specify the definition at the call si
 that a read-only reviewer _cannot_ write, which per-invocation escalation would void. **ADR-0028 is therefore untouched
 by the dials.** Dials say only how hard to run: it is still the coder, it is the coder running hot.
 
-Where a model is checked: three seats, each where the knowledge is. A definition's model resolves against the registry
-at **pod boot** (loudly, in the pod log — a typo is a static fact about the mounted spec). A configured provider is
-probed per named model at **converge**. A dial is checked at **admission**, 400-ing the invoke as its state is entered
-rather than settling the Submission `failed` mid-run — a call-site model cannot be checked earlier, because an invoke's
-`input` is a function and is not statically recoverable. Definitions keep converge-time safety; overrides pay a later
-check for the flexibility.
+Where a model is checked: two seats, each where the knowledge is. At **converge**, `j2 up` walks the registered Machines
+for the definitions they carry (ADR-0049) and probes a configured provider once per distinct model they name. At
+**admission**, the Harness resolves the definition it was handed against its registry and 400s the invoke as its state
+is entered, rather than settling the Submission `failed` mid-run. The pod-boot seat retired with the roster it read: the
+Harness no longer knows an Agent before a Turn brings it one. A dial has only ever had the admission seat — a call-site
+model cannot be checked earlier, because an invoke's `input` is a function and is not statically recoverable.
+Definitions keep converge-time safety; overrides pay the later check for the flexibility.
 
 ## Considered options
 

@@ -12,7 +12,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discoverImages, startInstance } from "../src/instance.ts";
+import { discoverImages, loadWorkflows, startInstance } from "../src/instance.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
@@ -259,8 +259,8 @@ test("reload picks up added, changed, and removed workflow files (dev hot-reload
 });
 
 test("discoverImages: dirname = name, `_`-prefixed skipped, sorted; absent images/ is empty", async () => {
-  // ADR-0037's discovery, the third member of the filename-discovery family (`workflows/`,
-  // `agents/`, `images/`) — same doctrine, one difference proven below.
+  // ADR-0037's discovery, the sibling of `workflows/`'s (the `agents/` folder retired with
+  // ADR-0049) — same doctrine, one difference proven below.
   const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
   try {
     assert.deepEqual(await discoverImages(dir), [], "an instance that authored none");
@@ -285,7 +285,7 @@ test("discoverImages: dirname = name, `_`-prefixed skipped, sorted; absent image
 });
 
 test("discoverImages: a subdirectory with no Dockerfile THROWS, naming the missing path", async () => {
-  // Unlike `agents/README.md`, a SUBDIRECTORY of images/ has no other reason to exist — staying
+  // Unlike a stray README.md, a SUBDIRECTORY of images/ has no other reason to exist — staying
   // quiet would leave an image its author believes in and no converge ever builds.
   const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
   try {
@@ -295,6 +295,49 @@ test("discoverImages: a subdirectory with no Dockerfile THROWS, naming the missi
       assert.ok(err.message.includes(join(dir, "images", "golang", "Dockerfile")));
       return true;
     });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadWorkflows: the same discovery and module contract, without booting (ADR-0049's walk)", async () => {
+  // What `j2 up` calls: a Machine carries its Agents, so the converge loads the registered
+  // Machines and walks them. Filename = name, sorted, `_`-prefixed helpers and `.d.ts` ignored —
+  // the `_` rule is load-bearing here (ADR-0049: a Machine meant only for composition, or a
+  // module of shared definitions, lives in a `_`-prefixed file).
+  const dir = await mkdtemp(join(pkgDir, "test-loadworkflows-"));
+  try {
+    assert.deepEqual(await loadWorkflows(dir), [], "an instance with no workflows/ yet");
+
+    await mkdir(join(dir, "workflows"), { recursive: true });
+    await writeFile(join(dir, "workflows", "second.ts"), machineSrc("second", "idle"));
+    await writeFile(join(dir, "workflows", "first.ts"), machineSrc("first", "idle"));
+    await writeFile(join(dir, "workflows", "_agents.ts"), "export const shared = 1;\n");
+    await writeFile(join(dir, "workflows", "types.d.ts"), "export type T = 1;\n");
+
+    const loaded = await loadWorkflows(dir);
+    assert.deepEqual(
+      loaded.map((w) => w.name),
+      ["first", "second"],
+    );
+    assert.equal(loaded[0]!.machine.id, "first");
+
+    // The module contract is the SAME one the boot enforces — a file that exports no `machine`
+    // fails here too, so `j2 up` refuses before it converges rather than deploying a broken image.
+    await writeFile(join(dir, "workflows", "broken.ts"), "export const nope = 1;\n");
+    await assert.rejects(loadWorkflows(dir), /workflow "broken".*no `machine` named export/s);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadWorkflows: only ENOENT maps to empty — an unreadable workflows/ path throws", async () => {
+  // A directory that exists but cannot be read must be loud, never "no workflows": the silent
+  // reading deploys an instance that runs nothing and preflights nothing.
+  const dir = await mkdtemp(join(tmpdir(), "j2-workflows-"));
+  try {
+    await writeFile(join(dir, "workflows"), "not a directory\n");
+    await assert.rejects(loadWorkflows(dir), (err: NodeJS.ErrnoException) => err.code === "ENOTDIR");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

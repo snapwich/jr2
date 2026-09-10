@@ -22,7 +22,7 @@ import {
 /** Run one Submission (the turn, `turn.ts`). Resolution settles `completed`; a rejection settles
  * `failed` — unless the signal fired, which settles `aborted`. The signal is how an abort reaches
  * the active pi run. Takes the whole admitted request, not just its prompt: this Submission's
- * dials frame the turn exactly as the prompt does (ADR-0018). */
+ * definition and dials frame the turn exactly as the prompt does (ADR-0018/0049). */
 export type RunSubmission = (submission: AdmissionRequest, signal: AbortSignal) => Promise<void>;
 
 /** A Turn the Harness itself ended because it would not conclude (ADR-0035) — a runaway trigger

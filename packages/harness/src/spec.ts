@@ -1,14 +1,32 @@
-// The J2_AGENTS_JSON contract (ADR-0018/0027): the mounted `j2-agents` ConfigMap — instance Agent
-// definitions + harness config — as the Harness reads it. Re-read per Submission, so a ConfigMap
-// update + pod restart is a full definition change; validation is LOUD (into the pod log), never a
-// silently thinner or mute Harness. Shapes mirror `@j2/orchestrator`'s `AgentDefinition` and
-// `HarnessConfig` deliberately without importing them — the stock image carries no Orchestrator.
+// What the Harness is HANDED, in two pieces with two lifetimes (ADR-0049).
+//
+//   - The Agent DEFINITION rides every admission. A Machine carries its Agents as actor slots, so
+//     the definition travels with the Turn that runs it (ADR-0049) and the Harness runs what it
+//     was handed — re-read per Submission as before, now literally: the queued admission IS the
+//     definition. There is no roster here, no `agents/` folder and no `J2_AGENTS_JSON`: a flat
+//     roster could not hold two Machines' `coder`s, and the pod would need a restart to learn a
+//     definition the Orchestrator already knows.
+//   - The harness CONFIG (`J2_HARNESS_JSON`) is what this instance can REACH — the custom model
+//     provider, and nothing else (ADR-0018). Deployment fact, not a Machine's, so it stays
+//     mounted config (ADR-0050) and is read once at boot.
+//
+// Validation of a definition is per ADMISSION and LOUD: a definition that cannot run is a 400
+// naming the slot, never a silently thinner turn. Shapes mirror `@j2/orchestrator`'s
+// `AgentDefinition` and `HarnessConfig` deliberately without importing them — the stock image
+// carries no Orchestrator.
 
 /** j2's reasoning-effort scale (mirrors `@j2/orchestrator`'s `ThinkingLevel`). A strict subset of
  * pi's — every value passes through to the runtime unmapped. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-/** The plain-data Agent definition (ADR-0018), as published to the ConfigMap. */
+/** The scale as data — what an admission's `thinkingLevel` is checked against before pi ever
+ * sees it (`mapThinkingLevel` is the second gate, on the resolved value). */
+const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/** What an Agent may DO to the Workspace (ADR-0028), as data — same reason. */
+const WORKSPACE_ACCESS: readonly string[] = ["write", "read", "none"];
+
+/** The plain-data Agent definition (ADR-0018), as the admission body carries it (ADR-0049). */
 export type AgentDefinition = {
   /** Model specifier, `<provider>/<modelId>`. REQUIRED — there is no instance-wide default
    * (ADR-0018): an Agent is independently valid, and this is the only place a model is
@@ -47,7 +65,8 @@ export type ProviderSpec = {
 };
 
 /** The harness section: what this instance can REACH. Deliberately no model default — the config
- * declares providers, the definition makes the choice (ADR-0018). */
+ * declares providers, the definition makes the choice (ADR-0018) — and no Agents at all: they
+ * ride the Turn (ADR-0049). */
 export type HarnessSpec = {
   provider?: ProviderSpec;
 };
@@ -59,12 +78,6 @@ export type HarnessSpec = {
 export type TurnDials = {
   model?: string;
   thinkingLevel?: ThinkingLevel;
-};
-
-/** The whole mounted spec — what `j2 up` writes into the `j2-agents` ConfigMap. */
-export type AgentsSpec = {
-  agents: Array<{ name: string; definition: AgentDefinition }>;
-  harness?: HarnessSpec;
 };
 
 /** One definition with its per-Submission resolution applied: the Submission's dials, the `/work`
@@ -79,66 +92,79 @@ export type ResolvedDefinition = {
 };
 
 /**
- * Read + validate the mounted spec from the environment. Throws (loudly, into the pod log) on
- * anything that would otherwise become a silently thinner or mute Harness — the same checks the
- * retired boot assembly made (ADR-0018), plus duplicate names, whose only previous check was the
- * boot-time flue build (ADR-0027 deleted it).
+ * Why the definition on this admission cannot be run, or undefined when it can — the structural
+ * half of the admission check (the model's resolvability is `provider.ts`'s half, which needs the
+ * registry). Every message names the SLOT, because that is the name the author wrote and the one
+ * the Orchestrator's error will quote back (ADR-0049).
+ *
+ * This is where the retired boot-time spec validation went: the same claims, made per admission,
+ * which is the only moment a definition exists here now.
  */
-export function loadSpec(env: Record<string, string | undefined>): AgentsSpec {
-  const raw = env.J2_AGENTS_JSON;
-  if (!raw) {
-    throw new Error(
-      "no J2_AGENTS_JSON in the environment — the Sandbox spec must inject the agents ConfigMap (ADR-0018)",
+export function definitionFault(agentName: string, definition: unknown): string | undefined {
+  const named = `agent "${agentName}"`;
+  if (typeof definition !== "object" || definition === null) {
+    return (
+      `${named}: the admission carries no definition — the Machine's Agent slot rides the Turn ` +
+      `(ADR-0049), so \`definition: { model, instructions, … }\` is required on the admit body`
     );
   }
-  let spec: AgentsSpec;
-  try {
-    spec = JSON.parse(raw) as AgentsSpec;
-  } catch (err) {
-    throw new Error(`J2_AGENTS_JSON is not JSON: ${err instanceof Error ? err.message : String(err)}`);
+  const { model, instructions, cwd, description, thinkingLevel, workspace } = definition as Record<string, unknown>;
+  if (typeof instructions !== "string" || instructions.length === 0) {
+    return `${named}: the definition has no \`instructions\` — an Agent is its model plus its prompt (ADR-0018)`;
   }
-
-  // An EMPTY roster is valid (ADR-0018): a workflow that invokes no Agent — a `workspace()` body
-  // parking a Sandbox (ADR-0012) — still needs a serving Harness (binding :8080 is the pod's Ready
-  // signal), just no definitions. Any admission against it 404s.
-  const agents = spec?.agents ?? [];
-  const seen = new Set<string>();
-  for (const a of agents) {
-    if (!a?.name || !a.definition?.instructions) {
-      throw new Error(`agent "${a?.name ?? "?"}" is not a definition — { instructions, … } required (ADR-0018)`);
-    }
-    if (seen.has(a.name)) {
-      throw new Error(
-        `agent "${a.name}" is defined twice in the mounted spec — names are conversation routes (ADR-0027)`,
-      );
-    }
-    seen.add(a.name);
-    if (!a.definition.model) {
-      throw new Error(
-        `agent "${a.name}" names no model — a definition must name one, there is no instance-wide ` +
-          "default (ADR-0018)",
-      );
-    }
+  if (typeof model !== "string" || model.length === 0) {
+    return `${named}: the definition names no model — a definition must name one, there is no instance-wide default (ADR-0018)`;
   }
-  // Normalized: a spec with no `agents` key serves as the empty roster, so callers never null-check.
-  return { ...spec, agents };
+  if (cwd !== undefined && typeof cwd !== "string") return `${named}: \`cwd\` must be a path string`;
+  if (description !== undefined && typeof description !== "string") {
+    return `${named}: \`description\` must be a string`;
+  }
+  if (thinkingLevel !== undefined && !THINKING_LEVELS.includes(thinkingLevel as string)) {
+    return `${named}: thinkingLevel "${String(thinkingLevel)}" is not one of ${THINKING_LEVELS.join("|")}`;
+  }
+  if (workspace !== undefined && !WORKSPACE_ACCESS.includes(workspace as string)) {
+    return `${named}: workspace "${String(workspace)}" is not one of ${WORKSPACE_ACCESS.join("|")} (ADR-0028)`;
+  }
+  return undefined;
 }
 
-/** One Agent's definition off a loaded spec, defaults applied — the per-Submission read
+/** The definition this Submission runs, defaults applied — the per-Submission read
  * (model/instructions/cwd/thinkingLevel resolve when the turn starts, ADR-0027). `dials` is this
  * Submission's override layer: the definition supplies the default, the invocation may turn it. */
-export function resolveDefinition(spec: AgentsSpec, name: string, dials?: TurnDials): ResolvedDefinition {
-  const def = spec.agents.find((a) => a.name === name)?.definition;
-  if (!def) {
-    throw new Error(`agent "${name}" is not in the mounted spec — the pod predates a definition rename? (ADR-0018)`);
-  }
-  const model = dials?.model ?? def.model;
-  const thinkingLevel = dials?.thinkingLevel ?? def.thinkingLevel;
+export function resolveDefinition(definition: AgentDefinition, dials?: TurnDials): ResolvedDefinition {
+  const model = dials?.model ?? definition.model;
+  const thinkingLevel = dials?.thinkingLevel ?? definition.thinkingLevel;
   return {
     model,
-    instructions: def.instructions,
-    cwd: def.cwd ?? "/work",
-    workspace: def.workspace ?? "write",
+    instructions: definition.instructions,
+    cwd: definition.cwd ?? "/work",
+    workspace: definition.workspace ?? "write",
     ...(thinkingLevel ? { thinkingLevel } : {}),
   };
+}
+
+/**
+ * Read + validate the mounted harness config from the environment (`J2_HARNESS_JSON` — the
+ * `j2-harness` ConfigMap, written by `j2 up`). ABSENT is valid and means "pi's own catalog
+ * alone": an instance whose Agents name only built-in models declares no provider, and `j2 up`
+ * writes the key with no `provider` in it. Malformed is not — it throws into the pod log, because
+ * a Harness that silently dropped its one reachable endpoint would fail every admission instead.
+ */
+export function loadHarnessSpec(env: Record<string, string | undefined>): HarnessSpec {
+  const raw = env.J2_HARNESS_JSON;
+  if (!raw) return {};
+  let spec: HarnessSpec;
+  try {
+    spec = JSON.parse(raw) as HarnessSpec;
+  } catch (err) {
+    throw new Error(`J2_HARNESS_JSON is not JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (typeof spec !== "object" || spec === null) throw new Error("J2_HARNESS_JSON is not an object");
+  const provider = spec.provider;
+  if (provider && (!provider.id || !provider.api || !provider.baseUrl)) {
+    throw new Error(
+      `J2_HARNESS_JSON's provider needs { id, api, baseUrl } — got ${JSON.stringify(provider)} (ADR-0018)`,
+    );
+  }
+  return spec;
 }

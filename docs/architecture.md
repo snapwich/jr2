@@ -127,7 +127,7 @@ sequenceDiagram
 
   S->>A: invoke src: "coder" { prompt, Dials }
   A->>A: register this state's Menu under the Agent's address
-  A->>H: POST /agents/:name/:id — the Harness wire
+  A->>H: POST /agents/:name/:id — prompt + the slot's definition + Dials
   H-->>A: Admission { streamUrl, offset, submissionId }
   Note over A: Admission persisted beside the snapshot —<br/>a restarted Orchestrator re-attaches by it (ADR-0016)
 
@@ -165,7 +165,8 @@ is an unaccounted-for writer in the Workspace (ADR-0024). A Runaway is ended by 
 - **Non-determinism** — the Agent may only say what the state's transitions name, and only when a guard would accept it.
   The Machine's shape bounds every Turn.
 - **Composition** — an Agent slot and `gate` are invokes on a state; the state, not the Agent, frames the work.
-- **Model agnostic** — the wire carries a prompt and Dials; the provider is the Agent definition's business.
+- **Model agnostic** — the wire carries a prompt, the Agent definition the Machine carries (ADR-0049), and the Dials;
+  the provider is that definition's business, and the Harness holds no roster of its own.
 
 ## 3. Setup and usage
 

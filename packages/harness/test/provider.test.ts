@@ -5,8 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dialFault, modelsFor, resolveModel, mapThinkingLevel, validateSpecModels } from "../src/provider.ts";
-import type { AgentsSpec, HarnessSpec, ThinkingLevel } from "../src/spec.ts";
+import { admissionFault, modelsFor, resolveModel, mapThinkingLevel } from "../src/provider.ts";
+import { resolveDefinition, type HarnessSpec, type ThinkingLevel } from "../src/spec.ts";
 
 const vllm: HarnessSpec = {
   provider: {
@@ -98,24 +98,24 @@ test("mapThinkingLevel: a level outside j2's scale throws — map loudly, never 
   assert.throws(() => mapThinkingLevel("bogus" as ThinkingLevel), /has no pi equivalent/);
 });
 
-test("validateSpecModels: every definition resolves at boot, or the container dies naming the agent", () => {
+test("admissionFault: the resolved definition is checked the way the turn would use it", () => {
   const models = modelsFor(vllm, {});
-  const spec = (model: string): AgentsSpec => ({
-    agents: [{ name: "coder", definition: { model, instructions: "i" } }],
-  });
+  const resolved = (model: string, thinkingLevel?: ThinkingLevel) =>
+    resolveDefinition({ model, instructions: "i", ...(thinkingLevel ? { thinkingLevel } : {}) });
   // Listed, unlisted-but-this-provider's, and pi's own catalog all resolve.
-  assert.doesNotThrow(() => validateSpecModels(spec("vllm/Qwen/Qwen3-32B"), models));
-  assert.doesNotThrow(() => validateSpecModels(spec("vllm/never-listed"), models));
-  // A provider nothing serves is a static fact about the mounted spec — loud at boot, not on the
-  // first Submission that happens to use this Agent (ADR-0018).
-  assert.throws(() => validateSpecModels(spec("ghost/x"), models), /agent "coder".*no custom provider "ghost"/s);
-  assert.throws(() => validateSpecModels(spec("bare"), models), /agent "coder".*not a <provider>\/<modelId>/s);
+  assert.equal(admissionFault(models, resolved("vllm/Qwen/Qwen3-32B")), undefined);
+  assert.equal(admissionFault(models, resolved("vllm/never-listed", "high")), undefined);
+  // A provider nothing serves is caught at ADMISSION now — the definition rides the Turn
+  // (ADR-0049), so there is no earlier moment, and the invoke fails instead of the Submission.
+  assert.match(admissionFault(models, resolved("ghost/x")) ?? "", /no custom provider "ghost"/);
+  assert.match(admissionFault(models, resolved("bare")) ?? "", /not a <provider>\/<modelId>/);
+  assert.match(admissionFault(models, resolved("vllm/m", "max" as ThinkingLevel)) ?? "", /has no pi equivalent/);
 });
 
-test("dialFault: an invocation's dials are checked the way the turn would use them", () => {
+test("admissionFault: a Turn's dial is checked in the same place as the definition's model", () => {
   const models = modelsFor(vllm, {});
-  assert.equal(dialFault(models, {}), undefined, "no dials is always fine");
-  assert.equal(dialFault(models, { model: "vllm/anything", thinkingLevel: "high" }), undefined);
-  assert.match(dialFault(models, { model: "ghost/x" }) ?? "", /no custom provider "ghost"/);
-  assert.match(dialFault(models, { thinkingLevel: "max" as ThinkingLevel }) ?? "", /has no pi equivalent/);
+  const definition = { model: "vllm/Qwen/Qwen3-32B", instructions: "i" };
+  assert.equal(admissionFault(models, resolveDefinition(definition, { model: "vllm/other" })), undefined);
+  // The dial WON the resolution, so it is the dial that is checked (ADR-0018).
+  assert.match(admissionFault(models, resolveDefinition(definition, { model: "ghost/x" })) ?? "", /ghost/);
 });

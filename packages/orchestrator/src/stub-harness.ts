@@ -6,7 +6,7 @@
 // silent real Harness, and e2e drives it by playing the agent against `/mcp/<iid>` instead.
 //
 // Wire (ADR-0027 — the normative model of the five endpoints; `@j2/harness` serves it for real):
-//   POST /agents/:name/:id  {message, model?, thinkingLevel?} → 200 { streamUrl, offset, submissionId }
+//   POST /agents/:name/:id  {message, definition, model?, thinkingLevel?} → 200 { streamUrl, offset, submissionId }
 //   GET  /agents/:name/:id?offset=…[&view=updates] → 200 `[]` + Stream-Next-Offset/Up-To-Date
 //   GET  /agents/:name/:id?…&live=long-poll        → parked; 204 + same headers on timeout
 //   POST /agents/:name/:id/abort                   → 200 { aborted }
@@ -32,13 +32,16 @@
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 
-/** One admission of an Agent: which persona, which durable exchange, the prompt, and this
- * Submission's dials (ADR-0018) — captured so a mechanics-tier test can assert which
- * settings a state framed the turn with, exactly as it asserts the prompt. */
+/** One admission of an Agent: which slot, which durable exchange, the prompt, the DEFINITION the
+ * Machine's slot carried here (ADR-0049), and this Submission's dials (ADR-0018) — captured so a
+ * mechanics-tier test can assert which Agent a state ran and at what settings, exactly as it
+ * asserts the prompt. The stub is inert and never READS the definition: a real Harness runs it,
+ * this one only proves it rode the wire. */
 export type Admission = {
   agentName: string;
   instanceId: string;
   message?: string;
+  definition?: Record<string, unknown>;
   model?: string;
   thinkingLevel?: string;
 };
@@ -118,11 +121,14 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
       let body = "";
       req.on("data", (chunk: Buffer) => (body += chunk));
       req.on("end", () => {
-        const sent = safeParse(body) as { message?: string; model?: string; thinkingLevel?: string } | undefined;
+        const sent = safeParse(body) as
+          | { message?: string; definition?: Record<string, unknown>; model?: string; thinkingLevel?: string }
+          | undefined;
         const admission: Admission = {
           agentName: decodeURIComponent(agentName),
           instanceId: decodeURIComponent(instanceId),
           message: sent?.message,
+          ...(sent?.definition ? { definition: sent.definition } : {}),
           ...(sent?.model ? { model: sent.model } : {}),
           ...(sent?.thinkingLevel ? { thinkingLevel: sent.thinkingLevel } : {}),
         };

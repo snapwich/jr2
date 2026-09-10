@@ -1,7 +1,8 @@
 # The STOCK Harness image (ADR-0018/0027): j2-harness:<kitversion>, one release train with the kit.
 # It runs `@j2/harness` — j2's own server on pi-agent-core + Hono. An instance builds NO Harness
-# image — its plain-data Agent definitions arrive at pod start via the agents ConfigMap
-# (J2_AGENTS_JSON), and main.ts constructs them at runtime: no boot build, no readiness lag.
+# image, and this one holds no Agents: each admission carries the plain-data definition it runs
+# (ADR-0049), so main.ts boots knowing only what the instance can REACH (J2_HARNESS_JSON) — no boot
+# build, no readiness lag.
 #
 # Build context is the KIT repo root:  docker build -f deploy/harness/Dockerfile -t j2-harness:local .
 # That exact path is load-bearing beyond this comment: ADR-0038's kit-checkout detection resolves

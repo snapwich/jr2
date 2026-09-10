@@ -19,6 +19,10 @@ type ScriptedRun = {
   reject: (err: unknown) => void;
 };
 
+/** The definition every admission carries (ADR-0049) — irrelevant to ordering, which is what this
+ * suite is about, so one constant serves them all. */
+const CODER = { model: "faux/model", instructions: "code" };
+
 /** A Conversation whose turns the test settles by hand. `admit` keeps the prompt-only shape most
  * of these tests care about; dials ride the optional second argument. */
 function scripted() {
@@ -28,7 +32,7 @@ function scripted() {
       runs.push({ message: submission.message, submission, signal, resolve, reject });
     });
   });
-  const admit = (message: string, dials?: TurnDials) => conversation.admit({ message, ...dials });
+  const admit = (message: string, dials?: TurnDials) => conversation.admit({ message, definition: CODER, ...dials });
   return { conversation, runs, admit };
 }
 
@@ -116,14 +120,14 @@ test("a signal-caused rejection settles aborted exactly once, never failed", asy
       signal.addEventListener("abort", () => reject(new Error("run torn down")));
     });
   });
-  const { submissionId } = conversation.admit({ message: "one" });
+  const { submissionId } = conversation.admit({ message: "one", definition: CODER });
   conversation.abort();
   await flush();
   assert.deepEqual(conversation.historyView().settlements, [
     { submissionId, outcome: "aborted", error: { type: SUBMISSION_ABORTED } },
   ]);
   // The swept turn wound down, so a post-abort admission is first unsettled and runs.
-  conversation.admit({ message: "again" });
+  conversation.admit({ message: "again", definition: CODER });
   await flush();
   assert.equal(calls, 2);
 });

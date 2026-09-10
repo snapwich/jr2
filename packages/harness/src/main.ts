@@ -1,7 +1,10 @@
-// The Harness process's PID 1 (ADR-0018/0027): process → env → spec → serve. Runtime
+// The Harness process's PID 1 (ADR-0018/0027): process → env → reach → serve. Runtime
 // construction, not codegen — the retired boot assembly and its readiness lag are gone; binding
 // :8080 is the pod's Ready signal. Everything here is wiring: validation lives in `spec.ts`, the
 // wire in `app.ts`, the turn in `turn.ts`. Fatal errors land in the pod log by throwing.
+//
+// The env carries what this instance can REACH and nothing about WHO runs (ADR-0049): each
+// admission brings its own Agent definition, so this process boots knowing no Agents at all.
 //
 // It is the container's command in BOTH placements: the stock image's own `CMD` (the Instance
 // Harness, ADR-0031), and the command the operator overrides a Sandbox Image with, where j2's
@@ -10,8 +13,8 @@
 import { createHash } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { harnessApp } from "./app.ts";
-import { dialFault, modelsFor, validateSpecModels } from "./provider.ts";
-import { loadSpec } from "./spec.ts";
+import { admissionFault, modelsFor } from "./provider.ts";
+import { loadHarnessSpec } from "./spec.ts";
 import { prepareProcess } from "./startup.ts";
 import { runSubmissionFor } from "./turn.ts";
 
@@ -30,15 +33,12 @@ function required(name: string, why: string): string {
   return value;
 }
 
-const spec = loadSpec(process.env);
+const harness = loadHarnessSpec(process.env);
 const adapterUrl = required(
   "J2_ADAPTER_URL",
   "the Agent has no Adapter to reach, so it cannot drive its Machine (ADR-0013)",
 );
-const models = modelsFor(spec.harness, process.env);
-// Boot-time, not first-Submission: a definition naming a model nothing serves is a fact about the
-// mounted spec, and the pod log is where it belongs (ADR-0018).
-validateSpecModels(spec, models);
+const models = modelsFor(harness, process.env);
 
 // The echo gate (ADR-0023): the endpoint is instance-token-gated, but the raw Instance token must
 // never enter this container (the Agent has code execution here — tokens.ts), so the env carries
@@ -49,9 +49,8 @@ const echoTokenSha256 = process.env.J2_ECHO_TOKEN_SHA256;
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("base64url");
 
 const app = harnessApp({
-  spec,
-  runSubmissionFor: (seat) => runSubmissionFor({ spec, models, adapterUrl, ...seat }),
-  checkDials: (dials) => dialFault(models, dials),
+  runSubmissionFor: (seat) => runSubmissionFor({ models, adapterUrl, ...seat }),
+  checkAdmission: (resolved) => admissionFault(models, resolved),
   // Set on the Instance Harness Deployment alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code
   // execution in this pod" a property, not a comment.
@@ -62,7 +61,9 @@ const app = harnessApp({
 });
 
 const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0" }, (info) => {
-  console.log(`j2 harness serving ${spec.agents.length} agent(s) on :${info.port}`);
+  // No agent count: this process holds no roster to count (ADR-0049) — every admission brings
+  // the definition it runs.
+  console.log(`j2 harness serving on :${info.port}`);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

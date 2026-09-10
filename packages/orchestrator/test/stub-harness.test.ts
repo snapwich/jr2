@@ -10,6 +10,10 @@ import { startStubHarness } from "../src/stub-harness.ts";
 
 const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
 
+/** The definition the Machine's slot carries (ADR-0049): it rides every admission, and the stub
+ * records it — the only place a socket-level test can see that it left this host. */
+const coder = { model: "anthropic/claude-x", instructions: "be the coder" };
+
 test("the real wire port admits against the stub, gets its admission, and parks in settle", async () => {
   const stub = await startStubHarness({ longPollMs: 200 });
   try {
@@ -17,14 +21,13 @@ test("the real wire port admits against the stub, gets its admission, and parks 
 
     // Admission reaches the stub (prompt and identity intact) and answers the durable handle —
     // persistable immediately (the ledger's write happens before settlement — ADR-0016).
-    const admission = await port.admit({
-      agentName: "coder",
-      instanceId: "iid-9",
-      endpoint: stub.url,
-      prompt: "hello",
-      tools: [],
-    });
-    assert.deepEqual(stub.admissions, [{ agentName: "coder", instanceId: "iid-9", message: "hello" }]);
+    const admission = await port.admit(
+      { agentName: "coder", instanceId: "iid-9", endpoint: stub.url, prompt: "hello", tools: [] },
+      { definition: coder },
+    );
+    assert.deepEqual(stub.admissions, [
+      { agentName: "coder", instanceId: "iid-9", message: "hello", definition: coder },
+    ]);
     assert.equal(admission.offset, "0_0");
     assert.ok(admission.streamUrl.includes("/agents/coder/iid-9"));
     assert.ok(admission.submissionId);
@@ -53,10 +56,10 @@ test("abort ends every unsettled submission for the instance, and history says s
   try {
     const port = createHarnessAgentRunClient({ baseUrl: stub.url });
     const input = { agentName: "coder", instanceId: "iid-9", endpoint: stub.url, prompt: "go", tools: [] };
-    const first = await port.admit(input);
+    const first = await port.admit(input, { definition: coder });
     // A second submission on the same instance — what `session: "continue"` produces, and what
     // flue queues rather than rejects. An abort ends the running one AND everything behind it.
-    const queued = await port.admit(input);
+    const queued = await port.admit(input, { definition: coder });
 
     await port.abort("coder", "iid-9");
 

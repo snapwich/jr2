@@ -24,7 +24,8 @@ import { join } from "node:path";
 import { loadConfig } from "./config.ts";
 import { startInstance, type RunningInstance } from "./instance.ts";
 import {
-  AGENTS_CONFIGMAP,
+  HARNESS_CONFIGMAP,
+  HARNESS_CONFIG_KEY,
   GIT_SSH_MOUNT,
   HARNESS_ENV_SECRET,
   IMAGES_KEY,
@@ -106,18 +107,19 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
         await repos!.first;
         return repos!.errorFor(name);
       },
-      // Named here the same way AGENTS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
+      // Named here the same way HARNESS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
       // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
       // buys: the map is read per provision, so an instance whose `j2-images` ConfigMap is not yet
       // mounted still BOOTS and serves — only a provision fails, pointing at `j2 up`. That is the
       // correct blast pattern, and the stale-read window is one kubelet propagation.
       imagesPath: join(IMAGES_MOUNT, IMAGES_KEY),
-      // The Harness containers' env (ADR-0018): the mounted agents spec, then the instance's own
-      // valueFrom entries (literal values already live in the j2-harness-env Secret below).
+      // The Harness containers' env (ADR-0018): what this instance can REACH (the custom provider
+      // — no Agents, they ride each Turn since ADR-0049), then the instance's own valueFrom
+      // entries (literal values already live in the j2-harness-env Secret below).
       env: [
         {
-          name: "J2_AGENTS_JSON",
-          valueFrom: { configMapKeyRef: { name: AGENTS_CONFIGMAP, key: "agents.json" } },
+          name: "J2_HARNESS_JSON",
+          valueFrom: { configMapKeyRef: { name: HARNESS_CONFIGMAP, key: HARNESS_CONFIG_KEY } },
         },
         // The echo gate (ADR-0023): the Harness verifies echo bearers against this sha-256. The
         // digest, never the token — the Agent executes code in the Harness container, and a

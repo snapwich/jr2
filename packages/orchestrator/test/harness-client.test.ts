@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SettlementFault, createEchoPush, createHarnessClient, harnessAgentRunPort } from "../src/harness-client.ts";
 import type { AgentAdmission, AgentRunInput } from "../src/actor.ts";
+import type { AgentDefinition } from "../src/agent.ts";
 import type { EchoEvent } from "@j2/harness/wire";
 
 const admission: AgentAdmission = {
@@ -16,6 +17,10 @@ const admission: AgentAdmission = {
   offset: "0",
   submissionId: "sub-1",
 };
+
+/** The Agent this Turn runs (ADR-0049) — carried by the Machine's slot, sent with every
+ * admission because the Harness holds no roster to look one up in. */
+const coder: AgentDefinition = { model: "anthropic/claude-x", instructions: "be the coder" };
 
 const baseInput: AgentRunInput = {
   agentName: "coder",
@@ -73,12 +78,13 @@ test("send POSTs the prompt and resolves with the admission — streamUrl absolu
       }),
   ]);
 
-  const adm = await client(fetch).send("coder", "inst-1", { message: "do the thing" });
+  const adm = await client(fetch).send("coder", "inst-1", { message: "do the thing", definition: coder });
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.url.toString(), "http://h.test/agents/coder/inst-1");
   assert.equal(calls[0]!.init?.method, "POST");
-  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), { message: "do the thing" });
+  // The definition rides the body (ADR-0049): the Harness runs what this Turn handed it.
+  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), { message: "do the thing", definition: coder });
   // The relative streamUrl the Harness may mint resolves against baseUrl, so the ledgered handle
   // re-attaches without remembering this client (an absolute one passes through unchanged).
   assert.deepEqual(adm, { streamUrl: "http://h.test/agents/coder/inst-1", offset: "3", submissionId: "sub-9" });
@@ -87,7 +93,7 @@ test("send POSTs the prompt and resolves with the admission — streamUrl absolu
 test("a refused admission is an error carrying the wire's detail", async () => {
   const { fetch } = scriptedFetch([() => new Response(JSON.stringify({ error: "no such agent" }), { status: 404 })]);
   await assert.rejects(
-    () => client(fetch).send("ghost", "inst-1", { message: "hi" }),
+    () => client(fetch).send("ghost", "inst-1", { message: "hi", definition: coder }),
     /harness admission failed \(404\): no such agent/,
   );
 });
@@ -107,7 +113,7 @@ test("an admission that never left the host is retried — a Service with no bac
     () => new Response(JSON.stringify(admission), { status: 200 }),
   ]);
 
-  const adm = await client(fetch).send("coder", "inst-1", { message: "do the thing" });
+  const adm = await client(fetch).send("coder", "inst-1", { message: "do the thing", definition: coder });
 
   assert.equal(calls.length, 3, "the POST is re-sent until it connects");
   assert.deepEqual(adm, admission);
@@ -130,7 +136,7 @@ test("a retry that SUCCEEDED still says what it cost — an absorbed fault must 
     log: (line) => lines.push(line),
   });
 
-  await measured.send("coder", "inst-1", { message: "do the thing" });
+  await measured.send("coder", "inst-1", { message: "do the thing", definition: coder });
 
   assert.equal(lines.length, 1);
   // This shape is a CONTRACT with features/steps/kind.steps.ts, which parses it for the tier's
@@ -148,7 +154,7 @@ test("an admission that connects first time is silent — a line existing at all
   await createHarnessClient({ baseUrl: "http://h.test", fetch, log: (line) => lines.push(line) }).send(
     "coder",
     "inst-1",
-    { message: "do the thing" },
+    { message: "do the thing", definition: coder },
   );
 
   assert.deepEqual(lines, []);
@@ -160,7 +166,10 @@ test("a transport failure that may have reached the Harness is NOT retried — a
   // that proves the request never left the host may be retried, and a reset connection does not.
   const { calls, fetch } = scriptedFetch([() => Promise.reject(transportError("ECONNRESET", "read"))]);
 
-  await assert.rejects(() => client(fetch).send("coder", "inst-1", { message: "do the thing" }), /fetch failed/);
+  await assert.rejects(
+    () => client(fetch).send("coder", "inst-1", { message: "do the thing", definition: coder }),
+    /fetch failed/,
+  );
   assert.equal(calls.length, 1);
 });
 
@@ -175,7 +184,7 @@ test("an endpoint that never answers faults with the address it kept trying", as
   });
 
   await assert.rejects(
-    () => bounded.send("coder", "inst-1", { message: "do the thing" }),
+    () => bounded.send("coder", "inst-1", { message: "do the thing", definition: coder }),
     // Not a bare `fetch failed`: the reason lands on the run as the terminal `agent.fault`, and a
     // fault nobody can act on is what made this class of failure invisible.
     /never connected to http:\/\/h\.test\/agents\/coder\/inst-1/,
@@ -187,11 +196,14 @@ test("the port admits via send and forwards the signal; admit without a prompt i
   const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
   const port = harnessAgentRunPort(client(fetch));
 
-  const adm = await port.admit(baseInput, { signal: new AbortController().signal });
+  const adm = await port.admit(baseInput, { definition: coder, signal: new AbortController().signal });
   assert.deepEqual(adm, admission);
   assert.ok(calls[0]!.init?.signal, "admit forwards its signal into the POST");
+  // The definition comes from the ADMIT OPTIONS — the actor's closure — never from the persisted
+  // input, so a restore admits the definition the Machine carries now (ADR-0049).
+  assert.deepEqual((JSON.parse(calls[0]!.init?.body as string) as { definition: unknown }).definition, coder);
 
-  await assert.rejects(() => port.admit({ ...baseInput, prompt: undefined }), /needs a prompt/);
+  await assert.rejects(() => port.admit({ ...baseInput, prompt: undefined }, { definition: coder }), /needs a prompt/);
 });
 
 test("wait long-polls from the admission offset and resolves on this submission's completed settlement", async () => {

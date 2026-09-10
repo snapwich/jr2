@@ -29,7 +29,8 @@
 //
 // The other closure is the DEFINITION (ADR-0049): one logic object per Agent slot, carrying the
 // definition it runs. Placement (ADR-0031) reads `workspace` off it — never off a roster, which
-// could not tell two Machines' `coder`s apart.
+// could not tell two Machines' `coder`s apart — and every admission carries it to the Harness,
+// which holds no roster either and runs what this Turn handed it.
 //
 // Stopping the actor ENDS THE TURN (ADR-0024). It abandons the run locally (admission/settlement
 // consumption) AND aborts the submission remotely, because an Agent slot is an invoke: leaving the
@@ -196,8 +197,11 @@ export type AgentRunReceiveEvent = { type: "CANCEL" };
  * (see module header), and the rejection it causes is swallowed by the stopped actor.
  */
 export interface AgentRunPort {
-  /** Admit one prompt; resolves with the admission the moment the Harness accepts it. */
-  admit(input: AgentRunInput, opts?: { signal?: AbortSignal }): Promise<AgentAdmission>;
+  /** Admit one prompt; resolves with the admission the moment the Harness accepts it. The
+   * DEFINITION rides the admission (ADR-0049) — it is the Agent slot's, read off the logic this
+   * invocation named, never off the persisted input: the Harness holds no roster, and a restore
+   * must run the definition the Machine carries NOW, not a copy a snapshot froze. */
+  admit(input: AgentRunInput, opts: AgentAdmitOptions): Promise<AgentAdmission>;
   /**
    * Follow an admitted submission until it settles. Resolving means the submission completed;
    * rejecting means it settled failed/aborted (or the conversation is gone).
@@ -212,6 +216,12 @@ export interface AgentRunPort {
    */
   abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void>;
 }
+
+/** What every admission carries beside the input: the Agent definition this Turn runs (ADR-0049),
+ * plus the local abandon signal. Not part of {@link AgentRunInput} on purpose — that shape is
+ * PERSISTED as the child's input, and a definition frozen into a snapshot would outlive the
+ * Machine edit that changed it. */
+export type AgentAdmitOptions = { definition: AgentDefinition; signal?: AbortSignal };
 
 /** Build a port for one invocation from its serializable input (ADR-0011 static-import doctrine). */
 export type AgentRunPortFactory = (endpoint: string) => AgentRunPort;
@@ -461,7 +471,7 @@ export function agentActorWith(
         await pendingAborts.get(instanceId);
         let admission = input.attach;
         if (!admission) {
-          admission = await client.admit(input, { signal: controller.signal });
+          admission = await client.admit(input, { definition, signal: controller.signal });
           ledger(admission);
           // The admission marker (ADR-0023): the Turn and its framing, once — a re-attach
           // continues a Turn already announced, and a nudge (below) is mechanism, not narrative
@@ -497,7 +507,7 @@ export function agentActorWith(
             registerSurface(currentIid);
             admission = await client.admit(
               { ...input, attach: undefined, instanceId: currentIid },
-              { signal: controller.signal },
+              { definition, signal: controller.signal },
             );
             ledger(admission);
             continue;
@@ -516,7 +526,7 @@ export function agentActorWith(
           });
           admission = await client.admit(
             { ...input, attach: undefined, instanceId: currentIid, prompt: nudgePrompt(input.tools) },
-            { signal: controller.signal },
+            { definition, signal: controller.signal },
           );
           ledger(admission);
         }

@@ -11,7 +11,7 @@ import { defineEvent, doneEvent, requestReviewEvent } from "@j2/agent-protocol";
 import { j2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { agent } from "../src/harness-client.ts";
-import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
+import type { AgentAdmission, AgentAdmitOptions, AgentRunInput, AgentRunPort } from "../src/actor.ts";
 import type { AgentDefinition } from "../src/agent.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
@@ -21,6 +21,9 @@ import type { WorkflowDef } from "../src/run-host.ts";
 export class MockFlueClient implements AgentRunPort {
   /** Every fresh admit this port served, in order (a nudge is a later admit on the same iid). */
   admits: AgentRunInput[] = [];
+  /** The DEFINITION each of those admits carried (ADR-0049) — the actor reads it off its own
+   * slot's closure, so this is where a test sees that it left the Orchestrator with the Turn. */
+  definitions: AgentDefinition[] = [];
   /** The admission minted on the LATEST admit. Distinct per admit so ledgers are assertable. */
   minted: AgentAdmission | undefined;
   /** Every admission `settle()` was asked to follow (fresh AND re-attached). */
@@ -40,8 +43,9 @@ export class MockFlueClient implements AgentRunPort {
     return this.admits[0];
   }
 
-  admit(input: AgentRunInput): Promise<AgentAdmission> {
+  admit(input: AgentRunInput, opts: AgentAdmitOptions): Promise<AgentAdmission> {
     this.admits.push(input);
+    this.definitions.push(opts.definition);
     this.minted = {
       streamUrl: `http://mock/agents/${input.agentName}/${input.instanceId}`,
       offset: `adm-${++this.seq}`,

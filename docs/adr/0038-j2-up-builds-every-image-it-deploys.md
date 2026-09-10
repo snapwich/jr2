@@ -92,9 +92,10 @@ of build-it-yourself-first image on top of that.
   ADR-0027 made false. The substitution belongs at the **provider**, not the image: `harness.provider` already accepts
   any OpenAI-compatible `baseUrl`, so pointing `@kind` at a scripted model endpoint runs the **stock** Harness and
   removes the last consumer of image substitution.
-- **The ref map as Deployment env** (symmetric with `J2_AGENTS_JSON`). Attractive because a run's Sandbox image becomes
-  a deterministic function of the Orchestrator generation instead of a read-at-a-moment. Rejected on the roll: bouncing
-  every run in flight because someone added a CLI to a Dockerfile is the wrong trade.
+- **The ref map as Deployment env** (symmetric with the harness config the Harness containers read from theirs).
+  Attractive because a run's Sandbox image becomes a deterministic function of the Orchestrator generation instead of a
+  read-at-a-moment. Rejected on the roll: bouncing every run in flight because someone added a CLI to a Dockerfile is
+  the wrong trade.
 - **A `--reimage` flag** that deletes and re-provisions live Sandboxes. Rejected: it destroys unpushed work, and the run
   already has a designed path for losing its Sandbox (`workspace.lost`, ADR-0021) that the workflow's policy drives —
   not the CLI.

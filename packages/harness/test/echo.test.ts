@@ -7,7 +7,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harnessApp } from "../src/app.ts";
 import { renderEchoEvent } from "../src/printer.ts";
-import type { AgentsSpec } from "../src/spec.ts";
 import type { EchoEvent } from "../src/wire.ts";
 
 test("status: an active run renders where it stands, compactly", () => {
@@ -77,14 +76,9 @@ test("an event this renderer does not recognize prints nothing — the log never
 
 // ---- The wire route (`POST /echo`) -------------------------------------------------------------
 
-const spec: AgentsSpec = {
-  agents: [{ name: "coder", definition: { model: "faux/model", instructions: "code" } }],
-};
-
 function echoApp(opts: { gate?: boolean } = {}) {
   const lines: string[] = [];
   const app = harnessApp({
-    spec,
     runSubmissionFor: () => () => Promise.resolve(),
     ...(opts.gate === false ? {} : { checkEchoBearer: (bearer) => bearer === "instance-token" }),
     echoOut: { write: (chunk: string) => void lines.push(chunk) },

@@ -17,8 +17,13 @@ export const INSTANCE_SECRET = "j2-instance";
 export const INSTANCE_HARNESS_SERVICE = "j2-instance-harness";
 export const INSTANCE_HARNESS_PORT = 8080;
 
-/** The Agent definitions + harness config ConfigMap the stock Harness boots from (ADR-0018). */
-export const AGENTS_CONFIGMAP = "j2-agents";
+/** The harness config ConfigMap the stock Harness boots from (ADR-0018): what this instance can
+ * REACH — the custom model provider, minus its key. No Agents ride it: a Machine carries its own
+ * (ADR-0049), and the definition rides each admission, so this holds deployment facts alone
+ * (ADR-0050). */
+export const HARNESS_CONFIGMAP = "j2-harness";
+/** Its one key, hence the env var's value — `J2_HARNESS_JSON` on every Harness container. */
+export const HARNESS_CONFIG_KEY = "harness.json";
 
 /** The resolved image map `j2 up` writes and every provision reads (ADR-0037/0038): name → ref for
  * the Harness, the Adapter, and each `images/<name>` Sandbox Image.

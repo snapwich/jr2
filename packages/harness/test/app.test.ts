@@ -6,12 +6,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harnessApp, type HarnessAppDeps } from "../src/app.ts";
-import type { AgentsSpec } from "../src/spec.ts";
+import type { AgentDefinition } from "../src/spec.ts";
 import type { AdmissionRequest, Settlement, StreamEvent } from "../src/wire.ts";
 
-const spec: AgentsSpec = {
-  agents: [{ name: "coder", definition: { model: "faux/model", instructions: "code" } }],
-};
+/** The definition every admission here carries (ADR-0049) — the Machine's slot, on the wire. */
+const CODER: AgentDefinition = { model: "faux/model", instructions: "code" };
 
 type ScriptedRun = {
   message: string;
@@ -26,7 +25,6 @@ type ScriptedRun = {
 function scripted(overrides?: Partial<HarnessAppDeps>) {
   const runs: ScriptedRun[] = [];
   const app = harnessApp({
-    spec,
     longPollMs: 25,
     runSubmissionFor: () => (submission, signal) =>
       new Promise<void>((resolve, reject) => {
@@ -40,10 +38,15 @@ function scripted(overrides?: Partial<HarnessAppDeps>) {
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-async function admit(app: ReturnType<typeof harnessApp>, path: string, message = "go") {
+async function admit(
+  app: ReturnType<typeof harnessApp>,
+  path: string,
+  message = "go",
+  definition: AgentDefinition = CODER,
+) {
   const res = await app.request(path, {
     method: "POST",
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, definition }),
     headers: { "content-type": "application/json" },
   });
   assert.equal(res.status, 200);
@@ -172,46 +175,80 @@ test("POST creates: the same path 404s before admission and streams after", asyn
   assert.equal((await app.request("/agents/coder/i9")).status, 200);
 });
 
-test("unknown agent name: POST is 404 — a definition must exist", async () => {
-  const { app } = scripted();
+test("an admission with no definition is a 400 naming the slot (ADR-0049)", async () => {
+  // There is no unknown agent any more: the Harness holds no roster, so any name admits — what it
+  // will not do is run a Turn nobody handed it a definition for.
+  const { app, runs } = scripted();
   const res = await app.request("/agents/ghost/i1", {
     method: "POST",
     body: JSON.stringify({ message: "go" }),
     headers: { "content-type": "application/json" },
   });
-  assert.equal(res.status, 404);
+  assert.equal(res.status, 400);
   const body = (await res.json()) as { error: string };
-  assert.ok(body.error.includes('"ghost"'));
+  assert.match(body.error, /agent "ghost": the admission carries no definition/);
+  assert.equal(runs.length, 0, "nothing ran");
+  // The rejected POST must not have created the conversation behind it (ADR-0027: POST creates).
+  assert.equal((await app.request("/agents/ghost/i1")).status, 404);
+});
+
+test("a definition that cannot run is a 400 naming the slot, before any conversation exists", async () => {
+  const { app, runs } = scripted();
+  const res = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", definition: { instructions: "code" } }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as { error: string }).error, /agent "coder".*names no model/s);
+  assert.equal(runs.length, 0);
+  assert.equal((await app.request("/agents/coder/i1")).status, 404);
+});
+
+test("the definition rides the admit body to the turn, per Submission (ADR-0049)", async () => {
+  const { app, runs } = scripted();
+  await admit(app, "/agents/coder/i1", "one");
+  // A later Submission on the SAME conversation may carry a retuned definition — the turn reads
+  // the one it was handed, so a Machine edit reaches the next Turn with no pod restart. Accept
+  // and queue (ADR-0027), so the second runs once the first settles.
+  await admit(app, "/agents/coder/i1", "two", { ...CODER, instructions: "code, but better" });
+  runs[0]!.resolve();
+  await flush();
+  assert.deepEqual(
+    runs.map((r) => r.submission.definition.instructions),
+    ["code", "code, but better"],
+  );
 });
 
 test("dials ride the admit body to the turn (ADR-0018)", async () => {
   const { app, runs } = scripted();
   const res = await app.request("/agents/coder/i1", {
     method: "POST",
-    body: JSON.stringify({ message: "go", model: "vllm/big", thinkingLevel: "xhigh" }),
+    body: JSON.stringify({ message: "go", definition: CODER, model: "vllm/big", thinkingLevel: "xhigh" }),
     headers: { "content-type": "application/json" },
   });
   assert.equal(res.status, 200);
-  assert.deepEqual(runs[0]!.submission, { message: "go", model: "vllm/big", thinkingLevel: "xhigh" });
+  assert.deepEqual(runs[0]!.submission, {
+    definition: CODER,
+    message: "go",
+    model: "vllm/big",
+    thinkingLevel: "xhigh",
+  });
 });
 
 test("a dial-less admission is unchanged — no keys invented for the turn", async () => {
   const { app, runs } = scripted();
-  await app.request("/agents/coder/i1", {
-    method: "POST",
-    body: JSON.stringify({ message: "go" }),
-    headers: { "content-type": "application/json" },
-  });
-  assert.deepEqual(runs[0]!.submission, { message: "go" });
+  await admit(app, "/agents/coder/i1");
+  assert.deepEqual(runs[0]!.submission, { definition: CODER, message: "go" });
 });
 
-test("dials that cannot run are a 400 at admission — no conversation, no Submission", async () => {
+test("an admission that cannot run is a 400 — no conversation, no Submission", async () => {
   const { app, runs } = scripted({
-    checkDials: (d) => (d.model === "nope/x" ? `model "nope/x" resolves to nothing` : undefined),
+    checkAdmission: (resolved) => (resolved.model === "nope/x" ? `model "nope/x" resolves to nothing` : undefined),
   });
   const res = await app.request("/agents/coder/i1", {
     method: "POST",
-    body: JSON.stringify({ message: "go", model: "nope/x" }),
+    body: JSON.stringify({ message: "go", definition: CODER, model: "nope/x" }),
     headers: { "content-type": "application/json" },
   });
   assert.equal(res.status, 400);
@@ -222,21 +259,16 @@ test("dials that cannot run are a 400 at admission — no conversation, no Submi
 });
 
 test("the Instance Harness admits Menu-only Agents alone — Workspace access is a 403 (ADR-0031)", async () => {
-  // The mounted spec is the FULL agents.json (same ConfigMap — ADR-0031) and the wire is
-  // unauthenticated in-cluster, so the placement gate is the Harness's own: without it, any
-  // in-cluster caller could run a `workspace: "write"` definition here and be handed the
-  // Working tools — code execution in the one pod ADR-0031 says has none.
-  const both: AgentsSpec = {
-    agents: [
-      { name: "coder", definition: { model: "faux/model", instructions: "code" } }, // "write" default
-      { name: "triage", definition: { model: "faux/model", instructions: "pick", workspace: "none" } },
-    ],
-  };
-  const { app, runs } = scripted({ spec: both, menuOnly: true });
+  // Every admission carries its own definition (ADR-0049) and the wire is unauthenticated
+  // in-cluster, so the placement gate is the Harness's own: without it, any in-cluster caller
+  // could POST a `workspace: "write"` definition here and be handed the Working tools — code
+  // execution in the one pod ADR-0031 says has none.
+  const menuOnlyDef: AgentDefinition = { model: "faux/model", instructions: "pick", workspace: "none" };
+  const { app, runs } = scripted({ menuOnly: true });
 
   const refused = await app.request("/agents/coder/i1", {
     method: "POST",
-    body: JSON.stringify({ message: "go" }),
+    body: JSON.stringify({ message: "go", definition: CODER }), // "write" default
     headers: { "content-type": "application/json" },
   });
   assert.equal(refused.status, 403);
@@ -247,22 +279,14 @@ test("the Instance Harness admits Menu-only Agents alone — Workspace access is
   // The refusal precedes creation: no conversation may exist here for a refused definition.
   assert.equal((await app.request("/agents/coder/i1")).status, 404);
 
-  // The Menu-only definition admits as ever; an unknown agent stays a 404, not a 403.
-  await admit(app, "/agents/triage/i1");
+  // The refusal is DEFINITION-level, not name-level: the same slot key admits when what it
+  // carries is Menu-only.
+  await admit(app, "/agents/coder/i2", "go", menuOnlyDef);
   assert.equal(runs.length, 1);
-  const unknown = await app.request("/agents/ghost/i1", {
-    method: "POST",
-    body: JSON.stringify({ message: "go" }),
-    headers: { "content-type": "application/json" },
-  });
-  assert.equal(unknown.status, 404);
 });
 
 test("a Sandbox's Harness (no placement gate) admits every definition unchanged", async () => {
-  const write: AgentsSpec = {
-    agents: [{ name: "coder", definition: { model: "faux/model", instructions: "code" } }],
-  };
-  const { app, runs } = scripted({ spec: write });
+  const { app, runs } = scripted();
   await admit(app, "/agents/coder/i1");
   assert.equal(runs.length, 1);
 });

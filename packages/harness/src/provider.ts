@@ -3,9 +3,10 @@
 // at boot; `resolveModel` is the per-Submission read of a `<provider>/<modelId>` specifier;
 // `mapThinkingLevel` is the loud gate between j2's effort scale and pi's.
 //
-// Two validation seats hang off `resolveModel`, because a model now reaches a turn by two routes
-// (ADR-0018): `validateSpecModels` checks every DEFINITION at boot, and `dialFault`
-// checks an INVOCATION's dials at admission. Neither is reachable from the other's moment.
+// ONE validation seat hangs off `resolveModel`: `admissionFault`, at admission, on the RESOLVED
+// definition. Since ADR-0049 there is only one moment a model reaches this process — the Turn
+// carries its Agent's definition and the invocation's dials together — so the retired boot-time
+// sweep of a mounted roster has nothing left to sweep.
 
 import {
   createProvider,
@@ -19,7 +20,7 @@ import {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ThinkingLevel as PiThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { AgentsSpec, ProviderSpec, HarnessSpec, ThinkingLevel, TurnDials } from "./spec.ts";
+import type { ProviderSpec, HarnessSpec, ResolvedDefinition, ThinkingLevel } from "./spec.ts";
 
 /** The wire protocols a custom provider may name. One entry today: the OpenAI-compatible path is
  * what `harness.provider` documents (vLLM/Ollama); an unlisted `api` throws at boot, never a
@@ -83,30 +84,15 @@ export function resolveModel(models: Models, specifier: string): Model<Api> {
 }
 
 /**
- * Every definition's model, resolved once at boot (ADR-0018). A definition names the
- * model, so a typo is a static fact about the mounted spec — it must kill the container in the pod
- * log, not surface as an `agent.fault` on the first Submission that happens to use that Agent.
- * Call-site dials are invisible here (they arrive per admission); `checkDials` is their seat.
+ * Why this admission cannot run, or undefined when it can — the `checkAdmission` seam `app.ts`
+ * 400s with (ADR-0049: the definition rides the Turn, so this is the only moment either half of
+ * it is checkable here). Both are checked the way the turn would use them, so an unresolvable
+ * model or an off-scale effort fails the invoke instead of the Submission.
  */
-export function validateSpecModels(spec: AgentsSpec, models: Models): void {
-  for (const { name, definition } of spec.agents) {
-    try {
-      resolveModel(models, definition.model);
-    } catch (err) {
-      throw new Error(`agent "${name}": ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-}
-
-/**
- * Why an admission's dials cannot run, or undefined when they can — the `checkDials` seam
- * `app.ts` rejects a 400 with. Both dials are checked the way the turn would use them, so an
- * unresolvable model or an off-scale effort fails the invoke instead of the Submission.
- */
-export function dialFault(models: Models, dials: TurnDials): string | undefined {
+export function admissionFault(models: Models, resolved: ResolvedDefinition): string | undefined {
   try {
-    if (dials.model) resolveModel(models, dials.model);
-    if (dials.thinkingLevel) mapThinkingLevel(dials.thinkingLevel);
+    resolveModel(models, resolved.model);
+    if (resolved.thinkingLevel) mapThinkingLevel(resolved.thinkingLevel);
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
   }

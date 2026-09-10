@@ -1,6 +1,7 @@
 // The Turn (ADR-0027): one Submission's execution — the `runSubmission` a Conversation pumps.
-// Per Submission the definition is re-read from the mounted spec (model, instructions, cwd,
-// thinkingLevel resolve when the turn starts), a FRESH MCP client fetches the Menu from the
+// Per Submission the definition is read off the ADMISSION that queued it (ADR-0049: the Agent
+// definition rides the Turn; model, instructions, cwd and thinkingLevel resolve when the turn
+// starts, so a later Submission on the same conversation may carry a retuned one), a FRESH MCP client fetches the Menu from the
 // Adapter (the previous turn's connection closes deterministically — the leak is bounded to
 // one), and the same pi session carries the conversation: a later Submission is the next
 // `prompt()` on the same AgentHarness. Settlement mapping: a throw settles `failed` (the Menu
@@ -23,14 +24,13 @@ import { RunawayError, type RunSubmission } from "./conversation.ts";
 import { connectMenu, type Menu } from "./menu.ts";
 import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
 import { mapThinkingLevel, resolveModel } from "./provider.ts";
-import { resolveDefinition, type AgentsSpec, type ResolvedDefinition } from "./spec.ts";
+import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage } from "./wire.ts";
 import { workingToolsFor } from "./working-tools.ts";
 
 /** What one conversation's turn loop needs. `appendMessage` is the Conversation's stream seam —
  * completed messages land on the durable stream and the history view through it. */
 export type TurnDeps = {
-  spec: AgentsSpec;
   /** The model registry (`provider.ts` — pi's catalog + the instance's custom provider). */
   models: Models;
   /** The Adapter on `localhost` — `$J2_ADAPTER_URL`; the Menu lives at `/mcp/<iid>` (ADR-0013). */
@@ -109,10 +109,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     watch.streak = 0;
     watch.signature = "";
     watch.tripped = "";
-    // This Submission's dials layer over the definition (ADR-0018). Read HERE, per
-    // Submission, so one `continue` conversation can queue turns at different settings — the
+    // This Submission's dials layer over the definition it carries (ADR-0018/0049). Read HERE,
+    // per Submission, so one `continue` conversation can queue turns at different settings — the
     // `setModel`/`setThinkingLevel` reconciliation below already handles the change.
-    const definition = resolveDefinition(deps.spec, deps.agentName, submission);
+    const definition = resolveDefinition(submission.definition, submission);
     const model = resolveModel(deps.models, definition.model);
     const thinkingLevel = definition.thinkingLevel ? mapThinkingLevel(definition.thinkingLevel) : "off";
 

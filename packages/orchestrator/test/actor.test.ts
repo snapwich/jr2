@@ -258,6 +258,22 @@ test("a failed settlement surfaces as agent.fault telemetry", async () => {
   assert.deepEqual(fault, { type: "agent.fault", instanceId: "inst-42", reason: "stream reset by peer" });
 });
 
+test("every admission carries the SLOT's definition — the Harness holds no roster (ADR-0049)", async () => {
+  const mock = new MockFlueClient();
+  const definition: AgentDefinition = { model: "vllm/qwen", instructions: "be the coder", cwd: "/work" };
+  const { received } = harness(mock, baseInput, undefined, definition);
+  await tick();
+
+  assert.deepEqual(mock.definitions, [definition], "read off the slot's own closure, not a lookup");
+
+  // A nudge is a fresh admission on the same conversation — it carries the definition too, or the
+  // re-prompt would arrive at a Harness that cannot say who is answering it.
+  mock.complete();
+  await tick();
+  assert.deepEqual(mock.definitions, [definition, definition]);
+  assert.ok(!received.some((e) => e.type === "agent.fault"));
+});
+
 test("no-signal: a completed turn with no menu call is re-prompted on the SAME iid (ADR-0016)", async () => {
   const mock = new MockFlueClient();
   const { received, ledger, telemetry } = harness(mock, baseInput);

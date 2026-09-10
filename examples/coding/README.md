@@ -72,7 +72,7 @@ beside it; a var already set in your shell wins over the file):
 
 ```sh
 j2 up                 # converges the current context: operator → kit images → instance image →
-                      # Sandbox Images (+ their preflight) → agents ConfigMap → Secrets (+
+                      # Sandbox Images (+ their preflight) → the Machine walk → Secrets (+
                       # preflights) → provider preflight → rollout. Idempotent; re-run after any
                       # change — unmoved images cost no docker. First contact asks; --yes for CI.
 
@@ -138,11 +138,8 @@ prefix keeps discovery from registering it as a workflow); a Machine that shippe
 workflow may turn the `model`/`thinkingLevel` dials for one turn; the rest of a definition is identity and only the
 definition sets it. The **stock Harness image** (`@j2/harness`, ADR-0027) runs the definition it is handed — no build
 step — and carries the mechanism: the Adapter leash (a fresh MCP connection to `$J2_ADAPTER_URL/mcp/<id>` per
-Submission, ADR-0013) and the Working tools. Editing a definition is a `j2 up` — no image build anywhere.
-
-`agents/` still exists beside them, and holds nothing but one re-export per Agent: the deployed Harness resolves a
-definition out of the `J2_AGENTS_JSON` ConfigMap `j2 up` writes from that folder. It goes when the definition rides the
-Turn (ADR-0049).
+Submission, ADR-0013) and the Working tools. Editing a definition is a `j2 up` — no image build anywhere: the definition
+rides each Turn's admission, so the Harness pod learns it from the Turn and never from a roster (ADR-0049).
 
 ## Follow-ups (deliberately out of scope here)
 
