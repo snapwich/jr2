@@ -53,11 +53,23 @@ export type ChildMachineDoc = {
   recursive?: true;
 };
 
+/** One event a Machine declares — its Vocabulary entry (ADR-0011) — mirrors `MachineEventDoc`. */
+export type MachineEventDoc = {
+  name: string;
+  description?: string;
+  audience: "agent" | "external" | "any";
+  /** The def's input schema as JSON Schema. */
+  input: unknown;
+};
+
 /** One Machine's structure, independent of what NAMES it — mirrors `MachineBodyDoc`. */
 export type MachineBodyDoc = {
   id: string;
   root: MachineStateDoc;
   transitions: MachineTransitionDoc[];
+  /** The events THIS Machine declares, and only this one (ADR-0049): a nested Machine's ride its
+   *  own body doc, because event names are scoped to the Machine that declared them. */
+  events: MachineEventDoc[];
 };
 
 /** The serialized structure of a workflow's Machine — mirrors `MachineDoc`. */

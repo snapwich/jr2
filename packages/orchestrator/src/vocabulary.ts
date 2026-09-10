@@ -1,56 +1,82 @@
-// Vocabulary-on-the-machine (ADR-0015): the workflow's event defs ride the machine OBJECT, not a
-// module export. `j2Setup.createMachine` attaches them here; discovery (`RunHost.register`) reads
-// them back. A WeakMap keeps the returned machine bit-identical — Stately-inspectable and
-// `.provide()`-testable — and preserves ADR-0011's anti-global-registry argument: attribution
-// flows through the machine object, per-workflow by construction (a shared defs module can feed
-// two machines; a dev reload's fresh machine object gets a fresh entry).
+// Vocabulary-on-the-machine (ADR-0011, ADR-0015): a Machine's event defs ride the machine, not a
+// module export — and they are scoped to THAT Machine alone. `j2Setup.createMachine` attaches
+// them here; `gate`/`agentRun` read them back off the Machine that invoked them, and nothing ever
+// merges two Machines' sets. That is what makes a Machine composable by plain `invoke`
+// (ADR-0049): the importing Machine neither re-declares nor sees the nested one's events, so
+// `coding`'s `approve` and `release`'s `approve` may differ and one run may hold both.
 //
-// The one caveat this key choice carries: `.provide()` returns a NEW machine object, which is why
-// discovery registers the pre-provide machine (it does — `WorkflowDef.machine`) and `provide`
-// stays a per-run assembly step below the vocabulary lookup.
+// The attachment is keyed on `machine.config` — the raw config object xstate's `.provide()`
+// passes through unchanged (`new StateMachine(this.config, …)`, verified against the pinned
+// xstate 5.32.2). So the host's per-run `provide` and a test's `.provide()` both keep the
+// vocabulary, which is ADR-0049's rule that parts resolve at invoke time THROUGH THE LIVE ACTOR'S
+// LOGIC rather than a build-time closure: whatever machine object an actor was invoked as, its
+// config is the one the defs were attached to.
 //
-// This module is a pure leaf (no wire client, no actors) so `run-host.ts` can read vocabularies
-// without dragging the Harness wire client onto its test load path — the same isolation actor.ts
-// keeps.
+// A WeakMap (rather than a field) keeps the returned machine bit-identical — Stately-inspectable,
+// constructible with no j2 runtime — and preserves ADR-0011's anti-global-registry argument:
+// attribution flows through the machine object, per-Machine by construction (a shared defs module
+// can feed two machines; a dev reload's fresh machine gets a fresh entry).
+//
+// This module is a pure leaf (no wire client, no actors) so `run-host.ts` and `registration.ts`
+// can read vocabularies without dragging the Harness wire client onto their test load path — the
+// same isolation actor.ts keeps.
 
-import type { AnyStateMachine } from "xstate";
+import type { AnyActorRef, AnyStateMachine } from "xstate";
 import type { z } from "zod";
 import type { EventDef } from "@j2/agent-protocol";
 
-const vocabularies = new WeakMap<AnyStateMachine, Map<string, EventDef>>();
+/** The key both attachments use: the machine's raw config, which survives `.provide()`. */
+type MachineKey = AnyStateMachine["config"];
 
-/** Attach a machine's resolved vocabulary. j2-internal: `j2Setup` and the machine factories
- * (`workspace`, `pool`) call it — the factories PROPAGATE their body's vocabulary onto the
- * wrapper they return, so a workflow whose root is a wrapper still registers its defs. */
+const vocabularies = new WeakMap<MachineKey, Map<string, EventDef>>();
+
+/** Attach a Machine's resolved vocabulary. j2-internal: `j2Setup` calls it, and `pool()` calls it
+ * for the one def it owns (its wake event). The machine factories do NOT propagate their body's
+ * or worker's defs onto the wrapper (ADR-0011): those belong to the nested Machine, which is
+ * where the actors that use them resolve. */
 export function attachVocabulary(machine: AnyStateMachine, defs: Map<string, EventDef>): void {
-  vocabularies.set(machine, defs);
+  vocabularies.set(machine.config, defs);
 }
 
-/** The vocabulary a machine was built with — undefined for a machine not built by `j2Setup`
- * (a plain `setup()` machine has no workflow events and resolves to an empty scope). */
+/** The vocabulary a Machine was built with — undefined for a Machine not built by `j2Setup`
+ * (a plain `setup()` machine declares no workflow events and resolves to an empty scope). */
 export function vocabularyOf(machine: AnyStateMachine): Map<string, EventDef> | undefined {
-  return vocabularies.get(machine);
+  return vocabularies.get(machine.config);
+}
+
+/**
+ * The Machine that invoked this actor — `self._parent.logic`, public xstate API (ADR-0011). This
+ * is the resolution scope for `gate`'s `accepts` and `agentRun`'s menu: the derived set came from
+ * THIS Machine's transitions, so its defs are the only ones a delivery may be validated against.
+ *
+ * Undefined for a rootless actor (`createActor(gate)` directly) and for a parent that is not a
+ * state machine — both read as an empty vocabulary, which fails the invoke loudly rather than
+ * silently accepting a name nobody declared.
+ */
+export function invokingMachine(self: AnyActorRef): AnyStateMachine | undefined {
+  const logic = (self._parent as { logic?: unknown } | undefined)?.logic as AnyStateMachine | undefined;
+  return logic?.root ? logic : undefined;
 }
 
 // The declared run input (ADR-0033): the one piece of a machine's vocabulary the event defs
 // missed — what a run of it is STARTED with. Same key choice as the vocabulary above, for the
-// same reasons (per-machine attribution, no global registry, `.provide()` registers pre-provide).
+// same reasons (per-machine attribution, no global registry, transparent across `.provide()`).
 
-const inputSchemas = new WeakMap<AnyStateMachine, z.ZodObject>();
+const inputSchemas = new WeakMap<MachineKey, z.ZodObject>();
 
 /** Attach a machine's declared run-input schema. j2-internal: `j2Setup.createMachine({ input })`
  * attaches it, and the machine factories (`workspace`, `pool`) attach their OWN — the `input` in
- * their options. Unlike the vocabulary, the door deliberately does NOT propagate up from a body
- * or a worker (ADR-0033): a wrapper feeds its child something other than the run input (the
- * injected `workspace` handles; a source item), so the child's contract is not the door's. */
+ * their options. Like the vocabulary, the door does NOT propagate up from a body or a worker
+ * (ADR-0033): a wrapper feeds its child something other than the run input (the injected
+ * `workspace` handles; a source item), so the child's contract is not the door's. */
 export function attachInputSchema(machine: AnyStateMachine, schema: z.ZodObject): void {
-  inputSchemas.set(machine, schema);
+  inputSchemas.set(machine.config, schema);
 }
 
 /** The run-input schema a machine declared — undefined for a machine that declared none, which
  * is PERMISSIVE (ADR-0033): a run of it starts with anything, today's behavior. */
 export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined {
-  return inputSchemas.get(machine);
+  return inputSchemas.get(machine.config);
 }
 
 /**

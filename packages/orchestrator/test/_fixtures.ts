@@ -336,8 +336,8 @@ const featureWorkspace = createMachine({
 
 /** The root: a coordinator that spawns a wrapper per feature and then just sits there — which is
  * the whole problem the child diagrams solve. Its `value` stays "discover" while the run works.
- * The root carries the workflow's vocabulary (ADR-0015: discovery reads the EXPORTED machine),
- * even though the gate that uses `approve` is invoked two levels down. */
+ * It declares `approve` for its own sake only: the gate two levels down resolves against the BODY
+ * that invokes it (ADR-0049), which declares the name itself. */
 export const pipelineTemplate = j2Setup({
   types: {} as { context: Record<string, never> },
   events: [approveDef],
@@ -454,3 +454,71 @@ export const twinGatesTemplate = j2Setup({
     done: {},
   },
 });
+
+// ---- Same name, two Machines (ADR-0011, ADR-0049) -----------------------------------------------
+// The pair per-Machine scoping exists for: an `approve` carrying a note in one Machine and an
+// `approve` carrying a score in another, live in ONE run. Under the retired run-wide set this was
+// a collision the root had to resolve; now neither Machine ever sees the other's def.
+
+const approveNote = defineEvent({ name: "approve", input: z.object({ note: z.string() }) });
+const approveScore = defineEvent({ name: "approve", input: z.object({ score: z.number() }) });
+
+/** The nested Machine: its own `approve`, its own payload, its own gate. */
+const scoredInner = j2Setup({
+  types: {} as { context: { score?: number }; output: { score?: number } },
+  events: [approveScore],
+}).createMachine({
+  id: "inner",
+  context: {},
+  initial: "waiting",
+  states: {
+    waiting: {
+      invoke: { src: "gate" },
+      on: { approve: { target: "done", actions: assign({ score: ({ event }) => event.score }) } },
+    },
+    done: { type: "final" },
+  },
+  // The score leaves as OUTPUT, so what the nested Machine's own `approve` delivered is still
+  // assertable once the run has settled and its children are gone.
+  output: ({ context }) => ({ score: context.score }),
+});
+
+/** The root: parallel, so its own gate and the nested Machine's are open at the same moment. */
+export const sameNameTemplate = j2Setup({
+  types: {} as { context: { note?: string; innerScore?: number } },
+  events: [approveNote],
+  actors: { inner: scoredInner },
+}).createMachine({
+  id: "outer",
+  context: {},
+  type: "parallel",
+  states: {
+    own: {
+      initial: "waiting",
+      states: {
+        waiting: {
+          invoke: { src: "gate" },
+          on: { approve: { target: "done", actions: assign({ note: ({ event }) => event.note }) } },
+        },
+        done: { type: "final" },
+      },
+    },
+    nested: {
+      initial: "running",
+      states: {
+        running: {
+          invoke: {
+            id: "inner",
+            src: "inner",
+            onDone: { target: "done", actions: assign({ innerScore: ({ event }) => event.output.score }) },
+          },
+        },
+        done: { type: "final" },
+      },
+    },
+  },
+});
+
+export function sameNameDef(): WorkflowDef {
+  return { name: "same-name", machine: sameNameTemplate, provide: () => ({}) };
+}

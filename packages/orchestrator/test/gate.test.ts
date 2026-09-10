@@ -1,8 +1,8 @@
 // Gate tests (ADR-0011): a gate is an addressable resource on a run — created when a state
 // invokes the `gate` actor, listed with schemas + meta for discovery, destroyed when the state
-// exits. Delivery is validated against the workflow's OWN vocabulary and lands on the invoking
-// state via the registration closure; gate ids are run-scoped mechanically (two runs, one id,
-// no collision).
+// exits. Delivery is validated against the vocabulary of the MACHINE THAT INVOKED the gate
+// (ADR-0049) and lands on that invoking state via the registration closure; gate ids are
+// run-scoped mechanically (two runs, one id, no collision).
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +14,7 @@ import {
   gatedDef,
   gatedOverreachTemplate,
   mkStore,
+  sameNameDef,
   twinGatesTemplate,
   waitFor,
 } from "./_fixtures.ts";
@@ -179,16 +180,51 @@ test("two unnamed gates in one state: the walk suffixes the ordinal, ids stay di
   );
 });
 
-test("an accepts name outside the workflow's vocabulary fails at invoke time, naming both", async () => {
+test("an accepts name outside the INVOKING MACHINE's vocabulary fails at invoke time, naming both", async () => {
   const host = new RunHost({ store: await mkStore() });
   host.register(gatedDef({ machine: gatedOverreachTemplate })); // defs missing request_changes
 
   // The gate actor throws on start → the run errors immediately (xstate reports invoke errors
-  // to the observer, not out of start). The fault names the workflow and its declared set, is
-  // readable through the store, and no zombie stays in the live registry.
+  // to the observer, not out of start). The fault names the MACHINE that invoked the gate and
+  // its declared set (ADR-0011/0049: names are per-Machine, so the Machine is the address that
+  // means anything), is readable through the store, and no zombie stays in the live registry.
   const { runId } = await host.start("gated");
   assert.equal(host.status(runId), undefined);
   const status = await host.read(runId);
   assert.equal(status?.status, "error");
-  assert.match(status?.fault ?? "", /workflow "gated" does not declare event "request_changes" \(declared: approve\)/);
+  assert.match(status?.fault ?? "", /machine "gated" does not declare event "request_changes" \(declared: approve\)/);
+});
+
+// ---- Per-Machine names (ADR-0011, ADR-0049) --------------------------------------------------
+
+test("two nested Machines' same-named, different-schema events both deliver in one run", async () => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(sameNameDef());
+  const { runId } = await host.start("same-name");
+  await waitFor(() => host.gates(runId).length === 2);
+
+  // Both gates advertise "approve" — and each advertises ITS OWN schema, because each resolved
+  // against the Machine that invoked it. Nothing merged, so nothing collided.
+  const byId = new Map(host.gates(runId).map((g) => [g.gate, g]));
+  const outer = byId.get("own.waiting");
+  const inner = byId.get("inner.waiting");
+  assert.deepEqual(
+    outer?.accepts.map((a) => a.name),
+    ["approve"],
+  );
+  assert.deepEqual((outer?.accepts[0]?.input as { required?: string[] }).required, ["note"]);
+  assert.deepEqual((inner?.accepts[0]?.input as { required?: string[] }).required, ["score"]);
+
+  // Each gate validates against its own def: the sibling's payload is rejected at both ends.
+  assert.throws(() => host.sendToGate(runId, "own.waiting", { type: "approve", score: 7 }), EventValidationError);
+  assert.throws(() => host.sendToGate(runId, "inner.waiting", { type: "approve", note: "ok" }), EventValidationError);
+
+  // And each delivers into its OWN Machine, with the payload its schema parsed.
+  host.sendToGate(runId, "own.waiting", { type: "approve", note: "looks good" });
+  host.sendToGate(runId, "inner.waiting", { type: "approve", score: 7 });
+  await waitFor(() => host.status(runId) === undefined);
+
+  const final = await host.read(runId);
+  assert.equal(final?.status, "done");
+  assert.deepEqual(final?.context, { note: "looks good", innerScore: 7 });
 });

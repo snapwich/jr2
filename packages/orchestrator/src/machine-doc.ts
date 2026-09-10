@@ -9,8 +9,16 @@
 // `spawnChild`), so the walk descends into them too — one `MachineBodyDoc` per child, attached to
 // the state that runs it. Each carries the `src` a live child actor reports, which is how the page
 // hangs run state under the right subgraph.
+//
+// Vocabulary is attributed the same way: each `MachineBodyDoc` carries the events ITS Machine
+// declares (ADR-0011, ADR-0049), never one flattened root list. Two Machines in one doc may
+// declare the same name with different payloads — that is legal, and only a per-Machine listing
+// can report it honestly.
 
 import type { AnyStateMachine, StateNode, TransitionDefinition } from "xstate";
+import { z } from "zod";
+import type { EventAudience } from "@j2/agent-protocol";
+import { vocabularyOf } from "./vocabulary.ts";
 
 /** One transition of the Machine, id-addressed at both ends. */
 export type MachineTransitionDoc = {
@@ -81,12 +89,28 @@ export type ChildMachineDoc = {
   recursive?: true;
 };
 
+/**
+ * One event a Machine declares — its Vocabulary entry (ADR-0011), as the doc carries it. Same
+ * shape a Gate's `accepts` serves, because it is the same thing seen statically: the name, what a
+ * caller sends (JSON Schema), and who may send it.
+ */
+export type MachineEventDoc = {
+  name: string;
+  description?: string;
+  audience: EventAudience;
+  /** The def's input schema as JSON Schema — what a form or a `j2 send` prompt generates from. */
+  input: unknown;
+};
+
 /** One Machine's structure, independent of what NAMES it (a `workflow` at the root, a `src` below). */
 export type MachineBodyDoc = {
   /** Machine id. */
   id: string;
   root: MachineStateDoc;
   transitions: MachineTransitionDoc[];
+  /** The events THIS Machine declares, and only this one (ADR-0049): a nested Machine's ride its
+   * own `MachineBodyDoc`. Empty for a Machine not built by `j2Setup`. */
+  events: MachineEventDoc[];
 };
 
 /** The serialized structure of a workflow's Machine. */
@@ -293,7 +317,13 @@ function serializeBody(machine: AnyStateMachine, path: Set<AnyStateMachine>): Ma
   const transitions: MachineTransitionDoc[] = [];
   const scope: Scope = { actors: machine.implementations.actors as Record<string, unknown>, path };
   const root = serializeState(machine.root, transitions, scope);
-  return { id: machine.id, root, transitions };
+  const events = [...(vocabularyOf(machine)?.values() ?? [])].map((def) => ({
+    name: def.name,
+    ...(def.description !== undefined ? { description: def.description } : {}),
+    audience: def.audience,
+    input: z.toJSONSchema(def.input),
+  }));
+  return { id: machine.id, root, transitions, events };
 }
 
 /** Serialize a workflow's template Machine into the Console's DTO, child machines and all. */

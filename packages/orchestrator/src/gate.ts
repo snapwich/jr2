@@ -4,8 +4,10 @@
 // caller.
 //
 // A state that needs outside input invokes `gate` with `{ gate?, accepts?, meta? }`. On start
-// the actor resolves the accepted names against ITS OWN workflow's vocabulary (per-workflow
-// scoping) and registers into the host's table; `GET /runs/:id` then lists the gate (accepts +
+// the actor resolves the accepted names against the vocabulary of the MACHINE THAT INVOKED IT —
+// `self._parent.logic`, per-Machine scoping (ADR-0011, ADR-0049), which is what lets a nested
+// Machine keep its own `approve` — and registers into the host's table; `GET /runs/:id` then
+// lists the gate (accepts +
 // schemas + meta — what a CLI, an inbox UI, or a webhook translator discovers), and
 // `POST /runs/:id/gates/:gate/events` validates against the named schema and delivers through
 // the closure below — the event lands on the state that invoked the gate, at any nesting depth.
@@ -59,7 +61,7 @@ export const gate = fromCallback<DeliveredEvent, GateInput | undefined>(({ input
         `invoking state (the accepted set derives from its transitions), or pass \`accepts\` explicitly`,
     );
   }
-  const defs = resolveAccepts(binding, input.accepts);
+  const defs = resolveAccepts(self, input.accepts);
   const dispose = binding.table.register({
     address: gateAddress(binding.runId, id),
     runId: binding.runId,

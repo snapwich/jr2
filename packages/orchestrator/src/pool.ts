@@ -26,7 +26,7 @@ import { assign, setup, spawnChild, stopChild, type AnyStateMachine, type Promis
 import type { z } from "zod";
 import type { EventDef } from "@j2/agent-protocol";
 import { gate } from "./gate.ts";
-import { attachInputSchema, attachVocabulary, vocabularyOf } from "./vocabulary.ts";
+import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
 /**
  * What `next` resolves. A plain item claims it; `null` says "nothing ready now" (drained, when
@@ -46,7 +46,7 @@ export type SourceSpec<T> = {
     | PromiseActorLogic<T | null, { active: string[] }>
     | PromiseActorLogic<null, { active: string[] }>;
   /** An external event def that wakes discovery early (webhook / `j2 send` push seam). The pool
-   * serves it as a standing gate named "source" and adds the def to the machine vocabulary. */
+   * serves it as a standing gate named "source"; the def IS the pool machine's vocabulary. */
   wake?: EventDef;
   /** Re-query cadence while parked, in ms — for sets that mutate underneath us. */
   pollEvery?: number;
@@ -114,9 +114,8 @@ function normalizeClaim(output: unknown): Claim {
 
 /**
  * Build the pool machine (ADR-0017). Returns a plain machine — the usual workflow ROOT
- * (`export const machine = pool(...)`), but nestable as a child like any other. The worker's
- * vocabulary (plus the wake def) is propagated onto it, so discovery reads the full set off the
- * exported machine (ADR-0015).
+ * (`export const machine = pool(...)`), but nestable as a child like any other. Its vocabulary is
+ * the wake def alone: the worker keeps its own (ADR-0011, ADR-0049).
  */
 export function pool<TSchema extends z.ZodObject>(
   worker: AnyStateMachine,
@@ -230,17 +229,12 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
     }),
   });
 
-  // Propagate the worker's vocabulary (+ the wake def) onto the pool (ADR-0015): the pool is
-  // the exported root, and discovery reads the vocabulary off the exported machine.
-  const merged = new Map(vocabularyOf(worker) ?? []);
-  if (wake) {
-    const existing = merged.get(wake.name);
-    if (existing && existing !== wake) {
-      throw new Error(`pool: wake event "${wake.name}" collides with a worker event of the same name`);
-    }
-    merged.set(wake.name, wake);
-  }
-  if (merged.size) attachVocabulary(machine, merged);
+  // The pool's vocabulary is the pool's OWN — the wake def and nothing else (ADR-0011,
+  // ADR-0049). The worker's names stay the worker's: its gates and menus resolve against the
+  // Machine that invoked them, which is the worker, so merging them up here would only make a
+  // same-name/different-payload pair between two workers a collision that per-Machine scoping
+  // had already avoided.
+  if (wake) attachVocabulary(machine, new Map([[wake.name, wake]]));
   // The run input does NOT propagate from the worker (ADR-0033): a wrapper declares its own door,
   // because what it feeds its child is not what a caller sends. Here it is sharpest — the pool
   // never passes the run body to a worker at all, workers get items — so propagating the worker's

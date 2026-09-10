@@ -1,10 +1,10 @@
 // `defineEvent` — the event mechanism, and zero events (ADR-0011). A workflow defines its own
 // control vocabulary as pure-data defs; j2 owns only definition, transport, validation, and
 // delivery. This is a PURE factory: no import-time side effects, no global registry. Scoping is
-// per-workflow — a workflow hands its defs to `j2Setup({ events: [...] })` (ADR-0015), which
-// attaches the vocabulary to the machine, and actors resolve event *names* (which is all a
-// serializable input can carry — ADR-0007) against their own workflow's set. Two workflows'
-// `approve` may legitimately differ.
+// per-MACHINE — a Machine hands its defs to `j2Setup({ events: [...] })` (ADR-0015), which
+// attaches the vocabulary to that machine, and actors resolve event *names* (which is all a
+// serializable input can carry — ADR-0007) against the Machine that INVOKED them (ADR-0049).
+// Two Machines' `approve` may legitimately differ, nested one inside the other, in one run.
 
 import { z } from "zod";
 

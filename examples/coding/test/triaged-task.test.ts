@@ -9,7 +9,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   agentRunActorWith,
-  attachVocabulary,
   RunHost,
   SqliteSnapshotStore,
   vocabularyOf,
@@ -90,11 +89,12 @@ async function waitFor(pred: () => boolean): Promise<void> {
 
 const RUN_INPUT = { prompt: "Make the thing", repo: "app", branch: "task/t-1" };
 
-test("the workflow's full vocabulary — both machines' events — rides the exported machine", () => {
-  assert.deepEqual([...(vocabularyOf(machine)?.keys() ?? [])].sort(), [
-    "answer",
+test("each Machine declares its OWN events; nothing is re-declared upward (ADR-0011, ADR-0049)", () => {
+  // The top machine handles the two triage routes and no more — the body's six resolve against
+  // the body, which is the Machine its gates and Menus are invoked from.
+  assert.deepEqual([...(vocabularyOf(machine)?.keys() ?? [])].sort(), ["answer", "code"]);
+  assert.deepEqual([...(vocabularyOf(body)?.keys() ?? [])].sort(), [
     "approve",
-    "code",
     "request_changes",
     "request_review",
     "review",
@@ -173,14 +173,14 @@ test('"code" emits the route BEFORE the workspace — which this cluster-less ho
 
 test("inside the body: the assess Turn CONTINUES the triage conversation on the Instance Harness", async () => {
   // The body under a real workspace() over the fake Sandbox port. `provide()` cannot reach an
-  // inline-invoked machine's slots, so the mock is provided on the exported body and the
-  // vocabulary re-attached (`.provide()` returns a new machine object) before wrapping.
+  // inline-invoked machine's slots, so the mock is provided on the exported body. The vocabulary
+  // rides through `.provide()` untouched — it is keyed on the machine's config, which xstate
+  // passes into the clone (ADR-0011: parts resolve through the live actor's logic).
   const port = new MockPort();
   const endpoints: string[] = [];
   const provided = body.provide({
     actors: { agentRun: agentRunActorWith((endpoint) => (endpoints.push(endpoint), port)) },
   });
-  attachVocabulary(provided, vocabularyOf(body)!);
   const wrapped = workspace(provided, {
     spec: ({ input }: { input: { repo: string; branch: string } }) => ({
       repos: [{ name: input.repo, baseRef: "main" }],

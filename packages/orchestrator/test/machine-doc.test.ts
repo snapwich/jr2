@@ -5,7 +5,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMachine, enqueueActions, fromPromise, setup, spawnChild, type AnyStateMachine } from "xstate";
+import { z } from "zod";
+import { defineEvent } from "@j2/agent-protocol";
 import { fingerprintOf } from "../src/fingerprint.ts";
+import { j2Setup } from "../src/setup.ts";
 import { opaqueStates, serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
 
 /** A fixture exercising every serialization path. */
@@ -387,4 +390,49 @@ test("drift in a CHILD machine is drift — most of a workflow lives down there"
     } as never) as unknown as AnyStateMachine;
   };
   assert.notEqual(fingerprintOf(withBody("first")), fingerprintOf(withBody("second")));
+});
+
+// ---- Vocabulary, per Machine node (ADR-0011, ADR-0049) ------------------------------------------
+// Event names are scoped to the Machine that declared them, so the doc attributes them the same
+// way: one list per `MachineBodyDoc`, never a flattened root list that would have to reconcile two
+// Machines' identically-named, differently-shaped events.
+
+test("each Machine node carries its OWN vocabulary; nothing is flattened to the root", () => {
+  const nested = j2Setup({
+    events: [defineEvent({ name: "approve", input: z.object({ score: z.number() }) })],
+  }).createMachine({
+    id: "nested",
+    initial: "waiting",
+    states: { waiting: { on: { approve: "done" } }, done: { type: "final" } },
+  });
+  const top = j2Setup({
+    events: [defineEvent({ name: "approve", audience: "external", input: z.object({ note: z.string() }) })],
+    actors: { nested },
+  }).createMachine({
+    id: "top",
+    initial: "running",
+    states: {
+      running: { invoke: { id: "nested", src: "nested" }, on: { approve: "done" } },
+      done: { type: "final" },
+    },
+  });
+
+  const doc = serializeMachine("nested-wf", top);
+  assert.deepEqual(
+    doc.events.map((e) => e.name),
+    ["approve"],
+  );
+  assert.equal(doc.events[0]?.audience, "external");
+  assert.deepEqual((doc.events[0]?.input as { required?: string[] }).required, ["note"]);
+
+  // The child node carries the OTHER `approve` — same name, its own schema and audience.
+  const child = findState(doc.root, "top.running")!.children[0]!.machine!;
+  assert.equal(child.id, "nested");
+  assert.equal(child.events[0]?.audience, "any");
+  assert.deepEqual((child.events[0]?.input as { required?: string[] }).required, ["score"]);
+});
+
+test("a machine not built by j2Setup declares no events", () => {
+  assert.deepEqual(parentDoc.events, []);
+  assert.deepEqual(wrapperDoc().events, []);
 });

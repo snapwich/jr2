@@ -11,7 +11,10 @@
 //     appearing anywhere in the machine maps to a def — closing xstate's nested-`on` typo hole
 //     (unknown keys in nested states typecheck silently upstream) with a load-time failure;
 //   - the vocabulary is attached to the machine object (`vocabularyOf` — vocabulary.ts), which
-//     is what lets the `export const events` manifest die (ADR-0011 revised);
+//     is what lets the `export const events` manifest die (ADR-0011 revised). It is scoped to
+//     THIS Machine: `gate`/`agentRun` resolve names against the Machine that invoked them, so a
+//     Machine nested by plain `invoke` keeps its own names and this one never sees them
+//     (ADR-0049);
 //   - an optional `input` on the createMachine config — a zod object — declares what a RUN of
 //     this machine is started with (ADR-0033). It rides the machine object beside the vocabulary
 //     (`inputSchemaOf`), never the xstate config: the host validates `POST /workflows/:name/runs`
@@ -97,7 +100,7 @@ export function j2Setup<
     emitted?: TEmitted;
     meta?: TMeta;
   };
-  /** The workflow's vocabulary, as values — the single source for types, validation, delivery. */
+  /** This Machine's vocabulary, as values — the single source for types, validation, delivery. */
   events: TDefs;
   actors?: TActors;
   actions?: {

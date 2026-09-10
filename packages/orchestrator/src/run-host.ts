@@ -22,8 +22,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
-import type { EventDef, EventSemantics } from "@j2/agent-protocol";
-import { inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
+import type { EventSemantics } from "@j2/agent-protocol";
+import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild } from "@j2/harness/wire";
 import {
   agentAddress,
@@ -375,8 +375,6 @@ export class RunHost {
   private readonly instanceHarness?: string;
   private readonly echoFactory?: (endpoint: string) => (events: EchoEvent[]) => Promise<void>;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
-  /** Per-workflow name→def resolution scope, built (and validated) at registration. */
-  private readonly workflowEvents = new Map<string, Map<string, EventDef>>();
   private readonly runs = new Map<string, LiveRun>();
   /**
    * Workflow name → its observers. Deliberately on the HOST and not on `LiveRun`: a workflow's
@@ -398,10 +396,10 @@ export class RunHost {
   }
 
   /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
-   * The vocabulary rides the machine object (ADR-0015): `j2Setup.createMachine` attached it,
-   * already validated. A machine not built by j2Setup accepts no workflow events. */
+   * Nothing about the vocabulary is copied here: event names are scoped to the Machine that
+   * declared them and resolved at invoke time off the invoking Machine (ADR-0011, ADR-0049), so
+   * a nested Machine's defs are never the root's — or this host's — to hold. */
   register(def: WorkflowDef): void {
-    this.workflowEvents.set(def.name, vocabularyOf(def.machine) ?? new Map());
     this.workflowDefs.set(def.name, def);
   }
 
@@ -413,12 +411,6 @@ export class RunHost {
    * the next reload, which the still-open feed then picks up with no reconnect. */
   unregister(name: string): void {
     this.workflowDefs.delete(name);
-    this.workflowEvents.delete(name);
-  }
-
-  /** A workflow's declared event vocabulary, resolved name→def (empty for an eventless workflow). */
-  events(name: string): Map<string, EventDef> | undefined {
-    return this.workflowEvents.get(name);
   }
 
   /** The names of every registered workflow (the `GET /workflows` listing — ADR-0009). */
@@ -957,7 +949,6 @@ export class RunHost {
     const binding: RunBinding = {
       runId: record.runId,
       workflow: record.workflow,
-      events: this.workflowEvents.get(def.name) ?? new Map(),
       table: this.table,
       sandbox: this.sandbox,
       agentWorkspace: this.agentWorkspace,

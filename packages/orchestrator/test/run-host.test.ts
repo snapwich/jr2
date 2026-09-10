@@ -208,17 +208,24 @@ test("a delivery outside the turn's surface is refused, naming what IS accepted"
   assert.throws(() => host.sendToAgent("no-such-iid", { type: "done" }), /no live registration/);
 });
 
-test("registration reads the vocabulary off the machine (ADR-0015); a plain machine has none", async () => {
+test("the vocabulary rides the Machine and is served per Machine node (ADR-0011, ADR-0049)", async () => {
   const host = new RunHost({ store: await mkStore() });
 
-  // A j2Setup machine carries its defs; registering under any name resolves them.
+  // A j2Setup machine carries its own defs, and the machine doc attributes them to that node —
+  // there is no run-wide list to read them off any more.
   host.register(codingDef(new Map()));
-  assert.deepEqual([...host.events("coding")!.keys()].sort(), ["done", "request_review"]);
+  assert.deepEqual(
+    host
+      .machine("coding")!
+      .events.map((e) => e.name)
+      .sort(),
+    ["done", "request_review"],
+  );
 
-  // A machine NOT built by j2Setup (no vocabulary attached) accepts no workflow events.
+  // A machine NOT built by j2Setup declares no workflow events.
   const bare = setup({}).createMachine({ id: "bare", initial: "a", states: { a: {} } });
   host.register({ name: "bare", machine: bare, provide: () => ({}) });
-  assert.equal(host.events("bare")?.size, 0);
+  assert.deepEqual(host.machine("bare")!.events, []);
 });
 
 test("the admission is ledgered host-side and persisted beside the snapshot (ADR-0016)", async () => {

@@ -13,6 +13,7 @@ import { agentRunActorWith, type AgentRunOptions } from "../src/actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
 import { registerAmbientHandles, type AmbientHandles } from "../src/ambient.ts";
 import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry, type RunBinding } from "../src/registration.ts";
+import { attachVocabulary } from "../src/vocabulary.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
 const pingEvent = defineEvent({ name: "ping", input: z.object({}) });
@@ -53,11 +54,14 @@ function harness(
     },
   });
 
+  // The menu resolves against the INVOKING Machine's vocabulary (ADR-0011, ADR-0049), so the
+  // parent carries it — what `j2Setup` does for an authored machine, done by hand here because
+  // these fixtures exercise the actor over a plain `setup()` parent.
+  attachVocabulary(machine, eventMap("test", [pingEvent]));
   const actor = createActor(machine);
   const binding: RunBinding = {
     runId: "run-1",
     workflow: "test",
-    events: eventMap("test", [pingEvent]),
     table,
     recordAdmission: (iid, admission) => (ledger[iid] = admission),
     telemetry: (event) => telemetry.push(event),
@@ -232,14 +236,14 @@ test('the loud no-Harness error names the definition\'s own workspace value ("re
   assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "read"/);
 });
 
-test("a tools name outside the workflow's vocabulary errors the invoke at start", () => {
+test("a tools name outside the INVOKING MACHINE's vocabulary errors the invoke at start", () => {
   const mock = new MockFlueClient();
   // The harness machine's "*" catches the xstate error event (a real workflow without a handler
   // would escalate and error the run — see gate.test.ts for the host-level path).
   const { received } = harness(mock, { ...baseInput, tools: ["ping", "zap"] });
   const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
   assert.ok(errEvent, "the invoke must error at start");
-  assert.match(String(errEvent?.error?.message), /workflow "test" does not declare event "zap" \(declared: ping\)/);
+  assert.match(String(errEvent?.error?.message), /machine "parent" does not declare event "zap" \(declared: ping\)/);
 });
 
 test("a failed settlement surfaces as agent.fault telemetry", async () => {
@@ -559,8 +563,9 @@ test("the next turn on the same iid waits for the pending abort (session: contin
       second: { invoke: { id: "run", src: "run", input: { ...input, prompt: "and again" } } },
     },
   });
+  attachVocabulary(machine, eventMap("test", [pingEvent]));
   const actor = createActor(machine);
-  bindRun(actor.system, { runId: "run-1", workflow: "test", events: eventMap("test", [pingEvent]), table });
+  bindRun(actor.system, { runId: "run-1", workflow: "test", table });
   actor.start();
   await tick();
   assert.equal(mock.admits.length, 1);

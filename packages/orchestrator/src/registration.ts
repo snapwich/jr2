@@ -17,12 +17,18 @@
 // here. That is what makes gate ids run-scoped — `gate: "F-12"` in two concurrent runs cannot
 // collide — with zero workflow plumbing. The WeakMap is rendezvous keyed by per-run object
 // identity, not a swappable adapter (the distinction ADR-0011 draws for the demux).
+//
+// The binding carries run identity and host infrastructure and NO vocabulary: event names are
+// scoped to the Machine that declared them, not to the run (ADR-0011, ADR-0049), so
+// `resolveAccepts` reads them off the invoking Machine below and a nested Machine's names are
+// never the root's problem.
 
 import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
 import type { EventDef } from "@j2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
 import type { WorkspaceAccess } from "./agent.ts";
 import type { SandboxPort } from "./workspace.ts";
+import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
 
 /** xstate doesn't export its internal AnyActorSystem; this matches what actors receive. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -211,12 +217,10 @@ export class RegistrationTable {
   }
 }
 
-/** What a callback actor needs from its host: run identity, the workflow's vocabulary, the table. */
+/** What a callback actor needs from its host: run identity, the table, and the host's ports. */
 export type RunBinding = {
   runId: string;
   workflow: string;
-  /** The workflow's declared vocabulary (the machine's j2Setup defs, resolved name→def). */
-  events: Map<string, EventDef>;
   table: RegistrationTable;
   /** The host's Sandbox backend, when it has a cluster (`workspace()` resolves it here —
    * one cluster per orchestrator instance, so it is host infrastructure like the table). */
@@ -321,17 +325,22 @@ export function runBindingOf(system: AnyActorSystem): RunBinding {
 }
 
 /**
- * Resolve `accepts` names against the run's declared vocabulary. An unlisted name fails at
- * invoke time, naming the workflow and its declared set (ADR-0011: names are per-workflow).
+ * Resolve `accepts` names against the vocabulary of the Machine that INVOKED this actor
+ * (ADR-0011, ADR-0049). Names are local to their Machine — `coding`'s `approve` and `release`'s
+ * `approve` may carry different payloads, and one run may hold both — so the scope is
+ * `self._parent.logic`, never a run-wide set. An unlisted name fails at invoke time, naming the
+ * Machine and its declared set.
  */
-export function resolveAccepts(binding: RunBinding, accepts: readonly string[]): Map<string, EventDef> {
+export function resolveAccepts(self: AnyActorRef, accepts: readonly string[]): Map<string, EventDef> {
+  const machine = invokingMachine(self);
+  const vocabulary = (machine && vocabularyOf(machine)) ?? new Map<string, EventDef>();
   const defs = new Map<string, EventDef>();
   for (const name of accepts) {
-    const def = binding.events.get(name);
+    const def = vocabulary.get(name);
     if (!def) {
       throw new Error(
-        `workflow "${binding.workflow}" does not declare event "${name}" ` +
-          `(declared: ${[...binding.events.keys()].join(", ") || "none — pass its def to j2Setup({ events })"})`,
+        `machine "${machine?.id ?? "(no invoking machine)"}" does not declare event "${name}" ` +
+          `(declared: ${[...vocabulary.keys()].join(", ") || "none — pass its def to j2Setup({ events })"})`,
       );
     }
     defs.set(name, def);

@@ -133,7 +133,10 @@ test("workspace(): the body's schema is NOT the door — the wrapper declares it
     spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }),
   });
   assert.equal(inputSchemaOf(bare), undefined);
-  assert.equal(vocabularyOf(bare), vocabularyOf(wsBody)); // vocabulary still propagates
+  // Nor does the VOCABULARY propagate (ADR-0049): the body's names stay the body's, because the
+  // gates and menus that use them resolve against the Machine that invoked them.
+  assert.equal(vocabularyOf(bare), undefined);
+  assert.ok(vocabularyOf(wsBody)?.has("approve"));
 
   const door = z.object({ repo: z.string(), branch: z.string().default("feat-1") });
   const declared = workspace(wsBody, {
@@ -186,7 +189,10 @@ test("pool(): the worker's schema is NOT the door — the pool declares its own 
   const parked = source({ next: fromPromise<null, { active: string[] }>(() => new Promise(() => {})) });
   const bare = pool(worker, { source: parked, itemId: () => "i" });
   assert.equal(inputSchemaOf(bare), undefined);
-  assert.ok(vocabularyOf(bare)?.has("approve")); // the vocabulary propagation is undisturbed
+  // Nor the vocabulary (ADR-0049): a source-less pool declares nothing, and `approve` is the
+  // WORKER's word — resolved against the worker, where its gate lives.
+  assert.equal(vocabularyOf(bare), undefined);
+  assert.ok(vocabularyOf(worker)?.has("approve"));
 
   const poolInput = z.object({ maxWorkers: z.number().default(2) });
   const capped = pool(worker, {

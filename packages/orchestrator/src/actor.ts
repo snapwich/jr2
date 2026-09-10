@@ -2,7 +2,7 @@
 // Agent run. It does two things on start, and undoes both on stop:
 //
 //   1. REGISTERS the invocation's event surface: `tools` names are resolved against the
-//      workflow's own vocabulary (per-workflow scoping — an unlisted name fails at invoke time)
+//      INVOKING MACHINE's vocabulary (per-Machine scoping — an unlisted name fails at invoke time)
 //      and registered in the host's table under the instance's agent address, with a deliver
 //      closure over THIS invocation's `sendBack`. The Agent's domain tool calls arrive from its
 //      Adapter (`/agents/<iid>/events` — ADR-0013), are validated by the table, and land on the
@@ -160,7 +160,7 @@ export type AgentRunInput = {
    * A gated runaway goes straight to the terminal fault.
    */
   continuation?: boolean;
-  /** Event names (from the workflow's vocabulary) this invocation accepts over MCP. */
+  /** Event names (from the invoking Machine's vocabulary) this invocation accepts over MCP. */
   tools: readonly string[];
 };
 
@@ -319,8 +319,9 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
       sandbox = input.sandbox ?? ambient.sandbox;
     }
 
-    // Register this invocation's event surface (throws on a name outside the vocabulary —
-    // ADR-0011's invoke-time check — which errors the run loudly at the invoking state).
+    // Register this invocation's event surface (throws on a name outside the INVOKING MACHINE's
+    // vocabulary — ADR-0011's invoke-time check, scoped to `self._parent.logic` because names are
+    // per-Machine — which errors the run loudly at the invoking state).
     // `signaled` is the no-signal detector: a delivered menu event means the Agent ended its
     // turn the intended way, so a completed settlement needs no nudge. ONE invocation can hold
     // more than one surface: a runaway reroll (ADR-0035) is a fresh conversation whose menu
@@ -333,7 +334,7 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
     // registers, nudges and aborts the LIVE conversation, never the dead original the Harness
     // already ended.
     let currentIid = input.attach?.instanceId ?? instanceId;
-    const defs = resolveAccepts(binding, input.tools);
+    const defs = resolveAccepts(self, input.tools);
     const disposers: Array<() => void> = [];
     const registerSurface = (iid: string) =>
       disposers.push(

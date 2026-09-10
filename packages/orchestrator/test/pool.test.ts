@@ -152,16 +152,21 @@ test("the poll timer re-queries a mutating set with no push at all", async () =>
   await waitFor(() => host.status(runId) === undefined);
 });
 
-test("the pool machine carries the worker vocabulary plus the wake def (ADR-0015)", async () => {
+test("the pool machine's vocabulary is its OWN wake def; the worker keeps its own (ADR-0049)", async () => {
   const { src } = memorySource([]);
   const machine = pool(gatedWorker, { source: src, itemId: (i) => i.id });
-  assert.deepEqual([...vocabularyOf(machine)!.keys()].sort(), ["finish", "work_ready"]);
+  assert.deepEqual([...vocabularyOf(machine)!.keys()], ["work_ready"]);
+  // The worker's `finish` never migrates up: the worker's gate resolves against the worker.
+  assert.deepEqual([...vocabularyOf(gatedWorker)!.keys()], ["finish"]);
 });
 
-test("a wake def colliding with a worker event fails at build time", () => {
-  const clash = defineEvent({ name: "finish", audience: "external", input: z.object({}) });
+test("a wake def sharing a worker event's NAME is no collision — the scopes are separate", async () => {
+  // Same name, different payload, one run: legal since the sets never merge (ADR-0011/0049).
+  const clash = defineEvent({ name: "finish", audience: "external", input: z.object({ why: z.string() }) });
   const src = source<Item>({ next: fromPromise<Item | null, { active: string[] }>(async () => null), wake: clash });
-  assert.throws(() => pool(gatedWorker, { source: src, itemId: (i) => i.id }), /wake event "finish" collides/);
+  const machine = pool(gatedWorker, { source: src, itemId: (i) => i.id });
+  assert.equal(vocabularyOf(machine)!.get("finish"), clash);
+  assert.notEqual(vocabularyOf(gatedWorker)!.get("finish"), clash);
 });
 
 test("a plain-setup worker with no vocabulary still pools (wake def only)", () => {

@@ -36,13 +36,7 @@ import {
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
-import {
-  attachInputSchema,
-  attachVocabulary,
-  inputSchemaOf,
-  vocabularyOf,
-  type HostInjectedInput,
-} from "./vocabulary.ts";
+import { attachInputSchema, inputSchemaOf, type HostInjectedInput } from "./vocabulary.ts";
 
 /** Lease cadence when the backend names none. Well inside the 30m default idle timeout, so a
  * few missed renewals in a row are survivable; also the worst-case detection latency for a
@@ -346,11 +340,12 @@ export function workspace(
     );
   }
   const wrapper = buildWorkspaceMachine(body, options.spec);
-  // Propagate the body's vocabulary onto the wrapper (ADR-0015): a workflow whose ROOT is this
-  // wrapper still registers its defs — discovery reads the vocabulary off the exported machine.
-  const vocab = vocabularyOf(body);
-  if (vocab) attachVocabulary(wrapper, vocab);
-  // The door does NOT propagate from the body (ADR-0033): the wrapper hands the body the run
+  // The body's vocabulary stays the BODY's (ADR-0011, ADR-0049): the wrapper declares no events
+  // of its own and merges none, because the actors that use the body's names resolve against the
+  // Machine that invoked them — the body — at any nesting depth. Propagating them up was what
+  // made a nested Machine's events its parent's problem to re-declare.
+  //
+  // The door does NOT propagate from the body either (ADR-0033): the wrapper hands the body the run
   // input plus the injected `workspace` field, so the body's declared input would be the door
   // plus a field no caller can send — declaring it there 400s every valid start. The wrapper
   // declares its own, exactly as a pool does.

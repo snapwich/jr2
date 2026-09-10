@@ -39,10 +39,10 @@ const runInput = z.object({
 });
 
 // ---------------------------------------------------------------------------------------------
-// Vocabulary (ADR-0015). ONE list serves both machines: the exported (top) machine's vocabulary
-// is what the host binds for the whole run, so it takes the FULL set — the body's events
-// included, or the body's menus would fail resolution at invoke time; the body's own j2Setup
-// takes the subset its states handle.
+// Vocabulary (ADR-0011, ADR-0049). Each Machine declares the events IT handles and no more: the
+// top machine takes the two triage routes, the body takes its own six. Nothing is re-declared
+// upward — a `gate` or an Agent Menu resolves against the Machine that invoked it, so the body's
+// names never reach the top machine and the two sets could safely disagree.
 
 const answer = defineEvent({
   name: "answer",
@@ -255,7 +255,7 @@ export const machine = j2Setup({
     output: { outcome: "answered" | "approved" | "lost" | "triage-fault"; answer?: string; branch: string };
     emitted: { type: "triage.decided"; route: "answer" | "code"; reason?: string };
   },
-  events: [answer, code, requestReview, ship, review, reviewVerdict, approve, requestChanges],
+  events: [answer, code],
   actors: { work },
 }).createMachine({
   id: "triaged-task",

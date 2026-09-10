@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createActor, fromCallback, type AnyActorRef } from "xstate";
 import { z } from "zod";
-import { defineEvent, eventMap, type EventDef } from "@j2/agent-protocol";
+import { defineEvent, type EventDef } from "@j2/agent-protocol";
 import { agentRunActorWith } from "../src/actor.ts";
 import { bindRun, mayMove, RegistrationTable, wouldMove } from "../src/registration.ts";
 import { j2Setup } from "../src/setup.ts";
@@ -155,20 +155,16 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 
 /** Run a j2Setup machine under a bare binding (no RunHost): table + run identity only. Binds on
  * the root's creation inspection event — before initial children construct — exactly as RunHost
- * does, so iid minting sees the run identity. */
-function hostless(machine: Parameters<typeof createActor>[0], defs: Parameters<typeof eventMap>[1]) {
+ * does, so iid minting sees the run identity. The binding carries NO vocabulary: names resolve
+ * against the invoking Machine, which already carries its own defs (ADR-0011, ADR-0049). */
+function hostless(machine: Parameters<typeof createActor>[0]) {
   const table = new RegistrationTable();
   let bound = false;
   const actor = createActor(machine, {
     inspect: (ev) => {
       if (!bound && ev.type === "@xstate.actor") {
         bound = true;
-        bindRun((ev.actorRef as AnyActorRef).system, {
-          runId: "run-1",
-          workflow: "wf",
-          events: eventMap("wf", defs),
-          table,
-        });
+        bindRun((ev.actorRef as AnyActorRef).system, { runId: "run-1", workflow: "wf", table });
       }
     },
   });
@@ -208,7 +204,7 @@ test("agent menus and gate accepts derive from transitions, routed by audience",
     },
   });
 
-  const { actor, table } = hostless(machine, defs);
+  const { actor, table } = hostless(machine);
   await tick();
 
   // The agent's menu: own request_review + bubbled report_blocked; human_approve is excluded
@@ -254,7 +250,7 @@ test("session continue derives ONE deterministic iid; the fresh default mints a 
         },
       },
     });
-    const { actor } = hostless(machine, [go]);
+    const { actor } = hostless(machine);
     await tick();
     actor.send({ type: "go" });
     await tick();
@@ -306,7 +302,7 @@ test("a `conversation` pin derives ONE run-scoped iid across MACHINES; `continue
         working: { invoke: { src: "child" } },
       },
     });
-    const { actor, table } = hostless(machine, [go]);
+    const { actor, table } = hostless(machine);
     await tick();
     table.deliver(`agent/${mock.admits[0]!.instanceId}`, "go", {});
     await tick();
@@ -344,7 +340,7 @@ test("explicit tools remain the escape hatch over the derived menu", async () =>
       b: {},
     },
   });
-  const { actor } = hostless(machine, [ping, pong]);
+  const { actor } = hostless(machine);
   await tick();
   assert.deepEqual(mock.admitted?.tools, ["pong"]);
   actor.stop();
@@ -370,8 +366,8 @@ test("the dials pass through to the admission; omitted, nothing is invented (ADR
     });
 
   const base = { agent: "coder", prompt: "go", endpoint: "http://x" };
-  const a = hostless(build(dialed, { ...base, model: "vllm/big", thinkingLevel: "xhigh" }), [ping]);
-  const b = hostless(build(plain, base), [ping]);
+  const a = hostless(build(dialed, { ...base, model: "vllm/big", thinkingLevel: "xhigh" }));
+  const b = hostless(build(plain, base));
   await tick();
 
   assert.equal(dialed.admitted?.model, "vllm/big");
@@ -408,7 +404,7 @@ async function turnWith(on: any, context: Record<string, unknown>, defs: EventDe
       b: {},
     },
   });
-  const { actor, table } = hostless(machine, defs);
+  const { actor, table } = hostless(machine);
   await tick();
   const reg = table.byRun("run-1").find((r) => r.kind === "agent")!;
   return { actor, reg, mock };
