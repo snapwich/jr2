@@ -1,6 +1,7 @@
-// `workspace(body, { input, spec })` (ADR-0012): the j2-owned wrapper Machine that owns ONLY
-// Sandbox lifecycle — provision the Sandbox + attach repos/worktrees, run the author's body
-// Machine inside it with `{ workspace: { workdir, repos, branch } }` appended to its input (the
+// `workspace(body, { input, image, user, spec })` (ADR-0012, ADR-0049): the j2-owned wrapper
+// Machine that owns ONLY Sandbox lifecycle — provision the Sandbox (out of the STATIC `image`/`user`
+// options it carries) + attach repos/worktrees, run the author's body Machine inside it as the named
+// slot `body`, with `{ workspace: { workdir, repos, branch } }` appended to its input (the
 // mechanism-facing endpoint/sandbox are published ambiently — ADR-0016, ambient.ts), and
 // destroy the Sandbox when the body reaches a final state. Teardown lives INSIDE the
 // wrapper's own states because an xstate stop is synchronous — multi-step async cleanup must be
@@ -24,10 +25,10 @@
 
 import {
   assign,
-  createMachine,
   fromCallback,
   fromPromise,
   sendTo,
+  setup,
   type AnyStateMachine,
   type InputFrom,
   type OutputFrom,
@@ -35,37 +36,26 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
+import { attachSandboxParts, sandboxPartsOf } from "./parts.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
-import { attachInputSchema, inputSchemaOf, type HostInjectedInput } from "./vocabulary.ts";
+import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInput } from "./vocabulary.ts";
 
 /** Lease cadence when the backend names none. Well inside the 30m default idle timeout, so a
  * few missed renewals in a row are survivable; also the worst-case detection latency for a
  * workspace that went away (ADR-0021). */
 const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
 
-/** What to attach, in workspace vocabulary only (ADR-0012 boundary): which repos on what base
- * ref, the one branch the body works on — and, since ADR-0037, what the Sandbox is MADE OF.
- * Workflow configuration still never enters the spec; pod composition is admitted because it is
- * the wrapper's business in exactly the way its worktrees are. */
+/** What to attach, in workspace vocabulary only (ADR-0012 boundary): which repos on what base ref,
+ * the one branch the body works on, and the pod's work group. Derived PER RUN from the wrapper's
+ * input, which is what keeps it out here rather than in the options — and which is exactly why the
+ * two IMAGES are NOT here (ADR-0049): `j2 up` must find them by walking the Machine, and no walk
+ * can evaluate a function of run input. They are static `workspace()` options instead. */
 export type WorkspaceSpec = {
   /** `baseRef` absent → the repo's OWN default branch: the attach bases the worktree on
    * `origin/HEAD`, which the reconcile's clone pointed at the remote's default (ADR-0004) — so
    * nothing anywhere hardcodes a guess like `main` against a `master` repo. */
   repos: Array<{ name: string; baseRef?: string }>;
   branch: string;
-  /** The Sandbox Image (ADR-0037), in either of its two origins: an `images/<name>` DIRNAME the
-   * instance builds, or a registry REF its owner baked and hosts. The two are told apart by shape
-   * — a ref contains `/` or `:`, a dirname cannot — and resolution to a concrete ref is the
-   * port's, which keeps the Machine cluster-agnostic. A ref is safe to persist for the same reason
-   * a dirname is: both are stable NAMES. What must never reach a snapshot is a resolved
-   * content-addressed tag, which would outlive the image it names — and that only ever exists on
-   * the port's side of the seam. Absent → `images/default`, then the stock Harness. */
-  image?: string;
-  /** The User Container's image (ADR-0005), same two origins and the same resolution as `image`.
-   * Absent → the pod has no third container: there is no default, because the seat's whole
-   * identity is "what j2 does not own" and j2 has nothing to put there. One string is the entire
-   * authoring surface — env, ports, and resources are deliberately not forwarded. */
-  user?: string;
   /** The pod's work group (ADR-0005): `fsGroup`, default 2000. The two writing seats may run
    * different uids — each image's own `USER` decides — and POSIX would then make the other seat's
    * files read-only; fsGroup (group ownership) plus the default ACL the attach stamps on each
@@ -133,9 +123,10 @@ export type Continuity = { present: false } | { present: true; identity?: string
 export interface SandboxPort {
   /** Ensure the Sandbox CR exists (labeled with its run for `j2 ls`) and await `phase: Ready`;
    * resolve with the Harness endpoint the orchestrator can reach, and the identity the lease
-   * will hold this workspace to. `image`/`user` are the spec's image NAMES (ADR-0037/0005) —
-   * dirname or registry ref, the port resolves both, and an unknown dirname fails here rather
-   * than converge-time. `workGroup` is the pod's `fsGroup`; the port owns the default. */
+   * will hold this workspace to. `image`/`user` are the wrapper's static image options
+   * (ADR-0037/0005/0049) — a `file:` context or a registry ref, the port resolves both, and a
+   * context the last converge did not build fails here rather than converge-time. `workGroup` is
+   * the pod's `fsGroup`; the port owns the default. */
   provision(req: {
     name: string;
     runId: string;
@@ -278,10 +269,32 @@ type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor> =
     : { "the body's declared input must accept the door plus the injected handles": Workspaced<TDoor> };
 
 /**
- * How a Workspace with a declared door is configured (ADR-0012, ADR-0033) — the wrapper's own
- * run-input schema, and the mapping from what comes through it to workspace vocabulary.
+ * What the Sandbox is MADE OF (ADR-0037, ADR-0005), as STATIC options on the wrapper rather than
+ * fields of the per-run spec (ADR-0049). Static is the whole point: `j2 up` walks the registered
+ * Machines to find every `file:` context and build it (parts.ts), and a spec is a function of run
+ * input that no walk can evaluate. They are also never persisted — the provisioning state re-reads
+ * them off the Machine it was invoked as, so a restore, a `provide()` and a `customize()` all get
+ * the image the Machine carries NOW.
+ *
+ * Each is one string in ADR-0037's two shapes: a `file:` URL to a docker context the Machine's
+ * module ships (`import.meta.resolve("./image")`), or a registry ref its owner baked and hosts.
  */
-export type WorkspaceOptions<TSchema extends z.ZodObject> = {
+export type SandboxOptions = {
+  /** The Sandbox Image. Absent → the Instance's `images/default`, then the stock Harness. */
+  image?: string;
+  /** The User Container's image (ADR-0005). Absent → the pod has no third container: there is no
+   * default, because the seat's whole identity is "what j2 does not own" and j2 has nothing to put
+   * there. One string is the entire authoring surface — env, ports, and resources are deliberately
+   * not forwarded. */
+  user?: string;
+};
+
+/**
+ * How a Workspace with a declared door is configured (ADR-0012, ADR-0033) — the wrapper's own
+ * run-input schema, what the pod is made of, and the mapping from what comes through the door to
+ * workspace vocabulary.
+ */
+export type WorkspaceOptions<TSchema extends z.ZodObject> = SandboxOptions & {
   /** The wrapper's OWN declared run input (ADR-0033) — what a caller sends to start a run of it,
    * what types `spec`'s `input`, and what the body is checked against. Deliberately NOT the body's
    * schema: the body is fed the run input PLUS the injected `workspace` handles
@@ -301,7 +314,7 @@ export type WorkspaceOptions<TSchema extends z.ZodObject> = {
  * parameter (`spec: ({ input }: { input: Item }) => …`), which types the wrapper's input too. For
  * anything a caller starts, the honest fix is to declare `input`.
  */
-export type PermissiveWorkspaceOptions<TInput = unknown> = {
+export type PermissiveWorkspaceOptions<TInput = unknown> = SandboxOptions & {
   /** Never present on this path. Spelled out so a declared schema can never fall through to the
    * permissive overload, where the body would go unchecked. */
   input?: never;
@@ -326,7 +339,7 @@ export function workspace<TBody extends AnyStateMachine, TInput = unknown>(
 ): WorkspaceMachine<TInput, OutputFrom<TBody>>;
 export function workspace(
   body: AnyStateMachine,
-  options: { input?: z.ZodObject; spec: (args: { input: any }) => WorkspaceSpec },
+  options: SandboxOptions & { input?: z.ZodObject; spec: (args: { input: any }) => WorkspaceSpec },
 ): AnyStateMachine {
   // A body that still declares its own run input is a dead declaration under the door design: the
   // wrapper never serves it, never validates against it, and feeds the body something it does not
@@ -339,7 +352,27 @@ export function workspace(
         "workspace(body, { input, spec }) (ADR-0033).",
     );
   }
+  // Static, so checkable NOW rather than at the first provision — an empty or non-string image is
+  // the same derives-from-a-typo bug `assertSpec` catches for the spec, one build earlier.
+  for (const seat of ["image", "user"] as const) {
+    const value = options[seat];
+    if (value !== undefined && (typeof value !== "string" || !value)) {
+      throw new Error(
+        `workspace(): \`${seat}\` must be a non-empty string (got ${JSON.stringify(value)}) — either a \`file:\` ` +
+          'URL to a docker context this module ships (`import.meta.resolve("./image")`) or a registry ref ' +
+          "(ADR-0037).",
+      );
+    }
+  }
   const wrapper = buildWorkspaceMachine(body, options.spec);
+  // What the pod is MADE of rides the Machine (ADR-0049), keyed on `machine.config` like the
+  // vocabulary — so a `provide()` clone keeps it, and the provisioning state reads it back off the
+  // Machine it was invoked as instead of closing over these values. That is also what lets `j2 up`
+  // find every `file:` context by walking the registered Machines (parts.ts).
+  attachSandboxParts(wrapper, {
+    ...(options.image !== undefined ? { image: options.image } : {}),
+    ...(options.user !== undefined ? { user: options.user } : {}),
+  });
   // The body's vocabulary stays the BODY's (ADR-0011, ADR-0049): the wrapper declares no events
   // of its own and merges none, because the actors that use the body's names resolve against the
   // Machine that invoked them — the body — at any nesting depth. Propagating them up was what
@@ -373,14 +406,6 @@ function assertSpec(spec: WorkspaceSpec): void {
     });
   if (spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
     bad.push(`reviewSha (got ${JSON.stringify(spec?.reviewSha)})`);
-  // Shape only, for both image names. Whether a DIRNAME exists is unanswerable here — the image
-  // map lives in the cluster and this runs before any port call — so an unknown one fails at
-  // provision (ADR-0037), loudly and listing what was discovered. A REF is not checkable anywhere
-  // on this side: it is deployed-never-built, and its pull is the cluster's own.
-  if (spec?.image !== undefined && (typeof spec.image !== "string" || !spec.image))
-    bad.push(`image (got ${JSON.stringify(spec?.image)})`);
-  if (spec?.user !== undefined && (typeof spec.user !== "string" || !spec.user))
-    bad.push(`user (got ${JSON.stringify(spec?.user)})`);
   // A gid, so an integer — a float or a negative becomes a pod the API server rejects at
   // admission, which surfaces as "never reached Ready" with nothing pointing back at the spec.
   if (
@@ -398,17 +423,23 @@ function assertSpec(spec: WorkspaceSpec): void {
 
 function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
   const provision = fromPromise<{ endpoint: string }, { wsId: string; spec: WorkspaceSpec }>(
-    async ({ input, system }) => {
+    async ({ input, self, system }) => {
       assertSpec(input.spec); // before the port: a bad spec must never cost a pod
       const binding = runBindingOf(system);
+      // The images come off the WRAPPER, at invoke time, not out of context and not out of a
+      // build-time closure (ADR-0049). This state re-runs on every restore, so the re-read is the
+      // whole mechanism: a redeployed instance provisions what the Machine carries NOW, and no
+      // snapshot ever holds an image name — let alone a resolved content-addressed tag, which
+      // would outlive the image it names.
+      const parts = sandboxPartsOf(invokingMachine(self));
       return sandboxOf(system).provision({
         name: workspaceName(binding.runId, input.wsId),
         runId: binding.runId,
         workflow: binding.workflow,
-        // The NAMES, straight through (ADR-0037/0005) — the port owns resolution, and the
+        // The image strings straight through (ADR-0037/0005) — the port owns resolution, and the
         // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
-        ...(input.spec.image !== undefined ? { image: input.spec.image } : {}),
-        ...(input.spec.user !== undefined ? { user: input.spec.user } : {}),
+        ...(parts.image !== undefined ? { image: parts.image } : {}),
+        ...(parts.user !== undefined ? { user: parts.user } : {}),
         ...(input.spec.workGroup !== undefined ? { workGroup: input.spec.workGroup } : {}),
       });
     },
@@ -496,7 +527,14 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     sandboxOf(system).destroy(workspaceName(runBindingOf(system).runId, input.wsId)),
   );
 
-  return createMachine({
+  // Every actor this wrapper runs is a NAMED SLOT (ADR-0049), the body first among them: a Machine
+  // composes by invoking a declared `src`, and `body` is what `provide()`, `customize()`, Stately,
+  // the Console's join key and the `j2 up` parts walk all reach it by. The mechanism's own four —
+  // provision, attach, registrar, lease, destroy — are named for the same price, and the Console
+  // now shows what each state is doing instead of "inline".
+  return setup({
+    actors: { body, provision, attach, registrar, lease, destroy },
+  }).createMachine({
     id: "workspace",
     context: ({ input, self }: { input: unknown; self: { id: string } }): WsContext => ({
       runInput: (input ?? {}) as Record<string, unknown>,
@@ -507,7 +545,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     states: {
       provisioning: {
         invoke: {
-          src: provision,
+          src: "provision",
           input: ({ context }) => ({
             wsId: (context as unknown as WsContext).wsId,
             spec: (context as unknown as WsContext).spec,
@@ -523,7 +561,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
       },
       attaching: {
         invoke: {
-          src: attach,
+          src: "attach",
           input: ({ context }) => ({
             wsId: (context as unknown as WsContext).wsId,
             spec: (context as unknown as WsContext).spec,
@@ -560,14 +598,16 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
           // Registrar FIRST: the ambient handles must be readable before the body starts.
           {
             id: "registrar",
-            src: registrar,
+            src: "registrar",
             input: ({ context }) => ({ handles: (context as unknown as WsContext).handles! }),
           },
           {
             id: "body",
-            src: body,
-            input: ({ context }) => {
-              const ctx = context as unknown as WsContext;
+            // Annotated because the body is `AnyStateMachine`: its declared input type is opaque,
+            // so `setup()` has nothing to contextually type this callback's parameter from.
+            src: "body",
+            input: ({ context }: { context: WsContext }) => {
+              const ctx = context;
               const { workdir, repos, branch, review } = ctx.handles!;
               // Body-facing subset only (ADR-0016): endpoint/sandbox are mechanism-internal.
               return {
@@ -582,7 +622,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
           },
           {
             id: "lease",
-            src: lease,
+            src: "lease",
             input: ({ context }) => ({
               wsId: (context as unknown as WsContext).wsId,
               identity: (context as unknown as WsContext).identity,
@@ -594,7 +634,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
       },
       teardown: {
         invoke: {
-          src: destroy,
+          src: "destroy",
           input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId }),
           onDone: "done",
           // A failed delete is the operator GC's problem (ADR-0012 backstop), not the run's.

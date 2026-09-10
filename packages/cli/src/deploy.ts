@@ -91,12 +91,13 @@ export function instanceObjects(opts: {
   harness?: HarnessConfig;
   /** The private-CA PEM bundle (`harness.caBundle` file contents, read by `up` — ADR-0020). */
   caBundle?: string;
-  /** Every image ref THIS converge resolved (ADR-0037/0038): `{ harness, adapter, operator?,
-   * sandbox: { <name>: ref }, sandboxUser: { <name>: user } }`. It lands twice, deliberately as one
-   * JSON so the record `up` diffs and the map pods read can never disagree: as the `j2-images`
-   * ConfigMap the Orchestrator reads per provision, and as an annotation on the Deployment's own
-   * metadata. `sandboxUser` rides along because a provision cannot inspect an image and the pod's
-   * uid-1000 fallback turns on whether the image declares a `USER` (up.ts, ADR-0037). */
+  /** Every image ref THIS converge resolved (ADR-0037/0038/0049): `{ harness, adapter, operator?,
+   * sandbox: { <key>: ref }, sandboxUser: { <key>: user } }`, where a key is a build context's
+   * content digest or the reserved `default`. It lands twice, deliberately as one JSON so the
+   * record `up` diffs and the map pods read can never disagree: as the `j2-images` ConfigMap the
+   * Orchestrator reads per provision, and as an annotation on the Deployment's own metadata.
+   * `sandboxUser` rides along because a provision cannot inspect an image and the pod's uid-1000
+   * fallback turns on whether the image declares a `USER` (up.ts, ADR-0037). */
   imageRefs: Record<string, unknown>;
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "j2" };

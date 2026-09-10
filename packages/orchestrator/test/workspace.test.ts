@@ -123,6 +123,13 @@ test("lifecycle: provision → attach → body(input+handles) → body final →
 
   const name = [...sandbox.provisioned.keys()][0]!;
   assert.deepEqual(sandbox.provisioned.get(name), { runId, workflow: "ws" });
+  // The LIVE half of the Console's join (ADR-0049): the body is a named slot, so the running child
+  // reports `src: "body"` — the same string `serializeMachine` records for it, and no longer
+  // xstate's positional `xstate.invoke.<i>.<state>` key.
+  assert.deepEqual(
+    host.status(runId)!.children.map((c) => ({ id: c.id, src: c.src })),
+    [{ id: "body", src: "body" }],
+  );
   // Parking IS retention (ADR-0012): the body is holding its gate, the Sandbox must be alive.
   assert.ok(!sandbox.calls.some((c) => c.startsWith("destroy:")));
 
@@ -211,33 +218,28 @@ test("a spec deriving undefined fields (missing run input) faults BEFORE any pod
   );
 });
 
-test("spec.image: the NAME reaches the port untouched; a malformed one faults before any pod", async () => {
-  // ADR-0037: what the Sandbox is MADE OF is spec vocabulary now, but only as a NAME — resolution
-  // to a ref is the port's, so the Machine stays cluster-agnostic and no content-addressed tag ever
-  // lands in a snapshot.
+test("the image is a STATIC option read off the Machine at invoke time, never the spec", async () => {
+  // ADR-0049: what the Sandbox is MADE OF moved out of the per-run spec and onto the wrapper,
+  // because `j2 up` must find it by WALKING the Machine and a spec is a function of run input.
+  // Resolution to a ref is still the port's, so the Machine stays cluster-agnostic and no
+  // content-addressed tag ever lands in a snapshot.
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   const named = workspace(body, {
-    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b", image: "rust" }),
+    image: "file:///srv/pkg/image",
+    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b" }),
   });
   host.register({ name: "named", machine: named, provide: () => ({}) });
 
   const { runId } = await host.start("named");
   await waitFor(() => host.gates(runId).length === 1);
-  assert.deepEqual(sandbox.images, ["rust"]);
-
-  // Shape only — an image that does not EXIST is unknowable here (the map lives in the cluster),
-  // so that failure belongs to provision.
-  const bad = new FakeSandbox();
-  const host2 = new RunHost({ store: await mkStore(), sandbox: bad });
-  const empty = workspace(body, {
-    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b", image: "" as string }),
-  });
-  host2.register({ name: "empty", machine: empty, provide: () => ({}) });
-  const run2 = await host2.start("empty");
-  await waitFor(() => host2.status(run2.runId) === undefined);
-  assert.match((await host2.read(run2.runId))?.fault ?? "", /workspace spec invalid: image \(got ""\)/);
-  assert.deepEqual(bad.calls, [], "a bad spec never costs a pod");
+  assert.deepEqual(sandbox.images, ["file:///srv/pkg/image"]);
+  // It is read off the WRAPPER, so the host's per-run `provide()` clone still finds it — the
+  // attachment is keyed on `machine.config`, which `.provide()` passes through unchanged.
+  assert.ok(
+    !JSON.stringify((await host.read(runId))?.context ?? {}).includes("file:///srv/pkg/image"),
+    "and it is nowhere in the persisted context: a restore re-reads what the Machine carries NOW",
+  );
 
   // baseRef is OPTIONAL (absent → the repo's own default branch, resolved at attach) but
   // present-and-empty is still the derives-from-input bug assertSpec exists to catch.
@@ -260,27 +262,22 @@ test("spec.image: the NAME reaches the port untouched; a malformed one faults be
   assert.deepEqual(bad4.calls, [], "a bad spec never costs a pod");
 });
 
-test("pod composition rides the spec: `user` and `workGroup` reach the port, malformed ones fault first", async () => {
-  // ADR-0005/0037: what the Sandbox is MADE OF is the wrapper's business in the same way its
-  // worktrees are — workflow configuration still never enters the spec. A registry REF is as
-  // persistable as a dirname: both are stable NAMES, and only a resolved content-addressed tag
-  // (which lives on the port's side) would outlive the image it names.
+test("pod composition: `user` is a static option too, `workGroup` stays per-run spec", async () => {
+  // ADR-0005/0037/0049: the User Container's image rides the same rule as the Sandbox Image's —
+  // two origins, one resolution, static so the converge can build it. The work GROUP is not an
+  // image and nothing walks it, so it stays where a run's own facts live.
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   const composed = workspace(body, {
-    spec: () => ({
-      repos: [{ name: "app", baseRef: "main" }],
-      branch: "b",
-      image: "ghcr.io/acme/toolchain:2024-11",
-      user: "sshd",
-      workGroup: 4000,
-    }),
+    image: "ghcr.io/acme/toolchain:2024-11",
+    user: "ghcr.io/acme/sshd:1",
+    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b", workGroup: 4000 }),
   });
   host.register({ name: "composed", machine: composed, provide: () => ({}) });
   const { runId } = await host.start("composed");
   await waitFor(() => host.gates(runId).length === 1);
   assert.deepEqual(sandbox.images, ["ghcr.io/acme/toolchain:2024-11"]);
-  assert.deepEqual(sandbox.composition, [{ user: "sshd", workGroup: 4000 }]);
+  assert.deepEqual(sandbox.composition, [{ user: "ghcr.io/acme/sshd:1", workGroup: 4000 }]);
 
   // A gid that is not an integer becomes a pod the API server rejects at admission — which
   // surfaces as "never reached Ready" with nothing pointing back at the run input.

@@ -1,7 +1,7 @@
 // `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
-// ownership → image resolution → operator → kit images → instance image → Sandbox Images → the
-// Machine walk → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance Harness
+// ownership → image resolution → operator → kit images → instance image → the Machine walk →
+// Sandbox Images → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance Harness
 // (ADR-0031: converged by convention when a carried definition declares `workspace: "none"`,
 // deleted when none does) → a report of live workspaces still on an older image. Repos reconcile onto the
 // in-cluster source volume at orchestrator boot (ADR-0004); a configured custom provider is
@@ -40,12 +40,14 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import {
-  agentsOf,
-  discoverImages,
+  defaultImageContext,
+  imageContextDigest,
   loadConfig,
   loadWorkflows,
+  partsOf,
   sandboxToken,
   type CarriedAgent,
+  type CarriedImage,
   type ImageRefs,
   type InstanceConfig,
 } from "@j2/orchestrator";
@@ -61,7 +63,6 @@ import {
   platformSuffix,
   pnpmDockerBuild,
   publishedKitRefs,
-  sandboxImageHash,
   sandboxImageTag,
   stageInstanceBundle,
   INSTANCE_DOCKERFILE,
@@ -401,33 +402,64 @@ export async function up(args: string[], io: Io): Promise<number> {
     await staged.dispose();
   }
 
-  // --- Sandbox Images (ADR-0037): the instance's own `images/<name>/Dockerfile` -------------------
+  // --- the Machine walk (ADR-0049) ---------------------------------------------------------------
+  // A Machine carries its parts, so this converge LOADS the instance's registered Workflows — the
+  // same discovery and module contract the Orchestrator boots with — and walks them for everything
+  // three later layers need: the Agent definitions whose models are preflighted (ADR-0018), any
+  // `workspace: "none"`, which converges the Instance Harness (ADR-0031), and every `file:` docker
+  // context a `workspace()` names, which is built right below (ADR-0037). It runs BEFORE the image
+  // builds because it is what says which images there are; nothing about Agents is published,
+  // because the definition rides each Turn.
+  const workflows = await loadWorkflows(root);
+  const { agents, images: contexts } = partsOf(workflows.map((w) => w.machine));
+  const carried = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
+  activity(io, `agents: ${carried} (carried by ${workflows.length} workflow machine(s))`);
+
+  // --- Sandbox Images (ADR-0037/0049): the contexts the Machines carry, plus `images/default` -----
   // Gated on `repos`, which is already the data-plane switch (ADR-0012/0031): a workspace-less
-  // instance has no Sandboxes, so it must not pay a docker build for a scaffolded image it can
-  // never use. Said out loud, because a silent skip of a folder you just wrote reads as a bug.
+  // instance has no Sandboxes, so it must not pay a docker build for an image it can never use.
+  // Said out loud, because a silent skip of a folder you just wrote reads as a bug.
   if (config.repos?.length) {
-    const images = await discoverImages(root);
-    if (images.length === 0) {
-      activity(io, "sandbox images: none authored (add images/<name>/Dockerfile — Sandboxes run the stock Harness)");
+    // The scaffolded `images/default` is a PATH CONVENTION, not discovery (ADR-0049/0050): exactly
+    // one path is checked, and it is keyed `default` rather than by digest, because that reserved
+    // key IS the middle leg of the resolution chain a `workspace()` that names no image lands on.
+    const fallback = await defaultImageContext(root);
+    const built: Array<{ dir: string; name: string; reserved?: "default" }> = [
+      ...(fallback ? [{ dir: fallback, name: "default", reserved: "default" as const }] : []),
+      ...contexts.map((image: CarriedImage) => ({ dir: image.dir, name: image.name })),
+    ];
+    if (built.length === 0) {
+      activity(io, "sandbox images: none carried (a workspace() names one, or scaffold images/default)");
     }
-    for (const image of images) {
-      // The hash covers `images/<name>/` and nothing else (ADR-0037/0038). The harness ref is NOT
-      // an input any more: the runtime rides the pod's volume, so a kit edit re-images future
-      // pods and leaves every Sandbox Image tag — and every delivered layer — where it was.
-      const imageHash = await sandboxImageHash(image.dir);
-      const ref = sandboxImageTag(name, image.name, imageHash, { platforms, registry });
+    for (const image of built) {
+      // A `file:` URL that names no folder fails HERE, at converge (ADR-0037) — the one moment a
+      // context's existence is checkable at all, since the pod only ever resolves a digest.
+      const digest = await imageContextDigest(image.dir).catch((err: NodeJS.ErrnoException) => {
+        throw new Error(
+          `the Sandbox Image context ${image.dir} cannot be read (${err.code ?? "read failed"}) — a ` +
+            '`workspace()` names its image with `import.meta.resolve("./<dir>")`, so that directory must exist ' +
+            "beside the Machine's own module (ADR-0037/0049).",
+        );
+      });
+      // Every carried context is keyed by that digest, which is how the baked Orchestrator finds
+      // this ref again from the `file:` URL its own copy of the module carries — no path table on
+      // either side (ADR-0049). The TAG carries the digest either way, so a Machine that names
+      // `images/default` by URL lands on the same tag as the reserved key: two records, one build
+      // (the host-held check below spends nothing the second time).
+      const key = image.reserved ?? digest;
+      const ref = sandboxImageTag(name, image.name, digest, { platforms, registry });
       // A record is only worth skipping on when it is COMPLETE: the ref AND the seat the image
       // declared. A record from a kit that predates `sandboxUser` names the right image and
       // silently drops the fallback fact, which surfaces as a pod that will not start — so it reads
       // as stale here and the image is re-inspected (the host skip below then spends no build).
-      const remembered = previous?.sandboxUser?.[image.name];
-      if (previous?.sandbox?.[image.name] === ref && remembered !== undefined && values.force !== true) {
+      const remembered = previous?.sandboxUser?.[key];
+      if (previous?.sandbox?.[key] === ref && remembered !== undefined && values.force !== true) {
         // Unlike the instance image there is no rollout to verify a Sandbox Image against, so a
         // recorded-but-absent ref only shows up as ImagePullBackOff at the next provision —
         // `--force` rebuilds and re-delivers it. The seat is carried forward from the same record:
         // the tag is a content address, so the image the record names declares what it declared.
         activity(io, `sandbox image "${image.name}": ${ref} (fresh — build skipped; --force to rebuild anyway)`);
-        converged.sandboxUser[image.name] = remembered;
+        converged.sandboxUser[key] = remembered;
       } else {
         assertDeliverable();
         if (await hostBuilt(ref)) {
@@ -451,27 +483,17 @@ export async function up(args: string[], io: Io): Promise<number> {
         // `platforms` says where to look, not which variant to read (ADR-0045): a singleton build is
         // on this daemon, a multi-platform one is the manifest list buildx just pushed.
         const user = await build.imageUser(ref, platforms);
-        converged.sandboxUser[image.name] = user;
+        converged.sandboxUser[key] = user;
         activity(io, `  ${user ? `USER ${user}` : "no USER declared — the pod's uid-1000 fallback applies"}`);
         await deliver(ref);
       }
-      converged.sandbox[image.name] = ref;
+      converged.sandbox[key] = ref;
     }
   } else {
     activity(io, "sandbox images: skipped (no `repos` — a workspace-less instance provisions no Sandbox)");
   }
 
-  // --- the Machine walk + secrets ----------------------------------------------------------------
-  // A Machine carries its Agents (ADR-0049), so this converge LOADS the instance's registered
-  // Workflows — the same discovery and module contract the Orchestrator boots with — and walks
-  // them for the definitions two later layers need: the models to preflight (ADR-0018) and any
-  // `workspace: "none"`, which converges the Instance Harness (ADR-0031). There is no roster to
-  // read and nothing about Agents to publish: the definition rides each Turn.
-  const workflows = await loadWorkflows(root);
-  const agents = agentsOf(workflows.map((w) => w.machine));
-  const carried = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
-  activity(io, `agents: ${carried} (carried by ${workflows.length} workflow machine(s))`);
-
+  // --- secrets -----------------------------------------------------------------------------------
   // Idempotence: the token + signing key persist across re-runs (live Sandboxes bear tokens the
   // key signed — ADR-0013), minted only on first converge.
   const secret = await kube.getJson<KubeObject & { data?: Record<string, string> }>({
@@ -628,10 +650,10 @@ export async function up(args: string[], io: Io): Promise<number> {
  * `sandboxUser` is the same map's answer to a question a provision cannot ask: an image that
  * declares no `USER` runs as uid 1000 with `HOME=/home/j2` on an emptyDir (ADR-0037), and only the
  * host that BUILT the image can see which case it is (`docker inspect` at converge is free; the
- * cluster has no such reach). So the fact travels with the ref, in the same JSON, keyed by the same
- * `images/<name>` dirname: `""` means "declares none — apply the fallback", a non-empty value is
- * the declared user, and an ABSENT key means unknown, which is the only honest reading for an image
- * j2 did not build. A registry ref is exactly that absent case by construction — it is never built,
+ * cluster has no such reach). So the fact travels with the ref, in the same JSON, under the same key:
+ * `""` means "declares none — apply the fallback", a non-empty value is the declared user, and an
+ * ABSENT key means unknown, which is the only honest reading for an image j2 did not build. A
+ * registry ref is exactly that absent case by construction — it is never built,
  * never inspected, never in this map — so it runs as whatever its own `USER` says, and one that
  * would run as root fails the Harness container's `runAsNonRoot` at provision.
  */

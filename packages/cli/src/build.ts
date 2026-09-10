@@ -1,6 +1,7 @@
 // The image build seam (ADR-0019/0038): `j2 up` builds EVERY image it deploys. There are three
 // kinds — the instance's own (engine + this instance's workflows baked, ADR-0008), the instance's
-// Sandbox Images (`images/<name>/Dockerfile`, ADR-0037), and — only when the CLI is running out of
+// Sandbox Images (the `file:` docker contexts its Machines carry, ADR-0037/0049), and — only when the
+// CLI is running out of
 // a kit CHECKOUT — the Harness, Adapter, and operator images. Installed from npm those kit sources
 // do not resolve, so a real instance takes the published-`<kitversion>` path and never needs docker
 // for them. The checkout IS the signal: no flag, no config key, no env.
@@ -138,8 +139,9 @@ export type BuildPort = {
  * hashed deliberately, tests included; each entry below is justified against its own ignore file.
  *
  * Named `KIT_` so neither can be reached for a USER directory by accident. A Sandbox Image's
- * folder IS its build context (ADR-0037) and carries no `.dockerignore`, so docker copies `dist/`
- * and `node_modules/` straight in — hash them (`NO_EXCLUDE`).
+ * context is hashed by the ORCHESTRATOR's `imageContextDigest` instead (ADR-0049 — both sides
+ * compute it), which excludes nothing at all, for the same reason: that folder IS the build
+ * context and carries no `.dockerignore`, so docker copies `dist/` and `node_modules/` straight in.
  */
 
 /** For walks under `packages/*` (harness, adapter): their context is the KIT ROOT, so the root
@@ -155,9 +157,6 @@ const KIT_PACKAGE_EXCLUDE = new Set(["node_modules", "dist"]);
  * context-invisible, so excluding them is sound and keeps the converge walk off the tooling. The
  * rest of the non-go tree (Makefile, config/, hack/) stays hashed: over-hash, the cheap side. */
 const KIT_OPERATOR_EXCLUDE = new Set(["bin", "testbin", "cover.out"]);
-
-/** Hash everything: the only honest exclude set for a directory j2 does not own (see above). */
-const NO_EXCLUDE: Set<string> = new Set();
 
 /**
  * A short content hash over `paths` (files and/or directories, sorted walk), salted with `salt`.
@@ -524,14 +523,11 @@ export function kitImageBuild(
 
 // --- Sandbox Images (ADR-0037) ---------------------------------------------------------------
 
-/** The hash's domain separator, and the whole of it. A Sandbox Image's build is `docker build` of
- * the user's own directory with no generated text anywhere in it (ADR-0037), so — unlike the
- * instance image, whose generated Dockerfile is image content the context never holds — there is
- * nothing to salt WITH. The constant only keeps this hash's domain apart from the bundle's. */
-const SANDBOX_HASH_SALT = "sandbox";
-
 /** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>-<arch>` — the image a Sandbox's primary
- * container runs, addressed by its directory and the platform set it was built for (ADR-0045).
+ * container runs, addressed by its build context's content digest (`imageContextDigest`, which the
+ * ORCHESTRATOR owns because both sides compute it — ADR-0049) and the platform set it was built for
+ * (ADR-0045). `name` is the context directory's basename and is decoration: it makes
+ * `docker images` readable, while the hash is the identity.
  * Names are for humans and for content addressing only: nothing reads ownership out of this string
  * any more (ADR-0039). `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and the image
  * is the POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). A ref the user merely BROUGHT takes no
@@ -544,23 +540,6 @@ export function sandboxImageTag(
 ): string {
   const suffix = platformSuffix(opts.platforms);
   return `${opts.registry ? `${opts.registry}/` : ""}j2-sandbox-${instance}-${name}:${hash}${suffix}`;
-}
-
-/**
- * The content address of a Sandbox Image: everything in its `images/<name>/` directory, with NO
- * exclusions — and NOTHING else (ADR-0037/0038). The resolved harness ref is deliberately NOT an
- * input: the Harness arrives on a pod volume, so a kit edit moves the harness image's own tag and
- * re-images future pods while every Sandbox Image tag stands still. Coupling the two was the wrap's
- * doing (`COPY --from=<harness>` made it a real input), and it re-tagged, rebuilt, and re-delivered
- * every user image on the cluster for a kit source edit.
- *
- * No exclusions is the other half: that directory IS the build context, and it carries no
- * `.dockerignore`, so a `dist/` or `node_modules/` beside the Dockerfile is image content and must
- * be image address. The `KIT_*_EXCLUDE` sets describe the KIT's own ignore files and are a lie
- * about anyone else's tree.
- */
-export function sandboxImageHash(dir: string): Promise<string> {
-  return contentHash([dir], SANDBOX_HASH_SALT, NO_EXCLUDE);
 }
 
 /**
@@ -889,7 +868,7 @@ export function formatBytes(bytes: number): string {
 
 /**
  * The floor a Sandbox Image owes (ADR-0037) is NOT proven here, and the absence is the decision.
- * The floor is a HARNESS-SEAT obligation; a built `images/<name>` may equally be destined for the
+ * The floor is a HARNESS-SEAT obligation; a built context may equally be destined for the
  * User Container seat, which owes no floor at all (ADR-0005) — and which seat a directory serves is
  * workflow-internal and statically unrecoverable (ADR-0031, the same line that puts an unknown image
  * name at provision). So a converge cannot know what to hold an image to. The probe lives at the one

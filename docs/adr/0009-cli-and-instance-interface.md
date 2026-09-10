@@ -45,10 +45,12 @@ export default defineConfig({ name: "my-orchestrator", sandbox: {} });
   backend; without it, the instance is workspace-less — a Workspace needs repos. There is **no `images` config block**:
   `j2 up` builds every image it deploys and resolves each to a content-addressed tag
   ([ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)). Image composition is per Workspace, not per instance — a
-  `workspace()` spec names its Sandbox Image (a discovered `images/<name>/` directory or a registry ref,
-  [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)) and opts into a User Container the
-  same way ([ADR-0005](0005-sandbox-pod-composition.md)). Every Sandbox gets an Adapter — an Agent without one cannot
-  act (ADR-0013) — and that is not configurable. Agent-runtime concerns live in `harness` (ADR-0018).
+  `workspace()` names its Sandbox Image statically (a `file:` docker context the Machine ships or a registry ref,
+  [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md),
+  [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)) and opts into a User Container the same way
+  ([ADR-0005](0005-sandbox-pod-composition.md)); `images/default` is the one path convention `j2 up` still checks. Every
+  Sandbox gets an Adapter — an Agent without one cannot act (ADR-0013) — and that is not configurable. Agent-runtime
+  concerns live in `harness` (ADR-0018).
 - **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`) and the env/creds the Agents
   need (e.g. an Anthropic key, read from `process.env`/`.env` and materialized as a Secret by `j2 up`, or `envFrom` refs
   to Secrets you manage) — never which model to use; each definition names its own (ADR-0018).

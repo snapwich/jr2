@@ -221,6 +221,8 @@ test("a top-level spawnChild is not opaque — the flag marks a blind spot, not 
 });
 
 test("an inline invoked machine nests inside it, keyed by xstate's generated src", () => {
+  // An AUTHOR may still write a machine object straight onto an `invoke.src`; none of j2's own
+  // wrappers do since ADR-0049 (see the `workspace()` join-key test below).
   const running = findState(wrapperDoc().root, "wrapper.running");
   assert.equal(running?.children.length, 1, "the promise actor is not a child machine");
   const inline = running!.children[0]!;
@@ -435,4 +437,30 @@ test("each Machine node carries its OWN vocabulary; nothing is flattened to the 
 test("a machine not built by j2Setup declares no events", () => {
   assert.deepEqual(parentDoc.events, []);
   assert.deepEqual(wrapperDoc().events, []);
+});
+
+test("a workspace() body joins on the stable slot name `body`, not a generated key (ADR-0049)", async () => {
+  // The wrapper invokes its body as a NAMED slot now, so the string the Console joins structure and
+  // live state on is `body` at both ends — readable, stable under an edit to any sibling invoke,
+  // and the same string `provide()`, `customize()` and the parts walk reach the body by. It IS a
+  // shape change: a snapshot written under the old inline key fingerprints differently and a run
+  // parked across the upgrade is refused, which is exactly ADR-0030's contract.
+  const { workspace } = await import("../src/workspace.ts");
+  const inner = createMachine({ id: "body", initial: "coding", states: { coding: {}, shipped: { type: "final" } } });
+  const wrapped = workspace(inner, { spec: () => ({ repos: [{ name: "app" }], branch: "b" }) });
+
+  const doc = serializeMachine("wrapped", wrapped);
+  const running = findState(doc.root, "workspace.running")!;
+  const child = running.children.find((c) => c.label === "body")!;
+  assert.equal(child.src, "body", "the join key is the slot name");
+  assert.equal(child.machine?.id, "body");
+  // And every one of the wrapper's own actors is named too, so a reader sees what each state does.
+  assert.deepEqual(
+    findState(doc.root, "workspace.provisioning")!.invoke.map((i) => i.src),
+    ["provision"],
+  );
+  assert.deepEqual(
+    running.invoke.map((i) => i.src),
+    ["registrar", "body", "lease"],
+  );
 });

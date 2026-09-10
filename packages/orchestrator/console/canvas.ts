@@ -170,8 +170,9 @@ type Row = { text: string; cls: string };
 const guardSuffix = (guard: string | undefined): string => (guard ? (guard === "inline" ? " [?]" : ` [${guard}]`) : "");
 
 /** An invoke's display name. A `src` is the JOIN KEY, not a name: an anonymous actor gets xstate's
- * generated key (`xstate.invoke.0.workspace.provisioning`), which names the STATE — which is the box
- * the row is already sitting in. Only a setup() actor has a name of its own. */
+ * generated key (`xstate.invoke.0.wrapper.running`), which names the STATE — which is the box the
+ * row is already sitting in. Only a setup() actor has a name of its own, which since ADR-0049 is
+ * every actor j2's own wrappers run (`provision`, `body`, `lease`, `worker`, …). */
 const actorName = (src: string): string => (src.startsWith("xstate.invoke.") ? "inline" : src);
 
 /** The display rows inside a state box: invokes, targetless self-transitions, tags. A child MACHINE

@@ -1,14 +1,17 @@
 // kubectlSandbox — the CR/exec MAPPING, against a fake process seam (the cluster itself is the
 // kind e2e tier's job). What matters here: the CR carries the run labels + RO repos mount, Ready
 // gates provisioning (returning the CR's own svc-DNS endpoint), the attach script is the
-// idempotent ADR-0004 sequence, and — since ADR-0037/0038 — `spec.image` is RESOLVED from the
-// mounted image map on every provision rather than pinned at construction.
+// idempotent ADR-0004 sequence, and — since ADR-0037/0038/0049 — `spec.image` is RESOLVED from the
+// mounted image map on every provision rather than pinned at construction, by the CONTENT DIGEST of
+// the `file:` context the `workspace()` named.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { imageContextDigest } from "../src/images.ts";
 import { attachScript, kubectlSandbox, rootImageFault } from "../src/sandbox-kubectl.ts";
 import type { KubectlExec } from "../src/sandbox-kubectl.ts";
 
@@ -48,10 +51,25 @@ async function mkImages(refs: unknown): Promise<string> {
   return path;
 }
 
+/** A docker context on disk and the map key it hashes to. Since ADR-0049 an image is a `file:` URL
+ * and the map is keyed by content digest, so a fixture image has to be a real directory — which is
+ * the point: the port computes the key the same way `j2 up` did, with no path table between them. */
+async function mkContext(from: string): Promise<{ url: string; key: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "j2-ctx-"));
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "Dockerfile"), `FROM ${from}\n`);
+  return { url: pathToFileURL(dir).href, key: await imageContextDigest(dir) };
+}
+
+const RUST = await mkContext("rust:1");
+const BARE = await mkContext("node:24-slim");
+const DEV = await mkContext("debian:12");
+const GOLANG = await mkContext("golang:1.23");
+
 const REFS = {
   harness: "j2-harness:h00",
   adapter: "j2-adapter:a00",
-  sandbox: { default: "j2-sandbox-inst-default:d00", rust: "j2-sandbox-inst-rust:r00" },
+  sandbox: { default: "j2-sandbox-inst-default:d00", [RUST.key]: "j2-sandbox-inst-rust:r00" },
 };
 
 /** Everything a provision needs beyond the images map: the Adapter is always injected now, so its
@@ -104,7 +122,7 @@ test("the Harness arrives at POD time: an /opt/j2 volume, an init copy, and a co
   // the user's image byte-for-byte, and everything j2 needs from it arrives beside it.
   const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
   const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
-  await port.provision({ name: "sb-inj", runId: "r", workflow: "w", image: "rust" });
+  await port.provision({ name: "sb-inj", runId: "r", workflow: "w", image: RUST.url });
 
   const applied = crOf(calls);
   // The one thing j2 takes from the image. A container has one command and it must be the
@@ -173,7 +191,7 @@ test("the User Container is the zero-contract seat: own entrypoint, /work, and N
     env: [{ name: "MODEL", value: "x" }],
     envFrom: [{ secretRef: { name: "anthropic" } }],
   });
-  await port.provision({ name: "sb-user", runId: "r", workflow: "w", user: "rust" });
+  await port.provision({ name: "sb-user", runId: "r", workflow: "w", user: RUST.url });
 
   const applied = crOf(calls);
   const user = applied.spec.sidecars.find((s: { name: string }) => s.name === "user");
@@ -212,13 +230,17 @@ test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH plac
   // cannot ask for itself. j2 supplies a uid ONLY here: everywhere else the image's own USER
   // decides its seat (ADR-0005), and this is the one case where the image chose nothing and the
   // alternative is root, which the hardened context refuses.
-  const bare = { ...REFS, sandbox: { ...REFS.sandbox, bare: "j2-sandbox-inst-bare:b00" }, sandboxUser: { bare: "" } };
+  const bare = {
+    ...REFS,
+    sandbox: { ...REFS.sandbox, [BARE.key]: "j2-sandbox-inst-bare:b00" },
+    sandboxUser: { [BARE.key]: "" },
+  };
   const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
   await kubectlSandbox({ imagesPath: await mkImages(bare), ...provisionable, exec }).provision({
     name: "sb-bare",
     runId: "r",
     workflow: "w",
-    image: "bare",
+    image: BARE.url,
   });
 
   const applied = crOf(calls);
@@ -243,7 +265,7 @@ test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH plac
     name: "sb-own",
     runId: "r",
     workflow: "w",
-    image: "rust",
+    image: RUST.url,
   });
   const own = crOf(c2);
   assert.equal(own.spec.securityContext.runAsUser, undefined, "j2 sets runAsUser nowhere else");
@@ -266,7 +288,7 @@ test("the pod carries the work group: fsGroup = spec.workGroup ?? 2000", async (
   assert.equal(await fsGroupFor(4000), 4000);
 });
 
-test("the Sandbox Image chain: spec name → images/default → the stock Harness", async () => {
+test("the Sandbox Image chain: the wrapper's context → images/default → the stock Harness", async () => {
   const provisionWith = async (refs: unknown, image?: string): Promise<string> => {
     const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
     const port = kubectlSandbox({ imagesPath: await mkImages(refs), ...provisionable, exec });
@@ -274,8 +296,8 @@ test("the Sandbox Image chain: spec name → images/default → the stock Harnes
     return crOf(calls).spec.image;
   };
 
-  assert.equal(await provisionWith(REFS, "rust"), "j2-sandbox-inst-rust:r00", "the spec's name wins");
-  assert.equal(await provisionWith(REFS), "j2-sandbox-inst-default:d00", "no name → images/default");
+  assert.equal(await provisionWith(REFS, RUST.url), "j2-sandbox-inst-rust:r00", "the wrapper's context wins");
+  assert.equal(await provisionWith(REFS), "j2-sandbox-inst-default:d00", "no image → images/default");
   // The last leg comes out of the MAP, not a `j2-harness:<kitversion>` literal: in a kit checkout
   // the Harness is a content-addressed tag (ADR-0038) and a literal would name nothing built.
   assert.equal(
@@ -285,15 +307,17 @@ test("the Sandbox Image chain: spec name → images/default → the stock Harnes
   );
 });
 
-test("an unknown image name fails the provision with NOTHING applied, listing what was discovered", async () => {
+test("a context this converge did not build fails the provision with NOTHING applied", async () => {
+  // The stale-deployment case (ADR-0049): the Orchestrator's bundle holds a context whose digest is
+  // in no map, because the last `j2 up` predates the Machine edit that named it.
   const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
   const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
 
   await assert.rejects(
-    () => port.provision({ name: "sb", runId: "r", workflow: "w", image: "golang" }),
+    () => port.provision({ name: "sb", runId: "r", workflow: "w", image: GOLANG.url }),
     (err: Error) => {
-      assert.match(err.message, /no Sandbox Image named "golang"/);
-      assert.match(err.message, /"default", "rust"/, "the error lists what the converge built");
+      assert.match(err.message, /no Sandbox Image for file:/);
+      assert.match(err.message, /j2 up/, "the error names the fix");
       return true;
     },
   );
@@ -308,11 +332,15 @@ test("a recorded USER the kubelet would refuse fails the provision by NAME, not 
   // starts has no logs — so the timeout hint dead-ends and 120s burn before anything is said. The
   // converge already recorded the string, so the read-first provision can say it up front.
   const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const named = { ...REFS, sandbox: { ...REFS.sandbox, dev: "j2-sandbox-inst-dev:v00" }, sandboxUser: { dev: "dev" } };
+  const named = {
+    ...REFS,
+    sandbox: { ...REFS.sandbox, [DEV.key]: "j2-sandbox-inst-dev:v00" },
+    sandboxUser: { [DEV.key]: "dev" },
+  };
   const port = kubectlSandbox({ imagesPath: await mkImages(named), ...provisionable, exec });
 
   await assert.rejects(
-    () => port.provision({ name: "sb", runId: "r", workflow: "w", image: "dev" }),
+    () => port.provision({ name: "sb", runId: "r", workflow: "w", image: DEV.url }),
     (err: Error) => {
       assert.match(err.message, /`USER dev`/);
       assert.match(err.message, /USER 1000/, "the message names the one-line fix in the caller's Dockerfile");
@@ -323,18 +351,18 @@ test("a recorded USER the kubelet would refuse fails the provision by NAME, not 
 
   // Root is the same refusal for the other reason, and `uid:gid` is judged on the uid half only.
   const rooted = kubectlSandbox({
-    imagesPath: await mkImages({ ...named, sandboxUser: { dev: "0" } }),
+    imagesPath: await mkImages({ ...named, sandboxUser: { [DEV.key]: "0" } }),
     ...provisionable,
     exec,
   });
-  await assert.rejects(() => rooted.provision({ name: "sb", runId: "r", workflow: "w", image: "dev" }), /`USER 0`/);
+  await assert.rejects(() => rooted.provision({ name: "sb", runId: "r", workflow: "w", image: DEV.url }), /`USER 0`/);
 
   const paired = kubectlSandbox({
-    imagesPath: await mkImages({ ...named, sandboxUser: { dev: "1000:2000" } }),
+    imagesPath: await mkImages({ ...named, sandboxUser: { [DEV.key]: "1000:2000" } }),
     ...provisionable,
     exec,
   });
-  await paired.provision({ name: "sb", runId: "r", workflow: "w", image: "dev" });
+  await paired.provision({ name: "sb", runId: "r", workflow: "w", image: DEV.url });
 });
 
 /** A pod whose named container sits in `waiting`, as `kubectl get pod -o json` prints it. */

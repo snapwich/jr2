@@ -25,8 +25,9 @@ export const HARNESS_CONFIGMAP = "j2-harness";
 /** Its one key, hence the env var's value — `J2_HARNESS_JSON` on every Harness container. */
 export const HARNESS_CONFIG_KEY = "harness.json";
 
-/** The resolved image map `j2 up` writes and every provision reads (ADR-0037/0038): name → ref for
- * the Harness, the Adapter, and each `images/<name>` Sandbox Image.
+/** The resolved image map `j2 up` writes and every provision reads (ADR-0037/0038): key → ref for
+ * the Harness, the Adapter, and every Sandbox Image context the registered Machines carry — keyed
+ * by content digest, plus the reserved `default` (ADR-0049).
  *
  * MOUNTED, never projected into env — the load-bearing part. A mount updates in place through
  * kubelet propagation, so adding a CLI to a Dockerfile costs one propagation window; the same map

@@ -12,7 +12,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { discoverImages, loadWorkflows, startInstance } from "../src/instance.ts";
+import { defaultImageContext, loadWorkflows, startInstance } from "../src/instance.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
@@ -258,41 +258,35 @@ test("reload picks up added, changed, and removed workflow files (dev hot-reload
   }
 });
 
-test("discoverImages: dirname = name, `_`-prefixed skipped, sorted; absent images/ is empty", async () => {
-  // ADR-0037's discovery, the sibling of `workflows/`'s (the `agents/` folder retired with
-  // ADR-0049) — same doctrine, one difference proven below.
+test("images/default is a PATH CONVENTION, not discovery — one path, checked (ADR-0049/0050)", async () => {
+  // The `images/<name>` scan retired with the roster it resembled: a Machine carries its own image
+  // now, so a dirname is not a name any more. Exactly one path survives — the fallback leg
+  // `j2 init` scaffolds, so a local Machine never has to spell `import.meta.resolve("../images/default")`.
   const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
   try {
-    assert.deepEqual(await discoverImages(dir), [], "an instance that authored none");
+    assert.equal(await defaultImageContext(dir), undefined, "an instance that scaffolded none");
 
-    for (const name of ["rust", "default", "_scratch"]) {
-      await mkdir(join(dir, "images", name), { recursive: true });
-      await writeFile(join(dir, "images", name, "Dockerfile"), "FROM node:24-slim\n");
-    }
-    await writeFile(join(dir, "images", "README.md"), "not an image");
+    await mkdir(join(dir, "images", "rust"), { recursive: true });
+    await writeFile(join(dir, "images", "rust", "Dockerfile"), "FROM rust:1\n");
+    assert.equal(await defaultImageContext(dir), undefined, "no other directory is looked at, let alone named");
 
-    assert.deepEqual(await discoverImages(dir), [
-      {
-        name: "default",
-        dir: join(dir, "images", "default"),
-        dockerfile: join(dir, "images", "default", "Dockerfile"),
-      },
-      { name: "rust", dir: join(dir, "images", "rust"), dockerfile: join(dir, "images", "rust", "Dockerfile") },
-    ]);
+    await mkdir(join(dir, "images", "default"), { recursive: true });
+    await writeFile(join(dir, "images", "default", "Dockerfile"), "FROM node:24-slim\n");
+    assert.equal(await defaultImageContext(dir), join(dir, "images", "default"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("discoverImages: a subdirectory with no Dockerfile THROWS, naming the missing path", async () => {
-  // Unlike a stray README.md, a SUBDIRECTORY of images/ has no other reason to exist — staying
-  // quiet would leave an image its author believes in and no converge ever builds.
+test("images/default with no Dockerfile THROWS, naming the missing path", async () => {
+  // That directory has no other reason to exist — staying quiet would leave a Sandbox Image its
+  // author believes in and no converge ever builds.
   const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
   try {
-    await mkdir(join(dir, "images", "golang"), { recursive: true });
-    await assert.rejects(discoverImages(dir), (err: Error) => {
-      assert.match(err.message, /Sandbox Image "golang" has no Dockerfile/);
-      assert.ok(err.message.includes(join(dir, "images", "golang", "Dockerfile")));
+    await mkdir(join(dir, "images", "default"), { recursive: true });
+    await assert.rejects(defaultImageContext(dir), (err: Error) => {
+      assert.match(err.message, /`images\/default` has no Dockerfile/);
+      assert.ok(err.message.includes(join(dir, "images", "default", "Dockerfile")));
       return true;
     });
   } finally {

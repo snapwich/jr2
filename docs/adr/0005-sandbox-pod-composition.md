@@ -11,14 +11,15 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
   its MCP tool menu on `localhost` and is the pod's credential holder for the control plane. It exists as a separate
   container precisely _because_ the Working tools give the Agent code execution in the Harness container — the
   Orchestrator credential lives where the Agent cannot read it.
-- **User Container** — opt-in third seat, composed only when the `workspace()` spec names its image (a discovered
-  `images/<name>` dirname or a registry ref, the same resolution as the Sandbox Image, no default). The whole authoring
-  surface is that one string — `user?: string` on the `WorkspaceSpec`, beside `image` — and deliberately no more: env,
-  resources, and ports are not forwarded, because every key j2 forwarded would be a crack in "j2 puts nothing in it";
-  widening the string to an object stays compatible if a concrete need ever argues its own way in (the routable-port
-  follow-up below is the known candidate). In the pod it is the container named `user` (`kubectl exec -c user`). It runs
-  its **own entrypoint, untouched**: j2 injects nothing, probes nothing, and overrides nothing — the zero-contract seat,
-  which is exactly why it exists. Two jobs no other seat can do:
+- **User Container** — opt-in third seat, composed only when the `workspace()` names its image (a `file:` docker context
+  the Machine ships or a registry ref, the same resolution as the Sandbox Image, no default —
+  [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)). The whole authoring surface is that one
+  string — `user?: string` among `workspace()`'s options, beside `image` — and deliberately no more: env, resources, and
+  ports are not forwarded, because every key j2 forwarded would be a crack in "j2 puts nothing in it"; widening the
+  string to an object stays compatible if a concrete need ever argues its own way in (the routable-port follow-up below
+  is the known candidate). In the pod it is the container named `user` (`kubectl exec -c user`). It runs its **own
+  entrypoint, untouched**: j2 injects nothing, probes nothing, and overrides nothing — the zero-contract seat, which is
+  exactly why it exists. Two jobs no other seat can do:
   - **Unattended services.** A container's one command belongs to the Harness in the primary seat (ADR-0037), so an
     image's own services — an sshd for managed access, an IDE server, a metrics agent — need a container whose command
     j2 deliberately does not own. A system built _on_ j2 that hands people access to their Sandboxes automates through

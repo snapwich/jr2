@@ -253,10 +253,30 @@ async function mkInstance(config: string, name = "myinst", agents?: Record<strin
   return root;
 }
 
-/** Add a Sandbox Image to an instance (ADR-0037: `images/<name>/Dockerfile`, dirname = name). */
+/** Scaffold the Instance's `images/default` — ADR-0037's fallback leg, and since ADR-0049/0050 the
+ * ONE path `j2 up` still checks by convention rather than by walking a Machine. */
 async function withImage(root: string, name: string, dockerfile = "FROM node:24-slim\n"): Promise<string> {
   await mkdir(join(root, "images", name), { recursive: true });
   await writeFile(join(root, "images", name, "Dockerfile"), dockerfile);
+  return root;
+}
+
+/** A workflow whose `workspace()` names a docker context the module itself ships (ADR-0037/0049) —
+ * `import.meta.resolve` is the only way an ES module can name a folder it owns, and the walk is
+ * what turns it into a build. The body is trivial: this fixture is about the image, not the run. */
+async function withCarriedImage(root: string, dir: string, dockerfile: string): Promise<string> {
+  await mkdir(join(root, "workflows", dir), { recursive: true });
+  await writeFile(join(root, "workflows", dir, "Dockerfile"), dockerfile);
+  await writeFile(
+    join(root, "workflows", "shipped.ts"),
+    `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = j2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, {\n` +
+      `  image: import.meta.resolve("./${dir}"),\n` +
+      `  spec: () => ({ repos: [{ name: "app" }], branch: "b" }),\n` +
+      `});\n`,
+  );
   return root;
 }
 
@@ -757,6 +777,65 @@ test("`platforms` overrides the cluster absolutely, and an unpublished entry is 
   const bad = await mkInstance(`export default { name: "b", platforms: ["linux/s390x"] };\n`, "b");
   const w2 = mkWorld(bad);
   await assert.rejects(() => up(["--yes"], w2.io), /`platforms` names linux\/s390x/);
+});
+
+test("a `file:` context the Machine carries is built and keyed by its content DIGEST (ADR-0049)", async () => {
+  // The walk is what makes this image exist at all: nothing scans a folder, so a context is found
+  // only because a registered Machine names it. The map key is the digest — not a dirname, not a
+  // path — which is exactly what lets the baked Orchestrator resolve the same `file:` URL from its
+  // own node_modules without either side holding a table.
+  const kit = await mkKit();
+  const root = await withCarriedImage(
+    await withImage(
+      await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+      "default",
+    ),
+    "toolchain",
+    "FROM golang:1.23\nRUN echo hi\n",
+  );
+  const w = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const sandbox = imagesOf(w).sandbox as Record<string, string>;
+  const keys = Object.keys(sandbox);
+  assert.equal(keys.length, 2, `images/default plus the carried context (got: ${keys.join(", ")})`);
+  const digest = keys.find((k) => k !== "default")!;
+  assert.match(digest, /^[0-9a-f]{12}$/, "keyed by content digest, never by a dirname");
+  // The tag's readable half is the context directory's basename — decoration; the identity is the
+  // digest, which appears in the tag too.
+  assert.match(sandbox[digest]!, new RegExp(`^j2-sandbox-myinst-toolchain:${digest}-`));
+  assert.ok(w.built.includes(`build ${sandbox[digest]}`), `the carried context was built (${w.built.join(", ")})`);
+  assert.ok(w.built.includes(`inspect-user ${sandbox[digest]}`), "…and its seat recorded, like any built image");
+
+  // Editing the Dockerfile re-addresses it — a new key AND a new tag, so nothing stale is reachable.
+  await writeFile(join(root, "workflows", "toolchain", "Dockerfile"), "FROM golang:1.23\nRUN echo bye\n");
+  const edited = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], edited.io), 0);
+  const after = Object.keys(imagesOf(edited).sandbox as Record<string, string>).find((k) => k !== "default")!;
+  assert.notEqual(after, digest, "the context IS the address");
+});
+
+test("a Machine that names a registry ref costs no build — deployed, never built (ADR-0037)", async () => {
+  const kit = await mkKit();
+  const root = await mkInstance(
+    `export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`,
+  );
+  await writeFile(
+    join(root, "workflows", "brought.ts"),
+    `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = j2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, {\n` +
+      `  image: "ghcr.io/acme/toolchain:2024-11",\n` +
+      `  spec: () => ({ repos: [{ name: "app" }], branch: "b" }),\n` +
+      `});\n`,
+  );
+  const w = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  assert.deepEqual(imagesOf(w).sandbox, {}, "a ref needs no entry: it already IS its own ref");
+  assert.ok(!w.built.some((b) => b.includes("j2-sandbox-")), `nothing was built for it (got: ${w.built.join(", ")})`);
+  assert.match(w.err.join("\n"), /sandbox images: none carried/);
 });
 
 test("a mixed-arch node set is built once by buildx, which delivers by pushing", async () => {

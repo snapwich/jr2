@@ -16,7 +16,6 @@
 // remains a seam for tests, not a wiring obligation.
 
 import { mkdir, readdir, stat } from "node:fs/promises";
-import type { Dirent } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
@@ -222,7 +221,7 @@ async function importMachine(name: string, file: string, gen = 0): Promise<AnySt
  *
  * `j2 up` is the caller (ADR-0049/0050): a Machine carries its Agents and its Sandbox Image, so
  * the only way to know what a deployment must preflight and converge is to load the Machines and
- * WALK them (`agentsOf`, parts.ts). It lives here, beside the discovery it shares, so the
+ * WALK them (`partsOf`, parts.ts). It lives here, beside the discovery it shares, so the
  * convention has one implementation rather than a second copy in the CLI that can drift.
  */
 export async function loadWorkflows(dir: string): Promise<Array<{ name: string; machine: AnyStateMachine }>> {
@@ -236,10 +235,11 @@ export async function loadWorkflows(dir: string): Promise<Array<{ name: string; 
 /**
  * The instance module-discovery convention: every `<moduleDir>/<name>.ts` except `_`-prefixed
  * helpers and `.d.ts`, sorted, name = filename stem. `workflows/` is the one directory that uses
- * it — the `agents/` folder it was also written for retired with ADR-0049 (an Agent is a part of a
- * Machine, not a file the instance discovers), and {@link discoverImages} mirrors it for
- * directories. An ABSENT dir is empty; any other readdir failure (EACCES, ENOTDIR, …) throws — a
- * directory that exists but cannot be read must be loud, never "no modules".
+ * it, and the ONLY thing an Instance still discovers by filename (ADR-0050: what only the CLI and
+ * the HTTP API name is discovered; everything code names rides the Machine). The `agents/` folder
+ * and the `images/<name>` dirname scan it was also written for both retired with ADR-0049. An
+ * ABSENT dir is empty; any other readdir failure (EACCES, ENOTDIR, …) throws — a directory that
+ * exists but cannot be read must be loud, never "no modules".
  */
 export async function discoverModules(moduleDir: string): Promise<Array<{ name: string; file: string }>> {
   let entries: string[];
@@ -256,44 +256,39 @@ export async function discoverModules(moduleDir: string): Promise<Array<{ name: 
 }
 
 /**
- * The Sandbox Images an instance authored (ADR-0037): every `<dir>/images/<name>/Dockerfile`, name
- * = the DIRNAME (the build context is that directory, so the image's content hash covers exactly
- * what its build can see). Same doctrine as {@link discoverModules} — filename discovery is the one
- * registration mechanism, an ABSENT dir is empty, `_`-prefixed entries are helpers, sorted — with
- * one difference: a subdirectory holding no `Dockerfile` THROWS, naming the missing path. Unlike a
- * stray `README.md`, a subdirectory of `images/` has no other reason to exist, so silence there
- * would be a Sandbox Image the author believes in and no converge ever builds.
+ * The Instance's `images/default` build context, or undefined when it scaffolded none — ADR-0037's
+ * middle resolution leg, so that a local Machine never has to spell
+ * `import.meta.resolve("../images/default")` for the toolchain its own instance ships.
+ *
+ * A PATH CONVENTION, not discovery (ADR-0049/0050). There is exactly one path, it is checked, and
+ * nothing is enumerated: `images/<name>` dirnames stopped being names the moment a Machine started
+ * carrying its own image, and a folder scan would re-introduce the very thing that made a packaged
+ * Machine depend on someone else's directory layout. A second image is a `file:` context beside the
+ * Machine that names it.
+ *
+ * A folder with no `Dockerfile` THROWS, naming the missing path: unlike a stray `README.md`,
+ * `images/default/` has no other reason to exist, so silence there would be a Sandbox Image the
+ * author believes in and no converge ever builds.
  *
  * The Orchestrator process never calls this — refs reach it resolved, through the `j2-images`
- * ConfigMap (images.ts). It lives here so the convention has ONE implementation, beside the two it
- * mirrors, rather than a second copy in the CLI that can drift.
+ * ConfigMap (images.ts). It lives here because it is an Instance-layout fact, beside the one
+ * discovery convention that survives.
  */
-export async function discoverImages(dir: string): Promise<Array<{ name: string; dir: string; dockerfile: string }>> {
-  const imagesDir = join(dir, "images");
-  let entries: Dirent[];
+export async function defaultImageContext(dir: string): Promise<string | undefined> {
+  const imageDir = join(dir, "images", "default");
   try {
-    entries = await readdir(imagesDir, { withFileTypes: true });
+    await stat(join(imageDir, "Dockerfile"));
+    return imageDir;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw err;
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  const names = entries
-    .filter((e) => e.isDirectory() && !e.name.startsWith("_"))
-    .map((e) => e.name)
-    .sort();
-  const found: Array<{ name: string; dir: string; dockerfile: string }> = [];
-  for (const name of names) {
-    const imageDir = join(imagesDir, name);
-    const dockerfile = join(imageDir, "Dockerfile");
-    try {
-      await stat(dockerfile);
-    } catch {
-      throw new Error(
-        `Sandbox Image "${name}" has no Dockerfile (${dockerfile}) — a directory under \`images/\` IS an ` +
-          "image (ADR-0037: dirname = name, that directory = the build context).",
-      );
-    }
-    found.push({ name, dir: imageDir, dockerfile });
+  try {
+    await stat(imageDir);
+  } catch {
+    return undefined;
   }
-  return found;
+  throw new Error(
+    `the Instance's \`images/default\` has no Dockerfile (${join(imageDir, "Dockerfile")}) — that directory IS ` +
+      "a build context (ADR-0037), and it is the Sandbox Image every `workspace()` that names none falls back to.",
+  );
 }

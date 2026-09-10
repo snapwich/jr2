@@ -30,7 +30,6 @@ import {
   nodeSweepPlan,
   platformSuffix,
   publishedKitRefs,
-  sandboxImageHash,
   sandboxImageTag,
   stageInstanceBundle,
   sweepHost,
@@ -42,6 +41,7 @@ import {
   type ObservedImage,
   type RunCommand,
 } from "../src/build.ts";
+import { imageContextDigest } from "@j2/orchestrator";
 
 /** Every verb, inert. Each test overrides the two or three it is about; the rest answering with
  * nothing is what keeps a build test from depending on the sweep and vice versa. */
@@ -408,43 +408,23 @@ test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", a
 
   const image = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y cargo\n" }, "j2-image-");
   assert.equal(
-    await sandboxImageHash(image),
-    await sandboxImageHash(image),
-    "the same directory is the same address, and the harness ref is not an input to ask about",
+    await imageContextDigest(image),
+    await imageContextDigest(image),
+    "the same directory is the same address, and the harness ref is not even a parameter to ask about",
   );
 
   const edited = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y rustc\n" }, "j2-image-");
-  assert.notEqual(await sandboxImageHash(edited), await sandboxImageHash(image), "a Dockerfile edit moves it");
-});
-
-test("a Sandbox Image's hash covers its WHOLE directory — node_modules and dist are image content", async () => {
-  // The under-hashing defect: `images/<name>/` IS the build context (ADR-0037) and has no
-  // `.dockerignore`, so docker COPYs `node_modules/` and `dist/` in. Hashing it with the kit's
-  // exclude set (which describes the KIT's own `.dockerignore`) meant editing `images/x/dist/foo`
-  // changed the image at an unchanged tag — the silent-stale-image bug ADR-0038 exists to delete.
-  // Over-hashing is that ADR's stated direction; under-hashing is the defect.
-  const dirOf = (a: string, b: string) =>
-    mkTree(
-      {
-        "images/x/Dockerfile": "FROM node:24-slim\nCOPY . /srv\n",
-        "images/x/node_modules/a.txt": a,
-        "images/x/dist/b.txt": b,
-      },
-      "j2-image-tree-",
-    ).then((root) => join(root, "images", "x"));
-
-  const base = await sandboxImageHash(await dirOf("a1", "b1"));
-  assert.equal(await sandboxImageHash(await dirOf("a1", "b1")), base, "same bytes, same address");
-  assert.notEqual(await sandboxImageHash(await dirOf("a2", "b1")), base, "node_modules/ is hashed");
-  assert.notEqual(await sandboxImageHash(await dirOf("a1", "b2")), base, "dist/ is hashed");
+  assert.notEqual(await imageContextDigest(edited), await imageContextDigest(image), "a Dockerfile edit moves it");
 });
 
 test("`images/` never enters the instance bundle, so a Dockerfile edit cannot roll the Orchestrator", async () => {
   // ADR-0038 rejects Deployment env for the ref map because a Dockerfile edit would otherwise roll
   // the Orchestrator and put every live run through snapshot restore. `pnpm deploy` bundles the
   // package whole, so `images/` rode into the image and the INSTANCE tag moved anyway — the
-  // rationale was false in fact. `discoverImages` is host-side only (the CLI calls it; the
-  // Orchestrator resolves refs from the `j2-images` ConfigMap), so the tree is pure dead weight.
+  // rationale was false in fact. `images/default` is host-side only (`j2 up` checks that one path;
+  // the Orchestrator resolves refs from the `j2-images` ConfigMap), so the tree is pure dead weight.
+  // A context a MODULE ships is a different tree entirely: it lives beside the workflow and rides
+  // the bundle, which is what lets the pod compute its digest at all (ADR-0049).
   const port = (dockerfile: string) =>
     stagingPort(() => ({
       "package.json": `{"name":"inst"}`,

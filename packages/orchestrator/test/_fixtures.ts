@@ -336,7 +336,9 @@ const featureBody = j2Setup({
 
 /** Level 1: the per-feature wrapper, reached by `spawnChild`. `createMachine`, not `setup`, so `src`
  * can be the body MACHINE OBJECT — the INLINE shape, whose `src` xstate rewrites to a generated key
- * (`workspace()` invokes its body exactly this way, and the Console joins on that key). */
+ * the Console joins on. An AUTHOR may still write this; j2's own `workspace()` no longer does, since
+ * ADR-0049 made its body the named slot `body`. Kept inline here deliberately: the generated key is
+ * the harder half of the join, and nothing else in the suite covers it. */
 const featureWorkspace = createMachine({
   types: {} as { context: FeatureInput; input: FeatureInput },
   id: "ws",
@@ -395,7 +397,8 @@ const derivedBody = j2Setup({
   },
 });
 
-/** The per-feature wrapper (the `workspace()` shape): invokes the body under the id "body". */
+/** The per-feature wrapper: invokes the body under the id "body", the way `workspace()` does — but
+ * with an inline `src`, so the generated join key stays under test (see `featureWorkspace`). */
 const derivedWrapper = createMachine({
   types: {} as { context: DerivedInput; input: DerivedInput },
   id: "ws",

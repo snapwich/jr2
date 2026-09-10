@@ -12,10 +12,10 @@
 // All four operations are idempotent (SandboxPort contract): apply is create-or-update, attach
 // guards every clone/worktree, delete ignores absent.
 //
-// WHICH IMAGE a Sandbox runs is not an option here (ADR-0037/0038). The spec carries a NAME —
-// an `images/<name>` dirname or a registry ref — and the resolved name→ref map arrives as a
-// mounted ConfigMap read on EVERY provision, so a `j2 up` that rebuilds an image reaches future
-// Sandboxes without rolling this process.
+// WHICH IMAGE a Sandbox runs is not an option here (ADR-0037/0038/0049). The request carries what
+// the `workspace()` wrapper statically declared — a `file:` docker context or a registry ref — and
+// the resolved key→ref map arrives as a mounted ConfigMap read on EVERY provision, so a `j2 up`
+// that rebuilds an image reaches future Sandboxes without rolling this process.
 //
 // The pod's primary container is the Sandbox Image BYTE-FOR-BYTE (ADR-0037): no appended layers,
 // no rewritten Dockerfile, no j2 knowledge inside it. j2's runtime arrives at POD time instead —
@@ -50,14 +50,7 @@
 
 import { execFile } from "node:child_process";
 import { join } from "node:path";
-import {
-  declaresNoUser,
-  readImageRefs,
-  resolveSandboxImage,
-  resolveUserImage,
-  unrunnableUser,
-  type ImageRefs,
-} from "./images.ts";
+import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
 import { CA_CONFIGMAP, IMAGES_KEY, IMAGES_MOUNT, REPOS_PVC } from "./names.ts";
 import { sandboxToken } from "./tokens.ts";
 import type { HarnessEnvFromSource, HarnessEnvVar } from "./config.ts";
@@ -200,7 +193,7 @@ function rootImageError(name: string, fault: string): string {
  * buys at runtime.
  *
  * ONE prover, and this is it (ADR-0037/0041). A converge cannot hold an image to this floor: the
- * floor is a HARNESS-SEAT obligation, a built `images/<name>` may equally be destined for the User
+ * floor is a HARNESS-SEAT obligation, a built context may equally be destined for the User
  * Container seat — which owes no floor at all (ADR-0005) — and which seat a directory serves is
  * workflow-internal and statically unrecoverable (ADR-0031). Here the seat is known, and here is
  * also the only moment a registry ref exists at all, since j2 never builds or inspects one.
@@ -351,9 +344,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * hardening a seat whose identity is "what j2 does not own" is an opinion, and the standard
    * managed-access shape (a root sshd that setuids sessions down) must run unmodified.
    */
-  const userSidecar = (refs: ImageRefs, image: string) => ({
+  const userSidecar = async (refs: ImageRefs, image: string) => ({
     name: "user",
-    image: resolveUserImage(refs, image),
+    image: await resolveUserImage(refs, image),
     volumeMounts: [
       { name: "work", mountPath: workRoot },
       { name: "repos", mountPath: "/repos", readOnly: true },
@@ -365,9 +358,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * state left to branch on, and a Sandbox without one is a pod that comes up Ready and then parks
    * its Machine forever on a tool call it cannot make (ADR-0013). A map with no `adapter` fails the
    * read instead (images.ts). The User Container joins it only when the spec named one. */
-  const sidecarsFor = (name: string, refs: ImageRefs, user?: string) => [
+  const sidecarsFor = async (name: string, refs: ImageRefs, user?: string) => [
     adapterSidecar(name, refs),
-    ...(user !== undefined ? [userSidecar(refs, user)] : []),
+    ...(user !== undefined ? [await userSidecar(refs, user)] : []),
   ];
 
   // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
@@ -432,17 +425,20 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     securityContext: typeof HARDENED & { runAsUser?: number };
   };
 
-  const seatFor = (refs: ImageRefs, name?: string): Seat => {
-    const image = resolveSandboxImage(refs, name);
+  const seatFor = async (refs: ImageRefs, name?: string): Promise<Seat> => {
+    // ONE resolution, so the ref and the two seat facts can never come off different legs of
+    // ADR-0037's chain (images.ts). It is async because a `file:` context is keyed by its content
+    // digest, which is a directory walk — the price of the host and the pod agreeing about an
+    // image without a path table (ADR-0049).
+    const { ref: image, fallbackSeat, refusedUser } = await resolveSandboxImage(refs, name);
     // Fail HERE, before a Secret or a CR exists, on a `USER` the kubelet will refuse (images.ts).
     // The alternative is the worst shape a failure has: the preflight container never starts, so
     // it has no logs, and the whole 120s Ready budget burns before anything is said. The converge
     // already inspected the image, so this is knowable at zero cost — and the message names the
     // edit, because the fix is one line of the caller's own Dockerfile.
-    const refused = unrunnableUser(refs, name);
-    if (refused !== undefined) {
+    if (refusedUser !== undefined) {
       throw new Error(
-        `the Sandbox Image "${name ?? "default"}" declares \`USER ${refused}\`, which cannot run a j2 seat: ` +
+        `the Sandbox Image "${name ?? "default"}" declares \`USER ${refusedUser}\`, which cannot run a j2 seat: ` +
           "every j2-owned container is `runAsNonRoot` with no `runAsUser`, so the kubelet needs a NUMERIC " +
           "non-zero uid it can check without reading the image (ADR-0005). Change the Dockerfile's last " +
           "`USER` to that uid (e.g. `USER 1000`, or drop the line entirely and j2 supplies uid 1000 with a " +
@@ -452,7 +448,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     // The common case, and the one ADR-0037 is written around: the image chose its `USER` and its
     // `HOME`, and j2 touches neither — the human who execs in lands in the environment the
     // image's author built, dotfiles included.
-    if (!declaresNoUser(refs, name)) {
+    if (!fallbackSeat) {
       return { image, env: [], homeVolume: [], homeMount: [], securityContext: HARDENED };
     }
     return {
@@ -464,12 +460,12 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     };
   };
 
-  const crFor = (
+  const crFor = async (
     req: { name: string; runId: string; workflow: string; image?: string; user?: string; workGroup?: number },
     refs: ImageRefs,
   ) => {
-    const seat = seatFor(refs, req.image);
-    const sidecars = sidecarsFor(req.name, refs, req.user);
+    const seat = await seatFor(refs, req.image);
+    const sidecars = await sidecarsFor(req.name, refs, req.user);
     return {
       apiVersion: "core.j2.dev/v1alpha1",
       kind: "Sandbox",
@@ -647,7 +643,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       // reaches future Sandboxes without rolling the Orchestrator. Reading before the Secret apply
       // also means an unknown image name costs nothing: no Secret, no CR, nothing to clean up.
       const refs = await readImageRefs(imagesPath);
-      const cr = crFor(req, refs);
+      const cr = await crFor(req, refs);
 
       await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start
       await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(cr) });

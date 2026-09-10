@@ -55,18 +55,20 @@ and promotes incidental image properties into contract items.
   `libstdc++.so.6`/`libgcc_s.so.1` into `/opt/j2/lib`. The probe is one command —
   `git config --global safe.directory "*" && /opt/j2/bin/node -e "" && rg --version` — and it runs **only where the seat
   is known: as an init step in the user's own image**, `/opt/j2` mounted, before the Harness starts. It cannot run at
-  converge: the floor is a Harness-seat obligation, a built `images/<name>` may equally be destined for the User
-  Container seat — which owes no floor at all (ADR-0005) — and which seat a directory serves is workflow-internal and
-  statically unrecoverable (ADR-0031, the same line that puts unknown names at provision). So a broken toolchain image
-  surfaces at its first provision, in the `preflight` init container's log, with an error that names the fix (because
-  "node did not execute" is not actionable) — never as a mid-turn tool failure, and never as a converge refusal for a
-  contract the image was not under.
-- **A `workspace()` spec names the image; workflow configuration never enters the spec, but pod composition does** —
-  what the Sandbox is _made of_ is the wrapper's business in the same way its worktrees are. The User Container rides
-  the same rule and the same resolution as one more string beside `image` (`user?: string`,
-  [ADR-0005](0005-sandbox-pod-composition.md)). A persisted snapshot never holds a resolved content-addressed tag — that
-  is the port's business at provision — but a user's own registry ref is a stable name like a dirname, so either shape
-  of `image` may live in a spec.
+  converge: the floor is a Harness-seat obligation, a built context may equally be destined for the User Container seat
+  — which owes no floor at all (ADR-0005) — and which seat a directory serves is workflow-internal and statically
+  unrecoverable (ADR-0031, the same line that puts unknown names at provision). So a broken toolchain image surfaces at
+  its first provision, in the `preflight` init container's log, with an error that names the fix (because "node did not
+  execute" is not actionable) — never as a mid-turn tool failure, and never as a converge refusal for a contract the
+  image was not under.
+- **`workspace()` names the image as a STATIC OPTION, never in the per-run spec** — what the Sandbox is _made of_ is the
+  wrapper's business in the same way its worktrees are, but it is a fact about the MACHINE, not about a run: `j2 up`
+  finds it by walking the registered Machines ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)),
+  and a spec is a function of run input that no walk can evaluate. The User Container rides the same rule and the same
+  resolution as one more option beside `image` (`user?: string`, [ADR-0005](0005-sandbox-pod-composition.md)). Neither
+  is ever persisted: the option rides the Machine (a parts map keyed on `machine.config`, as the vocabulary is) and the
+  provisioning state re-reads it at invoke time, so a restore provisions what the Machine carries now — and a resolved
+  content-addressed tag, which would outlive the image it names, never leaves the port's side of the seam at all.
 - **A Menu-only Agent never gets a Sandbox Image.** `workspace: "none"` withholds the entire Working toolset (ADR-0028),
   so there is no tooling to carry; the Instance Harness (ADR-0031) runs the stock image permanently. The feature has
   exactly one seat, and it is the Workspace.

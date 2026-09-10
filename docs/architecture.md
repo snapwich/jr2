@@ -177,10 +177,10 @@ highlighted fork is the one decision the user makes.
 ```mermaid
 flowchart TB
   subgraph setup["Setup"]
-    init["j2 init my-instance"] --> folder["Instance folder<br/>j2.config.ts · workflows/ · images/ · manifests"]
+    init["j2 init my-instance"] --> folder["Instance folder<br/>j2.config.ts · workflows/ · images/default/ · manifests"]
     folder --> install["npm install<br/>pins the kit at one exact version"]
     install --> up["j2 up"]
-    up --> imgs["build the instance image + Sandbox Images<br/>resolve Kit images: ghcr.io/snapwich or kitRegistry"]
+    up --> imgs["walk the Machines: build the instance image + every file: Sandbox Image context<br/>resolve Kit images: ghcr.io/snapwich or kitRegistry"]
     imgs --> ctx{"current kubectl context"}
     ctx -->|kind| kind["kind cluster on the laptop"]
     ctx -->|shared| shared["shared cluster"]

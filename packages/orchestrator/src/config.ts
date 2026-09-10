@@ -1,8 +1,9 @@
 // Workflow author configuration: the repos a j2 deployment orchestrates, and what the instance's
-// Harness may reach. What a Sandbox is MADE of is not here — it is `images/<name>/Dockerfile`
-// (ADR-0037), and every image ref is resolved by `j2 up` (ADR-0038). The `images` block is gone
-// with no replacement key and no env hatch, deliberately: an override seat for the Harness ref is
-// the eject hatch ADR-0027 refuses.
+// Harness may reach. What a Sandbox is MADE of is not here — it is a `workspace()` option, either a
+// `file:` docker context the Machine ships or a registry ref (ADR-0037/0049), and every image ref
+// is resolved by `j2 up` (ADR-0038). The `images` block is gone with no replacement key and no env
+// hatch, deliberately: it typed nothing a Machine could carry (ADR-0050), and an override seat for
+// the Harness ref is the eject hatch ADR-0027 refuses.
 //
 // `defineConfig` is an identity passthrough — it exists solely so a `j2.config.ts` gets full
 // type inference and checking against `J2Config` at authoring time, exactly like the config

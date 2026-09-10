@@ -119,8 +119,10 @@ export default defineConfig({
 `;
 
 // The scaffolded Sandbox Image (ADR-0037). Scaffolding it is the point: `images/default` is the
-// middle leg of the resolution chain (a `workspace()` spec's `image` → `images/default` → the stock
-// Harness), so writing it out makes the fallback a visible convention rather than magic. It has
+// middle leg of the resolution chain (a `workspace()`'s `image` option → `images/default` → the
+// stock Harness), so writing it out makes the fallback a visible convention rather than magic — and
+// it is the ONE path j2 still checks by convention, so a local Machine never has to spell
+// `import.meta.resolve("../images/default")` for its own instance's toolchain. It has
 // ZERO j2 knowledge by contract — no ARG, no `FROM j2-harness`, nothing about /opt/j2 — because j2
 // injects its runtime at POD time and never builds a stage on top of this file. It also satisfies
 // the floor by construction — a glibc base with git — so the `preflight` init step that proves it
@@ -138,16 +140,18 @@ const IMAGE_DOCKERFILE = `# A Sandbox Image (ADR-0037): the tools your agents ca
 # \`USER\` and \`HOME\` are respected, dotfiles included; declare neither and the pod runs uid 1000
 # with HOME=/home/j2. Your \`ENTRYPOINT\`/\`CMD\` simply do not run — a container has one command and
 # the Harness must own it. A process you need running anyway gets its own seat: the User Container
-# (\`user:\` on a \`workspace()\` spec, ADR-0005).
+# (\`user:\` on \`workspace()\`, ADR-0005).
 #
 # Two things j2 cannot vendor, both proven by \`j2 up\` before it converges:
 #   - \`git\` — the agent clones, worktrees, and commits with the git you chose;
 #   - a glibc base no older than j2's node. alpine/musl cannot run it at all.
 #
-# The name is the directory name. Add \`images/<other>/Dockerfile\` for a second Sandbox Image and name
-# it from a workflow's \`workspace()\` spec — whose \`image\` also takes a registry REF (anything with a
-# \`/\` or \`:\`) for an image you baked and host yourself, which j2 never builds. This instance has
-# \`repos: []\`, so \`j2 up\` builds nothing here until it has repos to work on.
+# This one folder is a path convention; there is no \`images/\` scan (ADR-0049/0050). A SECOND Sandbox
+# Image is a docker context that travels with the Machine that names it — put the folder beside the
+# workflow module and pass \`image: import.meta.resolve("./my-image")\` to \`workspace()\`, and \`j2 up\`
+# finds it by walking the registered Machines. \`image\` also takes a registry REF (anything that is
+# not a \`file:\` URL) for an image you baked and host yourself, which j2 never builds. This instance
+# has \`repos: []\`, so \`j2 up\` builds nothing here until it has repos to work on.
 
 FROM node:24-slim
 

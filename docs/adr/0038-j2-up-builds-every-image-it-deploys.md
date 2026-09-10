@@ -27,8 +27,10 @@ of build-it-yourself-first image on top of that.
 - **Over-hash deliberately.** A kit image is hashed over its whole source directory, tests included, not over the exact
   file list its Dockerfile copies. Deriving the list by hand means a new `COPY` silently desynchronizes it, which is the
   invisible-stale-image bug being deleted; a needless rebuild in kit dev costs cached-layer seconds. **A Sandbox Image's
-  hash covers its `images/<name>/` directory alone** — the Harness rides the pod's `/opt/j2` volume (ADR-0037), so a kit
-  edit moves the harness image's own tag and touches no Sandbox Image tag.
+  hash covers its build-context directory alone** — the Harness rides the pod's `/opt/j2` volume (ADR-0037), so a kit
+  edit moves the harness image's own tag and touches no Sandbox Image tag. That hash is also the map KEY the deployed
+  Orchestrator looks the ref up by, which is what lets a Machine name its context by `file:` URL and be understood on
+  both sides without a path table ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)).
 - **A staged bundle records nothing about where or when it was staged.** The instance image's tag addresses the
   materialized bundle, so anything in that bundle that names its own scratch directory — or the minute it was written —
   makes one tag name many images, and "present implies current" stops being true for the one image every Instance runs.

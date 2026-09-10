@@ -71,10 +71,11 @@ export type MachineStateDoc = {
  * what it DOES. Attached to the state that runs it, so the renderer nests it where it belongs.
  *
  * `src` is the JOIN KEY: it is exactly the `src` a live child actor reports (`RunChild.src`), for
- * both kinds — a named actor keeps its name (`"featureWorkspace"`), an inline machine object gets
- * xstate's generated key (`"xstate.invoke.0.workspace.running"`) on both sides. That is what lets
- * the page hang a run's live child state under the right subgraph without the two halves agreeing
- * on anything but this string.
+ * both kinds — a named actor keeps its name (`"body"`, `"worker"`, `"featureWorkspace"`), an inline
+ * machine object gets xstate's generated key (`"xstate.invoke.0.wrapper.running"`) on both sides.
+ * That is what lets the page hang a run's live child state under the right subgraph without the two
+ * halves agreeing on anything but this string. Since ADR-0049 every kit wrapper names its child, so
+ * the generated key is an author's shape only.
  */
 export type ChildMachineDoc = {
   /** The join key — matches a live `RunChild.src` exactly. */

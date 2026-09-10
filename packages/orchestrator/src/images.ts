@@ -1,26 +1,35 @@
-// The resolved name→ref image map, from the READ side (ADR-0037/0038). `j2 up` builds every image
-// it deploys and writes this map into the `j2-images` ConfigMap; the Sandbox port consults it when
-// it creates a pod. This module is the shape both sides agree on — deliberately its own file, not
-// folded into sandbox-kubectl.ts, because the CLI needs the type without dragging in the kubectl
-// port.
+// The resolved key→ref image map, from the READ side (ADR-0037/0038/0049). `j2 up` builds every
+// image it deploys and writes this map into the `j2-images` ConfigMap; the Sandbox port consults it
+// when it creates a pod. This module is the shape both sides agree on — deliberately its own file,
+// not folded into sandbox-kubectl.ts, because the CLI needs the type without dragging in the
+// kubectl port.
 //
-// The map is NESTED, never flat. `images/harness/Dockerfile` is a legal user image (nothing stops
-// someone naming their Sandbox Image "harness"), and `images/default` is the name ADR-0037's
-// fallback chain is built on — so user images must sit under their own `sandbox` key or a user
-// image would shadow the kit's own refs.
+// The map is NESTED, never flat. The kit's own `harness`/`adapter` refs sit beside a `sandbox`
+// sub-map, so a user image can never shadow them — and `default` is the one reserved key in that
+// sub-map, because ADR-0037's fallback chain is built on it.
 //
-// There is NO cache and NO memo here. The whole reason the map arrives as a mounted ConfigMap
-// rather than Deployment env (ADR-0038) is that a Dockerfile edit must not roll the Orchestrator
-// and put every live run through snapshot restore; a read-once cache would give back exactly the
-// stale-ref behavior the mount exists to avoid. The cost is a plain file read per provision.
+// A user image's key is its build context's CONTENT DIGEST (ADR-0049). That is what lets the two
+// sides agree without a path table: a Machine names its context as a `file:` URL, whose absolute
+// path differs between the host at `j2 up` and the baked Orchestrator, while the FOLDER is the same
+// folder — the instance's `node_modules` holds the very tree the converge hashed. Digest in, digest
+// out, no dirname registry in between.
+//
+// There is NO cache and NO memo for the map itself. The whole reason it arrives as a mounted
+// ConfigMap rather than Deployment env (ADR-0038) is that a Dockerfile edit must not roll the
+// Orchestrator and put every live run through snapshot restore; a read-once cache would give back
+// exactly the stale-ref behavior the mount exists to avoid. The cost is a plain file read per
+// provision.
 
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Every image ref one converge resolved. `harness`/`adapter` are the kit's own (built from a kit
- * checkout, or the published `<kitversion>` tags); `sandbox` is the instance's own
- * `images/<name>/Dockerfile` builds — one `docker build` straight to a content tag, carrying no j2
- * layers at all, because the Harness arrives at POD time on the `/opt/j2` volume (ADR-0037).
+ * checkout, or the published `<kitversion>` tags); `sandbox` is the instance's own docker-context
+ * builds — one `docker build` straight to a content tag, carrying no j2 layers at all, because the
+ * Harness arrives at POD time on the `/opt/j2` volume (ADR-0037).
  *
  * A registry REF is deliberately absent from this map and always will be: it is never built,
  * never labeled, never swept, and never inspected at converge (ADR-0037/0039 — what j2 did not
@@ -32,10 +41,12 @@ export type ImageRefs = {
   /** The Adapter image (ADR-0013). An Agent with no Adapter cannot drive its Machine at all, so
    * this is required: a map without it fails the provision rather than shipping a mute pod. */
   adapter: string;
-  /** Built Sandbox Images by `images/<name>` dirname. Empty when the instance authored none. */
+  /** Built Sandbox Images by their build context's CONTENT DIGEST (ADR-0049), plus the reserved
+   * key `default` — the Instance's `images/default`, ADR-0037's middle leg. Empty when the
+   * instance ships no context and scaffolded no default. */
   sandbox: Record<string, string>;
   /**
-   * What each BUILT Sandbox Image's `USER` is, keyed by the same dirname — the answer to a
+   * What each BUILT Sandbox Image's `USER` is, keyed by the same key — the answer to a
    * question a provision cannot ask. ADR-0037 gives an image that declares no user a fallback
    * (uid 1000, `HOME=/home/j2` on an emptyDir), and only the host that built the image can see
    * which case it is: `docker inspect` at converge is free, the cluster has no such reach.
@@ -114,108 +125,179 @@ export async function readImageRefs(path: string): Promise<ImageRefs> {
 }
 
 /**
- * Which of ADR-0037's two origins a spec string names, told apart by SHAPE alone — a registry ref
- * contains `/` (a host or a namespace) or `:` (a tag), and an `images/<name>` dirname can contain
- * neither, because it is one path segment discovered from the filesystem. Shape is the whole test
- * on purpose: it needs no lookup, so it gives the same answer on the CLI's side and here, and a
- * bare `ubuntu` — no host, no tag — is read as a dirname, which is the safe direction (it fails
- * naming what was discovered, instead of silently pulling a stranger's `:latest`).
+ * Which of ADR-0037's two origins an image string names, told apart by SHAPE alone: a `file:` URL
+ * is a docker CONTEXT the Machine's module ships (`import.meta.resolve("./image")` — the only way
+ * an ES module can name a folder it owns), and anything else is a registry REF.
+ *
+ * Shape is the whole test on purpose: it needs no lookup, so it gives the same answer on the CLI's
+ * side and here. There is no third shape any more — the `images/<name>` dirname retired with
+ * dirname discovery (ADR-0049/0050), so a bare `ubuntu` is now what it looks like, a ref.
  */
-export function isRegistryRef(name: string): boolean {
-  return name.includes("/") || name.includes(":");
+export function isImageContext(image: string): boolean {
+  return image.startsWith("file:");
 }
 
 /**
- * Resolve one image NAME to a ref (ADR-0037), for the Sandbox Image and the User Container alike —
- * one function because ADR-0005 gives the User Container "the same resolution" deliberately.
+ * The content address of a build context: everything in that directory, with NO exclusions — and
+ * nothing else (ADR-0037/0038).
  *
- * A REF passes through VERBATIM. It is deployed-never-built: j2 never built it, so j2 has no ref
- * to look up and nothing to say about its tag discipline — the cluster pulls it. A DIRNAME is
- * looked up in the map this converge wrote.
+ * It lives HERE, not in the CLI's build module, because BOTH sides compute it: `j2 up` keys the
+ * map it publishes by this digest, and the baked Orchestrator computes it again at provision to
+ * look the ref up. One implementation is what makes "the host and the pod agree without a path
+ * table" true rather than hopeful (ADR-0049).
  *
- * An unknown dirname throws, listing what the converge actually discovered — a converge-time check
- * is impossible (workflow internals are not statically recoverable, the line ADR-0031 drew), so
- * provision is the first honest moment to fail, and the error has to say what the choices were.
- * It names BOTH origins, because "this name is not one of my folders" and "you meant a registry
- * ref and forgot the tag" are the two ways to arrive here.
+ * No exclusions is deliberate: that directory IS the build context and it carries no
+ * `.dockerignore`, so a `dist/` or `node_modules/` beside the Dockerfile is image content and must
+ * be image address. The resolved harness ref is likewise NOT an input — the Harness arrives on a
+ * pod volume, so a kit edit moves the harness image's own tag and re-images future pods while
+ * every Sandbox Image tag stands still.
  */
-function resolveImageName(refs: ImageRefs, name: string, what: string): string {
-  if (isRegistryRef(name)) return name;
-  if (!Object.hasOwn(refs.sandbox, name)) {
-    const known = Object.keys(refs.sandbox);
+export async function imageContextDigest(dir: string): Promise<string> {
+  const h = createHash("sha256");
+  // A domain separator, and the whole of it: a Sandbox Image's build is `docker build` of the
+  // user's own directory with no generated text anywhere in it, so — unlike the instance image,
+  // whose generated Dockerfile is image content the context never holds — there is nothing to salt
+  // WITH. The constant only keeps this hash's domain apart from the bundle's.
+  h.update("salt:sandbox\n");
+  const walk = async (root: string, d: string): Promise<void> => {
+    const entries = (await readdir(d, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
+    for (const e of entries) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) await walk(root, p);
+      // Symlinks are skipped, as they are for every other content address j2 takes: a link's
+      // content is its target's path, which is host geography, not image content.
+      else if (e.isFile()) {
+        h.update(`0:${relative(root, p)}\n`);
+        h.update(await readFile(p));
+      }
+    }
+  };
+  await walk(dir, dir);
+  return h.digest("hex").slice(0, 12);
+}
+
+/**
+ * The map key one image string resolves to: a CONTEXT is keyed by its content digest, a REF is its
+ * own key and is never looked up. Absent is the reserved `default` key — ADR-0037's middle leg.
+ *
+ * A context whose folder is unreadable fails HERE, before a Secret or a CR exists, naming the path:
+ * in a deployed Orchestrator that means the module shipped a context the instance bundle does not
+ * hold, which is a packaging bug and not a cluster one.
+ */
+async function imageKey(image: string): Promise<string> {
+  if (!isImageContext(image)) return image;
+  const dir = fileURLToPath(image);
+  try {
+    return await imageContextDigest(dir);
+  } catch (err) {
     throw new Error(
-      `no ${what} named "${name}" — this instance built ${known.length ? known.map((n) => `"${n}"`).join(", ") : "none"} ` +
-        `from \`images/<name>/Dockerfile\`. Add \`images/${name}/Dockerfile\` and re-run \`j2 up\`, ` +
-        "or name a registry ref instead (a ref carries a `/` or a `:`; a dirname carries neither) — ADR-0037.",
+      `the Sandbox Image context ${image} cannot be read (${(err as NodeJS.ErrnoException).code ?? "read failed"}) — ` +
+        "a `file:` image names a docker context the Machine's own module ships (ADR-0037), so it must travel " +
+        `with the module: check that ${dir} exists in the instance's node_modules.`,
     );
   }
-  return refs.sandbox[name]!;
 }
 
 /**
- * ADR-0037's resolution chain: the spec's `image` (dirname or ref) → `images/default` → the stock
- * Harness. The last leg comes out of the MAP rather than a `j2-harness:${KIT_VERSION}` literal,
- * because in a kit checkout the Harness is built to a content-addressed tag (ADR-0038) and a
- * literal would name a tag nothing ever built.
+ * One resolved Sandbox Image (ADR-0037): the ref the pod runs, plus the two seat facts only the
+ * host that BUILT it could see. One call rather than three, because all three answers must come
+ * off the same leg of the resolution chain — split, they could disagree.
  */
-export function resolveSandboxImage(refs: ImageRefs, name?: string): string {
-  if (name !== undefined) return resolveImageName(refs, name, "Sandbox Image");
-  return refs.sandbox["default"] ?? refs.harness;
-}
+export type ResolvedImage = {
+  /** The ref the primary container runs. */
+  ref: string;
+  /**
+   * The image declares no `USER`, so ADR-0037's fallback seat applies: uid 1000 with
+   * `HOME=/home/j2` on an emptyDir.
+   *
+   * Only a recorded `""` — docker's own answer for "declares none" — sets this. Everything else is
+   * false, and each for its own reason: a registry ref was never inspected (its own `USER` stands,
+   * and a root one fails `runAsNonRoot` at provision, named from the pod's own status rather than
+   * silently patched); the stock Harness declares `USER 1000` itself; and an unrecorded key is a
+   * map an older converge wrote, where "nothing known" must leave the image's identity alone.
+   */
+  fallbackSeat: boolean;
+  /**
+   * The recorded `USER` the kubelet will REFUSE, when it will.
+   *
+   * Every j2-owned seat carries `runAsNonRoot: true` and names no `runAsUser` (the image's own
+   * `USER` decides — ADR-0005), and the kubelet resolves that pairing before it ever starts the
+   * container. Two recorded values lose there: a non-numeric name (`USER dev`), which the kubelet
+   * cannot prove is non-root because it does not read the image's `/etc/passwd`, and uid 0
+   * (`USER root`, `USER 0`), which plainly is root.
+   *
+   * Both surface as CreateContainerConfigError on the FIRST init step that runs the image — the
+   * preflight — and that container never starts, so `kubectl logs -c preflight` prints nothing. The
+   * record is the one place that can see it coming: `docker inspect` at converge already put the
+   * string in the map, so the provision can fail BEFORE it applies anything. Only a BUILT image is
+   * knowable here; a registry ref was never inspected, so it answers undefined and that pod is
+   * caught later, from the cluster (`rootImageFault` in sandbox-kubectl.ts) — same fault, same fix,
+   * one round trip more expensive.
+   */
+  refusedUser?: string;
+};
 
-/**
- * Whether the image {@link resolveSandboxImage} would pick declares no `USER`, and so needs
- * ADR-0037's fallback seat: uid 1000 with `HOME=/home/j2` on an emptyDir.
- *
- * It reads the SAME leg of the chain the ref came from, so the two can never disagree. Everything
- * that is not a recorded `""` answers false, and each for its own reason: a registry ref was never
- * inspected (its own `USER` stands, and a root one fails `runAsNonRoot` at provision — named from
- * the pod's own status, not silently patched); the stock Harness declares `USER 1000` itself; and
- * an unrecorded name is a map an older converge wrote, where "nothing known" must leave the
- * image's identity alone.
- */
-export function declaresNoUser(refs: ImageRefs, name?: string): boolean {
-  const key = name ?? "default";
-  if (isRegistryRef(key)) return false;
-  return refs.sandboxUser?.[key] === "";
-}
-
-/**
- * The recorded `USER` the kubelet will REFUSE, or undefined when it will not.
- *
- * Every j2-owned seat carries `runAsNonRoot: true` and names no `runAsUser` (the image's own
- * `USER` decides — ADR-0005), and the kubelet resolves that pairing before it ever starts the
- * container. Two recorded values lose there: a non-numeric name (`USER dev`), which the kubelet
- * cannot prove is non-root because it does not read the image's `/etc/passwd`, and uid 0
- * (`USER root`, `USER 0`), which plainly is root.
- *
- * Both surface as CreateContainerConfigError on the FIRST init step that runs the image — the
- * preflight — and that container never starts, so `kubectl logs -c preflight` prints nothing. The
- * record is the one place that can see it coming: `docker inspect` at converge already put the
- * string in the map, so the provision fails BEFORE it applies anything and names the edit. Only a
- * BUILT image is knowable here; a registry ref was never inspected, so an absent key answers
- * undefined and that pod is caught later, from the cluster (`rootImageFault` in
- * sandbox-kubectl.ts) — same fault, same fix, one round trip more expensive.
- *
- * `uid:gid` is split because docker records the whole `USER` line; only the uid half is judged.
- */
-export function unrunnableUser(refs: ImageRefs, name?: string): string | undefined {
-  const key = name ?? "default";
-  if (isRegistryRef(key)) return undefined;
-  const recorded = refs.sandboxUser?.[key];
+/** The recorded `USER`, judged. `uid:gid` is split because docker records the whole `USER` line;
+ * only the uid half decides. */
+function judgeUser(recorded: string | undefined): Pick<ResolvedImage, "fallbackSeat" | "refusedUser"> {
   // `""` is the fallback's trigger, not a failure (ADR-0037 supplies uid 1000); absent is unknown.
-  if (recorded === undefined || recorded === "") return undefined;
+  if (recorded === undefined) return { fallbackSeat: false };
+  if (recorded === "") return { fallbackSeat: true };
   const uid = recorded.split(":")[0]!;
-  if (!/^\d+$/.test(uid) || Number(uid) === 0) return recorded;
-  return undefined;
+  if (!/^\d+$/.test(uid) || Number(uid) === 0) return { fallbackSeat: false, refusedUser: recorded };
+  return { fallbackSeat: false };
+}
+
+/**
+ * Look one built key up in the map this converge wrote — for the Sandbox Image and the User
+ * Container alike, because ADR-0005 gives the User Container "the same resolution" deliberately.
+ *
+ * An unknown key throws: a converge-time check is impossible for a ref and unnecessary for a
+ * context (the walk built every one it found), so this fires when the Orchestrator's own
+ * `node_modules` holds a context the LAST converge did not build — a stale deployment. The error
+ * says exactly that, because "re-run `j2 up`" is the whole fix.
+ */
+function builtRef(refs: ImageRefs, key: string, image: string, what: string): string {
+  const ref = refs.sandbox[key];
+  if (ref === undefined) {
+    throw new Error(
+      `no ${what} for ${image} (context digest ${key}) — this instance's last converge built ` +
+        `${Object.keys(refs.sandbox).length} image(s), none of them this one. Re-run \`j2 up\`: it walks the ` +
+        "registered Machines and builds every `file:` context they carry (ADR-0037/0049).",
+    );
+  }
+  return ref;
+}
+
+/**
+ * ADR-0037's resolution chain: the wrapper's `image` (a context or a ref) → the Instance's
+ * `images/default` → the stock Harness. The last leg comes out of the MAP rather than a
+ * `j2-harness:${KIT_VERSION}` literal, because in a kit checkout the Harness is built to a
+ * content-addressed tag (ADR-0038) and a literal would name a tag nothing ever built.
+ *
+ * A REF passes through VERBATIM. It is deployed-never-built: j2 never built it, so j2 has no ref to
+ * look up and nothing to say about its tag discipline — the cluster pulls it, and nothing was
+ * inspected, so no seat fact is known.
+ */
+export async function resolveSandboxImage(refs: ImageRefs, image?: string): Promise<ResolvedImage> {
+  if (image === undefined) {
+    const ref = refs.sandbox["default"];
+    if (ref === undefined) return { ref: refs.harness, fallbackSeat: false };
+    return { ref, ...judgeUser(refs.sandboxUser?.["default"]) };
+  }
+  if (!isImageContext(image)) return { ref: image, fallbackSeat: false };
+  const key = await imageKey(image);
+  return { ref: builtRef(refs, key, image, "Sandbox Image"), ...judgeUser(refs.sandboxUser?.[key]) };
 }
 
 /**
  * The User Container's image (ADR-0005). Same two origins, same resolution — and NO fallback
  * chain: absence means the pod has no third container, so there is nothing for a default to be.
  * The seat's identity is "what j2 does not own", and a j2-chosen default would be an opinion in
- * the one place ADR-0005 promises none.
+ * the one place ADR-0005 promises none. Its `USER` is not judged either: the seat carries no
+ * `securityContext` at all, so root is allowed there.
  */
-export function resolveUserImage(refs: ImageRefs, name: string): string {
-  return resolveImageName(refs, name, "User Container image");
+export async function resolveUserImage(refs: ImageRefs, image: string): Promise<string> {
+  if (!isImageContext(image)) return image;
+  return builtRef(refs, await imageKey(image), image, "User Container image");
 }
