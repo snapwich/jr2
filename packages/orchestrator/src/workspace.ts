@@ -36,7 +36,7 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
-import { attachSandboxParts, sandboxPartsOf } from "./parts.ts";
+import { attachSandboxParts, attachWrapperBody, sandboxPartsOf, type WrapperActors } from "./parts.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInput } from "./vocabulary.ts";
 
@@ -210,17 +210,21 @@ type WsContext = {
 };
 
 /**
- * What `workspace()` returns: a Machine erased to the two parameters that carry meaning across
- * the seam — the door a run of it starts with, and the body's output, which the wrapper forwards
- * verbatim (ADR-0012). Everything else is the wrapper's own business, so it stays `any`: a
- * generic `setup()` over the body does not infer (report-xstate.md §3), which is why the
- * implementation is loosely typed and only the public signature is precise.
+ * What `workspace()` returns: a Machine erased to the parameters that carry meaning across the
+ * seam — the door a run of it starts with, the body's output, which the wrapper forwards verbatim
+ * (ADR-0012), and the wrapper's own actor slots. Everything else is the wrapper's own business,
+ * so it stays `any`: a generic `setup()` over the body does not infer (report-xstate.md §3),
+ * which is why the implementation is loosely typed and only the public signature is precise.
+ *
+ * The slots are stated because the wrapper is TRANSPARENT to its body (ADR-0049): `body` holding
+ * the body's own type is what lets `customize(machine, { agents })` offer the BODY's Agents
+ * through the wrapper, without the composer ever spelling `body`.
  */
-export type WorkspaceMachine<TInput, TOutput> = StateMachine<
+export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine = AnyStateMachine> = StateMachine<
   any,
   any,
   any,
-  any,
+  WrapperActors<"body", TBody, "provision" | "attach" | "registrar" | "lease" | "destroy">,
   any,
   any,
   any,
@@ -332,11 +336,11 @@ export type PermissiveWorkspaceOptions<TInput = unknown> = SandboxOptions & {
 export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMachine>(
   body: TBody & BodyAcceptsDoor<TBody, z.infer<TSchema>>,
   options: WorkspaceOptions<TSchema>,
-): WorkspaceMachine<z.infer<TSchema>, OutputFrom<TBody>>;
+): WorkspaceMachine<z.infer<TSchema>, OutputFrom<TBody>, TBody>;
 export function workspace<TBody extends AnyStateMachine, TInput = unknown>(
   body: TBody,
   options: PermissiveWorkspaceOptions<TInput>,
-): WorkspaceMachine<TInput, OutputFrom<TBody>>;
+): WorkspaceMachine<TInput, OutputFrom<TBody>, TBody>;
 export function workspace(
   body: AnyStateMachine,
   options: SandboxOptions & { input?: z.ZodObject; spec: (args: { input: any }) => WorkspaceSpec },
@@ -365,6 +369,10 @@ export function workspace(
     }
   }
   const wrapper = buildWorkspaceMachine(body, options.spec);
+  // The wrapper is TRANSPARENT to its body (ADR-0049): `customize(machine, { agents })` on a
+  // Workspace means the Machine inside, so the composer never spells `body` and never has to know
+  // that j2 wrapped anything.
+  attachWrapperBody(wrapper, "body");
   // What the pod is MADE of rides the Machine (ADR-0049), keyed on `machine.config` like the
   // vocabulary — so a `provide()` clone keeps it, and the provisioning state reads it back off the
   // Machine it was invoked as instead of closing over these values. That is also what lets `j2 up`

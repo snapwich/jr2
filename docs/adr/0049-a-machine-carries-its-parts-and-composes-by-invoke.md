@@ -38,13 +38,18 @@ because they are one problem: **what a Machine depends on that is not inside it.
   ADR-0011 adopted for Vocabulary.
 - **Customization is `customize(machine, parts)`**, a plain function in the family of `workspace()` and `pool()`,
   returning a plain `StateMachine`. `parts` has the declaration's own shape, recursively partial:
-  `{ agents?: { <slot>?: Partial<AgentDefinition> }, image?, actors?: { <child>?: parts } }`. Internally an Agent
-  override is xstate's `machine.provide({ actors: { researcher: agent(merged) } })`; a child override is the same call
-  one level down, recursing — each level is exactly the one-level reach ADR-0015 found `provide` has, held by the
-  composer who owns the child object, never host-side injection. j2's wrappers are transparent:
-  `customize(research, { agents })` reaches the body through the `body` slot, so a consumer never writes `body`. The
-  image is the one part `provide` cannot carry (xstate copies only implementations), so that field clones the wrapper's
-  config and rebuilds. Rejected: a `.with()` method on the machine — it needs a j2-owned machine type over xstate's,
+  `{ agents?: { <slot>?: Partial<AgentDefinition> }, image?, user?, actors?: { <child>?: parts } }` — the two image
+  seats together, since ADR-0005 gives the User Container the same static option. Internally an Agent override is
+  xstate's `machine.provide({ actors: { researcher: agent(merged) } })`, with the override layered over the stock
+  definition; a child override is the same call one level down, recursing — each level is exactly the one-level reach
+  ADR-0015 found `provide` has, held by the composer who owns the child object, never host-side injection. j2's wrappers
+  are transparent: `customize(research, { agents })` reaches the body through the `body` slot (and `pool()`'s `worker`,
+  at any depth), so a consumer never writes `body`. The images are the one part `provide` cannot carry (xstate copies
+  only implementations, and every part is keyed on the config it passes through by reference), so those fields clone the
+  wrapper's config and rebuild it with the same implementations, re-attaching what the original carried. Only DECLARED
+  parts can be retuned, and the compiler is what says so: the slots are read off xstate's own `TActor` parameter, so an
+  Agent or a child the Machine does not carry is a type error (ADR-0050), and the runtime refuses the same call naming
+  the Machine's own slots. Rejected: a `.with()` method on the machine — it needs a j2-owned machine type over xstate's,
   which ADR-0015 avoided, and it vanishes after any `.provide()`; a callable-machine hybrid — verified to work, reads as
   a trick.
 - **A package exports a Machine, nothing beside it.** The door (ADR-0033), the vocabulary, the Agents, and the image all

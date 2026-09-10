@@ -238,6 +238,26 @@ Then(
   },
 );
 
+// What each Turn was admitted to RUN (ADR-0049): the definition rides the admission, so the stub
+// can report which persona a state actually ran — the only place, short of a real Harness, where a
+// customized definition is observable from outside.
+Then(
+  "the stub Harness was asked to run {string} at models {string}",
+  async function (this: E2EWorld, agentName: string, models: string): Promise<void> {
+    const want = models.split(",").map((m) => m.trim());
+    let seen: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      seen = this.stubAdmissions()
+        .filter((a) => a.agentName === agentName)
+        .map((a) => String((a.definition as { model?: unknown } | undefined)?.model))
+        .sort();
+      if (seen.length >= want.length) break;
+      await sleep(50);
+    }
+    assert.deepEqual(seen, [...want].sort(), "one admission per invoking Machine, each with its own definition");
+  },
+);
+
 Then("the run faults mentioning {string}", async function (this: E2EWorld, needle: string): Promise<void> {
   const s = (await waitForValue(this, "error")) as Status & { fault?: string };
   assert.match(s.fault ?? "", new RegExp(needle));

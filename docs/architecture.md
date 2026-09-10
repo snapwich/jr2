@@ -274,6 +274,16 @@ imported Machine enough. Agents ride the Machine the same way — an Agent is an
 and its parent's are two different Agents (ADR-0049). The same layering is where a memory piece would sit: a wrapper
 around an Agent slot that reads and writes beside the Turn, with the body unchanged.
 
+An imported Machine arrives with everything it carries, so RETUNING one is a function over it rather than config beside
+it: `customize(machine, { agents: { coder: { model } }, image, actors: { child: … } })` returns a new Machine with the
+override layered over the stock definition, leaving the imported object untouched (ADR-0049). Underneath it is xstate's
+own `provide`, one level per key; the kit's wrappers are transparent, so a `workspace()`-rooted workflow is customized
+by naming the body's Agents and never `body`. Two customizations of one import are two Machines — the `deep`/`quick`
+pair — and one run can hold both, each Turn admitted with the definition ITS Machine carries. Only DECLARED parts can be
+retuned: a name the Machine does not carry is a compile error, which is what `j2 up`'s typecheck gate stops at
+(ADR-0050). The shape is untouched by a retune, so the two share a fingerprint and neither drifts the other's parked
+runs (ADR-0030).
+
 **Answers**
 
 - **Composition** — three layers, each a kit export, each ignorant of the outer one; the body is plain xstate.

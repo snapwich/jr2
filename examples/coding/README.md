@@ -1,6 +1,6 @@
 # example-coding
 
-Three workflows on the settled ADR-0015..0019 surface:
+Four workflows on the settled ADR-0015..0019 surface:
 
 - **`workflows/task-with-review.ts`** — the MVP validation loop: one run = one task prompt = one Workspace, coder ⇄
   reviewer under a round cap, ending at a human Gate. **Runs for real** against any cluster your kube context points at
@@ -11,6 +11,12 @@ Three workflows on the settled ADR-0015..0019 surface:
   the task in place — no Sandbox ever — or routes to code; the body's `assess` state then CONTINUES that same
   conversation (`conversation: "triage"`) to pick ship-vs-review after each coder round. Its mechanics test in
   [`test/`](./test) runs in the default `pnpm -r test` gate, cluster-free.
+- **`workflows/task-with-review-deep.ts`** — the same Machine, retuned: it imports `task-with-review`'s exported Machine
+  and hands it to `customize()` with a frontier model behind both Agents (ADR-0049). The whole file is the override — no
+  states, no door, no roster, and nothing restated — because a Machine carries everything it depends on, and importing
+  it is importing all of it. Both workflows register, and each run carries the Agents its Machine was given. A run of
+  this one needs the `anthropic` Secret (see `j2.config.ts`); registering it costs a vLLM-only converge nothing, since
+  `j2 up` probes only the custom provider's own models.
 - **`workflows/jr.ts`** — [jr](https://github.com/snapwich/jr)'s `start-work` orchestration as a j2 Machine (machine id
   `coding`). The j2 side is done; the workflow-owned side (tk actors, `openPr`/`pushBranch`) is sketched. Read it as the
   reference for a full-scale workflow shape: Pool over a tk Source, architect review, escalation parking. Its door is

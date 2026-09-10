@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { setWorldConstructor } from "@cucumber/cucumber";
-import { startStubHarness } from "@j2/orchestrator";
+import { startStubHarness, type Admission, type RunningStubHarness } from "@j2/orchestrator";
 import type { Browser, Page } from "playwright";
 import { startFakeProvider, type FakeProvider } from "./fake-provider.ts";
 import type { InstalledKit } from "./dist-kit.ts";
@@ -65,7 +65,7 @@ export class E2EWorld {
   /** The serving orchestrator's address + Instance token, once serving. */
   server?: ServerInfo;
   /** The in-process stub Harness (ADR-0011), started on demand; its url is run input. */
-  private stub?: { url: string; close: () => Promise<void> };
+  private stub?: RunningStubHarness;
   /** The most recent `j2 …` invocation's captured output + exit code. */
   last?: CliResult;
   /** A runId carried between steps (the last run started or settled). */
@@ -194,6 +194,12 @@ export class E2EWorld {
   async stubHarnessUrl(): Promise<string> {
     this.stub ??= await startStubHarness();
     return this.stub.url;
+  }
+
+  /** What the stub has been asked to run so far: one entry per admitted Turn, carrying the slot
+   * key and the DEFINITION the Machine handed it (ADR-0049). Empty until the stub is started. */
+  stubAdmissions(): Admission[] {
+    return this.stub?.admissions ?? [];
   }
 
   /** Run `j2 <args>` against this instance, capturing stdout/stderr/exit code into `last`.

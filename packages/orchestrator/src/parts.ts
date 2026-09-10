@@ -34,7 +34,7 @@
 
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AnyStateMachine, StateNode } from "xstate";
+import type { AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
 import { isAgent, type AgentDefinition } from "./agent.ts";
 import { isImageContext } from "./images.ts";
 
@@ -68,6 +68,50 @@ export function sandboxPartsOf(machine: AnyStateMachine | undefined): SandboxPar
   return (machine && sandboxParts.get(machine.config)) ?? {};
 }
 
+/** Does this Machine COMPOSE a Sandbox — i.e. is it a `workspace()` wrapper? Distinct from
+ * `sandboxPartsOf(m)` being empty: a wrapper that names neither image carries `{}` and still
+ * owns the two seats, which is what `customize({ image })` retunes (ADR-0049). */
+export function composesSandbox(machine: AnyStateMachine): boolean {
+  return sandboxParts.has(machine.config);
+}
+
+// The slot a j2 WRAPPER is transparent to (ADR-0049): `workspace()`'s `body`, `pool()`'s
+// `worker`. A wrapper owns Sandbox lifecycle or Source scheduling and carries no Agents of its
+// own, so a composer who writes `customize(research, { agents: { researcher } })` means the
+// Machine inside — and never has to know that j2 wrapped it, or spell `body`.
+//
+// Recorded, not inferred: a slot named `body` is a name any author may choose, and routing a
+// customize through it because of its spelling would retune a different Machine than the
+// composer named. The wrappers stamp this the same way they stamp everything else a Machine
+// carries — keyed on `machine.config`, so a `provide()` clone and a `customize()` retune keep it.
+
+const wrapperBodies = new WeakMap<AnyStateMachine["config"], string>();
+
+/** Mark this Machine a j2 wrapper over `slot`. j2-internal: `workspace()`/`pool()` call it. */
+export function attachWrapperBody(machine: AnyStateMachine, slot: string): void {
+  wrapperBodies.set(machine.config, slot);
+}
+
+/** The slot a j2 wrapper is transparent to — undefined for every Machine an author wrote, which
+ * is where a `customize()` stops descending and starts resolving. */
+export function wrapperBodyOf(machine: AnyStateMachine): string | undefined {
+  return wrapperBodies.get(machine.config);
+}
+
+/**
+ * The TYPE half of the same statement: the actor-slot union a j2 wrapper declares, in xstate's
+ * own `ProvidedActor` shape. `workspace()` and `pool()` name it in their return types, so the
+ * body's own slots are readable through the wrapper and `customize()` can offer the composer the
+ * Agents of the Machine inside (customize.ts) — the compile-time twin of the walk above.
+ *
+ * The mechanism actors ride along as `UnknownActorLogic`: they are named slots (Stately shows
+ * `provision`, not `inline`) but nothing outside the wrapper substitutes them, so their logic
+ * types buy nothing and would drag the port contracts into every consumer's inference.
+ */
+export type WrapperActors<TSlot extends string, TBody extends AnyStateMachine, TMechanism extends string> =
+  | { src: TSlot; logic: TBody; id: string | undefined }
+  | { src: TMechanism; logic: UnknownActorLogic; id: string | undefined };
+
 /** One Agent a Machine carries: the SLOT KEY it is declared under (its name everywhere — the
  * Harness route, the minted iid, the markers) and the definition that slot runs. */
 export type CarriedAgent = { name: string; definition: AgentDefinition };
@@ -85,8 +129,10 @@ export type CarriedImage = { url: string; dir: string; name: string };
 /** Everything the registered Machines carry that a converge must act on. */
 export type CarriedParts = { agents: CarriedAgent[]; images: CarriedImage[] };
 
-/** A machine actor, told apart from a promise/callback/observable one by having a state tree. */
-function asMachine(logic: unknown): AnyStateMachine | undefined {
+/** A machine actor, told apart from a promise/callback/observable one by having a state tree.
+ * Structural on purpose: an Instance resolves its OWN `@j2/orchestrator`, so the CLI's walk and a
+ * workflow's machines may come from two module instances and no `instanceof` can hold. */
+export function asMachine(logic: unknown): AnyStateMachine | undefined {
   return (logic as AnyStateMachine | undefined)?.root ? (logic as AnyStateMachine) : undefined;
 }
 

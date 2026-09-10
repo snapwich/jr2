@@ -60,6 +60,20 @@ Feature: Agents and gates drive a run from outside
       And the agent calls "request_review" with summary "PR up"
       Then the run's status shows "done"
 
+  Rule: one Machine, customized twice, is two Agents in one run
+    ADR-0049. Composition is Machine composition: a workflow imports another module's Machine and
+    invokes it as a child, and `customize()` retunes what that Machine carries — its Agents'
+    definitions — without editing the module it came from. The two customizations are two Machines,
+    so one run holds both, each Turn is admitted with the definition ITS Machine carries, and the
+    slot key they share names neither of them alone. An Instance-wide roster could hold only one.
+
+    Scenario: each nested Machine's Turn carries its own definition to the Harness
+      Given a fresh instance
+      And the instance also has the "nested" workflow
+      And the orchestrator is serving
+      When I start the "nested" workflow against the stub harness
+      Then the stub Harness was asked to run "coder" at models "stub/deep, stub/quick"
+
   Rule: a gate is an addressable resource on the run
 
     Background:

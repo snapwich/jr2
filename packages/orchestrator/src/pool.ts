@@ -22,10 +22,19 @@
 // drained from deadlocked needs one more bit than `null` carries, so a Source's `next` MAY
 // resolve the richer `{ item: null, open: n }` shape; a bare `null` means drained-when-idle.
 
-import { assign, setup, spawnChild, stopChild, type AnyStateMachine, type PromiseActorLogic } from "xstate";
+import {
+  assign,
+  setup,
+  spawnChild,
+  stopChild,
+  type AnyStateMachine,
+  type PromiseActorLogic,
+  type StateMachine,
+} from "xstate";
 import type { z } from "zod";
 import type { EventDef } from "@j2/agent-protocol";
 import { gate } from "./gate.ts";
+import { attachWrapperBody, type WrapperActors } from "./parts.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
 /**
@@ -87,6 +96,29 @@ export type PoolSpec<T, TInput = unknown> = {
   onDrained?: "final";
 };
 
+/**
+ * What `pool()` returns: the door a run of it starts with, the pool's own output, and the
+ * wrapper's actor slots — `worker` holding the worker's own type, because the pool is
+ * TRANSPARENT to its worker (ADR-0049), so `customize(machine, { agents })` on a pool-rooted
+ * workflow offers the WORKER's Agents and the composer never spells `worker`.
+ */
+export type PoolMachine<TWorker extends AnyStateMachine, TInput> = StateMachine<
+  any,
+  any,
+  any,
+  WrapperActors<"worker", TWorker, "next" | "gate">,
+  any,
+  any,
+  any,
+  any,
+  any,
+  TInput,
+  PoolOutput,
+  any,
+  any,
+  any
+>;
+
 type PoolCtx = {
   runInput: Record<string, unknown>;
   cap: number;
@@ -117,14 +149,14 @@ function normalizeClaim(output: unknown): Claim {
  * (`export const machine = pool(...)`), but nestable as a child like any other. Its vocabulary is
  * the wake def alone: the worker keeps its own (ADR-0011, ADR-0049).
  */
-export function pool<TSchema extends z.ZodObject>(
-  worker: AnyStateMachine,
+export function pool<TWorker extends AnyStateMachine, TSchema extends z.ZodObject>(
+  worker: TWorker,
   spec: PoolSpec<any, z.infer<TSchema>> & { input: TSchema },
-): AnyStateMachine;
-export function pool<TInput = unknown>(
-  worker: AnyStateMachine,
+): PoolMachine<TWorker, z.infer<TSchema>>;
+export function pool<TWorker extends AnyStateMachine, TInput = unknown>(
+  worker: TWorker,
   spec: PoolSpec<any, TInput> & { input?: never },
-): AnyStateMachine;
+): PoolMachine<TWorker, TInput>;
 export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStateMachine {
   const wake = spec.source.wake;
   const claimOf = (event: unknown): Claim => normalizeClaim((event as { output: unknown }).output);
@@ -235,6 +267,10 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
   // same-name/different-payload pair between two workers a collision that per-Machine scoping
   // had already avoided.
   if (wake) attachVocabulary(machine, new Map([[wake.name, wake]]));
+  // The pool is TRANSPARENT to its worker (ADR-0049), exactly as `workspace()` is to its body: a
+  // `customize(machine, { agents })` on a pool-rooted workflow means the worker's Agents, which
+  // is the only Machine under a pool that carries any.
+  attachWrapperBody(machine, "worker");
   // The run input does NOT propagate from the worker (ADR-0033): a wrapper declares its own door,
   // because what it feeds its child is not what a caller sends. Here it is sharpest — the pool
   // never passes the run body to a worker at all, workers get items — so propagating the worker's
