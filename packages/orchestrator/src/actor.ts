@@ -166,6 +166,14 @@ export type AgentRunInput = {
    * caller-passed `instanceId` (fresh on its first invocation, but j2 did not mint the id and
    * must not derive reroll identity from one it does not own — ADR-0016's minting doctrine).
    * A gated runaway goes straight to the terminal fault.
+   *
+   * A continuation carries NO check that it continues the same persona (ADR-0049, closing
+   * consequence, open): two Machines that each carry a `coder` slot and pin the same
+   * `conversation` continue one conversation under two definitions, and the second Turn gets its
+   * own instructions and Working-tool filter over the first's context. The ledger holds no
+   * definition to compare against, and adding a digest would refuse an edited-`instructions`
+   * redeploy too, which ADR-0030 lets continue — so the refusal waits on a persona identity that
+   * survives a retune.
    */
   continuation?: boolean;
   /** Event names (from the invoking Machine's vocabulary) this invocation accepts over MCP. */

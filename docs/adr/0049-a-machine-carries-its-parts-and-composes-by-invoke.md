@@ -87,5 +87,9 @@ because they are one problem: **what a Machine depends on that is not inside it.
   the next full reload. Known, unaddressed here.
 - A `workflows/` file that is both discovered and imported by another registers as its own Workflow too; a Machine meant
   only for composition lives in a `_`-prefixed file or outside `workflows/`.
-- Same-name slots across Machines plus a `conversation:` pin would continue one conversation under two personas;
-  `agentRun` should refuse a continuation whose definition differs from the ledger's.
+- Same-name slots across Machines plus a `conversation:` pin continue one conversation under two personas, and nothing
+  refuses it. The obvious guard — a definition digest on the ledger record (ADR-0016), compared before a continuation is
+  admitted — is NOT taken here, because it cannot tell the two cases apart: it would equally refuse a run whose only
+  change is an edited `instructions` after a redeploy, which ADR-0030 deliberately lets continue (shape decides
+  restorability, not behavior). A refusal needs a persona identity that survives a retune but not a swap, and this
+  decision does not settle what that is. Known, unaddressed here.
