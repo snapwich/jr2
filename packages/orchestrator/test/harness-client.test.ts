@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { SettlementFault, createEchoPush, createHarnessClient, harnessAgentRunPort } from "../src/harness-client.ts";
 import type { AgentAdmission, AgentRunInput } from "../src/actor.ts";
 import type { AgentDefinition } from "../src/agent.ts";
-import type { EchoEvent } from "@j2/harness/wire";
+import type { EchoEvent } from "../src/wire.ts";
 
 const admission: AgentAdmission = {
   streamUrl: "http://h.test/agents/coder/inst-1",

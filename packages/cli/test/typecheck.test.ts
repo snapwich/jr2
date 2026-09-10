@@ -5,16 +5,24 @@
 // The fixtures are temp folders whose `node_modules/typescript` is a symlink to this repo's, which
 // is exactly the resolution the port must perform: an instance's compiler is the one IT installed
 // (the scaffold pins it, ADR-0043), never one the CLI happens to carry.
+//
+// The last test is the one that gates the PROGRAM rather than the port: an instance staged as npm
+// leaves one — `@j2/orchestrator` as its `files:` list with no `node_modules` of its own, its
+// runtime dependencies flat beside it, and the real `tsconfig.instance.json` extends chain. The
+// checkout hides the class of failure it catches, because pnpm links the kit's packages to each
+// other and an instance here resolves the orchestrator's own devDependencies through that link.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tscTypecheck } from "../src/typecheck.ts";
 
-const REPO_TYPESCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "node_modules", "typescript");
+const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const REPO_TYPESCRIPT = join(REPO, "node_modules", "typescript");
+const ORCHESTRATOR = join(REPO, "packages", "orchestrator");
 
 /** An instance folder as `j2 init` leaves one: the root marker, a tsconfig, and an installed
  * compiler. `compiler: false` is the folder whose dependencies were never installed. */
@@ -33,8 +41,9 @@ async function mkInstance(files: Record<string, string>, opts: { compiler?: bool
 }
 
 /** The compiler options an instance inherits from `@j2/orchestrator/tsconfig.instance.json`, inline:
- * these fixtures have no kit in `node_modules`, and the claim under test is the gate, not the
- * extends chain (`examples/*` and the `@dist` tier run the real one). */
+ * these fixtures have no kit in `node_modules`, and the claim they test is the port's — which
+ * compiler runs, and what it does with the two answers. The extends chain and the kit's own sources
+ * are the last test's subject. */
 const TSCONFIG = JSON.stringify({
   compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, noEmit: true },
   include: ["**/*.ts"],
@@ -52,9 +61,9 @@ test("a folder that compiles passes, and says nothing", async () => {
 test("a type error is the answer, with the compiler's own line — the gate reports, it does not judge", async () => {
   const root = await mkInstance({
     "tsconfig.json": TSCONFIG,
-    // Stands in for every name a Machine carries and the compiler now checks (ADR-0049/0050): a
-    // slot the Machine does not declare, a `customize()` of an Agent it does not carry, a repo the
-    // Register does not know. All of them arrive here as one `tsc` line.
+    // Stands in for every name a Machine carries and the compiler now checks (ADR-0049): a slot the
+    // Machine does not declare, a `customize()` of an Agent it does not carry. Both arrive here as
+    // one `tsc` line.
     "workflows/ping.ts": `export const machine: number = "not a machine";\n`,
   });
 
@@ -86,4 +95,63 @@ test("no tsconfig.json: the refusal names the file the scaffold writes", async (
   const root = await mkInstance({ "workflows/ping.ts": "export const machine = 1;\n" });
 
   await assert.rejects(tscTypecheck(root), /no tsconfig\.json/);
+});
+
+/** An instance as npm leaves one, staged from this checkout (ADR-0043's installed shape).
+ *
+ * Faithful in the one way that matters: `node_modules/@j2/orchestrator` is a COPY of the package's
+ * `files:` list with no `node_modules` of its own, and only its declared `dependencies` sit beside
+ * it. So a kit source reaching for a devDependency — `@j2/harness`, which is private and never
+ * published (ADR-0009/0043) — is `Cannot find module` here and nowhere else in the default gate.
+ */
+async function mkInstalledInstance(): Promise<string> {
+  const pkg = JSON.parse(await readFile(join(ORCHESTRATOR, "package.json"), "utf8")) as {
+    files: string[];
+    dependencies: Record<string, string>;
+  };
+  const root = await mkdtemp(join(tmpdir(), "j2-installed-"));
+  const modules = join(root, "node_modules");
+
+  const orchestrator = join(modules, "@j2", "orchestrator");
+  await mkdir(orchestrator, { recursive: true });
+  for (const entry of pkg.files) await cp(join(ORCHESTRATOR, entry), join(orchestrator, entry), { recursive: true });
+  await writeFile(join(orchestrator, "package.json"), JSON.stringify({ ...pkg, devDependencies: undefined }));
+
+  // Flat-hoisted, as npm and pnpm's default public hoisting both leave them. Each is the link the
+  // workspace already resolved, so the versions under test are the versions that ship.
+  for (const dep of [...Object.keys(pkg.dependencies), "@types/node"]) {
+    await mkdir(join(modules, dirname(dep)), { recursive: true });
+    await symlink(join(ORCHESTRATOR, "node_modules", dep), join(modules, dep), "dir");
+  }
+  await symlink(REPO_TYPESCRIPT, join(modules, "typescript"), "dir");
+
+  // What `j2 init` scaffolds, verbatim in shape: an ESM package, the real extends chain, and one
+  // workflow that imports the kit — which is what pulls @j2/orchestrator's sources into the program.
+  await writeFile(join(root, "package.json"), JSON.stringify({ name: "staged", private: true, type: "module" }));
+  await writeFile(
+    join(root, "tsconfig.json"),
+    `{ "extends": "@j2/orchestrator/tsconfig.instance.json", "include": ["**/*.ts"] }`,
+  );
+  await writeFile(
+    join(root, "j2.config.ts"),
+    `import { defineConfig } from "@j2/orchestrator";\nexport default defineConfig({ repos: [] });\n`,
+  );
+  await mkdir(join(root, "workflows"), { recursive: true });
+  await writeFile(
+    join(root, "workflows", "ping.ts"),
+    `import { j2Setup } from "@j2/orchestrator";\n` +
+      `export const machine = j2Setup({ events: [] }).createMachine({\n` +
+      `  id: "ping",\n  initial: "done",\n  states: { done: { type: "final" } },\n});\n`,
+  );
+  return root;
+}
+
+test("an instance staged as npm installs it typechecks — the kit's own sources included", async () => {
+  // The gate is a converge REFUSAL (ADR-0050), so a published source that cannot compile in an
+  // installed folder is `j2 up` returning 1 for every user, on `j2 init` → `npm i` → `j2 up`. The
+  // checkout cannot see it: pnpm links @j2/orchestrator to `packages/orchestrator`, whose own
+  // `node_modules` holds the devDependencies the published tarball leaves behind.
+  const root = await mkInstalledInstance();
+
+  assert.deepEqual(await tscTypecheck(root), { ok: true, output: "" });
 });

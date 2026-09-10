@@ -133,10 +133,11 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- typecheck (ADR-0050): the compiler agrees the folder is coherent, before anything is spent -
   // A REFUSAL, not a warning, and it comes before the namespace apply as well as before the builds:
-  // the names a Machine carries (an Agent slot, a composed Machine, a `customize()` of either, a
-  // repo through the Register) are typed, so the answer here is the same answer the author's editor
-  // gives — and a converge that shipped a Machine the compiler rejects would surface it as an
-  // invoke-time failure mid-run, minutes and three image builds later.
+  // the names a Machine carries (an Agent slot, a composed Machine, a `customize()` of either) are
+  // typed since ADR-0049, so the answer here is the same answer the author's editor gives — and a
+  // converge that shipped a Machine the compiler rejects would surface it as an invoke-time failure
+  // mid-run, minutes and three image builds later. Repo names are not typed yet — ADR-0050's
+  // Register is decided and unbuilt — so a mistyped repo is still refused at attach, not here.
   activity(io, "typecheck: tsc --noEmit (the instance's own compiler)");
   const checked = await (io.typecheck ?? tscTypecheck)(root);
   if (!checked.ok) {

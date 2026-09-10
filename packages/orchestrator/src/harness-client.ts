@@ -2,8 +2,8 @@
 // drives one Agent run over the five-endpoint wire — and `agent(definition)`, the Agent slot built
 // on it (ADR-0049: a Machine carries its Agents; the client is constructed from `input.endpoint`).
 //
-// The wire is j2's own (`@j2/harness/wire` is the shape contract; the stub Harness is the normative
-// server model), so this module speaks plain `fetch` — no SDK. Keeping it here (not in `actor.ts`)
+// The wire is j2's own (`./wire.ts` is the shape contract as this client reads it; the stub Harness
+// is the normative server model), so this module speaks plain `fetch` — no SDK. Keeping it here (not in `actor.ts`)
 // is what keeps the run-lifecycle actor and its unit tests wire-free (see actor.ts header). The
 // port is built over an INJECTABLE client (`harnessAgentRunPort(client)`) so the mapping logic is
 // unit-testable against a fake; `createHarnessClient(opts)` is the real thing, itself testable
@@ -36,14 +36,15 @@
 import { agentActorWith } from "./actor.ts";
 import type { AgentAdmission, AgentAdmitOptions, AgentLogic, AgentRunInput, AgentRunPort } from "./actor.ts";
 import type { AgentDefinition, ThinkingLevel } from "./agent.ts";
-import type { EchoEvent, Settlement, StreamEvent, SubmissionSettledEvent } from "@j2/harness/wire";
-
-// Wire literals, restated: `@j2/harness` is a types-only devDependency here (the orchestrator
-// ships without it), so the value constants in `@j2/harness/wire` cannot be imported — the
-// wire-shape tests hold the two in agreement.
-const STREAM_NEXT_OFFSET_HEADER = "stream-next-offset";
-const VIEW_UPDATES = "updates";
-const LIVE_LONG_POLL = "long-poll";
+import {
+  LIVE_LONG_POLL,
+  STREAM_NEXT_OFFSET_HEADER,
+  VIEW_UPDATES,
+  type EchoEvent,
+  type Settlement,
+  type StreamEvent,
+  type SubmissionSettledEvent,
+} from "./wire.ts";
 
 /** The three-verb wire client (the injectable seam — structurally what `@flue/sdk`'s
  * `agents.{send,wait,abort}` was, minus the SDK). */

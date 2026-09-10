@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { emit } from "xstate";
-import type { EchoEvent } from "@j2/harness/wire";
+import type { EchoEvent } from "../src/wire.ts";
 import { doneEvent, requestReviewEvent } from "@j2/agent-protocol";
 import { j2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";

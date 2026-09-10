@@ -24,7 +24,7 @@ import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
 import type { EventSemantics } from "@j2/agent-protocol";
 import { inputSchemaOf } from "./vocabulary.ts";
-import type { EchoEvent, EchoStatusChild } from "@j2/harness/wire";
+import type { EchoEvent, EchoStatusChild } from "./wire.ts";
 import {
   agentAddress,
   bindRun,

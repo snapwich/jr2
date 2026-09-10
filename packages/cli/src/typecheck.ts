@@ -1,9 +1,11 @@
 // The Instance's own typecheck, run as a converge gate (ADR-0050). A Machine names its parts by
-// string — an actor slot, a `customize()` of an Agent, a repo through the Register — and since
-// ADR-0049 those strings are typed by xstate's own `src` typing and by the Machine's own parts. A
-// type error is therefore the EARLIEST place a wrong name can be caught, and until now `j2 up`
-// walked straight past it: the first sign of a mistyped slot was an invoke-time failure mid-run,
-// after a bundle, three image builds, and a rollout had been spent.
+// string — an actor slot, a composed Machine, a `customize()` of either — and since ADR-0049 those
+// strings are typed by xstate's own `src` typing and by the Machine's own parts. A type error is
+// therefore the EARLIEST place a wrong name can be caught, and until now `j2 up` walked straight
+// past it: the first sign of a mistyped slot was an invoke-time failure mid-run, after a bundle,
+// three image builds, and a rollout had been spent. Repo names are the one dependency still
+// untyped — ADR-0050's Register is decided and unbuilt — so a mistyped repo remains what it was:
+// the port's runtime refusal at attach.
 //
 // The compiler is the INSTANCE's, resolved from its own `node_modules` (ADR-0043): the instance's
 // program includes @j2/orchestrator's `.ts` sources (zero-build — `exports` point at source), so

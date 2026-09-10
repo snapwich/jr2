@@ -258,7 +258,7 @@ export type AgentRunOptions = {
 /**
  * The runaway settlement class (ADR-0035), read STRUCTURALLY off a settle rejection: the wire
  * client's `SettlementFault` carries the Settlement, but this module is wire-free (see header),
- * so the literal is restated (`SUBMISSION_RUNAWAY` in `@j2/harness/wire`) and the shape
+ * so the literal is restated (`SUBMISSION_RUNAWAY` in `./wire.ts`) and the shape
  * duck-typed. A lost conversation (404) carries no settlement, so it stays terminal like every
  * other class.
  */

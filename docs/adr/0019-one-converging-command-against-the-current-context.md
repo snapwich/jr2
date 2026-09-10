@@ -80,11 +80,12 @@ loudly narrated, safe to re-run:
 
 ## Sharing is npm; the instance repo is a deployment assembly
 
-Nothing in `j2.config.ts` is useful to others _by design_ — it is the boundary where shared code meets your repos,
-models, and cluster. Reusable workflows/agents are published as npm packages — a Machine is imported by a workflow file
-(ADR-0049), an Agent is used by value in `j2.config.ts` (ADR-0050); nobody clones an instance repo to reuse it —
-`j2 init` + a dependency is the path. `up` typechecks the instance before it builds anything and refuses on errors
-(ADR-0050): a wrong Agent, image, or repo name is a compile error at the door, not a mid-run failure. `j2.config.ts`
+Nothing in `j2.config.ts` is useful to others _by design_ — it is the boundary where shared code meets your repos and
+your cluster. Reusable work is published as npm packages, and a package exports a **Machine**, nothing beside it: its
+Agents are its own actor slots and its Sandbox Image is a `workspace()` option, so a workflow file imports the Machine
+and the parts ride along (ADR-0049). Nobody clones an instance repo to reuse it — `j2 init` + a dependency is the path.
+`up` typechecks the instance before it builds anything and refuses on errors (ADR-0050): a wrong Agent slot or a
+`customize()` of a part the Machine does not carry is a compile error at the door, not a mid-run failure. `j2.config.ts`
 stays committed (the instance repo is the GitOps unit, ADR-0008); everything deployment-varying resolves from env.
 
 ## Considered options
