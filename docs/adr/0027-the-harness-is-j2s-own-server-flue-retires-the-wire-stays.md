@@ -34,10 +34,11 @@ that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; g
   `@earendil-works/pi-ai` (pinned exact — 0.x minors break) and Hono, which the repo already uses. The stock image keeps
   its tag (`j2-harness:<kitversion>`) and every operator contract: numeric uid, binding `:8080` is Ready, `git` in the
   image — plus `ripgrep` for the grep tool.
-- **Assembly is runtime construction, not codegen.** `main.ts` reads `J2_AGENTS_JSON`, validates it loudly, constructs
-  the server, and listens. `boot.mjs`, the generated shims, the boot-time `flue build`, and the readiness lag it caused
-  are deleted. Definitions still arrive as ConfigMap JSON and are still re-read per Submission, so the ADR-0018 contract
-  — stock image, instance-owned plain-data definitions — survives with its mechanism simplified.
+- **Assembly is runtime construction, not codegen.** `main.ts` constructs the server and listens; each admission carries
+  its Agent's definition (ADR-0049), validated loudly and re-read per Submission. `boot.mjs`, the generated shims, the
+  boot-time `flue build`, and the readiness lag it caused are deleted, and so — later — was the `J2_AGENTS_JSON` roster
+  this cut read at boot. The ADR-0018 contract — stock image, user-owned plain-data definitions — survives with its
+  mechanism simplified.
 - **The wire stays, and becomes normative.** The five endpoints the stub documents (`POST /agents/:name/:id`,
   updates/history views, long-poll, `POST .../abort → {aborted}`) and the three-string admission
   `{streamUrl, offset, submissionId}` (j2 now mints its own opaque values) are j2's protocol, not flue's. The stub

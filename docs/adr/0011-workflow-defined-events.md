@@ -10,14 +10,20 @@ invoke time, so no routing layer exists anywhere.
 tagged objects, never `oneOf` — the ADR-0006 encoding rule), an optional audience tag (`agent` | `external` | `any`,
 ADR-0015), and an optional semantics tag (`ack` | `deferred` | `poll`). It is a **pure factory — no import-time side
 effects, no global registry**. Because actor **inputs are serializable** (ADR-0007) they carry event _names_, so
-resolution needs a name→def scope; that scope is **per-workflow**: `j2Setup` takes the defs as values and attaches the
-vocabulary to the machine object (ADR-0015 — discovery reads it there; the module contract is `export const machine`
-alone), and actors resolve names against their run's workflow set (run identity reaches every registration mechanically
-— the host maps the xstate actor `system`, which callback actors receive, to the run). Names are local to their
-workflow: `coding`'s `approve` and `release`'s `approve` may differ. An unlisted name fails at invoke time with an error
-naming the workflow and its declared set. We rejected a global name registry (import = registration): it couples every
-workflow in an instance — and any future npm-distributed one — through one namespace, and attribution can't be inferred
-at import time; attribution through the machine object keeps vocabularies per-workflow by construction.
+resolution needs a name→def scope; that scope is **per-Machine**: `j2Setup` takes the defs as values and attaches the
+vocabulary to the machine (ADR-0015 — discovery reads it there; the module contract is `export const machine` alone),
+and `gate`/`agentRun` resolve names against **the Machine that invoked them** — `self._parent.logic`, public xstate API
+— never a run-wide set. Names are local to their Machine: `coding`'s `approve` and `release`'s `approve` may differ, and
+one run may hold both, because a Machine nested inside another resolves against its own defs and no map is ever merged.
+That is what makes a Machine composable by plain `invoke` (ADR-0049): the importing Machine neither re-declares nor sees
+the nested one's events, and `workspace()`/`pool()` propagate nothing. An unlisted name fails at invoke time with an
+error naming the Machine and its declared set. The attachment is keyed on the machine's `config`, which xstate's
+`.provide()` passes through unchanged, so the host's per-run provide and a test's `.provide()` both keep it. We rejected
+a global name registry (import = registration): it couples every workflow in an instance — and any future
+npm-distributed one — through one namespace, and attribution can't be inferred at import time. We also retired the
+run-scoped set this ADR first specified (`RunBinding.events`, the root's vocabulary): it made every nested Machine's
+events the root's problem to re-declare, and turned a same-name-different-payload pair into a collision that the
+per-Machine defs had already avoided.
 
 `defineEvent` also carries the TypeScript side: `j2Setup` derives the machine's event union from the defs — one source
 of truth, no schema/type drift, and the machine stays fully typed for xstate tooling.

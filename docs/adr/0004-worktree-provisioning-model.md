@@ -58,8 +58,9 @@ path segment, minus a trailing `.git` — and two entries that derive the same n
 since the explicit form exists for exactly that case. The default is recorded here rather than left to taste because the
 name is the directory on the volume (`repos/<name>/default`) and the handle every `workspace()` uses: a different
 derivation later orphans every checkout the old one made. Resolution happens once, where the config is loaded, and is
-the one place the entries' shape is validated at runtime — an instance is zero-build, so nothing typechecks a config
-before `j2 up` imports it, and a mis-shaped entry must fail there rather than silently read as `url: undefined`.
+the one place the entries' shape is validated at runtime — `j2 up` typechecks the instance first (ADR-0050), but a
+runtime import can still see a shape the types did not, and a mis-shaped entry must fail there rather than silently read
+as `url: undefined`.
 
 ## Storage shape: one model, two backings
 

@@ -37,8 +37,8 @@ loudly narrated, safe to re-run:
 - **Harness**: no per-instance Harness image (ADR-0018). Harness and Adapter are Kit images, resolved like the
   operator's (checkout-built or published, ADR-0038/0044); the Harness reaches each Sandbox as an `/opt/j2` volume
   injected at pod time, over a Sandbox Image the instance builds or brings
-  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)). `up` delivers the instance's
-  plain-data Agent definitions to the Orchestrator (`J2_AGENTS_JSON`), which assembles each turn's harness spec.
+  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)). Each Turn carries its Agent's
+  definition to the Harness in the admission (ADR-0049); `up` delivers no roster.
 - **Secrets**: values declared in config (which may read `process.env`, populated from the uncommitted `.env`) are
   materialized into an instance-owned Secret. Referenced-but-unmanaged Secrets (`envFrom` refs, git credentials) are
   **preflighted**: `up` fails naming the missing Secret with the exact creation hint — converting the
@@ -81,9 +81,11 @@ loudly narrated, safe to re-run:
 ## Sharing is npm; the instance repo is a deployment assembly
 
 Nothing in `j2.config.ts` is useful to others _by design_ — it is the boundary where shared code meets your repos,
-models, and cluster. Reusable workflows/agents are published as npm packages and re-exported by instance files
-(ADR-0009/0018); nobody clones an instance repo to reuse it — `j2 init` + a dependency is the path. `j2.config.ts` stays
-committed (the instance repo is the GitOps unit, ADR-0008); everything deployment-varying resolves from env.
+models, and cluster. Reusable workflows/agents are published as npm packages — a Machine is imported by a workflow file
+(ADR-0049), an Agent is used by value in `j2.config.ts` (ADR-0050); nobody clones an instance repo to reuse it —
+`j2 init` + a dependency is the path. `up` typechecks the instance before it builds anything and refuses on errors
+(ADR-0050): a wrong Agent, image, or repo name is a compile error at the door, not a mid-run failure. `j2.config.ts`
+stays committed (the instance repo is the GitOps unit, ADR-0008); everything deployment-varying resolves from env.
 
 ## Considered options
 

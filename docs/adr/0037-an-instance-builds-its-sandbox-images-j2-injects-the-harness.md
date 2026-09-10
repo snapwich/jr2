@@ -12,17 +12,20 @@ and promotes incidental image properties into contract items.
 
 ## Decision
 
-- **Two origins, one meaning.** `images/<name>/Dockerfile` is a Sandbox Image — a directory per image, dirname = name,
-  discovered like `agents/` and `workflows/` (filename-discovery stays the one registration mechanism). The build
-  context is **that directory**, so the content hash covers exactly what the build can see and a workflow edit
-  invalidates no image; there is no cross-image `FROM`. `j2 up` builds it, content-tags it, and delivers it
-  ([ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)). **Or a registry ref**: a `workspace()` spec's `image` may
-  name an image j2 never builds — baked and hosted by the user, pulled by the cluster, its tag discipline its owner's.
-  The two are distinguishable by shape (a ref contains `/` or `:`; a dirname cannot). Resolution is: spec `image` →
-  `images/default` → stock `j2-harness:<kitversion>`. `j2 init` scaffolds `images/default/Dockerfile`, which is what
-  makes the fallback a visible convention rather than magic. An unknown dirname fails loudly at provision, listing what
-  was discovered — a converge-time check is impossible because workflow internals are not statically recoverable
-  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md) drew this line).
+- **Two origins, one meaning.** A built Sandbox Image is a docker context the Machine names —
+  `workspace(body, { image: import.meta.resolve("./image") })`, a `file:` URL to the folder, which a package ships
+  beside its Machine and `j2 up` finds by walking the registered Machines
+  ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md); the first cut discovered
+  `images/<name>/Dockerfile` by dirname, a second named it from config). The build context is **that directory**, so the
+  content hash covers exactly what the build can see and a workflow edit invalidates no image; there is no cross-image
+  `FROM`. `j2 up` builds it, content-tags it, and delivers it ([ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)).
+  **Or a registry ref**: a `workspace()`'s `image` may name an image j2 never builds — baked and hosted by the user,
+  pulled by the cluster, its tag discipline its owner's. The two are distinguishable by shape (a `file:` scheme is a
+  context; anything else is a ref). Resolution is: the wrapper's `image` → the Instance's `images/default` → stock
+  `j2-harness:<kitversion>`. The middle step is a **path convention, not discovery**: `j2 init` scaffolds
+  `images/default/Dockerfile`, `j2 up` builds that one folder when it exists, and a `workspace()` that names nothing
+  gets it — so a local Machine never has to spell `import.meta.resolve("../images/default")`. A `file:` URL that names
+  no folder fails at `j2 up`; a ref is the cluster's to pull.
 - **The Harness arrives by volume, never by build.** The operator composes every Sandbox with an `/opt/j2` volume,
   populated from the kit's harness image by an init container, and overrides the primary container's **command** to
   start the Harness. The image the pod runs is the user's, byte-for-byte: no appended layers, no rewritten Dockerfile,

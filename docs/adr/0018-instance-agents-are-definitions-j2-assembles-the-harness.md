@@ -13,19 +13,21 @@ promised the split — an Agent is a definition j2 maps into the Harness, and an
 
 ## Decision
 
-- **The instance's `agents/<name>.ts` is a plain-data Agent definition** — filename = Agent name, mirroring
-  `workflows/`. The contract is `export default defineAgent({ model, instructions, … })`, a typed identity from
-  `@j2/orchestrator` (like `defineConfig`). Serializable persona data only; **the instance never imports the Harness
-  runtime**. `model` is **required**: every Agent is independently valid, and definitions are the only models `j2 up`
-  can preflight.
+- **An Agent is a plain-data definition carried by a Machine as an actor slot** —
+  `actors: { <name>: agent({ model, instructions, … }) }`, slot key = Agent name, invoked as `src: "<name>"` (ADR-0049).
+  The definition may be written inline or imported from any module. Serializable persona data only; **the instance never
+  imports the Harness runtime**. `model` is **required**: every Agent is independently valid, and definitions are the
+  only models `j2 up` can preflight — it collects them by walking the registered Machines. (The first cut
+  filename-discovered `agents/<name>.ts`, mirroring `workflows/`, and a second put them in `j2.config.ts`; both were
+  Instance rosters, and a roster cannot hold two Machines' `coder`s.)
 - **The Harness image is stock and published** — `j2-harness:<kitversion>`, one release train with the kit (like the
   operator and Adapter images, ADR-0019). An instance builds **no** Harness image. The image is `@j2/harness`, j2's own
   server (ADR-0027), honoring the operator's image contracts.
-- **Definitions are injected at pod start, not baked.** `j2 up` publishes the instance's definitions as a ConfigMap; the
-  server reads them at boot (`J2_AGENTS_JSON`), validates them loudly, and re-reads model/instructions/cwd per
-  Submission — so definition edits reach pods as a ConfigMap update + pod restart, and no image is built anywhere.
-  Assembly is runtime construction; the codegen-at-boot mechanism this decision originally required retired with the
-  framework that forced it (ADR-0027).
+- **The definition rides the Turn, never the image.** The admission body carries the slot's definition (ADR-0049); the
+  server validates it loudly and re-reads model/instructions/cwd per Submission. No image is built anywhere for a
+  definition edit. (A ConfigMap roster read at boot — `J2_AGENTS_JSON` — was the mechanism between the codegen-at-boot
+  cut and this one; it retired because a Machine edit already rebakes the Orchestrator, so the roster bought nothing a
+  Machine-carried definition loses.)
 - **The kit's server assembly carries the mechanism**: the Adapter leash, the workspace cwd, tool assembly — existing
   only in kit code, unforgettable by construction (symmetric with ADR-0016 making endpoint/sandbox threading
   unrepresentable in workflows).
@@ -43,11 +45,11 @@ promised the split — an Agent is a definition j2 maps into the Harness, and an
 
 ## Dials: a workflow may set two of a definition's fields for one Turn
 
-Agents are instance-scoped and every workflow may name any of them, so one persona legitimately runs at different
-settings in different workflows — a reviewer on a one-line diff and the same reviewer on an architecture change want
-identical instructions and different effort. Spread-composition (below) answers this with persona×tier files where
-"heavy" is a knob wearing a persona's filename, so `agentRun` takes two optional **dials**, `model` and `thinkingLevel`,
-layered over the definition per Submission.
+One definition value may be carried by several Machines, so one persona legitimately runs at different settings in
+different workflows — a reviewer on a one-line diff and the same reviewer on an architecture change want identical
+instructions and different effort. Spread-composition (below) answers this with persona×tier files where "heavy" is a
+knob wearing a persona's filename, so `agentRun` takes two optional **dials**, `model` and `thinkingLevel`, layered over
+the definition per Submission.
 
 The line that keeps this from becoming "re-specify the definition at the call site": **identity vs. dial.** Identity —
 `instructions`, `access`, `cwd` — is definition-only: a call site that rewrote it would make the Agent's name a lie, and
@@ -79,13 +81,10 @@ check for the flexibility.
 - The definition contract is data-only: what an Agent may do to the Workspace is part of it (`access`, ADR-0028); custom
   tools/skills/subagents have no seat yet. When someone needs them, the contract grows deliberately — there is no eject
   hatch to a foreign harness project (ADR-0027 deleted it).
-- Because definitions are plain data, stock ones compose with no API: `@j2/agents` definitions are used by re-export
-  (`export { coder as default } from "@j2/agents"` — filename-discovery stays the one registration mechanism) and
-  extended by spread (ADR-0009).
-- Invalid definitions fail at pod boot, loudly, in the pod log: duplicate agent names, a model no registry resolves. An
-  **empty roster is not invalid**: an instance may define no Agents at all and still run workflows that invoke none (a
-  `workspace()` body parking a Sandbox, ADR-0012) — the Harness serves the empty roster, and any `agentRun` against it
-  404s at admission naming the missing definition. Readiness is binding `:8080`, with no boot build ahead of it
-  (ADR-0027).
+- Because definitions are plain data, stock ones compose with no API: a Machine carries `agent(coder)`, and a consumer
+  retunes it with `customize(machine, { agents: { coder: { model: "…" } } })` (ADR-0049, ADR-0009).
+- An invalid definition fails at admission, loudly, naming the slot: a model no registry resolves, a malformed field. A
+  Machine with no Agent slots is valid — a `workspace()` body parking a Sandbox (ADR-0012) invokes none. Readiness is
+  binding `:8080`, with no boot build ahead of it (ADR-0027).
 - The kit owns version compatibility: the Harness runtime and its exact pins are kit concerns (ADR-0027) — bumping them
   is a kit change, never an instance chore.

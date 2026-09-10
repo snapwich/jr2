@@ -14,8 +14,8 @@ built.
 ## Decision
 
 - **One Instance Harness per instance, deployed by convention.** `j2 up` converges a Harness Deployment + Service —
-  stock `j2-harness:<kitversion>` image, same definitions ConfigMap, same wire — whenever any discovered Agent
-  definition declares `workspace: "none"`
+  stock `j2-harness:<kitversion>` image, same wire — whenever any Agent slot carried by a registered Machine (ADR-0049's
+  walk) declares `workspace: "none"`
   ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)). The scan is static and
   definition-level, deliberately not workflow-level (workflow internals are not statically recoverable — the same line
   ADR-0018 drew for model preflight); a declared-but-never-invoked `"none"` Agent over-deploys, erring toward "the
@@ -66,7 +66,7 @@ built.
 - **A host-local dev Harness.** Considered as a dev story and dropped when the premise died:
   [ADR-0019](0019-one-converging-command-against-the-current-context.md) removed `j2 dev` — there is no host dev mode to
   serve. Local development of a decisioning workflow is `j2 up` against kind, where the Instance Harness converges like
-  everything else; an instructions tweak is a ConfigMap update, no image build. The stub Harness keeps its one job: a
+  everything else; an instructions tweak rides the next admission, no image build. The stub Harness keeps its one job: a
   test fixture reached by explicit `endpoint`.
 
 ## Consequences

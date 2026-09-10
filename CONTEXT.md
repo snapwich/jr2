@@ -11,19 +11,21 @@ Kubernetes (kind locally).
 **Machine**: The xstate state machine that defines a workflow's control flow. The unit a user authors. _Avoid_:
 workflow, graph
 
-**Workflow**: A concrete, deployable assembly — a Machine wired to its Agents and config — that an Orchestrator instance
-registers and runs. Lives as a code module in the instance's `workflows/` directory (contract: `export const machine`);
-**not** declarative config, and **not** shipped by the kit. _Avoid_: app, pipeline
+**Workflow**: A Machine registered under a name — the unit an Orchestrator instance runs and `j2 run` addresses. Lives
+as a code module in the instance's `workflows/` directory (contract: `export const machine`); the Machine carries
+everything it needs (ADR-0049), so a Workflow is a name and nothing more. **Not** declarative config, and **not**
+shipped by the kit — a packaged Machine becomes a Workflow when a workflows file exports it. _Avoid_: app, pipeline
 
 **Orchestrator**: The runtime that executes Machines. A single-writer daemon (`replicas: 1`, always in-cluster —
 ADR-0019) persisting run snapshots to its store (sqlite by default, Postgres opt-in). `replicas: 1` means single
 _writer_ (no split-brain on the snapshot), not one workflow per process — one Orchestrator hosts **many** Workflows and
 many runs, fed by both Sources (pull) and the HTTP API (push). _Avoid_: runner, engine
 
-**Instance**: A user-owned folder scaffolded by `j2 init` — `j2.config.ts` + discovered `workflows/` and `agents/`
-directories + manifests. `j2 up` bakes the engine + the instance's workflows into one image and converges the target
-cluster; this folder is the deployed Orchestrator. A deployment assembly, not a sharing unit — reusable workflows/agents
-travel as npm packages (ADR-0019). _Avoid_: workspace (collides), project
+**Instance**: A user-owned folder scaffolded by `j2 init` — `j2.config.ts` (repos and reach: the deployment facts a
+Machine cannot carry, ADR-0050) + the discovered `workflows/` directory + manifests. `j2 up` bakes the engine + the
+instance's workflows into one image and converges the target cluster; this folder is the deployed Orchestrator. A
+deployment assembly, not a sharing unit — reusable workflows/agents travel as npm packages (ADR-0019). _Avoid_:
+workspace (collides), project
 
 **j2 CLI**: The `j2` binary — the primary interface to an Instance (`init`, `up`, `run`, status). Operates on the
 current `kubectl` context, argo/cilium-style; users reach for the CLI far more than the raw HTTP API; the CLI sits on
@@ -39,12 +41,14 @@ starting runs, answering Gates — without moving any band. _Avoid_: visualizer 
 acts), dashboard, UI (unqualified), viz
 
 **Actor**: An xstate actor inside a Machine that drives a remote worker via a Harness client. The local handle in the
-Orchestrator; the compute is remote. _Avoid_: agent actor
+Orchestrator; the compute is remote. An Agent is one as a named slot — `actors: { coder: agent(…) }`, invoked as
+`src: "coder"` (ADR-0049). _Avoid_: agent actor
 
 **Agent**: A configured worker persona — model + instructions + Working tools + workspace access (e.g. coder, reviewer).
-What a user customizes: a plain-data definition in the instance's `agents/<name>.ts` (filename = Agent name, mirroring
-`workflows/`); the Harness runs the definition directly (ADR-0018, ADR-0027). An Agent is instance-scoped, so every
-workflow may invoke it; a Turn may set its **Dials** but never its identity. _Avoid_: role, persona
+A plain-data definition a Machine carries as an actor slot, `agent({ model, instructions, … })`, so its name is the
+slot's and its scope is that Machine (ADR-0049); the Harness runs the definition it is handed with each Turn (ADR-0018,
+ADR-0027). A composer retunes it with `customize()`; a Turn may set its **Dials** but never its identity. _Avoid_: role,
+persona, roster entry
 
 **Dials**: The two fields a Machine state may set for one Turn on top of an Agent's definition — `model` and
 `thinkingLevel` — because they say how hard to run, not who is running (ADR-0018). Everything else in a definition is
@@ -81,10 +85,10 @@ the npm packages (ADR-0019, ADR-0038). The kit's second distribution channel: wh
 these images (ADR-0043). _Avoid_: system image, base image, j2 image (ambiguous with the instance image `j2 up` bakes)
 
 **Sandbox Image**: A user-owned image a Sandbox's primary container runs — the tools an Agent's Working tools can reach,
-and the shell a human gets on `exec`. Built by the Instance from `images/<name>/Dockerfile`, or brought as a registry
-ref; named by a `workspace()`. j2 mounts the Harness runtime into the pod at `/opt/j2`, so the image carries zero j2
-layers and its floor is glibc + git (ADR-0037). _Avoid_: workspace image (a Workspace is a Machine; the image is the
-pod's), agent image, harness image (the kit's own), toolchain
+and the shell a human gets on `exec`. A `workspace()` names it statically (ADR-0049): a `file:` URL to a docker context
+the Machine's module ships, built by `j2 up`, or a registry ref. j2 mounts the Harness runtime into the pod at
+`/opt/j2`, so the image carries zero j2 layers and its floor is glibc + git (ADR-0037). _Avoid_: workspace image (a
+Workspace is a Machine; the image is the pod's), agent image, harness image (the kit's own), toolchain
 
 **User Container**: The optional third container in a Sandbox pod — a user-owned image the `workspace()` spec names,
 running its own entrypoint with `/work` mounted read-write and nothing injected (ADR-0005). The zero-contract seat: j2
@@ -131,6 +135,12 @@ decision), truncation (the failure Compaction exists to prevent), pruning
 to those its guards would currently accept (ADR-0029), served by the Adapter over MCP. What the Agent may **say**. The
 derived set is the state's vocabulary and the scope delivery validates against; the Menu is what a given turn is
 offered, so one state can offer different Menus as its context changes. _Avoid_: tools (unqualified), tool list
+
+**Vocabulary**: The workflow events a Machine accepts — each a `defineEvent` def: a name, a payload schema, an optional
+audience — taken as values by its `j2Setup` and scoped to that Machine alone (ADR-0011). What a Gate's accepted set and
+an Agent's Menu are drawn from, and what a delivery is validated against. A nested Machine keeps its own; the Machine
+that invokes it never sees or merges it. _Avoid_: events (unqualified — the mechanism also delivers `agent.fault`-class
+events no author declared), event manifest (the retired module export), schema
 
 **Machine shape**: The facts about a Machine that decide whether a persisted snapshot can still be read by it — state
 ids and nesting, invoke ids and srcs, transition targets — as a digest stamped on every save and compared on restore

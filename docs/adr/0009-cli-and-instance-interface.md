@@ -9,18 +9,18 @@ secrets) live in ADR-0019.
 
 ```
 my-orchestrator/
-  j2.config.ts     # instance config — minimal; convention over configuration (see below)
+  j2.config.ts     # instance config: repos, agents, images — everything a Machine names by string (ADR-0050)
   workflows/       # filename-discovered: workflows/review.ts (contract: export const machine) → "review"
-  agents/          # filename-discovered plain-data Agent definitions (ADR-0018); j2 assembles the Harness
-  images/          # filename-discovered Sandbox Images: images/<name>/Dockerfile (ADR-0037); build context = that dir
+  images/          # docker contexts the config's `images` entries point at (ADR-0037); no discovery
   manifests/       # user-supplied objects applied by `j2 up` (e.g. SealedSecrets); optional
   .env             # local secrets + deployment-varying env; uncommitted
   .j2/             # scratch; nothing durable lives on the host (state is in-cluster, ADR-0019)
 ```
 
 `workflows/<name>.ts` registers a workflow named `<name>` via `export const machine` — the one-export module contract
-(ADR-0015; vocabulary rides the machine object, so there is no manifest export). `agents/<name>.ts` registers an Agent
-definition the same way (`export default defineAgent({…})`, ADR-0018). No central registry file.
+(ADR-0015; vocabulary rides the machine object, so there is no manifest export). Workflows are the one discovered kind
+because nothing in code names one: `j2 run` and the API do. Agents, images, and repos are named from Machines, so they
+are config entries the Register types (ADR-0050).
 
 **The instance repo is a deployment assembly, not a sharing unit** (ADR-0019): reusable workflows/agents are published
 as npm packages and re-exported here; `j2.config.ts` holds only what is specific to this deployment's repos, models, and
@@ -63,12 +63,12 @@ export default defineConfig({ name: "my-orchestrator", sandbox: {} });
   stdin (ADR-0019, [ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)). Kube target: the current `kubectl`
   context (`--context` to override).
 
-## Agents ship as npm; instances compose or override
+## Machines ship as npm; instances compose or customize
 
-The kit publishes to npm under `@j2/*`; stock Agent definitions ship in **`@j2/agents`** (coder, reviewer, …). Because a
-definition is plain data (ADR-0018), composition needs no API: an instance file re-exports a stock one
-(`export { coder as default } from "@j2/agents"` — filename-discovery stays the single registration mechanism) or
-extends it by spread (`export default defineAgent({ ...coder, model: "…" })`). Adding tools/skills waits on the
+The kit publishes to npm under `@j2/*`; stock Agent definitions ship in **`@j2/agents`** (coder, reviewer, …), and a
+package may ship whole Machines with their Agents and image inside (ADR-0049). Because a definition is plain data
+(ADR-0018), composition needs no API: a Machine carries `agent(coder)`, a workflows file exports a packaged Machine
+as-is or through `customize(machine, { agents: { coder: { model: "…" } } })`. Adding tools/skills waits on the
 definition contract growing that seat (ADR-0018).
 
 ## Orchestrator HTTP API (hono, run-addressed-by-id)
@@ -191,8 +191,8 @@ since prefix probing on an open route would be a run-id enumeration oracle.
 **`j2 init` (v1).** Scaffolds the minimum runnable instance: `j2.config.ts` (root marker), `package.json` (deps on
 `@j2/*` + xstate), one starter `workflows/<name>.ts`, `images/default/Dockerfile` (the Sandbox Image every Workspace
 falls back to, ADR-0037), and `.gitignore` (`.j2/`, `.env`, `node_modules/`). `[dir]` positional (default cwd);
-`--force` to overwrite an existing `j2.config.ts`. `agents/`, `manifests/`, and `.env` are added by their later slices.
-No auto-install — it prints the next step, naming no package manager, since the instance's lockfile is what picks one
+`--force` to overwrite an existing `j2.config.ts`. `manifests/` and `.env` are added by their later slices. No
+auto-install — it prints the next step, naming no package manager, since the instance's lockfile is what picks one
 ([ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)).
 
 ## Consequences
