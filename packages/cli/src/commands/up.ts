@@ -1,12 +1,17 @@
 // `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
-// ownership → image resolution → operator → kit images → instance image → the Machine walk →
+// typecheck → ownership → image resolution → operator → kit images → instance image → the Machine walk →
 // Sandbox Images → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance Harness
 // (ADR-0031: converged by convention when a carried definition declares `workspace: "none"`,
 // deleted when none does) → a report of live workspaces still on an older image. Repos reconcile onto the
 // in-cluster source volume at orchestrator boot (ADR-0004); a configured custom provider is
 // preflighted from inside the cluster. ssh repos ask where their key comes from (ADR-0047), and a
 // converge that GENERATED one ends by saying so — the key is dead until a human registers it.
+//
+// The typecheck is FIRST and is a gate (ADR-0050): a Machine names its Agents, its composed
+// Machines, and its repos by string, and since ADR-0049 every one of those strings is typed, so a
+// wrong name is a compile error rather than an invoke-time failure mid-run. Nothing is built, and
+// nothing on the cluster is touched, before the compiler has agreed the folder is coherent.
 //
 // Images (ADR-0038, as amended by ADR-0045): `j2 up` builds every image it deploys, and every tag is
 // a content address of (its own inputs × the platform set it was built for) — `<hash>-<arch>`, with
@@ -98,6 +103,7 @@ import {
 } from "../kube.ts";
 import { activity, chooseOrBail, confirmOrBail, promptLine, readSecretInput, type Io } from "../output.ts";
 import { kindCluster, sweepImages } from "../sweep.ts";
+import { tscTypecheck } from "../typecheck.ts";
 
 export async function up(args: string[], io: Io): Promise<number> {
   const { values } = parseArgs({
@@ -124,6 +130,20 @@ export async function up(args: string[], io: Io): Promise<number> {
   const ctx = values.context ? { context: values.context as string } : {};
 
   activity(io, `j2 up — instance "${name}" → context ${context} / namespace ${namespace}`);
+
+  // --- typecheck (ADR-0050): the compiler agrees the folder is coherent, before anything is spent -
+  // A REFUSAL, not a warning, and it comes before the namespace apply as well as before the builds:
+  // the names a Machine carries (an Agent slot, a composed Machine, a `customize()` of either, a
+  // repo through the Register) are typed, so the answer here is the same answer the author's editor
+  // gives — and a converge that shipped a Machine the compiler rejects would surface it as an
+  // invoke-time failure mid-run, minutes and three image builds later.
+  activity(io, "typecheck: tsc --noEmit (the instance's own compiler)");
+  const checked = await (io.typecheck ?? tscTypecheck)(root);
+  if (!checked.ok) {
+    activity(io, "refusing: this instance does not typecheck — nothing was built and nothing was applied");
+    for (const line of checked.output.split("\n")) activity(io, `  ${line}`);
+    return 1;
+  }
 
   // --- ownership: the cluster is the record (ADR-0019) -------------------------------------------
   const ns = await kube.getJson({ kind: "namespace", name: namespace, ...ctx });

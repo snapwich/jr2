@@ -194,3 +194,54 @@ test("workspace() refuses an empty image at build time, not at the first provisi
   );
   assert.throws(() => ws(undefined, ""), /`user` must be a non-empty string/);
 });
+
+// --- the jr shape, whole (ADR-0049) -------------------------------------------------------------
+
+test("a workspace() inside a j2Setup() inside a pool() — every part, at every depth", () => {
+  // The shape a real workflow actually has (examples/coding's `jr`), and the one a converge must
+  // read in a single pass: the Pool schedules a worker Machine, the worker composes a Workspace,
+  // and the Agents sit one level below that. Two wrapper kinds, an author Machine between them,
+  // and both image seats — nothing here is reachable from the root's own `implementations.actors`.
+  const body = j2Setup({
+    events: [],
+    actors: { coder: agent(def("vllm/qwen")), reviewer: agent(def("anthropic/claude-x", "read")) },
+  }).createMachine({
+    id: "body",
+    initial: "coding",
+    states: { coding: { invoke: { src: "coder", input: { prompt: "go" } } } },
+  });
+
+  const feature = workspace(body, {
+    image: "file:///srv/pkg/tools",
+    user: "file:///srv/pkg/sshd",
+    spec: () => ({ repos: [{ name: "app" }], branch: "feat-1" }),
+  });
+
+  const worker = j2Setup({
+    events: [],
+    actors: { triager: agent(def("anthropic/claude-haiku", "none")), feature },
+  }).createMachine({ id: "worker", initial: "triaging", states: { triaging: { invoke: { src: "feature" } } } });
+
+  const workReady = defineEvent({ name: "work_ready", input: z.object({}) });
+  const top = pool(worker, {
+    source: source<{ id: string }>({
+      next: fromPromise(async (): Promise<{ item: { id: string } | null; open: number }> => ({ item: null, open: 0 })),
+      wake: workReady,
+    }),
+    itemId: (i) => i.id,
+  });
+
+  assert.deepEqual(partsOf([top]), {
+    // In walk order, and every one of them is a model `j2 up` preflights (ADR-0018) — the
+    // `workspace: "none"` triager is also what converges the Instance Harness (ADR-0031).
+    agents: [
+      { name: "triager", definition: def("anthropic/claude-haiku", "none") },
+      { name: "coder", definition: def("vllm/qwen") },
+      { name: "reviewer", definition: def("anthropic/claude-x", "read") },
+    ],
+    images: [
+      { url: "file:///srv/pkg/tools", dir: "/srv/pkg/tools", name: "tools" },
+      { url: "file:///srv/pkg/sshd", dir: "/srv/pkg/sshd", name: "sshd" },
+    ],
+  });
+});

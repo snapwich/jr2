@@ -98,12 +98,14 @@ test("a scaffolded instance can typecheck: tsconfig extends the base shipped by 
   assert.equal(pkg.scripts.typecheck, "tsc --noEmit");
   // `node:` imports in a workflow (and in the orchestrator source the program pulls in) need these.
   assert.ok(pkg.devDependencies["@types/node"]);
-  // And the compiler itself, or the script names a tool the folder does not declare: in an
-  // INSTALLED instance `tsc` then resolves to `@j2/cli`'s transitive `ts-blank-space` →
-  // `typescript`, which floats across majors — the instance checks the kit's own `.ts` sources
-  // (zero-build: `exports` point at source) with a compiler the kit never ran. Read back from the
-  // kit's OWN range rather than restated, so a kit that moves compilers and leaves the scaffold
-  // behind fails here instead of shipping instances checked by a compiler the gate never ran.
+  // And the compiler itself — `j2 up` RUNS it as a converge gate (ADR-0050), so a folder that
+  // declares none cannot converge at all. Unpinned, the script names a tool the folder does not
+  // declare: in an INSTALLED instance `tsc` then resolves to `@j2/cli`'s transitive
+  // `ts-blank-space` → `typescript`, which floats across majors — the instance checks the kit's
+  // own `.ts` sources (zero-build: `exports` point at source) with a compiler the kit never ran.
+  // Read back from the kit's OWN range rather than restated, so a kit that moves compilers and
+  // leaves the scaffold behind fails here instead of shipping instances checked by a compiler the
+  // gate never ran.
   const kit = JSON.parse(await readFile(fileURLToPath(new URL("../../../package.json", import.meta.url)), "utf8"));
   assert.equal(pkg.devDependencies.typescript, kit.devDependencies.typescript);
 });

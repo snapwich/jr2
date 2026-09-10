@@ -1,9 +1,14 @@
 // `j2 init [dir] [--name <n>]` (ADR-0009): scaffold a new instance folder — the minimum `j2 up`
 // can converge and `j2 run` can drive. v1 scope: the root marker (`j2.config.ts`), a package.json, a
-// `tsconfig.json` so the instance typechecks (and an editor's language service understands it), a
+// `tsconfig.json` the instance typechecks against (an editor's language service reads it, and so
+// does `j2 up`, which refuses to converge a folder the compiler rejects — ADR-0050), a
 // `.gitignore` for the runtime `.j2/`, ONE starter workflow (`ping`) that runs end-to-end with no
 // Workspace/Agent — a small "respond directly" Machine to trim down and build on — and
 // `images/default/Dockerfile`, the Sandbox Image every Workspace falls back to (ADR-0037).
+//
+// What it does NOT scaffold is as deliberate: there is no `agents/` folder and no `images/` scan,
+// because a Machine carries its own Agents and Sandbox Images (ADR-0049) and only what the CLI
+// names by string is discovered from files (ADR-0050). `workflows/` is the one discovered folder.
 //
 // Templates mirror `examples/starter/` verbatim (that folder is the model instance) — byte-for-byte
 // except package.json's `name`/`description`, which are per-instance. `test/init.test.ts` enforces
@@ -67,7 +72,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 // The scaffold declares the tool every script it writes runs. `typescript` is the one that had to
-// be learned the hard way: the scaffold ships a `typecheck` script but named no compiler, so `tsc`
+// be learned the hard way, and `j2 up` now RUNS this compiler as a converge gate (ADR-0050), so it
+// is load-bearing twice over: the scaffold ships a `typecheck` script but named no compiler, so `tsc`
 // resolved to whatever happened to be hoisted — in an installed instance that is `@j2/cli`'s own
 // transitive `ts-blank-space` → `typescript`, which floats across MAJORS. A scaffolded folder
 // checked its kit's sources with a compiler the kit never ran, and reported ~120 errors in
@@ -183,6 +189,18 @@ const PING_TS = `// The simplest j2 workflow: no Agent, no Workspace, no data pl
 // Module contract (ADR-0011/0015): one named export — \`machine\`. A workflow that accepts
 // external events authors with \`j2Setup({ events: [...] })\`; ping accepts none, so plain
 // xstate \`setup()\` is all it needs.
+//
+// An Agent is the next step, and it is one more entry in this same \`actors\` map — a Machine CARRIES
+// its Agents as actor slots (ADR-0049):
+//
+//   actors: { coder: agent({ model: "anthropic/claude-sonnet-4-6", instructions: "…" }) }
+//   states: { coding: { invoke: { src: "coder", input: { prompt: "…" } } } }
+//
+// The slot key IS the Agent's name; there is no \`agents/\` folder and no roster anywhere, and the
+// definition rides each Turn. \`j2 up\` finds it by walking this Machine — and typechecks the folder
+// first, so a slot name that does not exist is a compile error, never a failed run (ADR-0050).
+// \`ping\` stays Agent-free on purpose: it is the workflow that runs before any model provider,
+// Harness, or Sandbox exists.
 
 import { setup, assign, fromPromise } from "xstate";
 
@@ -192,7 +210,7 @@ type Ctx = { message: string; reply?: string };
 export const machine = setup({
   types: {} as { context: Ctx; input: Input },
   actors: {
-    // A plain actor — no flue client, no Sandbox. Stands in for any non-Agent compute a workflow runs.
+    // A plain actor — no Harness, no Sandbox. Stands in for any non-Agent compute a workflow runs.
     respond: fromPromise<string, { message: string }>(async ({ input }) => \`pong: \${input.message}\`),
   },
 }).createMachine({

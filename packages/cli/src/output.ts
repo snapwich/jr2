@@ -9,6 +9,7 @@
 import type { BuildPort } from "./build.ts";
 import type { FetchLike } from "./client.ts";
 import type { KubeAdmin, KubePort } from "./kube.ts";
+import type { TypecheckPort } from "./typecheck.ts";
 
 export type Io = {
   stdout: (s: string) => void;
@@ -23,6 +24,8 @@ export type Io = {
   kubeAdmin?: KubeAdmin;
   /** Override the image build port; default → pnpm + docker + kind subprocesses. */
   build?: BuildPort;
+  /** Override `j2 up`'s Instance typecheck (ADR-0050); default → the Instance's own `tsc`. */
+  typecheck?: TypecheckPort;
   /** Where kit-checkout detection starts walking up from (ADR-0038); default → the CLI's own
    * module directory, which is the whole signal: a checkout resolves the kit sources, an npm
    * install does not. Exists so tests can drive both worlds instead of detecting the real repo

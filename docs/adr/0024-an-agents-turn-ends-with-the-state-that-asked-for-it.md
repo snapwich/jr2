@@ -82,8 +82,8 @@ single-threaded.
 - **The Adapter renders the receipt as prose**, because a model reads text before `structuredContent`: the pick was
   delivered, the workflow consumed it, the turn is over.
 - **The Agent instructions gain the stop half.** "You MUST finish by calling `review_verdict`" is half a contract — it
-  says how to finish and never that finishing is finished. `examples/coding/agents/*.ts` say to call it **once**, then
-  stop.
+  says how to finish and never that finishing is finished. The definitions in `examples/coding/workflows/_agents.ts` (an
+  Agent is a slot on the Machine that carries it — ADR-0049) say to call it **once**, then stop.
 
 ## The Harness queues, and the queue is load-bearing here
 

@@ -180,7 +180,8 @@ flowchart TB
     init["j2 init my-instance"] --> folder["Instance folder<br/>j2.config.ts · workflows/ · images/default/ · manifests"]
     folder --> install["npm install<br/>pins the kit at one exact version"]
     install --> up["j2 up"]
-    up --> imgs["walk the Machines: build the instance image + every file: Sandbox Image context<br/>resolve Kit images: ghcr.io/snapwich or kitRegistry"]
+    up --> tsc["typecheck the instance (tsc --noEmit)<br/>a wrong Agent slot, child or repo name refuses here"]
+    tsc --> imgs["walk the Machines: build the instance image + every file: Sandbox Image context<br/>resolve Kit images: ghcr.io/snapwich or kitRegistry"]
     imgs --> ctx{"current kubectl context"}
     ctx -->|kind| kind["kind cluster on the laptop"]
     ctx -->|shared| shared["shared cluster"]
@@ -203,12 +204,13 @@ flowchart TB
   class ctx fork
 ```
 
-`j2 up` is one converging command against the current context (ADR-0019): it reads the folder, builds and loads or
-pushes every image it will deploy (ADR-0038), applies the operator if the cluster's is older (never downgrades), and
-converges the Orchestrator and the Instance Harness. Kit images come from the canonical home or a self-hosted mirror
-(ADR-0044). Steady state spends a directory walk and no docker. `j2 down` and `j2 gc` sweep what `j2 up` left
-unreachable (ADR-0039). Everything after converge is HTTP: the CLI starts runs, answers Gates, and reads status through
-the same routes the Console and any webhook use.
+`j2 up` is one converging command against the current context (ADR-0019): it typechecks the instance with the compiler
+the folder itself installed and refuses on errors (ADR-0050 — nothing is built and nothing is applied), reads the
+folder, builds and loads or pushes every image it will deploy (ADR-0038), applies the operator if the cluster's is older
+(never downgrades), and converges the Orchestrator and the Instance Harness. Kit images come from the canonical home or
+a self-hosted mirror (ADR-0044). Steady state spends a directory walk and no docker. `j2 down` and `j2 gc` sweep what
+`j2 up` left unreachable (ADR-0039). Everything after converge is HTTP: the CLI starts runs, answers Gates, and reads
+status through the same routes the Console and any webhook use.
 
 **Answers**
 

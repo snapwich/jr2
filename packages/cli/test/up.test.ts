@@ -299,6 +299,11 @@ async function mkKit(): Promise<string> {
 
 type World = { io: Io; kube: FakeCluster; built: string[]; err: string[]; confirms: string[]; choices: string[][] };
 
+/** The gate's answer for a world that is not about the gate (ADR-0050). Every converge runs the
+ * Instance's own `tsc` first; these fixtures are folders in the temp dir with no `node_modules`, so
+ * the port itself is tested against a real compiler in `typecheck.test.ts` and stubbed here. */
+const TYPECHECK_OK = async (): Promise<{ ok: boolean; output: string }> => ({ ok: true, output: "" });
+
 function mkWorld(
   root: string,
   over: {
@@ -314,6 +319,8 @@ function mkWorld(
      * none of them detect the real repo the suite happens to run inside. */
     kitDir?: string;
     imageUser?: string;
+    /** What the Instance typecheck says (ADR-0050). Default: it passes. */
+    typecheck?: Io["typecheck"];
     hostImages?: ObservedImage[];
     nodeImages?: ObservedImage[];
     sweepFails?: boolean;
@@ -332,6 +339,7 @@ function mkWorld(
     cwd: root,
     kitDir: over.kitDir ?? root,
     kubeAdmin: kube,
+    typecheck: over.typecheck ?? TYPECHECK_OK,
     build: fakeBuild(built, {
       files: over.bundleFiles,
       imageUser: over.imageUser,
@@ -360,6 +368,26 @@ function imagesOf(w: World): Record<string, any> {
   const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-images")!;
   return JSON.parse(cm.data["images.json"]);
 }
+
+test("the typecheck gate: a folder that does not compile converges nothing (ADR-0050)", async () => {
+  // The FIRST layer, and a refusal rather than a warning: since ADR-0049 a Machine's Agent slots,
+  // its composed Machines and its repos are typed, so a wrong name is a compile error here instead
+  // of an invoke-time failure mid-run — but only if nothing is spent before the compiler answers.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const errors = "workflows/task.ts(9,5): error TS2353: Object literal may only specify known properties";
+  const bad = mkWorld(root, { typecheck: async () => ({ ok: false, output: errors }) });
+
+  assert.equal(await up(["--yes"], bad.io), 1);
+  assert.match(bad.err.join("\n"), /does not typecheck/);
+  assert.match(bad.err.join("\n"), /TS2353/, "the compiler's own report is what the user reads");
+  assert.deepEqual(bad.kube.applied, [], "not even the namespace — the gate precedes ownership");
+  assert.deepEqual(bad.built, [], "no bundle, no image build");
+  assert.deepEqual(bad.confirms, [], "and no first-contact ask for a folder that cannot deploy");
+
+  const ok = mkWorld(root);
+  assert.equal(await up(["--yes"], ok.io), 0);
+  assert.match(ok.err.join("\n"), /typecheck: tsc --noEmit/, "the layer narrates itself either way");
+});
 
 test("up refuses a namespace labeled for another instance", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);

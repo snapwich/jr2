@@ -9,6 +9,18 @@
 // Module contract (ADR-0011/0015): one named export — `machine`. A workflow that accepts
 // external events authors with `j2Setup({ events: [...] })`; ping accepts none, so plain
 // xstate `setup()` is all it needs.
+//
+// An Agent is the next step, and it is one more entry in this same `actors` map — a Machine CARRIES
+// its Agents as actor slots (ADR-0049):
+//
+//   actors: { coder: agent({ model: "anthropic/claude-sonnet-4-6", instructions: "…" }) }
+//   states: { coding: { invoke: { src: "coder", input: { prompt: "…" } } } }
+//
+// The slot key IS the Agent's name; there is no `agents/` folder and no roster anywhere, and the
+// definition rides each Turn. `j2 up` finds it by walking this Machine — and typechecks the folder
+// first, so a slot name that does not exist is a compile error, never a failed run (ADR-0050).
+// `ping` stays Agent-free on purpose: it is the workflow that runs before any model provider,
+// Harness, or Sandbox exists.
 
 import { setup, assign, fromPromise } from "xstate";
 
@@ -18,7 +30,7 @@ type Ctx = { message: string; reply?: string };
 export const machine = setup({
   types: {} as { context: Ctx; input: Input },
   actors: {
-    // A plain actor — no flue client, no Sandbox. Stands in for any non-Agent compute a workflow runs.
+    // A plain actor — no Harness, no Sandbox. Stands in for any non-Agent compute a workflow runs.
     respond: fromPromise<string, { message: string }>(async ({ input }) => `pong: ${input.message}`),
   },
 }).createMachine({
