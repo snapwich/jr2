@@ -174,6 +174,28 @@ test("an instance staged as npm installs it typechecks — the kit's own sources
   assert.deepEqual(await tscTypecheck(root), { ok: true, output: "" });
 });
 
+test("a repo entry whose name is not a literal is refused, and the error IS the instruction (ADR-0050)", async () => {
+  // `defineConfig`'s refusal reaches the author only as far as tsc PRINTS it, and tsc prints a type
+  // alias by its name — so the instruction lives inline in `CheckRepoEntry` and this test is what
+  // holds it there. Driven through the real compiler, on the config file the author edits.
+  const root = await mkInstalledInstance();
+  await writeFile(
+    join(root, "j2.config.ts"),
+    `import { defineConfig } from "@j2/orchestrator";\n` +
+      // A url the config computes rather than spells: the type system has no last segment to read.
+      `const url = process.env.APP_REPO ?? "https://example.test/app.git";\n` +
+      `const config = defineConfig({ repos: [{ url }] });\n` +
+      `declare module "@j2/orchestrator" {\n  interface Register {\n    config: typeof config;\n  }\n}\n` +
+      `export default config;\n`,
+  );
+
+  const refused = await tscTypecheck(root);
+  assert.equal(refused.ok, false);
+  assert.match(refused.output, /j2\.config\.ts/, "the error lands on the entry the author wrote");
+  // tsc prints the literal as source, so the instruction's own quotes come back escaped.
+  assert.match(refused.output, /write `name: \\"…\\"` on it \(ADR-0050\)/, "and reads as the instruction itself");
+});
+
 test("the Register reaches an INSTALLED instance: a mistyped repo is what the gate refuses (ADR-0050)", async () => {
   // The whole claim in one folder, laid out the way npm lays it out — because the augmentation the
   // scaffold writes names `@j2/orchestrator` by bare specifier, and a checkout's pnpm link is not

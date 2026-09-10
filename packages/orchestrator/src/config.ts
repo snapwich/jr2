@@ -87,17 +87,20 @@ export type RepoName = [RegisteredRepos] extends [never]
 
 type RegisteredRepos = Register extends { config: { repos: infer R } } ? R : never;
 
-/** What a repo entry is replaced by when its name did not survive as a literal. Shaped as an
- * object with a `name` whose type IS the message, so the compiler's own error reads as the
- * instruction: either "Property 'name' is missing" (a bare non-literal url) or "Type 'string' is
- * not assignable to type '<message>'" (a non-literal `name`). */
-type NeedsLiteralName = {
-  name: 'j2: this repo entry\'s name is not a literal, so RepoName cannot type it — write `name: "…"` on the entry (ADR-0050)';
-};
-
 /** Refuse a catalog entry whose resolved name widens to `string`. Never widen instead: a `string`
- * `RepoName` would type-check every typo in every `workspace()` spec in the Instance. */
-type CheckRepoEntry<E> = string extends NameOfEntry<E> ? NeedsLiteralName : E;
+ * `RepoName` would type-check every typo in every `workspace()` spec in the Instance.
+ *
+ * The replacement is an object with a `name` whose type IS the instruction, so the compiler's own
+ * error carries it: "Property 'name' is missing in type … but required in type '{ name: "j2: …" }'"
+ * (a bare non-literal url) or "Type 'string' is not assignable to type '"j2: …"'" (a non-literal
+ * `name`). Written INLINE and deliberately not lifted to an alias: tsc prints an alias by its NAME,
+ * so the message would never reach the author. */
+type CheckRepoEntry<E> =
+  string extends NameOfEntry<E>
+    ? {
+        name: 'j2: this entry\'s name is not a literal — write `name: "…"` on it (ADR-0050)';
+      }
+    : E;
 
 /** The refusal, positioned so the error lands on the offending ENTRY. A homomorphic mapped type
  * over the const-inferred tuple keeps it readonly and keeps each index its own assignment site. */
@@ -250,9 +253,9 @@ export type J2Config = {
  *
  * The `CheckRepos<T>` intersection is a refusal, not a widening: an entry whose resolved name is
  * not a literal (a url read from `process.env`, a name spread in from a variable) is replaced by
- * {@link NeedsLiteralName}, so the compiler rejects that entry and says what to write. Widening to
- * `string` instead would cost the whole guarantee — every `workspace()` spec in the Instance would
- * accept every typo.
+ * {@link CheckRepoEntry}'s instruction type, so the compiler rejects that entry and prints what to
+ * write. Widening to `string` instead would cost the whole guarantee — every `workspace()` spec in
+ * the Instance would accept every typo.
  */
 export function defineConfig<const T extends J2Config>(c: T & CheckRepos<T>): T {
   return c;
