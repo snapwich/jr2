@@ -155,10 +155,10 @@ sequenceDiagram
 A Machine state that invokes an Agent derives its Menu from its own transitions (ADR-0015), narrowed to the events its
 guards would accept right now (ADR-0029). The Actor registers that Menu when the state is entered and removes it when
 the state exits, so the Adapter never learns which Turn is live: it asks per connection. A pick is a Gate delivery,
-validated against the Workflow's vocabulary, and lands on the invoking state at any nesting depth. When the state stops
-waiting, the Turn is over: the Actor aborts the Submission, because an Agent still generating after its state moved on
-is an unaccounted-for writer in the Workspace (ADR-0024). A Runaway is ended by the Harness, rerolled once, then a fault
-(ADR-0035).
+validated against the invoking Machine's Vocabulary, and lands on the invoking state at any nesting depth. When the
+state stops waiting, the Turn is over: the Actor aborts the Submission, because an Agent still generating after its
+state moved on is an unaccounted-for writer in the Workspace (ADR-0024). A Runaway is ended by the Harness, rerolled
+once, then a fault (ADR-0035).
 
 **Answers**
 

@@ -165,6 +165,19 @@ function inlineMachines(node: StateNode<any, any>): AnyStateMachine[] {
   });
 }
 
+/** `JSON.stringify` with object keys sorted at every depth — a value's identity, not its spelling. */
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, v) =>
+    v !== null && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.keys(v as Record<string, unknown>)
+            .sort()
+            .map((k) => [k, (v as Record<string, unknown>)[k]]),
+        )
+      : v,
+  );
+}
+
 /**
  * Everything the given Machines carry, themselves and through the Machines they compose — deduped,
  * in walk order.
@@ -186,7 +199,9 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     // Keyed on the PAIR, serialized whole: a separator character inside a template literal is
     // either ambiguous (a slot key may contain it) or, if chosen for being impossible, a control
     // byte that makes this module binary to git — invisible to diff, blame and grep, forever.
-    const key = JSON.stringify(["agent", name, definition]);
+    // Serialized CANONICALLY (keys sorted at every depth): two structurally equal definitions
+    // written in a different key order are one Agent, and must collapse to one preflight.
+    const key = canonical(["agent", name, definition]);
     if (seen.has(key)) return;
     seen.add(key);
     agents.push({ name, definition });
@@ -198,7 +213,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   // same two origins and the same resolution.
   const collectImage = (url: string | undefined): void => {
     if (url === undefined || !isImageContext(url)) return;
-    const key = JSON.stringify(["image", url]);
+    const key = canonical(["image", url]);
     if (seen.has(key)) return;
     seen.add(key);
     const dir = fileURLToPath(url);

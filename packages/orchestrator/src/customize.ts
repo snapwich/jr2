@@ -93,24 +93,18 @@ type ChildSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AnySta
 /** The child Machine under one slot key, constrained so `Customize` may recurse into it. */
 type ChildAt<M extends AnyStateMachine, K extends string> = Extract<LogicAt<M, K>, AnyStateMachine>;
 
-/** One step through a j2 wrapper, or the Machine itself when it is not one. The step is taken on
- * the wrapper's MARKER (`J2Wrapper`, parts.ts), never on a slot's spelling — an author is free to
- * name a slot `body` or `worker`, and routing through it because of the name would offer the
- * Agents of a Machine the composer never named. */
-type Through<M extends AnyStateMachine> = M extends J2Wrapper<infer TBody> ? TBody : M;
-
 /**
  * The Machine a `customize()` actually reaches: j2's wrappers are transparent to their body, so
- * this is the first Machine an AUTHOR wrote. It mirrors `wrapperBodyOf`'s runtime walk, and reads
- * the SAME record — `J2Wrapper` is the type half of the stamp `attachWrapperBody` writes — so both
- * stop at the same Machine and what the compiler offers is what the call retunes.
- *
- * Unrolled rather than recursive: `Customize` is already a recursive type (a child's parts are a
- * `Customize` of the child), and a second recursion inside it makes the pair too deep to
- * instantiate. Two steps is every stack j2 builds — `pool(workspace(body))`, its deepest — and a
- * third wrapper around those would be j2 wrapping its own wrapper, which nothing does.
+ * this is the first Machine an AUTHOR wrote. It mirrors `bodyOf`'s runtime walk, and reads the
+ * SAME record — `J2Wrapper` is the type half of the stamp `attachWrapperBody` writes — so both
+ * stop at the same Machine and what the compiler offers is what the call retunes. Recursive in
+ * tail position, as the runtime walk is unbounded: however many wrappers a composer stacks, the
+ * compiler and the call answer alike.
  */
-type Reached<M extends AnyStateMachine> = Through<Through<M>>;
+// Each step is taken on the wrapper's MARKER (`J2Wrapper`, parts.ts), never on a slot's spelling —
+// an author is free to name a slot `body` or `worker`, and routing through it because of the name
+// would offer the Agents of a Machine the composer never named.
+type Reached<M extends AnyStateMachine> = M extends J2Wrapper<infer TBody> ? Reached<TBody> : M;
 
 /**
  * What may be retuned on one Machine, mirroring the DECLARATION's own shape and recursively

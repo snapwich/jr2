@@ -196,6 +196,34 @@ test("a repo entry whose name is not a literal is refused, and the error IS the 
   assert.match(refused.output, /write `name: \\"…\\"` on it \(ADR-0050\)/, "and reads as the instruction itself");
 });
 
+test("the refusal covers every non-literal shape: string shorthand and a computed `name` (ADR-0050)", async () => {
+  // Three ways an entry's name can widen to `string`; the bare-object url is pinned above. The other
+  // two are the shorthand (`repos: [url]`) and an explicit name the config computes — both must be
+  // refused by the same inline instruction, or one shape would silently type every typo.
+  const shapes = {
+    shorthand:
+      `const url = process.env.APP_REPO ?? "https://example.test/app.git";\n` +
+      `const config = defineConfig({ repos: [url] });\n`,
+    computedName:
+      `const name = process.env.APP_NAME ?? "app";\n` +
+      `const config = defineConfig({ repos: [{ url: "https://example.test/app.git", name }] });\n`,
+  };
+  for (const [shape, body] of Object.entries(shapes)) {
+    const root = await mkInstalledInstance();
+    await writeFile(
+      join(root, "j2.config.ts"),
+      `import { defineConfig } from "@j2/orchestrator";\n` +
+        body +
+        `declare module "@j2/orchestrator" {\n  interface Register {\n    config: typeof config;\n  }\n}\n` +
+        `export default config;\n`,
+    );
+    const refused = await tscTypecheck(root);
+    assert.equal(refused.ok, false, `${shape}: refused`);
+    assert.match(refused.output, /j2\.config\.ts/, `${shape}: the error lands on the entry`);
+    assert.match(refused.output, /write `name: \\"…\\"` on it \(ADR-0050\)/, `${shape}: and reads as the instruction`);
+  }
+});
+
 test("the Register reaches an INSTALLED instance: a mistyped repo is what the gate refuses (ADR-0050)", async () => {
   // The whole claim in one folder, laid out the way npm lays it out — because the augmentation the
   // scaffold writes names `@j2/orchestrator` by bare specifier, and a checkout's pnpm link is not

@@ -66,9 +66,13 @@ e2e-kind-up:
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
     @echo "now: \`just e2e-kind\`"
 
-# run the kind e2e tier (needs `just e2e-kind-up`)
+# run the kind e2e tier (needs `just e2e-kind-up`). The tier addresses the kind cluster by its own
+# exported kubeconfig, never the shell's current context: `j2 up` converges whatever `kubectl`
+# points at (ADR-0019), and a shell pointed at a real cluster would otherwise fail every scenario
+# at "is serving" — or worse, converge into it.
 e2e-kind:
-    pnpm --filter @j2/e2e test:e2e:kind
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
+    KUBECONFIG=features/.tmp/kubeconfig pnpm --filter @j2/e2e test:e2e:kind
 
 # render the operator install manifest shipped inside the npm package (ADR-0019; check in the result)
 operator-manifest:
@@ -231,4 +235,5 @@ e2e-dist-up:
 
 # run the @dist e2e tier (needs `just e2e-dist-up`, and network on every run — the storage is wiped)
 e2e-dist:
-    pnpm --filter @j2/e2e test:e2e:dist
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
+    KUBECONFIG=features/.tmp/kubeconfig pnpm --filter @j2/e2e test:e2e:dist

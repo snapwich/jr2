@@ -138,7 +138,7 @@ export const KIT_VERSION = (
   }
 ).version;
 
-/** Token limits for one model — flue registration options, keyed per model because limits are
+/** Token limits for one model — the Harness's provider-registration options, keyed per model because limits are
  * properties of the MODEL, not the endpoint (agents pick models per definition, ADR-0018). */
 export type HarnessProviderModel = {
   /** The model's context window, in tokens (vLLM: `max_model_len`). */
@@ -147,8 +147,8 @@ export type HarnessProviderModel = {
   maxTokens?: number;
 };
 
-/** A custom model provider (ADR-0018) — what the stock Harness registers via flue's
- * `registerProvider(id, { api, baseUrl, … })`. The vLLM/Ollama path: an OpenAI-compatible
+/** A custom model provider (ADR-0018) — what the stock Harness registers with pi's
+ * `registerProvider(id, { api, baseUrl, … })` (ADR-0027). The vLLM/Ollama path: an OpenAI-compatible
  * endpoint under an instance-chosen provider id. */
 export type HarnessProvider = {
   /** The provider id model specifiers use (`<id>/<model>`), e.g. `vllm`. */
