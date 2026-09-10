@@ -91,12 +91,13 @@ the Machine's module ships, built by `j2 up`, or a registry ref. j2 mounts the H
 `/opt/j2`, so the image carries zero j2 layers and its floor is glibc + git (ADR-0037). _Avoid_: workspace image (a
 Workspace is a Machine; the image is the pod's), agent image, harness image (the kit's own), toolchain
 
-**User Container**: The optional third container in a Sandbox pod — a user-owned image the `workspace()` spec names,
-running its own entrypoint with `/work` mounted read-write and nothing injected (ADR-0005). The zero-contract seat: j2
-never builds, probes, or commands it. For services that must run unattended (an sshd for managed access) and for
-sessions whose credentials must stay out of the Agent's mount namespace (a forwarded ssh agent). Not port isolation —
-the pod has one network namespace. _Avoid_: sidecar (its deployment shape, not what it is), debug container (an
-ephemeral attach is a one-off mechanism, not a seat), dev container
+**User Container**: The optional third container in a Sandbox pod — a user-owned image a `workspace()` names statically,
+in the same two shapes as the Sandbox Image and beside it (`user`, ADR-0049), running its own entrypoint with `/work`
+mounted read-write and nothing injected (ADR-0005). The zero-contract seat: j2 never builds, probes, or commands it. For
+services that must run unattended (an sshd for managed access) and for sessions whose credentials must stay out of the
+Agent's mount namespace (a forwarded ssh agent). Not port isolation — the pod has one network namespace. _Avoid_:
+sidecar (its deployment shape, not what it is), debug container (an ephemeral attach is a one-off mechanism, not a
+seat), dev container
 
 **Instance ID**: The identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id` on the Harness
 wire. Successive prompts to the same `(Agent name, instance id)` continue one conversation; j2 computes ids and persists

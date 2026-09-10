@@ -417,14 +417,14 @@ test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", a
   assert.notEqual(await imageContextDigest(edited), await imageContextDigest(image), "a Dockerfile edit moves it");
 });
 
-test("`images/` never enters the instance bundle, so a Dockerfile edit cannot roll the Orchestrator", async () => {
-  // ADR-0038 rejects Deployment env for the ref map because a Dockerfile edit would otherwise roll
-  // the Orchestrator and put every live run through snapshot restore. `pnpm deploy` bundles the
-  // package whole, so `images/` rode into the image and the INSTANCE tag moved anyway — the
-  // rationale was false in fact. `images/default` is host-side only (`j2 up` checks that one path;
-  // the Orchestrator resolves refs from the `j2-images` ConfigMap), so the tree is pure dead weight.
-  // A context a MODULE ships is a different tree entirely: it lives beside the workflow and rides
-  // the bundle, which is what lets the pod compute its digest at all (ADR-0049).
+test("`images/` rides the instance bundle, because the deployed Orchestrator reads that folder back", async () => {
+  // A Machine names its Sandbox Image context by `file:` URL, and the pod resolves it by computing
+  // the context digest AGAIN off its own copy of the folder (ADR-0049) — no path table on either
+  // side. So a context under `images/default` that a `workspace()` names by URL must be in the
+  // bundle: dropping it converged green and failed every provision on an ENOENT. The consequence is
+  // accepted, not worked around — the folder is instance-image content, so editing the Dockerfile
+  // moves the INSTANCE tag and rolls the Orchestrator. ADR-0038's ConfigMap still earns its keep:
+  // it keeps the resolved REF off the pod template, so a rebuilt Sandbox Image alone rolls nothing.
   const port = (dockerfile: string) =>
     stagingPort(() => ({
       "package.json": `{"name":"inst"}`,
@@ -432,17 +432,20 @@ test("`images/` never enters the instance bundle, so a Dockerfile edit cannot ro
       "images/default/Dockerfile": dockerfile,
     }));
 
-  assert.equal(
+  assert.notEqual(
     await hashOf(port("FROM node:24-slim\nRUN apt-get install -y cargo\n")),
     await hashOf(port("FROM node:24-slim\n")),
-    "editing images/default/Dockerfile leaves the instance image's address alone",
+    "editing images/default/Dockerfile moves the instance image's address — the folder is content",
   );
 
   const scratchRoot = await mkdtemp(join(tmpdir(), "j2-build-"));
   const staged = await stageInstanceBundle(port("FROM node:24-slim\n"), scratchRoot);
   try {
-    await assert.rejects(stat(join(staged.dir, "images")), "the staged bundle carries no images/ at all");
-    assert.ok(await stat(join(staged.dir, "workflows")), "…and everything the Orchestrator DOES read stays");
+    assert.ok(
+      await stat(join(staged.dir, "images", "default", "Dockerfile")),
+      "the staged bundle carries the context the pod will digest",
+    );
+    assert.ok(await stat(join(staged.dir, "workflows")), "…beside the modules that name it");
   } finally {
     await staged.dispose();
   }

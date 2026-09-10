@@ -1491,6 +1491,16 @@ export type StagedBundle = {
  * used to paper over it hid exactly the drift it was supposed to expose. With an empty exclude set
  * the failure inverts — anything that ever varies again re-tags on every converge, in the open.
  *
+ * `images/` rides along with the rest, and MUST (ADR-0049). A Machine names a Sandbox Image context
+ * by `file:` URL — `import.meta.resolve("../images/default")` — and the DEPLOYED Orchestrator reads
+ * that folder back: it recomputes the context digest at provision to look up the ref `j2 up`
+ * published under it, which is what lets the two sides agree with no path table between them.
+ * Dropping the folder here (it used to be dropped, as host-side-only) converged green and then
+ * failed every provision of such a Machine on an ENOENT the converge could never see. So the
+ * scaffolded Dockerfile is instance-image content: editing it re-tags the instance and rolls the
+ * Orchestrator. ADR-0038's map still buys what it was taken for — the resolved REF stays out of the
+ * pod template, so a rebuilt Sandbox Image alone rolls nothing.
+ *
  * Staging precedes the staleness decision, so `pnpm deploy` (~1s) runs even on the skip path; the
  * docker build it guards is the expensive half. The Dockerfile salts the hash — it is image content
  * that never lands in the context (it rides `docker build -f -`).
@@ -1500,19 +1510,14 @@ export async function stageInstanceBundle(port: BuildPort, instanceDir: string):
   const dir = join(scratch, "bundle");
   try {
     await port.bundle(instanceDir, dir);
-    // `images/` is HOST-SIDE ONLY (ADR-0037): `discoverImages` is called by `j2 up` alone, and the
-    // Orchestrator resolves every Sandbox Image from the `j2-images` ConfigMap it never scans a
-    // filesystem for. Dropped BEFORE the hash because leaving it in falsified ADR-0038's own
-    // rationale for that ConfigMap: editing only `images/default/Dockerfile` moved the INSTANCE
-    // tag, which is a pod-template change, which rolled the Orchestrator and put every live run
-    // through snapshot restore — the exact cost the map-not-env decision was taken to avoid.
-    await rm(join(dir, "images"), { recursive: true, force: true });
     // pnpm leaves two files that are nothing but a record of where and when this staging happened
     // — `.modules.yaml` (a `prunedAt` stamp and the scratch paths, written by `pnpm deploy`) and
     // `.pnpm-workspace-state.json` (a `lastValidatedTimestamp`, written by `pnpm install`) — and
-    // the image reads neither. Both go beside `images/`: the timestamp alone re-addressed every
-    // pnpm bundle on every converge, which is a pod-template change on a no-op `up`. The rest of
-    // the where-and-when — the shims' baked `NODE_PATH` — the seal corrects.
+    // the image reads neither. Both go — they are the one exception to "nothing is excluded",
+    // earned because they are a record OF the staging rather than content of it: the timestamp
+    // alone re-addressed every pnpm bundle on every converge, which is a pod-template change on a
+    // no-op `up`. The rest of the where-and-when — the shims' baked `NODE_PATH` — the seal
+    // corrects.
     for (const record of [".modules.yaml", ".pnpm-workspace-state.json"]) {
       await rm(join(dir, "node_modules", record), { force: true });
     }

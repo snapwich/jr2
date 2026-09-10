@@ -41,8 +41,9 @@ built.
 - **No image config at all.** The Harness image was once configured as `sandbox.image` because the Sandbox pod was the
   only place a Harness ran — a misnomer once the Instance Harness exists, and config is the wrong seat regardless:
   `j2 up` builds and resolves every image it deploys ([ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)), and the
-  per-Workspace images (Sandbox Image, User Container) are named by the `workspace()` spec
-  ([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md),
+  per-Workspace images (Sandbox Image, User Container) are static `workspace()` options carried by the Machine itself
+  ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md),
+  [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md),
   [ADR-0005](0005-sandbox-pod-composition.md)). `sandbox.image`, `sandbox.adapterImage`, and `operator.image` dissolve;
   the `sandbox` config section disappears until something genuinely pod-shaped and user-tunable exists.
 

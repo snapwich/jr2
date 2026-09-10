@@ -25,7 +25,8 @@
 // built); only its `ENTRYPOINT`/`CMD` do not run, because a container has one command and the
 // Harness must own it — its death must be the container's death, which is what the operator's
 // Ready probe and restart semantics at `:8080` mean. A process the image WANTS running is not
-// lost: it has its own seat, the User Container (ADR-0005), composed here when the spec names it.
+// lost: it has its own seat, the User Container (ADR-0005), composed here when the wrapper's static
+// `user` option names an image (ADR-0049).
 //
 // So this module composes the whole pod — two init steps and up to three containers:
 //
@@ -115,8 +116,9 @@ const FALLBACK_HOME = "/home/j2";
  * else: the container never starts, so it has no logs, and the pod sits in this waiting state until
  * the provision times out — which then blames the preflight for a container the preflight never got
  * to run. A BUILT image is caught earlier and cheaper (the converge's `docker inspect` recorded the
- * string; `unrunnableUser` in images.ts reads it before anything is applied), so this is the brought
- * ref's path: never inspected, never given the uid-1000 fallback, knowable only from the cluster.
+ * string; `resolveSandboxImage` in images.ts judges it into `refusedUser` before anything is
+ * applied), so this is the brought ref's path: never inspected, never given the uid-1000 fallback,
+ * knowable only from the cluster.
  *
  * Reason and message are BOTH required. The reason alone covers a missing Secret or ConfigMap key
  * too — a different fault with a different fix — and only the message distinguishes them.
@@ -322,8 +324,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   });
 
   /**
-   * The User Container (ADR-0005): the opt-in third seat, composed only when the spec names an
-   * image. The ZERO-CONTRACT seat — j2 injects nothing, probes nothing, overrides nothing. So:
+   * The User Container (ADR-0005): the opt-in third seat, composed only when the wrapper's static
+   * `user` option names an image (ADR-0049). The ZERO-CONTRACT seat — j2 injects nothing, probes nothing, overrides nothing. So:
    * no `command` (its own entrypoint runs, untouched), no `env`, no `envFrom`, no `/opt/j2`, no CA
    * bundle, no ports, no resources. Every key j2 forwarded would be a crack in "j2 puts nothing in
    * it", and widening the one authoring string to an object stays compatible if a concrete need

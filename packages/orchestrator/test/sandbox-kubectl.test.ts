@@ -381,7 +381,8 @@ const RUNS_AS_ROOT = "container has runAsNonRoot and image will run as root";
 
 test("a BROUGHT ref that runs as root fails the provision by name, not as the preflight's timeout", async () => {
   // The one seat-fault a converge cannot see coming (ADR-0037): a registry ref is never built and
-  // never inspected, so nothing recorded its `USER` and `unrunnableUser` has nothing to judge. The
+  // never inspected, so nothing recorded its `USER` and `resolveSandboxImage` reports no
+  // `refusedUser` to judge it by. The
   // kubelet refuses it against the hardened seat, the `preflight` init container never STARTS, and
   // a container that never started has no logs — so the pod is the only witness, and without this
   // read the 120s timeout blames a probe that never ran.

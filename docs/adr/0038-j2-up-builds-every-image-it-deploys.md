@@ -59,9 +59,10 @@ of build-it-yourself-first image on top of that.
   one kubelet propagation after `j2 up`, and that two workspaces provisioned seconds apart can straddle a change — which
   was already true across a roll.
 - **The `images` config block is deleted outright — no key, no env escape hatch.** Its `harness`/`adapter`/`operator`
-  entries were kit-dev overrides that auto-build now covers; the User Container is composed per Workspace by the
-  `workspace()` spec, not by config (ADR-0005), so no `user` entry belongs here either. Nobody should be able to run a
-  patched Harness against a real cluster: that is ADR-0027's "no eject hatch" enforced rather than merely stated.
+  entries were kit-dev overrides that auto-build now covers; the User Container's image is a static `workspace()` option
+  the Machine carries, not config (ADR-0005, [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), so
+  no `user` entry belongs here either. Nobody should be able to run a patched Harness against a real cluster: that is
+  ADR-0027's "no eject hatch" enforced rather than merely stated.
 - **`j2 up` reports live workspaces on an older image; it never re-images one.** Provision is create-if-absent, so a
   running Sandbox keeps the image its CR was created with — the only safe behavior, since replacing the pod takes the
   worktrees and unpushed commits with it, which is precisely the Continuity break
