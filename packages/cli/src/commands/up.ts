@@ -8,10 +8,12 @@
 // preflighted from inside the cluster. ssh repos ask where their key comes from (ADR-0047), and a
 // converge that GENERATED one ends by saying so — the key is dead until a human registers it.
 //
-// The typecheck is FIRST and is a gate (ADR-0050): a Machine names its Agents, its composed
-// Machines, and its repos by string, and since ADR-0049 every one of those strings is typed, so a
-// wrong name is a compile error rather than an invoke-time failure mid-run. Nothing is built, and
-// nothing on the cluster is touched, before the compiler has agreed the folder is coherent.
+// The typecheck is FIRST and is a gate (ADR-0050): a Machine names its Agents and its composed
+// Machines by string, and since ADR-0049 those strings are typed, so a wrong name is a compile
+// error rather than an invoke-time failure mid-run. Repo names are NOT typed yet — ADR-0050's
+// Register is decided and unbuilt — so a mistyped repo still fails at attach, not here. Nothing is
+// built, and nothing on the cluster is touched, before the compiler has agreed the folder is
+// coherent.
 //
 // Images (ADR-0038, as amended by ADR-0045): `j2 up` builds every image it deploys, and every tag is
 // a content address of (its own inputs × the platform set it was built for) — `<hash>-<arch>`, with
