@@ -71,13 +71,13 @@ built.
 
 ## Consequences
 
-- **`agentRun`'s resolution grows one arm**: explicit `endpoint` (tests) → `workspace: "none"` → Instance Harness
+- **The Agent actor's resolution grows one arm**: explicit `endpoint` (tests) → `workspace: "none"` → Instance Harness
   (deterministic Service DNS) → enclosing `workspace()`'s ambient handles → loud error naming the definition's
   `workspace` value.
 - **A `"none"` conversation must not be continued if the Instance Harness pod restarts** — same live-only contract as
   every conversation (ADR-0023): the Deployment restores the endpoint, not the history.
 - **An instance with no `"none"` definitions deploys nothing new.** The feature is invisible until the first
-  `defineAgent({ ..., workspace: "none" })`, which is its entire user-facing surface.
+  `agent({ ..., workspace: "none" })` a Machine carries, which is its entire user-facing surface.
 - **The harness conformance suite (ADR-0027) gains the Menu-only shape**: a Turn whose definition withholds every
   Working tool, settled by pick alone — no infra, same scripted provider.
 - **CONTEXT.md**: Harness's "inside a Sandbox" loosens to name the second placement; **Instance Harness** becomes a

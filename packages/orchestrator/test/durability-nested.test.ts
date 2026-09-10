@@ -3,7 +3,7 @@
 // map per run — so restore at depth needs exactly two host behaviors:
 //   1. the admission is ledgered through the run binding the moment flue admits, from any
 //      nesting depth (the binding rides the actor SYSTEM, shared by the whole tree);
-//   2. `reattachAgentRuns` walks the snapshot TREE and rewrites every agentRun child input
+//   2. `reattachAgentRuns` walks the snapshot TREE and rewrites every Agent child input
 //      whose iid has a ledgered admission (drop `prompt`, set `attach`) — no per-level scoping.
 // Both the invoke'd-child and spawnChild'd-child shapes are proven end-to-end through a real
 // RunHost pair sharing one store — the exact orchestrator-restart sequence.
@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, spawnChild } from "xstate";
-import { agentRunActorWith } from "../src/actor.ts";
+import { agentActorWith } from "../src/actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
 import { reattachAgentRuns } from "../src/durability.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
@@ -20,8 +20,8 @@ import type { SnapshotStore } from "../src/snapshot-store.ts";
 
 type Log = { admissions: AgentRunInput[]; settled: AgentAdmission[]; aborted: string[] };
 
-/** An agentRun bound to a port that records admits + settles and parks forever (never settles). */
-function recordingAgentRun(log: Log) {
+/** An Agent slot over a port that records admits + settles and parks forever (never settles). */
+function recordingAgent(log: Log) {
   let seq = 0;
   const port: AgentRunPort = {
     abort(_agentName, instanceId) {
@@ -41,24 +41,26 @@ function recordingAgentRun(log: Log) {
       return new Promise<void>(() => {}); // stays live until abandoned
     },
   };
-  return agentRunActorWith(() => port);
+  return agentActorWith(() => port, { model: "test/model", instructions: "i" });
 }
 
 /** The body: the agent invocation lives HERE, two levels below the run root. */
 function innerMachine(log: Log) {
   return setup({
     types: {} as { context: { iid: string }; input: { iid: string } },
-    actors: { agentRun: recordingAgentRun(log) },
+    actors: { coder: recordingAgent(log) },
   }).createMachine({
     id: "inner",
     context: ({ input }) => ({ iid: input.iid }),
     initial: "coding",
     states: {
       coding: {
+        // A plain `setup()` machine, deliberately: its input is already finalized (this suite is
+        // about the ledger at depth, not the menu walk), so it names the Agent itself.
         invoke: {
-          id: "agentRun",
-          src: "agentRun",
-          input: ({ context }) => ({
+          id: "coder",
+          src: "coder",
+          input: ({ context }: { context: { iid: string } }) => ({
             agentName: "coder",
             instanceId: context.iid,
             endpoint: "http://harness.invalid",

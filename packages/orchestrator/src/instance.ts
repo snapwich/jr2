@@ -10,7 +10,7 @@
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
 // The one design point worth stating (ADR-0011 static-import doctrine): a workflow module is
-// self-contained — it imports `agentRun`/`gate` itself and lists them in its own `setup` actors;
+// self-contained — it declares its Agents and imports `gate` itself, in its own `setup` actors;
 // everything live is constructed per-invocation from serializable input (the flue client from
 // `input.endpoint`). The host injects NOTHING into workflow machines; `WorkflowDef.provide`
 // remains a seam for tests, not a wiring obligation.
@@ -22,7 +22,6 @@ import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
-import { loadAgents } from "./agent.ts";
 import { createEchoPush } from "./harness-client.ts";
 import { createApp } from "./http.ts";
 import type { RepoReconcile } from "./repos.ts";
@@ -111,14 +110,6 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   }
   await store.init();
 
-  // The host's own view of the instance's Agent definitions (ADR-0028/0031): `agentRun` reads a
-  // definition's `workspace` to place its Turn — the same `agents/` discovery `j2 up` ConfigMaps
-  // for the Harness, loaded here for the resolution seat. Only the resolved access is kept: the
-  // Harness runs the definitions; the host merely places them.
-  const workspaceByAgent = new Map(
-    (await loadAgents(opts.dir)).map((a) => [a.name, a.definition.workspace ?? ("write" as const)]),
-  );
-
   // Resolved BEFORE the host: the Instance token is also the echo bearer (ADR-0023), so the
   // host's echo pusher closes over it. Served under in step 4 below, unchanged.
   const instanceToken = opts.instanceToken ?? mintInstanceToken();
@@ -127,7 +118,6 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     store,
     reconcile: opts.reconcile,
     sandbox: opts.sandbox,
-    agentWorkspace: (agent) => workspaceByAgent.get(agent),
     instanceHarness: opts.instanceHarness,
     // The run-narrative echo (ADR-0023): tee a run's feed to its enclosing Workspace's Harness,
     // authenticated as the instance. The wire push is here and the fire-and-forget is the

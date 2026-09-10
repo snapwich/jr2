@@ -136,10 +136,10 @@ test("an un-provided template Machine (empty actor slot) serializes the same str
   const template = createMachine({
     id: "tpl",
     initial: "working",
-    states: { working: { invoke: { src: "agentRun" }, onDone: "done" }, done: { type: "final" } },
+    states: { working: { invoke: { src: "coder" }, onDone: "done" }, done: { type: "final" } },
   });
   const tplDoc = serializeMachine("tpl-wf", template);
-  assert.equal(findState(tplDoc.root, "tpl.working")?.invoke[0]?.src, "agentRun");
+  assert.equal(findState(tplDoc.root, "tpl.working")?.invoke[0]?.src, "coder");
   assert.deepEqual(JSON.parse(JSON.stringify(tplDoc)), tplDoc);
 });
 

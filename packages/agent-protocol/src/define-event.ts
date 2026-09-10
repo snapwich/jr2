@@ -18,7 +18,7 @@ export type EventSemantics = "ack" | "deferred" | "poll";
 
 /**
  * Who may deliver the event (ADR-0015). The invoking actor kind is the primary router — an
- * `agentRun` menu draws audience ∈ {agent, any}, a `gate` draws {external, any} — so this tag
+ * an Agent's menu draws audience ∈ {agent, any}, a `gate` draws {external, any} — so this tag
  * exists to RESTRICT: tag the security-sensitive events (`approve: "external"` guarantees no
  * agent state can ever offer it) and leave the rest at the `"any"` default.
  */

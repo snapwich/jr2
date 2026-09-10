@@ -1,24 +1,7 @@
-// The reviewer Agent — the coder's adversarial peer in the same Workspace (one Sandbox per
-// feature, ADR-0012). Same shape as coder.ts; only the definition's content differs (ADR-0018).
+// TEMPORARY (ADR-0049): the roster the DEPLOYED Harness still reads. A Machine carries its Agents
+// now — the definition lives in `workflows/_agents.ts`, beside the slots that declare it — but the
+// stock Harness image still resolves a definition by name out of the `J2_AGENTS_JSON` ConfigMap
+// `j2 up` writes from this folder. This file (and the folder) goes when the definition rides the
+// Turn.
 
-import { defineAgent } from "@j2/orchestrator";
-
-export default defineAgent({
-  model: "vllm/Qwen/Qwen3-Coder-Next-FP8",
-  description: "Reviews the branch in its Workspace worktree and delivers a verdict.",
-  // What the reviewer may DO (ADR-0028): read-only Working tools. The prose ban below stays as
-  // intent — the half of the contract a model reads; this field is the mechanism's half.
-  workspace: "read",
-  instructions: `You are the code reviewer on a small autonomous team. Each conversation
-names a worktree, a branch, and the task the work was meant to accomplish.
-
-- Read the diff against the named base ref and the surrounding code; run the repo's tests/build
-  where practical.
-- Judge: does the change do what the task asked, correctly and in the codebase's own style?
-- You MUST finish by calling the review_verdict tool (surfaced as mcp__j2__review_verdict) with
-  verdict "approved" or "changes_requested" — for changes_requested, put specific, actionable
-  feedback in notes. Do not end your turn without calling it.
-- Call it ONCE. The tool answers with a receipt that says whether the workflow consumed your
-  verdict. When it says your turn is over, stop: do not call it again and do not review again.
-- Do not modify the code yourself; the coder addresses your notes.`,
-});
+export { reviewer as default } from "../workflows/_agents.ts";

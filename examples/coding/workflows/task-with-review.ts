@@ -14,7 +14,8 @@
 
 import { assign } from "xstate";
 import { z } from "zod";
-import { defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
+import { coder, reviewer } from "./_agents.ts";
 
 // ---------------------------------------------------------------------------------------------
 // The door (ADR-0033): what a caller sends to start a run, declared on the `workspace()` that is
@@ -88,6 +89,8 @@ const body = j2Setup({
     output: { outcome: "approved" | "lost"; branch: string };
   },
   events: [requestReview, reviewVerdict, approve, requestChanges],
+  // The two Agents this Machine carries (ADR-0049) — the slot key is the Agent's name.
+  actors: { coder: agent(coder), reviewer: agent(reviewer) },
   guards: {
     underReviewCap: ({ context }: { context: BodyCtx }) => context.rounds < (context.reviewRounds ?? 3),
   },
@@ -104,8 +107,8 @@ const body = j2Setup({
     // agent's context. A terminal agent.fault (j2 already retried/nudged) parks for a human.
     coding: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }) => ({ agent: "coder", prompt: coderPrompt(context) }),
+        src: "coder",
+        input: ({ context }) => ({ prompt: coderPrompt(context) }),
       },
       on: {
         request_review: { target: "reviewing" },
@@ -118,8 +121,8 @@ const body = j2Setup({
 
     reviewing: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }) => ({ agent: "reviewer", prompt: reviewerPrompt(context) }),
+        src: "reviewer",
+        input: ({ context }) => ({ prompt: reviewerPrompt(context) }),
       },
       on: {
         review_verdict: [

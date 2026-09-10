@@ -87,7 +87,7 @@ export function hydrateSnapshot(
  * live conversation. */
 type Admission = { streamUrl: string; offset: string; submissionId: string; instanceId?: string };
 
-/** A persisted `agentRun` child input: `instanceId` (the durable handle) beside `agentName` —
+/** A persisted Agent child input: `instanceId` (the durable handle) beside `agentName` —
  * both strings by construction (machine children carry neither at top level; `endpoint` can no
  * longer identify it, being ambient-optional since ADR-0016). */
 function isAgentRunInput(input: unknown): input is { instanceId: string; agentName: string } {
@@ -100,7 +100,7 @@ function isAgentRunInput(input: unknown): input is { instanceId: string; agentNa
 }
 
 /**
- * Rewrite every persisted `agentRun` child input in a snapshot TREE so restore re-attaches
+ * Rewrite every persisted Agent child input in a snapshot TREE so restore re-attaches
  * (drop `prompt`, set `attach`) instead of re-prompting — at any nesting depth. The admissions
  * come from the run's HOST LEDGER (ADR-0016), keyed by iid: iids are globally unique, so one
  * flat map covers the whole tree (the old per-level `context.offsets` scoping died with the

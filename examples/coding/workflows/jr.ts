@@ -18,7 +18,7 @@
 //   signals parsed from ticket notes           workflow-defined events, menus derived per state
 //   `just approve` / `request-changes`         the humanReview gate's derived accepts
 //   session-history.jsonl resume prompts       fresh sessions by default (jr's lossy handoff)
-//   handle_no_signal budgeted resume           absorbed into agentRun; ONE terminal agent.fault
+//   handle_no_signal budgeted resume           absorbed into the Agent actor; ONE terminal agent.fault
 //   JR_MAX_CONCURRENT / REVIEW_ROUNDS          knobs on the run's input
 //   exit 0 / 2 / 3                             pool triage: drained / deadlocked / waiting
 //   env blockers fixed in the worktree         escalation PARKS a gate; resume re-enters the loop
@@ -27,7 +27,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assign, fromPromise } from "xstate";
 import { z } from "zod";
-import { defineEvent, j2Setup, pool, source, workspace } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, pool, source, workspace } from "@j2/orchestrator";
+import { architect, coder, reviewer } from "./_agents.ts";
 
 const exec = promisify(execFile);
 
@@ -119,7 +120,18 @@ type BodyCtx = BodyInput & {
 export const body = j2Setup({
   types: {} as { context: BodyCtx; input: BodyInput; output: { status: "done" | "escalated"; feature: string } },
   events: [requestReview, reportBlocked, reviewVerdict, approve, requestChanges, resume, dismiss],
-  actors: { claimNextTask, closeTicket, escalateTicket, pushBranch, openPr },
+  // Agents and Work-Source actors sit in ONE map: an Agent is an actor slot like any other
+  // (ADR-0049), and `src` typing is what checks both.
+  actors: {
+    coder: agent(coder),
+    reviewer: agent(reviewer),
+    architect: agent(architect),
+    claimNextTask,
+    closeTicket,
+    escalateTicket,
+    pushBranch,
+    openPr,
+  },
   guards: {
     underReviewCap: ({ context }: { context: BodyCtx }) => context.coderRounds < context.reviewRounds,
     underArchCap: ({ context }: { context: BodyCtx }) => context.archRounds < context.reviewRounds,
@@ -167,8 +179,8 @@ export const body = j2Setup({
         // A terminal agent.fault means j2 already retried infra faults and nudged silence.
         coding: {
           invoke: {
-            src: "agentRun",
-            input: ({ context }) => ({ agent: "coder", prompt: coderPrompt(context) }),
+            src: "coder",
+            input: ({ context }) => ({ prompt: coderPrompt(context) }),
           },
           on: {
             request_review: { target: "reviewing" },
@@ -185,8 +197,8 @@ export const body = j2Setup({
 
         reviewing: {
           invoke: {
-            src: "agentRun",
-            input: ({ context }) => ({ agent: "reviewer", prompt: reviewerPrompt(context) }),
+            src: "reviewer",
+            input: ({ context }) => ({ prompt: reviewerPrompt(context) }),
           },
           on: {
             review_verdict: [
@@ -229,8 +241,8 @@ export const body = j2Setup({
     // "changes requested" loops to working, which re-queries the chain it edited.
     architectReview: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }) => ({ agent: "architect", prompt: architectPrompt(context) }),
+        src: "architect",
+        input: ({ context }) => ({ prompt: architectPrompt(context) }),
       },
       on: {
         review_verdict: [

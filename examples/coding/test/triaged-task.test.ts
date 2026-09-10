@@ -1,6 +1,6 @@
 // Mechanics assertions for the triaged-task workflow (the ADR-0031 validation vehicle), driven
-// through a REAL RunHost against the kit's public seams only — a mock AgentRunPort at the
-// port-factory seam and a fake SandboxPort — so placement (the triager's Turns land on the
+// through a REAL RunHost against the kit's public seams only — a mock AgentRunPort behind the
+// Machine's own Agent slots and a fake SandboxPort — so placement (the triager's Turns land on the
 // Instance Harness, everyone else's on the enclosing Workspace), the pinned conversation's
 // identity, and the two routes are exercised the way a run experiences them, socket-free.
 // The Instance Harness deployment itself is `j2 up`'s (deploy-tier); nothing here needs a cluster.
@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  agentRunActorWith,
+  agentActorWith,
   RunHost,
   SqliteSnapshotStore,
   vocabularyOf,
@@ -17,20 +17,19 @@ import {
   type AgentRunInput,
   type AgentRunPort,
   type RunFeedEvent,
+  type AgentDefinition,
   type SandboxPort,
   type WorkflowDef,
-  type WorkspaceAccess,
   type WorkspaceSpec,
 } from "@j2/orchestrator";
 import { body, machine } from "../workflows/triaged-task.ts";
-import triager from "../agents/triager.ts";
-import coder from "../agents/coder.ts";
-import reviewer from "../agents/reviewer.ts";
+import { coder, reviewer, triager } from "../workflows/_agents.ts";
 
-// Placement resolves off the REAL definitions (what `loadAgents` would hand the host), so these
-// tests break if triager.ts ever stops declaring `workspace: "none"`.
-const definitions: Record<string, { workspace?: WorkspaceAccess }> = { triager, coder, reviewer };
-const agentWorkspace = (agent: string): WorkspaceAccess | undefined => definitions[agent]?.workspace;
+/** The unit-test seam (ADR-0049): replace a SLOT with the same Agent over a mock port. Placement
+ * then resolves off the definition the slot carries — so these tests break if `_agents.ts` ever
+ * stops declaring the triager `workspace: "none"`, which is exactly the coupling they want. */
+const slot = (definition: AgentDefinition, endpoints: string[], port: AgentRunPort) =>
+  agentActorWith((endpoint: string) => (endpoints.push(endpoint), port), definition);
 
 const INSTANCE_HARNESS = "http://j2-instance-harness.coding.svc:8080";
 
@@ -106,12 +105,12 @@ test("each Machine declares its OWN events; nothing is re-declared upward (ADR-0
 test('"answer" finishes the run on the Instance Harness alone — no Workspace ever (ADR-0031)', async () => {
   const port = new MockPort();
   const endpoints: string[] = [];
-  const host = new RunHost({ store: await mkStore(), agentWorkspace, instanceHarness: INSTANCE_HARNESS });
+  const host = new RunHost({ store: await mkStore(), instanceHarness: INSTANCE_HARNESS });
   // No `sandbox` on the host, deliberately: the answer route must never need one.
   host.register({
     name: "triaged-task",
     machine,
-    provide: () => ({ actors: { agentRun: agentRunActorWith((endpoint) => (endpoints.push(endpoint), port)) } }),
+    provide: () => ({ actors: { triager: slot(triager, endpoints, port) } }),
   } satisfies WorkflowDef);
 
   const { runId } = await host.start("triaged-task", RUN_INPUT);
@@ -143,11 +142,11 @@ test('"answer" finishes the run on the Instance Harness alone — no Workspace e
 
 test('"code" emits the route BEFORE the workspace — which this cluster-less host then refuses loudly', async () => {
   const port = new MockPort();
-  const host = new RunHost({ store: await mkStore(), agentWorkspace, instanceHarness: INSTANCE_HARNESS });
+  const host = new RunHost({ store: await mkStore(), instanceHarness: INSTANCE_HARNESS });
   host.register({
     name: "triaged-task",
     machine,
-    provide: () => ({ actors: { agentRun: agentRunActorWith(() => port) } }),
+    provide: () => ({ actors: { triager: slot(triager, [], port) } }),
   } satisfies WorkflowDef);
 
   const { runId } = await host.start("triaged-task", RUN_INPUT);
@@ -179,7 +178,11 @@ test("inside the body: the assess Turn CONTINUES the triage conversation on the 
   const port = new MockPort();
   const endpoints: string[] = [];
   const provided = body.provide({
-    actors: { agentRun: agentRunActorWith((endpoint) => (endpoints.push(endpoint), port)) },
+    actors: {
+      coder: slot(coder, endpoints, port),
+      reviewer: slot(reviewer, endpoints, port),
+      triager: slot(triager, endpoints, port),
+    },
   });
   const wrapped = workspace(provided, {
     spec: ({ input }: { input: { repo: string; branch: string } }) => ({
@@ -189,7 +192,7 @@ test("inside the body: the assess Turn CONTINUES the triage conversation on the 
   });
 
   const sandbox = new FakeSandbox();
-  const host = new RunHost({ store: await mkStore(), sandbox, agentWorkspace, instanceHarness: INSTANCE_HARNESS });
+  const host = new RunHost({ store: await mkStore(), sandbox, instanceHarness: INSTANCE_HARNESS });
   host.register({ name: "triaged-body", machine: wrapped, provide: () => ({}) });
 
   const { runId } = await host.start("triaged-body", { ...RUN_INPUT, reason: "needs a new flag", reviewRounds: 3 });

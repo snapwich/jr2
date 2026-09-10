@@ -100,7 +100,7 @@ export function loadSpec(env: Record<string, string | undefined>): AgentsSpec {
 
   // An EMPTY roster is valid (ADR-0018): a workflow that invokes no Agent — a `workspace()` body
   // parking a Sandbox (ADR-0012) — still needs a serving Harness (binding :8080 is the pod's Ready
-  // signal), just no definitions. Any `agentRun` against it 404s at admission.
+  // signal), just no definitions. Any admission against it 404s.
   const agents = spec?.agents ?? [];
   const seen = new Set<string>();
   for (const a of agents) {

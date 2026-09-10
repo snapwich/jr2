@@ -3,19 +3,19 @@
 //
 // Wiring (ADR-0011 registration table — no routing layer):
 //   - The host owns ONE RegistrationTable and binds each run's actor system to it at track time;
-//     `gate` and `agentRun` register their invocation's event surface there, with deliver
+//     `gate` and the Agent slots register their invocation's event surface there, with deliver
 //     closures over their own `sendBack` — so delivery lands on the invoking state at any
 //     nesting depth and the host routes nothing.
 //   - Two thin surfaces sit on that table, and NEITHER is MCP (ADR-0013 — the Orchestrator does
 //     not speak it): `agentSurface` / `sendToAgent` serve the Agent's Adapter (`/agents/:iid/*`),
 //     `gates` / `sendToGate` serve humans, webhooks and CI (`/runs/:id/gates/*`). Lookup,
 //     validation, delivery and lifecycle stay implemented once, in the table.
-//   - The run's `agentRun` children report their durable admissions through the run binding into
+//   - The run's Agent children report their durable admissions through the run binding into
 //     the host LEDGER (`RunBlob.agents` — ADR-0016), persisted in the same save as the snapshot.
 //     (the Harness wire = lifecycle; the agent surface = domain events.)
 //
 // Durability (ADR-0007): a snapshot is persisted after every transition. Live infrastructure (the
-// wire-client-backed `agentRun` actor) is injected via `.provide()` at start AND restore, never
+// wire-client-backed Agent slot) is injected via `.provide()` at start AND restore, never
 // persisted — so the snapshot is JSON-safe and restore re-attaches by rewriting the child's
 // persisted input (drop `prompt`, set `attach` from the ledger) rather than re-POSTing the prompt.
 
@@ -38,7 +38,6 @@ import {
   type RunBinding,
   type TurnMarker,
 } from "./registration.ts";
-import type { WorkspaceAccess } from "./agent.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
@@ -53,7 +52,7 @@ export type RunProviders = { actors?: Record<string, AnyActorLogic> };
 /** A registered workflow: a template Machine plus how to fill its live slots for one run. */
 export type WorkflowDef = {
   name: string;
-  /** The template; slots (e.g. `agentRun`) are referenced by name and filled by `provide`. */
+  /** The template; slots (e.g. an Agent) are referenced by name and filled by `provide`. */
   machine: AnyStateMachine;
   /** Build this run's live providers. A test seam (ADR-0015): discovery injects nothing. */
   provide: (ctx: { instanceId: string }) => RunProviders;
@@ -311,9 +310,6 @@ export type RunHostOptions = {
   /** The Sandbox backend `workspace()` provisions through (ADR-0012). Absent = no cluster:
    * workspace-less workflows run fine; a `workspace()` invocation faults its run pointedly. */
   sandbox?: SandboxPort;
-  /** The definitions' `workspace` access by Agent name (ADR-0028/0031) — what `agentRun` reads
-   * to place a Turn. Instance-level like `sandbox`, so it rides every run's binding. */
-  agentWorkspace?: (agent: string) => WorkspaceAccess | undefined;
   /** The Instance Harness base URL (ADR-0031) — where `workspace: "none"` Turns are admitted. */
   instanceHarness?: string;
   /**
@@ -326,7 +322,7 @@ export type RunHostOptions = {
 };
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs.
- * `agents` is the admission LEDGER (ADR-0016) — iid → durable admission, reported by `agentRun`
+ * `agents` is the admission LEDGER (ADR-0016) — iid → durable admission, reported by the Agent actor
  * through the run binding and saved in the same blob (same store, same atomicity). */
 type RunBlob = {
   workflow: string;
@@ -363,7 +359,7 @@ type LiveRun = {
 
 export class RunHost {
   /** The internal registration table both delivery surfaces share (ADR-0011). Callback actors
-   * (`gate`, `agentRun`) reach it via the run binding, not this field. */
+   * (`gate`, the Agent slots) reach it via the run binding, not this field. */
   private readonly table = new RegistrationTable();
 
   private readonly store: SnapshotStore;
@@ -371,7 +367,6 @@ export class RunHost {
   private readonly newId: () => string;
   private readonly onRestoreError?: (runId: string, err: unknown) => void;
   private readonly sandbox?: SandboxPort;
-  private readonly agentWorkspace?: (agent: string) => WorkspaceAccess | undefined;
   private readonly instanceHarness?: string;
   private readonly echoFactory?: (endpoint: string) => (events: EchoEvent[]) => Promise<void>;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
@@ -390,7 +385,6 @@ export class RunHost {
     this.newId = opts.newId ?? (() => randomUUID());
     this.onRestoreError = opts.onRestoreError;
     this.sandbox = opts.sandbox;
-    this.agentWorkspace = opts.agentWorkspace;
     this.instanceHarness = opts.instanceHarness;
     this.echoFactory = opts.echo;
   }
@@ -529,7 +523,7 @@ export class RunHost {
           continue;
         }
 
-        // Re-attach every persisted agentRun input in the TREE from the admission ledger
+        // Re-attach every persisted Agent input in the TREE from the admission ledger
         // (ADR-0016): iids are globally unique, so one flat map covers every nesting depth.
         const agents = blob.agents ?? {};
         const hydrated = reattachAgentRuns(blob.snapshot, agents);
@@ -829,7 +823,7 @@ export class RunHost {
   /**
    * CANCEL: the human's "abandon this run" (`j2 send <run> --event CANCEL` — ADR-0025). It ends
    * the work rather than parking it: stopping the actor with no `hostStopping` flag ends every
-   * live `agentRun` invocation, and each one ends its Agent's turn remotely (ADR-0024). The run
+   * live Agent invocation, and each one ends its Agent's turn remotely (ADR-0024). The run
    * is then persisted TERMINAL, so `restore()` leaves it alone and `read()` reports how it ended.
    *
    * Ending the turns and refusing to restore are one decision, not two: a cancelled run that came
@@ -951,9 +945,8 @@ export class RunHost {
       workflow: record.workflow,
       table: this.table,
       sandbox: this.sandbox,
-      agentWorkspace: this.agentWorkspace,
       instanceHarness: this.instanceHarness,
-      // The admission ledger's write half (ADR-0016): `agentRun` reports the durable handle the
+      // The admission ledger's write half (ADR-0016): the Agent actor reports the durable handle the
       // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
       // exactly like the persist scheduler's tracked-run guard.

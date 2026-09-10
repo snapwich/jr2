@@ -93,7 +93,7 @@ export function createAuthenticator(opts: { instanceToken: string; signingKey: B
 /**
  * May this principal deliver to this agent registration? The Instance token may (it is the
  * operator). A Sandbox token may only when the registration records ITS name — which is why
- * `agentRun` carries `sandbox` at all (ADR-0013). The recorded name is the pod hosting the Turn:
+ * an Agent registration carries `sandbox` at all (ADR-0013). The recorded name is the pod hosting the Turn:
  * a Workspace's Sandbox, or `j2-instance-harness` for a Menu-only registration (ADR-0031). An
  * agent registration with NO name at all is an explicit-`endpoint` run (the stub Harness on the
  * host, in no pod): no Sandbox token can claim it.

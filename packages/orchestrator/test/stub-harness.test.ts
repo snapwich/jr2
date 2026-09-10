@@ -1,6 +1,6 @@
 // Stub-Harness wire tests: the REAL wire-backed port (`createHarnessAgentRunClient`) talks
 // to the stub over a real socket — proving "an endpoint is just a URL" (ADR-0011): the same
-// single agentRun code path admits, receives a durable admission, and parks in settle, exactly
+// single Agent-actor code path admits, receives a durable admission, and parks in settle, exactly
 // as it would against a silent real Harness. (A socket test — the stub IS wire.)
 
 import { test } from "node:test";

@@ -11,7 +11,7 @@ import { emit } from "xstate";
 import type { EchoEvent } from "@j2/harness/wire";
 import { doneEvent, requestReviewEvent } from "@j2/agent-protocol";
 import { j2Setup } from "../src/setup.ts";
-import { agentRunActorWith } from "../src/actor.ts";
+import { agentActorWith } from "../src/actor.ts";
 import type { AgentRunInput } from "../src/actor.ts";
 import { workspace, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
 import { RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts";
@@ -57,7 +57,12 @@ function echoDef(client: MockFlueClient): WorkflowDef {
       emitted: { type: "note"; message: string };
     },
     events: [doneEvent, requestReviewEvent],
-    actors: { agentRun: agentRunActorWith(() => client) },
+    // TWO Agent slots, one port: the body carries both personas itself (ADR-0049), which is also
+    // what lets the two turns be told apart by name on the feed.
+    actors: {
+      coder: agentActorWith(() => client, { model: "test/model", instructions: "code" }),
+      decider: agentActorWith(() => client, { model: "test/model", instructions: "decide" }),
+    },
   }).createMachine({
     id: "body",
     context: ({ input }) => ({ instanceId: input.instanceId, tag: input.tag ?? "solo" }),
@@ -65,9 +70,8 @@ function echoDef(client: MockFlueClient): WorkflowDef {
     states: {
       local: {
         invoke: {
-          src: "agentRun",
-          input: ({ context }): AgentRunInput => ({
-            agentName: "coder",
+          src: "coder",
+          input: ({ context }) => ({
             instanceId: `${context.instanceId}/local`,
             prompt: "code it",
             tools: ["request_review"],
@@ -82,9 +86,8 @@ function echoDef(client: MockFlueClient): WorkflowDef {
       },
       remote: {
         invoke: {
-          src: "agentRun",
-          input: ({ context }): AgentRunInput => ({
-            agentName: "decider",
+          src: "decider",
+          input: ({ context }) => ({
             instanceId: `${context.instanceId}/remote`,
             endpoint: "http://decider.test",
             prompt: "approve or not",

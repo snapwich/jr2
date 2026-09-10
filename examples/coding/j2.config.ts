@@ -7,14 +7,14 @@
 // before evaluating this config, and anything already set in your shell wins over it.
 //
 // `harness` declares what this instance can REACH — never WHICH model to use. That choice lives in
-// `agents/<name>.ts` (ADR-0018):
+// the Agent definitions the Machines carry (`workflows/_agents.ts` — ADR-0018/0049):
 //   - VLLM_BASE_URL set → a custom `vllm` provider (OpenAI-compatible; the address must be
 //     reachable FROM PODS — a LAN address, never localhost). `j2 up` preflights it from inside
 //     the cluster, probing every model the definitions name against it, including one tool-call
 //     completion each.
 //   - The model specifiers themselves (`vllm/Qwen/…`, `anthropic/claude-sonnet-4-6`) are in the
-//     agent definitions. There is no instance-wide default: agents are shared across workflows,
-//     so the variation that matters is per-agent and per-invocation.
+//     agent definitions. There is no instance-wide default: one definition may be carried by
+//     several Machines, so the variation that matters is per-definition and per-invocation.
 //   - For Anthropic instead of vLLM: point the definitions' `model` at `anthropic/…`, create the
 //     `anthropic` kube Secret, and reference it in `harness.envFrom` (`kubectl -n coding create
 //     secret generic anthropic --from-literal=ANTHROPIC_API_KEY=...`) — `j2 up` preflights that

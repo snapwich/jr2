@@ -4,13 +4,13 @@ Three workflows on the settled ADR-0015..0019 surface:
 
 - **`workflows/task-with-review.ts`** — the MVP validation loop: one run = one task prompt = one Workspace, coder ⇄
   reviewer under a round cap, ending at a human Gate. **Runs for real** against any cluster your kube context points at
-  (kind locally), with Agents assembled from the definitions in [`agents/`](./agents) by the stock Harness image. Start
-  here; the runbook is below.
+  (kind locally), with the Agents the Machine carries as actor slots ([`workflows/_agents.ts`](./workflows/_agents.ts))
+  assembled by the stock Harness image. Start here; the runbook is below.
 - **`workflows/triaged-task.ts`** — task-with-review with a Menu-only triager in front (ADR-0031): a `triage` state
-  OUTSIDE the `workspace()` runs `agents/triager.ts` (`workspace: "none"` → the Instance Harness) and either answers the
-  task in place — no Sandbox ever — or routes to code; the body's `assess` state then CONTINUES that same conversation
-  (`conversation: "triage"`) to pick ship-vs-review after each coder round. Its mechanics test in [`test/`](./test) runs
-  in the default `pnpm -r test` gate, cluster-free.
+  OUTSIDE the `workspace()` invokes the `triager` slot (`workspace: "none"` → the Instance Harness) and either answers
+  the task in place — no Sandbox ever — or routes to code; the body's `assess` state then CONTINUES that same
+  conversation (`conversation: "triage"`) to pick ship-vs-review after each coder round. Its mechanics test in
+  [`test/`](./test) runs in the default `pnpm -r test` gate, cluster-free.
 - **`workflows/jr.ts`** — [jr](https://github.com/snapwich/jr)'s `start-work` orchestration as a j2 Machine (machine id
   `coding`). The j2 side is done; the workflow-owned side (tk actors, `openPr`/`pushBranch`) is sketched. Read it as the
   reference for a full-scale workflow shape: Pool over a tk Source, architect review, escalation parking. Its door is
@@ -20,7 +20,7 @@ Three workflows on the settled ADR-0015..0019 surface:
 ## task-with-review
 
 ```
-coding (agentRun coder) ──request_review──▶ reviewing (agentRun reviewer)
+coding (invoke coder) ──request_review──▶ reviewing (invoke reviewer)
 reviewing ──changes_requested (under cap)──▶ coding            [rounds++]
 reviewing ──approved / cap hit──▶ humanReview (gate)
 coding/reviewing ──agent.fault──▶ humanReview (gate)
@@ -53,7 +53,7 @@ just kind-up
 # 1. the ENDPOINT, in examples/coding/.env (uncommitted; the CLI loads the .env beside
 #    j2.config.ts into the environment the config reads — ADR-0019):
 #      VLLM_BASE_URL=https://<address>/v1             # reachable FROM PODS — never localhost
-#    The MODEL is not here: each agents/<name>.ts names its own (ADR-0018), because an
+#    The MODEL is not here: each definition in workflows/_agents.ts names its own (ADR-0018), because an
 #    address is a deployment fact and a model is a design decision. `j2 up` probes every model the
 #    definitions name for this provider.
 #    vLLM must run with --enable-auto-tool-choice and the matching --tool-call-parser; `j2 up`
@@ -111,13 +111,15 @@ per-cluster operator too.
 
 ## The surface (ADR-0015..0017), in brief
 
-- **Six statically-imported names**: `defineEvent`, `j2Setup`, `agentRun` + `gate` (pre-registered, invoked by name),
-  `workspace`, `pool`/`source`. The module contract is `export const machine`; the filename is the workflow name.
-- **Events are the workflow's vocabulary**; `audience` tags who may deliver. A state that invokes `agentRun` gets the
+- **Six statically-imported names**: `defineEvent`, `j2Setup`, `agent` + `gate`, `workspace`, `pool`/`source`. The
+  module contract is `export const machine`; the filename is the workflow name.
+- **Events are the workflow's vocabulary**; `audience` tags who may deliver. A state that invokes an Agent slot gets the
   agent-events its transitions handle as its Agent's tool menu; a `gate` state gets the external set the same way.
-- **`agentRun` takes `{ agent, prompt }`** — plus the optional dials `model` and `thinkingLevel`, which turn this ONE
-  turn up or down without changing who the Agent is (ADR-0018). Sessions are fresh by default; endpoint and Sandbox
-  resolve ambiently from the enclosing `workspace()`; the workflow sees ONE terminal `agent.fault { reason }`.
+- **An Agent is an actor slot** (ADR-0049): `actors: { coder: agent(def) }`, invoked as `src: "coder"` with `{ prompt }`
+  — the slot key IS the Agent's name, so a name this Machine does not carry is a compile error. Plus the optional dials
+  `model` and `thinkingLevel`, which turn this ONE turn up or down without changing who the Agent is (ADR-0018).
+  Sessions are fresh by default; endpoint and Sandbox resolve ambiently from the enclosing `workspace()`; the workflow
+  sees ONE terminal `agent.fault { reason }`.
 - **`workspace(body, { input, spec })` owns Sandbox lifecycle only** and hands the body `{ workdir, repos, branch }` on
   top of the run input — `Workspaced<RunInput>`. `input` is the wrapper's own declared door (ADR-0033); it types `spec`
   and checks the body, which may not demand more than the door plus the handles (demanding less is fine). The body never
@@ -127,15 +129,20 @@ per-cluster operator too.
   (`repos/<name>/default`, read-only in pods — ADR-0004); the workflow's `workspace()` spec picks which entries a run
   mounts — task-with-review takes the name as run input.
 
-## agents/ — the Agent definitions
+## workflows/\_agents.ts — the Agent definitions
 
-Plain-data definitions (ADR-0018): `agents/<name>.ts` is `export default defineAgent({ model, instructions, … })` —
-filename = Agent name, typechecked with the instance, `model` and `instructions` required (there is no instance-wide
-model default), `workspace` optional (ADR-0028). A workflow may turn the `model`/`thinkingLevel` dials for one turn; the
-rest of a definition is identity and only the definition sets it. `j2 up` publishes them as a ConfigMap; the **stock
-Harness image** (`@j2/harness`, ADR-0027) constructs the Agents at pod start from that JSON — no build step — and
-carries the mechanism: the Adapter leash (a fresh MCP connection to `$J2_ADAPTER_URL/mcp/<id>` per Submission, ADR-0013)
-and the Working tools. Editing a definition is a `j2 up` + pod restart — no image build anywhere.
+Plain-data definitions (ADR-0018) the Machines here carry as actor slots (ADR-0049): `model` and `instructions` are
+required (there is no instance-wide model default), `workspace` is optional (ADR-0028), and the Agent's NAME is the slot
+key — `actors: { coder: agent(coder) }`. They live in one `_`-prefixed module because three workflows share them (a `_`
+prefix keeps discovery from registering it as a workflow); a Machine that shipped as a package would inline its own. A
+workflow may turn the `model`/`thinkingLevel` dials for one turn; the rest of a definition is identity and only the
+definition sets it. The **stock Harness image** (`@j2/harness`, ADR-0027) runs the definition it is handed — no build
+step — and carries the mechanism: the Adapter leash (a fresh MCP connection to `$J2_ADAPTER_URL/mcp/<id>` per
+Submission, ADR-0013) and the Working tools. Editing a definition is a `j2 up` — no image build anywhere.
+
+`agents/` still exists beside them, and holds nothing but one re-export per Agent: the deployed Harness resolves a
+definition out of the `J2_AGENTS_JSON` ConfigMap `j2 up` writes from that folder. It goes when the definition rides the
+Turn (ADR-0049).
 
 ## Follow-ups (deliberately out of scope here)
 

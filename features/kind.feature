@@ -94,7 +94,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the run has not settled
 
   Rule: an Agent's turn ends when the state that asked for it stops waiting
-    ADR-0024. Leaving an `agentRun` invoke means "I am no longer interested in this answer", so the
+    ADR-0024. Leaving an Agent invoke means "I am no longer interested in this answer", so the
     submission behind it is ended — at the Harness, which is the only place that end is observable
     (the Orchestrator is already gone by then, by construction). The `handoff` workflow parks
     WITHOUT settling, so the Workspace survives the whole scenario: that is the shape where an

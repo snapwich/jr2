@@ -115,7 +115,7 @@ is the Menu round trip: the Agent learns what it may say by asking, and what it 
 sequenceDiagram
   box rgb(238, 242, 255) Orchestrator pod · one process
     participant S as Machine state
-    participant A as Actor (agentRun) + Run host
+    participant A as Agent actor (the slot) + Run host
   end
   box rgb(236, 253, 245) Sandbox pod · Harness container
     participant H as Harness
@@ -125,7 +125,7 @@ sequenceDiagram
     participant Ad as Adapter
   end
 
-  S->>A: invoke agentRun { agent, prompt, Dials }
+  S->>A: invoke src: "coder" { prompt, Dials }
   A->>A: register this state's Menu under the Agent's address
   A->>H: POST /agents/:name/:id — the Harness wire
   H-->>A: Admission { streamUrl, offset, submissionId }
@@ -164,7 +164,7 @@ is an unaccounted-for writer in the Workspace (ADR-0024). A Runaway is ended by 
 
 - **Non-determinism** — the Agent may only say what the state's transitions name, and only when a guard would accept it.
   The Machine's shape bounds every Turn.
-- **Composition** — `agentRun` and `gate` are invokes on a state; the state, not the Agent, frames the work.
+- **Composition** — an Agent slot and `gate` are invokes on a state; the state, not the Agent, frames the work.
 - **Model agnostic** — the wire carries a prompt and Dials; the provider is the Agent definition's business.
 
 ## 3. Setup and usage
@@ -176,7 +176,7 @@ highlighted fork is the one decision the user makes.
 ```mermaid
 flowchart TB
   subgraph setup["Setup"]
-    init["j2 init my-instance"] --> folder["Instance folder<br/>j2.config.ts · workflows/ · agents/ · images/ · manifests"]
+    init["j2 init my-instance"] --> folder["Instance folder<br/>j2.config.ts · workflows/ · images/ · manifests"]
     folder --> install["npm install<br/>pins the kit at one exact version"]
     install --> up["j2 up"]
     up --> imgs["build the instance image + Sandbox Images<br/>resolve Kit images: ghcr.io/snapwich or kitRegistry"]
@@ -213,8 +213,8 @@ the same routes the Console and any webhook use.
 
 - **Local to shared** — the fork. One folder, two targets, no edit between them.
 - **Headless** — the usage lane: five clients, one API.
-- **Composition** — `workflows/` and `agents/` are the folder; reusable ones travel as npm packages, not by copying the
-  folder.
+- **Composition** — `workflows/` is the folder, and each Machine carries its own Agents (ADR-0049); reusable Machines
+  travel as npm packages, not by copying the folder.
 
 ## 4. Composing a Workflow
 
@@ -234,12 +234,12 @@ flowchart TB
       subgraph body["body — plain xstate; receives the run input plus the handles workspace() injects"]
         direction TB
         subgraph working["working"]
-          claim["claimTask"] --> coding["coding<br/>invoke agentRun: coder"]
-          coding -->|request_review| reviewing["reviewing<br/>invoke agentRun: reviewer"]
+          claim["claimTask"] --> coding["coding<br/>invoke coder"]
+          coding -->|request_review| reviewing["reviewing<br/>invoke reviewer"]
           reviewing -->|"review_verdict: changes"| coding
           reviewing -->|"review_verdict: approved"| closing["closingTask"] --> claim
         end
-        working -->|"chain drained"| arch["architectReview<br/>invoke agentRun"]
+        working -->|"chain drained"| arch["architectReview<br/>invoke architect"]
         arch --> pr["openingPr"] --> human["humanReview<br/>invoke gate"]
         human -->|approve| settled(["settled"])
         human -->|request_changes| arch
@@ -260,16 +260,18 @@ flowchart TB
 Reading from the outside in: `pool()` owns spawn, collect, wake, and drain, and declares the run's input; `source()`
 owns "what is ready" and re-queries it, so the Machine never encodes dependency edges (ADR-0017). `workspace()` wraps
 the body in a child Machine that creates the Sandbox and Worktree on entry and tears them down on final (ADR-0012),
-injecting `workspace` handles the body reads. The body is the author's: states that invoke `agentRun` with one Agent
-each, and states that invoke `gate` to park on an outside decision. The events on the arrows are the body's
-`defineEvent` vocabulary; a state's outgoing agent events become its Menu, and a state's outgoing external events become
-its Gate's accepted set (ADR-0015). One Agent per state is what keeps each Turn on one task.
+injecting `workspace` handles the body reads. The body is the author's: states that invoke one of its Agent slots
+(`actors: { coder: agent(def) }`, `src: "coder"` — ADR-0049), and states that invoke `gate` to park on an outside
+decision. The events on the arrows are the body's `defineEvent` vocabulary; a state's outgoing agent events become its
+Menu, and a state's outgoing external events become its Gate's accepted set (ADR-0015). One Agent per state is what
+keeps each Turn on one task.
 
 Nesting is xstate's `invoke`, so a Workflow can import another Machine and run it as a child actor. Vocabulary is
 per-Machine: the nested Machine keeps its own defs, the parent neither sees nor re-declares them, and the kit's
 wrappers, `workspace()` and `pool()`, propagate nothing (ADR-0011, ADR-0049) — which is what makes a plain invoke of an
-imported Machine enough. The same layering is where a memory piece would sit: a wrapper around `agentRun` that reads and
-writes beside the Turn, with the body unchanged.
+imported Machine enough. Agents ride the Machine the same way — an Agent is an actor slot, so a nested Machine's `coder`
+and its parent's are two different Agents (ADR-0049). The same layering is where a memory piece would sit: a wrapper
+around an Agent slot that reads and writes beside the Turn, with the body unchanged.
 
 **Answers**
 

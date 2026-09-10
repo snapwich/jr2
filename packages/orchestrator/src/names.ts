@@ -10,7 +10,7 @@ export const ORCHESTRATOR_PORT = 4000;
 export const INSTANCE_SECRET = "j2-instance";
 
 /** The Instance Harness's Deployment + Service name (ADR-0031): converged by `j2 up` whenever any
- * Agent definition declares `workspace: "none"`, and the deterministic Service DNS `agentRun`
+ * Agent definition declares `workspace: "none"`, and the deterministic Service DNS the Agent actor
  * resolves such a Turn to. Doubles as the delivery scope a Menu-only registration records — the
  * name the placement's Adapter token is signed for (tokens.ts, ADR-0013). The port is the
  * Harness's own listen port (`PORT` default). */

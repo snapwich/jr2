@@ -5,16 +5,17 @@
 //   - the MECHANISM events (`agent.fault`, `workspace.lost`, …) are injected into the event
 //     union, and the WORKFLOW event types derive from the zod defs — hand-written `EventFrom`
 //     unions retire;
-//   - the j2 actors (`agentRun`, `gate`) are pre-registered with typed inputs (a consumer actor
-//     under the same name wins — the unit-test seam);
+//   - the j2 `gate` actor is pre-registered with typed input (a consumer actor under the same
+//     name wins — the unit-test seam), and every Agent SLOT the machine declares
+//     (`actors: { coder: agent(def) }` — ADR-0049) gets the same input finalization by brand;
 //   - because it takes the defs AS VALUES, `createMachine` validates that every event key
 //     appearing anywhere in the machine maps to a def — closing xstate's nested-`on` typo hole
 //     (unknown keys in nested states typecheck silently upstream) with a load-time failure;
 //   - the vocabulary is attached to the machine object (`vocabularyOf` — vocabulary.ts), which
 //     is what lets the `export const events` manifest die (ADR-0011 revised). It is scoped to
-//     THIS Machine: `gate`/`agentRun` resolve names against the Machine that invoked them, so a
-//     Machine nested by plain `invoke` keeps its own names and this one never sees them
-//     (ADR-0049);
+//     THIS Machine: `gate` and the Agent slots resolve names against the Machine that invoked
+//     them, so a Machine nested by plain `invoke` keeps its own names and this one never sees
+//     them (ADR-0049);
 //   - an optional `input` on the createMachine config — a zod object — declares what a RUN of
 //     this machine is started with (ADR-0033). It rides the machine object beside the vocabulary
 //     (`inputSchemaOf`), never the xstate config: the host validates `POST /workflows/:name/runs`
@@ -43,7 +44,7 @@ import {
 import type { z } from "zod";
 import { eventMap, type EventDef, type EventFrom } from "@j2/agent-protocol";
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
-import { agentRun } from "./harness-client.ts";
+import { isAgent } from "./agent.ts";
 import { gate } from "./gate.ts";
 import { actorPath, boundRunId } from "./registration.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
@@ -58,8 +59,10 @@ export type MechanismEvent = FaultTelemetry | { type: "workspace.lost" };
 /** The full event union a j2Setup machine sees: the defs' derived types plus the mechanism's. */
 export type WorkflowEvent<TDefs extends readonly EventDef[]> = EventFrom<TDefs[number]> | MechanismEvent;
 
-/** The j2 actors every workflow can invoke by name without listing them (ADR-0015). */
-const j2Actors = { agentRun, gate };
+/** The j2 actor every workflow can invoke by name without listing it (ADR-0015). `gate` is the
+ * whole set: an Agent is not pre-registered, because it is not one logic — it is the slot the
+ * Machine declares, `actors: { coder: agent(def) }` (ADR-0049). */
+const j2Actors = { gate };
 type J2Actors = typeof j2Actors;
 
 /** Consumer actors merge OVER the pre-registered set: same name → the consumer's logic wins. */
@@ -160,12 +163,12 @@ export function j2Setup<
     // the same loud failure `eventMap` gave the manifest, moved to machine-build time)…
     const defs = eventMap((machineConfig as { id?: string }).id ?? "(machine)", def.events);
 
-    // …then rewrite the config (ADR-0015): every `agentRun`/`gate` invoke's input is wrapped to
+    // …then rewrite the config (ADR-0015): every Agent-slot/`gate` invoke's input is wrapped to
     // append its DERIVED menu and finalize the mechanism fields. Static — the walk sees the same
     // config the Console will — and the derived names still ride serializable input, so the
     // ADR-0007 restore path and invoke-time `resolveAccepts` validation are unchanged.
     const machine = (inner.createMachine as unknown as (c: never) => AnyStateMachine)(
-      deriveMenus(machineConfig, defs) as never,
+      deriveMenus(machineConfig, defs, def.actors ?? {}) as never,
     );
 
     // Close the nested-`on` typo hole (ADR-0015): with the manifest dead, a typo'd key would
@@ -212,11 +215,16 @@ export function j2Setup<
 }
 
 // --- Menu derivation (ADR-0015) ------------------------------------------------------------------
-// A state that invokes `agentRun` gets, as its Agent's tool menu, the workflow events its
+// A state that invokes an AGENT SLOT gets, as its Agent's tool menu, the workflow events its
 // transitions handle — own + bubbled ancestors, per statechart semantics — filtered to audience
 // ∈ {agent, any}; a `gate` gets the same set filtered to {external, any}. The invoking actor
 // kind is the primary router; `audience` on the def exists to RESTRICT (tag the security-
 // sensitive events). Explicit `tools:`/`accepts:` on the invoke input remain as escape hatches.
+//
+// An agent invoke is identified by its LOGIC, not by a reserved src name: the walk looks the
+// invoke's `src` up in the setup's own `actors` map and asks `isAgent` (ADR-0049). That is also
+// where the Agent's NAME comes from — the slot key, injected into the wrapped input, so nothing
+// downstream (the iid, the Harness route, the markers) has to be authored twice.
 //
 // The walk also NAMES unnamed gate invokes with their state key path (ADR-0011):
 // the gate actor derives its default id from its own actor path, so the invoke id is the leaf
@@ -232,8 +240,8 @@ type LooseState = {
 };
 type InputArgs = { context: unknown; event: unknown; self: AnyActorRef };
 
-/** Rewrite a machine config, wrapping every `agentRun`/`gate` invoke input (immutably). */
-function deriveMenus(config: unknown, defs: Map<string, EventDef>): unknown {
+/** Rewrite a machine config, wrapping every Agent-slot/`gate` invoke input (immutably). */
+function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Record<string, UnknownActorLogic>): unknown {
   const pick = (names: Set<string>, kind: "agent" | "external"): string[] =>
     [...names].filter((name) => {
       const d = defs.get(name);
@@ -254,7 +262,10 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>): unknown {
       const unnamedGates = invokes.filter((inv) => inv?.src === "gate" && inv.id == null).length;
       let ordinal = 0;
       const wrapOne = (inv: LooseInvoke): LooseInvoke => {
-        if (inv?.src === "agentRun") return { ...inv, input: wrapAgentInput(inv.input, pick(names, "agent")) };
+        // The slot key IS the Agent name (ADR-0049) — read off the declaration, never authored.
+        if (typeof inv?.src === "string" && isAgent(actors[inv.src])) {
+          return { ...inv, input: wrapAgentInput(inv.input, pick(names, "agent"), inv.src) };
+        }
         if (inv?.src === "gate") {
           const wrapped: LooseInvoke = { ...inv, input: wrapGateInput(inv.input, pick(names, "external")) };
           // A machine-root gate (empty path) is left to xstate's default id: a `""` id would be
@@ -283,12 +294,11 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>): unknown {
 const resolveInput = (orig: unknown, args: InputArgs): Record<string, unknown> =>
   (typeof orig === "function" ? (orig as (a: InputArgs) => unknown)(args) : (orig ?? {})) as Record<string, unknown>;
 
-/** Wrap an agentRun invoke input: append the derived menu and finalize the mechanism fields. */
-function wrapAgentInput(orig: unknown, derived: string[]) {
+/** Wrap an Agent slot's invoke input: name the Agent (the slot key), append the derived menu, and
+ * finalize the mechanism fields. */
+function wrapAgentInput(orig: unknown, derived: string[], agentName: string) {
   return (args: InputArgs): AgentRunInput => {
     const consumer = resolveInput(orig, args) as Partial<AgentTurnInput & AgentRunInput>;
-    const agentName = consumer.agentName ?? consumer.agent;
-    if (!agentName) throw new Error(`agentRun input needs \`agent\` (the Agent to admit)`);
     return {
       agentName,
       instanceId: consumer.instanceId ?? mintIid(consumer, agentName, args.self),

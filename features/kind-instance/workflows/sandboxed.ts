@@ -13,7 +13,8 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { defineEvent, j2Setup, workspace } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, workspace } from "@j2/orchestrator";
+import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 
@@ -25,6 +26,8 @@ type BodyContext = BodyInput & { fault?: string };
 const body = j2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [finish],
+  // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.
+  actors: { coder: agent(coder) },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
@@ -35,12 +38,11 @@ const body = j2Setup({
   states: {
     coding: {
       invoke: {
-        src: "agentRun",
+        src: "coder",
         // No endpoint, no sandbox: both resolve AMBIENTLY from the enclosing workspace()
         // (ADR-0016) — and the registration records that Sandbox as its ADR-0013 token scope,
         // so only this pod's Adapter can deliver into this turn. Unforgettable by construction.
         input: ({ context }) => ({
-          agentName: "coder",
           instanceId: context.instanceId,
           tools: [finish.name],
           // A plain prompt. The pod runs the STOCK Harness (ADR-0038), so what parks the Machine

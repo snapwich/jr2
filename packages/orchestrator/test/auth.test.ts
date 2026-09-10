@@ -174,7 +174,7 @@ test("a Sandbox token cannot speak for another Sandbox's Agent", async () => {
 
 test("a Sandbox token cannot claim a workspace-less agent (no pod owns it)", async () => {
   const { host, app } = await mkApp();
-  // The mechanics-tier shape: an `agentRun` against the stub Harness on the host, in no Sandbox.
+  // The mechanics-tier shape: an Agent turn against the stub Harness on the host, in no Sandbox.
   const { instanceId } = await host.start("coding");
   const token = sandboxToken(KEY, "ws-1");
 

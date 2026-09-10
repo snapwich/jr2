@@ -1,6 +1,6 @@
 // Vocabulary-on-the-machine (ADR-0011, ADR-0015): a Machine's event defs ride the machine, not a
 // module export — and they are scoped to THAT Machine alone. `j2Setup.createMachine` attaches
-// them here; `gate`/`agentRun` read them back off the Machine that invoked them, and nothing ever
+// them here; `gate` and the Agent slots read them back off the Machine that invoked them, and nothing ever
 // merges two Machines' sets. That is what makes a Machine composable by plain `invoke`
 // (ADR-0049): the importing Machine neither re-declares nor sees the nested one's events, so
 // `coding`'s `approve` and `release`'s `approve` may differ and one run may hold both.
@@ -46,7 +46,7 @@ export function vocabularyOf(machine: AnyStateMachine): Map<string, EventDef> | 
 
 /**
  * The Machine that invoked this actor — `self._parent.logic`, public xstate API (ADR-0011). This
- * is the resolution scope for `gate`'s `accepts` and `agentRun`'s menu: the derived set came from
+ * is the resolution scope for `gate`'s `accepts` and an Agent turn's menu: the derived set came from
  * THIS Machine's transitions, so its defs are the only ones a delivery may be validated against.
  *
  * Undefined for a rootless actor (`createActor(gate)` directly) and for a parent that is not a

@@ -36,7 +36,7 @@ export type SettlementError = { type: string; message?: string };
 export const SUBMISSION_ABORTED = "submission_aborted";
 
 /** `SettlementError.type` for a Turn the Harness ended as a Runaway (ADR-0035) — no fourth
- * `SettlementOutcome`; the typed error on a `failed` settlement is what lets `agentRun` switch on
+ * `SettlementOutcome`; the typed error on a `failed` settlement is what lets the Agent actor switch on
  * the class (one fresh-conversation reroll) without parsing prose. */
 export const SUBMISSION_RUNAWAY = "runaway";
 

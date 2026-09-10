@@ -5,12 +5,14 @@
 // `sendToAgent` / `POST /agents/:iid/events` path the Adapter uses (ADR-0013). There is no MCP here
 // because there is no MCP in the Orchestrator: that surface lives in the Sandbox now.
 
-import { fromCallback, assign, createMachine, spawnChild } from "xstate";
+import { assign, createMachine, spawnChild } from "xstate";
 import { z } from "zod";
 import { defineEvent, doneEvent, requestReviewEvent } from "@j2/agent-protocol";
 import { j2Setup } from "../src/setup.ts";
-import { agentRunActorWith } from "../src/actor.ts";
-import type { AgentAdmission, AgentRunInput, AgentRunPort, AgentRunReceiveEvent } from "../src/actor.ts";
+import { agentActorWith } from "../src/actor.ts";
+import { agent } from "../src/harness-client.ts";
+import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
+import type { AgentDefinition } from "../src/agent.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
@@ -94,20 +96,30 @@ export class MockFlueClient implements AgentRunPort {
 
 export type Ctx = { instanceId: string; sandbox?: string; summary?: string };
 
+/** The Agent these fixtures carry (ADR-0049): a slot's definition, declared by the Machine itself.
+ * Its CONTENT never matters here — no model is ever called — but its identity does: the same
+ * definition builds the slot the template declares and the mock-ported slot a test provides over
+ * it, which is what makes the two the same Agent. */
+export const coderDefinition: AgentDefinition = {
+  model: "test/model",
+  instructions: "you are the test coder",
+};
+
 /**
  * A minimal real template standing in for a coding workflow, on the example event set (ADR-0011:
  * the events are the WORKFLOW's vocabulary — `request_review`, not a j2 name), authored via
  * j2Setup (ADR-0015: vocabulary rides the machine; the mechanism events are injected into the
- * union). `agentRun` is overridden with a noop; tests fill it with a MockFlueClient via `provide`.
+ * union). The Agent is the `coder` SLOT the machine carries (ADR-0049); tests swap it for one
+ * over a MockFlueClient via `provide` — the same slot key, a different port.
  *
- * `sandbox` rides the run input into the `agentRun` invocation, so a test can register an agent
+ * `sandbox` rides the run input into the `coder` invocation, so a test can register an agent
  * surface that BELONGS to a Sandbox (what a Sandbox token is scoped against — ADR-0013) or, by
  * omitting it, one that belongs to no pod at all (a workspace-less run against the stub Harness).
  */
 export const codingTemplate = j2Setup({
   types: {} as { context: Ctx; input: { instanceId: string; sandbox?: string } },
   events: [doneEvent, requestReviewEvent],
-  actors: { agentRun: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },
+  actors: { coder: agent(coderDefinition) },
 }).createMachine({
   id: "m",
   context: ({ input }) => ({ instanceId: input.instanceId, sandbox: input.sandbox }),
@@ -115,10 +127,9 @@ export const codingTemplate = j2Setup({
   states: {
     active: {
       invoke: {
-        id: "agentRun",
-        src: "agentRun",
-        input: ({ context }): AgentRunInput => ({
-          agentName: "coder",
+        id: "coder",
+        src: "coder",
+        input: ({ context }) => ({
           instanceId: context.instanceId,
           endpoint: "http://harness.invalid", // the mock port never dials it
           sandbox: context.sandbox,
@@ -141,7 +152,8 @@ export const codingTemplate = j2Setup({
   },
 });
 
-/** Build a workflow def whose `agentRun` slot is a fresh MockFlueClient, recorded per instance. */
+/** Build a workflow def whose `coder` slot runs over a fresh MockFlueClient, recorded per instance
+ * — the unit-test seam ADR-0049 names: `provide({ actors: { coder: … } })`, the same definition. */
 export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
   return {
     name: "coding",
@@ -149,13 +161,13 @@ export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
     provide: ({ instanceId }) => {
       const client = new MockFlueClient();
       clients.set(instanceId, client);
-      return { actors: { agentRun: agentRunActorWith(() => client) } };
+      return { actors: { coder: agentActorWith(() => client, coderDefinition) } };
     },
   };
 }
 
 /**
- * TWO turns of ONE conversation: both states invoke `agentRun` with the same instance id — what
+ * TWO turns of ONE conversation: both states invoke the `coder` slot with the same instance id — what
  * `session: "continue"` derives (ADR-0016). It is the shape ADR-0024's ordering rule exists for:
  * the second turn's admission must queue behind the first turn's abort, and the pick that ended
  * the first turn must read `turnComplete` even though the next state re-registers that address.
@@ -163,7 +175,7 @@ export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
 export const continuedTemplate = j2Setup({
   types: {} as { context: Ctx; input: { instanceId: string } },
   events: [doneEvent, requestReviewEvent],
-  actors: { agentRun: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },
+  actors: { coder: agent(coderDefinition) },
 }).createMachine({
   id: "c",
   context: ({ input }) => ({ instanceId: input.instanceId }),
@@ -171,9 +183,8 @@ export const continuedTemplate = j2Setup({
   states: {
     first: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }): AgentRunInput => ({
-          agentName: "coder",
+        src: "coder",
+        input: ({ context }) => ({
           instanceId: context.instanceId,
           endpoint: "http://harness.invalid",
           prompt: "turn one",
@@ -184,9 +195,8 @@ export const continuedTemplate = j2Setup({
     },
     second: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }): AgentRunInput => ({
-          agentName: "coder",
+        src: "coder",
+        input: ({ context }) => ({
           instanceId: context.instanceId, // the SAME conversation
           endpoint: "http://harness.invalid",
           prompt: "turn two",
@@ -207,7 +217,7 @@ export function continuedDef(clients: Map<string, MockFlueClient>): WorkflowDef 
     provide: ({ instanceId }) => {
       const client = new MockFlueClient();
       clients.set(instanceId, client);
-      return { actors: { agentRun: agentRunActorWith(() => client) } };
+      return { actors: { coder: agentActorWith(() => client, coderDefinition) } };
     },
   };
 }

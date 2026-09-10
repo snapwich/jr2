@@ -23,12 +23,16 @@
 //      (`agent.fault` when the Submission settles failed); domain events never ride it.
 //
 // The port factory — `(endpoint) => AgentRunPort`, not a wire client — is the dependency, so the
-// actor is unit-testable without a live Harness: `agentRunActorWith(() => mock)` is the seam,
-// and the canonical `agentRun` (bound to the real wire client) lives in harness-client.ts so this
-// module never pulls the wire client onto the test load path.
+// actor is unit-testable without a live Harness: `agentActorWith(() => mock, def)` is the seam,
+// and the canonical `agent(def)` (bound to the real wire client) lives in harness-client.ts so
+// this module never pulls the wire client onto the test load path.
+//
+// The other closure is the DEFINITION (ADR-0049): one logic object per Agent slot, carrying the
+// definition it runs. Placement (ADR-0031) reads `workspace` off it — never off a roster, which
+// could not tell two Machines' `coder`s apart.
 //
 // Stopping the actor ENDS THE TURN (ADR-0024). It abandons the run locally (admission/settlement
-// consumption) AND aborts the submission remotely, because `agentRun` is an invoke: leaving the
+// consumption) AND aborts the submission remotely, because an Agent slot is an invoke: leaving the
 // state means "I am no longer interested in this answer", and an Agent whose turn has ended but
 // whose submission has not is an unaccounted-for writer in the Workspace.
 //
@@ -37,8 +41,8 @@
 // the run binding (`hostStopping`), never a fact inferred here: process shutdown stops no actors
 // at all, and restore is a fresh process, so there is nothing to infer it from.
 
-import { fromCallback } from "xstate";
-import type { ThinkingLevel } from "./agent.ts";
+import { fromCallback, type CallbackActorLogic } from "xstate";
+import type { AgentDefinition, ThinkingLevel } from "./agent.ts";
 import { ambientHandlesFor } from "./ambient.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
@@ -67,24 +71,25 @@ export type AgentAdmission = {
 };
 
 /**
- * What a WORKFLOW writes on an `agentRun` invoke (ADR-0015/0016): the agent and this turn's
- * prompt — everything else is derived. `j2Setup.createMachine` wraps the invoke input to
- * finalize it into {@link AgentRunInput}: the tool menu derives from the invoking state's
- * transitions, the instance id is minted (fresh session by default; `session: "continue"` or a
- * `conversation` pin derives a deterministic id so re-invocations continue one conversation),
- * and endpoint/sandbox resolve ambiently from the enclosing `workspace()`.
+ * What a WORKFLOW writes on an Agent slot's invoke (ADR-0015/0016/0049): this turn's prompt —
+ * everything else is derived. The AGENT is not written here at all: the slot key is its name
+ * (`actors: { coder: agent(def) }`, `src: "coder"`), so a name the Machine does not carry is a
+ * compile error on `src` instead of a runtime miss. `j2Setup.createMachine` wraps the invoke
+ * input to finalize it into {@link AgentRunInput}: the slot key lands as `agentName`, the tool
+ * menu derives from the invoking state's transitions, the instance id is minted (fresh session by
+ * default; `session: "continue"` or a `conversation` pin derives a deterministic id so
+ * re-invocations continue one conversation), and endpoint/sandbox resolve ambiently from the
+ * enclosing `workspace()`.
  */
 export type AgentTurnInput = {
-  /** The Agent (persona) to admit the turn against. */
-  agent: string;
   /** This turn's task framing — lands as the conversation's next user message. */
   prompt: string;
   /**
    * This turn's DIALS (ADR-0018) — how hard to run, layered over the definition's own
-   * values. Agents are instance-scoped and every workflow may name any of them, so the same
-   * persona legitimately runs at different settings in different workflows: a reviewer on a
-   * one-line diff and the same reviewer on an architecture change want identical instructions and
-   * different effort.
+   * values. One definition value may be carried by several Machines, so the same persona
+   * legitimately runs at different settings in different workflows: a reviewer on a one-line diff
+   * and the same reviewer on an architecture change want identical instructions and different
+   * effort.
    *
    * IDENTITY is deliberately absent — no `instructions`, `workspace` or `cwd` here. A call site
    * that rewrote those would make the Agent's name a lie, and `workspace` in particular carries
@@ -123,6 +128,8 @@ export type AgentTurnInput = {
 /** What the actor is invoked with AFTER j2Setup finalization: the durable handle, this turn's
  * surface, and — only outside a workspace — an explicit Harness. */
 export type AgentRunInput = {
+  /** The Agent's name — its SLOT KEY, injected by the menu walk (ADR-0049), never authored. It
+   * is what the Harness route, the minted iid, the markers and the telemetry all name. */
   agentName: string;
   instanceId: string;
   /**
@@ -252,29 +259,49 @@ function nudgePrompt(tools: readonly string[]): string {
   );
 }
 
+/** One Agent slot's logic: the run-lifecycle actor closed over ONE definition and BRANDED with it
+ * (ADR-0049). The brand is the whole resolution mechanism — the actor reads its definition off its
+ * own closure, `j2Setup` recognizes the slot by `isAgent`, and a `.provide()` that swaps the slot
+ * swaps the definition with it, because the two are one object.
+ *
+ * The brand is a RUNTIME property, read back through `isAgent`, and deliberately NOT part of this
+ * type: the unit-test seam is `provide({ actors: { coder: fake } })` (ADR-0049), and a required
+ * `definition` here would make every fake carry a definition it never uses. */
+export type AgentLogic = CallbackActorLogic<AgentRunReceiveEvent, AgentTurnInput | AgentRunInput>;
+
 /**
- * Build the run-lifecycle actor logic over an injected port factory.
+ * Build one Agent slot's actor logic over an injected port factory — the seam `agent()` (bound to
+ * the real wire client, harness-client.ts) and every unit test share.
  *
  * On start it registers the invocation's event surface, then either admits `prompt` (recording
  * the admission in the host ledger — the durable handle) or, when the host set `attach` on
  * restore, re-follows the persisted admission. A `CANCEL` from the parent (or the actor being
  * stopped) abandons local consumption and destroys the registration; a failed settlement
  * surfaces as `agent.fault` so the Machine can react rather than hang on a dead run.
+ *
+ * The `definition` is a CLOSURE, not a lookup: the Turn's placement (ADR-0031) reads it off the
+ * logic the invoke actually named, so two Machines carrying different `coder`s each resolve their
+ * own, and no roster is consulted anywhere (ADR-0049).
  */
-export function agentRunActorWith(portFactory: AgentRunPortFactory, options: AgentRunOptions = {}) {
+export function agentActorWith(
+  portFactory: AgentRunPortFactory,
+  definition: AgentDefinition,
+  options: AgentRunOptions = {},
+): AgentLogic {
   const nudgeBudget = options.nudgeBudget ?? 2;
   const runawayBudget = options.runawayBudget ?? 1;
   // Typed as the union so BOTH shapes typecheck on an invoke: j2Setup machines write
   // AgentTurnInput (and the config wrapper finalizes it before the actor ever runs); plain
   // setup() machines must pass the finalized shape themselves — checked loudly below.
-  return fromCallback<AgentRunReceiveEvent, AgentTurnInput | AgentRunInput>((args) => {
+  const logic = fromCallback<AgentRunReceiveEvent, AgentTurnInput | AgentRunInput>((args) => {
     const { system, self, sendBack, receive } = args;
     const input = args.input as AgentRunInput;
     const { instanceId } = input;
     if (!instanceId || !input.agentName) {
       throw new Error(
-        `agentRun invoked with unfinalized input — author the machine with j2Setup(...) (which mints ` +
-          `the instance id and derives the menu), or pass \`agentName\`/\`instanceId\`/\`tools\` explicitly`,
+        `an Agent slot was invoked with unfinalized input — declare it on a j2Setup(...) machine ` +
+          `(\`actors: { <name>: agent(def) }\`, which names the Agent, mints the instance id and ` +
+          `derives the menu), or pass \`agentName\`/\`instanceId\`/\`tools\` explicitly`,
       );
     }
 
@@ -286,7 +313,7 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
     // handles — walked structurally via the actor parent chain, so a sibling workspace's handles
     // are unreachable (ADR-0013).
     const binding = runBindingOf(system);
-    const workspace = binding.agentWorkspace?.(input.agentName) ?? "write";
+    const workspace = definition.workspace ?? "write";
     let endpoint: string;
     let sandbox: string | undefined;
     if (input.endpoint) {
@@ -295,7 +322,7 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
     } else if (workspace === "none") {
       if (!binding.instanceHarness) {
         throw new Error(
-          `agentRun "${instanceId}": agent "${input.agentName}" has workspace: "none" — its Turn runs on ` +
+          `turn ${instanceId}: agent "${input.agentName}" has workspace: "none" — its Turn runs on ` +
             `the Instance Harness (ADR-0031), and this host knows no Instance Harness address (deployed ` +
             `instances derive it from their namespace; tests pass an explicit \`endpoint\`)`,
         );
@@ -310,7 +337,7 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
       const ambient = ambientHandlesFor(self);
       if (!ambient?.endpoint) {
         throw new Error(
-          `agentRun "${instanceId}": agent "${input.agentName}" has workspace: "${workspace}" — ` +
+          `turn ${instanceId}: agent "${input.agentName}" has workspace: "${workspace}" — ` +
             `invoke it inside a workspace() (ambient resolution), or pass an explicit \`endpoint\` ` +
             `(workspace-less stub path)`,
         );
@@ -502,4 +529,7 @@ export function agentRunActorWith(portFactory: AgentRunPortFactory, options: Age
     // Stop (parent stopped the child) == abandon. Idempotent with an explicit CANCEL.
     return abandon;
   });
+  // The brand (ADR-0049): a readable property, so `isAgent` is a plain shape test and a reader —
+  // `j2 up`'s model preflight, a Machine doc — can name what this slot runs without invoking it.
+  return Object.assign(logic, { definition });
 }

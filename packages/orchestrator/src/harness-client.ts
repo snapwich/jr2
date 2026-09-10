@@ -1,6 +1,6 @@
 // The real, Harness-wire-backed `AgentRunPort` (ADR-0027, on ADR-0002/0007/0016) — the client that
-// drives one Agent run over the five-endpoint wire — and the canonical `agentRun` actor built on it
-// (ADR-0011: workflows import it statically; the client is constructed from `input.endpoint`).
+// drives one Agent run over the five-endpoint wire — and `agent(definition)`, the Agent slot built
+// on it (ADR-0049: a Machine carries its Agents; the client is constructed from `input.endpoint`).
 //
 // The wire is j2's own (`@j2/harness/wire` is the shape contract; the stub Harness is the normative
 // server model), so this module speaks plain `fetch` — no SDK. Keeping it here (not in `actor.ts`)
@@ -33,9 +33,9 @@
 // the distinct `aborted` Settlement — worth having for observability, though j2 never reads it
 // (the actor is stopped by then; see actor.ts).
 
-import { agentRunActorWith } from "./actor.ts";
-import type { AgentAdmission, AgentRunInput, AgentRunPort } from "./actor.ts";
-import type { ThinkingLevel } from "./agent.ts";
+import { agentActorWith } from "./actor.ts";
+import type { AgentAdmission, AgentLogic, AgentRunInput, AgentRunPort } from "./actor.ts";
+import type { AgentDefinition, ThinkingLevel } from "./agent.ts";
 import type { EchoEvent, Settlement, StreamEvent, SubmissionSettledEvent } from "@j2/harness/wire";
 
 // Wire literals, restated: `@j2/harness` is a types-only devDependency here (the orchestrator
@@ -330,13 +330,20 @@ export function createEchoPush(options: {
 }
 
 /**
- * THE `agentRun` actor (ADR-0011): pre-registered by `j2Setup` (ADR-0015), importable statically.
+ * THE authoring surface for an Agent (ADR-0049): one definition in, one actor slot out —
+ * `j2Setup({ actors: { coder: agent({ model, instructions }) } })`, invoked as `src: "coder"`.
+ * The slot key is the Agent's name (the Harness route, the minted iid, the markers), so a name
+ * the Machine does not carry is a compile error on `src`, and two Machines in one run may each
+ * carry their own `coder`.
+ *
  * Everything live is constructed per-invocation from serializable input: the wire client from
  * `input.endpoint` (which Sandbox's Harness — or the wire-compatible dev stub; either way it's
  * only a URL, one code path). Lives here, not in actor.ts, so the actor logic and its unit tests
  * never touch the wire.
  */
-export const agentRun = agentRunActorWith((endpoint) => createHarnessAgentRunClient({ baseUrl: endpoint }));
+export function agent(definition: AgentDefinition): AgentLogic {
+  return agentActorWith((endpoint) => createHarnessAgentRunClient({ baseUrl: endpoint }), definition);
+}
 
 /** A stream read worth retrying (server hiccup) — internal to the reconnect loop, never thrown out. */
 class ReconnectableError extends Error {}

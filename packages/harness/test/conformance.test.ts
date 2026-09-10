@@ -529,7 +529,7 @@ test('K byte-identical tool calls are a Runaway: the Harness ends the turn, type
 
   // The self-abort is clean (ADR-0026) and the conversation is not poisoned at the wire level: a
   // later Submission on the same conversation still runs and completes (the reroll's fresh
-  // conversation is agentRun policy, not a Harness constraint).
+  // conversation is the Agent actor's policy, not a Harness constraint).
   await sleep(100); // a stray rejection surfaces on a later tick — give it room to land
   assert.deepEqual(rejections.slice(rejectionsMark), [], "the self-abort leaves no rejection nothing awaits");
   const next = await admit(iid, "Answer in text.");

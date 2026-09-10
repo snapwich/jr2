@@ -4,4 +4,4 @@
 // `j2 up` writes from this folder. This file (and the folder) goes when the definition rides the
 // Turn.
 
-export { triager as default } from "../workflows/_agents.ts";
+export { architect as default } from "../workflows/_agents.ts";

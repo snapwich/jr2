@@ -211,7 +211,7 @@ When("the orchestrator starts again", async function (this: E2EWorld): Promise<v
 /**
  * The model this pod's Harness talks to now answers with a tool call (ADR-0013/0038). The step
  * TEXT is unchanged and still true — the Agent calls the tool — but the mechanism inverted: the
- * submission was admitted by the Machine's own `agentRun`, the pod's Harness has been parked on a
+ * submission was admitted by the Machine's own Agent slot, the pod's Harness has been parked on a
  * provider request ever since (which is exactly what "still thinking" looks like from the
  * Machine's side), and this releases it. Everything downstream is real and in-cluster: pi executes
  * `mcp__j2__<tool>` over its own MCP connection to the Adapter on localhost, the Adapter delivers,

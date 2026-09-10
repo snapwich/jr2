@@ -83,7 +83,7 @@ export type WorkspaceSpec = {
 
 /**
  * What the workspace hands the BODY (ADR-0012, ADR-0016): worktree geography only.
- * `endpoint` and `sandbox` are mechanism-internal now — `agentRun` resolves them ambiently from
+ * `endpoint` and `sandbox` are mechanism-internal now — the Agent actor resolves them ambiently from
  * the enclosing wrapper (ambient.ts), so a workflow can no longer forget to thread them (the
  * baba71f incident: `sandbox` omitted, every tool call 403'd, fail-closed but silent).
  */
@@ -422,10 +422,10 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
   );
 
   // The ambient registrar (ADR-0016): publishes this wrapper's handles for the parent-chain
-  // walk `agentRun` does. An INVOKED actor, co-invoked in `running` beside the body — invoked
+  // walk the Agent actor does. An INVOKED actor, co-invoked in `running` beside the body — invoked
   // actors restart on snapshot restore (entry actions do not), so the publication is
   // restore-safe by construction; and it is listed FIRST, so the handles are readable before
-  // the body's first agentRun starts.
+  // the body's first Agent turn starts.
   //
   // The run-narrative echo (ADR-0023) rides the same seat: attaching here IS "at workspace
   // attach" — the host replays the run's feed-so-far to this Workspace's Harness (the log opens
@@ -541,7 +541,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
                 return {
                   endpoint: ctx.endpoint!,
                   // Derived, not remembered: the same function every port operation names the CR
-                  // with, so the Sandbox the registrar publishes — and agentRun records on its
+                  // with, so the Sandbox the registrar publishes — and the Agent actor records on its
                   // registration — is the one the Adapter's token is scoped to, by construction
                   // (ADR-0013).
                   sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),

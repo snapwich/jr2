@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { j2Setup } from "../src/setup.ts";
-import { agentRunActorWith } from "../src/actor.ts";
+import { agentActorWith } from "../src/actor.ts";
 import { workspace, workspaceName, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { approveDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
@@ -409,8 +409,8 @@ test("a host without a Sandbox backend faults a workspace() run pointedly", asyn
   assert.match(final?.fault ?? "", /`j2 up`/);
 });
 
-test("ambient resolution (ADR-0016): agentRun inside a workspace finds endpoint + sandbox itself", async () => {
-  // The body invokes agentRun with NO endpoint and NO sandbox: both must resolve from the
+test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint + sandbox itself", async () => {
+  // The body invokes its Agent with NO endpoint and NO sandbox: both must resolve from the
   // enclosing wrapper via the parent chain — and the registration must record the wrapper's
   // Sandbox (the ADR-0013 token scope) with zero workflow plumbing.
   const endpoints: string[] = [];
@@ -418,10 +418,13 @@ test("ambient resolution (ADR-0016): agentRun inside a workspace finds endpoint 
     types: {} as { context: Record<string, never>; input: { workspace: { workdir: string } } },
     events: [approveDef],
     actors: {
-      agentRun: agentRunActorWith((endpoint) => {
-        endpoints.push(endpoint);
-        return new MockFlueClient();
-      }),
+      coder: agentActorWith(
+        (endpoint: string) => {
+          endpoints.push(endpoint);
+          return new MockFlueClient();
+        },
+        { model: "test/model", instructions: "i" },
+      ),
     },
   }).createMachine({
     id: "ambient",
@@ -430,8 +433,8 @@ test("ambient resolution (ADR-0016): agentRun inside a workspace finds endpoint 
     states: {
       coding: {
         invoke: {
-          src: "agentRun",
-          input: { agentName: "coder", instanceId: "amb-1", prompt: "go", tools: [] },
+          src: "coder",
+          input: { instanceId: "amb-1", prompt: "go", tools: [] },
         },
         on: { approve: "done" },
       },

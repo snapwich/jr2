@@ -14,7 +14,8 @@
 // The instance id is the RUN's instanceId (as in `sandboxed.ts`), so the same steps drive it.
 
 import { z } from "zod";
-import { defineEvent, j2Setup, workspace } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, workspace } from "@j2/orchestrator";
+import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 const ship = defineEvent({ name: "ship", input: z.object({ summary: z.string() }) });
@@ -25,6 +26,8 @@ type BodyInput = { instanceId: string; workspace: Ws };
 const body = j2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [finish, ship],
+  // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.
+  actors: { coder: agent(coder) },
 }).createMachine({
   id: "body",
   context: ({ input }) => input,
@@ -32,12 +35,11 @@ const body = j2Setup({
   states: {
     coding: {
       invoke: {
-        src: "agentRun",
+        src: "coder",
         // Plain prompts throughout: the pod's stock Harness parks on its scripted model until a
         // scenario releases it (ADR-0038), so the Machine waits exactly as it would on an Agent
         // that is still thinking.
         input: ({ context }) => ({
-          agentName: "coder",
           instanceId: context.instanceId,
           tools: [finish.name],
           prompt: "implement the thing",
@@ -47,9 +49,8 @@ const body = j2Setup({
     },
     shipping: {
       invoke: {
-        src: "agentRun",
+        src: "coder",
         input: ({ context }) => ({
-          agentName: "coder",
           instanceId: context.instanceId, // the SAME conversation — the continue case
           tools: [ship.name],
           prompt: "now ship it",

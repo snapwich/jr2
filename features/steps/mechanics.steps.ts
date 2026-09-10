@@ -5,7 +5,7 @@
 // These steps used to open an MCP client to `/mcp/<iid>`. That surface is gone from the Orchestrator
 // (ADR-0013): MCP now lives in the Adapter, inside the Sandbox. So what these steps play is the
 // ADAPTER, not an Agent — which is what they were always really doing, since there was never a pod
-// here (this tier is workspace-less: `agentRun` admits against the host's stub Harness). The tier
+// here (this tier is workspace-less: the Agent admits against the host's stub Harness). The tier
 // that makes a real Agent originate a real MCP call is `@kind`, where there is a real pod to do it.
 //
 // They carry the INSTANCE token, not a Sandbox token: these registrations belong to no Sandbox, and

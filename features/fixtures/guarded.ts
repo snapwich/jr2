@@ -15,7 +15,7 @@
 // Filename `guarded.ts` → workflow "guarded".
 
 import { z } from "zod";
-import { defineEvent, j2Setup } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup } from "@j2/orchestrator";
 
 const requestReview = defineEvent({
   name: "request_review",
@@ -31,9 +31,18 @@ const escalate = defineEvent({
 type Input = { instanceId: string; endpoint: string; attempts?: number };
 type Ctx = { instanceId: string; endpoint: string; attempts: number };
 
+/** The Agent this Machine carries (ADR-0049): a slot, so the name the Turn is admitted under is
+ * the slot key. The definition's CONTENT is inert here — the tier's stub Harness never runs a
+ * model — but a slot IS its definition, so it is stated. */
+const coder = agent({
+  model: "stub/model",
+  instructions: "You are the coder. Do the work, then end your turn by calling one of your tools.",
+});
+
 export const machine = j2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [requestReview, escalate],
+  actors: { coder },
 }).createMachine({
   id: "guarded",
   context: ({ input }) => ({
@@ -45,9 +54,8 @@ export const machine = j2Setup({
   states: {
     working: {
       invoke: {
-        src: "agentRun",
+        src: "coder",
         input: ({ context }) => ({
-          agentName: "coder",
           instanceId: context.instanceId,
           endpoint: context.endpoint,
           prompt: "Do the work, then call request_review with a summary.",

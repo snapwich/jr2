@@ -18,7 +18,8 @@
 
 import { assign, emit } from "xstate";
 import { z } from "zod";
-import { defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
+import { coder, reviewer, triager } from "./_agents.ts";
 
 // ---------------------------------------------------------------------------------------------
 // The door (ADR-0033): what a caller sends to start a run. Declared on the TOP machine here —
@@ -119,6 +120,10 @@ type BodyOutput = { outcome: "approved" | "lost"; branch: string };
 export const body = j2Setup({
   types: {} as { context: BodyCtx; input: Workspaced<z.infer<typeof codeRouteInput>>; output: BodyOutput },
   events: [requestReview, ship, review, reviewVerdict, approve, requestChanges],
+  // The body carries three Agents (ADR-0049). `triager` is declared HERE as well as on the top
+  // machine: a slot is per-Machine, and the two are the same Agent only because they name the
+  // same definition — what continues one conversation across them is the `conversation` pin.
+  actors: { coder: agent(coder), reviewer: agent(reviewer), triager: agent(triager) },
   guards: {
     underReviewCap: ({ context }: { context: BodyCtx }) => context.rounds < (context.reviewRounds ?? 3),
   },
@@ -135,8 +140,8 @@ export const body = j2Setup({
     // continued conversation in the run. A terminal agent.fault parks for a human.
     coding: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }) => ({ agent: "coder", prompt: coderPrompt(context) }),
+        src: "coder",
+        input: ({ context }) => ({ prompt: coderPrompt(context) }),
       },
       on: {
         request_review: { target: "assess", actions: assign({ summary: ({ event }) => event.summary }) },
@@ -153,8 +158,8 @@ export const body = j2Setup({
     // an ambient Workspace endpoint would be a different server mid-conversation).
     assess: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }) => ({ agent: "triager", prompt: assessPrompt(context), conversation: "triage" }),
+        src: "triager",
+        input: ({ context }) => ({ prompt: assessPrompt(context), conversation: "triage" }),
       },
       on: {
         ship: { target: "humanReview", actions: assign({ gateReason: "shipped" }) },
@@ -168,8 +173,8 @@ export const body = j2Setup({
 
     reviewing: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }) => ({ agent: "reviewer", prompt: reviewerPrompt(context) }),
+        src: "reviewer",
+        input: ({ context }) => ({ prompt: reviewerPrompt(context) }),
       },
       on: {
         review_verdict: [
@@ -256,7 +261,7 @@ export const machine = j2Setup({
     emitted: { type: "triage.decided"; route: "answer" | "code"; reason?: string };
   },
   events: [answer, code],
-  actors: { work },
+  actors: { work, triager: agent(triager) },
 }).createMachine({
   id: "triaged-task",
   input: runInput,
@@ -269,8 +274,8 @@ export const machine = j2Setup({
     // (ADR-0023: why this Workspace exists).
     triage: {
       invoke: {
-        src: "agentRun",
-        input: ({ context }) => ({ agent: "triager", prompt: triagePrompt(context), conversation: "triage" }),
+        src: "triager",
+        input: ({ context }) => ({ prompt: triagePrompt(context), conversation: "triage" }),
       },
       on: {
         answer: {

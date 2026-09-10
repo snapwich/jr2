@@ -9,8 +9,9 @@ import assert from "node:assert/strict";
 import { createActor, setup, sendTo } from "xstate";
 import { z } from "zod";
 import { defineEvent, eventMap } from "@j2/agent-protocol";
-import { agentRunActorWith, type AgentRunOptions } from "../src/actor.ts";
+import { agentActorWith, type AgentRunOptions } from "../src/actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
+import type { AgentDefinition } from "../src/agent.ts";
 import { registerAmbientHandles, type AmbientHandles } from "../src/ambient.ts";
 import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry, type RunBinding } from "../src/registration.ts";
 import { attachVocabulary } from "../src/vocabulary.ts";
@@ -28,6 +29,9 @@ function harness(
   client: AgentRunPort,
   input: AgentRunInput,
   options?: AgentRunOptions,
+  /** The slot's DEFINITION (ADR-0049) — what places the Turn (ADR-0031). It is a closure over the
+   * logic, not a host lookup, so a test states it exactly where the Machine would: at the slot. */
+  definition: AgentDefinition = { model: "test/model", instructions: "i" },
   bindingExtra?: Partial<RunBinding>,
   ambient?: AmbientHandles,
 ) {
@@ -39,7 +43,7 @@ function harness(
   const endpoints: string[] = [];
 
   const machine = setup({
-    actors: { run: agentRunActorWith((endpoint) => (endpoints.push(endpoint), client), options) },
+    actors: { run: agentActorWith((endpoint: string) => (endpoints.push(endpoint), client), definition, options) },
   }).createMachine({
     id: "parent",
     initial: "running",
@@ -134,12 +138,17 @@ test("no endpoint and no enclosing workspace → the invoke errors loudly, NAMIN
   const { received } = harness(mock, { ...baseInput, endpoint: undefined });
   const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
   assert.ok(errEvent, "the invoke must error at start");
-  // No agentWorkspace on the bare binding → the "write" default is what the error names.
+  // The definition omits `workspace` → the "write" default is what the error names.
   assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "write"/);
   assert.match(String(errEvent?.error?.message), /invoke it inside a workspace\(\)/);
 });
 
 // --- Placement resolution (ADR-0031): endpoint → "none" → Instance Harness → ambient → error ----
+
+/** The two definitions the placement rules turn on (ADR-0031) — the Menu-only Agent, and an
+ * ordinary one that must resolve an enclosing workspace(). */
+const NONE: AgentDefinition = { model: "test/model", instructions: "i", workspace: "none" };
+const READ: AgentDefinition = { model: "test/model", instructions: "i", workspace: "read" };
 
 const AMBIENT: AmbientHandles = {
   endpoint: "http://ws-1.harness.local:8080",
@@ -155,7 +164,8 @@ test('explicit input.endpoint wins over everything — even a "none" definition 
     mock,
     { ...baseInput, sandbox: "stub-1" },
     undefined,
-    { agentWorkspace: () => "none", instanceHarness: "http://j2-instance-harness.ns.svc:8080" },
+    NONE,
+    { instanceHarness: "http://j2-instance-harness.ns.svc:8080" },
     AMBIENT,
   );
   await tick();
@@ -166,8 +176,7 @@ test('explicit input.endpoint wins over everything — even a "none" definition 
 
 test('workspace "none" → the Instance Harness, and the registration records the placement as its scope (ADR-0031)', async () => {
   const mock = new MockFlueClient();
-  const { endpoints, table } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, {
-    agentWorkspace: (agent) => (agent === "coder" ? "none" : undefined),
+  const { endpoints, table } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, NONE, {
     instanceHarness: "http://j2-instance-harness.ns.svc:8080",
   });
   await tick();
@@ -188,7 +197,8 @@ test('definition-wins: "none" inside an enclosing workspace() still lands on the
     mock,
     { ...baseInput, endpoint: undefined },
     undefined,
-    { agentWorkspace: () => "none", instanceHarness: "http://j2-instance-harness.ns.svc:8080" },
+    NONE,
+    { instanceHarness: "http://j2-instance-harness.ns.svc:8080" },
     AMBIENT,
   );
   await tick();
@@ -203,13 +213,7 @@ test('definition-wins: "none" inside an enclosing workspace() still lands on the
 
 test("everyone else resolves the enclosing workspace(): ambient endpoint AND sandbox", async () => {
   const mock = new MockFlueClient();
-  const { endpoints, table } = harness(
-    mock,
-    { ...baseInput, endpoint: undefined },
-    undefined,
-    { agentWorkspace: () => "read" },
-    AMBIENT,
-  );
+  const { endpoints, table } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, READ, {}, AMBIENT);
   await tick();
 
   assert.deepEqual(endpoints, ["http://ws-1.harness.local:8080"]);
@@ -218,9 +222,7 @@ test("everyone else resolves the enclosing workspace(): ambient endpoint AND san
 
 test('workspace "none" with no Instance Harness address → loud error at start, naming both', () => {
   const mock = new MockFlueClient();
-  const { received } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, {
-    agentWorkspace: () => "none",
-  });
+  const { received } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, NONE);
   const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
   assert.ok(errEvent, "the invoke must error at start");
   assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "none"/);
@@ -229,9 +231,7 @@ test('workspace "none" with no Instance Harness address → loud error at start,
 
 test('the loud no-Harness error names the definition\'s own workspace value ("read" here)', () => {
   const mock = new MockFlueClient();
-  const { received } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, {
-    agentWorkspace: () => "read",
-  });
+  const { received } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, READ);
   const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
   assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "read"/);
 });
@@ -555,7 +555,9 @@ test("the next turn on the same iid waits for the pending abort (session: contin
   const table = new RegistrationTable();
   const input: AgentRunInput = { ...baseInput, instanceId: "inst-continue" };
 
-  const machine = setup({ actors: { run: agentRunActorWith(() => mock) } }).createMachine({
+  const machine = setup({
+    actors: { run: agentActorWith(() => mock, { model: "test/model", instructions: "i" }) },
+  }).createMachine({
     id: "parent",
     initial: "first",
     states: {

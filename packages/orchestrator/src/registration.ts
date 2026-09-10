@@ -1,9 +1,9 @@
 // The internal registration table (ADR-0011): one structure behind both delivery dialects.
-// `agentRun` and `gate` register `address → { accepted event defs, deliver closure, meta }`;
+// An Agent slot and `gate` register `address → { accepted event defs, deliver closure, meta }`;
 // the two HTTP surfaces (`/agents/:iid/*` for the Adapter, `/runs/:id/gates/*` for humans and
 // webhooks) are adapters over it — lookup, schema validation, delivery, discovery, and lifecycle
 // are implemented ONCE. The table is implementation structure, not vocabulary: workflows speak
-// only `defineEvent` / `agentRun` / `gate`.
+// only `defineEvent` / `agent` / `gate`.
 //
 // The dialects are also the AUTHORIZATION boundary (ADR-0013), which is why an agent registration
 // records its `sandbox`: a Sandbox token may deliver to `kind: "agent"` registrations whose Sandbox
@@ -26,7 +26,6 @@
 import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
 import type { EventDef } from "@j2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
-import type { WorkspaceAccess } from "./agent.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
 
@@ -59,7 +58,7 @@ export type Registration = {
   path?: string[];
   /**
    * The Sandbox this agent runs in — the scope of the Sandbox token that may deliver here
-   * (ADR-0013). Absent on gates, and on a workspace-less `agentRun` (the mechanics tier's stub
+   * (ADR-0013). Absent on gates, and on a workspace-less Agent turn (the mechanics tier's stub
    * Harness runs on the host, in no Sandbox at all): those are the Instance token's business.
    */
   sandbox?: string;
@@ -226,21 +225,13 @@ export type RunBinding = {
    * one cluster per orchestrator instance, so it is host infrastructure like the table). */
   sandbox?: SandboxPort;
   /**
-   * The definition's `workspace` access for one of this instance's Agents, default applied
-   * (ADR-0028) — what places a Turn (ADR-0031): `agentRun` reads it to send a `"none"` Agent to
-   * the Instance Harness and everyone else to the enclosing `workspace()`. Host-supplied from
-   * `loadAgents`; absent (bare unit-test bindings), or returning undefined for an Agent the
-   * host never discovered, resolution assumes the `"write"` default.
-   */
-  agentWorkspace?: (agent: string) => WorkspaceAccess | undefined;
-  /**
    * The Instance Harness base URL (ADR-0031) — the deterministic Service DNS a
    * `workspace: "none"` Turn is admitted at. Deployed instances derive it from their namespace;
    * absent, a `"none"` Agent without an explicit `endpoint` fails loudly.
    */
   instanceHarness?: string;
   /**
-   * Record an agent invocation's durable admission in the host ledger (ADR-0016): persisted
+   * Record an Agent invocation's durable admission in the host ledger (ADR-0016): persisted
    * beside the snapshot in the same RunBlob save, keyed by iid (globally unique, so the map is
    * flat). Optional so a bare unit-test binding can omit it — then admissions simply are not
    * durable.
@@ -253,7 +244,7 @@ export type RunBinding = {
    */
   telemetry?: (event: RetryTelemetry) => void;
   /**
-   * Put a Turn marker on the run's feed (ADR-0023): `agentRun` reports its admission and its
+   * Put a Turn marker on the run's feed (ADR-0023): an Agent turn reports its admission and its
    * settlement pick, so the run's narrative can name what a Turn hosted elsewhere decided.
    * Host-supplied; absent (bare unit-test bindings), turns leave no markers.
    */
@@ -267,7 +258,7 @@ export type RunBinding = {
    */
   echo?: (endpoint: string) => () => void;
   /**
-   * The HOST is ending this run for its own reasons (ADR-0024). An `agentRun` invocation ending
+   * The HOST is ending this run for its own reasons (ADR-0024). An Agent invocation ending
    * normally ends the Agent's turn — the state stopped waiting — but `RunHost.stop()` is the one
    * ending that must leave the durable submission alive, because ADR-0007's restore re-attaches
    * to it. The host cannot be INFERRED (process shutdown stops no actors, and restore is a fresh
@@ -275,7 +266,7 @@ export type RunBinding = {
    */
   hostStopping?: boolean;
   /**
-   * iid → the abort still in flight for it (ADR-0024). `agentRun` fills this on the way out and
+   * iid → the abort still in flight for it (ADR-0024). The Agent actor fills this on the way out and
    * waits on it before admitting, so an abort can never overtake the next turn on the same
    * instance — flue QUEUES per instance, and an abort that lost that race would settle the new
    * submission before it ran. Created on demand: the ordering must hold for ANY binding, not only
@@ -317,7 +308,7 @@ export function runBindingOf(system: AnyActorSystem): RunBinding {
   const binding = bindings.get(system);
   if (!binding) {
     throw new Error(
-      "no run binding for this actor system — gate/agentRun only run under a j2 RunHost " +
+      "no run binding for this actor system — gate and Agent slots only run under a j2 RunHost " +
         "(unit tests: bindRun(actor.system, …) before start)",
     );
   }

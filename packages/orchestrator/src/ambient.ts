@@ -1,7 +1,7 @@
-// Ambient workspace coordinates (ADR-0016): how `agentRun` finds its Harness without the
+// Ambient workspace coordinates (ADR-0016): how an Agent's turn finds its Harness without the
 // workflow threading `endpoint`/`sandbox` through every input. `workspace()`'s `running` state
 // co-invokes a REGISTRAR actor that records the wrapper's mechanism handles here, keyed by the
-// wrapper's own actorRef; `agentRun` walks `self._parent` to the nearest registered ancestor.
+// wrapper's own actorRef; the Agent actor walks `self._parent` to the nearest registered ancestor.
 //
 // Why an invoked actor and not an entry action: invoked actors restart on snapshot restore,
 // entry actions do not — so the registration is restore-safe by construction (the same property

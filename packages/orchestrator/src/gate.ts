@@ -1,5 +1,5 @@
 // The `gate` actor (ADR-0011): a pending external input on a run, as an addressable resource.
-// The symmetric twin of `agentRun` for every NON-agent caller — humans (`j2 send`, a UI),
+// The symmetric twin of the Agent actor for every NON-agent caller — humans (`j2 send`, a UI),
 // webhook translators, CI. "Human" is policy, not mechanism, so the actor is not named for one
 // caller.
 //

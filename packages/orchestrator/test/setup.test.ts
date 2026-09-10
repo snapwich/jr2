@@ -1,17 +1,27 @@
 // j2Setup tests (ADR-0015): the authoring surface returns a plain xstate machine with the
 // mechanism pre-wired — vocabulary attached to the machine object, mechanism events in the
-// union, j2 actors pre-registered — and closes xstate's nested-`on` typo hole at build time.
+// union, `gate` pre-registered and every Agent SLOT finalized by brand (ADR-0049) — and closes
+// xstate's nested-`on` typo hole at build time.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createActor, fromCallback, type AnyActorRef } from "xstate";
 import { z } from "zod";
 import { defineEvent, type EventDef } from "@j2/agent-protocol";
-import { agentRunActorWith } from "../src/actor.ts";
-import { bindRun, mayMove, RegistrationTable, wouldMove } from "../src/registration.ts";
+import { agentActorWith } from "../src/actor.ts";
+import type { AgentDefinition } from "../src/agent.ts";
+import { agent } from "../src/harness-client.ts";
+import { bindRun, mayMove, RegistrationTable, wouldMove, type RunBinding } from "../src/registration.ts";
 import { j2Setup } from "../src/setup.ts";
 import { vocabularyOf } from "../src/vocabulary.ts";
 import { MockFlueClient } from "./_fixtures.ts";
+
+/** The Agent every fixture here carries. Its content never matters — no model is called — but a
+ * slot needs a definition, because the definition IS the slot (ADR-0049). */
+const testDefinition: AgentDefinition = { model: "test/model", instructions: "i" };
+
+/** One Agent slot over a mock port: what a Machine declares, with the wire swapped out. */
+const slot = (mock: MockFlueClient) => agentActorWith(() => mock, testDefinition);
 
 const approve = defineEvent({ name: "approve", input: z.object({}) });
 const requestChanges = defineEvent({ name: "request_changes", input: z.object({ notes: z.string() }) });
@@ -102,26 +112,22 @@ test("duplicate and reserved-semantics defs fail at createMachine, naming the ma
   );
 });
 
-test("agentRun and gate are pre-registered; a consumer actor under the same name wins", async () => {
-  let ranOverride = false;
+test("an Agent slot is the Machine's own logic; provide() swaps it — the unit-test seam (ADR-0049)", () => {
+  let ranFake = false;
   const machine = j2Setup({
     types: {} as { context: Record<string, never> },
     events: [approve],
-    actors: {
-      agentRun: fromCallback(() => {
-        ranOverride = true;
-      }),
-      probe: fromCallback(() => {}),
-    },
+    actors: { coder: agent(testDefinition), probe: fromCallback(() => {}) },
   }).createMachine({
     id: "wf",
     context: {},
     initial: "working",
     states: {
-      // Both resolve by NAME with no consumer listing: gate from j2, agentRun overridden.
+      // `coder` is not resolved against anything: it is the slot this Machine declares, so its
+      // name is checked by xstate's own `src` typing (ADR-0049/0050).
       working: {
         invoke: [
-          { src: "agentRun", input: { agentName: "x", instanceId: "i", endpoint: "http://x", tools: [] } },
+          { src: "coder", input: { prompt: "go", endpoint: "http://x", tools: [] } },
           { src: "probe", input: {} },
         ],
         on: { approve: "done" },
@@ -130,11 +136,19 @@ test("agentRun and gate are pre-registered; a consumer actor under the same name
     },
   });
 
-  // The override means no run binding / flue client is needed — it starts as a plain machine.
-  const actor = createActor(machine);
+  // Replacing the SLOT replaces the Agent — no roster, no host, nothing to inject: the fake is
+  // what runs, so this machine starts with no run binding and no Harness at all.
+  const faked = machine.provide({
+    actors: {
+      coder: fromCallback(() => {
+        ranFake = true;
+      }),
+    },
+  });
+  const actor = createActor(faked);
   actor.start();
   actor.stop();
-  assert.ok(ranOverride, "consumer-supplied agentRun logic must win over the pre-registered one");
+  assert.ok(ranFake, "the provided slot logic must win over the declared agent()");
 });
 
 test("the returned machine is a plain StateMachine: provide() still works as the test seam", () => {
@@ -143,7 +157,7 @@ test("the returned machine is a plain StateMachine: provide() still works as the
     events: [approve],
   }).createMachine({ id: "wf", context: {}, initial: "a", states: { a: { on: { approve: "b" } }, b: {} } });
 
-  const provided = machine.provide({ actors: { agentRun: fromCallback(() => {}) } });
+  const provided = machine.provide({ actors: { gate: fromCallback(() => {}) } });
   assert.ok(provided);
   // Discovery registers the PRE-provide machine, which is the one carrying the vocabulary.
   assert.ok(vocabularyOf(machine));
@@ -157,14 +171,14 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
  * the root's creation inspection event — before initial children construct — exactly as RunHost
  * does, so iid minting sees the run identity. The binding carries NO vocabulary: names resolve
  * against the invoking Machine, which already carries its own defs (ADR-0011, ADR-0049). */
-function hostless(machine: Parameters<typeof createActor>[0]) {
+function hostless(machine: Parameters<typeof createActor>[0], extra: Partial<RunBinding> = {}) {
   const table = new RegistrationTable();
   let bound = false;
   const actor = createActor(machine, {
     inspect: (ev) => {
       if (!bound && ev.type === "@xstate.actor") {
         bound = true;
-        bindRun((ev.actorRef as AnyActorRef).system, { runId: "run-1", workflow: "wf", table });
+        bindRun((ev.actorRef as AnyActorRef).system, { runId: "run-1", workflow: "wf", table, ...extra });
       }
     },
   });
@@ -183,7 +197,7 @@ test("agent menus and gate accepts derive from transitions, routed by audience",
   const machine = j2Setup({
     types: {} as { context: Record<string, never> },
     events: defs,
-    actors: { agentRun: agentRunActorWith(() => mock) },
+    actors: { coder: slot(mock) },
   }).createMachine({
     id: "wf",
     context: {},
@@ -193,7 +207,7 @@ test("agent menus and gate accepts derive from transitions, routed by audience",
     on: { report_blocked: { target: ".done" }, human_approve: { target: ".done" } },
     states: {
       coding: {
-        invoke: { src: "agentRun", input: { agent: "coder", prompt: "go", endpoint: "http://x" } },
+        invoke: { src: "coder", input: { prompt: "go", endpoint: "http://x" } },
         on: { request_review: "review" },
       },
       review: {
@@ -207,7 +221,9 @@ test("agent menus and gate accepts derive from transitions, routed by audience",
   const { actor, table } = hostless(machine);
   await tick();
 
-  // The agent's menu: own request_review + bubbled report_blocked; human_approve is excluded
+  // The Agent's name came off the SLOT KEY (ADR-0049) — the invoke never wrote it…
+  assert.equal(mock.admitted?.agentName, "coder");
+  // …and its menu is own request_review + bubbled report_blocked; human_approve is excluded
   // by its audience even though it bubbles here too.
   assert.deepEqual([...(mock.admitted?.tools ?? [])].sort(), ["report_blocked", "request_review"]);
   // The minted iid is run-scoped and readable; fresh sessions get a random suffix.
@@ -222,6 +238,59 @@ test("agent menus and gate accepts derive from transitions, routed by audience",
   actor.stop();
 });
 
+test("two Machines may each carry a `coder`, and each Turn places by ITS OWN definition (ADR-0049)", async () => {
+  // The pair a roster could not hold: one name, two definitions, one run. The parent's coder is
+  // Menu-only, so its Turn goes to the Instance Harness (ADR-0031); the child's is an ordinary
+  // one that resolves the endpoint it was handed. Nothing merges, and neither Machine can see the
+  // other's slot.
+  const go = defineEvent({ name: "go", input: z.object({}) });
+  const outerPort = new MockFlueClient();
+  const innerPort = new MockFlueClient();
+  const endpoints: string[] = [];
+  const named = (mock: MockFlueClient, definition: AgentDefinition) =>
+    agentActorWith((endpoint: string) => (endpoints.push(endpoint), mock), definition);
+
+  const child = j2Setup({
+    types: {} as { context: Record<string, never> },
+    events: [],
+    actors: { coder: named(innerPort, testDefinition) },
+  }).createMachine({
+    id: "child",
+    context: {},
+    initial: "coding",
+    states: { coding: { invoke: { src: "coder", input: { prompt: "code it", endpoint: "http://sandbox.test" } } } },
+  });
+
+  const machine = j2Setup({
+    types: {} as { context: Record<string, never> },
+    events: [go],
+    actors: { coder: named(outerPort, { ...testDefinition, workspace: "none" }), child },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    initial: "advising",
+    states: {
+      advising: { invoke: { src: "coder", input: { prompt: "advise" } }, on: { go: "working" } },
+      working: { invoke: { src: "child" } },
+    },
+  });
+
+  const { actor, table } = hostless(machine, { instanceHarness: "http://j2-instance-harness.ns.svc:8080" });
+  await tick();
+  // The parent's Turn: no endpoint authored, and its own definition says "none".
+  assert.equal(outerPort.admitted?.agentName, "coder");
+  assert.deepEqual(endpoints, ["http://j2-instance-harness.ns.svc:8080"]);
+
+  table.deliver(`agent/${outerPort.admitted!.instanceId}`, "go", {});
+  await tick();
+
+  // The child's Turn: the same NAME, a different Agent — its own port, its own placement.
+  assert.equal(innerPort.admitted?.agentName, "coder");
+  assert.deepEqual(endpoints, ["http://j2-instance-harness.ns.svc:8080", "http://sandbox.test"]);
+  assert.notEqual(outerPort.admitted?.instanceId, innerPort.admitted?.instanceId, "two conversations");
+  actor.stop();
+});
+
 test("session continue derives ONE deterministic iid; the fresh default mints a new one per turn", async () => {
   const go = defineEvent({ name: "go", input: z.object({}) });
   const iidsFor = async (session?: "continue") => {
@@ -229,7 +298,7 @@ test("session continue derives ONE deterministic iid; the fresh default mints a 
     const machine = j2Setup({
       types: {} as { context: Record<string, never> },
       events: [go],
-      actors: { agentRun: agentRunActorWith(() => mock) },
+      actors: { coder: slot(mock) },
     }).createMachine({
       id: "wf",
       context: {},
@@ -237,15 +306,15 @@ test("session continue derives ONE deterministic iid; the fresh default mints a 
       states: {
         a: {
           invoke: {
-            src: "agentRun",
-            input: { agent: "coder", prompt: "one", session, scope: "F-1", endpoint: "http://x" },
+            src: "coder",
+            input: { prompt: "one", session, scope: "F-1", endpoint: "http://x" },
           },
           on: { go: "b" },
         },
         b: {
           invoke: {
-            src: "agentRun",
-            input: { agent: "coder", prompt: "two", session, scope: "F-1", endpoint: "http://x" },
+            src: "coder",
+            input: { prompt: "two", session, scope: "F-1", endpoint: "http://x" },
           },
         },
       },
@@ -277,28 +346,30 @@ test("a `conversation` pin derives ONE run-scoped iid across MACHINES; `continue
     const mock = new MockFlueClient();
     const turn = (prompt: string) =>
       conversation
-        ? { agent: "triager", prompt, conversation, endpoint: "http://x" }
-        : { agent: "triager", prompt, session: "continue" as const, endpoint: "http://x" };
+        ? { prompt, conversation, endpoint: "http://x" }
+        : { prompt, session: "continue" as const, endpoint: "http://x" };
     const child = j2Setup({
       types: {} as { context: Record<string, never> },
+      // The nested Machine carries its OWN `triager` slot (ADR-0049): same name, same definition
+      // here, but a separate declaration — nothing crosses the invoke boundary.
       events: [],
-      actors: { agentRun: agentRunActorWith(() => mock) },
+      actors: { triager: slot(mock) },
     }).createMachine({
       id: "child",
       context: {},
       initial: "deciding",
-      states: { deciding: { invoke: { src: "agentRun", input: turn("again") } } },
+      states: { deciding: { invoke: { src: "triager", input: turn("again") } } },
     });
     const machine = j2Setup({
       types: {} as { context: Record<string, never> },
       events: [go],
-      actors: { agentRun: agentRunActorWith(() => mock), child },
+      actors: { triager: slot(mock), child },
     }).createMachine({
       id: "wf",
       context: {},
       initial: "triage",
       states: {
-        triage: { invoke: { src: "agentRun", input: turn("one") }, on: { go: "working" } },
+        triage: { invoke: { src: "triager", input: turn("one") }, on: { go: "working" } },
         working: { invoke: { src: "child" } },
       },
     });
@@ -327,14 +398,14 @@ test("explicit tools remain the escape hatch over the derived menu", async () =>
   const machine = j2Setup({
     types: {} as { context: Record<string, never> },
     events: [ping, pong],
-    actors: { agentRun: agentRunActorWith(() => mock) },
+    actors: { coder: slot(mock) },
   }).createMachine({
     id: "wf",
     context: {},
     initial: "a",
     states: {
       a: {
-        invoke: { src: "agentRun", input: { agent: "coder", prompt: "go", tools: ["pong"], endpoint: "http://x" } },
+        invoke: { src: "coder", input: { prompt: "go", tools: ["pong"], endpoint: "http://x" } },
         on: { ping: "b", pong: "b" },
       },
       b: {},
@@ -357,15 +428,15 @@ test("the dials pass through to the admission; omitted, nothing is invented (ADR
     j2Setup({
       types: {} as { context: Record<string, never> },
       events: [ping],
-      actors: { agentRun: agentRunActorWith(() => mock) },
+      actors: { coder: slot(mock) },
     }).createMachine({
       id: "wf",
       context: {},
       initial: "a",
-      states: { a: { invoke: { src: "agentRun", input }, on: { ping: "b" } }, b: {} },
+      states: { a: { invoke: { src: "coder", input }, on: { ping: "b" } }, b: {} },
     });
 
-  const base = { agent: "coder", prompt: "go", endpoint: "http://x" };
+  const base = { prompt: "go", endpoint: "http://x" };
   const a = hostless(build(dialed, { ...base, model: "vllm/big", thinkingLevel: "xhigh" }));
   const b = hostless(build(plain, base));
   await tick();
@@ -394,13 +465,13 @@ async function turnWith(on: any, context: Record<string, unknown>, defs: EventDe
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     types: {} as { context: any },
     events: defs,
-    actors: { agentRun: agentRunActorWith(() => mock) },
+    actors: { coder: slot(mock) },
   }).createMachine({
     id: "wf",
     context,
     initial: "a",
     states: {
-      a: { invoke: { src: "agentRun", input: { agent: "coder", prompt: "go", endpoint: "http://x" } }, on },
+      a: { invoke: { src: "coder", input: { prompt: "go", endpoint: "http://x" } }, on },
       b: {},
     },
   });
