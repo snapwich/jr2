@@ -98,11 +98,30 @@ export function wrapperBodyOf(machine: AnyStateMachine): string | undefined {
   return wrapperBodies.get(machine.config);
 }
 
+declare const wrapperBody: unique symbol;
+
 /**
- * The TYPE half of the same statement: the actor-slot union a j2 wrapper declares, in xstate's
- * own `ProvidedActor` shape. `workspace()` and `pool()` name it in their return types, so the
- * body's own slots are readable through the wrapper and `customize()` can offer the composer the
- * Agents of the Machine inside (customize.ts) — the compile-time twin of the walk above.
+ * The TYPE half of {@link attachWrapperBody}'s stamp: a j2 wrapper's machine type SAYS which
+ * Machine it is transparent to, so `customize()`'s types read the same record its runtime walk
+ * reads (`wrapperBodyOf`) and the compiler's answer and the runtime's are one answer.
+ *
+ * Recorded here too, for the reason the runtime records it: a slot named `body` or `worker` is a
+ * name any author may choose, so a type that routed a `customize()` through a slot's SPELLING
+ * would offer the composer the Agents of a Machine they never named — and would deny the Agents
+ * of the one they did, since the reach stops at a Machine that is not a wrapper. Only a wrapper
+ * carries this marker, and only `workspace()` and `pool()` write it.
+ *
+ * Phantom: the property exists in the type alone. A wrapper's implementation returns a plain
+ * machine and its overloads state this, exactly as the runtime stamp lives beside the object
+ * rather than on it.
+ */
+export type J2Wrapper<TBody extends AnyStateMachine> = { readonly [wrapperBody]: TBody };
+
+/**
+ * The actor-slot union a j2 wrapper declares, in xstate's own `ProvidedActor` shape. `workspace()`
+ * and `pool()` name it in their return types beside {@link J2Wrapper}, so the body's own slots are
+ * readable THROUGH the wrapper and `customize()` can offer the composer the Agents of the Machine
+ * inside (customize.ts) — the compile-time twin of the walk above.
  *
  * The mechanism actors ride along as `UnknownActorLogic`: they are named slots (Stately shows
  * `provision`, not `inline`) but nothing outside the wrapper substitutes them, so their logic

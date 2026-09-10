@@ -12,7 +12,8 @@
 //      `agents` at all;
 //   2. a child key it does not compose is an error;
 //   3. j2's wrappers are transparent — a body's Agents are reachable through the wrapper, without
-//      `body`, and the wrapper's own mechanism slots are not offered;
+//      `body`, and the wrapper's own mechanism slots are not offered; and the transparency follows
+//      the wrapper's MARKER, so a slot an author spelled `body` is an ordinary child;
 //   4. an override is a PARTIAL definition: `{ model }` alone is enough, an unknown field is not;
 //   5. the result is the same Machine type, so a customized Machine goes wherever the original
 //      did — invoked as a child, with its door still checked.
@@ -113,6 +114,26 @@ function refusedThroughTheWrapper(): void {
   void customize(pooled, { agents: { scribe: { model: opus } } });
 }
 
+// The counter-case, and the reason the reach reads a marker instead of a name: an author is free
+// to spell a slot `body` or `worker`, and a type that stepped through it on the spelling would
+// offer this Machine's OWN Agents nowhere and the child's everywhere — a compile-time answer the
+// runtime (which reads `wrapperBodyOf`) would then contradict.
+const namesake = j2Setup({
+  events: [done],
+  actors: { coder: agent({ model: haiku, instructions: "c" }), body: child, worker: fromPromise(async () => 1) },
+}).createMachine({ id: "namesake", initial: "idle", states: { idle: {} } });
+
+void customize(namesake, { agents: { coder: { model: opus } } });
+void customize(namesake, { actors: { body: { agents: { scribe: { model: opus } } } } });
+
+function refusedThroughANamesake(): void {
+  // @ts-expect-error `scribe` is the child's, and `body` here is an ordinary child slot — so it is
+  // reached by name, one level down, like any other composed Machine.
+  void customize(namesake, { agents: { scribe: { model: opus } } });
+  // @ts-expect-error and `worker` composes no Machine at all
+  void customize(namesake, { actors: { worker: {} } });
+}
+
 const pooled = pool(wrapped, {
   input: door,
   source: source<{ id: string }>({
@@ -165,5 +186,9 @@ test("customize()'s type-level claims are the compiler's; this run pins the runt
   assert.ok(doorSurvives);
   // Declared for the compiler, never called — naming them here is what keeps them from reading as
   // dead code (their `@ts-expect-error` lines ARE the assertions).
-  assert.ok([refusedAgents, refusedChildren, refusedThroughTheWrapper, refusedOverrides].every((f) => !!f));
+  assert.ok(
+    [refusedAgents, refusedChildren, refusedThroughTheWrapper, refusedThroughANamesake, refusedOverrides].every(
+      (f) => !!f,
+    ),
+  );
 });

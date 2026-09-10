@@ -179,6 +179,27 @@ test("a pool() is transparent to its worker, and a pool of Workspaces to what is
   );
 });
 
+test("a slot an AUTHOR spelled `body` is an ordinary child — transparency follows the marker", () => {
+  // The counter-case to the two above: `body` and `worker` are names any author may choose, so
+  // the reach is the wrapper's own record of being one (`J2Wrapper`/`wrapperBodyOf`, parts.ts) and
+  // never the spelling. Stepping through this Machine would retune the CHILD's Agents and refuse
+  // the host's own — which is what its author named.
+  const host = j2Setup({
+    events: [done],
+    actors: { coder: agent(coderDef), body: research(), worker: fromPromise(async () => 1) },
+  }).createMachine({ id: "host", initial: "idle", states: { idle: { invoke: { src: "body" } } } });
+
+  const retuned = customize(host, {
+    agents: { coder: { model: opus } },
+    // ...and the child under it is reached the way every other composed Machine is: by name.
+    actors: { body: { agents: { reviewer: { model: opus } } } },
+  });
+
+  assert.equal(definitionAt(retuned, "coder").model, opus);
+  assert.equal(definitionAt(slotAt(retuned, "body"), "reviewer").model, opus);
+  assert.equal(definitionAt(slotAt(retuned, "body"), "coder").model, haiku);
+});
+
 // --- The Sandbox seats: the one part `provide` cannot carry ------------------------------------
 
 test("image/user retune the workspace() the chain reaches, and the original keeps its own", () => {

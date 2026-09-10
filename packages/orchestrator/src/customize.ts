@@ -23,10 +23,15 @@
 //     wrapper's config and rebuilds it with the same implementations, re-attaching what the
 //     original carried.
 //
-// j2's wrappers are TRANSPARENT (`wrapperBodyOf` — parts.ts): `agents`/`actors` route through
-// `workspace()`'s `body` and `pool()`'s `worker`, so a consumer customizing a Workspace-rooted
-// workflow never writes `body` and never has to know that j2 wrapped anything. `image`/`user`
-// travel the same chain in the other direction — down to the `workspace()` that owns the seats.
+// j2's wrappers are TRANSPARENT: `agents`/`actors` route through `workspace()`'s `body` and
+// `pool()`'s `worker`, so a consumer customizing a Workspace-rooted workflow never writes `body`
+// and never has to know that j2 wrapped anything. `image`/`user` travel the same chain in the
+// other direction — down to the `workspace()` that owns the seats.
+//
+// Both halves route on the wrapper's own RECORD of being one, never on a slot's spelling: the
+// runtime reads `wrapperBodyOf` and the types read `J2Wrapper` (parts.ts), which the wrappers
+// stamp and state together. That is what keeps the compiler's answer and the runtime's the same
+// answer for a Machine whose author happened to name a slot `body`.
 //
 // Only DECLARED parts can be customized; none can be added. A consumer who needs a third Agent
 // composes a new Machine — which is the same act, spelled honestly.
@@ -42,6 +47,7 @@ import {
   composesSandbox,
   sandboxPartsOf,
   wrapperBodyOf,
+  type J2Wrapper,
   type SandboxParts,
 } from "./parts.ts";
 import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
@@ -87,13 +93,17 @@ type ChildSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AnySta
 /** The child Machine under one slot key, constrained so `Customize` may recurse into it. */
 type ChildAt<M extends AnyStateMachine, K extends string> = Extract<LogicAt<M, K>, AnyStateMachine>;
 
-/** One step through a j2 wrapper, or the Machine itself when it is not one. */
-type Through<M extends AnyStateMachine> = [LogicAt<M, WrapperSlot>] extends [never] ? M : ChildAt<M, WrapperSlot>;
+/** One step through a j2 wrapper, or the Machine itself when it is not one. The step is taken on
+ * the wrapper's MARKER (`J2Wrapper`, parts.ts), never on a slot's spelling — an author is free to
+ * name a slot `body` or `worker`, and routing through it because of the name would offer the
+ * Agents of a Machine the composer never named. */
+type Through<M extends AnyStateMachine> = M extends J2Wrapper<infer TBody> ? TBody : M;
 
 /**
  * The Machine a `customize()` actually reaches: j2's wrappers are transparent to their body, so
- * this is the first Machine an AUTHOR wrote. It mirrors `wrapperBodyOf`'s runtime walk — both
- * stop at the same Machine, so what the compiler offers is what the call retunes.
+ * this is the first Machine an AUTHOR wrote. It mirrors `wrapperBodyOf`'s runtime walk, and reads
+ * the SAME record — `J2Wrapper` is the type half of the stamp `attachWrapperBody` writes — so both
+ * stop at the same Machine and what the compiler offers is what the call retunes.
  *
  * Unrolled rather than recursive: `Customize` is already a recursive type (a child's parts are a
  * `Customize` of the child), and a second recursion inside it makes the pair too deep to
@@ -101,12 +111,6 @@ type Through<M extends AnyStateMachine> = [LogicAt<M, WrapperSlot>] extends [nev
  * third wrapper around those would be j2 wrapping its own wrapper, which nothing does.
  */
 type Reached<M extends AnyStateMachine> = Through<Through<M>>;
-
-/** The slot names j2's own wrappers are transparent to — `workspace()`'s body, `pool()`'s worker.
- * The type half of what the wrappers stamp at build time (`attachWrapperBody`, parts.ts) and
- * state in their return types, which is what makes the compiler's answer and the runtime's the
- * same answer. */
-type WrapperSlot = "body" | "worker";
 
 /**
  * What may be retuned on one Machine, mirroring the DECLARATION's own shape and recursively

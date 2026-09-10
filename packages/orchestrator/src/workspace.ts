@@ -36,7 +36,7 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
-import { attachSandboxParts, attachWrapperBody, sandboxPartsOf, type WrapperActors } from "./parts.ts";
+import { attachSandboxParts, attachWrapperBody, sandboxPartsOf, type J2Wrapper, type WrapperActors } from "./parts.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInput } from "./vocabulary.ts";
 
@@ -218,7 +218,10 @@ type WsContext = {
  *
  * The slots are stated because the wrapper is TRANSPARENT to its body (ADR-0049): `body` holding
  * the body's own type is what lets `customize(machine, { agents })` offer the BODY's Agents
- * through the wrapper, without the composer ever spelling `body`.
+ * through the wrapper, without the composer ever spelling `body`. {@link J2Wrapper} is what SAYS
+ * it is a wrapper — the type twin of the `attachWrapperBody` stamp `workspace()` writes below — so
+ * `customize()` reaches the body because this Machine IS one, never because a slot is spelled
+ * `body`: that name is an author's to choose too (parts.ts).
  */
 export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine = AnyStateMachine> = StateMachine<
   any,
@@ -235,7 +238,8 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine = An
   any,
   any,
   any
->;
+> &
+  J2Wrapper<TBody>;
 
 /**
  * The door CONSTRAINS the body (ADR-0033), in one direction only: the body may not demand more

@@ -34,7 +34,7 @@ import {
 import type { z } from "zod";
 import type { EventDef } from "@j2/agent-protocol";
 import { gate } from "./gate.ts";
-import { attachWrapperBody, type WrapperActors } from "./parts.ts";
+import { attachWrapperBody, type J2Wrapper, type WrapperActors } from "./parts.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
 /**
@@ -100,7 +100,8 @@ export type PoolSpec<T, TInput = unknown> = {
  * What `pool()` returns: the door a run of it starts with, the pool's own output, and the
  * wrapper's actor slots — `worker` holding the worker's own type, because the pool is
  * TRANSPARENT to its worker (ADR-0049), so `customize(machine, { agents })` on a pool-rooted
- * workflow offers the WORKER's Agents and the composer never spells `worker`.
+ * workflow offers the WORKER's Agents and the composer never spells `worker`. {@link J2Wrapper} is
+ * what marks it a j2 wrapper: the transparency follows the marker, not the slot's spelling.
  */
 export type PoolMachine<TWorker extends AnyStateMachine, TInput> = StateMachine<
   any,
@@ -117,7 +118,8 @@ export type PoolMachine<TWorker extends AnyStateMachine, TInput> = StateMachine<
   any,
   any,
   any
->;
+> &
+  J2Wrapper<TWorker>;
 
 type PoolCtx = {
   runInput: Record<string, unknown>;
