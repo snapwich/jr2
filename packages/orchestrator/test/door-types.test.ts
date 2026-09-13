@@ -15,12 +15,16 @@
 //   6. a parent invoking the wrapper has its input mapper checked against the door;
 //   7. with no door declared the mapper's `input` is `unknown` — an honest "j2 does not know",
 //      not `any`;
-//   8. what the HOST injects beside the door is outside the check — and only that.
+//   8. what the HOST injects beside the door is outside the check — and only that;
+//   9. a per-run Repo Slot's mapper reads the same PARSED door as `spec` (ADR-0051), on the
+//      wrapper itself: `unknown` on the permissive path, and an annotation that contradicts the
+//      door is refused.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, type InputFrom, type OutputFrom } from "xstate";
 import { z } from "zod";
+import { open } from "../src/parts.ts";
 import { workspace, type WorkspaceSpec, type Workspaced } from "../src/workspace.ts";
 import { inputSchemaOf, type HostInjectedInput } from "../src/vocabulary.ts";
 
@@ -200,8 +204,56 @@ void workspace(unionDemandsMore, { input: door, repos, spec: ({ input }) => spec
 const unionNeedsLess = bodyTakingInput<Workspaced<{ repo: string }> | Workspaced<Door>>();
 void workspace(unionNeedsLess, { input: door, repos, spec: ({ input }) => specOf(input) });
 
+// --- 9: a per-run slot's mapper reads the door, on the wrapper itself ---------------------------
+
+// The slot seat is `SandboxOptions<TSlots, TInput>` threading the door into `RepoSlot<TInput>`.
+// customize-types.test.ts pins the same mapper through `WorkspaceOf<M>` — a different seat — so a
+// slip to `RepoSlot<any>` here would pass every other pin (examples/coding's mappers compile under
+// `any`). The mapper's `input` is the PARSED door, uninstructed, and an open slot rides beside it.
+const perRun = workspace(wantsApp, {
+  input: door,
+  repos: { app: ({ input }) => input.repo, docs: open },
+  spec: ({ input }) => specOf(input),
+});
+// The per-run and open slots are slots like any other: the body is handed their handles too.
+const mapperSlotsAreSlots: Eq<InputFrom<typeof perRun>, Door> = true;
+void workspace(wantsDocs, {
+  input: door,
+  repos: { app: ({ input }) => ({ url: input.repo, ref: input.branch }), docs: open },
+  spec: ({ input }) => specOf(input),
+});
+void workspace(wantsApp, {
+  input: door,
+  // @ts-expect-error `title` is not on this door — the mapper reads what the schema parses, nothing more
+  repos: { app: ({ input }) => input.title },
+  spec: ({ input }) => specOf(input),
+});
+void workspace(wantsApp, {
+  input: door,
+  // @ts-expect-error a mapper annotated against a shape the door does not serve is refused, like a body would be
+  repos: { app: ({ input }: { input: { other: string } }) => input.other },
+  spec: ({ input }) => specOf(input),
+});
+// No door declared → the mapper's `input` is `unknown`, the same honesty as `spec`'s (claim 7).
+void workspace(ignoresHandles, {
+  repos: {
+    app: ({ input }) => {
+      // @ts-expect-error nothing is known about what starts this wrapper; the mapper must narrow
+      return input.repo;
+    },
+  },
+  spec: () => ({ branch: "feat" }),
+});
+// And when the permissive path is annotated, the slot mapper and `spec` state the SAME thing.
+void workspace(ignoresHandles, {
+  repos: { app: ({ input }: { input: { ticket: Door } }) => input.ticket.repo },
+  spec: ({ input }: { input: { ticket: Door } }) => specOf(input.ticket),
+});
+
 test("the door's type-level claims are the compiler's; this run pins the runtime half", () => {
   assert.equal(inputSchemaOf(wrapped), door, "the declared door rides the WRAPPER, not the body");
   assert.equal(inputSchemaOf(permissive), undefined, "no schema declared → the door stays permissive");
-  assert.ok(doorIsTheInput && bodyOutputIsTheOutput && permissiveDoorIsUnknown && annotatedInputFlows);
+  assert.ok(
+    doorIsTheInput && bodyOutputIsTheOutput && permissiveDoorIsUnknown && annotatedInputFlows && mapperSlotsAreSlots,
+  );
 });
