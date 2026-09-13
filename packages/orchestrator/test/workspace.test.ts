@@ -256,6 +256,18 @@ test("the image is a STATIC option read off the Machine at invoke time, never th
     !JSON.stringify((await host.read(runId))?.context ?? {}).includes("file:///srv/pkg/image"),
     "and it is nowhere in the persisted context: a restore re-reads what the Machine carries NOW",
   );
+
+  // And NEVER the spec (ADR-0051: `WorkspaceSpec = { branch, workGroup?, reviewSha? }`): an
+  // `image` a spec mapper smuggles in is not a name the port ever sees — the request carries what
+  // the wrapper carries, and this wrapper carries none.
+  const unnamed = workspace(body, {
+    repos: { app: APP },
+    spec: () => ({ branch: "b", image: "file:///srv/pkg/image" }) as { branch: string },
+  });
+  host.register({ name: "unnamed", machine: unnamed, provide: () => ({}) });
+  const second = await host.start("unnamed");
+  await waitFor(() => host.gates(second.runId).length === 1);
+  assert.deepEqual(sandbox.images, ["file:///srv/pkg/image", undefined]);
 });
 
 test("pod composition: `user` is a static option too, `workGroup` stays per-run spec", async () => {

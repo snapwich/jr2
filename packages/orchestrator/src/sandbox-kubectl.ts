@@ -242,8 +242,10 @@ const PREFLIGHT_SCRIPT = [
 
 export type KubectlSandboxOptions = {
   /** The mounted image map (ADR-0037/0038) — every ref this port can name, written by `j2 up`.
-   * Default: the `j2-images` ConfigMap's mount. No image option here any more: which image a
-   * Sandbox runs is a NAME on the spec, resolved against this map at provision. */
+   * Default: the `j2-images` ConfigMap's mount. No image option here: which image a Sandbox runs
+   * is the `workspace()` wrapper's static `image` option (ADR-0049) — carried on the Machine, read
+   * off it at invoke time, handed to `provision()` as a string — and resolved against this map at
+   * provision. The per-run spec never names one (ADR-0051). */
   imagesPath?: string;
   /** Extra env for the HARNESS container (`harness.env`) — merged ahead of the
    * mechanism-owned vars, which win on collision. */

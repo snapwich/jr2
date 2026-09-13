@@ -131,7 +131,8 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
   const applied = crOf(calls);
   assert.equal(applied.metadata.name, "sb-1");
   assert.deepEqual(applied.metadata.labels, { "j2.dev/run": "run-9", "j2.dev/workflow": "coding" });
-  // No name on the spec → `images/default` (ADR-0037's middle leg), resolved from the map.
+  // No `image` on the request (the wrapper named none) → `images/default` (ADR-0037's middle
+  // leg), resolved from the map.
   assert.equal(applied.spec.image, "j2-sandbox-inst-default:d00");
   // The Repos, by cache key (ADR-0051): the operator mounts each node cache read-only at
   // `/repos/<key>` itself, places the pod, and gates Ready on it — so the CR names them and mounts
