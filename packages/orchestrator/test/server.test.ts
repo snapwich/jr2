@@ -157,6 +157,35 @@ test("the boot creates one bound Repo resource per identity its Machines bind, a
   }
 });
 
+test("a boot finding its bound Repo already there RESTATES the Machine's spec — the boot is the one writer (ADR-0051)", async () => {
+  // A redeploy: the resource stands from the last boot. The boot binds — one merge patch carrying
+  // the walk's url — where a provision would only move the clock; so a url or credential moved in
+  // j2.config.ts reaches the cache at the next `j2 up`, and never from a run.
+  const dir = await mkWorkspaceInstance();
+  const lines: string[] = [];
+  const kubectl = fakeKubectl((args) =>
+    args[0] === "create" ? "Error from server (AlreadyExists): repos.core.j2.dev already exists" : undefined,
+  );
+  const inst = await serverMain({
+    dir,
+    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
+    announce: (line) => lines.push(line),
+    exec: kubectl.exec,
+  });
+  try {
+    const { key } = repoIdentity("https://example.test/app.git");
+    assert.deepEqual(await announcedRepos(lines, 1), [{ repo: key, url: "https://example.test/app.git", bound: true }]);
+    const patch = kubectl.calls.find((a) => a[0] === "patch" && a[1] === "repos.core.j2.dev" && a[2] === key);
+    assert.ok(patch, "the boot patched the existing resource");
+    const body = JSON.parse(patch!.at(-1)!) as { spec?: { url?: string }; metadata?: { labels?: unknown } };
+    assert.equal(body.spec?.url, "https://example.test/app.git");
+    assert.deepEqual(body.metadata?.labels, { "j2.dev/bound": "true" });
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a Repo the cluster refuses is announced as an error, and the process serves regardless (ADR-0048)", async () => {
   const dir = await mkWorkspaceInstance();
   const lines: string[] = [];

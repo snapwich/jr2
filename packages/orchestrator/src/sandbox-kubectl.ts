@@ -286,9 +286,10 @@ export type KubectlSandboxOptions = {
    * The Repo-resource port (ADR-0051, repos.ts): every Repo a provision names must exist as a
    * `Repo` resource before the CR names it, or the operator reports it missing and the Sandbox
    * never reaches Ready. So `provision` ensures each one here — a per-run url's resource is
-   * created at first attach, a bound one is restated — and REFUSES to run without the port: a
-   * Sandbox whose Repos nobody creates parks on `RepoMissing` for the whole Ready budget. The
-   * other operations (attach, renew, destroy) need no port, so it is optional at construction.
+   * created at first attach, a bound one is found as the boot stated it — and REFUSES to run
+   * without the port: a Sandbox whose Repos nobody creates parks on `RepoMissing` for the whole
+   * Ready budget. The other operations (attach, renew, destroy) need no port, so it is optional
+   * at construction.
    */
   repos?: RepoResources;
   /**
@@ -731,8 +732,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       const cr = await crFor(req, refs, repos);
 
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
-      // the boot and is restated; a per-run one is created here, at its first attach, and every
-      // later attach anywhere finds it. After the image resolution, so a refused image still
+      // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
+      // the boot stated; a per-run one is created here, at its first attach, and every later
+      // attach anywhere finds it. After the image resolution, so a refused image still
       // costs nothing; before the token Secret, so no Secret is minted for a Sandbox whose Repo
       // could not be recorded.
       for (const repo of repos) await opts.repos.ensure(repo);

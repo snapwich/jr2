@@ -1,9 +1,10 @@
 // kubectlRepos — the Repo-resource port's kubectl MAPPING against a fake process seam (ADR-0051).
 // What matters here: `ensure` creates the resource the operator's cache agent will clone, with
-// the credential resolved from `git.credentials` into a `secretRef` in Flux's shape; a bound
-// ensure restates the Machine's resolution and the label `j2 gc` honors, a per-run one only moves
-// the eviction clock; `reconcileBound` unlabels what no Machine binds any more; and `list` reads
-// the agent's per-node status back into what `GET /repos` reports.
+// the credential resolved from `git.credentials` into a `secretRef` in Flux's shape; the boot's
+// `bind` restates the Machine's resolution and the label `j2 gc` honors, a provision's `ensure`
+// only moves the eviction clock of what exists — whatever spelling the run brought; `reconcileBound`
+// unlabels what no Machine binds any more; and `list` reads the agent's per-node status back into
+// what `GET /repos` reports.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -141,11 +142,11 @@ test("no entry matches → no secretRef; the longest match wins when several do"
   assert.equal(created(none.calls)[0].spec.secretRef, undefined);
 });
 
-test("ensure(bound) on an EXISTING resource restates the Machine's resolution: label, clock, url, secretRef", async () => {
+test("bind() on an EXISTING resource restates the Machine's resolution: label, clock, url, secretRef", async () => {
   // A redeploy: the resource is there from the last boot, and this boot's config may have moved
-  // the credential. AlreadyExists is tolerated, then ONE merge patch says what the Machine
-  // resolves now — `secretRef: null` when the config no longer names a credential, so a dropped
-  // entry is not a credential that lingers.
+  // the url or the credential. AlreadyExists is tolerated, then ONE merge patch says what the
+  // Machine resolves now — `secretRef: null` when the config no longer names a credential, so a
+  // dropped entry is not a credential that lingers.
   const { exec, calls } = fakeExec({
     apply: () => "ok",
     create: () => {
@@ -154,7 +155,7 @@ test("ensure(bound) on an EXISTING resource restates the Machine's resolution: l
     patch: () => "patched",
   });
   const port = kubectlRepos({ namespace: "inst", credentials: [], env: {}, exec, now: () => NOW });
-  await port.ensure({ url: SSH, identity, key, bound: true });
+  await port.bind({ url: SSH, identity, key });
 
   const patch = calls.find((c) => c.args[0] === "patch")!;
   assert.deepEqual(patch.args.slice(0, 3), ["patch", "repos.core.j2.dev", key]);
@@ -166,6 +167,52 @@ test("ensure(bound) on an EXISTING resource restates the Machine's resolution: l
     },
     spec: { url: SSH, secretRef: null },
   });
+});
+
+test("ensure(bound) on an EXISTING resource moves the clock and NOTHING else — two Machines spelling one identity never flip it", async () => {
+  // The boot stated the identity with Machine A's https spelling. A run of Machine B, which
+  // binds the same repository over ssh, provisions with `bound: true` — and must not rewrite
+  // `spec.url` to ssh, nor the next run of A rewrite it back: every rewrite is a generation the
+  // cache agent re-points origin and refetches on, and an ssh spelling without a key would leave
+  // A's runs attaching stale. So a provision's ensure of what exists is the eviction clock only —
+  // no spec, no secretRef, no label — the same patch a per-run ensure sends.
+  const runs = [
+    { url: SSH, at: new Date("2026-09-13T11:00:00.000Z") },
+    { url: HTTPS, at: new Date("2026-09-13T12:00:00.000Z") },
+  ];
+  for (const run of runs) {
+    const { exec, calls } = fakeExec({
+      apply: () => "ok",
+      create: () => {
+        throw new Error(`Error from server (AlreadyExists): repos.core.j2.dev "${key}" already exists`);
+      },
+      patch: () => "patched",
+    });
+    const port = kubectlRepos({
+      namespace: "inst",
+      credentials: [{ match: "*", sshKey: "j2-git-ssh" }],
+      env: {},
+      exec,
+      now: () => run.at,
+    });
+    await port.ensure({ url: run.url, identity, key, bound: true });
+    assert.deepEqual(patches(calls), [{ metadata: { annotations: { "j2.dev/last-attached": run.at.toISOString() } } }]);
+    assert.equal(applied(calls, "Secret").length, 0, "no Secret minted for a resource the run does not write");
+  }
+});
+
+test("ensure(bound) CREATES an absent resource labeled bound — a run that outpaces the boot is not on gc's clock", async () => {
+  // The boot's bind is never awaited by serving, so a provision can reach the port first, or the
+  // boot's create may have been refused. The resource is born here as the Machine's: labeled
+  // bound, this spelling's url — and the boot's bind then restates it, so the walk's spelling is
+  // still the one that stands.
+  const { exec, calls } = fakeExec({ apply: () => "ok", create: () => "created" });
+  const port = kubectlRepos({ namespace: "inst", credentials: [], env: {}, exec, now: () => NOW });
+  await port.ensure({ url: SSH, identity, key, bound: true });
+  const [cr] = created(calls);
+  assert.deepEqual(cr.metadata.labels, { "j2.dev/bound": "true" });
+  assert.equal(cr.spec.url, SSH);
+  assert.equal(patches(calls).length, 0);
 });
 
 test("ensure(per-run) creates if absent and otherwise only moves the eviction clock", async () => {

@@ -168,8 +168,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
  * The boot's half of ADR-0051's "the Orchestrator creates Repo resources": one per identity the
  * registered Machines bind, so statically known repositories are warm before a run asks — then
  * the bound label reconciled, so a slot unbound since the last deploy is a Repo `j2 gc` may
- * evict. Sequential, and each failure its own line: a wrong url on one Machine must not hide
- * the others.
+ * evict. The boot is the ONE writer of a bound resource's spec: a redeploy that moved a url or a
+ * credential restates it here, and no provision does. Sequential, and each failure its own
+ * line: a wrong url on one Machine must not hide the others.
  */
 async function ensureBound(
   repos: RepoResources,
@@ -178,7 +179,7 @@ async function ensureBound(
 ): Promise<void> {
   for (const repo of bound) {
     try {
-      await repos.ensure({ url: repo.url, identity: repo.identity, key: repo.key, bound: true });
+      await repos.bind({ url: repo.url, identity: repo.identity, key: repo.key });
       announce(JSON.stringify({ repo: repo.key, url: repo.url, bound: true }));
     } catch (err) {
       announce(JSON.stringify({ repo: repo.key, url: repo.url, error: (err as Error).message }));

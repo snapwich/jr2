@@ -79,10 +79,15 @@ const REFS = {
   sandbox: { default: "j2-sandbox-inst-default:d00", [RUST.key]: "j2-sandbox-inst-rust:r00" },
 };
 
-/** The Repo-resource port (ADR-0051) as a recorder: what a provision asked it to ensure, in order. */
+/** The Repo-resource port (ADR-0051) as a recorder: what a provision asked it to ensure, in order.
+ * `bind` is the boot's statement of a spec and refuses: a provision that restated a bound Repo
+ * would flip the resource between two Machines' spellings on every run. */
 function fakeRepos() {
   const ensured: Array<{ url: string; identity: string; key: string; bound: boolean }> = [];
   const port: RepoResources = {
+    async bind(repo) {
+      throw new Error(`a provision must not bind ${repo.key}: only the boot states a Repo's spec`);
+    },
     async ensure(repo) {
       ensured.push(repo);
     },
@@ -818,7 +823,8 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
 test("provision ENSURES every Repo's resource — per key, identity and boundness resolved — before the Secret and the CR", async () => {
   // The operator holds Ready until every key the CR names exists as a `Repo` resource, and
   // creating them is the provision's job: a per-run url's resource is born here, at its first
-  // attach; a bound one is restated. Ordered after the image resolution (a refused image still
+  // attach; a bound one is found as the boot stated it — ensured, never bound, so this run's
+  // spelling does not rewrite the spec. Ordered after the image resolution (a refused image still
   // costs nothing) and before the token Secret (no Secret for a Sandbox whose Repo could not be
   // recorded).
   const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
