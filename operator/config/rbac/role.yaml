@@ -20,6 +20,25 @@ rules:
 - apiGroups:
   - core.j2.dev
   resources:
+  - repos
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - core.j2.dev
+  resources:
+  - repos/status
+  - sandboxes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - core.j2.dev
+  resources:
   - sandboxes
   verbs:
   - create
@@ -34,12 +53,4 @@ rules:
   resources:
   - sandboxes/finalizers
   verbs:
-  - update
-- apiGroups:
-  - core.j2.dev
-  resources:
-  - sandboxes/status
-  verbs:
-  - get
-  - patch
   - update

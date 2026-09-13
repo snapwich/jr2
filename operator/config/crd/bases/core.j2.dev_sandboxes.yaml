@@ -1977,6 +1977,43 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              repos:
+                description: |-
+                  Repos are the Repos this Sandbox attaches, named by cache key
+                  (ADR-0051). For each entry the operator adds a pod volume named
+                  `repo-<key>` — the node's cache for that Repo (hostPath
+                  `/var/lib/j2/<namespace>/repos/<key>`, `DirectoryOrCreate`) — mounted
+                  read-only at `/repos/<key>` in the primary container; a sidecar that
+                  needs it mounts the same volume by name. Scheduling prefers nodes whose
+                  `Repo` status reports the key present; `Ready` waits for every key to be
+                  present on the pod's node and fetched since this Sandbox was created.
+                  This is the whole of what the CRD knows about git: clone and worktree
+                  stay the Orchestrator's post-Ready step (ADR-0004).
+                items:
+                  description: SandboxRepo names one Repo a Sandbox attaches.
+                  properties:
+                    key:
+                      description: |-
+                        Key is the Repo resource's name — the cache key derived from its
+                        identity — and the leaf of the volume name, the hostPath, and the mount.
+                      maxLength: 49
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    url:
+                      description: |-
+                        URL is the Binding's spelling of the repository, carried for the
+                        messages a missing or failed Repo produces; the cache agent reads the
+                        Repo resource's own spec.url, never this.
+                      minLength: 1
+                      type: string
+                  required:
+                  - key
+                  - url
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - key
+                x-kubernetes-list-type: map
               resources:
                 description: Resources are the compute resources for the primary container.
                 properties:
@@ -5803,6 +5840,12 @@ spec:
                 description: |-
                   Endpoint is the in-cluster Service DNS the Orchestrator uses to reach the
                   Harness, e.g. http://<name>.<ns>.svc:8080.
+                type: string
+              node:
+                description: |-
+                  Node is the node the Pod was scheduled onto, once it was — the node
+                  whose Repo caches this Sandbox mounts (ADR-0051). The cache agent on
+                  that node reads it to learn which Repos it must hold.
                 type: string
               phase:
                 description: 'Phase is a coarse lifecycle summary: Pending -> Ready

@@ -52,7 +52,7 @@ func TestBuildPodHardensIsolation(t *testing.T) {
 		Image:    "harness:latest",
 		Port:     8080,
 		Sidecars: []corev1.Container{{Name: testAgentName, Image: "agent:latest"}},
-	}))
+	}), nil)
 
 	if got := pod.Spec.AutomountServiceAccountToken; got == nil || *got {
 		t.Fatalf("automountServiceAccountToken: want false, got %v", got)
@@ -109,7 +109,7 @@ func TestBuildPodExemptsTheUserContainer(t *testing.T) {
 			{Name: "adapter", Image: "adapter:latest"},
 			{Name: "user", Image: "sshd:latest"},
 		},
-	}))
+	}), nil)
 
 	byName := map[string]corev1.Container{}
 	for _, c := range pod.Spec.Containers {
@@ -145,7 +145,7 @@ func TestBuildPodCarriesFSGroupAndInitContainers(t *testing.T) {
 		Port:           8080,
 		FSGroup:        ptr.To(int64(2000)),
 		InitContainers: init,
-	}))
+	}), nil)
 
 	if fg := pod.Spec.SecurityContext.FSGroup; fg == nil || *fg != 2000 {
 		t.Fatalf("pod fsGroup should carry the spec's work group, got %v", fg)
@@ -162,7 +162,7 @@ func TestBuildPodCarriesFSGroupAndInitContainers(t *testing.T) {
 	}
 
 	// Absent fsGroup stays absent: volume ownership is then the images' own.
-	bare := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}))
+	bare := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
 	if bare.Spec.SecurityContext.FSGroup != nil {
 		t.Fatalf("fsGroup must not be invented by the operator, got %v", *bare.Spec.SecurityContext.FSGroup)
 	}
@@ -176,7 +176,7 @@ func TestBuildPodCarriesFSGroupAndInitContainers(t *testing.T) {
 func TestBuildPodReadinessProbe(t *testing.T) {
 	r := &SandboxReconciler{}
 
-	def := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 9000}))
+	def := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 9000}), nil)
 	probe := def.Spec.Containers[0].ReadinessProbe
 	if probe == nil || probe.TCPSocket == nil {
 		t.Fatalf("expected a default TCPSocket readiness probe, got %+v", probe)
@@ -195,7 +195,7 @@ func TestBuildPodReadinessProbe(t *testing.T) {
 		Image:          testHarnessImage,
 		Port:           8080,
 		ReadinessProbe: custom,
-	}))
+	}), nil)
 	got := honored.Spec.Containers[0].ReadinessProbe
 	if got == nil || got.HTTPGet == nil || got.HTTPGet.Path != "/healthz" {
 		t.Fatalf("expected spec.readinessProbe to be honored, got %+v", got)
@@ -218,14 +218,14 @@ func TestBuildPodHonorsPrimarySecurityContext(t *testing.T) {
 		Image:           testHarnessImage,
 		Port:            8080,
 		SecurityContext: stated,
-	}))
+	}), nil)
 	sc := pod.Spec.Containers[0].SecurityContext
 	if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != 1000 {
 		t.Fatalf("the spec's own primary securityContext should win verbatim, got %+v", sc)
 	}
 
 	// Silence still hardens: the default is what a spec saying nothing gets.
-	bare := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}))
+	bare := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
 	if sc := bare.Spec.Containers[0].SecurityContext; sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
 		t.Fatalf("an unstated primary context should take the hardened default, got %+v", sc)
 	}
@@ -243,9 +243,176 @@ func TestBuildPodKeepsExplicitSidecarSecurityContext(t *testing.T) {
 			Image:           "agent:latest",
 			SecurityContext: &corev1.SecurityContext{RunAsUser: ptr.To(int64(1234))},
 		}},
-	}))
+	}), nil)
 	sc := pod.Spec.Containers[1].SecurityContext
 	if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != 1234 {
 		t.Fatalf("explicit sidecar securityContext should be preserved, got %+v", sc)
+	}
+}
+
+// TestBuildPodMountsRepoCaches pins the Sandbox CRD's whole knowledge of git
+// (ADR-0051): for every Repo the spec names, one hostPath volume named
+// `repo-<key>` at the node's cache directory for this namespace, mounted
+// READ-ONLY at `/repos/<key>` in the primary container and nowhere else — a
+// sidecar that wants it mounts the name itself. Read-only is load-bearing
+// (ADR-0004): nothing in a Sandbox can `gc` the objects its clones borrow. The
+// spec's own volumes and mounts stay, untouched and first.
+func TestBuildPodMountsRepoCaches(t *testing.T) {
+	r := &SandboxReconciler{}
+	sandbox := sandboxFor(corev1alpha1.SandboxSpec{
+		Image:        testHarnessImage,
+		Port:         8080,
+		Volumes:      []corev1.Volume{{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
+		VolumeMounts: []corev1.VolumeMount{{Name: "work", MountPath: "/work"}},
+		Sidecars:     []corev1.Container{{Name: "adapter", Image: "adapter:latest"}},
+		Repos: []corev1alpha1.SandboxRepo{
+			{Key: "app-0a1b2c3d", URL: "https://github.com/acme/app.git"},
+			{Key: "docs-4e5f6a7b", URL: "git@github.com:acme/docs.git"},
+		},
+	})
+	sandbox.Namespace = "j2-acme"
+	pod := r.buildPod(sandbox, nil)
+
+	volumes := map[string]corev1.Volume{}
+	for _, v := range pod.Spec.Volumes {
+		volumes[v.Name] = v
+	}
+	if _, ok := volumes["work"]; !ok {
+		t.Fatalf("the spec's own volumes must survive, got %+v", pod.Spec.Volumes)
+	}
+	for _, key := range []string{"app-0a1b2c3d", "docs-4e5f6a7b"} {
+		v, ok := volumes["repo-"+key]
+		if !ok {
+			t.Fatalf("want a volume repo-%s, got %+v", key, pod.Spec.Volumes)
+		}
+		if v.HostPath == nil || v.HostPath.Path != "/var/lib/j2/j2-acme/repos/"+key {
+			t.Fatalf("repo-%s should be the node cache hostPath under the namespace, got %+v", key, v.VolumeSource)
+		}
+		if v.HostPath.Type == nil || *v.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+			t.Fatalf("repo-%s hostPath should be DirectoryOrCreate, got %v", key, v.HostPath.Type)
+		}
+	}
+
+	primary := pod.Spec.Containers[0]
+	if primary.VolumeMounts[0].Name != "work" {
+		t.Fatalf("the spec's mounts come first, got %+v", primary.VolumeMounts)
+	}
+	mounts := map[string]corev1.VolumeMount{}
+	for _, m := range primary.VolumeMounts {
+		mounts[m.Name] = m
+	}
+	for _, key := range []string{"app-0a1b2c3d", "docs-4e5f6a7b"} {
+		m, ok := mounts["repo-"+key]
+		if !ok {
+			t.Fatalf("the primary container should mount repo-%s, got %+v", key, primary.VolumeMounts)
+		}
+		if m.MountPath != "/repos/"+key {
+			t.Fatalf("repo-%s should mount at /repos/<key>, got %q", key, m.MountPath)
+		}
+		if !m.ReadOnly {
+			t.Fatalf("repo-%s must be mounted read-only — a writable cache is a gc-able cache", key)
+		}
+	}
+	if got := pod.Spec.Containers[1].VolumeMounts; len(got) != 0 {
+		t.Fatalf("a sidecar gets no cache mount unless it asks by name, got %+v", got)
+	}
+}
+
+// TestBuildPodPrefersNodesHoldingTheCaches pins the placement half of ADR-0051:
+// a soft affinity — one preferred term of weight 1 per Repo — toward the nodes
+// whose Repo status reports the cache present, read off the Repo resources at
+// pod-build time. Soft, never required: a node without the cache clones on
+// first need, so node count never bounds placement. A node that reports but
+// does not hold the cache is not preferred.
+func TestBuildPodPrefersNodesHoldingTheCaches(t *testing.T) {
+	r := &SandboxReconciler{}
+	sandbox := sandboxFor(corev1alpha1.SandboxSpec{
+		Image: testHarnessImage,
+		Port:  8080,
+		Repos: []corev1alpha1.SandboxRepo{
+			{Key: "app-0a1b2c3d", URL: "https://github.com/acme/app.git"},
+			{Key: "docs-4e5f6a7b", URL: "https://github.com/acme/docs.git"},
+		},
+	})
+	repos := map[string]*corev1alpha1.Repo{
+		"app-0a1b2c3d": {Status: corev1alpha1.RepoStatus{Nodes: []corev1alpha1.RepoNodeStatus{
+			{Node: "node-b", Present: true, Synced: true},
+			{Node: "node-a", Present: true, Synced: false},
+			{Node: "node-c", Present: false, Synced: true},
+		}}},
+		"docs-4e5f6a7b": {Status: corev1alpha1.RepoStatus{Nodes: []corev1alpha1.RepoNodeStatus{
+			{Node: "node-c", Present: true, Synced: true},
+		}}},
+	}
+	pod := r.buildPod(sandbox, repos)
+
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil {
+		t.Fatalf("want a node affinity toward the caches, got %+v", pod.Spec.Affinity)
+	}
+	na := pod.Spec.Affinity.NodeAffinity
+	if na.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+		t.Fatalf("the affinity must be soft — a required term would pin Sandboxes to nodes, got %+v", na.RequiredDuringSchedulingIgnoredDuringExecution)
+	}
+	terms := na.PreferredDuringSchedulingIgnoredDuringExecution
+	if len(terms) != 2 {
+		t.Fatalf("want one preferred term per Repo, got %+v", terms)
+	}
+	for i, want := range [][]string{{"node-a", "node-b"}, {"node-c"}} {
+		term := terms[i]
+		if term.Weight != 1 {
+			t.Errorf("term %d: weight should be 1, got %d", i, term.Weight)
+		}
+		exprs := term.Preference.MatchExpressions
+		if len(exprs) != 1 || exprs[0].Key != corev1.LabelHostname || exprs[0].Operator != corev1.NodeSelectorOpIn {
+			t.Fatalf("term %d: want hostname In [...], got %+v", i, exprs)
+		}
+		if len(exprs[0].Values) != len(want) {
+			t.Fatalf("term %d: want nodes %v, got %v", i, want, exprs[0].Values)
+		}
+		for j := range want {
+			if exprs[0].Values[j] != want[j] {
+				t.Fatalf("term %d: want nodes %v (present only, sorted), got %v", i, want, exprs[0].Values)
+			}
+		}
+	}
+}
+
+// TestBuildPodWithoutCachesAddsNothing pins the two absences: a Sandbox naming
+// no Repo gets no cache volume and no affinity — a plain pod, as before
+// ADR-0051 — and a Repo resource that does not exist yet, or that no node
+// holds, gets its volume (the directory the agent will fill) but no
+// scheduling preference, because there is nowhere to prefer.
+func TestBuildPodWithoutCachesAddsNothing(t *testing.T) {
+	r := &SandboxReconciler{}
+
+	plain := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
+	if plain.Spec.Affinity != nil {
+		t.Fatalf("no Repo means no affinity, got %+v", plain.Spec.Affinity)
+	}
+	if len(plain.Spec.Volumes) != 0 || len(plain.Spec.Containers[0].VolumeMounts) != 0 {
+		t.Fatalf("no Repo means no cache volume or mount, got %+v / %+v", plain.Spec.Volumes, plain.Spec.Containers[0].VolumeMounts)
+	}
+
+	cold := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
+		Image: testHarnessImage,
+		Port:  8080,
+		Repos: []corev1alpha1.SandboxRepo{{Key: "app-0a1b2c3d", URL: "https://github.com/acme/app.git"}},
+	}), map[string]*corev1alpha1.Repo{
+		"app-0a1b2c3d": {Status: corev1alpha1.RepoStatus{Nodes: []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: false}}}},
+	})
+	if cold.Spec.Affinity != nil {
+		t.Fatalf("a Repo no node holds gives nowhere to prefer, got %+v", cold.Spec.Affinity)
+	}
+	if len(cold.Spec.Volumes) != 1 || cold.Spec.Volumes[0].Name != "repo-app-0a1b2c3d" {
+		t.Fatalf("the cache volume is defined whether or not any node holds it yet, got %+v", cold.Spec.Volumes)
+	}
+
+	missing := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
+		Image: testHarnessImage,
+		Port:  8080,
+		Repos: []corev1alpha1.SandboxRepo{{Key: "app-0a1b2c3d", URL: "https://github.com/acme/app.git"}},
+	}), nil)
+	if missing.Spec.Affinity != nil {
+		t.Fatalf("a Repo resource that does not exist contributes no term, got %+v", missing.Spec.Affinity)
 	}
 }

@@ -1,0 +1,17 @@
+apiVersion: core.j2.dev/v1alpha1
+kind: Repo
+metadata:
+  labels:
+    app.kubernetes.io/name: operator
+    app.kubernetes.io/managed-by: kustomize
+  # The cache key: derived from the identity (host plus path) by the
+  # Orchestrator that creates the resource, never chosen by hand (ADR-0051).
+  name: app-3f2a9c1e
+spec:
+  # The Binding's own spelling; the cache agent clones and fetches from it.
+  url: https://github.com/example/app.git
+  # Optional: a Secret with Flux's key names (username/password for https;
+  # identity, identity.pub, known_hosts for ssh). Absent means anonymous.
+  # secretRef:
+  #   name: j2-git-8a1b2c3d
+  refreshInterval: 5m

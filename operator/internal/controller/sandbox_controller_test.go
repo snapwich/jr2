@@ -18,13 +18,16 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
@@ -66,6 +69,14 @@ var _ = Describe("Sandbox Controller", func() {
 			} else {
 				Expect(errors.IsNotFound(err)).To(BeTrue())
 			}
+			// envtest runs no garbage collector and no kubelet: the owned Pod would
+			// outlive its Sandbox and be handed to the next spec as "the existing
+			// pod". Remove it at once, so every spec builds its own.
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: resourceNamespace}}
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0)))).To(Succeed())
+			Eventually(func() bool {
+				return errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Pod{}))
+			}).Should(BeTrue())
 		})
 
 		It("creates an owned Pod and Service and reports Pending until the pod is Ready", func() {
@@ -163,6 +174,95 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
 			Expect(sandbox.Status.PodUID).To(Equal(replacement.UID))
 			Expect(sandbox.Status.PodRef.Name).To(Equal(original.Name), "the name cannot reveal the swap — only the UID can")
+		})
+
+		It("holds Ready until every Repo it names is on its node, and reports whether it is fresh", func() {
+			// ADR-0051's gate: the pod being Ready is necessary, not sufficient. The
+			// cache the attach will clone from must be present on THIS node; whether
+			// it was fetched since this Sandbox asked is reported beside Ready, never
+			// in place of it.
+			const repoKey = "app-0a1b2c3d"
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			sandbox.Spec.Repos = []corev1alpha1.SandboxRepo{{Key: repoKey, URL: "https://github.com/acme/app.git"}}
+			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
+
+			repo := &corev1alpha1.Repo{
+				ObjectMeta: metav1.ObjectMeta{Name: repoKey, Namespace: resourceNamespace},
+				Spec:       corev1alpha1.RepoSpec{URL: "https://github.com/acme/app.git"},
+			}
+			Expect(k8sClient.Create(ctx, repo)).To(Succeed())
+			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, repo)).To(Succeed()) })
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("mounting the node cache read-only into the primary container")
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			Expect(pod.Spec.Volumes).To(ContainElement(HaveField("Name", "repo-"+repoKey)))
+			Expect(pod.Spec.Containers[0].VolumeMounts).To(ContainElement(And(
+				HaveField("MountPath", "/repos/"+repoKey),
+				HaveField("ReadOnly", BeTrue()),
+			)))
+
+			By("scheduling the pod and bringing it up Ready — which is not yet enough")
+			binding := &corev1.Binding{
+				ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
+				Target:     corev1.ObjectReference{Kind: "Node", Name: "node-a"},
+			}
+			Expect(k8sClient.SubResource("binding").Create(ctx, pod, binding)).To(Succeed())
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			Expect(pod.Spec.NodeName).To(Equal("node-a"))
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Node).To(Equal("node-a"))
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
+			ready := meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal("RepoPending"))
+			Expect(ready.Message).To(ContainSubstring(`Repo "app-0a1b2c3d" is not on node node-a yet`))
+			Expect(meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh)).To(BeNil())
+
+			By("becoming Ready — stale — once the cache is present but its refresh since creation failed")
+			// Freshness degrades, absence does not (ADR-0051): a warm cache whose
+			// on-demand fetch failed still lets the attach proceed on the objects it
+			// holds, and says so with git's own words.
+			earlier := metav1.NewTime(sandbox.CreationTimestamp.Add(-time.Hour))
+			now := metav1.Now()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: false, LastError: "fatal: unable to access: timed out", LastAttempt: &now, LastFetched: &earlier}}
+			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
+			fresh := meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh)
+			Expect(fresh).NotTo(BeNil())
+			Expect(fresh.Status).To(Equal(metav1.ConditionFalse))
+			Expect(fresh.Reason).To(Equal("FetchFailed"))
+			Expect(fresh.Message).To(ContainSubstring("timed out"))
+
+			By("reporting fresh once a fetch since creation lands")
+			later := metav1.NewTime(now.Add(time.Minute))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: true, LastAttempt: &later, LastFetched: &later}}
+			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
+			fresh = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh)
+			Expect(fresh).NotTo(BeNil())
+			Expect(fresh.Status).To(Equal(metav1.ConditionTrue))
+			Expect(fresh.Reason).To(Equal("Fetched"))
 		})
 	})
 })

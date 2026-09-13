@@ -22,6 +22,9 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the operator itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- repo_admin_role.yaml
+- repo_editor_role.yaml
+- repo_viewer_role.yaml
 - sandbox_admin_role.yaml
 - sandbox_editor_role.yaml
 - sandbox_viewer_role.yaml

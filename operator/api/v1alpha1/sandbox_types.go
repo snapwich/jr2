@@ -125,6 +125,38 @@ type SandboxSpec struct {
 	// owner. Empty disables idle GC. Format: a Go duration string, e.g. "30m".
 	// +optional
 	IdleTimeout *metav1.Duration `json:"idleTimeout,omitempty"`
+
+	// Repos are the Repos this Sandbox attaches, named by cache key
+	// (ADR-0051). For each entry the operator adds a pod volume named
+	// `repo-<key>` — the node's cache for that Repo (hostPath
+	// `/var/lib/j2/<namespace>/repos/<key>`, `DirectoryOrCreate`) — mounted
+	// read-only at `/repos/<key>` in the primary container; a sidecar that
+	// needs it mounts the same volume by name. Scheduling prefers nodes whose
+	// `Repo` status reports the key present; `Ready` waits for every key to be
+	// present on the pod's node and fetched since this Sandbox was created.
+	// This is the whole of what the CRD knows about git: clone and worktree
+	// stay the Orchestrator's post-Ready step (ADR-0004).
+	// +listType=map
+	// +listMapKey=key
+	// +optional
+	Repos []SandboxRepo `json:"repos,omitempty"`
+}
+
+// SandboxRepo names one Repo a Sandbox attaches.
+type SandboxRepo struct {
+	// Key is the Repo resource's name — the cache key derived from its
+	// identity — and the leaf of the volume name, the hostPath, and the mount.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=49
+	Key string `json:"key"`
+
+	// URL is the Binding's spelling of the repository, carried for the
+	// messages a missing or failed Repo produces; the cache agent reads the
+	// Repo resource's own spec.url, never this.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	URL string `json:"url"`
 }
 
 // SandboxPhase is a coarse lifecycle summary of a Sandbox.
@@ -134,7 +166,9 @@ type SandboxPhase string
 const (
 	// SandboxPending means the Pod/Service exist but the pod is not yet Ready.
 	SandboxPending SandboxPhase = "Pending"
-	// SandboxReady means the pod reports the Ready condition.
+	// SandboxReady means the pod reports the Ready condition and every Repo
+	// it names is present on its node and fetched since the Sandbox was
+	// created (ADR-0051).
 	SandboxReady SandboxPhase = "Ready"
 	// SandboxTerminating means the Sandbox is being deleted.
 	SandboxTerminating SandboxPhase = "Terminating"
@@ -167,6 +201,12 @@ type SandboxStatus struct {
 	// ServiceRef references the Service fronting this Sandbox.
 	// +optional
 	ServiceRef *corev1.LocalObjectReference `json:"serviceRef,omitempty"`
+
+	// Node is the node the Pod was scheduled onto, once it was — the node
+	// whose Repo caches this Sandbox mounts (ADR-0051). The cache agent on
+	// that node reads it to learn which Repos it must hold.
+	// +optional
+	Node string `json:"node,omitempty"`
 
 	// Conditions represent the current state of the Sandbox resource.
 	// +listType=map

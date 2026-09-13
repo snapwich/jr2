@@ -23,6 +23,15 @@ import (
 	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
 )
 
+const (
+	// repoCacheRoot is the node directory the cache agent's DaemonSet owns;
+	// `j2 up` mounts `<repoCacheRoot>/<namespace>/repos` into the agent.
+	repoCacheRoot = "/var/lib/j2"
+	// reposMount is the in-pod root under which each Repo's cache is mounted
+	// read-only, one leaf per key.
+	reposMount = "/repos"
+)
+
 // sandboxLabels are the pod labels the Sandbox's Service selects on.
 func sandboxLabels(sandbox *corev1alpha1.Sandbox) map[string]string {
 	return map[string]string{
@@ -55,4 +64,25 @@ func podReady(pod *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// repoVolumeName is the pod volume that carries one Repo's node cache
+// (ADR-0051). A sidecar that needs the cache mounts this name; the primary
+// container gets it mounted by the operator.
+func repoVolumeName(key string) string {
+	return "repo-" + key
+}
+
+// repoHostPath is where the Instance's cache agent keeps the Repo's bare clone
+// on every node: one directory per Instance namespace, one leaf per key. The
+// DaemonSet mounts the namespace directory; the Sandbox mounts one leaf,
+// read-only.
+func repoHostPath(namespace, key string) string {
+	return repoCacheRoot + "/" + namespace + "/repos/" + key
+}
+
+// repoMountPath is where a Sandbox's primary container sees one Repo's cache,
+// and what the Orchestrator's attach clones `--shared` from (ADR-0004).
+func repoMountPath(key string) string {
+	return reposMount + "/" + key
 }

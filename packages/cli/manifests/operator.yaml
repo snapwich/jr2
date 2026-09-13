@@ -12,6 +12,225 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
+  name: repos.core.j2.dev
+spec:
+  group: core.j2.dev
+  names:
+    kind: Repo
+    listKind: RepoList
+    plural: repos
+    singular: repo
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.url
+      name: URL
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Synced")].status
+      name: Synced
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Repo is the Schema for the repos API: a git repository the Instance keeps a
+          per-node cache of (ADR-0051). The Orchestrator creates one per repository
+          its Machines bind (at boot) or a run attaches (at first attach), labels the
+          bound ones `j2.dev/bound: "true"`, and annotates `j2.dev/identity` and
+          `j2.dev/last-attached`; `j2 gc` evicts by that label and age.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Repo
+            properties:
+              refreshInterval:
+                default: 5m
+                description: |-
+                  RefreshInterval is how often the cache agent fetches a cache it holds,
+                  beyond the on-demand fetch before every attach. A Go duration string.
+                type: string
+              secretRef:
+                description: |-
+                  SecretRef names the Secret carrying the credential the cache agent uses,
+                  resolved from the Instance's git.credentials by the Orchestrator that
+                  created this resource (ADR-0051). The keys are Flux's, so a Flux or Argo
+                  user reuses the Secret they have: `username`/`password` for https;
+                  `identity`, `identity.pub`, and optionally `known_hosts` for ssh. Absent
+                  means an anonymous clone.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              url:
+                description: |-
+                  URL is the Binding's own spelling of the repository — the url the cache
+                  agent clones and fetches from. Any scheme git accepts from inside the
+                  cluster: https, ssh (scp-style or ssh://), git, or an absolute path.
+                minLength: 1
+                type: string
+            required:
+            - url
+            type: object
+          status:
+            description: status defines the observed state of Repo
+            properties:
+              conditions:
+                description: |-
+                  Conditions carries `Synced`: True when every reporting node is synced,
+                  False with the first node's error when any is not, Unknown while no node
+                  has reported. It is what `j2 status` and `kubectl get repos` read.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              nodes:
+                description: |-
+                  Nodes holds one entry per node whose cache agent has reported, keyed by
+                  node name. Each agent replaces only its own entry.
+                items:
+                  description: |-
+                    RepoNodeStatus is one node's report on its cache of the Repo, written only
+                    by that node's cache agent. The operator reads it to place Sandboxes and to
+                    gate their Ready; nothing else writes it.
+                  properties:
+                    lastAttempt:
+                      description: LastAttempt is when the node last tried anything
+                        against the remote.
+                      format: date-time
+                      type: string
+                    lastError:
+                      description: LastError is git's own words for the last failure;
+                        empty when Synced.
+                      type: string
+                    lastFetched:
+                      description: |-
+                        LastFetched is when the node last cloned or fetched successfully — the
+                        instant a Sandbox's Ready compares against its own creation (ADR-0051).
+                      format: date-time
+                      type: string
+                    node:
+                      description: Node is the node this entry describes.
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration is the spec generation the last attempt used, so a
+                        url or credential change is retried without waiting for the interval.
+                      format: int64
+                      type: integer
+                    present:
+                      description: |-
+                        Present reports that a clone exists on this node. A half-finished clone
+                        is never present: the agent removes it and reports the error instead.
+                      type: boolean
+                    synced:
+                      description: |-
+                        Synced reports that the last attempt — a probe, a clone, or a fetch —
+                        succeeded.
+                      type: boolean
+                  required:
+                  - node
+                  - present
+                  - synced
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - node
+                x-kubernetes-list-type: map
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: sandboxes.core.j2.dev
 spec:
   group: core.j2.dev
@@ -1985,6 +2204,43 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              repos:
+                description: |-
+                  Repos are the Repos this Sandbox attaches, named by cache key
+                  (ADR-0051). For each entry the operator adds a pod volume named
+                  `repo-<key>` — the node's cache for that Repo (hostPath
+                  `/var/lib/j2/<namespace>/repos/<key>`, `DirectoryOrCreate`) — mounted
+                  read-only at `/repos/<key>` in the primary container; a sidecar that
+                  needs it mounts the same volume by name. Scheduling prefers nodes whose
+                  `Repo` status reports the key present; `Ready` waits for every key to be
+                  present on the pod's node and fetched since this Sandbox was created.
+                  This is the whole of what the CRD knows about git: clone and worktree
+                  stay the Orchestrator's post-Ready step (ADR-0004).
+                items:
+                  description: SandboxRepo names one Repo a Sandbox attaches.
+                  properties:
+                    key:
+                      description: |-
+                        Key is the Repo resource's name — the cache key derived from its
+                        identity — and the leaf of the volume name, the hostPath, and the mount.
+                      maxLength: 49
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    url:
+                      description: |-
+                        URL is the Binding's spelling of the repository, carried for the
+                        messages a missing or failed Repo produces; the cache agent reads the
+                        Repo resource's own spec.url, never this.
+                      minLength: 1
+                      type: string
+                  required:
+                  - key
+                  - url
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - key
+                x-kubernetes-list-type: map
               resources:
                 description: Resources are the compute resources for the primary container.
                 properties:
@@ -5812,6 +6068,12 @@ spec:
                   Endpoint is the in-cluster Service DNS the Orchestrator uses to reach the
                   Harness, e.g. http://<name>.<ns>.svc:8080.
                 type: string
+              node:
+                description: |-
+                  Node is the node the Pod was scheduled onto, once it was — the node
+                  whose Repo caches this Sandbox mounts (ADR-0051). The cache agent on
+                  that node reads it to learn which Repos it must hold.
+                type: string
               phase:
                 description: 'Phase is a coarse lifecycle summary: Pending -> Ready
                   -> Terminating.'
@@ -5937,6 +6199,25 @@ rules:
 - apiGroups:
   - core.j2.dev
   resources:
+  - repos
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - core.j2.dev
+  resources:
+  - repos/status
+  - sandboxes/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - core.j2.dev
+  resources:
   - sandboxes
   verbs:
   - create
@@ -5951,14 +6232,6 @@ rules:
   resources:
   - sandboxes/finalizers
   verbs:
-  - update
-- apiGroups:
-  - core.j2.dev
-  resources:
-  - sandboxes/status
-  verbs:
-  - get
-  - patch
   - update
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -5986,6 +6259,77 @@ metadata:
 rules:
 - nonResourceURLs:
   - /metrics
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: operator
+  name: j2-repo-admin-role
+rules:
+- apiGroups:
+  - core.j2.dev
+  resources:
+  - repos
+  verbs:
+  - '*'
+- apiGroups:
+  - core.j2.dev
+  resources:
+  - repos/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: operator
+  name: j2-repo-editor-role
+rules:
+- apiGroups:
+  - core.j2.dev
+  resources:
+  - repos
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - core.j2.dev
+  resources:
+  - repos/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: operator
+  name: j2-repo-viewer-role
+rules:
+- apiGroups:
+  - core.j2.dev
+  resources:
+  - repos
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - core.j2.dev
+  resources:
+  - repos/status
   verbs:
   - get
 ---

@@ -4,8 +4,21 @@ The Kubernetes operator that reconciles the generic `Sandbox` CRD into a Pod + S
 A standalone Go module (kubebuilder / controller-runtime). See
 [ADR-0001](../docs/adr/0001-operator-owned-generic-sandbox.md). This is **PoC #1** of the j2 orchestrator rewrite.
 
-- **Group/Version/Kind:** `core.j2.dev/v1alpha1`, `Sandbox`
+- **Group/Version:** `core.j2.dev/v1alpha1`; **Kinds:** `Sandbox`, `Repo`
 - **Module:** `github.com/snapwich/j2/operator`
+
+## Two CRDs (ADR-0051)
+
+A `Repo` is one git repository the Instance keeps a bare cache of per node: `spec.url` (the Binding's own spelling),
+`spec.secretRef` (a Secret with Flux's key names, resolved from `git.credentials` by the Orchestrator that creates the
+resource), `spec.refreshInterval`; `status.nodes[]` is written per node by that node's cache agent (`present`, `synced`,
+`lastAttempt`, `lastFetched`, `lastError`), and `RepoReconciler` folds it into one `Synced` condition. A `Sandbox` names
+the Repos it attaches by cache key in `spec.repos[]`; for each the operator adds a read-only hostPath volume
+`repo-<key>` at `/repos/<key>` in the primary container, prefers nodes whose `Repo` status holds the cache, publishes
+`status.node`, and holds `Ready` until every key is present on that node and fetched since the Sandbox was created — a
+cache whose refresh failed is `Ready` with `ReposFresh=False`, a cold node that could not clone is held with
+`RepoCloneFailed`. That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the
+Orchestrator's post-Ready step (ADR-0004).
 
 ## What it does (ADR-0001)
 

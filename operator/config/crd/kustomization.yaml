@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/core.j2.dev_sandboxes.yaml
+- bases/core.j2.dev_repos.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
