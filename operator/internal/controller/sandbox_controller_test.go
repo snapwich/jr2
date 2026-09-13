@@ -192,7 +192,9 @@ var _ = Describe("Sandbox Controller", func() {
 				Spec:       corev1alpha1.RepoSpec{URL: "https://github.com/acme/app.git"},
 			}
 			Expect(k8sClient.Create(ctx, repo)).To(Succeed())
-			DeferCleanup(func() { Expect(k8sClient.Delete(ctx, repo)).To(Succeed()) })
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1alpha1.Repo{ObjectMeta: metav1.ObjectMeta{Name: repoKey, Namespace: resourceNamespace}}))).To(Succeed())
+			})
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -279,7 +281,12 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(fresh.Reason).To(Equal("FetchFailed"))
 			Expect(fresh.Message).To(ContainSubstring("timed out"))
 
-			By("reporting fresh once a fetch since creation lands")
+			Expect(nodeEntry(repo, sandbox.Status.Node)).To(Equal(&repo.Status.Nodes[0]), "status.node keys the Repo's entry a reader joins on")
+
+			By("keeping that verdict once granted: a fetch that lands later does not move it")
+			// The gate is asked until it passes for the pod, and its verdict then
+			// stands: the attach read its inputs at Ready, and a verdict that moved
+			// afterwards would describe an attach that never happened.
 			later := metav1.NewTime(now.Add(time.Minute))
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
 			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: &later, LastFetched: &later}}
@@ -291,9 +298,74 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
 			fresh = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh)
 			Expect(fresh).NotTo(BeNil())
-			Expect(fresh.Status).To(Equal(metav1.ConditionTrue))
-			Expect(fresh.Reason).To(Equal("Fetched"))
-			Expect(nodeEntry(repo, sandbox.Status.Node)).To(Equal(&repo.Status.Nodes[0]), "status.node keys the Repo's entry a reader joins on")
+			Expect(fresh.Status).To(Equal(metav1.ConditionFalse))
+
+			By("staying Ready on the lease renewal after `j2 gc` evicted the Repo resource under the live pod")
+			// Eviction is reachability plus age (ADR-0051): a Workspace parked past
+			// the TTL loses its resource while its pod still mounts the cache — which
+			// the agent keeps for exactly that reason. The lease's next renewal is a
+			// Sandbox event, and the reconcile it triggers must not re-ask the gate.
+			Expect(k8sClient.Delete(ctx, repo)).To(Succeed())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			sandbox.Annotations = map[string]string{keepaliveAnnotation: metav1.Now().UTC().Format(time.RFC3339)}
+			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
+			ready = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+			Expect(ready.Reason).To(Equal("PodReady"))
+			fresh = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh)
+			Expect(fresh).NotTo(BeNil(), "the verdict the pod passed the gate with stands")
+			Expect(fresh.Status).To(Equal(metav1.ConditionFalse))
+
+			By("staying Ready when a later attach recreates the resource with an empty status")
+			repo = &corev1alpha1.Repo{
+				ObjectMeta: metav1.ObjectMeta{Name: repoKey, Namespace: resourceNamespace},
+				Spec:       corev1alpha1.RepoSpec{URL: "https://github.com/acme/app.git"},
+			}
+			Expect(k8sClient.Create(ctx, repo)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
+
+			By("asking the gate afresh for a replacement pod, which mounts whatever its node holds now")
+			// A new Pod identity (ADR-0021) is a new set of mounts: the verdict the
+			// lost pod passed with says nothing about them.
+			Expect(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed())
+			Eventually(func() bool {
+				return errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Pod{}))
+			}).Should(BeTrue())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			replacement := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, replacement)).To(Succeed())
+			Expect(replacement.UID).NotTo(Equal(pod.UID))
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.PodUID).To(Equal(replacement.UID))
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
+			Expect(meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh)).To(BeNil(), "the lost pod's verdict is not this pod's")
+
+			binding = &corev1.Binding{
+				ObjectMeta: metav1.ObjectMeta{Name: replacement.Name, Namespace: replacement.Namespace},
+				Target:     corev1.ObjectReference{Kind: "Node", Name: "node-a"},
+			}
+			Expect(k8sClient.SubResource("binding").Create(ctx, replacement, binding)).To(Succeed())
+			Expect(k8sClient.Get(ctx, key, replacement)).To(Succeed())
+			replacement.Status.Phase = corev1.PodRunning
+			replacement.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, replacement)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
+			ready = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+			Expect(ready.Reason).To(Equal("RepoPending"), "the recreated resource has no entry for the node yet")
 		})
 	})
 })

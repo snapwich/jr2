@@ -45,11 +45,13 @@ const (
 	defaultPort = 8080
 	// conditionReady mirrors status.phase==Ready as a standard condition.
 	conditionReady = "Ready"
-	// conditionReposFresh is set once Ready and says whether every Repo cache
-	// the Sandbox mounts was fetched since the Sandbox was created (ADR-0051):
-	// True with reason Fetched, or False with reason FetchFailed and git's
-	// words — a warm cache whose refresh failed lets the attach proceed on
-	// what it holds, announced as stale. Freshness degrades; absence does not.
+	// conditionReposFresh is set when the Repo gate passes and says whether
+	// every Repo cache the Sandbox mounts had been fetched since the Sandbox
+	// was created (ADR-0051): True with reason Fetched, or False with reason
+	// FetchFailed and git's words — a warm cache whose refresh failed lets the
+	// attach proceed on what it holds, announced as stale. Freshness degrades;
+	// absence does not. It is the gate's verdict for the Pod status.podUID
+	// names, taken once and standing for that Pod's life (reposAdmitted).
 	conditionReposFresh = "ReposFresh"
 
 	// Ready reasons a Repo cache can hold a Sandbox at, and the two ReposFresh
@@ -462,8 +464,14 @@ func hardenedContainerSecurityContext() *corev1.SecurityContext {
 // reconcileStatus computes phase/endpoint/refs from the live Pod and the Repo
 // resources it depends on, and writes status. Phase reaches Ready only when the
 // Pod reports the Ready condition AND every Repo the spec names is present on
-// the Pod's node and fetched since this Sandbox was created (ADR-0051).
+// the Pod's node and fetched since this Sandbox was created (ADR-0051). The
+// Repo half is a gate on the way to Ready, not a standing check: it is asked
+// until it passes for the Pod, and its verdict then stands for that Pod's
+// life (reposAdmitted). A replacement Pod is asked afresh.
 func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1alpha1.Sandbox, pod *corev1.Pod, repos map[string]*corev1alpha1.Repo) error {
+	// Read before status.podUID is overwritten below: the latch is keyed on the
+	// Pod the last status named.
+	admitted := reposAdmitted(sandbox, pod)
 	sandbox.Status.Endpoint = fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
 	sandbox.Status.PodRef = &corev1.LocalObjectReference{Name: pod.Name}
 	// Identity, not just address: a replacement Pod reuses the name but never the
@@ -486,19 +494,20 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	}
 	var fresh *metav1.Condition
 	ready := podReady(pod)
-	if ready {
+	if ready && !admitted {
 		var reason, message string
 		ready, reason, message, fresh = reposReadiness(sandbox, pod.Spec.NodeName, repos)
-		if ready {
-			cond.Reason = "PodReady"
-			cond.Status = metav1.ConditionTrue
-			cond.Message = "pod reports Ready"
-			if len(sandbox.Spec.Repos) > 0 {
-				cond.Message = "pod reports Ready and every Repo is present on its node"
-			}
-		} else {
+		if !ready {
 			cond.Reason = reason
 			cond.Message = message
+		}
+	}
+	if ready {
+		cond.Reason = "PodReady"
+		cond.Status = metav1.ConditionTrue
+		cond.Message = "pod reports Ready"
+		if len(sandbox.Spec.Repos) > 0 {
+			cond.Message = "pod reports Ready and every Repo is present on its node"
 		}
 	}
 
@@ -507,17 +516,34 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 		sandbox.Status.Phase = corev1alpha1.SandboxReady
 	}
 	meta.SetStatusCondition(&sandbox.Status.Conditions, cond)
-	if fresh != nil {
+	switch {
+	case fresh != nil:
+		// The gate passed for this Pod: its verdict is recorded, and reposAdmitted
+		// reads it back on every later reconcile.
 		fresh.ObservedGeneration = sandbox.Generation
 		meta.SetStatusCondition(&sandbox.Status.Conditions, *fresh)
-	} else {
-		// Freshness is a statement about a Ready Sandbox's caches; before Ready
-		// there is nothing to be fresh, and a stale one from an earlier Ready
-		// would be a lie.
+	case !admitted:
+		// Freshness is a verdict about the caches a Pod passed the gate with;
+		// before that there is nothing to be fresh, and one taken for a Pod this
+		// one replaced would be a lie about the caches this one mounts.
 		meta.RemoveStatusCondition(&sandbox.Status.Conditions, conditionReposFresh)
 	}
 
 	return r.Status().Update(ctx, sandbox)
+}
+
+// reposAdmitted reports whether the Repo gate already passed for the Pod
+// backing this Sandbox: status names this Pod's identity and carries the
+// ReposFresh verdict the gate wrote when it passed. Once it has, the gate is
+// not asked again for that Pod. Its mounts were fixed when the Pod was
+// created, and the cache agent keeps a cache while a pod on its node mounts
+// it (ADR-0051) — so the Repo resource's later state, or its absence once
+// `j2 gc` evicted it, says nothing about this Pod, and re-deriving the verdict
+// from it would flip a serving Sandbox to Pending on the next lease renewal.
+// A replacement Pod (new UID) mounts whatever its node holds now, and is asked
+// afresh. A Sandbox naming no Repo writes no verdict and has no gate to pass.
+func reposAdmitted(sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) bool {
+	return sandbox.Status.PodUID == pod.UID && meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh) != nil
 }
 
 // reposReadiness decides whether the Repos a Sandbox names hold it back from

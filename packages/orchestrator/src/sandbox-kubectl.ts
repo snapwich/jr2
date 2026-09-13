@@ -720,7 +720,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * fails on it by name rather than burning the budget. `ReposFresh=False` is the other verdict:
    * the caches are there but a fetch since this CR asked failed, so the attach proceeds STALE and
    * says so. Remembered per name until the Sandbox is destroyed, because the attach is a separate
-   * call — and re-runs on snapshot restore, when the condition may already have moved on.
+   * call. The operator takes that verdict once per pod and keeps it, so a provision re-run on
+   * snapshot restore reads the same one — unless the pod was replaced, which is the lease's news.
    */
   const staleByName = new Map<string, string>();
 

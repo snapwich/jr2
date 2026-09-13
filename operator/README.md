@@ -20,8 +20,11 @@ operator adds a read-only hostPath volume `repo-<key>` at `/repos/<key>` in the 
 reader of the Sandbox — the key into each Repo's `status.nodes[]`; the cache agent reads demand off pods), and holds
 `Ready` until every key is present on that node and fetched since the Sandbox was created — a cache whose refresh
 failed is `Ready` with `ReposFresh=False`, a cold node whose `Clone` failed is held with `RepoCloneFailed` (a failed
-`Probe` is not that: the pod's arrival makes the agent clone). That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the
-Orchestrator's post-Ready step (ADR-0004).
+`Probe` is not that: the pod's arrival makes the agent clone). That gate is asked until it passes for the pod, and its
+verdict then stands for that pod's life: the `Repo` resource's later state, or its absence once `j2 gc` evicted it
+under a pod still mounting the cache, never moves a serving Sandbox off `Ready`; a replacement pod is asked afresh.
+That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the Orchestrator's
+post-Ready step (ADR-0004).
 
 ## The cache agent (`/manager repo-cache`)
 

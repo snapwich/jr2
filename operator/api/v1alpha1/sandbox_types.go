@@ -167,8 +167,9 @@ const (
 	// SandboxPending means the Pod/Service exist but the pod is not yet Ready.
 	SandboxPending SandboxPhase = "Pending"
 	// SandboxReady means the pod reports the Ready condition and every Repo
-	// it names is present on its node and fetched since the Sandbox was
-	// created (ADR-0051).
+	// it names was present on its node and fetched since the Sandbox was
+	// created when the pod passed that gate (ADR-0051) — a verdict taken once
+	// per pod, which the Repo's later state never revokes.
 	SandboxReady SandboxPhase = "Ready"
 	// SandboxTerminating means the Sandbox is being deleted.
 	SandboxTerminating SandboxPhase = "Terminating"
