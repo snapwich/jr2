@@ -98,7 +98,8 @@ function remoteIdentity(host: string, path: string): string {
 
 /** Leading `/` off, `//` collapsed, `.` and `..` segments resolved (as `new URL()` resolves them,
  * so the hand-parsed scp form lands where the URL forms do), trailing `/` off, ONE trailing
- * `.git` off; case kept. */
+ * `.git` off; case kept. The `.git` comes off the LAST SEGMENT — as a suffix (`repo.git`) or as the
+ * whole segment (`repo/.git`, the git dir git itself clones from) — so no `/` survives it. */
 function normalizePath(path: string): string {
   const segments: string[] = [];
   for (const segment of path.split("/")) {
@@ -106,7 +107,9 @@ function normalizePath(path: string): string {
     if (segment === "..") segments.pop();
     else segments.push(segment);
   }
-  return segments.join("/").replace(/\.git$/, "");
+  const last = segments.pop();
+  if (last !== undefined && last !== ".git") segments.push(last.replace(/\.git$/, ""));
+  return segments.join("/");
 }
 
 function keyOf(identity: string): string {

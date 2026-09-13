@@ -16,6 +16,8 @@ test("every spelling of one repository resolves to one identity — scheme, user
     "https://user:token@github.com:443/Acme/App.git",
     "  https://github.com//Acme//App.git  ",
     "git://github.com:9418/Acme/App",
+    "https://github.com/Acme/App/.git",
+    "git@github.com:Acme/App/.git/",
   ];
   for (const url of spellings) assert.equal(repoIdentity(url).identity, "github.com/Acme/App", url);
   assert.equal(new Set(spellings.map(repoKey)).size, 1, "one identity → one key");
@@ -50,7 +52,13 @@ test("a local repository is its absolute path — file:// and a bare path alike,
   assert.equal(repoIdentity("file:///srv/x.git").identity, "/srv/x");
   assert.equal(repoIdentity("/srv/x.git/").identity, "/srv/x");
   assert.equal(repoIdentity("/srv//x").identity, "/srv/x");
+  assert.equal(repoIdentity("/srv/x/.git").identity, "/srv/x", "the git dir as a segment, no trailing /");
   assert.equal(repoKey("file:///srv/x.git"), repoKey("/srv/x.git/"));
+});
+
+test("only ONE trailing .git comes off, and a url whose path is .git alone names no repository", () => {
+  assert.equal(repoIdentity("https://host/x.git/.git").identity, "host/x.git");
+  assert.throws(() => repoIdentity("https://host/.git"), /has no path/);
 });
 
 test("a relative path is refused — a Sandbox has no directory for it to be relative to", () => {
