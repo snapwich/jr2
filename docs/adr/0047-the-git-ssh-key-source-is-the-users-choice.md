@@ -16,8 +16,9 @@ warned and on purpose.
   behavior); **use a local key** (discovered `~/.ssh` candidates plus "other path"); or **paste one on stdin, hidden**.
   Declining all three bails, as before — the cache agent would only fail on an unauthenticated clone later. A per-run
   slot's url is not on the walk and is never prompted for: an ssh url first seen at attach fails that attach with the
-  key hint, as any unregistered key does. The scripting escape is unchanged: create the Secret yourself,
-  `kubectl create secret generic j2-git-ssh --from-file=key=…`.
+  key hint, as any unregistered key does. The scripting escape stays kubectl: create the Secret yourself,
+  `kubectl create secret generic j2-git-ssh --from-file=identity=…` — the Secret carries Flux's key names
+  ([ADR-0051](0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md)), and the cache agent reads no other.
 - **`--yes` means generate.** Non-interactive mode never selects a personal key — the dangerous option is never a
   default. There is no `--git-ssh-key` flag: a scripted supplied-key path is the kubectl escape.
 - **A passphrase-protected key is refused by name** — the in-cluster clone cannot answer a passphrase — detected with
@@ -25,7 +26,8 @@ warned and on purpose.
   user chose to have.
 - **The supplied-key paths warn at choice time**: the key lands in a namespace Secret, readable by anyone with Secret
   read there and at rest in etcd — a generated deploy key leaks read access to some repos; a personal key leaks
-  everything it can reach. `key.pub` is derived via `ssh-keygen -y`; output prints the fingerprint, never key material.
+  everything it can reach. The public half (`identity.pub`) is derived via `ssh-keygen -y`; output prints the
+  fingerprint, never key material.
 - **The generate path pauses at the moment of truth.** The printed key is useless until registered, and an unregistered
   key makes the repo sync fail ([ADR-0048](0048-the-orchestrator-boots-without-its-repos.md) keeps that from crashing
   the boot). So interactively, `up` prints the key and waits: "register this public key with your git host, then press

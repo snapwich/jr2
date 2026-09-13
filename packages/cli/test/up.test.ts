@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -222,6 +222,9 @@ function fakeBuild(
 function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
   return { tags: [], bytes: 0, labeled: true, ...over };
 }
+
+/** This checkout's root, for the few tests that read artifacts other packages own. */
+const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
 /** The kit's own package by ABSOLUTE path. A fixture instance lives in the OS temp dir, where a
  * bare `@j2/orchestrator` resolves to nothing — and these workflows must be the real thing, since
@@ -1685,7 +1688,9 @@ test("git ssh: declining every source bails; an existing Secret is never offered
   const { home } = await mkSshHome();
   const decline = mkWorld(await sshInstance("decl"), { env: { HOME: home } }); // → none of these
   decline.io.sshKeygen = async () => assert.fail("declined — no key may be generated");
-  await assert.rejects(() => up([], decline.io), /j2-git-ssh/);
+  // The bail spells the scripted escape, and it must name the key the cache agent reads — `identity`
+  // (Flux's names, ADR-0051). A Secret under any other key is refused by every clone.
+  await assert.rejects(() => up([], decline.io), /j2-git-ssh.*--from-file=identity=<path>/s);
   assert.equal(gitSshSecret(decline), undefined);
 
   const has = mkWorld(await sshInstance("has"));
@@ -1693,6 +1698,29 @@ test("git ssh: declining every source bails; an existing Secret is never offered
   has.io.sshKeygen = async () => assert.fail("Secret exists — no key may be generated");
   assert.equal(await up(["--yes"], has.io), 0);
   assert.equal(has.choices.length, 0);
+});
+
+test("git ssh: every documented kubectl escape names a Secret key the cache agent accepts", async () => {
+  // The scripted path (ADR-0047) hands the user a `kubectl create secret generic` line, and the
+  // cache agent reads Flux's key names only (ADR-0051) — a line naming any other key builds a
+  // Secret every clone refuses, reported as a credential error that never blames the key name. So
+  // the prose and the agent are held to one list: whatever creds.go keys.
+  const creds = await readFile(join(REPO_ROOT, "operator/internal/repocache/creds.go"), "utf8");
+  const accepted = [...creds.matchAll(/secretKey\w+ += +"([^"]+)"/g)].map((m) => m[1]!);
+  assert.ok(accepted.includes("identity") && accepted.includes("password"), "creds.go still keys both shapes");
+
+  let found = 0;
+  for (const dir of ["docs/adr", "packages/cli/src"]) {
+    for (const file of await readdir(join(REPO_ROOT, dir), { recursive: true })) {
+      if (!/\.(md|ts)$/.test(file)) continue;
+      const text = await readFile(join(REPO_ROOT, dir, file), "utf8");
+      for (const [, key] of text.matchAll(/--from-file=([\w.]+)=/g)) {
+        found += 1;
+        assert.ok(accepted.includes(key!), `${dir}/${file} tells the user --from-file=${key}=, which no clone reads`);
+      }
+    }
+  }
+  assert.ok(found > 0, "the scripted escape is still documented");
 });
 
 // --- Instance Harness (ADR-0031): converged by convention, never by config -----------------------
