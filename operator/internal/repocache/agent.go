@@ -131,9 +131,13 @@ type Agent struct {
 //   - a cache → pin gc, then fetch when a pod created since the last attempt
 //     asks, when the refresh interval elapsed, or when the spec changed.
 //
-// A clone or probe that fails returns an error so the queue retries with
+// A clone, probe, or pin that fails returns an error so the queue retries with
 // backoff; a fetch that fails degrades the cache to stale and waits for the
-// interval — freshness degrades, absence does not.
+// interval — freshness degrades, absence does not. Every failure is written
+// to this node's entry before the error returns: the entry is what `j2
+// status` and a waiting Sandbox's Ready read (ADR-0048, ADR-0051), and a
+// backoff with nothing in the entry would hold that Sandbox Pending with the
+// cause visible nowhere.
 func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	key := req.Name
@@ -309,8 +313,14 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 // without paying for a clone (ADR-0048). The entry says it was a Probe, so a
 // Sandbox that lands here after a failed one is held Pending for the clone,
 // not failed for an error no clone produced.
+//
+// The probe is skipped only when the entry already says absent and synced at
+// this generation. An entry that says present describes a cache this node no
+// longer holds — the directory was removed, or the node was re-imaged under
+// its name — and it must not stand: the operator places Sandboxes by it, and
+// `j2 status` reports it. The probe is the write that corrects it.
 func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result, error) {
-	if entry := a.own(repo); entry != nil && entry.Synced && entry.ObservedGeneration == repo.Generation {
+	if entry := a.own(repo); entry != nil && !entry.Present && entry.Synced && entry.ObservedGeneration == repo.Generation {
 		return ctrl.Result{}, nil
 	}
 	started := a.now()
@@ -346,14 +356,35 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 // change — which also re-points origin, since the url may be what changed.
 // An on-demand fetch carries the short budget: a Sandbox is held on it, and
 // freshness degrades where absence does not.
+//
+// A pin that fails — a `git config` write refused by a checkout another uid
+// owns, a read-only or full disk — is a failed attempt on a present cache:
+// the entry says present, unsynced, with git's words, so a Sandbox waiting on
+// this node goes Ready stale and `j2 status` names the cause; the error
+// returns for the backoff, since nothing fetches into a cache that cannot be
+// pinned (ADR-0004).
 func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string, asked time.Time) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	if err := a.pin(ctx, dir); err != nil {
-		return ctrl.Result{}, fmt.Errorf("pin Repo %s: %w", repo.Name, err)
-	}
 	interval := refreshInterval(repo)
 	now := a.now()
 	entry := a.own(repo)
+	if err := a.pin(ctx, dir); err != nil {
+		failed := corev1alpha1.RepoNodeStatus{
+			Present:            true,
+			Synced:             false,
+			Attempted:          corev1alpha1.RepoAttemptFetch,
+			ObservedGeneration: repo.Generation,
+			LastAttempt:        &now,
+			LastError:          err.Error(),
+		}
+		if entry != nil {
+			failed.LastFetched = entry.LastFetched
+		}
+		if reportErr := a.report(ctx, repo, failed); reportErr != nil {
+			return ctrl.Result{}, reportErr
+		}
+		return ctrl.Result{}, fmt.Errorf("pin Repo %s: %w", repo.Name, err)
+	}
 	var last time.Time
 	if entry != nil && entry.LastAttempt != nil {
 		last = entry.LastAttempt.Time

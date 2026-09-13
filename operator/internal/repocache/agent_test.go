@@ -552,6 +552,75 @@ func TestProbeFailureIsReportedAndRetried(t *testing.T) {
 	}
 }
 
+func TestAVanishedCacheIsReportedAbsent(t *testing.T) {
+	// ADR-0051: the entry is what places Sandboxes and what `j2 status`
+	// shows. One that says present for a cache this node no longer holds (the
+	// directory removed by hand, the node re-imaged under its name) must not
+	// stand until a pod happens to land and force a clone: the probe rewrites
+	// it absent on the next look.
+	git := &fakeGit{}
+	old := fixedNow.Add(-10 * time.Minute)
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: ts(old), LastFetched: ts(old), ObservedGeneration: 1}),
+	)
+
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !git.has("ls-remote", "--heads", "--", repoURL) {
+		t.Fatalf("a present entry over a missing cache must be probed, got %v", git.calls)
+	}
+	e := entry(t, a)
+	if e == nil || e.Present || !e.Synced || e.Attempted != corev1alpha1.RepoAttemptProbe || e.LastFetched != nil {
+		t.Fatalf("expected the entry rewritten absent by the probe, got %+v", e)
+	}
+
+	// Corrected once: an absent, synced entry at this generation is skipped.
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(git.calls) != 1 {
+		t.Fatalf("an absent, synced entry must not be probed again, got %v", git.calls)
+	}
+}
+
+func TestPinFailureOnAPresentCacheIsReportedBeforeTheBackoff(t *testing.T) {
+	// ADR-0048/0051: every failure is in the entry. A pin refused on a
+	// present cache (a checkout another uid owns, a read-only disk) returns
+	// an error for the backoff, but the entry says present, unsynced, with
+	// git's words first — so the Sandbox waiting here goes Ready stale
+	// instead of Pending until its budget expires, and `j2 status` names the
+	// cause. Nothing fetches into a cache that cannot be pinned (ADR-0004).
+	git := &fakeGit{fail: map[string]string{gitConfig: "fatal: detected dubious ownership in repository at '/var/lib/j2/j2-test/repos/app-0a1b2c3d'"}}
+	old := fixedNow.Add(-10 * time.Minute)
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: ts(old), LastFetched: ts(old), ObservedGeneration: 1}),
+		podOn("sb", node, fixedNow),
+	)
+	makePresent(t, a)
+
+	_, err := reconcile1(t, a)
+	if err == nil {
+		t.Fatal("a failed pin must return an error so the queue retries with backoff")
+	}
+	if slices.Contains(git.subcommands(), "fetch") {
+		t.Fatalf("nothing fetches into a cache that cannot be pinned, got %v", git.calls)
+	}
+	e := entry(t, a)
+	if e == nil || !e.Present || e.Synced || e.Attempted != corev1alpha1.RepoAttemptFetch || !strings.Contains(e.LastError, "dubious ownership") {
+		t.Fatalf("expected present, unsynced, with git's words, got %+v", e)
+	}
+	if e.LastAttempt == nil || !e.LastAttempt.Time.Equal(fixedNow) {
+		t.Fatalf("lastAttempt must record the failed pin, got %v", e.LastAttempt)
+	}
+	if e.LastFetched == nil || !e.LastFetched.Time.Equal(old) {
+		t.Fatalf("lastFetched must stay at the last success, got %v", e.LastFetched)
+	}
+	if e.ObservedGeneration != 1 {
+		t.Fatalf("expected observedGeneration 1, got %+v", e)
+	}
+}
+
 func TestFetchesOnDemandWhenAPodWasCreatedSinceTheLastAttempt(t *testing.T) {
 	// ADR-0051: on demand before an attach — a pod created after the last
 	// attempt asks for a fetch, so its Sandbox's Ready sees lastFetched ≥ its
