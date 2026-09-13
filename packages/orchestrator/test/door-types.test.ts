@@ -20,15 +20,25 @@
 //      wrapper itself: `unknown` on the permissive path, and an annotation that contradicts the
 //      door is refused;
 //  10. the handles are keyed by the wrapper's DECLARED Repo Slots (ADR-0050): a body names the
-//      slots it reads, an undeclared one is refused at the `workspace()` call, and there is no
-//      default that widens `repos` to `Record<string, string>`.
+//      slots it reads, an undeclared one is refused at the `workspace()` call — on BOTH overloads,
+//      since the slots are declared on the door-less path exactly as on the other — and no type
+//      on the seam defaults its slots to `string`, which would widen `repos` to `Record<string, …>`.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, type InputFrom, type OutputFrom } from "xstate";
 import { z } from "zod";
 import { open } from "../src/parts.ts";
-import { workspace, type WorkspaceHandles, type WorkspaceSpec, type Workspaced } from "../src/workspace.ts";
+import {
+  workspace,
+  type PermissiveWorkspaceOptions,
+  type SandboxOptions,
+  type WorkspaceHandles,
+  type WorkspaceMachine,
+  type WorkspaceOptions,
+  type WorkspaceSpec,
+  type Workspaced,
+} from "../src/workspace.ts";
 import { inputSchemaOf, type HostInjectedInput } from "../src/vocabulary.ts";
 
 const door = z.object({ repo: z.string(), branch: z.string() });
@@ -93,6 +103,42 @@ void workspace(wantsApp, {
 });
 // @ts-expect-error `docs` is a slot this wrapper never declared — the body would read a path that does not exist
 void workspace(wantsDocs, { input: door, repos, spec: ({ input }) => specOf(input) });
+
+// The door-less overload leaves the DOOR unchecked because it is unknown (claim 7) — but the slots
+// are declared on this path exactly as on the other, so it holds the body to them the same way:
+// the handles it will inject must satisfy what the body declares for them. Every kind-tier
+// workflow and jr's pool worker are this overload, so a hole here would be a hole everywhere.
+void workspace(wantsApp, { repos, spec: () => ({ branch: "feat" }) });
+void workspace(wantsApp, {
+  repos: { app: "https://a.test/a.git", docs: "https://a.test/d.git" },
+  spec: () => ({ branch: "feat" }),
+});
+// @ts-expect-error `docs` is a slot this wrapper never declared — refused on the door-less path too
+void workspace(wantsDocs, { repos, spec: () => ({ branch: "feat" }) });
+// And with the door stated by annotation (claim 7's `itemFed`), the slot check still runs.
+// @ts-expect-error the mapper's annotation types the door; it does not excuse an undeclared slot
+void workspace(wantsDocs, { repos, spec: ({ input }: { input: { ticket: Door } }) => specOf(input.ticket) });
+
+// No type on the seam defaults its slots to `string` either — `WorkspaceMachine` is what a package
+// author annotates an export with, and under `J2Repos<string>` `customize()` would offer every
+// key exactly where the phantom exists to refuse them; an options value annotated with a `string`
+// slot set types `repos` as `Record<string, RepoSlot>` and passes a body demanding any slot.
+// The `workspace()` overloads infer the slots; an annotation names them.
+// @ts-expect-error a `WorkspaceMachine` names its body and its slots; neither defaults
+type DefaultedMachine = WorkspaceMachine<Door, unknown>;
+// @ts-expect-error the same for the options a wrapper is built from
+type DefaultedSandbox = SandboxOptions;
+// @ts-expect-error the same for the declared-door options
+type DefaultedOptions = WorkspaceOptions<typeof door>;
+// @ts-expect-error the same for the door-less options
+type DefaultedPermissive = PermissiveWorkspaceOptions;
+type Defaulted = DefaultedMachine | DefaultedSandbox | DefaultedOptions | DefaultedPermissive;
+void (null as unknown as Defaulted);
+// Named, the slots type an options value as the inferred path would: `docs` is refused against it.
+const namedOptions: PermissiveWorkspaceOptions<"app"> = { repos, spec: () => ({ branch: "feat" }) };
+void workspace(wantsApp, namedOptions);
+// @ts-expect-error `docs` is not a slot the annotated options declare
+void workspace(wantsDocs, namedOptions);
 
 // A body NAMES its slots: there is no default. `Workspaced<Door>` alone would have typed `repos`
 // as `Record<string, string>`, under which a body's `repos.taregt` compiles and the wrapper accepts

@@ -264,13 +264,13 @@ type WsContext = {
  * it is a wrapper — the type twin of the `attachWrapperBody` stamp `workspace()` writes below — so
  * `customize()` reaches the body because this Machine IS one, never because a slot is spelled
  * `body`: that name is an author's to choose too (parts.ts).
+ *
+ * No parameter defaults (ADR-0050, as {@link Workspaced}): an annotation names the body and the
+ * Repo Slots it carries, because a default would widen exactly where the phantom exists to refuse
+ * — `J2Repos<string>` offers `customize()` every key, and `AnyStateMachine` as the body offers no
+ * Agent at all. `PoolMachine` names its worker the same way.
  */
-export type WorkspaceMachine<
-  TInput,
-  TOutput,
-  TBody extends AnyStateMachine = AnyStateMachine,
-  TSlots extends string = string,
-> = StateMachine<
+export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSlots extends string> = StateMachine<
   any,
   any,
   any,
@@ -327,6 +327,22 @@ type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor, TSlots extends string
     : { "the body's declared input must accept the door plus the injected handles": Workspaced<TDoor, TSlots> };
 
 /**
+ * The handles half of {@link BodyAcceptsDoor} alone, for the wrapper with NO declared door. The
+ * door is unchecked there because it is unknown (ADR-0033) — but the Repo Slots are declared on
+ * this path exactly as on the other, so a body naming a slot the wrapper never declared is refused
+ * here too (ADR-0051): it would read `workspace.repos.<slot>`, a path that never exists. The test
+ * is the same one-direction assignability, on the `workspace` field alone: the handles the wrapper
+ * will inject must satisfy what the body declares for them, so a body that names fewer slots, or
+ * no handles at all, is fed a superset and passes, as ever.
+ */
+type BodyAcceptsSlots<TBody extends AnyStateMachine, TSlots extends string> =
+  InputFrom<TBody> extends { workspace: infer THandles }
+    ? WorkspaceHandles<TSlots> extends THandles
+      ? unknown
+      : { "the body's declared handles must accept the Repo Slots the wrapper declares": WorkspaceHandles<TSlots> }
+    : unknown;
+
+/**
  * What the Sandbox is MADE OF (ADR-0037, ADR-0005) and which Repos it attaches (ADR-0051), as
  * STATIC options on the wrapper rather than fields of the per-run spec (ADR-0049). Static is the
  * whole point: `j2 up` walks the registered Machines to find every `file:` context and build it,
@@ -338,8 +354,13 @@ type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor, TSlots extends string
  * Each image is one string in ADR-0037's two shapes: a `file:` URL to a docker context the
  * Machine's module ships (`import.meta.resolve("./image")`), or a registry ref its owner baked and
  * hosts.
+ *
+ * `TSlots` has no default, here and on the two option types below (ADR-0050): a value annotated
+ * with a `string` slot set types `repos` as `Record<string, RepoSlot>`, under which a body naming
+ * any slot passes the wrapper's check — the widening {@link WorkspaceHandles} refuses for the
+ * same reason. The `workspace()` overloads infer it; an annotation names it.
  */
-export type SandboxOptions<TSlots extends string = string, TInput = unknown> = {
+export type SandboxOptions<TSlots extends string, TInput = unknown> = {
   /** The Sandbox Image. Absent → the Instance's `images/default`, then the stock Harness. */
   image?: string;
   /** The User Container's image (ADR-0005). Absent → the pod has no third container: there is no
@@ -362,7 +383,7 @@ export type SandboxOptions<TSlots extends string = string, TInput = unknown> = {
  * run-input schema, what the pod is made of, and the mapping from what comes through the door to
  * workspace vocabulary.
  */
-export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string = string> = SandboxOptions<
+export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string> = SandboxOptions<
   TSlots,
   z.infer<TSchema>
 > & {
@@ -385,12 +406,9 @@ export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string 
  * parameter (`spec: ({ input }: { input: Item }) => …`), which types the wrapper's input too. For
  * anything a caller starts, the honest fix is to declare `input`.
  */
-export type PermissiveWorkspaceOptions<TInput = unknown, TSlots extends string = string> = SandboxOptions<
-  TSlots,
-  TInput
-> & {
+export type PermissiveWorkspaceOptions<TSlots extends string, TInput = unknown> = SandboxOptions<TSlots, TInput> & {
   /** Never present on this path. Spelled out so a declared schema can never fall through to the
-   * permissive overload, where the body would go unchecked. */
+   * permissive overload, where the body's door would go unchecked. */
   input?: never;
   spec: (args: { input: TInput }) => WorkspaceSpec;
 };
@@ -407,9 +425,9 @@ export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMac
   body: TBody & BodyAcceptsDoor<TBody, z.infer<TSchema>, TSlots>,
   options: WorkspaceOptions<TSchema, TSlots>,
 ): WorkspaceMachine<z.infer<TSchema>, OutputFrom<TBody>, TBody, TSlots>;
-export function workspace<TBody extends AnyStateMachine, TInput = unknown, TSlots extends string = string>(
-  body: TBody,
-  options: PermissiveWorkspaceOptions<TInput, TSlots>,
+export function workspace<TBody extends AnyStateMachine, TSlots extends string, TInput = unknown>(
+  body: TBody & BodyAcceptsSlots<TBody, TSlots>,
+  options: PermissiveWorkspaceOptions<TSlots, TInput>,
 ): WorkspaceMachine<TInput, OutputFrom<TBody>, TBody, TSlots>;
 export function workspace(
   body: AnyStateMachine,

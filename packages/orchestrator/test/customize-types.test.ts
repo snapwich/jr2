@@ -32,7 +32,7 @@ import { open } from "../src/parts.ts";
 import { agent } from "../src/harness-client.ts";
 import { pool, source } from "../src/pool.ts";
 import { j2Setup } from "../src/setup.ts";
-import { workspace, type Workspaced } from "../src/workspace.ts";
+import { workspace, type WorkspaceMachine, type Workspaced } from "../src/workspace.ts";
 
 const opus = "anthropic/claude-opus-x";
 const haiku = "anthropic/claude-haiku-x";
@@ -192,9 +192,17 @@ void customize(pooled, { repos: { target: "git@github.com:ourorg/app.git", docs:
 // slot from run input without restating the shape.
 void customize(wrapped, { repos: { target: ({ input }) => `https://example.test/${input.topic}.git` } });
 
+// A package author annotates an export with `WorkspaceMachine`, naming its slots: the phantom the
+// annotation carries is what `customize()` reads, so the slots it offers are the named ones. A
+// `declare` has no runtime value, so its uses live in the never-called function below.
+declare const annotated: WorkspaceMachine<{ topic: string }, unknown, typeof body, "target">;
+
 function refusedRepos(): void {
+  void customize(annotated, { repos: { target: "git@github.com:ourorg/app.git" } });
   // @ts-expect-error `taregt` is a slot this Machine never declared — the body would have no handle for it
   void customize(wrapped, { repos: { taregt: "git@github.com:ourorg/app.git" } });
+  // @ts-expect-error the same through an annotation — it names the slots, and there is no default that offers every key
+  void customize(annotated, { repos: { whatever: "git@github.com:ourorg/app.git" } });
   // @ts-expect-error the mapper reads the DOOR: `subject` is not on it
   void customize(wrapped, { repos: { target: ({ input }) => input.subject } });
   // @ts-expect-error a Machine composing no Sandbox declares no slots — `never`, not `{}`
