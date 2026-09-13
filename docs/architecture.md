@@ -44,10 +44,12 @@ flowchart LR
     subgraph ns["Instance namespace"]
       subgraph orch["Orchestrator pod — replicas: 1, single writer"]
         api["HTTP API + Console"]
-        host["Run host<br/>Machines, Actors, snapshot store, Repo catalog"]
+        host["Run host<br/>Machines, Actors, snapshot store"]
       end
       state[("state volume<br/>snapshots + Admission ledger")]
-      repos[("repos volume<br/>read-only default/ checkouts")]
+      repocr["Repo CRs<br/>one per bound url"]
+      cagent["cache agent<br/>DaemonSet: clone once, fetch in place"]
+      cache[("node Repo cache<br/>hostPath, bare, read-only to pods")]
 
       subgraph ih["Instance Harness pod — Menu-only Agents"]
         ihh["Harness"]
@@ -77,9 +79,12 @@ flowchart LR
   harness -->|"completions"| provider
   ihh -->|"completions"| provider
   host --- state
-  host -->|"git fetch · git-ssh key"| remote
-  host --- repos
-  repos -.->|"cloned at pod start"| work
+  host -->|"Repo CR, via the Kubernetes API"| repocr
+  operator -->|"reconciles onto the nodes that need it"| repocr
+  repocr --> cagent
+  cagent -->|"git clone · git fetch · git-ssh key"| remote
+  cagent --- cache
+  cache -.->|"git clone --shared, post-Ready"| work
   harness --- work
   user --- work
   user -->|"push · the user's ssh"| remote
@@ -180,7 +185,7 @@ flowchart TB
     init["j2 init my-instance"] --> folder["Instance folder<br/>j2.config.ts · workflows/ · images/default/ · manifests"]
     folder --> install["npm install<br/>pins the kit at one exact version"]
     install --> up["j2 up"]
-    up --> tsc["typecheck the instance (tsc --noEmit)<br/>a wrong Agent slot, child or repo name refuses here"]
+    up --> tsc["typecheck the instance (tsc --noEmit)<br/>a wrong Agent slot, child or Repo Slot refuses here"]
     tsc --> imgs["walk the Machines: build the instance image + every file: Sandbox Image context<br/>resolve Kit images: ghcr.io/snapwich or kitRegistry"]
     imgs --> ctx{"current kubectl context"}
     ctx -->|kind| kind["kind cluster on the laptop"]
@@ -212,14 +217,14 @@ a self-hosted mirror (ADR-0044). Steady state spends a directory walk and no doc
 `j2 up` left unreachable (ADR-0039). Everything after converge is HTTP: the CLI starts runs, answers Gates, and reads
 status through the same routes the Console and any webhook use.
 
-What the gate can see is decided by where each name lives (ADR-0050). Agents and Sandbox Images ride the Machine, so
-xstate's own `src` typing and the Machine's parts check them. The Repo cannot ride it — it is a deployment fact — so
-`j2.config.ts` registers its catalog back to the kit
-(`declare module "@j2/orchestrator" { interface Register { config: typeof config } }`), `RepoName` derives the names
-from it by the same rule the loader applies, and `WorkspaceSpec.repos[].name` is typed by that. A door that takes a repo
-name writes `z.enum(repoNames(config))`, so the Console's start form offers the catalog instead of a text box. A config
-entry whose url is not a literal must carry a literal `name`: the alternative is widening to `string`, which would
-type-check every typo in the instance.
+What the gate can see is decided by where each name lives (ADR-0050). Agents, Sandbox Images, and Repos ride the
+Machine, so xstate's own `src` typing and the Machine's parts check them: a Repo is a slot on the `workspace()`, keyed
+by the Machine's own word for it and bound by url (ADR-0051), and a `customize` of a slot the Machine does not declare
+is a compile error. The one check the compiler cannot make is the walk's: a registered Machine with an open slot nobody
+bound is refused before anything is built, naming the Machine, the slot, and the `customize` line that fixes it. Nothing
+in `j2.config.ts` is named by code — it holds reach and credentials (`harness`, `git.credentials`, `registry`) — so
+there is no catalog for the Console's start form to offer; a per-run Repo is a url field unless the Machine's door
+enumerates its own.
 
 **Answers**
 

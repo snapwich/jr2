@@ -23,10 +23,11 @@ because they are one problem: **what a Machine depends on that is not inside it.
     `researching → invoke researcher` instead of a uniform `agentRun`. Two Machines in one run may both carry a
     `researcher`; each resolves against its own implementations, and the Instance ID's actor path keeps their
     conversations apart.
-  - **The Sandbox Image is a `workspace()` option**, static: `workspace(body, { input, image, spec })`. `image` is a
-    string in one of two shapes — a `file:` URL (`import.meta.resolve("./image")`, a docker context the module ships) or
-    a registry ref — or absent, which keeps ADR-0037's fallback. It moved out of the per-run spec because `j2 up` must
-    find it statically. It is never persisted: the provisioning state re-reads it off the Machine on restore.
+  - **The Sandbox Image is a `workspace()` option**, static: `workspace(body, { input, image, repos, spec })` (`repos`
+    is ADR-0051's, and follows the same rule). `image` is a string in one of two shapes — a `file:` URL
+    (`import.meta.resolve("./image")`, a docker context the module ships) or a registry ref — or absent, which keeps
+    ADR-0037's fallback. It moved out of the per-run spec because `j2 up` must find it statically. It is never
+    persisted: the provisioning state re-reads it off the Machine on restore.
 - **The definition rides the Turn.** The admission body carries the slot's definition; the Harness runs what it was
   handed and re-reads it per Submission as before. The Instance roster (`agents/`, then `config.agents`), its ConfigMap,
   and `J2_AGENTS_JSON` retire — a flat roster cannot hold two `researcher`s, and a Machine edit already needs `j2 up` to
@@ -38,20 +39,21 @@ because they are one problem: **what a Machine depends on that is not inside it.
   ADR-0011 adopted for Vocabulary.
 - **Customization is `customize(machine, parts)`**, a plain function in the family of `workspace()` and `pool()`,
   returning a plain `StateMachine`. `parts` has the declaration's own shape, recursively partial:
-  `{ agents?: { <slot>?: Partial<AgentDefinition> }, image?, user?, actors?: { <child>?: parts } }` — the two image
-  seats together, since ADR-0005 gives the User Container the same static option. Internally an Agent override is
+  `{ agents?: { <slot>?: Partial<AgentDefinition> }, image?, user?, repos?: { <slot>?: Binding }, actors?: { <child>?: parts } }`
+  — the two image seats together, since ADR-0005 gives the User Container the same static option, and the Repo Slots
+  beside them, since ADR-0051 makes a Repo a `workspace()` slot a composer binds. Internally an Agent override is
   xstate's `machine.provide({ actors: { researcher: agent(merged) } })`, with the override layered over the stock
   definition; a child override is the same call one level down, recursing — each level is exactly the one-level reach
   ADR-0015 found `provide` has, held by the composer who owns the child object, never host-side injection. j2's wrappers
   are transparent: `customize(research, { agents })` reaches the body through the `body` slot (and `pool()`'s `worker`,
-  at any depth), so a consumer never writes `body`. The images are the one part `provide` cannot carry (xstate copies
-  only implementations, and every part is keyed on the config it passes through by reference), so those fields clone the
-  wrapper's config and rebuild it with the same implementations, re-attaching what the original carried. Only DECLARED
-  parts can be retuned, and the compiler is what says so: the slots are read off xstate's own `TActor` parameter, so an
-  Agent or a child the Machine does not carry is a type error (ADR-0050), and the runtime refuses the same call naming
-  the Machine's own slots. Rejected: a `.with()` method on the machine — it needs a j2-owned machine type over xstate's,
-  which ADR-0015 avoided, and it vanishes after any `.provide()`; a callable-machine hybrid — verified to work, reads as
-  a trick.
+  at any depth), so a consumer never writes `body`. The images and the Repo bindings are the parts `provide` cannot
+  carry (xstate copies only implementations, and every part is keyed on the config it passes through by reference), so
+  those fields clone the wrapper's config and rebuild it with the same implementations, re-attaching what the original
+  carried. Only DECLARED parts can be retuned, and the compiler is what says so: the slots are read off xstate's own
+  `TActor` parameter, so an Agent, a Repo Slot, or a child the Machine does not carry is a type error (ADR-0050), and
+  the runtime refuses the same call naming the Machine's own slots. Rejected: a `.with()` method on the machine — it
+  needs a j2-owned machine type over xstate's, which ADR-0015 avoided, and it vanishes after any `.provide()`; a
+  callable-machine hybrid — verified to work, reads as a trick.
 - **A package exports a Machine, nothing beside it.** The door (ADR-0033), the vocabulary, the Agents, and the image all
   ride the exported object. The three uses:
 
@@ -71,8 +73,9 @@ because they are one problem: **what a Machine depends on that is not inside it.
 - **`j2 up` walks the registered Machines** — `implementations.actors`, descending into child Machines — to collect
   models to preflight and `file:` image contexts to build. A context is keyed by its content digest (the same digest
   ADR-0038 tags by), so the host at `j2 up` and the baked Orchestrator, whose `node_modules` holds the same folder,
-  agree without a path table. Repos stay Instance config (deployment facts) and arrive through the door or a parent's
-  mapper.
+  agree without a path table. Repos are slots on the same walk (ADR-0051): a bound slot's url is collected, so its
+  `Repo` resource is warm before a run asks; an open slot nobody bound is refused, naming the Machine, the slot, and the
+  `customize` line that fixes it; a per-run slot is the run's business and the walk leaves it alone.
 
 ## Consequences
 

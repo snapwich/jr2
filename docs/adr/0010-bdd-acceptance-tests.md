@@ -25,18 +25,18 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@j2/e2e`)
   is safe under `cucumber-js --parallel`.
 - **An opt-in `@kind` tier for the data plane** (added once the `workspace()` slice landed — ADR-0012). Workspaces are
   always real Sandboxes, so the only way to test them is against a real cluster: the `@kind` scenarios drive the
-  operator's Sandbox CR, a pod, the read-only source volume, an in-pod git worktree, and the Harness endpoint — faking
-  only the LLM. (Originally the Sandbox ran a **dev Harness image**, a wire-compatible stub in a container with `git`;
-  [ADR-0038](0038-j2-up-builds-every-image-it-deploys.md) retired it. The pod runs the STOCK Harness now — real pi, the
-  real Menu over MCP, real Working tools — and the substitution moved to the provider: a scripted OpenAI-compatible
-  endpoint the World serves from the host. Which is what makes this tier a second pi canary.) They are tagged `@kind`
-  and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is the product's own path
-  (ADR-0019): one shared VANILLA kind cluster and nothing else, then **`j2 up` per scenario into a fresh namespace** —
-  which since ADR-0038 builds and loads every image it deploys, so no image is pre-loaded by hand. Namespace-as-identity
-  makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster. **The tier runs parallel,
-  and three properties are what make that safe.** Scenario isolation (own namespace, own scripted model port); no shared
-  mutable image name between concurrent converges of one checkout — a Sandbox Image builds straight to its content tag,
-  with no intermediate, because the Harness arrives by volume at pod time
+  operator's Sandbox CR, a pod, the node's read-only Repo cache, an in-pod git worktree, and the Harness endpoint —
+  faking only the LLM. (Originally the Sandbox ran a **dev Harness image**, a wire-compatible stub in a container with
+  `git`; [ADR-0038](0038-j2-up-builds-every-image-it-deploys.md) retired it. The pod runs the STOCK Harness now — real
+  pi, the real Menu over MCP, real Working tools — and the substitution moved to the provider: a scripted
+  OpenAI-compatible endpoint the World serves from the host. Which is what makes this tier a second pi canary.) They are
+  tagged `@kind` and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is the
+  product's own path (ADR-0019): one shared VANILLA kind cluster and nothing else, then **`j2 up` per scenario into a
+  fresh namespace** — which since ADR-0038 builds and loads every image it deploys, so no image is pre-loaded by hand.
+  Namespace-as-identity makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster.
+  **The tier runs parallel, and three properties are what make that safe.** Scenario isolation (own namespace, own
+  scripted model port); no shared mutable image name between concurrent converges of one checkout — a Sandbox Image
+  builds straight to its content tag, with no intermediate, because the Harness arrives by volume at pod time
   ([ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md)) — while
   [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) makes a warm scenario's converge build nothing
   (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the two seats that dial a Sandbox

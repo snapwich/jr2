@@ -28,11 +28,12 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
     private mount namespace, where the Agent executes nothing. The human sshs in with agent forwarding, works, and the
     socket is gone on disconnect; at no point does it share a filesystem with code the Agent runs.
 
-The Harness and User containers mount `/work` read-write **and `/repos` read-only**, so human and agent see identical
-files. `/repos` is not a second exception but half of the first: the worktrees are `--shared` clones whose alternates
-resolve objects from `/repos/<name>/default` (ADR-0004), so a seat holding `/work` alone holds checkouts whose every
-borrowed object is missing — git in the User Container dies on "unable to normalize alternate object path". The Adapter
-mounts neither — the pod's credential holder has no business in the working tree.
+The Harness and User containers mount `/work` read-write **and `/repos` read-only** — the node's Repo cache, one bare
+checkout per Repo the Sandbox names (ADR-0004, ADR-0051) — so human and agent see identical files. `/repos` is not a
+second exception but half of the first: the worktrees are `--shared` clones whose alternates resolve objects from
+`/repos/<key>`, so a seat holding `/work` alone holds checkouts whose every borrowed object is missing — git in the User
+Container dies on "unable to normalize alternate object path". The Adapter mounts neither — the pod's credential holder
+has no business in the working tree.
 
 One git wall stays the image's own: git's dubious-ownership guard fires in the User Container whenever its uid differs
 from the Harness's (the attach created the trees), and `safe.directory` is honored only from system/global config —
@@ -42,15 +43,15 @@ scrub container env — so the image would still owe a line for sshd while carry
 mechanisms where one honest one serves. A User Container image whose sessions run git carries its own
 `git config --global --add safe.directory '*'` (or ships it in `/etc/gitconfig`).
 
-The worktrees' remotes encode which hop each seat can make: `git fetch origin` reads the volume checkout (refreshed by
-the reconcile — the hop the pod can make), while origin's **push url** is the real remote — the attach copies it from
-the volume checkout's own `remote.origin.url`, the single source the reconcile cloned from, so nothing plumbs it. A push
-therefore succeeds exactly when a caller supplies the credential — a human's forwarded agent in the User Container — and
-never for the Agent, because the pod holds none (the credential-visibility story above, unchanged). Creating a pull
-request is a GitHub API call on top: the human's own `gh` login in their session. An UNATTENDED publish (workflow pushes
-a branch, opens a PR) is deliberately absent: it belongs to the Orchestrator, which already holds the git credential and
-can fetch a branch out of a pod without one (`ext::kubectl exec … git upload-pack`) — a future decision, not a
-pod-composition change.
+The worktrees' remotes encode which hop each seat can make: `git fetch origin` reads the node cache (refreshed by the
+cache agent — the hop the pod can make), while origin's **push url** is the real remote in the Binding's own spelling —
+the attach sets it from the slot the Machine bound (ADR-0051), so a Machine that bound over ssh pushes over ssh even
+when the cache was cloned over https, and nothing else plumbs it. A push therefore succeeds exactly when a caller
+supplies the credential — a human's forwarded agent in the User Container — and never for the Agent, because the pod
+holds none (the credential-visibility story above, unchanged). Creating a pull request is a GitHub API call on top: the
+human's own `gh` login in their session. An UNATTENDED publish (workflow pushes a branch, opens a PR) is deliberately
+absent: it belongs to the Orchestrator, which already holds the git credential and can fetch a branch out of a pod
+without one (`ext::kubectl exec … git upload-pack`) — a future decision, not a pod-composition change.
 
 ## Sharing `/work` across uids
 
@@ -125,8 +126,8 @@ human session — with its edges stated plainly:
 - **It is not port isolation.** The User Container's sshd and the Agent's dev server contend for the same ports.
 - **It is not a seat for parallel authorship.** Two writers on one checkout collide as files, whatever the container
   layout; parallel work belongs on a second checkout — fetch the branch out
-  (`git fetch "ext::kubectl exec -i <pod> -c harness -- git upload-pack /work/<repo>"` needs no credential in the pod at
-  all) and push from where the keys already live.
+  (`git fetch "ext::kubectl exec -i <pod> -c harness -- git upload-pack /work/<slot>/default"` needs no credential in
+  the pod at all) and push from where the keys already live.
 
 ## Considered options
 

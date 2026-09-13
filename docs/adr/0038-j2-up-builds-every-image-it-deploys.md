@@ -83,9 +83,9 @@ of build-it-yourself-first image on top of that.
   to `kubectl` and on the developer's own disk. **Kit images are never pruned** — they are shared by every instance on
   the cluster — and neither are registry-pushed tags. The accepted remainder: deleting an `images/<x>/` folder orphans
   that image's already-loaded tags (nothing derives their names any more); they go with the cluster, or by hand.
-- **No `repos`, no Sandbox Image builds.** A non-empty `repos` is already the data-plane switch (ADR-0012/0031): a
-  workspace-less instance has no Sandboxes, so it must not pay a docker build for a scaffolded `images/default/` it can
-  never use.
+- **No `workspace()`, no Sandbox Image builds.** A registered Machine that composes a Sandbox is the data-plane switch,
+  read off the walk (ADR-0051): a workspace-less instance has no Sandboxes, so it must not pay a docker build for a
+  scaffolded `images/default/` it can never use.
 
 ## Considered options
 

@@ -9,9 +9,9 @@ secrets) live in ADR-0019.
 
 ```
 my-orchestrator/
-  j2.config.ts     # instance config: repos, agents, images — everything a Machine names by string (ADR-0050)
+  j2.config.ts     # instance config: reach and credentials — harness, git.credentials, registry; nothing a Machine names (ADR-0050)
   workflows/       # filename-discovered: workflows/review.ts (contract: export const machine) → "review"
-  images/          # docker contexts the config's `images` entries point at (ADR-0037); no discovery
+  images/default/  # the fallback docker context a `workspace()` with no `image` uses (ADR-0037); a path convention, not discovery
   manifests/       # user-supplied objects applied by `j2 up` (e.g. SealedSecrets); optional
   .env             # local secrets + deployment-varying env; uncommitted
   .j2/             # scratch; nothing durable lives on the host (state is in-cluster, ADR-0019)
@@ -19,31 +19,37 @@ my-orchestrator/
 
 `workflows/<name>.ts` registers a workflow named `<name>` via `export const machine` — the one-export module contract
 (ADR-0015; vocabulary rides the machine object, so there is no manifest export). Workflows are the one discovered kind
-because nothing in code names one: `j2 run` and the API do. Agents, images, and repos are named from Machines, so they
-are config entries the Register types (ADR-0050).
+because nothing in code names one: `j2 run` and the API do. Agents, images, and Repos are named from Machines, so they
+ride the Machine — Agent slots, `workspace()` options, Repo Slots (ADR-0049, ADR-0051) — and nothing in config names
+them (ADR-0050).
 
 **The instance repo is a deployment assembly, not a sharing unit** (ADR-0019): reusable workflows/agents are published
-as npm packages and re-exported here; `j2.config.ts` holds only what is specific to this deployment's repos, models, and
-cluster — committed, because the instance repo is the GitOps unit (ADR-0008), with deployment-varying values resolved
-from env.
+as npm packages and re-exported here; `j2.config.ts` holds only what is specific to this deployment's reach,
+credentials, and cluster — committed, because the instance repo is the GitOps unit (ADR-0008), with deployment-varying
+values resolved from env.
 
-## Minimum config, and the source volume
+## Minimum config, and the Repo cache
 
-`j2.config.ts` favors convention over configuration — a sandbox-ful instance can be as small as:
+`j2.config.ts` favors convention over configuration — an Instance whose Machines compose Sandboxes can be as small as:
 
 ```ts
 import { defineConfig } from "@j2/orchestrator";
 
-export default defineConfig({ name: "my-orchestrator", sandbox: {} });
+export default defineConfig({
+  name: "my-orchestrator",
+  git: { credentials: [{ match: "*", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" }] }, // narrow before untrusted runs
+});
 ```
 
 - **`name` is the instance's identity**; its namespace defaults to it (`-n` overrides — ADR-0019).
-- **`repos[]` is the source catalog.** Each `{ name, url, ref? }` entry is cloned into the in-cluster source volume by
-  the boot reconcile (ADR-0004); Sandboxes clone `--shared` against it. There is no host-side catalog directory — a repo
-  pods should see must be fetchable from the cluster.
-- **A non-empty `repos` list is the data-plane switch** (ADR-0031): with it, the instance gets the kubectl Sandbox
-  backend; without it, the instance is workspace-less — a Workspace needs repos. There is **no `images` config block**:
-  `j2 up` builds every image it deploys and resolves each to a content-addressed tag
+- **There is no `repos` list.** A Repo is a slot on a `workspace()`, bound by url (ADR-0051); `j2.config.ts` holds what
+  reaches one — `git.credentials`, the prefix-matched list that is also the fence a per-run slot's url must pass. The
+  scaffold writes one wildcard entry, commented, for the user to narrow (ADR-0051). The operator keeps a bare cache per
+  node from the `Repo` resources the Orchestrator creates off its Machines (ADR-0004); Sandboxes clone `--shared`
+  against it. There is no host-side directory — a Repo pods should see must be fetchable from the cluster.
+- **A registered Machine that composes a Sandbox is the data-plane switch** (ADR-0051), read off `j2 up`'s walk: with
+  one, the instance gets the kubectl Sandbox backend; without one, the instance is workspace-less. There is **no
+  `images` config block**: `j2 up` builds every image it deploys and resolves each to a content-addressed tag
   ([ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)). Image composition is per Workspace, not per instance — a
   `workspace()` names its Sandbox Image statically (a `file:` docker context the Machine ships or a registry ref,
   [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md),
@@ -90,16 +96,16 @@ GET  /runs/resolve?prefix=<p>          # run ids sharing a prefix, live + settle
 GET  /runs/:runId/events               # SSE: status replay + live deltas                [instance]
 POST /runs/:runId/events               # run-level infra interrupt: CANCEL               [instance]
 POST /runs/:runId/gates/:gate/events   # deliver a workflow event to an open gate        [instance]
-GET  /repos                            # per-repo source-volume sync state (ADR-0048)     [instance]
+GET  /repos                            # per-Repo node-cache sync state (ADR-0048)        [instance]
 GET  /agents/:iid/surface   POST /agents/:iid/events   # the Adapter's surface           [sandbox]
 GET  /healthz   GET /readyz
 ```
 
 `GET /repos` is [ADR-0048](0048-the-orchestrator-boots-without-its-repos.md)'s observability half: a failed clone
-degrades the repo, not the boot, so the reconcile's per-repo state (synced, or git's own error plus the attempt count)
-is a thing to ask the instance for. `j2 status` with **no** run id renders it — the place ADR-0047's "register the key,
-the reconcile retries" points at. Instance band, not open: a row names a repo and carries git's error text, exactly the
-class of author/deployment detail the open projections strip (ADR-0014).
+degrades the Repo, not the boot, so each `Repo` resource's status (per node: synced, or git's own error) is a thing to
+ask the instance for, read off the resources (ADR-0051). `j2 status` with **no** run id renders it — the place
+ADR-0047's "register the key, the cache agent retries" points at. Instance band, not open: a row names a Repo and
+carries git's error text, exactly the class of author/deployment detail the open projections strip (ADR-0014).
 
 Gates are the human/webhook/CI seam (ADR-0011): a gated state registers `{ gate, accepts, meta }`; `GET /runs/:runId`
 lists the open gates (with schemas + `meta`), and the gate POST validates the body against the named event schema and

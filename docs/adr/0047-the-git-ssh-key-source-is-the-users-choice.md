@@ -10,10 +10,13 @@ warned and on purpose.
 
 ## Decision
 
-- **Three sources, one prompt**, when ssh repo urls exist and no `j2-git-ssh` Secret does: **generate a fresh in-cluster
-  deploy keypair** (recommended, listed first, today's behavior); **use a local key** (discovered `~/.ssh` candidates
-  plus "other path"); or **paste one on stdin, hidden**. Declining all three bails, as before — the reconcile would only
-  fail on an unauthenticated fetch later. The scripting escape is unchanged: create the Secret yourself,
+- **Three sources, one prompt**, when `up`'s walk of the registered Machines finds an ssh url on a bound Repo Slot
+  (ADR-0051) whose matching `git.credentials` entry names an `sshKey` Secret that does not exist (the scaffold's
+  wildcard entry names `j2-git-ssh`): **generate a fresh in-cluster deploy keypair** (recommended, listed first, today's
+  behavior); **use a local key** (discovered `~/.ssh` candidates plus "other path"); or **paste one on stdin, hidden**.
+  Declining all three bails, as before — the cache agent would only fail on an unauthenticated clone later. A per-run
+  slot's url is not on the walk and is never prompted for: an ssh url first seen at attach fails that attach with the
+  key hint, as any unregistered key does. The scripting escape is unchanged: create the Secret yourself,
   `kubectl create secret generic j2-git-ssh --from-file=key=…`.
 - **`--yes` means generate.** Non-interactive mode never selects a personal key — the dangerous option is never a
   default. There is no `--git-ssh-key` flag: a scripted supplied-key path is the kubectl escape.
@@ -28,14 +31,15 @@ warned and on purpose.
   the boot). So interactively, `up` prints the key and waits: "register this public key with your git host, then press
   enter to continue" — the wait sits exactly where the user must act anyway. `--yes` proceeds without pausing, and any
   converge that generated a keypair **ends** by repeating the warning: the key, the repos that will not sync until it is
-  registered, and that the reconcile retries on its own.
+  registered, and that the cache agent retries on its own.
 
 ## Considered options
 
 - **Keep the invariant, improve the messaging.** Rejected: the multi-repo friction is structural (one deploy key, one
   repo), not informational — no message makes N registrations cheaper than zero.
-- **Agent forwarding instead of copying** (the ADR-0005 pattern for Sandbox sessions). Rejected here: the boot reconcile
-  fetches unattended, on a schedule the user is not present for — forwarding authenticates a session, not a daemon.
+- **Agent forwarding instead of copying** (the ADR-0005 pattern for Sandbox sessions). Rejected here: the cache agent
+  fetches unattended, in-cluster, on a schedule the user is not present for — forwarding authenticates a session, not a
+  daemon.
 - **A `--git-ssh-key <path>` flag.** Rejected: it makes the personal-key path scriptable, which is exactly the silent
   lift the prompt exists to prevent; the kubectl escape already serves automation, with the user's own tooling holding
   the key.

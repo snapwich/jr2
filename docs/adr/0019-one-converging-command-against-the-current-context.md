@@ -44,12 +44,15 @@ loudly narrated, safe to re-run:
   **preflighted**: `up` fails naming the missing Secret with the exact creation hint — converting the
   `CreateContainerConfigError` hang into an immediate error. Sealed Secrets/External Secrets ride this seam untouched:
   j2's contract is "a Secret named X exists", however it got there.
-- **Repos**: the boot reconcile (ADR-0004) clones `repos[]` from config into the in-cluster source volume. The host
-  `repos/` catalog directory is gone. Private repos: an HTTPS token from `.env` is the default path; for ssh URLs with
-  no `j2-git-ssh` Secret, `up` asks where the key comes from — a fresh in-cluster deploy keypair (the recommended
-  default, public key printed to register), a local key, or one pasted on stdin
-  ([ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)) — declining bails. A personal key never enters a
-  cluster silently: only by that explicit, warned choice.
+- **Repos**: `up`'s walk of the registered Machines collects every bound Repo Slot (ADR-0049, ADR-0051) — to refuse an
+  open slot nobody bound, and to see which urls need a key. The Orchestrator creates one `Repo` resource per url at
+  boot, and the operator's cache agent clones each onto the nodes that need it (ADR-0004). There is no `repos` config
+  list and no host `repos/` directory. Private repos: `git.credentials` matches each url to a token env var or an ssh
+  Secret by longest prefix (ADR-0051); the scaffold's wildcard entry makes `J2_GIT_TOKEN` from `.env` the default path
+  for https; for ssh URLs whose entry names a Secret that does not exist, `up` asks where the key comes from — a fresh
+  in-cluster deploy keypair (the recommended default, public key printed to register), a local key, or one pasted on
+  stdin ([ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)) — declining bails. A personal key never enters
+  a cluster silently: only by that explicit, warned choice.
 - **Provider preflight**: when a custom model provider is configured (ADR-0018's `harness` section), `up` probes the
   `baseUrl` _from inside the cluster_ — including one trivial tool-call completion — so an unreachable endpoint or a
   vLLM missing `--enable-auto-tool-choice` fails at converge time, not as `agent.fault` mid-run. Reachability itself is

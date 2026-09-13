@@ -1,9 +1,10 @@
 # `workspace()` wraps a body Machine and owns only Sandbox lifecycle
 
-j2 provides Workspaces as a helper so workflows never provision Sandboxes themselves: `workspace(body, { input, spec })`
-is a statically-imported factory (per [ADR-0011](0011-workflow-defined-events.md)'s import doctrine) returning a Machine
-that provisions a Sandbox and its worktrees, runs the author's **body** Machine inside it, and tears the Sandbox down
-when the body finishes. This makes CONTEXT.md's "Workspace = child Machine bound to a unit of work" concrete.
+j2 provides Workspaces as a helper so workflows never provision Sandboxes themselves:
+`workspace(body, { input, repos, spec })` is a statically-imported factory (per
+[ADR-0011](0011-workflow-defined-events.md)'s import doctrine) returning a Machine that provisions a Sandbox and its
+worktrees, runs the author's **body** Machine inside it, and tears the Sandbox down when the body finishes. This makes
+CONTEXT.md's "Workspace = child Machine bound to a unit of work" concrete.
 
 ```
 provisioning:  create Sandbox CR → await phase: Ready → attach repos/worktrees (post-Ready, ADR-0004)
@@ -25,13 +26,16 @@ already is. When the guarantee still fails (`kill -9`, hard cancel), the operato
 
 ## Boundary: the spec speaks workspace vocabulary only
 
-The spec — `{ repos: [{ name, baseRef }], branch }` — is mapped from the parent's context by the author, but its _shape_
-is workspace-domain: what to attach and on what ref. Workflow configuration (review rounds, budgets, ticket data) passes
-through to the body untouched; the workspace never sees it. In return the body gets what it needs to operate inside the
-Sandbox: `{ workdir, repos, branch }`. The Harness `endpoint` and the Sandbox name are mechanism-facing, not body-facing
-— `agentRun` resolves them **ambiently** from the enclosing wrapper (a registrar actor co-invoked in `running`,
-ADR-0016), so the body cannot mis-thread them. Keeping this boundary is what lets one helper serve any workflow rather
-than coupling to coding-shaped ones.
+The spec — `{ branch, workGroup?, reviewSha? }` — is mapped from the parent's context by the author, but its _shape_ is
+workspace-domain: the branch to cut, and what the attach needs to cut it. Which Repos to attach is not per-run at all:
+they are slots on the wrapper's options (`repos: { target: open, docs: { url, ref } }`, ADR-0051), static so `j2 up` can
+see them, each bound by the Machine, by a composer's `customize`, or by a mapper over the door. Workflow configuration
+(review rounds, budgets, ticket data) passes through to the body untouched; the workspace never sees it. In return the
+body gets what it needs to operate inside the Sandbox: `{ workdir, repos: Record<slot, path>, branch }`, the handles
+keyed by the slots the wrapper declared. The Harness `endpoint` and the Sandbox name are mechanism-facing, not
+body-facing — `agentRun` resolves them **ambiently** from the enclosing wrapper (a registrar actor co-invoked in
+`running`, ADR-0016), so the body cannot mis-thread them. Keeping this boundary is what lets one helper serve any
+workflow rather than coupling to coding-shaped ones.
 
 The wrapper's `input` beside it is the door the spec maps FROM — the wrapper's own declared run-input schema, which also
 types the mapping ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)). It sits on the wrapper and not on

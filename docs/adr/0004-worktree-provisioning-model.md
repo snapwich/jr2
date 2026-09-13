@@ -1,9 +1,10 @@
-# A Sandbox's workspace is a private local clone of a read-only `default/`, not a shared worktree
+# A Sandbox's workspace is a private local clone of a read-only cache, not a shared worktree
 
-Each Sandbox gets its **own** `.git` by running a local `git clone --shared` from a canonical `default/` checkout that
-is mounted **read-only**, rather than a `git worktree add` against a single shared `default/.git`. The clone borrows
-objects from `default/` (via alternates) for fast, disk-cheap setup but owns its refs, index, HEAD, config, and —
-critically — its **lock files**, so a Sandbox contends only with itself.
+Each Sandbox gets its **own** `.git` by running a local `git clone --shared` from a canonical bare checkout that is
+mounted **read-only**, rather than a `git worktree add` against a single shared `.git`. The clone borrows objects from
+the checkout (via alternates) for fast, disk-cheap setup but owns its refs, index, HEAD, config, and — critically — its
+**lock files**, so a Sandbox contends only with itself. The checkout it borrows from is a **node-local cache** the
+operator keeps (ADR-0051), one per repository per node, so a Sandbox can be scheduled on any node.
 
 ## Why
 
@@ -20,88 +21,90 @@ Agent's blast radius to its own pod (it physically cannot write — or `gc` — 
 which is the Sandbox thesis (CONTEXT.md) applied to git.
 
 We keep jr's worktree _ergonomics_ — fast spin-up, a working dir that looks like a totally normal checkout, one
-canonical `default/` everything branches from — because borrowing objects from `default/` sets up about as cheaply as a
-worktree while giving an independent `.git`.
+canonical checkout everything branches from — because borrowing objects sets up about as cheaply as a worktree while
+giving an independent `.git`.
 
 ## The `--shared` invariant, and how it is enforced
 
-A `--shared` clone reads `default/`'s object store via `objects/info/alternates`; if an object it borrows is ever
-deleted from `default/`, the clone corrupts (a PoC reproduced this by `gc`-ing a writable `default/` under a live
-clone). So the one invariant: **objects in `default/` are never deleted while clones borrow them.** Deletion only
-happens via `git gc`/`prune` — including the `gc --auto` that porcelain commands (`fetch` among them) run past a
-loose-object threshold, which prunes unreachable objects (e.g. commits a force-push orphaned that a long-lived clone
-still borrows). Enforcement, by side:
+A `--shared` clone reads the cache's object store via `objects/info/alternates`; if an object it borrows is ever deleted
+from the cache, the clone corrupts (a PoC reproduced this by `gc`-ing a writable checkout under a live clone). So the
+one invariant: **objects in a cache are never deleted while clones borrow them.** Deletion only happens via
+`git gc`/`prune` — including the `gc --auto` that porcelain commands (`fetch` among them) run past a loose-object
+threshold, which prunes unreachable objects (e.g. commits a force-push orphaned that a long-lived clone still borrows).
+Enforcement, by side:
 
-- **Sandboxes cannot violate it**: the volume is mounted read-only, and gc is a write. Structural.
-- **The reconcile side is the one writer, and it is config-pinned**: `ensureRepos` sets `gc.auto=0`,
-  `gc.pruneExpire=never`, and `maintenance.auto=false` on every `default/` it clones **or adopts**, before any fetch —
-  so neither its own fetches nor a human running git inside the checkout can trigger object deletion. Only a deliberate
-  `git gc --prune=now` defeats it, which is `rm -rf` territory.
+- **Sandboxes cannot violate it**: the cache is mounted read-only, and gc is a write. Structural.
+- **The cache agent is the one writer per node, and it is config-pinned**: it sets `gc.auto=0`, `gc.pruneExpire=never`,
+  and `maintenance.auto=false` on every checkout it clones **or adopts**, before any fetch — so neither its own fetches
+  nor a human running git inside the checkout can trigger object deletion. Only a deliberate `git gc --prune=now`
+  defeats it, which is `rm -rf` territory.
+- **Eviction is deletion of the whole checkout**, never of objects inside one, and only once no pod on the node mounts
+  it (ADR-0051). A live clone never loses what it borrows.
 
 The fallback where borrowing can't be made safe (a source j2 doesn't control) is a **full copy** — fully independent,
-gc-proof, at full disk and the slowest setup. An immutable generation-swap scheme (refresh = write a new snapshot, GC
-old generations as their Sandboxes drain) remains an option if force-push bloat under fetch-in-place ever becomes a real
-cost; it buys nothing else and costs real machinery, so it is not built.
+gc-proof, at full disk and the slowest setup. An immutable generation-swap scheme (refresh = a new snapshot, old
+generations released as their Sandboxes drain) was considered again as OCI image volumes in ADR-0051 and rejected there:
+it buys nothing gc pinning does not, and a repack costs a full re-upload.
 
-## Refresh is fetch-in-place; the config is the catalog
+## Refresh is fetch-in-place; the `Repo` resource is the catalog
 
-`ensureRepos` reconciles the source volume at every Orchestrator boot: `config.repos[]` entries are cloned when missing
-and fetched when present (`fetch` only **adds** objects — safe under the invariant by nature). A repo that fails to sync
-degrades that repo, never the boot — the server serves and the reconcile retries
-([ADR-0048](0048-the-orchestrator-boots-without-its-repos.md)). The Orchestrator runs in-cluster (ADR-0019), so the
-reconcile does too: every catalogued repo must be **fetchable from the cluster** (an HTTPS token or deploy-key Secret
-for private ones — ADR-0019); a working copy that exists only on someone's host is not a valid source. A checkout found
-on the volume without a config entry is left alone but not refreshed — the config is the single catalog.
+The catalog is the set of `Repo` custom resources in the Instance's namespace (ADR-0051): the Orchestrator creates one
+per repository its Machines bind, at boot from the walk and at first attach for a per-run url, and the operator
+reconciles each onto the nodes that need it. A cache is cloned when missing and fetched when present — on the resource's
+interval, and on demand before every attach, so a Workspace starts from the remote's now. `fetch` only **adds** objects
+— safe under the invariant by nature. A repository that fails to sync degrades that repository, never the Instance: a
+cold clone that fails fails the one provision that needed it, pointedly; a fetch that fails on a warm cache lets the
+attach proceed on what the cache holds, announced as stale
+([ADR-0048](0048-the-orchestrator-boots-without-its-repos.md)). The cache agent runs in-cluster, so every repository
+must be **fetchable from the cluster** (an HTTPS token or deploy-key Secret for private ones — ADR-0019, ADR-0047); a
+working copy that exists only on someone's host is not a valid source. Local-path urls are cloned like any other url,
+never used in place. A checkout found in a node's cache directory with no `Repo` resource is adopted and pinned but not
+refreshed, and is evicted like any other once nothing mounts it.
 
-A catalog entry is a url, or `{ name, url, ref }`. **The name defaults to the repository's own name** — the url's last
-path segment, minus a trailing `.git` — and two entries that derive the same name fail the load by naming both urls,
-since the explicit form exists for exactly that case. The default is recorded here rather than left to taste because the
-name is the directory on the volume (`repos/<name>/default`) and the handle every `workspace()` uses: a different
-derivation later orphans every checkout the old one made. The derivation is stated TWICE, once per side — `repoName()`
-at load and its type-level twin behind `RepoName` — because the Register makes the same rule a compile-time answer
-(ADR-0050), which is also why an entry whose url is not a literal must carry a literal `name`: there is no last path
-segment for the types to read. Resolution happens once, where the config is loaded, and is the one place the entries'
-shape is validated at runtime — `j2 up` typechecks the instance first (ADR-0050), but a runtime import can still see a
-shape the types did not, and a mis-shaped entry must fail there rather than silently read as `url: undefined`.
+A repository is identified by its url — host plus path, with scheme, user, a trailing `/` and `.git` dropped — so every
+spelling a Machine writes for one repository lands on ONE cache per node, and the expensive clone happens once per
+repository per node. The directory name is derived from that identity, printed beside the url by `j2 status`, and never
+chosen by a human; there is no name to derive twice or to orphan.
 
-## Storage shape: one model, two backings
+## Storage shape: a cache per node
 
-The contract every Sandbox needs is narrow — _a read-only directory at `/repos` containing `<name>/default`_ — and the
-writable side is always pod-local (`emptyDir`), which scales with agent count by construction. The backing is an
-**in-cluster volume** the boot reconcile populates (there is no host-side catalog — ADR-0019), mounted read-only into
-Sandboxes; only its storage class differs by cluster:
-
-- **Single node (kind)**: any plain PVC works.
-- **Multi-node**: a **ReadOnlyMany/RWX volume** (NFS, CephFS, EFS, Filestore) mounted read-only on every node — the easy
-  case of shared storage, since pods never write it. Where no such storage class exists, the fallback is an in-cluster
-  git mirror the Sandboxes clone from over the network (losing the object-borrow cheapness).
+The contract every Sandbox needs is narrow — _a read-only directory per repository it attaches, on the node it runs on_
+— and the writable side is always pod-local (`emptyDir`), which scales with agent count by construction. The backing is
+a **hostPath directory per node** that the Instance's cache agent (a DaemonSet) populates and the operator mounts
+read-only into Sandboxes, with a soft affinity toward nodes already holding the repositories a Sandbox names. A node
+that lacks one clones it on first need — the image-pull model, and the reason the cluster's node count is not a limit on
+Sandbox placement. A single-node cluster (kind) is the one-node case of the same model; there is no separate volume path
+to keep.
 
 Read-only-ness is load-bearing twice over: nobody can write the shared thing (no write contention), and nobody can `gc`
-it (the structural half of the invariant). Shell-in (`kubectl exec`) needs none of this — the shared volume exists
-purely for fast setup.
+it (the structural half of the invariant). Shell-in (`kubectl exec`) needs none of this — the cache exists purely for
+fast setup.
 
 ## Where setup runs
 
-Worktree provisioning is a post-`Ready` step owned by the Orchestrator (per ADR-0001 the Sandbox CRD stays
-git-agnostic): `workspace()`'s attach runs one idempotent in-pod script over `kubectl exec` (ADR-0012, `attachScript` in
-`sandbox-kubectl.ts`).
+Worktree provisioning is a post-`Ready` step owned by the Orchestrator: the Sandbox CRD names repositories by identity
+so the operator can place and mount them, but it knows nothing about clones or worktrees (ADR-0001, ADR-0051).
+`workspace()`'s attach runs one idempotent in-pod script over `kubectl exec` (ADR-0012, `attachScript` in
+`sandbox-kubectl.ts`), once `Ready` says every cache is present and fetched.
 
 ## In-Sandbox layout: worktrees off the per-Sandbox clone (gwtmux convention)
 
 "Not a shared worktree" above means _not a worktree off a fleet-shared `.git`_. **Inside** a Sandbox, worktrees are the
 intended ergonomic — taken off the Sandbox's **own** clone. The per-Sandbox clone _is_ the `default/`, and branch
-working trees are its siblings, matching the layout [gwtmux](https://github.com/snapwich/gwtmux) already expects:
+working trees are its siblings, matching the layout [gwtmux](https://github.com/snapwich/gwtmux) already expects, under
+the slot the Machine gave the repository (ADR-0051):
 
 ```
-<repo>/default/        the per-Sandbox `git clone --shared --no-checkout` (holds the pod-local .git)
-<repo>/<branch>/        `git worktree add` siblings, one per branch worked
+/work/<slot>/default/        the per-Sandbox `git clone --shared --no-checkout` (holds the pod-local .git)
+/work/<slot>/<branch>/        `git worktree add` siblings, one per branch worked
 ```
 
 Because the layout is identical to the one used outside the cluster, existing worktree tooling works **unchanged** when
 you exec into a Sandbox. Object resolution falls through: a branch worktree shares the per-Sandbox `default/.git`, whose
-alternates point at the read-only volume — existing objects are read from the volume, new commits land in the pod-local
+alternates point at the read-only cache — existing objects are read from the cache, new commits land in the pod-local
 `.git`. `default/` is cloned `--no-checkout`: work happens in the branch worktrees, so its working tree is never
-materialized.
+materialized. `origin`'s push url is the binding's own spelling, so a Machine that bound over ssh pushes over ssh even
+when the cache was cloned over https.
 
 This does **not** reintroduce jr's contention: the shared `.git` here is _per-Sandbox_, and it is accessed serially
 under the standing invariant that **one Agent runs at a time per Workspace** — structural since ADR-0012 (one sequential
