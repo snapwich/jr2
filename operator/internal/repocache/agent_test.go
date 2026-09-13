@@ -752,6 +752,32 @@ func TestSweepAdoptsWhatIsMountedAndRemovesTheRest(t *testing.T) {
 	}
 }
 
+func TestSweepAdoptsNothingFromAMountedDirectoryWithNoClone(t *testing.T) {
+	// The kubelet creates a Sandbox's hostPath leaf (`DirectoryOrCreate`)
+	// before any clone lands in it; with the Repo gone, the sweep finds an
+	// empty mounted directory. There is no clone to pin, and the directory
+	// must stay for the pod's bind mount.
+	git := &fakeGit{}
+	a := newAgent(t, git)
+	empty := filepath.Join(a.CacheDir, "orphan-empty")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Create(context.Background(), podMounting("sb-orphan", node, fixedNow, "orphan-empty")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Sweep(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if len(git.calls) != 0 {
+		t.Fatalf("a directory with no clone has nothing to pin, got %v", git.calls)
+	}
+	if info, err := os.Stat(empty); err != nil || !info.IsDir() {
+		t.Fatalf("the kubelet's directory must survive while the pod mounts it: %v", err)
+	}
+}
+
 func TestAMissingSecretIsReportedWithoutTouchingGit(t *testing.T) {
 	// ADR-0047/0051: the fix is the user's; no network attempt says so faster.
 	git := &fakeGit{}

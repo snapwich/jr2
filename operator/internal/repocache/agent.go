@@ -433,8 +433,11 @@ func (a *Agent) config(ctx context.Context, dir string, args ...string) error {
 
 // Sweep walks the cache directory for clones no Repo names: one a pod on
 // this node still mounts is adopted — pinned, never refreshed, evicted once
-// nothing mounts it (ADR-0004); one nothing mounts is removed. It runs at
-// startup and then on an interval; Repos that exist are the reconciler's.
+// nothing mounts it (ADR-0004); one nothing mounts is removed. A mounted
+// directory with no clone in it is the kubelet's (`DirectoryOrCreate` for a
+// Sandbox whose Repo is already gone): nothing to adopt, and not the sweep's
+// to remove while the pod's bind mount follows its inode. It runs at startup
+// and then on an interval; Repos that exist are the reconciler's.
 func (a *Agent) Sweep(ctx context.Context) error {
 	log := logf.FromContext(ctx)
 	entries, err := os.ReadDir(a.CacheDir)
@@ -461,6 +464,9 @@ func (a *Agent) Sweep(ctx context.Context) error {
 			return fmt.Errorf("list pods: %w", err)
 		}
 		if wanted {
+			if !present(a.dir(key)) {
+				continue
+			}
 			if err := a.pin(ctx, a.dir(key)); err != nil {
 				log.Error(err, "Could not pin an adopted cache", "key", key)
 			}
