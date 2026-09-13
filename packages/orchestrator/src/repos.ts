@@ -14,11 +14,21 @@
 // identity to the first spelling it meets (parts.ts), and `bind` states that spelling: created on
 // the first deploy, restated on every later one, so a config that moved the url or the credential
 // reaches the cache at the next boot. A provision only `ensure`s: created if absent, otherwise the
-// eviction clock alone — never the spec. So a Machine that binds over ssh what another bound over
-// https borrows the cache the boot stated, and its runs never flip the resource between the two
-// (each flip is a generation the cache agent re-points origin and refetches on). The push url is
-// each Binding's own (attachScript), so nothing about the run is wrong; only the cache's transport
-// is shared.
+// eviction clock — never the url. So a Machine that binds over ssh what another bound over https
+// borrows the cache the boot stated, and its runs never flip the resource between the two (each
+// flip is a generation the cache agent re-points origin and refetches on). The push url is each
+// Binding's own (attachScript), so nothing about the run is wrong; only the cache's transport is
+// shared.
+//
+// A resource NOTHING binds has no boot to restate it, so the provision is its one writer: an
+// `ensure` of an existing unbound resource re-resolves the `secretRef` against the url that
+// stands — the first attach's spelling, which the run's own spelling never replaces — so a
+// `git.credentials` entry fixed after a failed clone reaches the cache at the next run, the path
+// the clone error and `j2 status` name (ADR-0048).
+//
+// The eviction clock is the RUN's: only an `ensure` stamps `last-attached`. The boot's `bind`
+// touches the label and the spec, never the clock, so a Repo the boot created and no run attached
+// carries no stamp and `j2 gc` dates it from its `creationTimestamp` — a boot is not an attach.
 
 import { credentialSecretFor, matchCredential, type GitCredential } from "./config.ts";
 import { ANNOTATION_REPO_IDENTITY, ANNOTATION_REPO_LAST_ATTACHED, LABEL_REPO_BOUND } from "./names.ts";
@@ -50,7 +60,8 @@ export type RepoStatus = {
   identity?: string;
   /** A registered Machine binds it — never evicted by `j2 gc`. */
   bound: boolean;
-  /** When a run last attached it — the eviction clock for a Repo nothing binds. */
+  /** When a run last attached it — the eviction clock for a Repo nothing binds. Absent while only
+   * the boot has stated it: a bound Repo no run has attached yet. */
   lastAttached?: string;
   nodes: RepoNodeState[];
 };
@@ -60,17 +71,21 @@ export interface RepoResources {
   /**
    * The boot's statement of a Machine's resolution (ADR-0051): create the resource if absent,
    * otherwise restate its url, `secretRef`, and the bound label `j2 gc` honors — so a redeploy
-   * that moved the url or the credential reaches the cache. The only caller that writes an
-   * existing resource's spec. Resolves the `git.credentials` entry for the identity into the
-   * `secretRef` the cache agent reads: an https entry's token materializes as a Secret in Flux's
-   * shape, an ssh entry names its deploy-key Secret and the Orchestrator never reads it.
+   * that moved the url or the credential reaches the cache. The only caller that writes a BOUND
+   * resource's spec, and never the eviction clock: a boot is not an attach. Resolves the
+   * `git.credentials` entry for the identity into the `secretRef` the cache agent reads: an https
+   * entry's token materializes as a Secret in Flux's shape, an ssh entry names its deploy-key
+   * Secret and the Orchestrator never reads it.
    */
   bind(repo: { url: string; identity: string; key: string }): Promise<void>;
   /**
    * A provision's: create the resource if absent — labeled bound when a Machine's slot names
    * it, so one born before the boot recorded it is not on `j2 gc`'s clock — and annotate it
-   * attached now. An existing resource gets the clock and nothing else: its spec is the boot's
-   * statement, and a run of a Machine spelling the identity differently must not rewrite it.
+   * attached now. An existing resource gets the clock; its url stands (the boot's statement, or
+   * the first attach's), and a run of a Machine spelling the identity differently must not
+   * rewrite it. One a Machine binds gets nothing else — the boot restates its credential. One
+   * nothing binds has no boot, so the provision restates its `secretRef`, resolved against the
+   * url that stands: the fix the clone error names reaches the cache at the next run.
    */
   ensure(repo: { url: string; identity: string; key: string; bound: boolean }): Promise<void>;
   /** Drop the bound label from every resource whose key is not in `keys` — a slot unbound since
@@ -138,12 +153,14 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
     return { name: cred.secret };
   };
 
-  /** The resource as one statement writes it: `create` needs the whole, `bind` its spec again. */
-  const resourceFor = async (repo: { url: string; identity: string; key: string; bound: boolean }) => {
+  /** The resource as one statement writes it: `create` needs the whole, `bind` its spec again.
+   * `attached` is the run's clock — a provision passes it, the boot does not. */
+  const resourceFor = async (
+    repo: { url: string; identity: string; key: string; bound: boolean },
+    attached?: string,
+  ) => {
     const secretRef = await secretRefFor(repo.url, repo.identity);
-    const attached = now().toISOString();
     return {
-      attached,
       secretRef,
       cr: {
         apiVersion: "core.j2.dev/v1alpha1",
@@ -152,7 +169,10 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
           name: repo.key,
           namespace: opts.namespace,
           ...(repo.bound ? { labels: { [LABEL_REPO_BOUND]: "true" } } : {}),
-          annotations: { [ANNOTATION_REPO_IDENTITY]: repo.identity, [ANNOTATION_REPO_LAST_ATTACHED]: attached },
+          annotations: {
+            [ANNOTATION_REPO_IDENTITY]: repo.identity,
+            ...(attached !== undefined ? { [ANNOTATION_REPO_LAST_ATTACHED]: attached } : {}),
+          },
         },
         spec: {
           url: repo.url,
@@ -178,28 +198,49 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
     await exec(["patch", REPO_RESOURCE, key, ...base, "--type", "merge", "-p", JSON.stringify(body)]);
   };
 
+  /** One resource as it stands — what an unbound `ensure` restates its credential against. */
+  const get = async (key: string): Promise<RepoItem> => {
+    const { stdout } = await exec(["get", REPO_RESOURCE, key, ...base, "-o", "json"]);
+    return JSON.parse(stdout) as RepoItem;
+  };
+
   return {
     async bind(repo) {
-      const { attached, secretRef, cr } = await resourceFor({ ...repo, bound: true });
+      const { secretRef, cr } = await resourceFor({ ...repo, bound: true });
       if (await create(cr)) return;
       // Already there from an earlier deploy: ONE merge patch says what the Machine resolves now —
       // url, credential, and the label `j2 gc` honors. `secretRef: null` clears a credential the
-      // config no longer names, so a dropped entry does not linger.
+      // config no longer names, so a dropped entry does not linger. The clock is not touched: it
+      // records attaches, and a boot is not one.
       await patch(repo.key, {
         metadata: {
           labels: { [LABEL_REPO_BOUND]: "true" },
-          annotations: { [ANNOTATION_REPO_IDENTITY]: repo.identity, [ANNOTATION_REPO_LAST_ATTACHED]: attached },
+          annotations: { [ANNOTATION_REPO_IDENTITY]: repo.identity },
         },
         spec: { url: repo.url, secretRef: secretRef ?? null },
       });
     },
 
     async ensure(repo) {
-      const { attached, cr } = await resourceFor(repo);
+      const attached = now().toISOString();
+      const { cr } = await resourceFor(repo, attached);
       if (await create(cr)) return;
-      // Already there — the boot's statement, or an earlier run's. Only the eviction clock moves:
-      // the run attached it now. Bound or not, the spec stays as stated.
-      await patch(repo.key, { metadata: { annotations: { [ANNOTATION_REPO_LAST_ATTACHED]: attached } } });
+      // Already there — the boot's statement, or an earlier run's. The eviction clock moves: the
+      // run attached it now. The url stays as stated, whatever spelling this run brought.
+      const clock = { metadata: { annotations: { [ANNOTATION_REPO_LAST_ATTACHED]: attached } } };
+      // A Machine's slot binds it: the boot is its writer, and restates the credential at the next
+      // deploy. Read nothing.
+      if (repo.bound) return patch(repo.key, clock);
+      // This run's slot is per-run, but another registered Machine may bind the identity — the
+      // label says so, and then the boot is still the writer.
+      const standing = await get(repo.key);
+      if (standing.metadata?.labels?.[LABEL_REPO_BOUND] === "true") return patch(repo.key, clock);
+      // Nothing binds it: no boot ever restates it, so this attach does — the credential resolved
+      // against the url that STANDS, since the scheme picks the Secret's kind (config.ts) and the
+      // cache clones that url, not this run's spelling of it. `secretRef: null` clears an entry
+      // the config no longer names.
+      const secretRef = await secretRefFor(standing.spec?.url ?? repo.url, repo.identity);
+      await patch(repo.key, { ...clock, spec: { secretRef: secretRef ?? null } });
     },
 
     async reconcileBound(keys) {

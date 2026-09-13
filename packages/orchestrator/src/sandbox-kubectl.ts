@@ -734,9 +734,10 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
       // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
       // the boot stated; a per-run one is created here, at its first attach, and every later
-      // attach anywhere finds it. After the image resolution, so a refused image still
-      // costs nothing; before the token Secret, so no Secret is minted for a Sandbox whose Repo
-      // could not be recorded.
+      // attach anywhere finds it and restates its credential, so the `git.credentials` fix
+      // `repoCloneError` names reaches the cache at the next run. After the image resolution, so
+      // a refused image still costs nothing; before the token Secret, so no Secret is minted for
+      // a Sandbox whose Repo could not be recorded.
       for (const repo of repos) await opts.repos.ensure(repo);
 
       await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start

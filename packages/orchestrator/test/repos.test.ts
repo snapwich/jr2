@@ -1,10 +1,11 @@
 // kubectlRepos — the Repo-resource port's kubectl MAPPING against a fake process seam (ADR-0051).
 // What matters here: `ensure` creates the resource the operator's cache agent will clone, with
 // the credential resolved from `git.credentials` into a `secretRef` in Flux's shape; the boot's
-// `bind` restates the Machine's resolution and the label `j2 gc` honors, a provision's `ensure`
-// only moves the eviction clock of what exists — whatever spelling the run brought; `reconcileBound`
-// unlabels what no Machine binds any more; and `list` reads the agent's per-node status back into
-// what `GET /repos` reports.
+// `bind` restates the Machine's resolution and the label `j2 gc` honors — never the eviction
+// clock; a provision's `ensure` moves the clock of what exists — whatever spelling the run
+// brought — and restates the credential of a resource nothing binds; `reconcileBound` unlabels
+// what no Machine binds any more; and `list` reads the agent's per-node status back into what
+// `GET /repos` reports.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -142,11 +143,12 @@ test("no entry matches → no secretRef; the longest match wins when several do"
   assert.equal(created(none.calls)[0].spec.secretRef, undefined);
 });
 
-test("bind() on an EXISTING resource restates the Machine's resolution: label, clock, url, secretRef", async () => {
+test("bind() on an EXISTING resource restates the Machine's resolution: label, url, secretRef — never the clock", async () => {
   // A redeploy: the resource is there from the last boot, and this boot's config may have moved
   // the url or the credential. AlreadyExists is tolerated, then ONE merge patch says what the
   // Machine resolves now — `secretRef: null` when the config no longer names a credential, so a
-  // dropped entry is not a credential that lingers.
+  // dropped entry is not a credential that lingers. `last-attached` is a run's clock: a boot
+  // must not move it, or an unbound slot's Repo would age from the last boot, not the last run.
   const { exec, calls } = fakeExec({
     apply: () => "ok",
     create: () => {
@@ -163,10 +165,23 @@ test("bind() on an EXISTING resource restates the Machine's resolution: label, c
   assert.deepEqual(JSON.parse(patch.args.at(-1)!), {
     metadata: {
       labels: { "j2.dev/bound": "true" },
-      annotations: { "j2.dev/identity": identity, "j2.dev/last-attached": NOW.toISOString() },
+      annotations: { "j2.dev/identity": identity },
     },
     spec: { url: SSH, secretRef: null },
   });
+});
+
+test("bind() CREATES a resource with no last-attached — a boot is not an attach; gc dates it from creation", async () => {
+  // A Repo the boot created and no run has attached carries no clock. `j2 gc` falls back to
+  // `creationTimestamp` (repo-sweep.ts) once the slot is unbound, and `j2 status` reports no
+  // "last attached" that was really a boot.
+  const { exec, calls } = fakeExec({ apply: () => "ok", create: () => "created" });
+  const port = kubectlRepos({ namespace: "inst", credentials: [], env: {}, exec, now: () => NOW });
+  await port.bind({ url: HTTPS, identity, key });
+  const [cr] = created(calls);
+  assert.deepEqual(cr.metadata.labels, { "j2.dev/bound": "true" });
+  assert.deepEqual(cr.metadata.annotations, { "j2.dev/identity": identity });
+  assert.equal(patches(calls).length, 0);
 });
 
 test("ensure(bound) on an EXISTING resource moves the clock and NOTHING else — two Machines spelling one identity never flip it", async () => {
@@ -215,10 +230,9 @@ test("ensure(bound) CREATES an absent resource labeled bound — a run that outp
   assert.equal(patches(calls).length, 0);
 });
 
-test("ensure(per-run) creates if absent and otherwise only moves the eviction clock", async () => {
+test("ensure(per-run) creates if absent: unlabeled, on the clock, this spelling's url", async () => {
   // A run's url at first attach (ADR-0051): the resource is created unlabeled — no Machine binds
-  // it, so `j2 gc` may evict it once `last-attached` ages out. Every later attach anywhere finds
-  // it and re-stamps the clock; it never rewrites the spec (the first binder's) nor labels it.
+  // it, so `j2 gc` may evict it once `last-attached` ages out. Nothing is read: absent is absent.
   const { exec, calls } = fakeExec({ apply: () => "ok", create: () => "created" });
   const port = kubectlRepos({ namespace: "inst", credentials: [{ match: "*" }], env: {}, exec, now: () => NOW });
   await port.ensure({ url: HTTPS, identity, key, bound: false });
@@ -226,24 +240,86 @@ test("ensure(per-run) creates if absent and otherwise only moves the eviction cl
   assert.equal(cr.metadata.labels, undefined, "not bound");
   assert.equal(cr.metadata.annotations["j2.dev/last-attached"], NOW.toISOString());
   assert.equal(cr.spec.url, HTTPS);
+  assert.deepEqual(patches(calls), []);
+});
 
-  const again = fakeExec({
+/** kubectl scripted with one standing resource: `create` refuses, `get <key>` returns it. */
+function standing(item: object) {
+  return fakeExec({
     apply: () => "ok",
     create: () => {
-      throw new Error("AlreadyExists");
+      throw new Error(`Error from server (AlreadyExists): repos.core.j2.dev "${key}" already exists`);
+    },
+    get: (call) => {
+      assert.deepEqual(call.args.slice(0, 3), ["get", "repos.core.j2.dev", key], "the one resource, by key");
+      return JSON.stringify(item);
     },
     patch: () => "patched",
   });
+}
+
+test("ensure(per-run) of an EXISTING resource nothing binds restates its secretRef against the url that STANDS", async () => {
+  // The clone failed with the credential the first attach resolved — none, say — and the user did
+  // what the error told them: added the `git.credentials` entry. No boot restates an unbound
+  // resource, so the next attach must, or "start the run again" would move the clock and nothing
+  // else. The credential is resolved against the STANDING url, not this run's spelling: the
+  // resource was born https, this run says ssh, and the cache clones https — so the Secret is
+  // the token's, and the url is not rewritten (a rewrite is a generation the cache refetches on).
   const later = new Date("2026-09-14T00:00:00.000Z");
-  await kubectlRepos({ namespace: "inst", credentials: [], env: {}, exec: again.exec, now: () => later }).ensure({
-    url: SSH,
-    identity,
-    key,
-    bound: false,
+  const { exec, calls } = standing({
+    metadata: { name: key, annotations: { "j2.dev/identity": identity, "j2.dev/last-attached": NOW.toISOString() } },
+    spec: { url: HTTPS, refreshInterval: "5m" },
   });
-  assert.deepEqual(patches(again.calls), [
-    { metadata: { annotations: { "j2.dev/last-attached": later.toISOString() } } },
+  const port = kubectlRepos({
+    namespace: "inst",
+    credentials: [{ match: "github.com/acme/", token: "GH_TOKEN", sshKey: "j2-git-ssh" }],
+    env: { GH_TOKEN: "ghp_fixed" },
+    exec,
+    now: () => later,
+  });
+  await port.ensure({ url: SSH, identity, key, bound: false });
+
+  const [secret] = applied(calls, "Secret");
+  assert.equal(secret.stringData.password, "ghp_fixed", "the token as the env holds it now — a rotation lands too");
+  assert.deepEqual(patches(calls), [
+    {
+      metadata: { annotations: { "j2.dev/last-attached": later.toISOString() } },
+      spec: { secretRef: { name: gitTokenSecretName("github.com/acme/") } },
+    },
   ]);
+});
+
+test("ensure(per-run) of an EXISTING unbound resource clears a secretRef the config no longer names", async () => {
+  const { exec, calls } = standing({
+    metadata: { name: key, annotations: { "j2.dev/identity": identity } },
+    spec: { url: HTTPS, secretRef: { name: "j2-git-deadbeef" } },
+  });
+  const port = kubectlRepos({ namespace: "inst", credentials: [], env: {}, exec, now: () => NOW });
+  await port.ensure({ url: HTTPS, identity, key, bound: false });
+  assert.deepEqual(applied(calls, "Secret"), []);
+  assert.deepEqual(patches(calls), [
+    { metadata: { annotations: { "j2.dev/last-attached": NOW.toISOString() } }, spec: { secretRef: null } },
+  ]);
+});
+
+test("ensure(per-run) of an EXISTING resource ANOTHER Machine binds moves the clock only — the boot is its writer", async () => {
+  // This run's slot is per-run, but the resource is labeled bound: some registered Machine binds
+  // the identity, and the boot restates its credential at every deploy. The label decides, not
+  // the run's `bound`, so two writers never trade the spec.
+  const { exec, calls } = standing({
+    metadata: { name: key, labels: { "j2.dev/bound": "true" }, annotations: { "j2.dev/identity": identity } },
+    spec: { url: HTTPS, secretRef: { name: "the-boots" } },
+  });
+  const port = kubectlRepos({
+    namespace: "inst",
+    credentials: [{ match: "*", token: "GH_TOKEN" }],
+    env: { GH_TOKEN: "ghp_x" },
+    exec,
+    now: () => NOW,
+  });
+  await port.ensure({ url: SSH, identity, key, bound: false });
+  assert.deepEqual(applied(calls, "Secret"), [], "no Secret minted for a resource the run does not write");
+  assert.deepEqual(patches(calls), [{ metadata: { annotations: { "j2.dev/last-attached": NOW.toISOString() } } }]);
 });
 
 test("a create failure that is not AlreadyExists propagates — the caller announces it", async () => {
