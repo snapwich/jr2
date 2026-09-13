@@ -134,7 +134,7 @@ test("a registered Machine composing a Sandbox + J2_NAMESPACE → the data plane
 
 test("the boot creates one bound Repo resource per identity its Machines bind, and announces each (ADR-0051)", async () => {
   // "The Orchestrator creates Repo CRs; it does not sync them": statically known repositories are
-  // warm before a run can ask. After serving, never awaited — one line per Repo in ADR-0048's
+  // known (probed) before a run can ask. After serving, never awaited — one line per Repo in ADR-0048's
   // shape, so a human tailing pod logs sees what the cluster was told.
   const dir = await mkWorkspaceInstance();
   const lines: string[] = [];

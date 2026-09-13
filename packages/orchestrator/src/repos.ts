@@ -1,6 +1,7 @@
 // The Repo-resource port (ADR-0051): how the Orchestrator creates `Repo` custom resources and reads
 // their state back. The Orchestrator CREATES Repos and never syncs them — at boot, one per identity
-// its registered Machines bind (so statically known repositories are warm before a run asks), and
+// its registered Machines bind (so statically known repositories are known — probed — before a
+// run asks; a node clones on first demand), and
 // at first attach for a per-run url — and the operator's cache agent does the cloning and fetching
 // on every node that needs the repository. What comes back is that agent's per-node status, which
 // is what `j2 status` reports and what a provision waits on through the Sandbox's `Ready`.

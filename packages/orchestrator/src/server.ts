@@ -181,7 +181,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
 
 /**
  * The boot's half of ADR-0051's "the Orchestrator creates Repo resources": one per identity the
- * registered Machines bind, so statically known repositories are warm before a run asks — then
+ * registered Machines bind, so statically known repositories are KNOWN before a run asks (the
+ * cache agent probes each; a node clones on first demand) — then
  * the bound label reconciled, so a slot unbound since the last deploy is a Repo `j2 gc` may
  * evict. The boot is the ONE writer of a bound resource's spec: a redeploy that moved a url or a
  * credential restates it here, and no provision does. Sequential, and each failure its own

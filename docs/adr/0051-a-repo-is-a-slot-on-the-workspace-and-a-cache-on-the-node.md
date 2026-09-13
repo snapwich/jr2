@@ -54,11 +54,15 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   worktree beside it. A Sandbox that lands on a cold node pays one clone there, once — the same economics as an image
   pull, and the reason a Sandbox can run on any node.
 - **The Orchestrator creates `Repo` CRs; it does not sync them.** At boot it walks its registered Machines and creates
-  one CR per bound identity, so statically known repositories are warm before a run can ask. A per-run url creates its
-  CR at first attach, and every later attach anywhere finds it. The boot restates a bound CR's url and `secretRef` at
-  every deploy; an attach restates the `secretRef` of a CR nothing binds, since no boot will — so a `git.credentials`
-  entry fixed after a failed clone reaches the cache at the next run either way. Only an attach moves the eviction
-  clock: a boot is not an attach.
+  one CR per bound identity, so a statically known repository is KNOWN before a run can ask: the cache agent on every
+  node probes it (`git ls-remote`) as soon as the CR exists, so a wrong url or a credential that does not reach shows in
+  `j2 status` right after converge, not at the first run. Known is not warm: the clone happens on a node the first time
+  a Sandbox there needs the repository, never on every node at boot — cloning a large repository onto every node that
+  may never run a Sandbox for it is the cost the image-pull economics above exist to avoid. A per-run url creates its CR
+  at first attach, and every later attach anywhere finds it. The boot restates a bound CR's url and `secretRef` at every
+  deploy; an attach restates the `secretRef` of a CR nothing binds, since no boot will — so a `git.credentials` entry
+  fixed after a failed clone reaches the cache at the next run either way. Only an attach moves the eviction clock: a
+  boot is not an attach.
 - **Credentials are matched by prefix and carried by the CR, the Argo and Flux shape.** `j2.config.ts` holds
   `git.credentials`, a list of `{ match, token?, sshKey? }`: `match` is a prefix on the identity (`github.com/ourorg/`,
   or `*`), `token` names an env var `j2 up` materializes into the Instance Secret, `sshKey` names a Secret holding a
