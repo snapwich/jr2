@@ -5,9 +5,11 @@
 // DNS-1123 label: the Repo CR's `metadata.name`, the hostPath leaf, the in-pod mount `/repos/<key>`,
 // and the pod volume name `repo-<key>`.
 //
-// Pure, no I/O. Shared by the Orchestrator (which creates the CR and mounts the cache), the CLI
-// (the walk's bound urls, the credentials fence), and the e2e steps (the mount path they assert) —
-// every side derives the same key from the same string, and nothing ever writes one down.
+// Pure, no I/O. Shared by the Orchestrator (the Machine walk's bound urls, the CR it creates, the
+// cache it mounts, and the credentials fence a per-run url meets at provision), the CLI (which
+// groups the walk's bound ssh urls by the credential Secret each identity matches, for the
+// ADR-0047 prompt — it judges nothing), and the e2e steps (the mount path they assert) — every
+// side derives the same key from the same string, and nothing ever writes one down.
 
 import { createHash } from "node:crypto";
 
