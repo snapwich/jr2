@@ -325,8 +325,9 @@ const REPO_CACHE_HOME = "/home/j2";
  * Everything else is hardened as the operator's baseline is — no capabilities, no escalation, a
  * read-only root filesystem (the two writable places are the emptyDirs below), the default seccomp
  * profile. It tolerates everything, because a node no agent lands on is a node no Sandbox can be
- * placed on. The ServiceAccount token IS mounted: the agent is a client of the Repo and Sandbox
- * resources, unlike a Sandbox, whose north star is never reaching the API.
+ * placed on. The ServiceAccount token IS mounted: the agent is a client of the Repo resources and
+ * of the pods on its node (never of Sandboxes — demand is a pod's mount), unlike a Sandbox, whose
+ * north star is never reaching the API.
  */
 function repoCacheObjects(opts: {
   image: string;

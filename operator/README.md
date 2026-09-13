@@ -15,7 +15,8 @@ resource), `spec.refreshInterval`; `status.nodes[]` is written per node by that 
 `attempted` — `Probe`, `Clone`, or `Fetch` — `lastAttempt`, `lastFetched`, `lastError`), and `RepoReconciler` folds it
 into one `Synced` condition. A `Sandbox` names the Repos it attaches by cache key in `spec.repos[]`; for each the
 operator adds a read-only hostPath volume `repo-<key>` at `/repos/<key>` in the primary container, prefers nodes whose
-`Repo` status holds the cache (one soft term per node, matched by `metadata.name`), publishes `status.node`, and holds
+`Repo` status holds the cache (one soft term per node, matched by `metadata.name`), publishes `status.node` (for a
+reader of the Sandbox — the key into each Repo's `status.nodes[]`; the cache agent reads demand off pods), and holds
 `Ready` until every key is present on that node and fetched since the Sandbox was created — a cache whose refresh
 failed is `Ready` with `ReposFresh=False`, a cold node whose `Clone` failed is held with `RepoCloneFailed` (a failed
 `Probe` is not that: the pod's arrival makes the agent clone). That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the

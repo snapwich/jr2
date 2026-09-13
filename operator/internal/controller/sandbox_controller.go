@@ -471,7 +471,10 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// lets the owning Orchestrator notice its workspace was replaced (ADR-0021).
 	sandbox.Status.PodUID = pod.UID
 	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
-	// The node whose caches this Sandbox mounts; the cache agent there reads it.
+	// The node whose caches this Sandbox mounts — published for whoever reads
+	// the Sandbox, as the key into each Repo's status.nodes[]. The operator
+	// itself gates on the Pod's nodeName below, and the cache agent reads
+	// demand off the pods on its node, never off this field.
 	sandbox.Status.Node = pod.Spec.NodeName
 
 	cond := metav1.Condition{

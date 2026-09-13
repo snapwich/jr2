@@ -221,7 +221,9 @@ var _ = Describe("Sandbox Controller", func() {
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
-			Expect(sandbox.Status.Node).To(Equal("node-a"))
+			// status.node is the Pod's node, published as a reader's key into each
+			// Repo's status.nodes[] — the operator itself gates on the Pod.
+			Expect(sandbox.Status.Node).To(Equal(pod.Spec.NodeName))
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
 			ready := meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
 			Expect(ready).NotTo(BeNil())
@@ -291,6 +293,7 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(fresh).NotTo(BeNil())
 			Expect(fresh.Status).To(Equal(metav1.ConditionTrue))
 			Expect(fresh.Reason).To(Equal("Fetched"))
+			Expect(nodeEntry(repo, sandbox.Status.Node)).To(Equal(&repo.Status.Nodes[0]), "status.node keys the Repo's entry a reader joins on")
 		})
 	})
 })

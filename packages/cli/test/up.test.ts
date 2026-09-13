@@ -1175,6 +1175,12 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
     { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
     { apiGroups: [""], resources: ["secrets"], verbs: ["get"] },
   ]);
+  // Demand is a pod's mount, so the agent never reads a Sandbox — nor `status.node`, which is
+  // published for a reader of the Sandbox, not for the agent.
+  assert.ok(
+    !objects.Role!.rules.some((r: { resources: string[] }) => r.resources.includes("sandboxes")),
+    "the cache agent's Role names no Sandbox resource",
+  );
 
   // Waited on and verified like every other layer: a DaemonSet that never scheduled is a data
   // plane every provision would park on.
