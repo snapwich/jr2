@@ -86,8 +86,8 @@ var _ = Describe("Repo Controller", func() {
 			By("reporting False with the failing node's own error when any node is not synced")
 			now := metav1.Now()
 			report(
-				corev1alpha1.RepoNodeStatus{Node: "node-a", Present: true, Synced: true, LastAttempt: &now, LastFetched: &now},
-				corev1alpha1.RepoNodeStatus{Node: "node-b", Present: false, Synced: false, LastAttempt: &now, LastError: "fatal: repository not found"},
+				corev1alpha1.RepoNodeStatus{Node: "node-a", Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: &now, LastFetched: &now},
+				corev1alpha1.RepoNodeStatus{Node: "node-b", Present: false, Synced: false, Attempted: corev1alpha1.RepoAttemptClone, LastAttempt: &now, LastError: "fatal: repository not found"},
 			)
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -98,8 +98,8 @@ var _ = Describe("Repo Controller", func() {
 
 			By("reporting True once every reporting node is synced, and leaving the node entries as written")
 			report(
-				corev1alpha1.RepoNodeStatus{Node: "node-a", Present: true, Synced: true, LastAttempt: &now, LastFetched: &now},
-				corev1alpha1.RepoNodeStatus{Node: "node-b", Present: false, Synced: true, LastAttempt: &now},
+				corev1alpha1.RepoNodeStatus{Node: "node-a", Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: &now, LastFetched: &now},
+				corev1alpha1.RepoNodeStatus{Node: "node-b", Present: false, Synced: true, Attempted: corev1alpha1.RepoAttemptProbe, LastAttempt: &now},
 			)
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())

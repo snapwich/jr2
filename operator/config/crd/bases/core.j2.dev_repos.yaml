@@ -166,6 +166,18 @@ spec:
                     by that node's cache agent. The operator reads it to place Sandboxes and to
                     gate their Ready; nothing else writes it.
                   properties:
+                    attempted:
+                      description: |-
+                        Attempted is which of the three the last attempt was. A failed Probe and
+                        a failed Clone leave the same absent, unsynced entry otherwise, and only
+                        the Clone is a verdict on a Sandbox waiting on the node: a probe fails
+                        before any pod asked, and the pod's arrival makes the agent clone
+                        (ADR-0051).
+                      enum:
+                      - Probe
+                      - Clone
+                      - Fetch
+                      type: string
                     lastAttempt:
                       description: LastAttempt is when the node last tried anything
                         against the remote.
@@ -201,6 +213,7 @@ spec:
                         succeeded.
                       type: boolean
                   required:
+                  - attempted
                   - node
                   - present
                   - synced

@@ -31,7 +31,9 @@ import (
 // TestReposReadiness pins ADR-0051's Ready gate over the Repo caches, branch by
 // branch: a Sandbox is Ready only once every Repo it names is present on its
 // node and fetched since the Sandbox was created; a cold node that cannot
-// clone fails the provision pointedly; a warm cache whose refresh failed is
+// clone fails the provision pointedly — and only a clone: the agent's probe of
+// a Repo no pod on the node mounts yet can fail too, and that is `j2 status`'s
+// signal, not this Sandbox's verdict; a warm cache whose refresh failed is
 // Ready but stale (freshness degrades, absence does not). Every branch is a
 // pure function of the Sandbox, its node, and the Repo resources.
 func TestReposReadiness(t *testing.T) {
@@ -76,16 +78,31 @@ func TestReposReadiness(t *testing.T) {
 			message: `Repo "app-0a1b2c3d" is not on node node-a yet`,
 		},
 		{
-			name:    "not present with no failed attempt since creation is pending",
-			repos:   repoWith(corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: false, LastError: "old", LastAttempt: &before}),
+			name:    "not present with no failed clone since creation is pending",
+			repos:   repoWith(corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: false, Attempted: corev1alpha1.RepoAttemptClone, LastError: "old", LastAttempt: &before}),
 			reason:  "RepoPending",
 			message: `Repo "app-0a1b2c3d" is not on node node-a yet`,
 		},
 		{
-			name:    "not present after a failed attempt since creation fails the provision with git's words",
-			repos:   repoWith(corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: false, LastError: "fatal: repository not found", LastAttempt: &after}),
+			name:    "not present after a failed clone since creation fails the provision with git's words",
+			repos:   repoWith(corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: false, Attempted: corev1alpha1.RepoAttemptClone, LastError: "fatal: repository not found", LastAttempt: &after}),
 			reason:  "RepoCloneFailed",
 			message: `Repo "app-0a1b2c3d" could not be cloned onto node node-a: fatal: repository not found`,
+		},
+		{
+			// The Orchestrator creates the Repo milliseconds before the Sandbox, so
+			// every node's probe lands after the Sandbox's creation; a transient
+			// probe failure on the node the pod lands on is not a clone that failed.
+			name:    "not present after a failed probe since creation is pending — the pod's arrival makes the agent clone",
+			repos:   repoWith(corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: false, Attempted: corev1alpha1.RepoAttemptProbe, LastError: "fatal: unable to access: Could not resolve host", LastAttempt: &after}),
+			reason:  "RepoPending",
+			message: `Repo "app-0a1b2c3d" is not on node node-a yet`,
+		},
+		{
+			name:    "a synced probe since creation is pending too — the remote answered, nothing is on the node",
+			repos:   repoWith(corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: true, Attempted: corev1alpha1.RepoAttemptProbe, LastAttempt: &after}),
+			reason:  "RepoPending",
+			message: `Repo "app-0a1b2c3d" is not on node node-a yet`,
 		},
 		{
 			name:  "present and fetched since creation is Ready and fresh",

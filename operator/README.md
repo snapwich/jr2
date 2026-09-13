@@ -12,12 +12,13 @@ A standalone Go module (kubebuilder / controller-runtime). See
 A `Repo` is one git repository the Instance keeps a bare cache of per node: `spec.url` (the Binding's own spelling),
 `spec.secretRef` (a Secret with Flux's key names, resolved from `git.credentials` by the Orchestrator that creates the
 resource), `spec.refreshInterval`; `status.nodes[]` is written per node by that node's cache agent (`present`, `synced`,
-`lastAttempt`, `lastFetched`, `lastError`), and `RepoReconciler` folds it into one `Synced` condition. A `Sandbox` names
-the Repos it attaches by cache key in `spec.repos[]`; for each the operator adds a read-only hostPath volume
-`repo-<key>` at `/repos/<key>` in the primary container, prefers nodes whose `Repo` status holds the cache, publishes
-`status.node`, and holds `Ready` until every key is present on that node and fetched since the Sandbox was created — a
-cache whose refresh failed is `Ready` with `ReposFresh=False`, a cold node that could not clone is held with
-`RepoCloneFailed`. That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the
+`attempted` — `Probe`, `Clone`, or `Fetch` — `lastAttempt`, `lastFetched`, `lastError`), and `RepoReconciler` folds it
+into one `Synced` condition. A `Sandbox` names the Repos it attaches by cache key in `spec.repos[]`; for each the
+operator adds a read-only hostPath volume `repo-<key>` at `/repos/<key>` in the primary container, prefers nodes whose
+`Repo` status holds the cache (one soft term per node, matched by `metadata.name`), publishes `status.node`, and holds
+`Ready` until every key is present on that node and fetched since the Sandbox was created — a cache whose refresh
+failed is `Ready` with `ReposFresh=False`, a cold node whose `Clone` failed is held with `RepoCloneFailed` (a failed
+`Probe` is not that: the pod's arrival makes the agent clone). That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the
 Orchestrator's post-Ready step (ADR-0004).
 
 ## The cache agent (`/manager repo-cache`)

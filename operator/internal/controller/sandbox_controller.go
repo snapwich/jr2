@@ -350,9 +350,15 @@ func repoVolumesFor(sandbox *corev1alpha1.Sandbox) ([]corev1.Volume, []corev1.Vo
 }
 
 // repoAffinityFor prefers nodes whose Repo status reports a cache present: one
-// preferred term of weight 1 per key at least one node holds, so a node holding
-// more of the Sandbox's Repos scores higher. A Repo that does not exist, or
-// that no node holds yet, contributes no term; no terms means nil affinity.
+// preferred term of weight 1 per (key, node) the status holds. The scheduler
+// sums the weights of the terms a node matches, so a node holding more of the
+// Sandbox's Repos scores higher. A term matches the node by `metadata.name` —
+// the name the agent reports (its NODE_NAME, the downward `spec.nodeName`) —
+// through a field requirement, which takes exactly one value; the
+// `kubernetes.io/hostname` label is not that name on every cluster (a cloud
+// provider's or a `--hostname-override` differs), so it is never keyed on. A
+// Repo that does not exist, or that no node holds yet, contributes no term; no
+// terms means nil affinity.
 func repoAffinityFor(sandbox *corev1alpha1.Sandbox, repos map[string]*corev1alpha1.Repo) *corev1.Affinity {
 	var terms []corev1.PreferredSchedulingTerm
 	for _, ref := range sandbox.Spec.Repos {
@@ -366,20 +372,19 @@ func repoAffinityFor(sandbox *corev1alpha1.Sandbox, repos map[string]*corev1alph
 				nodes = append(nodes, n.Node)
 			}
 		}
-		if len(nodes) == 0 {
-			continue
-		}
 		slices.Sort(nodes)
-		terms = append(terms, corev1.PreferredSchedulingTerm{
-			Weight: 1,
-			Preference: corev1.NodeSelectorTerm{
-				MatchExpressions: []corev1.NodeSelectorRequirement{{
-					Key:      corev1.LabelHostname,
-					Operator: corev1.NodeSelectorOpIn,
-					Values:   nodes,
-				}},
-			},
-		})
+		for _, node := range nodes {
+			terms = append(terms, corev1.PreferredSchedulingTerm{
+				Weight: 1,
+				Preference: corev1.NodeSelectorTerm{
+					MatchFields: []corev1.NodeSelectorRequirement{{
+						Key:      metav1.ObjectNameField,
+						Operator: corev1.NodeSelectorOpIn,
+						Values:   []string{node},
+					}},
+				},
+			})
+		}
 	}
 	if len(terms) == 0 {
 		return nil
@@ -518,10 +523,14 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 // key. Per key, in declaration order, the first that is not ready wins:
 //
 //   - no Repo resource → RepoMissing;
-//   - no entry for the node, or not present and no failed attempt since the
+//   - no entry for the node, or not present and no failed clone since the
 //     Sandbox was created → RepoPending (the agent has not cloned it yet);
-//   - not present and an attempt since creation failed → RepoCloneFailed with
-//     git's words — a cold node that cannot clone fails this provision;
+//   - not present and a clone since creation failed → RepoCloneFailed with
+//     git's words — a cold node that cannot clone fails this provision. Only
+//     a Clone counts: the agent probes a Repo before any pod on the node
+//     mounts it, and a probe's failure is `j2 status`'s signal, not this
+//     Sandbox's verdict — the pod's arrival makes the agent clone, and that
+//     clone may succeed;
 //   - present and fetched since creation → ready and fresh;
 //   - present and an attempt since creation failed → ready but stale: the
 //     attach proceeds on the objects the cache holds (freshness degrades,
@@ -544,7 +553,7 @@ func reposReadiness(sandbox *corev1alpha1.Sandbox, node string, repos map[string
 		}
 		entry := nodeEntry(repo, node)
 		if entry == nil || !entry.Present {
-			if entry != nil && entry.LastError != "" && since(entry.LastAttempt) {
+			if entry != nil && entry.Attempted == corev1alpha1.RepoAttemptClone && entry.LastError != "" && since(entry.LastAttempt) {
 				return false, reasonRepoCloneFailed, fmt.Sprintf("Repo %q could not be cloned onto node %s: %s", ref.Key, node, entry.LastError), nil
 			}
 			return false, reasonRepoPending, fmt.Sprintf("Repo %q is not on node %s yet", ref.Key, node), nil

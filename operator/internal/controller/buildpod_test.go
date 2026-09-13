@@ -319,11 +319,13 @@ func TestBuildPodMountsRepoCaches(t *testing.T) {
 }
 
 // TestBuildPodPrefersNodesHoldingTheCaches pins the placement half of ADR-0051:
-// a soft affinity — one preferred term of weight 1 per Repo — toward the nodes
-// whose Repo status reports the cache present, read off the Repo resources at
-// pod-build time. Soft, never required: a node without the cache clones on
-// first need, so node count never bounds placement. A node that reports but
-// does not hold the cache is not preferred.
+// a soft affinity — one preferred term of weight 1 per (Repo, node) — toward
+// the nodes whose Repo status reports the cache present, read off the Repo
+// resources at pod-build time. Soft, never required: a node without the cache
+// clones on first need, so node count never bounds placement. A node that
+// reports but does not hold the cache is not preferred. Each term matches the
+// node by `metadata.name`, the name the agent reports; never by the hostname
+// label, which is not that name on every cluster.
 func TestBuildPodPrefersNodesHoldingTheCaches(t *testing.T) {
 	r := &SandboxReconciler{}
 	sandbox := sandboxFor(corev1alpha1.SandboxSpec{
@@ -354,25 +356,25 @@ func TestBuildPodPrefersNodesHoldingTheCaches(t *testing.T) {
 		t.Fatalf("the affinity must be soft — a required term would pin Sandboxes to nodes, got %+v", na.RequiredDuringSchedulingIgnoredDuringExecution)
 	}
 	terms := na.PreferredDuringSchedulingIgnoredDuringExecution
-	if len(terms) != 2 {
-		t.Fatalf("want one preferred term per Repo, got %+v", terms)
+	// Present only, per Repo in declaration order, nodes sorted within a Repo.
+	want := []string{"node-a", "node-b", "node-c"}
+	if len(terms) != len(want) {
+		t.Fatalf("want one preferred term per (Repo, node) holding the cache, got %+v", terms)
 	}
-	for i, want := range [][]string{{"node-a", "node-b"}, {"node-c"}} {
+	for i, node := range want {
 		term := terms[i]
 		if term.Weight != 1 {
 			t.Errorf("term %d: weight should be 1, got %d", i, term.Weight)
 		}
-		exprs := term.Preference.MatchExpressions
-		if len(exprs) != 1 || exprs[0].Key != corev1.LabelHostname || exprs[0].Operator != corev1.NodeSelectorOpIn {
-			t.Fatalf("term %d: want hostname In [...], got %+v", i, exprs)
+		if len(term.Preference.MatchExpressions) != 0 {
+			t.Fatalf("term %d: a node is matched by its name, never by a label, got %+v", i, term.Preference.MatchExpressions)
 		}
-		if len(exprs[0].Values) != len(want) {
-			t.Fatalf("term %d: want nodes %v, got %v", i, want, exprs[0].Values)
+		fields := term.Preference.MatchFields
+		if len(fields) != 1 || fields[0].Key != metav1.ObjectNameField || fields[0].Operator != corev1.NodeSelectorOpIn {
+			t.Fatalf("term %d: want metadata.name In [...], got %+v", i, fields)
 		}
-		for j := range want {
-			if exprs[0].Values[j] != want[j] {
-				t.Fatalf("term %d: want nodes %v (present only, sorted), got %v", i, want, exprs[0].Values)
-			}
+		if len(fields[0].Values) != 1 || fields[0].Values[0] != node {
+			t.Fatalf("term %d: want node %q (a field requirement takes one value), got %v", i, node, fields[0].Values)
 		}
 	}
 }

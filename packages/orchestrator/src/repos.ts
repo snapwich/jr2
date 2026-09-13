@@ -25,6 +25,9 @@ export type RepoNodeState = {
   present: boolean;
   /** The last attempt — a probe, a clone, or a fetch — succeeded. */
   synced: boolean;
+  /** Which of the three the last attempt was. A failed Probe is `j2 status`'s signal for a Repo
+   * no pod on the node mounts yet; only a failed Clone fails a Sandbox waiting on that node. */
+  attempted?: "Probe" | "Clone" | "Fetch";
   lastAttempt?: string;
   /** The last successful clone or fetch. */
   lastFetched?: string;
@@ -191,6 +194,7 @@ type RepoItem = {
       node: string;
       present?: boolean;
       synced?: boolean;
+      attempted?: "Probe" | "Clone" | "Fetch";
       lastAttempt?: string;
       lastFetched?: string;
       lastError?: string;
@@ -219,6 +223,7 @@ export function repoStatusOf(item: RepoItem): RepoStatus {
       node: n.node,
       present: n.present ?? false,
       synced: n.synced ?? false,
+      ...(n.attempted !== undefined ? { attempted: n.attempted } : {}),
       ...(n.lastAttempt !== undefined ? { lastAttempt: n.lastAttempt } : {}),
       ...(n.lastFetched !== undefined ? { lastFetched: n.lastFetched } : {}),
       ...(n.lastError !== undefined && n.lastError !== "" ? { lastError: n.lastError } : {}),

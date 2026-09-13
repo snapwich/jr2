@@ -229,14 +229,42 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(ready.Message).To(ContainSubstring(`Repo "app-0a1b2c3d" is not on node node-a yet`))
 			Expect(meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh)).To(BeNil())
 
+			By("staying Pending when the node's probe failed since creation — no clone was tried")
+			// The Orchestrator creates the Repo just before the Sandbox, so the node's
+			// probe lands after creation; its failure is `j2 status`'s signal, and the
+			// pod's arrival makes the agent clone. Only that clone's failure is terminal.
+			now := metav1.Now()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: false, Synced: false, Attempted: corev1alpha1.RepoAttemptProbe, LastError: "fatal: unable to access: Could not resolve host", LastAttempt: &now}}
+			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
+			ready = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+			Expect(ready.Reason).To(Equal("RepoPending"))
+
+			By("holding with RepoCloneFailed and git's words once the clone onto its node failed")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: false, Synced: false, Attempted: corev1alpha1.RepoAttemptClone, LastError: "fatal: repository not found", LastAttempt: &now}}
+			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
+			ready = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+			Expect(ready.Reason).To(Equal("RepoCloneFailed"))
+			Expect(ready.Message).To(Equal(`Repo "app-0a1b2c3d" could not be cloned onto node node-a: fatal: repository not found`))
+
 			By("becoming Ready — stale — once the cache is present but its refresh since creation failed")
 			// Freshness degrades, absence does not (ADR-0051): a warm cache whose
 			// on-demand fetch failed still lets the attach proceed on the objects it
 			// holds, and says so with git's own words.
 			earlier := metav1.NewTime(sandbox.CreationTimestamp.Add(-time.Hour))
-			now := metav1.Now()
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
-			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: false, LastError: "fatal: unable to access: timed out", LastAttempt: &now, LastFetched: &earlier}}
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: false, Attempted: corev1alpha1.RepoAttemptFetch, LastError: "fatal: unable to access: timed out", LastAttempt: &now, LastFetched: &earlier}}
 			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
@@ -252,7 +280,7 @@ var _ = Describe("Sandbox Controller", func() {
 			By("reporting fresh once a fetch since creation lands")
 			later := metav1.NewTime(now.Add(time.Minute))
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
-			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: true, LastAttempt: &later, LastFetched: &later}}
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: &later, LastFetched: &later}}
 			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})

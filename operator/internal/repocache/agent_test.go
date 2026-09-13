@@ -435,8 +435,8 @@ func TestProbesOncePerGenerationWhenNobodyAsks(t *testing.T) {
 		t.Fatal("a probe must not clone")
 	}
 	e := entry(t, a)
-	if e == nil || e.Present || !e.Synced || e.ObservedGeneration != 1 || e.LastAttempt == nil {
-		t.Fatalf("expected a synced, absent entry at generation 1, got %+v", e)
+	if e == nil || e.Present || !e.Synced || e.Attempted != corev1alpha1.RepoAttemptProbe || e.ObservedGeneration != 1 || e.LastAttempt == nil {
+		t.Fatalf("expected a synced, absent entry at generation 1 that says it was a probe, got %+v", e)
 	}
 
 	if _, err := reconcile1(t, a); err != nil {
@@ -477,6 +477,11 @@ func TestProbeFailureIsReportedAndRetried(t *testing.T) {
 	if e == nil || e.Synced || e.Present || e.LastError != "fatal: could not read Username for 'https://github.com'" {
 		t.Fatalf("expected git's own words in lastError, got %+v", e)
 	}
+	// The entry says it was a probe: a Sandbox that lands on this node next is
+	// held for the clone, not failed for an error no clone produced.
+	if e.Attempted != corev1alpha1.RepoAttemptProbe {
+		t.Fatalf("a failed probe must say it was a probe, got %+v", e)
+	}
 	// A failed probe is retried on the next look, same generation.
 	_, _ = reconcile1(t, a)
 	if len(git.calls) != 2 {
@@ -512,8 +517,8 @@ func TestFetchesOnDemandWhenAPodWasCreatedSinceTheLastAttempt(t *testing.T) {
 		}
 	}
 	e := entry(t, a)
-	if !e.LastFetched.Time.Equal(fixedNow) || !e.Synced || !e.Present {
-		t.Fatalf("expected lastFetched advanced to now, got %+v", e)
+	if !e.LastFetched.Time.Equal(fixedNow) || !e.Synced || !e.Present || e.Attempted != corev1alpha1.RepoAttemptFetch {
+		t.Fatalf("expected lastFetched advanced to now by a fetch, got %+v", e)
 	}
 	if res.RequeueAfter != defaultRefreshInterval {
 		t.Fatalf("expected a requeue at the refresh interval, got %v", res.RequeueAfter)

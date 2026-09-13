@@ -53,6 +53,21 @@ type RepoSpec struct {
 	RefreshInterval *metav1.Duration `json:"refreshInterval,omitempty"`
 }
 
+// RepoAttempt is what a node's cache agent last tried against the remote.
+// +kubebuilder:validation:Enum=Probe;Clone;Fetch
+type RepoAttempt string
+
+const (
+	// RepoAttemptProbe is `git ls-remote` for a Repo no pod on the node mounts
+	// yet: the sync signal `j2 status` shows before any run asks, and never a
+	// verdict on a Sandbox.
+	RepoAttemptProbe RepoAttempt = "Probe"
+	// RepoAttemptClone is the bare clone a pod on the node is waiting on.
+	RepoAttemptClone RepoAttempt = "Clone"
+	// RepoAttemptFetch is a fetch of a cache the node already holds.
+	RepoAttemptFetch RepoAttempt = "Fetch"
+)
+
 // RepoNodeStatus is one node's report on its cache of the Repo, written only
 // by that node's cache agent. The operator reads it to place Sandboxes and to
 // gate their Ready; nothing else writes it.
@@ -70,6 +85,14 @@ type RepoNodeStatus struct {
 	// succeeded.
 	// +required
 	Synced bool `json:"synced"`
+
+	// Attempted is which of the three the last attempt was. A failed Probe and
+	// a failed Clone leave the same absent, unsynced entry otherwise, and only
+	// the Clone is a verdict on a Sandbox waiting on the node: a probe fails
+	// before any pod asked, and the pod's arrival makes the agent clone
+	// (ADR-0051).
+	// +required
+	Attempted RepoAttempt `json:"attempted"`
 
 	// ObservedGeneration is the spec generation the last attempt used, so a
 	// url or credential change is retried without waiting for the interval.

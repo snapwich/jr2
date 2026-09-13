@@ -237,6 +237,7 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 		if reportErr := a.report(ctx, repo, corev1alpha1.RepoNodeStatus{
 			Present:            false,
 			Synced:             false,
+			Attempted:          corev1alpha1.RepoAttemptClone,
 			ObservedGeneration: repo.Generation,
 			LastAttempt:        &started,
 			LastError:          err.Error(),
@@ -274,6 +275,7 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 	if err := a.report(ctx, repo, corev1alpha1.RepoNodeStatus{
 		Present:            true,
 		Synced:             true,
+		Attempted:          corev1alpha1.RepoAttemptClone,
 		ObservedGeneration: repo.Generation,
 		LastAttempt:        &started,
 		LastFetched:        &started,
@@ -286,7 +288,9 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 
 // probe checks a Repo nobody on this node has asked for yet, once per spec
 // generation: the sync signal `j2 status` shows before any Sandbox exists,
-// without paying for a clone (ADR-0048).
+// without paying for a clone (ADR-0048). The entry says it was a Probe, so a
+// Sandbox that lands here after a failed one is held Pending for the clone,
+// not failed for an error no clone produced.
 func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result, error) {
 	if entry := a.own(repo); entry != nil && entry.Synced && entry.ObservedGeneration == repo.Generation {
 		return ctrl.Result{}, nil
@@ -295,6 +299,7 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 	entry := corev1alpha1.RepoNodeStatus{
 		Present:            false,
 		Synced:             true,
+		Attempted:          corev1alpha1.RepoAttemptProbe,
 		ObservedGeneration: repo.Generation,
 		LastAttempt:        &started,
 	}
@@ -342,6 +347,7 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 	next := corev1alpha1.RepoNodeStatus{
 		Present:            true,
 		Synced:             true,
+		Attempted:          corev1alpha1.RepoAttemptFetch,
 		ObservedGeneration: repo.Generation,
 		LastAttempt:        &now,
 	}
