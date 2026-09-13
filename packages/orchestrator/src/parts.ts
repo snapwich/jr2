@@ -38,7 +38,7 @@
 
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
+import type { AnyActorRef, AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
 import { isAgent, type AgentDefinition } from "./agent.ts";
 import { isImageContext } from "./images.ts";
 import { repoIdentity } from "./repo-identity.ts";
@@ -255,9 +255,51 @@ export type CarriedImage = { url: string; dir: string; name: string };
  */
 export type CarriedRepo = { url: string; ref?: string; identity: string; key: string };
 
-/** A Repo Slot left OPEN on a registered Machine — what `j2 up` refuses, naming the Machine
- * (its id) and the slot, before anything is built (ADR-0051). */
-export type OpenSlot = { machine: string; slot: string };
+/**
+ * A Repo Slot left OPEN on a registered Machine — what `j2 up` refuses, before anything is built,
+ * naming the Machine, the slot, and the `customize` line that binds it (ADR-0051).
+ *
+ * The Machine is named by WHERE it sits, not by its xstate id: `path` is the chain of actor-slot
+ * keys a `customize()` of the registered root walks to reach the `workspace()` that declares the
+ * slot — `[]` when the root is that wrapper, `["review"]` for a Machine composed under `actors:
+ * { review }`. It is exactly the `actors:` nesting of the fix line ({@link customizeLine}), so
+ * j2's transparent wrappers (`workspace()`'s `body`, `pool()`'s `worker`) are omitted from it as
+ * `customize()` omits them. `undefined` when the wrapper was reached through a Machine invoked
+ * INLINE (a machine object written straight onto `invoke.src`): an actor with no slot key is one
+ * no `customize()` can name, so no line binds that slot — declaring it under `setup({ actors })`
+ * does.
+ */
+export type OpenSlot = { slot: string; path: readonly string[] | undefined };
+
+/**
+ * The `customize` line that binds an open slot (ADR-0051), given the identifier the composer
+ * holds the registered Machine by: `customize(codeReview, { repos: { target: "<url>" } })` for a
+ * slot on the root, nested through `actors` for one on a composed Machine —
+ * `customize(top, { actors: { review: { repos: { target: "<url>" } } } })`. The same nesting
+ * `customize()` accepts, so the line pastes.
+ */
+export function customizeLine(machine: string, path: readonly string[], slot: string): string {
+  const inner = path.reduceRight((parts, key) => `{ actors: { ${key}: ${parts} } }`, `{ repos: { ${slot}: "<url>" } }`);
+  return `customize(${machine}, ${inner})`;
+}
+
+/**
+ * The runtime twin of the walk's `path`: the actor-slot chain from a run's root actor down to
+ * `actor` (its own `src` included), read off the live actor tree — each `src` is the slot key it
+ * was invoked or spawned as, and a wrapper's transparent body is skipped by the same record
+ * ({@link wrapperBodyOf}) the walk skips it by. `undefined` past an inline-invoked actor, whose
+ * `src` is the logic itself and names no slot.
+ */
+export function actorSlotPath(actor: AnyActorRef | undefined): string[] | undefined {
+  const path: string[] = [];
+  for (let node = actor; node?._parent; node = node._parent) {
+    const src = (node as { src?: unknown }).src;
+    if (typeof src !== "string") return undefined;
+    const parent = asMachine((node._parent as { logic?: unknown }).logic);
+    if (!parent || wrapperBodyOf(parent) !== src) path.unshift(src);
+  }
+  return path;
+}
 
 /** Everything the registered Machines carry that a converge or a boot must act on. */
 export type CarriedParts = {
@@ -350,10 +392,10 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   // `https://github.com/acme/app` are one Repo and one cache, so they collapse to one entry — the
   // first spelling wins, and it is the url the CR is created with. A per-run slot contributes
   // nothing, and an open one is reported for the converge to refuse.
-  const collectRepos = (machine: AnyStateMachine, slots: Record<string, RepoSlot>): void => {
+  const collectRepos = (path: OpenSlot["path"], slots: Record<string, RepoSlot>): void => {
     for (const [slot, value] of Object.entries(slots)) {
       const state = repoSlotState(value);
-      if (state.kind === "open") openSlots.push({ machine: machine.id, slot });
+      if (state.kind === "open") openSlots.push({ slot, path });
       if (state.kind !== "bound") continue;
       const { identity, key } = repoIdentity(state.binding.url);
       const dedupe = canonical(["repo", identity]);
@@ -368,7 +410,10 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     for (const child of Object.values(node.states as Record<string, StateNode<any, any>>)) walkStates(child, visit);
   };
 
-  const walk = (machine: AnyStateMachine): void => {
+  // `path` is the `customize()` route from the registered root to `machine` (see `OpenSlot`):
+  // a named child slot extends it, a wrapper's transparent body does not, and an inline invoke
+  // ends it — nothing downstream of an actor without a slot key can be named by a composer.
+  const walk = (machine: AnyStateMachine, path: OpenSlot["path"]): void => {
     if (walked.has(machine)) return;
     walked.add(machine);
     const parts = sandboxPartsOf(machine);
@@ -376,18 +421,19 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     collectImage(parts.user);
     if (composesSandbox(machine)) {
       sandboxed = true;
-      collectRepos(machine, parts.repos);
+      collectRepos(path, parts.repos);
     }
+    const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(name, logic.definition);
       else {
         const child = asMachine(logic);
-        if (child) walk(child);
+        if (child) walk(child, path === undefined ? undefined : name === body ? path : [...path, name]);
       }
     }
-    walkStates(machine.root, walk);
+    walkStates(machine.root, (inline) => walk(inline, undefined));
   };
 
-  for (const machine of machines) walk(machine);
+  for (const machine of machines) walk(machine, []);
   return { agents, images, repos, openSlots, composesSandbox: sandboxed };
 }

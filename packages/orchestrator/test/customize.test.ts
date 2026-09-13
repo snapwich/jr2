@@ -294,7 +294,7 @@ test("repos bind the workspace() the chain reaches — an open slot, through a p
     walked.repos.map((r) => r.identity),
     ["github.com/ourorg/app", "example.test/handbook"],
   );
-  assert.deepEqual(partsOf([pooled]).openSlots, [{ machine: "workspace", slot: "target" }], "the import is untouched");
+  assert.deepEqual(partsOf([pooled]).openSlots, [{ slot: "target", path: [] }], "the import is untouched");
   // The rebuild is what makes that possible — the same one `image` takes — so everything else the
   // wrapper carried rides across: the shape, the transparency, the Agents.
   assert.equal(fingerprintOf(reached as never), fingerprintOf(packaged));

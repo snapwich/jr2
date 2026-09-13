@@ -540,10 +540,27 @@ test("an OPEN slot nobody bound faults before the port, naming the customize lin
   await waitFor(() => host.status(runId) === undefined);
   const final = await host.read(runId);
   assert.equal(final?.status, "error");
-  assert.match(final?.fault ?? "", /Repo Slot "target" is open — nobody bound it/);
-  assert.match(final?.fault ?? "", /customize\(workspace, \{ repos: \{ target: "<url>" \} \}\)/);
+  // Named as `j2 up`'s walk names it: the Workflow, the slot, and a line that pastes — never the
+  // wrapper's xstate id, which every `workspace()` shares.
+  assert.match(final?.fault ?? "", /workflow "packaged": Repo Slot "target" is open — nobody bound it/);
+  assert.match(final?.fault ?? "", /export const machine = customize\(<import>, \{ repos: \{ target: "<url>" \} \}\)/);
   assert.match(final?.fault ?? "", /ADR-0051/);
   assert.deepEqual(sandbox.calls, [], "an open slot never costs a pod");
+
+  // Composed under a child slot, the line nests through `actors` — read off the live actor tree,
+  // the same route the static walk reports (`actorSlotPath` is `partsOf`'s runtime twin).
+  const nested = j2Setup({ events: [], actors: { review: packaged } }).createMachine({
+    id: "host",
+    initial: "reviewing",
+    states: { reviewing: { invoke: { src: "review" } } },
+  });
+  const host3 = new RunHost({ store: await mkStore(), sandbox: new FakeSandbox() });
+  host3.register({ name: "top", machine: nested, provide: () => ({}) });
+  const run3 = await host3.start("top");
+  await waitFor(() => host3.status(run3.runId) === undefined);
+  const fault3 = (await host3.read(run3.runId))?.fault ?? "";
+  assert.match(fault3, /workflow "top": Repo Slot "target" is open/);
+  assert.match(fault3, /customize\(<import>, \{ actors: \{ review: \{ repos: \{ target: "<url>" \} \} \} \}\)/);
 
   // Bound by the consumer, the SAME Machine runs: the binding is read off the Machine the run
   // was invoked as, exactly like the image (ADR-0049).

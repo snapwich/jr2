@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
-import { open, partsOf } from "../src/parts.ts";
+import { customizeLine, open, partsOf } from "../src/parts.ts";
 import { agent } from "../src/harness-client.ts";
 import { j2Setup } from "../src/setup.ts";
 import { pool, source } from "../src/pool.ts";
@@ -251,9 +251,11 @@ test("a workspace() inside a j2Setup() inside a pool() — every part, at every 
       { url: "file:///srv/pkg/sshd", dir: "/srv/pkg/sshd", name: "sshd" },
     ],
     // The bound Repo is known before any run asks (the boot warms it); the open slot is the
-    // converge's refusal; and the pool's worker's workspace is a Sandbox two wrappers down.
+    // converge's refusal, located by the `customize()` route from the root — through the pool's
+    // transparent `worker`, then the worker's own `feature` slot; and the pool's worker's
+    // workspace is a Sandbox two wrappers down.
     repos: [{ url: "git@github.com:acme/app.git", identity: "github.com/acme/app", key: APP_KEY }],
-    openSlots: [{ machine: "workspace", slot: "docs" }],
+    openSlots: [{ slot: "docs", path: ["feature"] }],
     composesSandbox: true,
   });
 });
@@ -298,13 +300,60 @@ test("a per-run slot contributes nothing — which Repo it binds is the run's bu
   assert.equal(parts.composesSandbox, true);
 });
 
-test("open slots are reported with the Machine's id — what `j2 up` refuses by name", () => {
+test("open slots are reported with their `customize()` route from the root — what `j2 up` refuses by name", () => {
+  // The Machine is named by where it sits, never by the wrapper's xstate id (every `workspace()`
+  // shares one): the path is the `actors` nesting a `customize()` of the registered root writes
+  // to reach the wrapper, so the refusal's fix line pastes.
   const packaged = wsRepos({ target: open, docs: open });
   assert.deepEqual(partsOf([packaged]).openSlots, [
-    { machine: "workspace", slot: "target" },
-    { machine: "workspace", slot: "docs" },
+    { slot: "target", path: [] },
+    { slot: "docs", path: [] },
   ]);
   assert.deepEqual(partsOf([packaged]).repos, []);
+
+  // Composed under a child slot, then under a pool: the path is the author-written slots alone —
+  // `customize()` is transparent to `worker` and `body`, so the route is too.
+  const host = j2Setup({ events: [], actors: { review: packaged } }).createMachine({
+    id: "host",
+    initial: "reviewing",
+    states: { reviewing: { invoke: { src: "review" } } },
+  });
+  assert.deepEqual(partsOf([host]).openSlots, [
+    { slot: "target", path: ["review"] },
+    { slot: "docs", path: ["review"] },
+  ]);
+  const workReady = defineEvent({ name: "work_ready", input: z.object({}) });
+  const pooled = pool(host, {
+    source: source<{ id: string }>({
+      next: fromPromise(async (): Promise<{ item: { id: string } | null; open: number }> => ({ item: null, open: 0 })),
+      wake: workReady,
+    }),
+    itemId: (i) => i.id,
+  });
+  assert.deepEqual(
+    partsOf([pooled]).openSlots.map((o) => o.path),
+    [["review"], ["review"]],
+  );
+
+  // Invoked INLINE, the wrapper sits under an actor with no slot key — nothing a `customize()`
+  // can name — so the path is undefined and the refusal says so instead of printing a line.
+  const inline = j2Setup({ events: [] }).createMachine({
+    id: "inline",
+    initial: "reviewing",
+    states: { reviewing: { invoke: { src: packaged } } },
+  });
+  assert.deepEqual(partsOf([inline]).openSlots, [
+    { slot: "target", path: undefined },
+    { slot: "docs", path: undefined },
+  ]);
+});
+
+test("customizeLine renders the fix as the nesting `customize()` accepts", () => {
+  assert.equal(customizeLine("codeReview", [], "target"), `customize(codeReview, { repos: { target: "<url>" } })`);
+  assert.equal(
+    customizeLine("top", ["review", "feature"], "docs"),
+    `customize(top, { actors: { review: { actors: { feature: { repos: { docs: "<url>" } } } } } })`,
+  );
 });
 
 test("composesSandbox is true through a pool and a child, false for a plain Machine — the data-plane switch", () => {

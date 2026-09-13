@@ -299,14 +299,20 @@ async function withWorkspace(root: string, url = "https://e.test/a.git"): Promis
 }
 
 /** A packaged `workspace()` whose one Repo Slot is left OPEN, registered as-is — what `j2 up`
- * refuses, naming the `customize` line that binds it (ADR-0051). */
-async function withOpenSlot(root: string): Promise<string> {
+ * refuses, naming the `customize` line that binds it (ADR-0051). `under` composes it one level
+ * down instead: invoked from an author Machine's `review` slot, the shape a packaged Machine
+ * actually arrives in. */
+async function withOpenSlot(root: string, under?: "child"): Promise<string> {
+  const packaged = `workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) })`;
   await writeFile(
     join(root, "workflows", "packaged.ts"),
     `import { j2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
       `const body = j2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
-      `export const machine = workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) });\n`,
+      (under === "child"
+        ? `export const machine = j2Setup({ events: [], actors: { review: ${packaged} } })\n` +
+          `  .createMachine({ id: "host", initial: "reviewing", states: { reviewing: { invoke: { src: "review" } } } });\n`
+        : `export const machine = ${packaged};\n`),
   );
   return root;
 }
@@ -1022,12 +1028,38 @@ test("an OPEN Repo Slot on a registered Machine is refused after the gate and be
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 1);
   const err = w.err.join("\n");
-  assert.match(err, /refusing: workflow "packaged" \(machine "workspace"\) leaves Repo Slot "target" open/);
-  assert.match(err, /export const machine = customize\(workspace, \{ repos: \{ target: "<url>" \} \}\)/);
+  // The Machine is the Workflow's own; the line names the import the author holds it by, never
+  // the wrapper's xstate id (every `workspace()` shares it, and `workspace` is the kit's factory).
+  assert.match(
+    err,
+    /refusing: workflow "packaged" leaves Repo Slot "target" open — bind it where the Machine is registered/,
+  );
+  assert.match(err, /export const machine = customize\(<import>, \{ repos: \{ target: "<url>" \} \}\)/);
+  assert.doesNotMatch(err, /machine "workspace"|customize\(workspace,/);
   assert.match(err, /ADR-0051/);
   assert.deepEqual(w.kube.applied, [], "not even the namespace");
   assert.deepEqual(w.built, [], "no bundle, no image build");
   assert.deepEqual(w.confirms, [], "and no first-contact ask for a folder that cannot deploy");
+});
+
+test("an OPEN Repo Slot on a COMPOSED Machine is refused with the nested `actors` line that binds it", async () => {
+  // The motivating case (ADR-0051): a packaged Machine invoked from an author Machine's slot.
+  // `customize()` binds nested slots through `actors`, so the refusal locates the Machine by that
+  // route and renders the line in the same nesting — what pastes into the workflows file.
+  const root = await withOpenSlot(await mkInstance(`export default { name: "myinst" };\n`), "child");
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /refusing: workflow "packaged" leaves Repo Slot "target" open \(on the Machine composed as "review"\)/,
+  );
+  assert.match(
+    err,
+    /export const machine = customize\(<import>, \{ actors: \{ review: \{ repos: \{ target: "<url>" \} \} \} \}\)/,
+  );
+  assert.deepEqual(w.kube.applied, []);
+  assert.deepEqual(w.built, []);
 });
 
 test("a bound Repo is narrated as the boot's to create; the token env vars git.credentials names ride the Secret", async () => {

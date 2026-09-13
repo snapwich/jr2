@@ -51,6 +51,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  customizeLine,
   defaultImageContext,
   imageContextDigest,
   isSshUrl,
@@ -168,12 +169,25 @@ export async function up(args: string[], io: Io): Promise<number> {
   const workflows = await loadWorkflows(root);
   const carried = partsOf(workflows.map((w) => w.machine));
   const { agents, images: contexts } = carried;
+  // The Machine is named by where it sits under the registered root — the slot chain a
+  // `customize()` walks — and the fix line nests the same way, so it pastes into
+  // `workflows/<name>.ts` with the imported Machine and the url filled in.
   for (const w of workflows) {
-    for (const { machine, slot } of partsOf([w.machine]).openSlots) {
+    for (const { slot, path } of partsOf([w.machine]).openSlots) {
+      if (path === undefined) {
+        activity(
+          io,
+          `refusing: workflow "${w.name}" leaves Repo Slot "${slot}" open on a Machine invoked inline — no ` +
+            "customize() reaches an actor without a slot key; declare that Machine under setup({ actors }) and " +
+            "bind the slot there  (ADR-0049, ADR-0051)",
+        );
+        return 1;
+      }
+      const where = path.length ? ` (on the Machine composed as ${path.map((k) => `"${k}"`).join(" → ")})` : "";
       activity(
         io,
-        `refusing: workflow "${w.name}" (machine "${machine}") leaves Repo Slot "${slot}" open — bind it where the ` +
-          `Machine is registered: export const machine = customize(${machine}, { repos: { ${slot}: "<url>" } })  (ADR-0051)`,
+        `refusing: workflow "${w.name}" leaves Repo Slot "${slot}" open${where} — bind it where the Machine is ` +
+          `registered: export const machine = ${customizeLine("<import>", path, slot)}  (ADR-0051)`,
       );
       return 1;
     }

@@ -37,9 +37,11 @@ import {
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
 import {
+  actorSlotPath,
   assertRepoSlot,
   attachSandboxParts,
   attachWrapperBody,
+  customizeLine,
   repoSlotState,
   sandboxPartsOf,
   type Binding,
@@ -500,10 +502,12 @@ function assertSpec(spec: WorkspaceSpec): void {
  * because it derives from `j2 run --input` exactly as the spec does; an open slot nobody bound is
  * a fault BEFORE the port, naming the `customize` line that fixes it — the run-time twin of the
  * refusal `j2 up`'s walk makes for a registered Machine, reached here only by a Machine that was
- * never registered as itself (a test seam, a nested invoke of an unbound import).
+ * never registered as itself (a test seam, a nested invoke of an unbound import). The Machine is
+ * named as the walk names it: the Workflow it runs under, and the slot chain (`path`) from that
+ * root to this wrapper — which is the `actors` nesting of the line, so it pastes.
  */
 function resolveBindings(
-  machineId: string,
+  where: { workflow: string; path: string[] | undefined },
   slots: Record<string, RepoSlot>,
   runInput: unknown,
 ): Record<string, ResolvedBinding> {
@@ -511,10 +515,11 @@ function resolveBindings(
   for (const [slot, value] of Object.entries(slots)) {
     const state = repoSlotState(value);
     if (state.kind === "open") {
-      throw new Error(
-        `workspace "${machineId}": Repo Slot "${slot}" is open — nobody bound it; ` +
-          `customize(${machineId}, { repos: { ${slot}: "<url>" } }) (ADR-0051)`,
-      );
+      const fix =
+        where.path === undefined
+          ? "no customize() reaches a Machine invoked inline; declare it under setup({ actors }) and bind the slot there"
+          : `bind it where the Machine is registered: export const machine = ${customizeLine("<import>", where.path, slot)}`;
+      throw new Error(`workflow "${where.workflow}": Repo Slot "${slot}" is open — nobody bound it; ${fix} (ADR-0051)`);
     }
     if (state.kind === "bound") {
       bindings[slot] = { ...state.binding, perRun: false };
@@ -561,9 +566,12 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     // carries NOW, and no snapshot ever holds an image name — let alone a resolved
     // content-addressed tag, which would outlive the image it names. The RESOLVED bindings are
     // persisted, because a per-run mapper's answer is this run's fact.
-    const invoking = invokingMachine(self);
-    const parts = sandboxPartsOf(invoking);
-    const bindings = resolveBindings(invoking?.id ?? "workspace", parts.repos, input.runInput);
+    const parts = sandboxPartsOf(invokingMachine(self));
+    const bindings = resolveBindings(
+      { workflow: binding.workflow, path: actorSlotPath(self._parent) },
+      parts.repos,
+      input.runInput,
+    );
     const provisioned = await sandboxOf(system).provision({
       name: workspaceName(binding.runId, input.wsId),
       runId: binding.runId,
