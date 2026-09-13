@@ -17,7 +17,17 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KIT_VERSION, defineConfig, loadConfig, repoName, resolveRepos } from "../src/config.ts";
+import {
+  KIT_VERSION,
+  credentialSecretFor,
+  defineConfig,
+  gitTokenSecretName,
+  isSshUrl,
+  loadConfig,
+  matchCredential,
+  repoName,
+  resolveRepos,
+} from "../src/config.ts";
 
 test("KIT_VERSION is the package's own version — npm version == image tag, one release train", () => {
   assert.match(KIT_VERSION, /^\d+\.\d+\.\d+/);
@@ -91,4 +101,91 @@ test("loadConfig resolves repos in place and hands back everything else untouche
   const bare = await mkdtemp(join(tmpdir(), "j2-config-"));
   await writeFile(join(bare, "j2.config.ts"), `export default { name: "bare" };\n`);
   assert.deepEqual(await loadConfig(bare), { name: "bare" }, "no repos key → none added");
+});
+
+// `git.credentials` (ADR-0051): matched by prefix on the Repo identity, the url's scheme picks the
+// field, and the list is the fence a per-run url must pass.
+
+test("matchCredential: the longest matching prefix wins; `*` matches everything at length 0", () => {
+  const list = [
+    { match: "*", token: "ANY" },
+    { match: "github.com/", token: "GH" },
+    { match: "github.com/ourorg/", token: "ORG" },
+  ];
+  assert.equal(matchCredential("github.com/ourorg/app", list)?.token, "ORG");
+  assert.equal(matchCredential("github.com/other/app", list)?.token, "GH");
+  assert.equal(matchCredential("gitlab.com/x/y", list)?.token, "ANY");
+  assert.equal(matchCredential("gitlab.com/x/y", list.slice(1)), undefined, "no entry → no match, the fence refuses");
+});
+
+test("matchCredential: a tie goes to the first entry in the list", () => {
+  const list = [
+    { match: "github.com/", token: "FIRST" },
+    { match: "github.com/", sshKey: "second" },
+  ];
+  assert.equal(matchCredential("github.com/a/b", list), list[0]);
+});
+
+test("credentialSecretFor: the url's scheme picks the field — https spends the token Secret, ssh the deploy key", () => {
+  const entry = { match: "github.com/", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" };
+  assert.deepEqual(credentialSecretFor("https://github.com/a/b.git", entry), {
+    kind: "token",
+    env: "J2_GIT_TOKEN",
+    secret: gitTokenSecretName("github.com/"),
+  });
+  assert.deepEqual(credentialSecretFor("http://github.com/a/b.git", entry), {
+    kind: "token",
+    env: "J2_GIT_TOKEN",
+    secret: gitTokenSecretName("github.com/"),
+  });
+  assert.deepEqual(credentialSecretFor("git@github.com:a/b.git", entry), { kind: "ssh", secret: "j2-git-ssh" });
+  assert.deepEqual(credentialSecretFor("ssh://git@github.com/a/b", entry), { kind: "ssh", secret: "j2-git-ssh" });
+});
+
+test("credentialSecretFor: no entry, no applicable field, git:// or a local path → no Secret, an anonymous clone", () => {
+  assert.equal(credentialSecretFor("https://github.com/a/b", undefined), undefined);
+  assert.equal(credentialSecretFor("https://github.com/a/b", { match: "*", sshKey: "k" }), undefined);
+  assert.equal(credentialSecretFor("git@github.com:a/b", { match: "*", token: "T" }), undefined);
+  assert.equal(credentialSecretFor("https://github.com/a/b", { match: "*" }), undefined, "admits, carries nothing");
+  assert.equal(credentialSecretFor("git://github.com/a/b", { match: "*", token: "T", sshKey: "k" }), undefined);
+  assert.equal(credentialSecretFor("/srv/x.git", { match: "*", token: "T", sshKey: "k" }), undefined);
+});
+
+test("gitTokenSecretName is deterministic in `match` — a redeploy finds its own Secret, two entries never share one", () => {
+  assert.equal(gitTokenSecretName("github.com/"), gitTokenSecretName("github.com/"));
+  assert.notEqual(gitTokenSecretName("github.com/"), gitTokenSecretName("*"));
+  assert.match(gitTokenSecretName("*"), /^j2-git-[0-9a-f]{8}$/);
+});
+
+test("isSshUrl: scp-style, ssh://, git+ssh:// — and nothing else", () => {
+  assert.equal(isSshUrl("git@github.com:a/b.git"), true);
+  assert.equal(isSshUrl("ssh://git@github.com/a/b"), true);
+  assert.equal(isSshUrl("git+ssh://git@github.com/a/b"), true);
+  assert.equal(isSshUrl("https://github.com/a/b"), false);
+  assert.equal(isSshUrl("/srv/x"), false);
+  assert.equal(isSshUrl("not a url"), false);
+});
+
+test("loadConfig passes git.credentials through and refuses a mis-shaped entry by index and field", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "j2-config-"));
+  await writeFile(
+    join(dir, "j2.config.ts"),
+    `export default { git: { credentials: [{ match: "*", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" }, { match: "github.com/" }] } };\n`,
+  );
+  assert.deepEqual(await loadConfig(dir), {
+    git: { credentials: [{ match: "*", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" }, { match: "github.com/" }] },
+  });
+
+  const bad = async (git: string) => {
+    const d = await mkdtemp(join(tmpdir(), "j2-config-"));
+    await writeFile(join(d, "j2.config.ts"), `export default { git: ${git} };\n`);
+    return loadConfig(d);
+  };
+  await assert.rejects(bad(`{ credentials: [{ match: "*" }, { token: "T" }] }`), /at git\.credentials\[1\]\.match/);
+  await assert.rejects(bad(`{ credentials: [{ match: "" }] }`), /at git\.credentials\[0\]\.match/);
+  await assert.rejects(bad(`{ credentials: [{ match: "*", token: 42 }] }`), /at git\.credentials\[0\]\.token/);
+  await assert.rejects(bad(`{ credentials: [{ match: "*", sshKey: "" }] }`), /at git\.credentials\[0\]\.sshKey/);
+  await assert.rejects(bad(`{ credentials: [{ match: "*", name: "x" }] }`), /at git\.credentials\[0\]/);
+  await assert.rejects(bad(`{ credentials: "*" }`), /at git\.credentials:/);
+  await assert.rejects(bad(`[]`), /at git:/);
 });

@@ -12,11 +12,13 @@
 // the repo catalog — is read back by the type system through the `Register` below, and a widened
 // `string[]` would have nothing to read.
 
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
+import { repoIdentity } from "./repo-identity.ts";
 
 /** A catalog entry as the author writes it (ADR-0004). `name` defaults to the repository's own
  * name from the url; the string form is `{ url }`. Name one explicitly when two catalogued
@@ -116,6 +118,78 @@ export type Repo = {
   ref?: string;
 };
 
+// ------------------------------------------------------------------------------------------------
+// `git.credentials` (ADR-0051): how the cluster authenticates to a Repo, and the fence.
+//
+// A Repo is identified by its url and nothing in this file names one (CONTEXT.md "Repo"). What
+// the config declares is CREDENTIALS, matched by prefix on the identity — the Argo and Flux shape.
+// The Orchestrator resolves the entry when it creates a Repo CR and writes a `secretRef`; the
+// cache agent reads only that. The list is also the fence: a per-run url (run input, a ticket
+// field) that matches no entry is refused at attach, so nothing can spend this cluster's
+// credential against an arbitrary host. A bound url is code the Instance typechecked and deployed
+// — admitted without a match, cloned anonymously.
+
+/** One credentials entry. An entry may carry neither `token` nor `sshKey`: it then admits its
+ * prefix through the fence and the clone is anonymous. */
+export type GitCredential = {
+  /** A prefix on the identity (`github.com/ourorg/`), or `*` for everything. */
+  match: string;
+  /** Env var name holding an HTTPS token; `j2 up` materializes its value into the Instance Secret. */
+  token?: string;
+  /** A Secret (Flux key names: `identity`, `identity.pub`, `known_hosts`) holding a deploy key. */
+  sshKey?: string;
+};
+
+export type GitConfig = {
+  /** Matched by prefix on the Repo identity; the longest `match` wins, ties → first in the list. */
+  credentials?: readonly GitCredential[];
+};
+
+/** The entry for an identity: `*` matches everything at length 0, else a prefix match; the
+ * longest `match` wins, and a tie goes to the first in the list. `undefined` when none matches —
+ * which the fence reads as "refuse a per-run url". */
+export function matchCredential(identity: string, list: readonly GitCredential[]): GitCredential | undefined {
+  let best: { entry: GitCredential; length: number } | undefined;
+  for (const entry of list) {
+    const length = entry.match === "*" ? 0 : identity.startsWith(entry.match) ? entry.match.length : -1;
+    if (length < 0) continue;
+    if (best === undefined || length > best.length) best = { entry, length };
+  }
+  return best?.entry;
+}
+
+/** The Secret a Repo CR's `secretRef` names for `url` under `entry`, picked by the url's scheme:
+ * https/http spend a token (a Secret the Orchestrator derives from the env var), ssh spends the
+ * named deploy-key Secret. `undefined` when no entry, no applicable field, or a scheme that carries
+ * no credential (`git://`, a local path) — the clone is anonymous. */
+export function credentialSecretFor(
+  url: string,
+  entry: GitCredential | undefined,
+): { kind: "token"; env: string; secret: string } | { kind: "ssh"; secret: string } | undefined {
+  if (entry === undefined) return undefined;
+  const { scheme } = repoIdentity(url);
+  if ((scheme === "https" || scheme === "http") && entry.token !== undefined)
+    return { kind: "token", env: entry.token, secret: gitTokenSecretName(entry.match) };
+  if (scheme === "ssh" && entry.sshKey !== undefined) return { kind: "ssh", secret: entry.sshKey };
+  return undefined;
+}
+
+/** The token Secret's name for one entry — deterministic in `match`, so a redeploy finds its own
+ * Secret and two entries never share one. */
+export function gitTokenSecretName(match: string): string {
+  return `j2-git-${createHash("sha256").update(match).digest("hex").slice(0, 8)}`;
+}
+
+/** Whether `url` clones over ssh — scp-style `git@host:path`, `ssh://`, or `git+ssh://`. A url
+ * that does not parse is not an ssh url. */
+export function isSshUrl(url: string): boolean {
+  try {
+    return repoIdentity(url).scheme === "ssh";
+  } catch {
+    return false;
+  }
+}
+
 /** An env var on the Harness container, in the CR's (corev1.EnvVar) shape — `value` or a
  * `valueFrom` secret/configmap reference, passed through to the operator verbatim. */
 export type HarnessEnvVar = {
@@ -213,6 +287,8 @@ export type J2Config = {
    * instance gets the kubectl Sandbox backend, and without them it is workspace-less
    * (`workspace()` invocations fault pointedly). */
   repos?: readonly (string | RepoConfig)[];
+  /** How the cluster authenticates to Repos, and the fence a per-run url must pass (ADR-0051). */
+  git?: GitConfig;
   /** Agent-runtime config for the stock Harness (see `HarnessConfig`). */
   harness?: HarnessConfig;
   /** Image registry prefix (deployment-varying — resolve from env). Absent → images are
@@ -289,8 +365,31 @@ export async function loadConfig(dir: string): Promise<InstanceConfig | undefine
   const mod = (await import(pathToFileURL(file).href)) as { default?: J2Config };
   if (!mod.default) throw new Error(`${file} has no default export (use \`export default defineConfig({…})\`)`);
   const { repos, ...rest } = mod.default;
+  if (rest.git !== undefined) checkGit(rest.git, file);
   return repos === undefined ? rest : { ...rest, repos: resolveRepos(repos, file) };
 }
+
+const NonEmpty = z.string().min(1);
+const Credential = z.object({ match: NonEmpty, token: NonEmpty.optional(), sshKey: NonEmpty.optional() }).strict();
+
+/** `git.credentials`' SHAPE, checked at load — by index and field, so a bad entry names itself
+ * (`git.credentials[1].token`) rather than surfacing as a Secret that never matches. */
+function checkGit(git: unknown, where: string): void {
+  if (typeof git !== "object" || git === null || Array.isArray(git))
+    throw new Error(`${where} at git: expected an object — ${GIT_HINT}`);
+  const { credentials } = git as { credentials?: unknown };
+  if (credentials === undefined) return;
+  if (!Array.isArray(credentials)) throw new Error(`${where} at git.credentials: expected an array — ${GIT_HINT}`);
+  for (const [i, entry] of credentials.entries()) {
+    const parsed = Credential.safeParse(entry);
+    if (parsed.success) continue;
+    const issue = parsed.error.issues[0];
+    const at = ["", ...(issue?.path ?? [])].map(String).join(".");
+    throw new Error(`${where} at git.credentials[${i}]${at}: ${issue?.message ?? "invalid"} — ${GIT_HINT}`);
+  }
+}
+
+const GIT_HINT = "an entry is { match, token?, sshKey? } (ADR-0051)";
 
 const RepoUrl = z.string().min(1);
 const RepoObject = z.object({ name: RepoUrl.optional(), url: RepoUrl, ref: RepoUrl.optional() }).strict();
