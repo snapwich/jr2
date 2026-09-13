@@ -736,6 +736,37 @@ test("a per-run url matching no git.credentials entry is REFUSED before any kube
   );
   assert.deepEqual(calls, [], "nothing applied");
 
+  // A url spelled as a git OPTION passes no fence at all: the identity refuses it before the list
+  // is consulted, even under an entry whose prefix the smuggled host part would match (ADR-0051).
+  const narrowed = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    exec,
+    credentials: [{ match: "github.com/ourorg/", token: "GH" }],
+  });
+  await assert.rejects(
+    () =>
+      narrowed.provision({
+        name: "sb-option",
+        runId: "r",
+        workflow: "w",
+        repos: [{ slot: "target", url: "--upload-pack=sh -c evil #@github.com:ourorg/repo", perRun: true }],
+      }),
+    /repo url begins with "-", which git reads as an option/,
+  );
+  await assert.rejects(
+    () =>
+      narrowed.provision({
+        name: "sb-dots",
+        runId: "r",
+        workflow: "w",
+        repos: [{ slot: "target", url: "git@github.com:ourorg/../evil/repo", perRun: true }],
+      }),
+    /no git\.credentials entry matches "github\.com\/evil\/repo"/,
+    "`..` resolves before the prefix is matched",
+  );
+  assert.deepEqual(calls, [], "nothing applied");
+
   // No entries at all → every per-run url is refused, and the message says the list is empty.
   const bare = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
   await assert.rejects(
@@ -997,7 +1028,10 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
   // The fetch/push split (ADR-0005/0051): push goes to the REAL remote, in the Binding's OWN
   // spelling — a Machine that bound over ssh pushes over ssh even when the cache was cloned over
   // https. Nothing is read off the cache to learn it.
-  assert.match(script, /git -C '\/work\/app\/default' remote set-url --push origin 'git@github\.com:acme\/app\.git'/);
+  assert.match(
+    script,
+    /git -C '\/work\/app\/default' remote set-url --push origin -- 'git@github\.com:acme\/app\.git'/,
+  );
   assert.doesNotMatch(script, /config remote\.origin\.url/);
   // No ref → the Repo's OWN default branch, via the clone's origin/HEAD — never a hardcoded
   // guess like `main` against a `master` repo.
@@ -1068,6 +1102,6 @@ test("attachScript quotes hostile refs and urls, and rejects an empty slot list"
   );
   assert.match(reviewed.script, /worktree add --detach '\/work\/app\/b-review' '\$\(reboot\)'/, "the sha too");
   const pushed = attachScript({ branch: "b" }, [{ slot: "app", url: "https://example.test/a'b.git" }], PATHS);
-  assert.match(pushed.script, /set-url --push origin 'https:\/\/example\.test\/a'\\''b\.git'/, "and the push url");
+  assert.match(pushed.script, /set-url --push origin -- 'https:\/\/example\.test\/a'\\''b\.git'/, "and the push url");
   assert.throws(() => attachScript({ branch: "b" }, [], PATHS), /names no Repo Slot/);
 });

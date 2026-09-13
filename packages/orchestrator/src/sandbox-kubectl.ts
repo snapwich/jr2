@@ -943,8 +943,8 @@ export function attachScript(
       // `git push` goes to the REAL remote — the Binding's own spelling, so a Machine that bound
       // over ssh pushes over ssh even when the cache was cloned over https (ADR-0051). Push still
       // succeeds only with a caller-supplied credential (a forwarded agent in the User Container);
-      // the pod itself holds none.
-      `git -C ${sq(dflt)} remote set-url --push origin ${sq(repo.url)}`,
+      // the pod itself holds none. `--` keeps the url an operand, never an option.
+      `git -C ${sq(dflt)} remote set-url --push origin -- ${sq(repo.url)}`,
     );
     if (spec.reviewSha) {
       // The reviewer's seat (ADR-0028): a DETACHED HEAD at the sha under review, so a rogue write

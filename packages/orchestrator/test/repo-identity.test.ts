@@ -59,6 +59,33 @@ test("a relative path is refused — a Sandbox has no directory for it to be rel
   assert.throws(() => repoIdentity("infra"), /repo url must be absolute or remote/);
 });
 
+test("a url that begins with `-` is refused — git would read it as an option, and no repository is spelled so", () => {
+  // The scp-style user part would otherwise carry anything up to `@`, so `--upload-pack=<command>`
+  // resolved to a fenceable identity and reached `git clone` as an option (ADR-0051).
+  assert.throws(
+    () => repoIdentity("--upload-pack=sh -c evil #@github.com:ourorg/repo"),
+    /repo url begins with "-", which git reads as an option/,
+  );
+  assert.throws(() => repoIdentity("  -x@github.com:ourorg/repo"), /begins with "-"/, "after trim");
+  assert.throws(() => repoIdentity("-"), /begins with "-"/);
+});
+
+test("`.` and `..` segments resolve in every form — the scp spelling normalizes exactly as the URL forms do", () => {
+  // `new URL()` resolves dot segments for `https://` and `ssh://`; the hand-parsed scp form must
+  // land on the same identity, or one repository has two caches and a prefix fence on
+  // `github.com/ourorg/` admits `github.com/ourorg/../evil/repo` (ADR-0051).
+  assert.equal(repoIdentity("git@github.com:ourorg/../evil/repo.git").identity, "github.com/evil/repo");
+  assert.equal(repoIdentity("git@github.com:ourorg/./repo").identity, "github.com/ourorg/repo");
+  assert.equal(repoIdentity("git@github.com:../../x").identity, "github.com/x", "climbing past the root stops at it");
+  assert.equal(
+    repoIdentity("git@github.com:ourorg/../evil/repo").identity,
+    repoIdentity("https://github.com/ourorg/../evil/repo").identity,
+  );
+  assert.equal(repoKey("git@github.com:a/../b/repo"), repoKey("ssh://git@github.com/b/repo"), "one key");
+  assert.equal(repoIdentity("/srv/a/../x.git").identity, "/srv/x", "local paths too");
+  assert.throws(() => repoIdentity("git@github.com:.."), /has no path/);
+});
+
 test("an empty url and an unsupported scheme are refused by name", () => {
   assert.throws(() => repoIdentity("   "), /repo url is empty/);
   assert.throws(() => repoIdentity("ftp://host/x.git"), /unsupported scheme "ftp"/);

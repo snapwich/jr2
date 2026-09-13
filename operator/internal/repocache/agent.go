@@ -197,7 +197,7 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 	if err := os.WriteFile(a.marker(key), nil, 0o644); err != nil {
 		return ctrl.Result{}, fmt.Errorf("mark clone: %w", err)
 	}
-	if _, err := a.Git.Run(ctx, "", env, "clone", "--bare", repo.Spec.URL, dir); err != nil {
+	if _, err := a.Git.Run(ctx, "", env, "clone", "--bare", "--", repo.Spec.URL, dir); err != nil {
 		return failed(err)
 	}
 	if err := a.pin(ctx, dir); err != nil {
@@ -238,7 +238,7 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 	}
 	env, err := a.credentials(ctx, repo)
 	if err == nil {
-		_, err = a.Git.Run(ctx, "", env, "ls-remote", "--heads", repo.Spec.URL)
+		_, err = a.Git.Run(ctx, "", env, "ls-remote", "--heads", "--", repo.Spec.URL)
 	}
 	if err != nil {
 		entry.Synced = false
@@ -335,9 +335,14 @@ const fetchRefspecKey = "remote.origin.fetch"
 // configureRemote points origin at the Repo's url and mirrors its branches
 // and tags into the bare cache's own refs, so a Sandbox's `clone --shared`
 // off the mount sees `origin/HEAD` and every branch (ADR-0004).
+//
+// Every git call that takes the url puts `--` before it: the url is a Repo
+// CR field a per-run url reaches, and git reads a leading `-` as an option
+// (`--upload-pack=<command>` runs a shell as this pod). The Orchestrator's
+// identity refuses that spelling first; this is the second lock.
 func (a *Agent) configureRemote(ctx context.Context, dir, url string) error {
 	for _, args := range [][]string{
-		{"remote.origin.url", url},
+		{"--", "remote.origin.url", url},
 		{"--replace-all", fetchRefspecKey, "+refs/heads/*:refs/heads/*"},
 		{"--add", fetchRefspecKey, "+refs/tags/*:refs/tags/*"},
 	} {

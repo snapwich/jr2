@@ -193,11 +193,12 @@ func TestClonesWhenASandboxOnThisNodeNamesTheRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !git.has(gitClone, "--bare", repoURL, a.dir(key)) {
+	if !git.has(gitClone, "--bare", "--", repoURL, a.dir(key)) {
 		t.Fatalf("expected a bare clone of the url into the cache, got %v", git.calls)
 	}
-	wantConfig := make([][]string, 0, 2+len(gcPins))
+	wantConfig := make([][]string, 0, 3+len(gcPins))
 	wantConfig = append(wantConfig,
+		[]string{gitConfig, "--", "remote.origin.url", repoURL},
 		[]string{gitConfig, "--replace-all", fetchRefspecKey, "+refs/heads/*:refs/heads/*"},
 		[]string{gitConfig, "--add", fetchRefspecKey, "+refs/tags/*:refs/tags/*"})
 	for _, kv := range gcPins {
@@ -229,6 +230,57 @@ func TestClonesWhenASandboxOnThisNodeNamesTheRepo(t *testing.T) {
 	}
 }
 
+func TestTheURLReachesGitOnlyBehindADoubleDash(t *testing.T) {
+	// ADR-0051: `spec.url` is a field a per-run url — run input — reaches. A
+	// url spelled `--upload-pack=<command>` is an OPTION to git and runs a
+	// shell as this pod, so every call that carries the url ends its options
+	// with `--` first: the probe, the clone, and the re-point alike.
+	evil := "--upload-pack=sh -c evil #@github.com:acme/app.git"
+	withURL := func(r *corev1alpha1.Repo) *corev1alpha1.Repo { r.Spec.URL = evil; return r }
+	operand := func(git *fakeGit, phase string) {
+		t.Helper()
+		carried := 0
+		for _, c := range git.calls {
+			for i, arg := range c {
+				if arg != evil {
+					continue
+				}
+				carried++
+				if !slices.Contains(c[:i], "--") {
+					t.Errorf("%s: the url must come after `--`, got %v", phase, c)
+				}
+			}
+		}
+		if carried == 0 {
+			t.Errorf("%s: expected a git call carrying the url, got %v", phase, git.calls)
+		}
+	}
+
+	git := &fakeGit{}
+	a := newAgent(t, git, withURL(repo(1)))
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	operand(git, "probe")
+
+	git = &fakeGit{}
+	a = newAgent(t, git, withURL(repo(1)), sandboxOn("sb", node, fixedNow.Add(-time.Minute)))
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	operand(git, "clone")
+
+	git = &fakeGit{}
+	a = newAgent(t, git, withURL(repo(2,
+		corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(fixedNow), LastFetched: ts(fixedNow), ObservedGeneration: 1},
+	)))
+	makePresent(t, a)
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("re-point: %v", err)
+	}
+	operand(git, "re-point")
+}
+
 func TestASandboxOnAnotherNodeIsNotDemand(t *testing.T) {
 	git := &fakeGit{}
 	a := newAgent(t, git, repo(1), sandboxOn("sb", "node-b", fixedNow))
@@ -249,7 +301,7 @@ func TestProbesOncePerGenerationWhenNobodyAsks(t *testing.T) {
 	if _, err := reconcile1(t, a); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !git.has("ls-remote", "--heads", repoURL) {
+	if !git.has("ls-remote", "--heads", "--", repoURL) {
 		t.Fatalf("expected a probe, got %v", git.calls)
 	}
 	if present(a.dir(key)) {
@@ -323,7 +375,7 @@ func TestFetchesOnDemandWhenASandboxWasCreatedSinceTheLastAttempt(t *testing.T) 
 	if !git.has("fetch", "origin") {
 		t.Fatalf("expected a fetch, got %v", git.calls)
 	}
-	if git.has(gitClone, "--bare", repoURL, dir) {
+	if git.has(gitClone, "--bare", "--", repoURL, dir) {
 		t.Fatal("a present cache is never re-cloned")
 	}
 	for _, kv := range gcPins {
@@ -384,7 +436,7 @@ func TestSpecChangeRepointsOriginAndFetches(t *testing.T) {
 	if _, err := reconcile1(t, a); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !git.has(gitConfig, "remote.origin.url", repoURL) || !git.has("fetch", "origin") {
+	if !git.has(gitConfig, "--", "remote.origin.url", repoURL) || !git.has("fetch", "origin") {
 		t.Fatalf("a new generation must re-point origin and fetch, got %v", git.calls)
 	}
 	if e := entry(t, a); e.ObservedGeneration != 2 {
@@ -482,7 +534,7 @@ func TestAHalfCloneWithItsMarkerIsDiscarded(t *testing.T) {
 	if _, err := reconcile1(t, a); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if !git.has(gitClone, "--bare", repoURL, a.dir(key)) {
+	if !git.has(gitClone, "--bare", "--", repoURL, a.dir(key)) {
 		t.Fatalf("a marked directory must be re-cloned, not fetched: %v", git.calls)
 	}
 }

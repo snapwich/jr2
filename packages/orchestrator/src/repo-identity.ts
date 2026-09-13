@@ -38,10 +38,16 @@ const DEFAULT_PORT: Record<string, string> = { ssh: "22", https: "443", http: "8
 const SCP_STYLE = /^(?:[^@/:]+@)?([^:/@]+):(?!\/\/)(.+)$/;
 
 /** Resolve a url to its identity and cache key. Throws on an empty, relative, or unparseable url,
- * or a scheme git cannot clone from — the caller's spelling is the error's subject. */
+ * a scheme git cannot clone from, or a url that begins with `-` — the caller's spelling is the
+ * error's subject. */
 export function repoIdentity(url: string): RepoIdentity {
   const raw = url.trim();
   if (raw === "") throw new Error("repo url is empty");
+  // No repository is spelled with a leading `-`, and git reads such an argv element as an OPTION
+  // (`--upload-pack=<command>` runs a shell). A per-run url is run input, so the identity — the
+  // one thing the credentials fence inspects — refuses the shape; the cache agent's `--` is the
+  // second lock.
+  if (raw.startsWith("-")) throw new Error(`repo url begins with "-", which git reads as an option: "${raw}"`);
   const resolved = resolveRemote(raw) ?? resolveLocal(raw);
   return { ...resolved, key: keyOf(resolved.identity) };
 }
@@ -90,13 +96,17 @@ function remoteIdentity(host: string, path: string): string {
   return `${host}/${normalized}`;
 }
 
-/** Leading `/` off, `//` collapsed, trailing `/` off, ONE trailing `.git` off; case kept. */
+/** Leading `/` off, `//` collapsed, `.` and `..` segments resolved (as `new URL()` resolves them,
+ * so the hand-parsed scp form lands where the URL forms do), trailing `/` off, ONE trailing
+ * `.git` off; case kept. */
 function normalizePath(path: string): string {
-  return path
-    .replace(/\/{2,}/g, "/")
-    .replace(/^\//, "")
-    .replace(/\/+$/, "")
-    .replace(/\.git$/, "");
+  const segments: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") segments.pop();
+    else segments.push(segment);
+  }
+  return segments.join("/").replace(/\.git$/, "");
 }
 
 function keyOf(identity: string): string {
