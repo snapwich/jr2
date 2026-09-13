@@ -11,6 +11,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1030,7 +1031,13 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
   const infraKey = repoKey("https://example.test/infra.git");
   assert.match(script, new RegExp(`git clone --shared --no-checkout '/repos/${appKey}' '/work/app/default'`));
   assert.match(script, new RegExp(`git clone --shared --no-checkout '/repos/${infraKey}' '/work/infra/default'`));
-  assert.match(script, /worktree add '\/work\/infra\/feat-login' -b 'feat\/login' 'v2'/);
+  // A Binding's `ref` is the BASE the branch is cut from (ADR-0051) — named through the clone's
+  // remote-tracking ref when one exists, else as written (a tag, a sha). Bare, git's DWIM would
+  // make the base branch itself and discard `-b` (see the real-git test below).
+  assert.match(
+    script,
+    /worktree add '\/work\/infra\/feat-login' -b 'feat\/login' "\$\(git -C '\/work\/infra\/default' rev-parse --verify -q 'refs\/remotes\/origin\/v2' >\/dev\/null && printf %s 'refs\/remotes\/origin\/v2' \|\| printf %s 'v2'\)"/,
+  );
   // The fetch/push split (ADR-0005/0051): push goes to the REAL remote, in the Binding's OWN
   // spelling — a Machine that bound over ssh pushes over ssh even when the cache was cloned over
   // https. Nothing is read off the cache to learn it.
@@ -1109,7 +1116,11 @@ test("attachScript without a reviewSha emits no review worktree", () => {
 
 test("attachScript quotes hostile refs and urls, and rejects an empty slot list", () => {
   const { script } = attachScript({ branch: "b" }, [{ slot: "app", url: APP_URL, ref: "main; rm -rf /" }], PATHS);
-  assert.match(script, /-b 'b' 'main; rm -rf \/'/, "ref rides inside single quotes, never bare");
+  assert.match(
+    script,
+    /-b 'b' "\$\(git -C '\/work\/app\/default' rev-parse --verify -q 'refs\/remotes\/origin\/main; rm -rf \/' >\/dev\/null && printf %s 'refs\/remotes\/origin\/main; rm -rf \/' \|\| printf %s 'main; rm -rf \/'\)"/,
+    "ref rides inside single quotes, never bare",
+  );
   const reviewed = attachScript(
     { branch: "b", reviewSha: "$(reboot)" },
     [{ slot: "app", url: APP_URL, ref: "main" }],
@@ -1119,4 +1130,59 @@ test("attachScript quotes hostile refs and urls, and rejects an empty slot list"
   const pushed = attachScript({ branch: "b" }, [{ slot: "app", url: "https://example.test/a'b.git" }], PATHS);
   assert.match(pushed.script, /set-url --push origin -- 'https:\/\/example\.test\/a'\\''b\.git'/, "and the push url");
   assert.throws(() => attachScript({ branch: "b" }, [], PATHS), /names no Repo Slot/);
+});
+
+test("attachScript cuts the branch worktree FROM a Binding's ref, never ON it (real git)", async (t) => {
+  // ADR-0051: `ref` is the base the branch Worktree is cut from. The pod-local clone is
+  // `--no-checkout` off the cache, so only the default branch exists locally and every other
+  // branch is `origin/<name>`; handed a bare `develop`, git's "worktree add" DWIM creates a local
+  // `develop` tracking `origin/develop` and silently drops `-b` — the Agent would commit on, and
+  // push to, the base. This drives the emitted worktree line through real git in a temp layout
+  // shaped like the pod's (`/repos/<key>` cache, `/work/<slot>/default`) for each ref kind.
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const root = await mkdtemp(join(tmpdir(), "j2-attach-"));
+  const src = join(root, "src");
+  await mkdir(src);
+  git(src, "init", "-q", "-b", "main");
+  const commit = (m: string) =>
+    git(src, "-c", "user.email=t@j2", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", m);
+  commit("one");
+  git(src, "branch", "develop");
+  commit("two");
+  git(src, "tag", "v3");
+  const sha = git(src, "rev-parse", "HEAD");
+  const url = "https://example.test/acme/app.git";
+  const key = repoKey(url);
+  const reposMount = join(root, "repos");
+  await mkdir(reposMount);
+  git(root, "clone", "-q", "--bare", src, join(reposMount, key));
+  // safe.directory is irrelevant here (one uid owns everything), and the ACL helper does not
+  // exist on the host — so run the script's git lines only, from `mkdir` on.
+  const attachable = (s: string) => s.split("\n").filter((l) => !/^umask|safe\.directory|work-acl/.test(l));
+  const cases: Array<{ ref: string | undefined; head: string; at: string }> = [
+    { ref: "develop", head: "feat/x", at: git(src, "rev-parse", "develop") }, // a non-default branch
+    { ref: "main", head: "feat/x", at: sha }, // the default branch, by name
+    { ref: "v3", head: "feat/x", at: sha }, // a tag
+    { ref: sha, head: "feat/x", at: sha }, // a sha
+    { ref: undefined, head: "feat/x", at: sha }, // absent → the Repo's own default branch
+  ];
+  for (const [i, c] of cases.entries()) {
+    await t.test(`ref ${c.ref === undefined ? "(absent)" : c.ref}`, async () => {
+      const workRoot = join(root, `work${i}`);
+      const { script, workdir } = attachScript(
+        { branch: c.head },
+        [{ slot: "app", url, ...(c.ref === undefined ? {} : { ref: c.ref }) }],
+        { reposMount, workRoot },
+      );
+      execFileSync("sh", ["-ec", attachable(script).join("\n")], { stdio: ["ignore", "pipe", "pipe"] });
+      assert.equal(git(workdir, "branch", "--show-current"), c.head, "the worktree is ON the new branch");
+      assert.equal(git(workdir, "rev-parse", "HEAD"), c.at, "cut FROM the ref");
+      assert.equal(
+        git(join(workRoot, "app", "default"), "branch", "--list", "develop"),
+        "",
+        "no local branch named after the base was conjured",
+      );
+    });
+  }
 });

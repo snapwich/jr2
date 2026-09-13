@@ -941,7 +941,7 @@ export function attachScript(
       `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared --no-checkout ${sq(cache)} ${sq(dflt)}`,
       // No ref → the Repo's own default branch: this clone's `origin/HEAD` tracks the cache's
       // HEAD, which the cache agent's clone pointed at the remote's default (ADR-0004).
-      `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.ref ?? "origin/HEAD")}`,
+      `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${repo.ref === undefined ? sq("origin/HEAD") : baseOf(dflt, repo.ref)}`,
       // Fetch/push split (ADR-0005): `git fetch` stays on the cache (the hop the pod can make —
       // which is why a stale attach stays stale until the cache agent's next fetch, ADR-0051),
       // `git push` goes to the REAL remote — the Binding's own spelling, so a Machine that bound
@@ -974,6 +974,19 @@ export function attachScript(
     repos: worktrees,
     ...(spec.reviewSha ? { review } : {}),
   };
+}
+
+/**
+ * The commit-ish a Binding's `ref` names inside the pod-local clone, as a shell expression: the
+ * remote-tracking branch `refs/remotes/origin/<ref>` when the clone has one, else `<ref>` as
+ * written (a tag, a sha). A `--no-checkout` clone holds ONE local branch — the default — so a bare
+ * branch name is never a local ref here, and git's "worktree add" DWIM would then create the BASE
+ * branch tracking `origin/<ref>` and discard `-b`: the Agent would commit on, and push to, the base
+ * it was meant to branch FROM. Naming the remote-tracking ref outright leaves nothing to guess.
+ */
+function baseOf(dflt: string, ref: string): string {
+  const remote = sq(`refs/remotes/origin/${ref}`);
+  return `"$(git -C ${sq(dflt)} rev-parse --verify -q ${remote} >/dev/null && printf %s ${remote} || printf %s ${sq(ref)})"`;
 }
 
 /** POSIX single-quote an argument for the in-pod `sh -ec` script. */
