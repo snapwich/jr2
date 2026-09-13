@@ -197,6 +197,14 @@ test("`j2 status` with no run reports the data plane and every Repo, failing nod
     },
     { key: "infra-89abcdef", url: "https://example.test/infra.git", bound: false, nodes: [] },
   ];
+  const staleOnly = [
+    {
+      key: "app-0123abcd",
+      url: "git@github.com:acme/app.git",
+      bound: true,
+      nodes: [{ node: "kind-worker", present: true, synced: false, lastError: "Could not resolve host: github.com" }],
+    },
+  ];
   const asked: string[] = [];
   const { io, out, err } = mkIo({
     env: { J2_URL: "http://test" },
@@ -218,12 +226,31 @@ test("`j2 status` with no run reports the data plane and every Repo, failing nod
   );
   assert.match(
     err(),
-    /repo app-0123abcd \(git@github\.com:acme\/app\.git\) on node kind-worker: Permission denied \(publickey\)\./,
+    /repo app-0123abcd \(git@github\.com:acme\/app\.git\) on node kind-worker: absent — Permission denied \(publickey\)\./,
+    "a cold clone that failed: the cache is absent on that node",
   );
   assert.doesNotMatch(err(), /kind-worker2/, "a synced node needs no line");
   assert.doesNotMatch(err(), /infra/, "a Repo no node has tried yet needs no line");
   assert.match(err(), /keeps retrying/, "…and the way out: register the key, the cache agent closes the window");
+  assert.match(
+    err(),
+    /absent: Workspaces needing that cache on that node wait/,
+    "absence parks the provision (ADR-0051)",
+  );
+  assert.doesNotMatch(err(), /stale:/, "no warm cache failed a fetch, so no stale line");
   assert.doesNotMatch(err(), /no data plane/);
+
+  // Freshness degrades, absence does not (ADR-0004/0051): a fetch that fails on a WARM cache is
+  // stale, and an attach proceeds on what the cache holds — the hint must not claim Workspaces wait.
+  const warm = mkIo({
+    env: { J2_URL: "http://test" },
+    fetch: () => Promise.resolve(Response.json({ dataPlane: true, repos: staleOnly })),
+  });
+  assert.equal(await main(["status"], warm.io), 0);
+  assert.match(warm.err(), /on node kind-worker: stale — Could not resolve host: github\.com/);
+  assert.match(warm.err(), /stale: attaches proceed on what the cache holds/);
+  assert.doesNotMatch(warm.err(), /wait until/, "a stale cache parks nothing");
+  assert.doesNotMatch(warm.err(), /absent/);
 
   // No data plane is an answer, not an empty list (ADR-0051).
   const none = mkIo({
