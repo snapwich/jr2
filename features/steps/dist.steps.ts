@@ -78,17 +78,22 @@ export default defineConfig({ kitRegistry: process.env.J2_KIT_REGISTRY });
  * registry already has. It reaches this install only — the staged bundle drops `.npmrc` with the
  * rest of the credential files (ADR-0043), so the frozen install `j2 up` runs inside it takes the
  * registry off the environment instead (see `setupDist`).
+ *
+ * The one thing the manager gets that a user's shell would not: a cache of the fixture's, because
+ * the user's own remembers a registry that was wiped since (`InstalledKit.cacheDir`).
  */
 When("I install its dependencies with {string}", async function (this: E2EWorld, pm: string): Promise<void> {
   const registry = this.dist?.registry;
-  assert.ok(registry, "a @dist scenario has its installed kit");
+  const cacheDir = this.dist?.cacheDir;
+  assert.ok(registry && cacheDir, "a @dist scenario has its installed kit");
+  const cacheSetting = CACHE_SETTING[pm];
+  assert.ok(cacheSetting, `no cache setting is known for "${pm}" — this tier drives npm and pnpm`);
   await writeFile(join(this.dir, ".npmrc"), `registry=${registry}\n`);
   // The resolution failure is the likeliest one in this tier, so its own words are carried out.
-  await exec(pm, ["install"], { cwd: this.dir, env: shellEnv(), maxBuffer: BIG }).catch(
-    (err: Error & { stderr?: string }) => {
-      throw new Error(`${pm} install failed in ${this.dir}: ${err.stderr || err.message}`);
-    },
-  );
+  const env = { ...shellEnv(), [cacheSetting]: cacheDir };
+  await exec(pm, ["install"], { cwd: this.dir, env, maxBuffer: BIG }).catch((err: Error & { stderr?: string }) => {
+    throw new Error(`${pm} install failed in ${this.dir}: ${err.stderr || err.message}`);
+  });
   // The lockfile is part of the instance contract (ADR-0043): it, not the node_modules this just
   // wrote, is what the image bundle installs from — so a manager that wrote none has already
   // broken the converge, three minutes before `j2 up` would say so.
@@ -97,6 +102,13 @@ When("I install its dependencies with {string}", async function (this: E2EWorld,
     throw new Error(`${pm} install left no ${lockfile} — the bundle installs from the lockfile (ADR-0043)`);
   });
 });
+
+/**
+ * Each manager's name for its cache, as the environment spells it. Keyed by manager because the
+ * two names differ and each warns about the other's as unknown config — and it goes through the
+ * environment, never through the `.npmrc` above, which stays what a user writes.
+ */
+const CACHE_SETTING: Record<string, string> = { npm: "npm_config_cache", pnpm: "npm_config_cache_dir" };
 
 // The converge, in installed mode: no kit sources resolve, so the Harness, Adapter, and operator
 // come from the published `<kitRegistry>/j2-<x>:<kitversion>` tags the suite fixture PUSHED, pulled

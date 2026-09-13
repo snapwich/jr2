@@ -32,8 +32,16 @@ const REPO = fileURLToPath(new URL("../../", import.meta.url));
 
 /** What a @dist scenario needs from the fixture: where the installed `j2` lives, the registry its
  * package manager resolves `@j2/*` from, and the one its CLUSTER pulls Kit images from — two
- * different registries answering two different questions (ADR-0044), never one address doing both. */
-export type InstalledKit = { binDir: string; registry: string; kitRegistry: string };
+ * different registries answering two different questions (ADR-0044), never one address doing both.
+ *
+ * `cacheDir` is where that package manager may REMEMBER `registry`: a folder of this fixture's, so
+ * the memory is exactly as old as the registry it describes. The registry is wiped per run — that
+ * is what deletes version bookkeeping (ADR-0043) — and a manager's cache is bookkeeping of the
+ * client's own: pnpm answers an EXACT version out of cached metadata without asking the registry
+ * at all, so `@j2/orchestrator@0.0.0` from a previous run's publish, at that run's integrity, would
+ * install out of the store and typecheck the instance against a kit this checkout no longer is.
+ * The publish side closes the same leak with `--force` (scripts/dist-publish.sh). */
+export type InstalledKit = { binDir: string; registry: string; kitRegistry: string; cacheDir: string };
 
 let pending: Promise<InstalledKit> | undefined;
 /** The fixture's own state — its dir (registry storage, npmrc, global prefix) and the environment
@@ -116,7 +124,7 @@ async function bringUp(): Promise<InstalledKit> {
   const real = await realpath(join(binDir, "j2"));
   const prefix = await realpath(dir);
   assert.ok(real.startsWith(prefix), `the installed j2 resolves inside the throwaway prefix, not to ${real}`);
-  return { binDir, registry, kitRegistry: kitRegistry.trim() };
+  return { binDir, registry, kitRegistry: kitRegistry.trim(), cacheDir: join(dir, "pm-cache") };
 }
 
 /** 64 MB: three docker builds and a publish, all narrating. */
