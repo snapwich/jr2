@@ -396,6 +396,69 @@ func TestRemoteGitCallsAreBudgetedAndLocalOnesAreNot(t *testing.T) {
 	}
 }
 
+func TestTheFetchASandboxWaitsOnCarriesTheShortBudget(t *testing.T) {
+	// ADR-0051: a Sandbox's Ready is held on the fetch before its attach, and
+	// "freshness degrades, absence does not" is only true if that fetch fails
+	// inside the wait — a hung remote must become a stale Ready, not a
+	// provision that times out. So the on-demand fetch carries its own short
+	// budget, while the interval fetch, with nobody waiting, keeps the full
+	// one; a cache the on-demand fetch could not refresh in time is landed by
+	// the interval fetch afterwards.
+	budgetOf := func(git *fakeGit) time.Duration {
+		t.Helper()
+		for i, c := range git.calls {
+			if c[0] == "fetch" {
+				return git.budgets[i]
+			}
+		}
+		t.Fatalf("no fetch call in %v", git.calls)
+		return 0
+	}
+	within := func(got, want time.Duration) bool { return got > want-time.Second && got <= want }
+	warm := func(last time.Time) corev1alpha1.RepoNodeStatus {
+		return corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}
+	}
+
+	// A pod created since the last attempt: on demand, the default short budget.
+	git := &fakeGit{}
+	a := newAgent(t, git, repo(1, warm(fixedNow.Add(-time.Minute))), podOn("sb", node, fixedNow.Add(-30*time.Second)))
+	makePresent(t, a)
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("on-demand fetch: %v", err)
+	}
+	if got := budgetOf(git); !within(got, defaultOnDemandFetchTimeout) {
+		t.Fatalf("the fetch a Sandbox waits on must carry the on-demand budget (%v), got %v", defaultOnDemandFetchTimeout, got)
+	}
+	if defaultOnDemandFetchTimeout >= defaultFetchTimeout {
+		t.Fatalf("the on-demand budget (%v) must be the short one, inside the interval budget (%v)", defaultOnDemandFetchTimeout, defaultFetchTimeout)
+	}
+
+	// The same demand with the flag set: the flag's value.
+	git = &fakeGit{}
+	b := newAgent(t, git, repo(1, warm(fixedNow.Add(-time.Minute))), podOn("sb", node, fixedNow.Add(-30*time.Second)))
+	b.OnDemandFetchTimeout, b.FetchTimeout = 20*time.Second, 3*time.Minute
+	makePresent(t, b)
+	if _, err := reconcile1(t, b); err != nil {
+		t.Fatalf("on-demand fetch: %v", err)
+	}
+	if got := budgetOf(git); !within(got, 20*time.Second) {
+		t.Fatalf("an on-demand fetch must carry OnDemandFetchTimeout, not FetchTimeout, got %v", got)
+	}
+
+	// The interval, with the same pod already served by an earlier attempt:
+	// nobody waits, so the full budget.
+	git = &fakeGit{}
+	c := newAgent(t, git, repo(1, warm(fixedNow.Add(-6*time.Minute))), podOn("sb", node, fixedNow.Add(-10*time.Minute)))
+	c.OnDemandFetchTimeout, c.FetchTimeout = 20*time.Second, 3*time.Minute
+	makePresent(t, c)
+	if _, err := reconcile1(t, c); err != nil {
+		t.Fatalf("interval fetch: %v", err)
+	}
+	if got := budgetOf(git); !within(got, 3*time.Minute) {
+		t.Fatalf("an interval fetch must carry FetchTimeout, got %v", got)
+	}
+}
+
 func TestOwnStatusWritesDoNotWakeTheAgent(t *testing.T) {
 	// The agent writes its node's entry and then returns an error for the
 	// backoff; if that write's event re-queued the key the backoff would never

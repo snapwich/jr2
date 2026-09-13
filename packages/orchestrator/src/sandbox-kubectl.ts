@@ -279,8 +279,20 @@ export type KubectlSandboxOptions = {
    * `j2.dev/keepalive` is re-stamped AND continuity is read back. Must be ≪ idleTimeout, since
    * a lapsed lease is what lets the operator reap. Default 5m. */
   leaseIntervalMs?: number;
-  /** Await-Ready budget. Default 120s, polled every second. */
+  /** Await-Ready budget for the POD: from the CR apply until the operator reports the pod Ready.
+   * Default 120s, polled every second. A pod that never comes up (an image that misses ADR-0037's
+   * floor) is what this bounds; a pod that is up and waiting on its Repos is `repoTimeoutMs`'s. */
   readyTimeoutMs?: number;
+  /**
+   * Await-Ready budget for the REPOS (ADR-0051): once the operator holds a Sandbox whose pod is
+   * Ready on a Repo reason — the node's cache agent is cloning a cold node, or fetching before the
+   * attach — the wait is measured against this, from the same CR apply. Sized for a clone, not a
+   * pod: the agent's clone budget is 20m, and this must exceed it so a clone that runs out of
+   * time fails BY NAME (`RepoCloneFailed`, git's words) instead of as this port's timeout; and it
+   * must stay inside `idleTimeout` (30m), because the lease starts after provision, so the operator
+   * reaps a Sandbox that waits longer than that. Default 25m.
+   */
+  repoTimeoutMs?: number;
   pollMs?: number;
   /**
    * The Repo-resource port (ADR-0051, repos.ts): every Repo a provision names must exist as a
@@ -309,6 +321,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const imagesPath = opts.imagesPath ?? join(IMAGES_MOUNT, IMAGES_KEY);
   const workRoot = opts.workRoot ?? "/work";
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
+  const repoTimeoutMs = opts.repoTimeoutMs ?? 25 * 60_000;
   const pollMs = opts.pollMs ?? 1_000;
   const exec = opts.exec ?? defaultKubectlExec;
   const credentials = opts.credentials ?? [];
@@ -570,7 +583,6 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     };
   };
 
-  type Condition = { type: string; status: string; reason?: string; message?: string };
   type SandboxStatus = {
     phase?: string;
     endpoint?: string;
@@ -743,7 +755,13 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start
       await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(cr) });
 
-      const deadline = Date.now() + readyTimeoutMs;
+      const applied = Date.now();
+      // Two budgets from one instant (see the options): the pod's until the operator has seen the
+      // pod Ready, the Repos' from the first poll that finds the Sandbox held on a Repo reason —
+      // which the operator reports only once the pod IS Ready, so the preflight has already passed
+      // and what remains is a clone or a fetch on the node. Sticky: a pod that came up once is not
+      // a pod that will never come up, whatever it does afterwards.
+      let held = false;
       let owned = false;
       let polls = 0;
       for (;;) {
@@ -764,6 +782,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         if (status?.phase !== "Ready" && ready?.reason === REPO_CLONE_FAILED) {
           throw new Error(repoCloneError(req.name, ready.message ?? ready.reason));
         }
+        if (ready?.reason !== undefined && REPO_HELD.has(ready.reason)) held = true;
         if (status?.phase === "Ready") {
           // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
           if (!status.endpoint) throw new Error(`Sandbox "${req.name}" is Ready but reports no endpoint`);
@@ -778,7 +797,11 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
           // undefined and the lease falls back to presence.
           return { endpoint: status.endpoint, identity: status.podUID };
         }
-        if (Date.now() >= deadline) {
+        if (Date.now() >= applied + (held ? repoTimeoutMs : readyTimeoutMs)) {
+          // A Sandbox the operator held on its Repos ran out the Repo budget: the pod is up and the
+          // preflight passed, so the hint about the image would be a lie. What is true is the
+          // operator's own verdict — which Repo, on which node — and that the agent is still at it.
+          if (held) throw new Error(repoWaitError(req.name, repoTimeoutMs, ready));
           // One last look before falling back to the hint: the fault may have appeared inside the
           // final interval, and a named error beats a timeout in every case where both are true.
           const fault = await podFault(req.name);
@@ -859,9 +882,33 @@ export const repoMountPath = (key: string): string => `${REPOS_MOUNT}/${key}`;
  * identity, and whether a Machine's slot (not only the run's) binds it. */
 type FencedRepo = { key: string; url: string; identity: string; bound: boolean };
 
+/** One entry of a Sandbox CR's `status.conditions`, as the operator writes it. */
+type Condition = { type: string; status: string; reason?: string; message?: string };
+
 /** The operator's Ready reason when the cache agent could not clone onto the pod's node
  * (sandbox_controller.go) — the one Ready verdict a provision cannot wait out. */
 const REPO_CLONE_FAILED = "RepoCloneFailed";
+
+/** The operator's Ready reasons that hold a Sandbox whose POD is Ready on its Repos
+ * (sandbox_controller.go, `reposReadiness`): the resource not yet seen, or the node's cache
+ * agent still cloning or fetching. The wait against them is the Repo budget, not the pod's. */
+const REPO_HELD: ReadonlySet<string> = new Set(["RepoMissing", "RepoPending"]);
+
+/**
+ * The Repo budget ran out with the operator still holding the Sandbox. The pod is up, so the
+ * preflight is not the question; the verdict names the Repo and the node, and the port adds
+ * what the operator cannot say: the agent is still working, `j2 status` shows it per node, and
+ * the budget is the port's, not the clone's.
+ */
+function repoWaitError(name: string, budgetMs: number, ready: Condition | undefined): string {
+  const verdict = ready?.message ? `${ready.reason ?? "?"}: ${ready.message}` : "no Ready condition reported";
+  return (
+    `Sandbox "${name}" waited ${Math.round(budgetMs / 60_000)}m for its Repos and the operator still holds it — ` +
+    `${verdict} (ADR-0051). The node's cache agent clones a cold node once and fetches before every attach; ` +
+    "`j2 status` reports each Repo per node. Start the run again once the cache is present, or raise " +
+    "the port's `repoTimeoutMs` for a repository whose clone outlasts it."
+  );
+}
 
 /**
  * The fix beside the symptom. The operator's message carries the Repo, the node, and git's own

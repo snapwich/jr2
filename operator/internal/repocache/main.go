@@ -50,7 +50,8 @@ func Main(args []string) int {
 	minBackoff := fs.Duration("min-backoff", 5*time.Second, "The first retry delay after a failed clone or probe.")
 	maxBackoff := fs.Duration("max-backoff", 5*time.Minute, "The longest retry delay after repeated failures.")
 	cloneTimeout := fs.Duration("clone-timeout", defaultCloneTimeout, "The budget for one git clone; past it the clone is killed and fails.")
-	fetchTimeout := fs.Duration("fetch-timeout", defaultFetchTimeout, "The budget for one git fetch or probe; past it the call is killed and fails.")
+	fetchTimeout := fs.Duration("fetch-timeout", defaultFetchTimeout, "The budget for one interval git fetch or probe; past it the call is killed and fails.")
+	onDemandFetchTimeout := fs.Duration("on-demand-fetch-timeout", defaultOnDemandFetchTimeout, "The budget for the git fetch a Sandbox waits on before its attach; past it the Sandbox goes Ready stale.")
 	zapOpts := zap.Options{}
 	zapOpts.BindFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -86,14 +87,15 @@ func Main(args []string) int {
 	}
 
 	agent := &Agent{
-		Client:       mgr.GetClient(),
-		Git:          ExecGit(),
-		CacheDir:     *cacheDir,
-		Namespace:    *namespace,
-		Node:         *node,
-		Home:         *home,
-		CloneTimeout: *cloneTimeout,
-		FetchTimeout: *fetchTimeout,
+		Client:               mgr.GetClient(),
+		Git:                  ExecGit(),
+		CacheDir:             *cacheDir,
+		Namespace:            *namespace,
+		Node:                 *node,
+		Home:                 *home,
+		CloneTimeout:         *cloneTimeout,
+		FetchTimeout:         *fetchTimeout,
+		OnDemandFetchTimeout: *onDemandFetchTimeout,
 	}
 	if err := agent.SetupWithManager(mgr, *minBackoff, *maxBackoff); err != nil {
 		log.Error(err, "Failed to create controller", "controller", "repo-cache")

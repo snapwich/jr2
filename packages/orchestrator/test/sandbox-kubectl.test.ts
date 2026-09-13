@@ -932,23 +932,82 @@ test("Ready held with reason RepoCloneFailed fails the provision BY NAME, not as
   assert.equal(gets, 3, "RepoPending is waited out; RepoCloneFailed is not");
 });
 
-test("a timeout carries the operator's Ready verdict when it has one", async () => {
-  // A Repo still pending on the node (a slow clone) reads very differently from a preflight
-  // death, and the phase alone cannot tell them apart — so the condition rides the message.
+test("a Sandbox the operator holds on its Repos waits on the REPO budget, not the pod's", async () => {
+  // ADR-0051: a Sandbox that lands on a cold node pays one clone there — the image-pull
+  // economics — and a clone is not bounded by what a pod takes to come up. The operator holds
+  // on a Repo reason only once the pod IS Ready, so from that poll on the wait is the Repo
+  // budget's: the pod budget here is long gone before the cache lands, and the provision still
+  // returns Ready.
+  let gets = 0;
+  const { exec } = fakeExec({
+    apply: () => "ok",
+    patch: () => "ok",
+    get: () => (++gets < 8 ? heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`) : readyStatus),
+  });
+  const port = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    readyTimeoutMs: 0,
+    repoTimeoutMs: 60_000,
+    exec,
+  });
+  const out = await port.provision({ name: "sb-cold", runId: "r", workflow: "w", ...withApp });
+  assert.equal(out.endpoint, "http://sb-1.default.svc:8080");
+  assert.equal(gets, 8, "every RepoPending poll past the pod budget was waited out");
+});
+
+test("the Repo budget runs out BY NAME: the operator's verdict, the node, and where to look — never the preflight", async () => {
+  // The pod came up, so the preflight passed; a timeout that pointed at the image would lie. The
+  // operator's condition names the Repo and the node, and the port adds that the agent is still
+  // at it, that `j2 status` shows it per node, and that the budget is the port's own.
   const { exec } = fakeExec({
     apply: () => "ok",
     patch: () => "ok",
     get: () => heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`),
   });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 5, exec });
+  const port = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    readyTimeoutMs: 60_000,
+    repoTimeoutMs: 5,
+    exec,
+  });
   await assert.rejects(
     () => port.provision({ name: "sb-slow", runId: "r", workflow: "w", ...withApp }),
     (err: Error) => {
+      assert.match(err.message, /Sandbox "sb-slow" waited \d+m for its Repos and the operator still holds it/);
+      assert.match(err.message, new RegExp(`RepoPending: Repo "${APP_KEY}" is not on node kind-worker yet`));
+      assert.match(err.message, /j2 status/);
+      assert.match(err.message, /repoTimeoutMs/);
+      assert.match(err.message, /ADR-0051/);
+      assert.ok(!/never reached Ready|preflight/.test(err.message), "the pod is up; the image is not the question");
+      return true;
+    },
+  );
+});
+
+test("a pod that never comes up is still the POD budget's timeout, with the preflight hint", async () => {
+  // The Repo budget applies only once the operator has held the Sandbox on a Repo reason, which
+  // it reports after the pod is Ready. A pod stuck before that — PodNotReady, or no condition
+  // at all — runs out the pod budget and gets the image hint, Repo budget untouched.
+  const { exec } = fakeExec({
+    apply: () => "ok",
+    patch: () => "ok",
+    get: () => heldOn("PodNotReady", "pod is not yet Ready"),
+  });
+  const port = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    readyTimeoutMs: 5,
+    repoTimeoutMs: 60_000,
+    exec,
+  });
+  await assert.rejects(
+    () => port.provision({ name: "sb-stuck", runId: "r", workflow: "w", ...withApp }),
+    (err: Error) => {
       assert.match(err.message, /never reached Ready \(last phase: Pending\)/);
-      assert.match(
-        err.message,
-        new RegExp(`Ready condition says: RepoPending: Repo "${APP_KEY}" is not on node kind-worker yet`),
-      );
+      assert.match(err.message, /check the preflight/);
+      assert.match(err.message, /Ready condition says: PodNotReady: pod is not yet Ready/);
       return true;
     },
   );

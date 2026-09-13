@@ -53,14 +53,30 @@ const (
 	// defaults it; a resource that skipped admission may not).
 	defaultRefreshInterval = 5 * time.Minute
 	// defaultCloneTimeout bounds one `git clone`; defaultFetchTimeout bounds
-	// one `git fetch` or `git ls-remote`. A git child that hangs — a
+	// one interval `git fetch` or `git ls-remote`. A git child that hangs — a
 	// black-holed network, a remote that never answers — would otherwise hold
 	// this node's one reconcile worker, and with it every other Repo's
 	// on-demand fetch, for as long as it hangs. ADR-0051's "freshness
 	// degrades, absence does not" assumes a fetch FAILS; the budget is what
 	// turns a hang into a failure.
-	defaultCloneTimeout = 30 * time.Minute
+	//
+	// The clone budget sits inside the Orchestrator's Repo budget for a
+	// provision (sandbox-kubectl.ts, 25m), which sits inside the Sandbox's
+	// idleTimeout (30m): a clone that runs out of time is then reported to
+	// the waiting provision BY NAME, with git's words, before that provision
+	// gives up on its own — and before the operator reaps the Sandbox.
+	defaultCloneTimeout = 20 * time.Minute
 	defaultFetchTimeout = 5 * time.Minute
+	// defaultOnDemandFetchTimeout bounds the fetch a Sandbox WAITS on — the
+	// one before its attach (ADR-0051). Its Ready is held until this fetch
+	// lands or fails, and the cache is already present, so a long fetch buys
+	// freshness at the price of the Sandbox's wait: past this bound the fetch
+	// fails, the Sandbox goes Ready stale, and the interval fetch — with the
+	// full budget, and nobody waiting — lands the objects afterwards. Short
+	// because the delta is small: a cache is fetched every interval, so what
+	// an on-demand fetch pulls is at most one interval of the remote's
+	// history, unless the interval fetches have been failing too.
+	defaultOnDemandFetchTimeout = time.Minute
 	// evictRetry is how long a deleted Repo whose cache a pod on this node
 	// still mounts waits before the agent looks again.
 	evictRetry = time.Minute
@@ -91,10 +107,12 @@ type Agent struct {
 	Node string
 	// Home is where ssh material is written ($HOME, an emptyDir).
 	Home string
-	// CloneTimeout bounds one clone and FetchTimeout one fetch or probe; zero
+	// CloneTimeout bounds one clone, FetchTimeout one interval fetch or
+	// probe, and OnDemandFetchTimeout the fetch a Sandbox waits on; zero
 	// means the default.
-	CloneTimeout time.Duration
-	FetchTimeout time.Duration
+	CloneTimeout         time.Duration
+	FetchTimeout         time.Duration
+	OnDemandFetchTimeout time.Duration
 	// Now is the clock; tests fix it.
 	Now func() time.Time
 }
@@ -326,6 +344,8 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 // refresh keeps a present cache pinned and fetched. The fetch is on demand
 // (a Sandbox created since the last attempt), on the interval, or on a spec
 // change — which also re-points origin, since the url may be what changed.
+// An on-demand fetch carries the short budget: a Sandbox is held on it, and
+// freshness degrades where absence does not.
 func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string, asked time.Time) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	if err := a.pin(ctx, dir); err != nil {
@@ -339,7 +359,8 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 		last = entry.LastAttempt.Time
 	}
 	stale := entry == nil || !entry.Present || entry.ObservedGeneration < repo.Generation
-	due := last.IsZero() || asked.After(last) || !now.Time.Before(last.Add(interval))
+	onDemand := asked.After(last)
+	due := last.IsZero() || onDemand || !now.Time.Before(last.Add(interval))
 	if !stale && !due {
 		return ctrl.Result{RequeueAfter: last.Add(interval).Sub(now.Time)}, nil
 	}
@@ -360,7 +381,11 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 		env, err = a.credentials(ctx, repo)
 	}
 	if err == nil {
-		fetchCtx, cancel := a.remote(ctx, a.FetchTimeout, defaultFetchTimeout)
+		budget, fallback := a.FetchTimeout, defaultFetchTimeout
+		if onDemand {
+			budget, fallback = a.OnDemandFetchTimeout, defaultOnDemandFetchTimeout
+		}
+		fetchCtx, cancel := a.remote(ctx, budget, fallback)
 		_, err = a.Git.Run(fetchCtx, dir, env, "fetch", "origin")
 		cancel()
 	}

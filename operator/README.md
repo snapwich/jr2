@@ -42,9 +42,12 @@ go run ./cmd repo-cache --cache-dir /tmp/j2-cache --namespace <ns> --node <name>
 ```
 
 `--namespace` and `--node` default to `J2_NAMESPACE` and `NODE_NAME` (the DaemonSet's downward API); `--min-backoff`
-and `--max-backoff` bound the retry after a failed clone or probe; `--clone-timeout` and `--fetch-timeout` bound one git
-call, so a hung remote fails the one Repo instead of holding the node's worker. The image carries `git` and `ssh` for
-it, which is why the final stage is alpine rather than distroless.
+and `--max-backoff` bound the retry after a failed clone or probe; `--clone-timeout`, `--fetch-timeout`, and
+`--on-demand-fetch-timeout` bound one git call, so a hung remote fails the one Repo instead of holding the node's
+worker. The on-demand budget is the short one: a Sandbox is held on that fetch, and past the bound it goes Ready stale
+on the objects the cache holds (ADR-0051); the interval fetch, with nobody waiting, gets the full budget. The clone
+budget sits inside the Orchestrator's Repo budget for a provision, so a clone that runs out of time reaches the waiting
+run by name. The image carries `git` and `ssh` for it, which is why the final stage is alpine rather than distroless.
 
 ## What it does (ADR-0001)
 
