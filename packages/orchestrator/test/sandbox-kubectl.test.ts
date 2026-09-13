@@ -1,8 +1,10 @@
 // kubectlSandbox — the CR/exec MAPPING, against a fake process seam (the cluster itself is the
 // kind e2e tier's job). What matters here: the CR carries the run labels and names its Repos by
 // cache key (ADR-0051), Ready gates provisioning (returning the CR's own svc-DNS endpoint), the
-// attach script is the idempotent ADR-0004 sequence off `/repos/<key>`, the credentials fence
-// refuses a per-run url no entry admits before anything is applied, and — since
+// attach script is the idempotent ADR-0004 sequence off `/repos/<key>`, every Repo's resource is
+// ensured before the CR names it and the operator's Ready verdict on it is read (a clone that
+// failed fails the provision by name; a fetch that failed makes the attach stale), the credentials
+// fence refuses a per-run url no entry admits before anything is applied, and — since
 // ADR-0037/0038/0049 — `spec.image` is RESOLVED from the mounted image map on every provision
 // rather than pinned at construction, by the CONTENT DIGEST of the `file:` context the
 // `workspace()` named.
@@ -17,6 +19,7 @@ import { imageContextDigest } from "../src/images.ts";
 import { repoKey } from "../src/repo-identity.ts";
 import { attachScript, kubectlSandbox, rootImageFault } from "../src/sandbox-kubectl.ts";
 import type { KubectlExec } from "../src/sandbox-kubectl.ts";
+import type { RepoResources } from "../src/repos.ts";
 import type { ProvisionedRepo } from "../src/workspace.ts";
 
 type Call = { args: string[]; input?: string };
@@ -76,9 +79,30 @@ const REFS = {
   sandbox: { default: "j2-sandbox-inst-default:d00", [RUST.key]: "j2-sandbox-inst-rust:r00" },
 };
 
+/** The Repo-resource port (ADR-0051) as a recorder: what a provision asked it to ensure, in order. */
+function fakeRepos() {
+  const ensured: Array<{ url: string; identity: string; key: string; bound: boolean }> = [];
+  const port: RepoResources = {
+    async ensure(repo) {
+      ensured.push(repo);
+    },
+    async reconcileBound() {},
+    async list() {
+      return [];
+    },
+  };
+  return { port, ensured };
+}
+
 /** Everything a provision needs beyond the images map: the Adapter is always injected now, so its
- * token Secret (and therefore a signing key and a route home) is no longer optional. */
-const provisionable = { signingKey: Buffer.from("k"), orchestratorUrl: "http://host:1234", pollMs: 1 };
+ * token Secret (and therefore a signing key and a route home) is no longer optional — and every
+ * provision names Repos whose resources it must ensure, so neither is the Repo-resource port. */
+const provisionable = {
+  signingKey: Buffer.from("k"),
+  orchestratorUrl: "http://host:1234",
+  pollMs: 1,
+  repos: fakeRepos().port,
+};
 
 /** One bound slot, as every provision that is not about Repos names it (a workspace() always
  * declares at least one — ADR-0051). */
@@ -755,6 +779,189 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
     repos: [{ slot: "t", url: "https://gitlab.com/a/b.git", perRun: true }],
   });
   assert.ok(crOf(any.calls));
+});
+
+// --- the Repo resources and the operator's verdict on them (ADR-0051) -------------------------------
+
+test("provision ENSURES every Repo's resource — per key, identity and boundness resolved — before the Secret and the CR", async () => {
+  // The operator holds Ready until every key the CR names exists as a `Repo` resource, and
+  // creating them is the provision's job: a per-run url's resource is born here, at its first
+  // attach; a bound one is restated. Ordered after the image resolution (a refused image still
+  // costs nothing) and before the token Secret (no Secret for a Sandbox whose Repo could not be
+  // recorded).
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const repos = fakeRepos();
+  let ensuredBeforeSecret: boolean | undefined;
+  repos.port.ensure = async (repo) => {
+    repos.ensured.push(repo);
+    ensuredBeforeSecret ??= calls.length === 0;
+  };
+  const port = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    repos: repos.port,
+    exec,
+    credentials: [{ match: "*" }],
+  });
+  await port.provision({
+    name: "sb-ensure",
+    runId: "r",
+    workflow: "w",
+    repos: [
+      { slot: "app", url: "git@github.com:acme/app.git", perRun: false },
+      { slot: "same", url: "https://github.com/acme/app", perRun: true },
+      { slot: "ticket", url: "https://gitlab.com/x/y.git", perRun: true },
+    ],
+  });
+  assert.deepEqual(repos.ensured, [
+    // One resource per KEY, the first spelling's url; bound because a Machine's slot names it,
+    // even though the run's slot names it too.
+    {
+      key: repoKey("git@github.com:acme/app.git"),
+      url: "git@github.com:acme/app.git",
+      identity: "github.com/acme/app",
+      bound: true,
+    },
+    // The run's alone: unbound, on `j2 gc`'s clock.
+    {
+      key: repoKey("https://gitlab.com/x/y.git"),
+      url: "https://gitlab.com/x/y.git",
+      identity: "gitlab.com/x/y",
+      bound: false,
+    },
+  ]);
+  assert.equal(ensuredBeforeSecret, true, "ensured before any kubectl call — the Secret and the CR come after");
+});
+
+test("a port with NO Repo-resource port refuses to provision, naming what would otherwise happen", async () => {
+  // Without it the CR names keys no resource backs, and the operator parks the Sandbox on
+  // `RepoMissing` for the whole Ready budget — a hang with a cause nobody printed.
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const { repos: _omitted, ...rest } = provisionable;
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...rest, exec });
+  await assert.rejects(
+    () => port.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
+    (err: Error) => {
+      assert.match(err.message, /no Repo-resource port/);
+      assert.match(err.message, /kubectlRepos/, "names the fix");
+      assert.match(err.message, /ADR-0051/);
+      return true;
+    },
+  );
+  assert.deepEqual(calls, [], "nothing applied");
+});
+
+/** A Sandbox CR as the operator reports it while holding Ready on a Repo (sandbox_controller.go). */
+const heldOn = (reason: string, message: string) =>
+  JSON.stringify({
+    status: { phase: "Pending", conditions: [{ type: "Ready", status: "False", reason, message }] },
+  });
+
+test("Ready held with reason RepoCloneFailed fails the provision BY NAME, not as a timeout", async () => {
+  // ADR-0051: absence does not degrade — a clone that fails on a cold node fails that provision
+  // pointedly, naming the repository and git's error. The operator's condition carries all three
+  // (key, node, error); the port adds what the operator cannot know: the agent keeps retrying,
+  // `j2 status` shows the same line, and where the credential is configured.
+  let gets = 0;
+  const { exec } = fakeExec({
+    apply: () => "ok",
+    patch: () => "ok",
+    get: () =>
+      ++gets < 3
+        ? heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`)
+        : heldOn(
+            "RepoCloneFailed",
+            `Repo "${APP_KEY}" could not be cloned onto node kind-worker: fatal: Authentication failed`,
+          ),
+  });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 60_000, exec });
+  await assert.rejects(
+    () => port.provision({ name: "sb-clone", runId: "r", workflow: "w", ...withApp }),
+    (err: Error) => {
+      assert.match(err.message, /Sandbox "sb-clone" cannot start/);
+      assert.match(
+        err.message,
+        new RegExp(`Repo "${APP_KEY}" could not be cloned onto node kind-worker: fatal: Authentication failed`),
+      );
+      assert.match(err.message, /git\.credentials/, "…and where the fix goes");
+      assert.match(err.message, /j2 status/, "…and where the same verdict is readable per node");
+      assert.match(err.message, /ADR-0051/);
+      assert.ok(!/never reached Ready/.test(err.message), "it replaces the timeout, it does not follow it");
+      return true;
+    },
+  );
+  assert.equal(gets, 3, "RepoPending is waited out; RepoCloneFailed is not");
+});
+
+test("a timeout carries the operator's Ready verdict when it has one", async () => {
+  // A Repo still pending on the node (a slow clone) reads very differently from a preflight
+  // death, and the phase alone cannot tell them apart — so the condition rides the message.
+  const { exec } = fakeExec({
+    apply: () => "ok",
+    patch: () => "ok",
+    get: () => heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`),
+  });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 5, exec });
+  await assert.rejects(
+    () => port.provision({ name: "sb-slow", runId: "r", workflow: "w", ...withApp }),
+    (err: Error) => {
+      assert.match(err.message, /never reached Ready \(last phase: Pending\)/);
+      assert.match(
+        err.message,
+        new RegExp(`Ready condition says: RepoPending: Repo "${APP_KEY}" is not on node kind-worker yet`),
+      );
+      return true;
+    },
+  );
+});
+
+test("Ready with ReposFresh=False makes the attach STALE per slot, with git's own error; fresh → no stale", async () => {
+  // Freshness degrades, absence does not (ADR-0051): the caches are there but the fetch since
+  // this Sandbox asked failed, so the attach proceeds on the objects the node holds and says so.
+  // The operator's clause names the KEY; the port keys it back to the slot the body knows.
+  const infraUrl = "https://example.test/infra.git";
+  const infraKey = repoKey(infraUrl);
+  const staleReady = JSON.stringify({
+    status: {
+      phase: "Ready",
+      endpoint: "http://sb-stale.default.svc:8080",
+      conditions: [
+        { type: "Ready", status: "True", reason: "PodReady" },
+        {
+          type: "ReposFresh",
+          status: "False",
+          reason: "FetchFailed",
+          message: `Repo "${infraKey}" on node kind-worker is stale: fatal: unable to access 'https://example.test/infra.git/': Could not resolve host`,
+        },
+      ],
+    },
+  });
+  const { exec } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => staleReady, exec: () => "" });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const slots = [
+    { slot: "app", url: APP_URL, perRun: false },
+    { slot: "infra", url: infraUrl, perRun: false },
+  ];
+  await port.provision({ name: "sb-stale", runId: "r", workflow: "w", repos: slots });
+  const out = await port.attach({ name: "sb-stale", spec: { branch: "b" }, repos: slots });
+  assert.deepEqual(out.stale, {
+    infra: `Repo "${infraKey}" on node kind-worker is stale: fatal: unable to access 'https://example.test/infra.git/': Could not resolve host`,
+  });
+  assert.equal(out.workdir, "/work/app/b", "the attach PROCEEDED — stale is a notice, not a refusal");
+
+  // Fresh (the common case): no `stale` key at all, and a later fresh provision of the same name
+  // forgets an earlier verdict.
+  const fresh = JSON.stringify({
+    status: {
+      phase: "Ready",
+      endpoint: "http://sb-stale.default.svc:8080",
+      conditions: [{ type: "ReposFresh", status: "True", reason: "Fetched", message: "every Repo was fetched" }],
+    },
+  });
+  const { exec: e2 } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => fresh, exec: () => "" });
+  const port2 = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec: e2 });
+  await port2.provision({ name: "sb-stale", runId: "r", workflow: "w", repos: slots });
+  assert.equal("stale" in (await port2.attach({ name: "sb-stale", spec: { branch: "b" }, repos: slots })), false);
 });
 
 // --- the attach (ADR-0004, ADR-0051) ----------------------------------------------------------------

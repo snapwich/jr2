@@ -17,7 +17,10 @@
 //                      the Orchestrator materializes it into the Repo's credential Secret.
 //
 // The first stdout line is one JSON object `{ url, workflows }` — the discovery seam a fixture (or
-// a human tailing pod logs) parses instead of racing the socket.
+// a human tailing pod logs) parses instead of racing the socket. Deployed with a data plane, the
+// boot then creates one `Repo` resource per identity its Machines bind (ADR-0051) and announces
+// each as `{ repo, url, bound: true }` — or `{ repo, error }` — one line apiece, after serving:
+// a Repo the cluster refuses is a degraded Repo (ADR-0048), never a boot that did not happen.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -33,8 +36,9 @@ import {
   INSTANCE_HARNESS_SERVICE,
   ORCHESTRATOR_SERVICE,
 } from "./names.ts";
-import { partsOf } from "./parts.ts";
-import { kubectlSandbox } from "./sandbox-kubectl.ts";
+import { partsOf, type CarriedRepo } from "./parts.ts";
+import { kubectlRepos, type RepoResources } from "./repos.ts";
+import { kubectlSandbox, type KubectlExec } from "./sandbox-kubectl.ts";
 import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 
@@ -45,6 +49,9 @@ export type ServerMainOptions = {
   env: Record<string, string | undefined>;
   /** Where the one-line JSON announcement goes (deployed: stdout). */
   announce: (line: string) => void;
+  /** The kubectl process seam behind the data plane's two ports, injectable for tests.
+   * Deployed: the `kubectl` on PATH. */
+  exec?: KubectlExec;
 };
 
 /** Boot the instance the env describes; resolves once serving (the caller owns signals/exit). */
@@ -73,10 +80,19 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   const carried = partsOf((await loadWorkflows(opts.dir)).map((w) => w.machine));
   const dataPlane = carried.composesSandbox && namespace !== undefined;
   let sandbox: SandboxPort | undefined;
+  let repos: RepoResources | undefined;
   if (dataPlane) {
+    const credentials = config?.git?.credentials ?? [];
+    // The Repo resources (ADR-0051): created by this process, cloned by the operator's cache agent
+    // on every node that needs them. The port resolves `git.credentials` into each resource's
+    // `secretRef`, reading a token entry's env var off this process — the Instance Secret is
+    // `envFrom` on the Deployment, so `j2 up` is what put it there.
+    repos = kubectlRepos({ namespace, credentials, env, ...(opts.exec ? { exec: opts.exec } : {}) });
     sandbox = kubectlSandbox({
       // The fence (ADR-0051): a per-run url must match one of these, or the provision refuses it.
-      credentials: config?.git?.credentials ?? [],
+      credentials,
+      // Where a provision records the Repos it names, before the CR names them.
+      repos,
       // Named here the same way HARNESS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
       // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
       // buys: the map is read per provision, so an instance whose `j2-images` ConfigMap is not yet
@@ -107,6 +123,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       orchestratorUrl: namespace ? `http://${ORCHESTRATOR_SERVICE}.${namespace}.svc:${port}` : undefined,
       signingKey,
       namespace,
+      ...(opts.exec ? { exec: opts.exec } : {}),
     });
   }
 
@@ -118,6 +135,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     signingKey,
     sandbox,
     dataPlane,
+    // Read per request, never snapshotted: the Repos as the cluster reports them right now.
+    ...(repos ? { repos: () => repos.list() } : {}),
     // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
     // `j2 up` converges the Deployment behind it whenever any definition declares
     // `workspace: "none"`, so deployed, the address exists exactly when it is needed.
@@ -138,5 +157,36 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       ...(failed.length ? { failed } : {}),
     }),
   );
+  // After serving, never awaited: the bound Repos' resources (ADR-0051). Serving does not wait on
+  // the cluster — a run whose Repo the boot could not record still finds its provision ensuring
+  // it again — and a refusal is one announced line per Repo, in ADR-0048's shape.
+  if (repos) void ensureBound(repos, carried.repos, opts.announce);
   return inst;
+}
+
+/**
+ * The boot's half of ADR-0051's "the Orchestrator creates Repo resources": one per identity the
+ * registered Machines bind, so statically known repositories are warm before a run asks — then
+ * the bound label reconciled, so a slot unbound since the last deploy is a Repo `j2 gc` may
+ * evict. Sequential, and each failure its own line: a wrong url on one Machine must not hide
+ * the others.
+ */
+async function ensureBound(
+  repos: RepoResources,
+  bound: CarriedRepo[],
+  announce: (line: string) => void,
+): Promise<void> {
+  for (const repo of bound) {
+    try {
+      await repos.ensure({ url: repo.url, identity: repo.identity, key: repo.key, bound: true });
+      announce(JSON.stringify({ repo: repo.key, url: repo.url, bound: true }));
+    } catch (err) {
+      announce(JSON.stringify({ repo: repo.key, url: repo.url, error: (err as Error).message }));
+    }
+  }
+  try {
+    await repos.reconcileBound(bound.map((r) => r.key));
+  } catch (err) {
+    announce(JSON.stringify({ repos: bound.map((r) => r.key), error: (err as Error).message }));
+  }
 }

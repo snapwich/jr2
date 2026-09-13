@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { serverMain } from "../src/server.ts";
+import { repoIdentity } from "../src/repo-identity.ts";
+import type { KubectlExec } from "../src/sandbox-kubectl.ts";
 
 // The same fixture instance folder instance.test.ts serves (holds `workflows/echo.ts`).
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
@@ -72,18 +74,107 @@ async function mkWorkspaceInstance(): Promise<string> {
 
 const authed = { headers: { authorization: "Bearer tok" } };
 
+/** A kubectl that records what the boot asked of the cluster and answers as an empty namespace
+ * would — the seam behind both data-plane ports, so no test here reaches a real cluster. */
+function fakeKubectl(fail?: (args: string[]) => string | undefined) {
+  const calls: string[][] = [];
+  const exec: KubectlExec = async (args) => {
+    calls.push(args);
+    const refusal = fail?.(args);
+    if (refusal) throw new Error(refusal);
+    if (args[0] === "get") return { stdout: JSON.stringify({ items: [] }), stderr: "" };
+    return { stdout: "ok", stderr: "" };
+  };
+  return { exec, calls };
+}
+
+/** The announce lines after the first — the boot's Repo lines arrive after serving. */
+async function announcedRepos(lines: string[], count: number): Promise<Array<Record<string, unknown>>> {
+  for (let i = 0; i < 200 && lines.length < 1 + count; i++) await new Promise((r) => setTimeout(r, 10));
+  return lines.slice(1).map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
 test("a registered Machine composing a Sandbox + J2_NAMESPACE → the data plane is wired (ADR-0051)", async () => {
   // The switch is read off the WALK, not off config: nothing in j2.config.ts says "this instance
   // has Workspaces". Deployed (J2_NAMESPACE set), the kubectl backend is built and the instance
   // reports a data plane. The blast pattern ADR-0038 chose still holds: no image map is mounted
   // here, and the boot serves anyway — only a provision would fail.
   const dir = await mkWorkspaceInstance();
+  const kubectl = fakeKubectl();
   const inst = await serverMain({
     dir,
     env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
     announce: () => {},
+    exec: kubectl.exec,
   });
   try {
+    const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean; repos: unknown[] };
+    assert.equal(repos.dataPlane, true);
+    // …and the Repos are READ THROUGH to the cluster, per request (ADR-0048/0051).
+    assert.deepEqual(repos.repos, []);
+    assert.ok(
+      kubectl.calls.some((a) => a[0] === "get" && a[1] === "repos.core.j2.dev" && a.includes("ws")),
+      "GET /repos asked the namespace's Repo resources",
+    );
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the boot creates one bound Repo resource per identity its Machines bind, and announces each (ADR-0051)", async () => {
+  // "The Orchestrator creates Repo CRs; it does not sync them": statically known repositories are
+  // warm before a run can ask. After serving, never awaited — one line per Repo in ADR-0048's
+  // shape, so a human tailing pod logs sees what the cluster was told.
+  const dir = await mkWorkspaceInstance();
+  const lines: string[] = [];
+  const kubectl = fakeKubectl();
+  const inst = await serverMain({
+    dir,
+    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
+    announce: (line) => lines.push(line),
+    exec: kubectl.exec,
+  });
+  try {
+    const { key, identity } = repoIdentity("https://example.test/app.git");
+    assert.deepEqual(await announcedRepos(lines, 1), [{ repo: key, url: "https://example.test/app.git", bound: true }]);
+    const create = kubectl.calls.find((a) => a[0] === "create")!;
+    assert.ok(create, "kubectl create of the resource");
+    assert.ok(create.includes("--namespace") && create.includes("ws"), "in the instance's namespace");
+    // The label `j2 gc` honors, then the reconcile that drops it from what nothing binds any more.
+    const reconcile = kubectl.calls.find(
+      (a) => a[0] === "get" && a[1] === "repos.core.j2.dev" && a.includes("j2.dev/bound=true"),
+    );
+    assert.ok(reconcile, "reconcileBound read the bound resources");
+    assert.ok(
+      kubectl.calls.indexOf(create) < kubectl.calls.indexOf(reconcile!),
+      "ensure first, then reconcile — a resource this boot binds is never unlabeled",
+    );
+    assert.equal(identity, "example.test/app");
+  } finally {
+    await inst.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a Repo the cluster refuses is announced as an error, and the process serves regardless (ADR-0048)", async () => {
+  const dir = await mkWorkspaceInstance();
+  const lines: string[] = [];
+  const kubectl = fakeKubectl((args) =>
+    args[0] === "create" ? "Error from server (Forbidden): repos.core.j2.dev is forbidden" : undefined,
+  );
+  const inst = await serverMain({
+    dir,
+    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
+    announce: (line) => lines.push(line),
+    exec: kubectl.exec,
+  });
+  try {
+    const [line] = await announcedRepos(lines, 1);
+    assert.equal(line!.repo, repoIdentity("https://example.test/app.git").key);
+    assert.match(String(line!.error), /Forbidden/);
+    assert.equal(line!.bound, undefined);
+    // Serving is not conditional on the cluster: the instance answers, data plane and all.
     const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean };
     assert.equal(repos.dataPlane, true);
   } finally {

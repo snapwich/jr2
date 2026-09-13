@@ -283,9 +283,10 @@ export type KubectlSandboxOptions = {
   /**
    * The Repo-resource port (ADR-0051, repos.ts): every Repo a provision names must exist as a
    * `Repo` resource before the CR names it, or the operator reports it missing and the Sandbox
-   * never reaches Ready. A per-run url's resource is created here, at first attach; a bound one
-   * already exists from the boot. Absent (tests, a hand-built port) means the resources are
-   * somebody else's to create.
+   * never reaches Ready. So `provision` ensures each one here — a per-run url's resource is
+   * created at first attach, a bound one is restated — and REFUSES to run without the port: a
+   * Sandbox whose Repos nobody creates parks on `RepoMissing` for the whole Ready budget. The
+   * other operations (attach, renew, destroy) need no port, so it is optional at construction.
    */
   repos?: RepoResources;
   /**
@@ -306,7 +307,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const workRoot = opts.workRoot ?? "/work";
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const pollMs = opts.pollMs ?? 1_000;
-  const exec = opts.exec ?? defaultExec;
+  const exec = opts.exec ?? defaultKubectlExec;
   const credentials = opts.credentials ?? [];
 
   const adapterPort = opts.adapterPort ?? 8081;
@@ -479,7 +480,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const crFor = async (
     req: { name: string; runId: string; workflow: string; image?: string; user?: string; workGroup?: number },
     refs: ImageRefs,
-    repos: Array<{ key: string; url: string }>,
+    repos: FencedRepo[],
   ) => {
     const seat = await seatFor(refs, req.image);
     const sidecars = await sidecarsFor(
@@ -534,7 +535,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // `Ready` only once every one is present on the pod's node and fetched since this CR
         // asked. Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in
         // a Sandbox can `gc` the object store its `--shared` clones borrow from.
-        repos,
+        repos: repos.map(({ key, url }) => ({ key, url })),
         volumes: [
           // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
           // both load-bearing: every j2-owned seat runs as an unprivileged uid, which cannot mkdir
@@ -566,17 +567,27 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     };
   };
 
-  type SandboxStatus = { phase?: string; endpoint?: string; podUID?: string; uid?: string };
+  type Condition = { type: string; status: string; reason?: string; message?: string };
+  type SandboxStatus = {
+    phase?: string;
+    endpoint?: string;
+    podUID?: string;
+    uid?: string;
+    conditions?: Condition[];
+  };
 
   /** Parse a Sandbox CR off any kubectl call that printed one (`get -o json`, and the lease's
    * `annotate -o json` — which returns the object AFTER the patch, status included). */
   const readSandbox = (stdout: string): SandboxStatus => {
     const parsed = JSON.parse(stdout) as {
       metadata?: { uid?: string };
-      status?: { phase?: string; endpoint?: string; podUID?: string };
+      status?: { phase?: string; endpoint?: string; podUID?: string; conditions?: Condition[] };
     };
     return { ...(parsed.status ?? {}), uid: parsed.metadata?.uid };
   };
+
+  const conditionOf = (status: SandboxStatus | undefined, type: string): Condition | undefined =>
+    status?.conditions?.find((c) => c.type === type);
 
   const getSandbox = async (name: string): Promise<SandboxStatus | undefined> => {
     try {
@@ -664,10 +675,12 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * per-run url is the run's input; one no `git.credentials` entry admits is refused here, before
    * anything is read or applied, naming the list. A bound url is admitted without a match: it is
    * code the instance typechecked and deployed. Two slots spelling one repository collapse to one
-   * CR entry (first spelling wins) — one cache, however many slots borrow from it.
+   * CR entry (first spelling wins) — one cache, however many slots borrow from it — and the
+   * resource is BOUND when any of those slots is the Machine's: a per-run slot alone leaves it on
+   * `j2 gc`'s clock.
    */
-  const fencedRepos = (name: string, repos: ProvisionedRepo[]): Array<{ key: string; url: string }> => {
-    const byKey = new Map<string, { key: string; url: string }>();
+  const fencedRepos = (name: string, repos: ProvisionedRepo[]): FencedRepo[] => {
+    const byKey = new Map<string, FencedRepo>();
     for (const repo of repos) {
       const { identity, key } = repoIdentity(repo.url);
       if (repo.perRun && !matchCredential(identity, credentials)) {
@@ -678,15 +691,35 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
             "against any host, so j2.config.ts must admit it by prefix (ADR-0051).",
         );
       }
-      if (!byKey.has(key)) byKey.set(key, { key, url: repo.url });
+      const seen = byKey.get(key);
+      if (seen === undefined) byKey.set(key, { key, url: repo.url, identity, bound: !repo.perRun });
+      else seen.bound ||= !repo.perRun;
     }
     return [...byKey.values()];
   };
+
+  /**
+   * What the operator will hold this Sandbox's Ready on, and what an attach reads afterwards
+   * (ADR-0051). `Ready` with reason `RepoCloneFailed` is terminal for the provision — the cache
+   * agent could not clone onto the node the pod landed on, and the reason names it — so the loop
+   * fails on it by name rather than burning the budget. `ReposFresh=False` is the other verdict:
+   * the caches are there but a fetch since this CR asked failed, so the attach proceeds STALE and
+   * says so. Remembered per name until the Sandbox is destroyed, because the attach is a separate
+   * call — and re-runs on snapshot restore, when the condition may already have moved on.
+   */
+  const staleByName = new Map<string, string>();
 
   return {
     async provision(req) {
       // The fence first: a refused url costs nothing — no map read, no Secret, no CR.
       const repos = fencedRepos(req.name, req.repos);
+      if (opts.repos === undefined) {
+        throw new Error(
+          `Sandbox "${req.name}" cannot be provisioned: this port has no Repo-resource port (ADR-0051). The ` +
+            "operator holds a Sandbox's Ready until every Repo it names exists as a resource, and creating " +
+            "them is this provision's job — build the port with `repos: kubectlRepos(...)`.",
+        );
+      }
       // Read PER PROVISION, and next (ADR-0038). Not hoisted into `kubectlSandbox()`: a boot-time
       // read would freeze the map for the process lifetime, which is precisely the Deployment-env
       // behavior the ConfigMap mount was chosen over — the point of the mount is that a `j2 up`
@@ -694,6 +727,13 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       // also means an unknown image name costs nothing: no Secret, no CR, nothing to clean up.
       const refs = await readImageRefs(imagesPath);
       const cr = await crFor(req, refs, repos);
+
+      // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
+      // the boot and is restated; a per-run one is created here, at its first attach, and every
+      // later attach anywhere finds it. After the image resolution, so a refused image still
+      // costs nothing; before the token Secret, so no Secret is minted for a Sandbox whose Repo
+      // could not be recorded.
+      for (const repo of repos) await opts.repos.ensure(repo);
 
       await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start
       await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(cr) });
@@ -712,9 +752,22 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
           const fault = await podFault(req.name);
           if (fault) throw new Error(rootImageError(req.name, fault));
         }
+        // Terminal for THIS provision: the cache agent tried to clone onto the pod's node and git
+        // refused. The operator's message carries the key, the node, and git's own words; the
+        // agent keeps retrying on its own, so `j2 status` will show the same error until it is fixed.
+        const ready = conditionOf(status, "Ready");
+        if (status?.phase !== "Ready" && ready?.reason === REPO_CLONE_FAILED) {
+          throw new Error(repoCloneError(req.name, ready.message ?? ready.reason));
+        }
         if (status?.phase === "Ready") {
           // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
           if (!status.endpoint) throw new Error(`Sandbox "${req.name}" is Ready but reports no endpoint`);
+          // Freshness degrades, absence does not (ADR-0051): Ready with `ReposFresh=False` is a
+          // Sandbox whose caches exist but could not be fetched since it asked. Remembered for the
+          // attach, which is where a slot can be named; forgotten when the caches are fresh.
+          const fresh = conditionOf(status, "ReposFresh");
+          if (fresh?.status === "False" && fresh.message) staleByName.set(req.name, fresh.message);
+          else staleByName.delete(req.name);
           // The identity the lease will hold this workspace to (ADR-0021). Ready means the pod
           // is up, so the operator has published it; an operator too old to do so leaves it
           // undefined and the lease falls back to presence.
@@ -728,11 +781,16 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
           // Otherwise name where to look, because the next most likely cause is an image that
           // misses ADR-0037's floor, and that failure is an INIT container's — invisible in the
           // phase alone. A musl or git-less base dies INSIDE the preflight, on j2's own message.
+          // The operator's own verdict rides along when it has one: a Repo still pending on the
+          // node (a slow clone) reads very differently from a preflight death.
           throw new Error(
             `Sandbox "${req.name}" never reached Ready (last phase: ${status?.phase ?? "absent"}) — if its ` +
               "Sandbox Image is new, check the preflight: `kubectl logs " +
               req.name +
-              " -c preflight` (ADR-0037's floor: glibc, git, a writable HOME, a numeric non-root USER).",
+              " -c preflight` (ADR-0037's floor: glibc, git, a writable HOME, a numeric non-root USER)." +
+              (ready?.message
+                ? `\n  the operator's Ready condition says: ${ready.reason ?? "?"}: ${ready.message}`
+                : ""),
           );
         }
         await sleep(pollMs);
@@ -748,7 +806,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       // Sandbox Image, so `git` here is the git the user chose. Never `-c user` — that seat is
       // zero-contract, may hold no git at all, and j2 commands nothing in it (ADR-0005).
       await exec(["exec", `pod/${req.name}`, ...base, "-c", "harness", "--", "sh", "-ec", script]);
-      return { workdir, repos, ...(review ? { review } : {}) };
+      const stale = staleSlots(req.repos, staleByName.get(req.name));
+      return { workdir, repos, ...(review ? { review } : {}), ...(stale ? { stale } : {}) };
     },
 
     leaseIntervalMs,
@@ -776,6 +835,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     },
 
     async destroy(name) {
+      staleByName.delete(name);
       // The Secret is an owned child of the CR, so deleting the CR reaps it — this is belt and
       // braces for the case where the ownerRef patch didn't land.
       await exec(["delete", "sandbox", name, ...base, "--ignore-not-found"]);
@@ -789,6 +849,51 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
  * User Container's mounts and the attach's clone source agree with it by construction. */
 export const repoVolumeName = (key: string): string => `repo-${key}`;
 export const repoMountPath = (key: string): string => `${REPOS_MOUNT}/${key}`;
+
+/** One Repo as the provision names it: the CR entry, plus what its resource records — the
+ * identity, and whether a Machine's slot (not only the run's) binds it. */
+type FencedRepo = { key: string; url: string; identity: string; bound: boolean };
+
+/** The operator's Ready reason when the cache agent could not clone onto the pod's node
+ * (sandbox_controller.go) — the one Ready verdict a provision cannot wait out. */
+const REPO_CLONE_FAILED = "RepoCloneFailed";
+
+/**
+ * The fix beside the symptom. The operator's message carries the Repo, the node, and git's own
+ * words; what it cannot say is that the cache agent keeps retrying, that `j2 status` reports the
+ * same line per node, or where a credential is configured (ADR-0047/0051).
+ */
+function repoCloneError(name: string, verdict: string): string {
+  return (
+    `Sandbox "${name}" cannot start: ${verdict} (ADR-0051). The node's cache agent keeps retrying on its own — ` +
+    "fix the url or its git.credentials entry (an ssh url needs its deploy key registered with the host, " +
+    "ADR-0047), then start the run again; `j2 status` reports the same error per node until it clears."
+  );
+}
+
+/**
+ * The `ReposFresh=False` message, keyed back to SLOTS for the attach's `stale`. The operator
+ * writes one clause per stale Repo — `Repo "<key>" on node <n> is stale: <error>` — joined by
+ * `; `; each slot whose key a clause names gets that clause. A message that names no key at all
+ * lands on every slot: a verdict with no address is still a verdict.
+ */
+function staleSlots(
+  repos: Array<{ slot: string; url: string }>,
+  message: string | undefined,
+): Record<string, string> | undefined {
+  if (!message) return undefined;
+  const byKey = new Map<string, string>();
+  for (const clause of message.split("; ")) {
+    const key = /^Repo "([^"]+)"/.exec(clause)?.[1];
+    if (key !== undefined) byKey.set(key, clause);
+  }
+  const stale: Record<string, string> = {};
+  for (const repo of repos) {
+    const clause = byKey.size === 0 ? message : byKey.get(repoIdentity(repo.url).key);
+    if (clause !== undefined) stale[repo.slot] = clause;
+  }
+  return Object.keys(stale).length ? stale : undefined;
+}
 
 /**
  * The post-Ready attach step as one idempotent in-pod script (ADR-0004, ADR-0051): per Repo Slot
@@ -876,7 +981,8 @@ function isNotFound(err: unknown): boolean {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const defaultExec: KubectlExec = (args, opts) =>
+/** The `kubectl` on PATH, as every kubectl-driven port shells to it (this one and repos.ts). */
+export const defaultKubectlExec: KubectlExec = (args, opts) =>
   new Promise((resolve, reject) => {
     const child = execFile("kubectl", args, { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) reject(new Error(`kubectl ${args[0]} failed: ${stderr || err.message}`));
