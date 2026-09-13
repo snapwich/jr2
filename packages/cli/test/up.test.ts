@@ -49,12 +49,15 @@ class FakeCluster implements KubeAdmin {
   async deleteManifest(): Promise<void> {
     this.deleted.push("(manifest)");
   }
-  /** Rollouts scripted to time out, keyed `"<namespace>/<deployment>"` — what `kubectl rollout
-   * status` does when a pod never comes up, and the only thing it says about it (ADR-0046). */
+  /** Rollouts scripted to time out, keyed `"<namespace>/<name>"` — what `kubectl rollout status`
+   * does when a pod never comes up, and the only thing it says about it (ADR-0046). */
   rolloutFails = new Set<string>();
-  async waitRollout(opts: { deployment: string; namespace: string }): Promise<void> {
-    this.rollouts.push(`${opts.namespace}/${opts.deployment}`);
-    if (this.rolloutFails.has(`${opts.namespace}/${opts.deployment}`)) {
+  /** Every rollout waited on, as `<namespace>/<name>` — a DaemonSet's prefixed `daemonset/`, so a
+   * test can tell the cache agent's wait from a Deployment's of the same name. */
+  async waitRollout(opts: { kind?: string; name: string; namespace: string }): Promise<void> {
+    const kind = opts.kind === "daemonset" ? "daemonset/" : "";
+    this.rollouts.push(`${opts.namespace}/${kind}${opts.name}`);
+    if (this.rolloutFails.has(`${opts.namespace}/${opts.name}`)) {
       throw new Error("error: timed out waiting for the condition");
     }
   }
@@ -124,7 +127,7 @@ class FakeCluster implements KubeAdmin {
       const doc = manifest.trimStart().startsWith("{") ? JSON.parse(manifest) : undefined;
       const items = doc?.kind === "List" ? doc.items : doc ? [doc] : [];
       for (const i of items) {
-        if (i.kind !== "Deployment") continue;
+        if (i.kind !== "Deployment" && i.kind !== "DaemonSet") continue;
         if (app && i.spec?.selector?.matchLabels?.app !== app) continue;
         return i.spec?.template?.spec?.containers?.[0]?.image;
       }
@@ -1060,6 +1063,131 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
     ["state", "images"],
   );
   assert.ok(!JSON.stringify(podSpec.containers[0].env).includes("J2_REPOS_DIR"));
+});
+
+// --- the data plane (ADR-0051): the cache agent DaemonSet, converged with the same switch --------
+
+/** The cache agent's objects, as this converge applied them — or nothing, when it did not. */
+function findRepoCache(w: World): Record<string, Record<string, any>> {
+  const out: Record<string, Record<string, any>> = {};
+  for (const manifest of w.kube.applied) {
+    if (!manifest.trimStart().startsWith("{")) continue;
+    const doc = JSON.parse(manifest) as { kind?: string; items?: Array<Record<string, any>> };
+    for (const i of doc.kind === "List" ? (doc.items ?? []) : []) {
+      if (i.metadata?.name === "j2-repo-cache") out[i.kind] = i;
+    }
+  }
+  return out;
+}
+
+test("a Machine composing a Sandbox converges the cache agent: one root-seated pod per node over the node's cache directory", async () => {
+  // The data plane's node half (ADR-0051, ADR-0004): a DaemonSet running the operator image as
+  // `/manager repo-cache`, the one writer of `/var/lib/j2/<namespace>/repos` on its node — the
+  // hostPath the operator mounts a leaf of, read-only, into every Sandbox there. The switch is
+  // the walk's, exactly as for the Sandbox Images: a Machine composes a Sandbox, so the cluster
+  // needs somewhere to clone from.
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const objects = findRepoCache(w);
+  assert.deepEqual(Object.keys(objects).sort(), ["DaemonSet", "Role", "RoleBinding", "ServiceAccount"]);
+  const ds = objects.DaemonSet!;
+  const podSpec = ds.spec.template.spec;
+  assert.equal(ds.spec.selector.matchLabels.app, "j2-repo-cache");
+  assert.equal(ds.metadata.labels["j2.dev/instance"], "myinst", "owned like every other object");
+
+  // The same binary as the operator, at the ref THIS converge resolved (installed here, so the
+  // published one at the kit version), dispatched into its second entrypoint.
+  const agent = podSpec.containers[0];
+  assert.equal(agent.name, "agent");
+  assert.equal(agent.image, imagesOf(w).operator, "the record and the pod name one operator ref");
+  assert.match(agent.image, /^ghcr\.io\/snapwich\/j2-operator:/);
+  assert.deepEqual(agent.command, ["/manager", "repo-cache"]);
+
+  // The node directory, created by the kubelet, mounted where `--cache-dir` defaults.
+  const cache = podSpec.volumes.find((v: { name: string }) => v.name === "cache");
+  assert.deepEqual(cache.hostPath, { path: "/var/lib/j2/myinst/repos", type: "DirectoryOrCreate" });
+  assert.equal(agent.volumeMounts.find((m: { name: string }) => m.name === "cache").mountPath, "/cache");
+  // The seat is root — the kubelet creates that directory root-owned — and nothing else is loose:
+  // no capabilities, no escalation, a read-only root with $HOME and /tmp on emptyDirs.
+  assert.equal(agent.securityContext.runAsUser, 0);
+  assert.equal(agent.securityContext.allowPrivilegeEscalation, false);
+  assert.deepEqual(agent.securityContext.capabilities, { drop: ["ALL"] });
+  assert.equal(agent.securityContext.readOnlyRootFilesystem, true);
+  assert.ok(agent.env.some((e: { name: string; value?: string }) => e.name === "HOME" && e.value === "/home/j2"));
+  assert.ok(podSpec.volumes.some((v: { name: string; emptyDir?: unknown }) => v.name === "home" && v.emptyDir));
+  assert.ok(podSpec.volumes.some((v: { name: string; emptyDir?: unknown }) => v.name === "tmp" && v.emptyDir));
+  // Which node it writes for, and whose Repos it watches, come off the downward API.
+  const env = Object.fromEntries(agent.env.map((e: { name: string }) => [e.name, e]));
+  assert.deepEqual(env.NODE_NAME.valueFrom, { fieldRef: { fieldPath: "spec.nodeName" } });
+  assert.deepEqual(env.J2_NAMESPACE.valueFrom, { fieldRef: { fieldPath: "metadata.namespace" } });
+  // Every node, because a node with no agent is a node no Sandbox can be placed on.
+  assert.deepEqual(podSpec.tolerations, [{ operator: "Exists" }]);
+  // It is an API client (its own status entry, the Repos, the Sandboxes on its node, the
+  // credential Secret a Repo names) — read-mostly, and never a creator or deleter of anything.
+  assert.equal(podSpec.serviceAccountName, "j2-repo-cache");
+  assert.equal(podSpec.automountServiceAccountToken, true);
+  assert.deepEqual(objects.Role!.rules, [
+    { apiGroups: ["core.j2.dev"], resources: ["repos"], verbs: ["get", "list", "watch"] },
+    { apiGroups: ["core.j2.dev"], resources: ["repos/status"], verbs: ["get", "patch", "update"] },
+    { apiGroups: ["core.j2.dev"], resources: ["sandboxes"], verbs: ["get", "list", "watch"] },
+    { apiGroups: [""], resources: ["secrets"], verbs: ["get"] },
+  ]);
+
+  // Waited on and verified like every other layer: a DaemonSet that never scheduled is a data
+  // plane every provision would park on.
+  assert.ok(w.kube.rollouts.includes("myinst/daemonset/j2-repo-cache"), `got: ${w.kube.rollouts.join(", ")}`);
+  assert.match(w.err.join("\n"), /repo cache: verified — 1 pod\(s\) running ghcr\.io\/snapwich\/j2-operator:/);
+  assert.ok(!w.kube.deleted.some((d) => d.includes("j2-repo-cache")), "nothing of its own is deleted");
+});
+
+test("the Orchestrator's Role reaches the Repo resources it creates", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const role = items.find((i) => i.kind === "Role" && i.metadata.name === "j2-orchestrator")!;
+  const crds = role.rules.find((r: { apiGroups: string[] }) => r.apiGroups.includes("core.j2.dev"));
+  assert.ok(
+    crds.resources.includes("repos"),
+    `the Orchestrator creates, labels, and lists Repos (got: ${crds.resources})`,
+  );
+});
+
+test("no Machine composing a Sandbox → no cache agent, and a stale one is deleted on converge", async () => {
+  // The switch converges both ways (ADR-0051): a Machine that dropped its `workspace()` leaves no
+  // DaemonSet writing the node's disk — nor the ServiceAccount and Role that existed only for it.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.deepEqual(findRepoCache(w), {});
+  assert.ok(!w.kube.rollouts.some((r) => r.includes("daemonset/")), "nothing to wait on");
+  for (const kind of ["daemonset", "serviceaccount", "role", "rolebinding"]) {
+    assert.ok(w.kube.deleted.includes(`myinst/${kind}/j2-repo-cache`), `stale ${kind} deleted`);
+  }
+  assert.equal(imagesOf(w).operator !== undefined, true, "the operator layer still resolved its image");
+});
+
+test("operator.manage: false with a data plane still resolves the operator image — the cache agent runs it", async () => {
+  // The controller loop may be somebody else's (manage: false), but the cache agent is THIS
+  // instance's DaemonSet and it is the same binary — so the image is built, delivered, recorded,
+  // and run, while the operator manifest itself stays untouched.
+  const kit = await mkKit();
+  const root = await withWorkspace(
+    await mkInstance(`export default { name: "myinst", operator: { manage: false } };\n`),
+  );
+  const w = mkWorld(root, { kitDir: kit });
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  assert.ok(!w.kube.applied.some((m) => m.includes("controller-manager")), "the operator layer is skipped");
+  assert.match(w.err.join("\n"), /operator: skipped \(operator\.manage: false/);
+  const built = w.built.find((b) => b.startsWith("build j2-operator:"));
+  assert.ok(built, `the operator image is built for the cache agent (got: ${w.built.join(", ")})`);
+  const ref = built.slice("build ".length);
+  assert.equal(imagesOf(w).operator, ref, "…and recorded, so the next converge can skip the build");
+  assert.equal(findRepoCache(w).DaemonSet!.spec.template.spec.containers[0].image, ref);
 });
 
 test("live workspaces on an older image are reported, and nothing re-images them", async () => {

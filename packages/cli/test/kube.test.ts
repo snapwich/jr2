@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { oneShotFailure, rolloutFailure, type KubeAdmin } from "../src/kube.ts";
+import { oneShotFailure, rolloutFailure, rolloutStatusArgs, type KubeAdmin } from "../src/kube.ts";
 
 /** What `promisify(execFile)` rejects with: a message built from stderr, plus both streams. */
 function execFileRejection(stdout: string, stderr: string): Error {
@@ -118,7 +118,7 @@ function mkKube(opts: {
   return kube;
 }
 
-const target = { deployment: "j2-orchestrator", namespace: "demo", selector: "app=j2-orchestrator" };
+const target = { name: "j2-orchestrator", namespace: "demo", selector: "app=j2-orchestrator" };
 const timedOut = new Error("error: timed out waiting for the condition");
 
 /** One crashing container, with whatever the kubelet said about it. */
@@ -278,7 +278,43 @@ test("evidence no name matches is still carried, with no diagnosis invented", as
 test("a rollout whose ReplicaSet made no pod says so", async () => {
   const err = await rolloutFailure(mkKube({}), timedOut, target);
   assert.match(err.message, /no pod matches app=j2-orchestrator/);
+  assert.match(err.message, /the ReplicaSet made none/);
   assert.match(err.message, /timed out waiting for the condition$/);
+
+  // The cache agent is a DaemonSet (ADR-0051), and its pods are made by no ReplicaSet.
+  const agent = await rolloutFailure(mkKube({}), timedOut, {
+    kind: "daemonset",
+    name: "j2-repo-cache",
+    namespace: "demo",
+    selector: "app=j2-repo-cache",
+  });
+  assert.match(agent.message, /^j2-repo-cache: rollout did not complete/);
+  assert.match(agent.message, /the DaemonSet made none/);
+});
+
+// --- the rollout wait's argv ------------------------------------------------------------------
+// `j2 up` waits on two workload kinds: every layer's Deployment, and the cache agent's DaemonSet
+// (ADR-0051). The kind → `rollout status <kind>/<name>` mapping is the one thing the port adds.
+
+test("a rollout wait is a Deployment's unless the kind says DaemonSet", () => {
+  assert.deepEqual(rolloutStatusArgs({ name: "j2-orchestrator", namespace: "demo" }), [
+    "--namespace",
+    "demo",
+    "rollout",
+    "status",
+    "deployment/j2-orchestrator",
+    "--timeout=180s",
+  ]);
+  assert.deepEqual(
+    rolloutStatusArgs({
+      kind: "daemonset",
+      name: "j2-repo-cache",
+      namespace: "demo",
+      context: "kind-j2",
+      timeoutSeconds: 60,
+    }),
+    ["--context", "kind-j2", "--namespace", "demo", "rollout", "status", "daemonset/j2-repo-cache", "--timeout=60s"],
+  );
 });
 
 test("a read that itself fails becomes a note, never a second failure", async () => {

@@ -23,7 +23,8 @@ usage: j2 <command> [args]
   init [dir] [--name <n>]            scaffold a new instance folder
   up [--yes] [--force]              converge the current kube context to this instance (ADR-0019)
   down [--all]                      remove the instance from the cluster (--all: operator too)
-  gc [--dry-run]                    remove j2's images that no live instance names (ADR-0039)
+  gc [--dry-run] [--repo-ttl 7d]    remove j2's images that no live instance names (ADR-0039), and
+                                    Repo resources no Machine binds and no run attached lately (ADR-0051)
   kit push <registry>               mirror the published kit images into a registry (ADR-0044)
   run <workflow> [--input <json>]   start a run; stream activity, print terminal result
        [--detach]                   ...or just print the runId and return

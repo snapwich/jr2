@@ -20,11 +20,21 @@ import {
   KIT_VERSION,
   ORCHESTRATOR_PORT,
   ORCHESTRATOR_SERVICE,
+  REPO_CACHE,
+  REPO_CACHE_HOSTPATH,
   STATE_PVC,
   type HarnessConfig,
 } from "@j2/orchestrator";
 
-export { GIT_SSH_SECRET, HARNESS_CONFIGMAP, HARNESS_ENV_SECRET, INSTANCE_HARNESS_SERVICE, KIT_VERSION, STATE_PVC };
+export {
+  GIT_SSH_SECRET,
+  HARNESS_CONFIGMAP,
+  HARNESS_ENV_SECRET,
+  INSTANCE_HARNESS_SERVICE,
+  KIT_VERSION,
+  REPO_CACHE,
+  STATE_PVC,
+};
 
 export const LABEL_INSTANCE = "j2.dev/instance";
 export const LABEL_VERSION = "j2.dev/version";
@@ -89,6 +99,10 @@ export function instanceObjects(opts: {
    * `sandboxUser` rides along because a provision cannot inspect an image and the pod's uid-1000
    * fallback turns on whether the image declares a `USER` (up.ts, ADR-0037). */
   imageRefs: Record<string, unknown>;
+  /** The data plane (ADR-0051): present iff a registered Machine composes a Sandbox, carrying the
+   * resolved operator ref — the same binary is the cache agent (`/manager repo-cache`). Absent, no
+   * DaemonSet and none of its RBAC is applied; `up` deletes a stale one. */
+  repoCache?: { image: string };
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "j2" };
   const meta = (name: string, extra: Record<string, string> = {}): KubeManifest => ({
@@ -111,12 +125,13 @@ export function instanceObjects(opts: {
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(ORCHESTRATOR_SA) },
     {
       // The orchestrator drives Sandbox CRs (+ their token Secrets) in its own namespace
-      // (ADR-0012/0013); pod exec/port-forward are the attach path (ADR-0004).
+      // (ADR-0012/0013) and creates the Repo CRs the cache agent reconciles (ADR-0051); pod
+      // exec/port-forward are the attach path (ADR-0004).
       apiVersion: "rbac.authorization.k8s.io/v1",
       kind: "Role",
       metadata: meta(ORCHESTRATOR_SA),
       rules: [
-        { apiGroups: ["core.j2.dev"], resources: ["sandboxes"], verbs: ["*"] },
+        { apiGroups: ["core.j2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
         // patch/update: the token Secret is `kubectl apply`d idempotently and later ownerRef-patched.
         {
           apiGroups: [""],
@@ -287,9 +302,117 @@ export function instanceObjects(opts: {
         ports: [{ port: ORCHESTRATOR_PORT, targetPort: ORCHESTRATOR_PORT }],
       },
     },
+    ...(opts.repoCache ? repoCacheObjects({ ...opts.repoCache, namespace: opts.namespace, labels, meta }) : []),
   ];
 
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/** Where the cache agent's pod sees the node's directory: `--cache-dir`'s default. */
+const REPO_CACHE_MOUNT = "/cache";
+/** The agent's `$HOME` — an emptyDir, where it writes a deploy key for the life of the pod. */
+const REPO_CACHE_HOME = "/home/j2";
+
+/**
+ * The data plane's node half (ADR-0051, ADR-0004): the cache agent as a DaemonSet, one pod per node,
+ * each the one writer of `/var/lib/j2/<namespace>/repos` on its node — the hostPath the operator
+ * mounts one leaf of, read-only, into every Sandbox there that names the key. It runs the operator
+ * image (`/manager repo-cache`), so the kit's operator ref is resolved even when the operator layer
+ * itself is unmanaged.
+ *
+ * The seat is ROOT, and deliberately so: the kubelet creates a `DirectoryOrCreate` hostPath owned by
+ * root, and a Sandbox's mount of the leaf may exist before the agent has written anything there.
+ * Everything else is hardened as the operator's baseline is — no capabilities, no escalation, a
+ * read-only root filesystem (the two writable places are the emptyDirs below), the default seccomp
+ * profile. It tolerates everything, because a node no agent lands on is a node no Sandbox can be
+ * placed on. The ServiceAccount token IS mounted: the agent is a client of the Repo and Sandbox
+ * resources, unlike a Sandbox, whose north star is never reaching the API.
+ */
+function repoCacheObjects(opts: {
+  image: string;
+  namespace: string;
+  labels: Record<string, string>;
+  meta: (name: string, extra?: Record<string, string>) => KubeManifest;
+}): KubeManifest[] {
+  const { image, namespace, labels, meta } = opts;
+  return [
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(REPO_CACHE) },
+    {
+      // What one agent writes on the API is its own node's entry in each Repo's status; it reads
+      // the Repos and the Sandboxes that name them, and the credential Secret a Repo's `secretRef`
+      // names — nothing it could create or delete.
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "Role",
+      metadata: meta(REPO_CACHE),
+      rules: [
+        { apiGroups: ["core.j2.dev"], resources: ["repos"], verbs: ["get", "list", "watch"] },
+        { apiGroups: ["core.j2.dev"], resources: ["repos/status"], verbs: ["get", "patch", "update"] },
+        { apiGroups: ["core.j2.dev"], resources: ["sandboxes"], verbs: ["get", "list", "watch"] },
+        { apiGroups: [""], resources: ["secrets"], verbs: ["get"] },
+      ],
+    },
+    {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "RoleBinding",
+      metadata: meta(REPO_CACHE),
+      roleRef: { apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: REPO_CACHE },
+      subjects: [{ kind: "ServiceAccount", name: REPO_CACHE, namespace }],
+    },
+    {
+      apiVersion: "apps/v1",
+      kind: "DaemonSet",
+      metadata: meta(REPO_CACHE, { [LABEL_VERSION]: KIT_VERSION }),
+      spec: {
+        selector: { matchLabels: { app: REPO_CACHE } },
+        updateStrategy: { type: "RollingUpdate" },
+        template: {
+          metadata: { labels: { ...labels, app: REPO_CACHE } },
+          spec: {
+            serviceAccountName: REPO_CACHE,
+            automountServiceAccountToken: true,
+            tolerations: [{ operator: "Exists" }],
+            containers: [
+              {
+                name: "agent",
+                image,
+                imagePullPolicy: "IfNotPresent",
+                command: ["/manager", "repo-cache"],
+                env: [
+                  // The downward API names the node this pod is the writer for, and the namespace
+                  // whose Repos and Sandboxes it watches (the agent's `--node` / `--namespace`).
+                  { name: "NODE_NAME", valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } } },
+                  { name: "J2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
+                  { name: "HOME", value: REPO_CACHE_HOME },
+                ],
+                volumeMounts: [
+                  { name: "cache", mountPath: REPO_CACHE_MOUNT },
+                  { name: "home", mountPath: REPO_CACHE_HOME },
+                  { name: "tmp", mountPath: "/tmp" },
+                ],
+                resources: { requests: { cpu: "20m", memory: "64Mi" } },
+                securityContext: {
+                  runAsUser: 0,
+                  runAsGroup: 0,
+                  allowPrivilegeEscalation: false,
+                  capabilities: { drop: ["ALL"] },
+                  readOnlyRootFilesystem: true,
+                  seccompProfile: { type: "RuntimeDefault" },
+                },
+              },
+            ],
+            volumes: [
+              {
+                name: "cache",
+                hostPath: { path: `${REPO_CACHE_HOSTPATH}/${namespace}/repos`, type: "DirectoryOrCreate" },
+              },
+              { name: "home", emptyDir: {} },
+              { name: "tmp", emptyDir: {} },
+            ],
+          },
+        },
+      },
+    },
+  ];
 }
 
 /** Where the Instance Harness's Harness container sees the CA bundle — the same path

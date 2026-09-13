@@ -1,13 +1,15 @@
 // `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
 // typecheck → the Machine walk → ownership → image resolution → operator → kit images → instance
-// image → Sandbox Images → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance
-// Harness (ADR-0031: converged by convention when a carried definition declares `workspace:
-// "none"`, deleted when none does) → a report of live workspaces still on an older image. The
-// Orchestrator creates a Repo resource per Repo the walk found bound, at boot, and the cache agent
-// clones it onto a node on first need (ADR-0051); a configured custom provider is preflighted from
-// inside the cluster. A bound ssh url asks where its deploy key comes from (ADR-0047), and a
-// converge that GENERATED one ends by saying so — the key is dead until a human registers it.
+// image → Sandbox Images → Secret (+ preflight of referenced Secrets) → apply + rollout → the cache
+// agent (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted when
+// none does) → Instance Harness (ADR-0031: converged by convention when a carried definition
+// declares `workspace: "none"`, deleted when none does) → a report of live workspaces still on an
+// older image. The Orchestrator creates a Repo resource per Repo the walk found bound, at boot, and
+// the cache agent clones it onto a node on first need (ADR-0051); a configured custom provider is
+// preflighted from inside the cluster. A bound ssh url asks where its deploy key comes from
+// (ADR-0047), and a converge that GENERATED one ends by saying so — the key is dead until a human
+// registers it.
 //
 // The typecheck is FIRST and is a gate (ADR-0050): a Machine names its Agents, its composed
 // Machines, and its Repo Slots by string, and since ADR-0049 those strings are typed, so a wrong
@@ -97,6 +99,7 @@ import {
   OPERATOR_NAMESPACE,
   OPERATOR_SELECTOR,
   operatorManifest,
+  REPO_CACHE,
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import {
@@ -365,11 +368,20 @@ export async function up(args: string[], io: Io): Promise<number> {
   };
 
   // --- operator (per-cluster, shared) ------------------------------------------------------------
+  // The operator IMAGE is resolved whenever anything this converge deploys runs it: the operator
+  // layer itself, or the data plane's cache agent, which is the same binary (`/manager repo-cache`,
+  // ADR-0051) and rides the instance's namespace even when the controller loop is somebody else's.
+  const operatorImage =
+    config.operator?.manage === false && !carried.composesSandbox ? undefined : await ensureKitImage("operator");
+  if (operatorImage !== undefined) converged.operator = operatorImage;
   if (config.operator?.manage === false) {
-    activity(io, "operator: skipped (operator.manage: false — run the controller loop yourself)");
+    activity(
+      io,
+      "operator: skipped (operator.manage: false — run the controller loop yourself)" +
+        (operatorImage !== undefined ? `; its image ${operatorImage} still runs as the cache agent` : ""),
+    );
   } else {
-    const image = await ensureKitImage("operator");
-    converged.operator = image;
+    const image = operatorImage!;
     const existing = await kube.getJson({
       kind: "deployment",
       name: OPERATOR_DEPLOYMENT,
@@ -390,7 +402,7 @@ export async function up(args: string[], io: Io): Promise<number> {
         ...ctx,
       });
       await awaitRollout(kube, {
-        deployment: OPERATOR_DEPLOYMENT,
+        name: OPERATOR_DEPLOYMENT,
         namespace: OPERATOR_NAMESPACE,
         selector: OPERATOR_SELECTOR,
         ...ctx,
@@ -610,12 +622,13 @@ export async function up(args: string[], io: Io): Promise<number> {
       harness: config.harness,
       caBundle: caPem,
       imageRefs: converged,
+      repoCache: carried.composesSandbox ? { image: operatorImage! } : undefined,
     }),
     ...ctx,
   });
   activity(io, "orchestrator: waiting for rollout");
   await awaitRollout(kube, {
-    deployment: ORCHESTRATOR_SERVICE,
+    name: ORCHESTRATOR_SERVICE,
     namespace,
     selector: `app=${ORCHESTRATOR_SERVICE}`,
     ...ctx,
@@ -627,6 +640,36 @@ export async function up(args: string[], io: Io): Promise<number> {
     image: tag,
     ...ctx,
   });
+
+  // --- the cache agent (ADR-0051): the data plane's node half, converged with the same switch ---
+  // Applied in the List above whenever a registered Machine composes a Sandbox; waited on and
+  // verified here like every other layer, because a DaemonSet that never scheduled (a Pod Security
+  // admission that forbids its root seat, an image the nodes cannot pull) is a data plane every
+  // provision will park on. No Machine composing a Sandbox → nothing to cache, and a DaemonSet left
+  // over from a Machine that dropped its `workspace()` is deleted with its RBAC: the layer
+  // converges toward the Machines like the Instance Harness does.
+  if (carried.composesSandbox) {
+    activity(io, "repo cache: waiting for the cache agent on every node");
+    await awaitRollout(kube, {
+      kind: "daemonset",
+      name: REPO_CACHE,
+      namespace,
+      selector: `app=${REPO_CACHE}`,
+      ...ctx,
+    });
+    await verifyRunningImage(io, kube, {
+      layer: "repo cache",
+      namespace,
+      selector: `app=${REPO_CACHE}`,
+      image: operatorImage!,
+      container: "agent",
+      ...ctx,
+    });
+  } else {
+    for (const kind of ["daemonset", "rolebinding", "role", "serviceaccount"]) {
+      await kube.deleteObject({ kind, name: REPO_CACHE, namespace, ...ctx });
+    }
+  }
 
   // --- Instance Harness (ADR-0031): converged by convention, never by config ---------------------
   // The scan is the Machine walk above, and it is DEFINITION-level (the line ADR-0018 drew:
@@ -657,7 +700,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...ctx,
     });
     await awaitRollout(kube, {
-      deployment: INSTANCE_HARNESS_SERVICE,
+      name: INSTANCE_HARNESS_SERVICE,
       namespace,
       selector: `app=${INSTANCE_HARNESS_SERVICE}`,
       ...ctx,
@@ -821,13 +864,13 @@ async function reportOlderWorkspaces(
  * so the user went and read the pods by hand — the step this deletes.
  *
  * A WRAPPER rather than a fatter `waitRollout`, so the port keeps saying one thing (wait for this
- * Deployment) and the diagnosis is driven through the same injected KubeAdmin the tests fake:
+ * workload) and the diagnosis is driven through the same injected KubeAdmin the tests fake:
  * evidence gathering that hid inside the kubectl port could never be exercised without a cluster.
  */
 async function awaitRollout(kube: KubeAdmin, target: RolloutTarget): Promise<void> {
-  const { deployment, namespace, context } = target;
+  const { kind, name, namespace, context } = target;
   try {
-    await kube.waitRollout({ deployment, namespace, ...(context ? { context } : {}) });
+    await kube.waitRollout({ ...(kind ? { kind } : {}), name, namespace, ...(context ? { context } : {}) });
   } catch (err) {
     throw await rolloutFailure(kube, err, target);
   }

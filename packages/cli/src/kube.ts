@@ -96,13 +96,9 @@ export type KubeAdmin = {
   }): Promise<void>;
   /** `kubectl delete --ignore-not-found -f -` of a manifest string (the operator uninstall). */
   deleteManifest(opts: { manifest: string; context?: string }): Promise<void>;
-  /** `kubectl rollout status deployment/<d>` — converge isn't done until the pod is. */
-  waitRollout(opts: {
-    deployment: string;
-    namespace: string;
-    context?: string;
-    timeoutSeconds?: number;
-  }): Promise<void>;
+  /** `kubectl rollout status <kind>/<name>` — converge isn't done until the pods are. A Deployment
+   * by default; the cache agent's DaemonSet (ADR-0051) is the one other rollout `j2 up` waits on. */
+  waitRollout(opts: RolloutRequest): Promise<void>;
   /** The tail of one container's output (`kubectl logs --tail`) — evidence, not a claim: a read
    * that fails (no such pod, a container that never started, no RBAC) answers `""`, because this
    * is only ever called to explain a failure that already happened (ADR-0046) and a diagnosis
@@ -132,6 +128,38 @@ export type KubeAdmin = {
 };
 
 const nsArgs = (namespace?: string): string[] => (namespace ? ["--namespace", namespace] : []);
+
+/** The two workload kinds `j2 up` rolls out and waits on. */
+export type RolloutKind = "deployment" | "daemonset";
+
+/** One rollout to wait for: the object, by kind and name, in its namespace. */
+export type RolloutRequest = {
+  /** Default `deployment`. */
+  kind?: RolloutKind;
+  name: string;
+  namespace: string;
+  context?: string;
+  timeoutSeconds?: number;
+};
+
+/** The argv of one rollout wait — pure, so the kind → `kubectl rollout status <kind>/<name>` mapping
+ * is checkable without a cluster. */
+export function rolloutStatusArgs({
+  kind = "deployment",
+  name,
+  namespace,
+  context,
+  timeoutSeconds = 180,
+}: RolloutRequest): string[] {
+  return [
+    ...ctxArgs(context),
+    ...nsArgs(namespace),
+    "rollout",
+    "status",
+    `${kind}/${name}`,
+    `--timeout=${timeoutSeconds}s`,
+  ];
+}
 
 /**
  * Did this read fail because the cluster has no such RESOURCE TYPE (`kubectl get sandboxes… ` on a
@@ -213,15 +241,8 @@ export const kubectlAdmin: KubeAdmin = {
     await execStdin(["kubectl", ...ctxArgs(context), "delete", "--ignore-not-found", "-f", "-"], manifest);
   },
 
-  async waitRollout({ deployment, namespace, context, timeoutSeconds = 180 }) {
-    await exec("kubectl", [
-      ...ctxArgs(context),
-      ...nsArgs(namespace),
-      "rollout",
-      "status",
-      `deployment/${deployment}`,
-      `--timeout=${timeoutSeconds}s`,
-    ]);
+  async waitRollout(req) {
+    await exec("kubectl", rolloutStatusArgs(req));
   },
 
   async logs({ namespace, pod, container, tailLines = 20, previous, context }) {
@@ -294,11 +315,12 @@ export function oneShotFailure(err: unknown): Error {
   return trimmed ? new Error(`${trimmed}\n${base}`) : err instanceof Error ? err : new Error(base);
 }
 
-/** What a rollout wait needs to know to go looking: the Deployment that did not come up, and the
- * label selector its pods carry (each converge layer already knows its own — it verifies the
- * running image through the same selector). */
+/** What a rollout wait needs to know to go looking: the workload that did not come up (a Deployment
+ * unless `kind` says otherwise), and the label selector its pods carry (each converge layer already
+ * knows its own — it verifies the running image through the same selector). */
 export type RolloutTarget = {
-  deployment: string;
+  kind?: RolloutKind;
+  name: string;
   namespace: string;
   selector: string;
   context?: string;
@@ -393,7 +415,7 @@ export async function rolloutFailure(kube: KubeAdmin, err: unknown, target: Roll
     evidence = { pods: [], notes: [`the pods could not be read (${errText(gatherErr)})`] };
   }
   const lines = [
-    `${target.deployment}: rollout did not complete in namespace ${target.namespace} — the pods say:`,
+    `${target.name}: rollout did not complete in namespace ${target.namespace} — the pods say:`,
     "",
     ...renderEvidence(evidence, target),
   ];
@@ -426,7 +448,8 @@ async function gatherRolloutEvidence(kube: KubeAdmin, target: RolloutTarget): Pr
   const live = pods.filter((p) => !p.metadata.deletionTimestamp);
   if (pods.length > 0 && live.length === 0) notes.push(`every pod matching ${selector} is terminating`);
   if (pods.length === 0 && notes.length === 0) {
-    notes.push(`no pod matches ${selector} — the ReplicaSet made none (check quota, node taints, and the selector)`);
+    const maker = target.kind === "daemonset" ? "the DaemonSet" : "the ReplicaSet";
+    notes.push(`no pod matches ${selector} — ${maker} made none (check quota, node taints, and the selector)`);
   }
 
   let events: EventObject[] = [];

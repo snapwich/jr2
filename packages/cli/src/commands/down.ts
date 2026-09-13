@@ -13,6 +13,12 @@
 // gone, its image map, its Sandboxes, and its pods are gone with it, so its images are unreachable
 // by construction — while every other instance's roots still protect everything they share, kit
 // refs included. Nothing here parses a tag.
+//
+// What the namespace delete does NOT reclaim: the node cache directories under
+// `/var/lib/j2/<namespace>/repos` (ADR-0051). The cache agent evicts a Repo's copy on its resource's
+// deletion, but the DaemonSet dies with the namespace before it can act on the Repos going with it,
+// so the bare clones stay on each node. They are inert — nothing mounts or refreshes them — and
+// bounded by the node's disk; on kind they live inside the node container and go with the cluster.
 
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
