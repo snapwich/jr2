@@ -45,6 +45,12 @@ When("I run an unknown command", async function (this: E2EWorld): Promise<void> 
   await this.runCli(["frobnicate"]);
 });
 
+/** `j2 status` with NO run names the instance (ADR-0048/0051): its data-plane switch and the
+ * per-node state of every Repo resource — the report a human asks for when a Repo will not clone. */
+When("I ask for the instance's status", async function (this: E2EWorld): Promise<void> {
+  await this.runCli(["status"]);
+});
+
 // --- assertions ----------------------------------------------------------------------------------
 
 Then("the run reaches {string} on stderr", function (this: E2EWorld, state: string): void {
@@ -69,6 +75,16 @@ Then("the run appears in the runs list", function (this: E2EWorld): void {
     list.some((r) => r.runId === this.runId),
     "the live run is listed",
   );
+});
+
+/** The data plane is read off the registered Machines (ADR-0051), not off config: an instance
+ * none of whose Machines compose a Sandbox has none, and says so rather than listing zero Repos. */
+Then("it reports no data plane", function (this: E2EWorld): void {
+  assert.equal(this.last?.code, 0, `j2 status failed: ${this.last?.stderr}`);
+  const report = this.resultJson<{ dataPlane: boolean; repos: unknown[] }>();
+  assert.equal(report.dataPlane, false, "no registered Machine composes a Sandbox");
+  assert.deepEqual(report.repos, [], "and there are no Repo resources to report");
+  assert.match(this.last?.stderr ?? "", /no data plane/, "the answer is spelled out, not left as an empty list");
 });
 
 Then("the status is {string}", function (this: E2EWorld, status: string): void {

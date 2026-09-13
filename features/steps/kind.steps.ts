@@ -25,7 +25,8 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@j2/orchestrator";
+import { IMAGES_CONFIGMAP, IMAGES_KEY, repoKey, type RepoStatus } from "@j2/orchestrator";
+import { ensureSeed, SEED_URL } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -174,6 +175,9 @@ async function waitSettled(world: E2EWorld): Promise<WsStatus> {
 // 10 min: the FIRST converge of a session builds the instance image (pnpm deploy + docker);
 // later scenarios hit the content-hash skip and the docker cache.
 Given("the kind instance is serving", { timeout: 600_000 }, async function (this: E2EWorld): Promise<void> {
+  // The Repo the workflows bind must be reachable from the cluster before the Orchestrator boots
+  // and the cache agent clones it (ADR-0051) — served in-cluster, once per suite (seed.ts).
+  await ensureSeed();
   // The product's own path (ADR-0010/0019): converge the scenario's fresh namespace with `j2 up`.
   // The workflows (incl. `sandboxed`) are committed in the kind instance and baked into its image.
   const r = await this.runCli(["up", "--yes"]);
@@ -207,6 +211,20 @@ When("the run's Sandbox is reaped behind its back", async function (this: E2EWor
 When("the orchestrator starts again", async function (this: E2EWorld): Promise<void> {
   await scaleOrchestrator(this, 1);
 });
+
+/**
+ * A PER-RUN Repo (ADR-0051): the `perrun` workflow's one slot is a mapper over its door, so the
+ * url is run input — a ticket field, in the shape the fence exists for. Whether the url passes
+ * `git.credentials` is decided at attach, by the Orchestrator, and the run either provisions a
+ * Sandbox naming it or faults naming the list.
+ */
+When(
+  "I start the {string} workflow with repo {string} detached",
+  async function (this: E2EWorld, wf: string, repo: string): Promise<void> {
+    await this.runCli(["run", wf, "--detach", "--input", JSON.stringify({ repo })]);
+    this.runId = this.resultJson<{ runId: string }>().runId;
+  },
+);
 
 /**
  * The model this pod's Harness talks to now answers with a tool call (ADR-0013/0038). The step
@@ -558,14 +576,17 @@ Then("the run's Sandbox becomes Ready", async function (this: E2EWorld): Promise
   this.sandboxBefore = sandbox.metadata.name;
 });
 
+/** The string is the Repo SLOT (ADR-0051) — the Machine's own word for the repository, which is
+ * also the directory under `/work`. Every kind workflow binds its one slot, `app`, to the seed. */
 Then(
   "the run's Sandbox has repo {string} checked out on branch {string}",
-  async function (this: E2EWorld, repo: string, branch: string): Promise<void> {
+  async function (this: E2EWorld, slot: string, branch: string): Promise<void> {
     await waitForAttached(this); // attach is post-Ready — the pod being up is not the worktree being there
     const pod = (await waitForReadySandbox(this)).metadata.name;
-    const workdir = `/work/${repo}/${branch}`;
+    const workdir = `/work/${slot}/${branch}`;
     // The attach contract (ADR-0004), read straight out of the pod: a worktree on the branch, whose
-    // objects are BORROWED from the read-only repos volume rather than copied.
+    // objects are BORROWED from the node's Repo cache — mounted read-only at `/repos/<key>`, the key
+    // derived from the url exactly as the Orchestrator derives it — rather than copied.
     const current = await kubectl(this, [
       "exec",
       `pod/${pod}`,
@@ -586,9 +607,34 @@ Then(
       "harness",
       "--",
       "cat",
-      `/work/${repo}/default/.git/objects/info/alternates`,
+      `/work/${slot}/default/.git/objects/info/alternates`,
     ]);
-    assert.equal(alternates.trim(), `/repos/${repo}/default/.git/objects`);
+    assert.equal(alternates.trim(), `/repos/${repoKey(SEED_URL)}/objects`);
+  },
+);
+
+/**
+ * The Repo as the INSTANCE reports it (ADR-0048/0051): `j2 status` with no run asks the
+ * Orchestrator for every Repo resource and its per-node state, which is the cache agent's own
+ * account. A Sandbox reached Ready only because the cache was present and fetched on its node, so
+ * this is the same fact read from the other side — the side a human asks when a clone will not.
+ * The string is the url; the report is keyed by the cache key derived from it.
+ */
+Then(
+  "j2 status reports repo {string} present on the node",
+  async function (this: E2EWorld, url: string): Promise<void> {
+    const key = repoKey(url);
+    let last: RepoStatus | undefined;
+    for (let i = 0; i < 60; i++) {
+      const r = await this.runCli(["status"]);
+      assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+      const { dataPlane, repos } = this.resultJson<{ dataPlane: boolean; repos: RepoStatus[] }>();
+      assert.equal(dataPlane, true, "an instance whose Machines compose a Sandbox has a data plane");
+      last = repos.find((repo) => repo.key === key);
+      if (last?.nodes.some((n) => n.present)) return;
+      await sleep(1000);
+    }
+    throw new Error(`no node reports Repo ${key} (${url}) present (last: ${JSON.stringify(last)})`);
   },
 );
 

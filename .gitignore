@@ -25,4 +25,3 @@ poc/
 # misc
 .DS_Store
 *.log
-features/kind-instance/seed/

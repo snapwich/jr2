@@ -2,8 +2,9 @@
 Feature: a workspace() run drives a real Sandbox on kind
   ADR-0012: a Workspace is ALWAYS a real Sandbox — there is no stubbed workspace mode — so this is
   the one tier where the data plane is real: the operator's Sandbox CR, a pod running the instance's
-  own Sandbox Image with j2's runtime injected into it (ADR-0037), the read-only repos volume, a git
-  worktree inside the pod, and the Harness endpoint the body's agent is admitted against.
+  own Sandbox Image with j2's runtime injected into it (ADR-0037), the node's Repo cache mounted
+  read-only (ADR-0051), a git worktree inside the pod, and the Harness endpoint the body's agent is
+  admitted against.
 
   It is also the only tier where the AGENT is real in the way that matters (ADR-0013): the pod
   originates its own tool calls. Since ADR-0038 the pod runs the STOCK Harness — pi, the real Menu
@@ -32,6 +33,28 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's status shows "done"
       And the run's body settled as "finished"
       And the run's Sandbox is destroyed
+
+  Rule: a per-run Repo passes the credentials fence or is refused
+    ADR-0051. A bound slot is code the instance typechecked and deployed; a PER-RUN slot is a
+    mapper over the door, so its url is run input — a ticket field — and otherwise a way to spend
+    the cluster's credential against any host. `git.credentials` is the fence: the kind instance
+    admits the seed's host by prefix and nothing else, so the same workflow either provisions a
+    Sandbox whose node cache holds the Repo or faults at attach naming the list.
+
+    Scenario: a url no git.credentials entry admits is refused at attach, naming the fence
+      Given the kind instance is serving
+      When I start the "perrun" workflow with repo "https://github.com/nobody/x.git" detached
+      Then the run faults mentioning "git.credentials"
+      And no Sandbox was re-provisioned for the run
+
+    Scenario: an admitted url is cloned onto the node the Sandbox lands on, and j2 status says so
+      Given the kind instance is serving
+      When I start the "perrun" workflow with repo "http://seed.j2-e2e-seed.svc/app.git" detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
+      # The cache agent's own account, read the way a human reads it — the Sandbox went Ready only
+      # once the Repo was present and fetched on its node (ADR-0048/0051).
+      And j2 status reports repo "http://seed.j2-e2e-seed.svc/app.git" present on the node
 
   Rule: a live Sandbox survives an orchestrator restart, and the run re-attaches to it
 

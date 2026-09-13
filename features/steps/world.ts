@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, copyFile, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, copyFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -120,9 +120,9 @@ export class E2EWorld {
   }
 
   /**
-   * Adopt the shared kind instance (@kind scenarios) under a FRESH namespace, and make sure the
-   * seed git bundle the config's `repos[]` clones from exists (self-healing: generated once,
-   * then baked into the instance image by content hash).
+   * Adopt the shared kind instance (@kind scenarios) under a FRESH namespace. The Repo its
+   * workflows bind is not on disk at all: it is served in-cluster by url (`steps/seed.ts`), and
+   * the cache agent clones it onto whichever node a Sandbox lands on (ADR-0051).
    *
    * Also starts this scenario's scripted MODEL (ADR-0038) and publishes its address to the `j2`
    * binary. HOST-SIDE, on an ephemeral port, so `--parallel` stays safe and the tier needs neither
@@ -132,7 +132,6 @@ export class E2EWorld {
   async setupKind(): Promise<void> {
     this.namespace = `j2e2e-${randomBytes(3).toString("hex")}`;
     this.dir = KIND_DIR;
-    await ensureSeedBundle(join(this.dir, "seed"));
     this.provider = await startFakeProvider();
     this.extraEnv.J2_FAKE_PROVIDER_URL = `http://${await kindHostAddress()}:${this.provider.port}/v1`;
   }
@@ -275,8 +274,8 @@ export class E2EWorld {
     });
     this.serverProc = proc;
     proc.stderr?.on("data", () => {}); // drain so the pipe never blocks
-    // The entrypoint announces one JSON object per line; the `{ url }` line is the address (repo
-    // reconcile lines may precede it on a sandbox-ful instance).
+    // The entrypoint announces one JSON object per line; the `{ url }` line is the address (an
+    // instance with a data plane announces its Repo resources on later lines — ADR-0051).
     const announced = await new Promise<Announcement>((resolve, reject) => {
       let buf = "";
       proc.stdout!.on("data", (d: Buffer) => {
@@ -353,35 +352,6 @@ function execKubectl(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile("kubectl", args, (err) => (err ? reject(err) : resolve()));
   });
-}
-
-/**
- * The seed repo the kind config's `repos[]` clones from, as a git BUNDLE (`seed/app.bundle`):
- * a single file survives the instance image build (`pnpm deploy` strips nested `.git` dirs) and
- * is clonable from inside the cluster. Generated once; the image content hash then keeps it.
- */
-async function ensureSeedBundle(seedDir: string): Promise<void> {
-  const bundle = join(seedDir, "app.bundle");
-  try {
-    await readFile(bundle);
-    return;
-  } catch {
-    // absent → generate
-  }
-  await mkdir(seedDir, { recursive: true });
-  const work = await mkdtemp(join(tmpdir(), "j2-seed-"));
-  const git = (args: string[]): Promise<void> =>
-    new Promise((resolve, reject) => {
-      execFile("git", ["-C", work, ...args], (err, _o, stderr) =>
-        err ? reject(new Error(`git ${args.join(" ")}: ${stderr}`)) : resolve(),
-      );
-    });
-  await git(["init", "-q", "-b", "main"]);
-  await writeFile(join(work, "README.md"), "# app\n");
-  await git(["add", "-A"]);
-  await git(["-c", "user.email=e2e@j2", "-c", "user.name=e2e", "commit", "-qm", "init"]);
-  await git(["bundle", "create", bundle, "HEAD", "main"]);
-  await rm(work, { recursive: true, force: true });
 }
 
 setWorldConstructor(E2EWorld);

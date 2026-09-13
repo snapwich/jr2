@@ -72,7 +72,7 @@ e2e-kind-up:
 # at "is serving" — or worse, converge into it.
 e2e-kind:
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG=features/.tmp/kubeconfig pnpm --filter @j2/e2e test:e2e:kind
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @j2/e2e test:e2e:kind
 
 # render the operator install manifest shipped inside the npm package (ADR-0019; check in the result)
 operator-manifest:
@@ -236,4 +236,4 @@ e2e-dist-up:
 # run the @dist e2e tier (needs `just e2e-dist-up`, and network on every run — the storage is wiped)
 e2e-dist:
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG=features/.tmp/kubeconfig pnpm --filter @j2/e2e test:e2e:dist
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @j2/e2e test:e2e:dist

@@ -16,7 +16,7 @@ Before({ tags: "not @kind and not @dist" }, async function (this: E2EWorld): Pro
   await this.setup();
 });
 
-// The kind tier shares one fixed instance (its cluster's repos mount is baked to that path — see
+// The kind tier shares one fixed instance (a workspace package `j2 up` bundles — see
 // World.setupKind), so it opts out of the mkdtemp above rather than getting a folder of its own.
 Before({ tags: "@kind" }, async function (this: E2EWorld): Promise<void> {
   await this.setupKind();

@@ -7,8 +7,7 @@
   "files": [
     "package.json",
     "j2.config.ts",
-    "workflows",
-    "seed"
+    "workflows"
   ],
   "dependencies": {
     "@j2/orchestrator": "workspace:*",
