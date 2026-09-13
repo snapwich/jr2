@@ -14,14 +14,14 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, j2Setup } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, type HostInjectedInput, type Workspaced } from "@j2/orchestrator";
 import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 
-/** The handles a wrapper hands the body: the one Repo Slot every kind workflow declares, `app`. */
-type Ws = { workdir: string; repos: Record<"app", string>; branch: string };
-type BodyInput = { instanceId: string; workspace: Ws };
+/** What a ROOT-placed wrapper hands the body: the host's injection beside the door (the run's
+ * `instanceId`), plus the handles keyed by the one Repo Slot every kind workflow declares, `app`. */
+type BodyInput = Workspaced<HostInjectedInput, "app">;
 /** Plus the one thing the body records without acting on it — see the `agent.fault` handler. */
 type BodyContext = BodyInput & { fault?: string };
 

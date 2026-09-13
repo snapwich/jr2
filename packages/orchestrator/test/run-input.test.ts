@@ -44,7 +44,7 @@ function titledDef(): WorkflowDef {
  * door plus the handles the wrapper injects — `Workspaced<…>`, the composition the wrapper's
  * declared door is checked against. */
 const wsBody = j2Setup({
-  types: {} as { context: { repo: string }; input: Workspaced<{ repo: string; branch: string }> },
+  types: {} as { context: { repo: string }; input: Workspaced<{ repo: string; branch: string }, "app"> },
   events: [approveDef],
 }).createMachine({
   id: "wsbody",

@@ -95,7 +95,7 @@ function refusedChildren(): void {
 const door = z.object({ topic: z.string() });
 const body = j2Setup({
   events: [done],
-  types: {} as { context: {}; input: Workspaced<z.infer<typeof door>> },
+  types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, "target"> },
   actors: { coder: agent({ model: haiku, instructions: "c" }) },
 }).createMachine({ id: "body", context: {}, initial: "idle", states: { idle: {} } });
 

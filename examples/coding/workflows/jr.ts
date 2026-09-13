@@ -27,7 +27,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assign, fromPromise } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, pool, source, workspace } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, pool, source, workspace, type Workspaced } from "@j2/orchestrator";
 import { architect, coder, reviewer } from "./_agents.ts";
 
 const exec = promisify(execFile);
@@ -107,11 +107,13 @@ const openPr = fromPromise<{ url: string }, { workdir: string; branch: string; f
 // which appends `workspace: { workdir, repos, branch }` — the only handles a workflow needs;
 // `repos.target` is the feature's repository, under the one slot the wrapper declares.
 
-type BodyInput = {
-  feature: Ticket;
-  reviewRounds: number; // JR_REVIEW_ROUNDS (5)
-  workspace: { workdir: string; repos: Record<"target", string>; branch: string };
-};
+type BodyInput = Workspaced<
+  {
+    feature: Ticket;
+    reviewRounds: number; // JR_REVIEW_ROUNDS (5)
+  },
+  "target"
+>;
 type BodyCtx = BodyInput & {
   task?: Ticket;
   coderRounds: number;

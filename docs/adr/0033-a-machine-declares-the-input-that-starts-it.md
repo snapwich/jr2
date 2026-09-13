@@ -27,9 +27,9 @@ machine is the one piece of its vocabulary that pattern missed.
   vocabulary does not propagate either — event names resolve against the Machine that invoked the actor, so a body keeps
   its own defs and nothing is merged upward (ADR-0011, ADR-0049). The door is one more part a Machine carries and scopes
   to itself. The composition the body needs a name for is exported instead:
-  `Workspaced<T> = T & { workspace: WorkspaceHandles }`. A body that _still_ declares a schema is refused by
-  `workspace()` with a message naming the fix: nothing would ever serve or validate it, and a contract nobody enforces
-  is worse than none.
+  `Workspaced<T, Slot> = T & { workspace: WorkspaceHandles<Slot> }`, the handles keyed by the Repo Slots the body names
+  (ADR-0050, ADR-0051). A body that _still_ declares a schema is refused by `workspace()` with a message naming the fix:
+  nothing would ever serve or validate it, and a contract nobody enforces is worse than none.
 - **The door types the mapping, and constrains the body.** `WorkspaceOptions.spec` reads its `input` from the declared
   schema (`z.infer`), so a workflow states its shape once and the workspace mapping is checked against it — the drift
   this ADR exists to close, closed in the one place that used to re-declare the shape by hand. The same schema checks

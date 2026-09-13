@@ -88,8 +88,13 @@ export type WorkspaceSpec = {
  * `endpoint` and `sandbox` are mechanism-internal — the Agent actor resolves them ambiently from
  * the enclosing wrapper (ambient.ts), so a workflow can no longer forget to thread them (the
  * baba71f incident: `sandbox` omitted, every tool call 403'd, fail-closed but silent).
+ *
+ * `TSlots` has NO default on purpose (ADR-0050): a body names the slots it reads, and
+ * `workspace()` holds those names to the ones the wrapper declares. A default of `string` would
+ * type `repos` as `Record<string, string>`, under which a misspelled slot reads as a path — the
+ * silent widening the slot key exists to refuse.
  */
-export type WorkspaceHandles<TSlots extends string = string> = {
+export type WorkspaceHandles<TSlots extends string> = {
   /** The primary working directory: the FIRST declared slot's branch worktree. */
   workdir: string;
   /** Every slot's branch-worktree path: `/work/<slot>/<branch>`. */
@@ -103,17 +108,19 @@ export type WorkspaceHandles<TSlots extends string = string> = {
 /**
  * A body's input under a Workspace: the run input the wrapper passes through, PLUS the handles it
  * injects. The composition is the whole reason the door is declared on the wrapper and not on the
- * body (ADR-0033) — `Workspaced<RunInput>` is what the body receives, `RunInput` is what a caller
+ * body (ADR-0033) — `Workspaced<RunInput, Slot>` is what the body receives, `RunInput` is what a caller
  * may send, and no caller can send `workspace` (the handles do not exist until a Sandbox is
  * provisioned and attached). Naming it here keeps the body from hand-copying
- * {@link WorkspaceHandles}, which drifts.
+ * {@link WorkspaceHandles}, which drifts. The second argument is the body's word for each Repo
+ * Slot it reads (`Workspaced<RunInput, "target">`) — required, never defaulted, so
+ * `workspace.repos.<slot>` is typed by the same keys the wrapper declares (ADR-0050, ADR-0051).
  *
  * The wrapper passes its input through UNTOUCHED, so a ROOT-placed wrapper's body also receives
  * what the host injected beside the door — `HostInjectedInput` today (the run's `instanceId`).
  * That is outside this type on purpose: it depends on where the wrapper sits, and `Workspaced` is
  * the composition the WRAPPER makes.
  */
-export type Workspaced<TInput, TSlots extends string = string> = TInput & { workspace: WorkspaceHandles<TSlots> };
+export type Workspaced<TInput, TSlots extends string> = TInput & { workspace: WorkspaceHandles<TSlots> };
 
 /**
  * What a renewal learned about the workspace it just stamped (ADR-0021).
@@ -391,7 +398,7 @@ export type PermissiveWorkspaceOptions<TInput = unknown, TSlots extends string =
 /**
  * Wrap a body Machine in Sandbox lifecycle (ADR-0012). `spec` maps the wrapper's input to the
  * workspace-domain spec; the body receives the wrapper's input plus `workspace` (the handles) —
- * `Workspaced<TInput>`, which is also what the declared door checks the body against. The
+ * `Workspaced<TInput, TSlots>`, which is also what the declared door checks the body against. The
  * wrapper's output is the body's output. A body ERROR is deliberately unhandled: it faults the run
  * loudly (RunStatus.fault) and leaves the Sandbox to the operator's idle-timeout GC — the trail
  * stays inspectable, and silent cleanup would destroy the evidence.
@@ -767,7 +774,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
               // Body-facing subset only (ADR-0016): endpoint/sandbox are mechanism-internal.
               return {
                 ...ctx.runInput,
-                workspace: { workdir, repos, branch, ...(review ? { review } : {}) } satisfies WorkspaceHandles,
+                workspace: { workdir, repos, branch, ...(review ? { review } : {}) } satisfies WorkspaceHandles<string>,
               };
             },
             onDone: {

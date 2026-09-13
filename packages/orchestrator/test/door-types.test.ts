@@ -18,14 +18,17 @@
 //   8. what the HOST injects beside the door is outside the check — and only that;
 //   9. a per-run Repo Slot's mapper reads the same PARSED door as `spec` (ADR-0051), on the
 //      wrapper itself: `unknown` on the permissive path, and an annotation that contradicts the
-//      door is refused.
+//      door is refused;
+//  10. the handles are keyed by the wrapper's DECLARED Repo Slots (ADR-0050): a body names the
+//      slots it reads, an undeclared one is refused at the `workspace()` call, and there is no
+//      default that widens `repos` to `Record<string, string>`.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup, type InputFrom, type OutputFrom } from "xstate";
 import { z } from "zod";
 import { open } from "../src/parts.ts";
-import { workspace, type WorkspaceSpec, type Workspaced } from "../src/workspace.ts";
+import { workspace, type WorkspaceHandles, type WorkspaceSpec, type Workspaced } from "../src/workspace.ts";
 import { inputSchemaOf, type HostInjectedInput } from "../src/vocabulary.ts";
 
 const door = z.object({ repo: z.string(), branch: z.string() });
@@ -39,14 +42,15 @@ const bodyTakingInput = <TInput>() =>
     states: { idle: {} },
   });
 
-const exact = bodyTakingInput<Workspaced<Door>>();
-const needsLess = bodyTakingInput<Workspaced<{ repo: string }>>();
-const needsMore = bodyTakingInput<Workspaced<Door & { reason: string }>>();
+// Every body below names the one slot the wrappers declare, `app` (claim 10).
+const exact = bodyTakingInput<Workspaced<Door, "app">>();
+const needsLess = bodyTakingInput<Workspaced<{ repo: string }, "app">>();
+const needsMore = bodyTakingInput<Workspaced<Door & { reason: string }, "app">>();
 const unrelated = bodyTakingInput<{ ticket: number }>();
 const ignoresHandles = bodyTakingInput<Door>();
 
 const outputting = setup({
-  types: {} as { context: {}; input: Workspaced<Door>; output: { outcome: "approved" } },
+  types: {} as { context: {}; input: Workspaced<Door, "app">; output: { outcome: "approved" } },
 }).createMachine({
   context: {},
   initial: "done",
@@ -74,9 +78,11 @@ void workspace(needsMore, { input: door, repos, spec: ({ input }) => specOf(inpu
 // @ts-expect-error no overlap at all, rejected the same way
 void workspace(unrelated, { input: door, repos, spec: ({ input }) => specOf(input) });
 
-// The handles are keyed by the wrapper's DECLARED slots (ADR-0051), so the same check holds a body
-// to the slots it will actually be handed: demanding a slot the wrapper never declared is refused,
-// demanding the declared one — or an index signature over all of them — is fine.
+// --- 10: the handles are keyed by the wrapper's DECLARED slots ----------------------------------
+
+// The same check holds a body to the slots it will actually be handed (ADR-0050, ADR-0051):
+// demanding a slot the wrapper never declared is refused, demanding the declared one — or fewer
+// than the wrapper declares — is fine.
 const wantsApp = bodyTakingInput<Workspaced<Door, "app">>();
 const wantsDocs = bodyTakingInput<Workspaced<Door, "app" | "docs">>();
 void workspace(wantsApp, { input: door, repos, spec: ({ input }) => specOf(input) });
@@ -87,6 +93,22 @@ void workspace(wantsApp, {
 });
 // @ts-expect-error `docs` is a slot this wrapper never declared — the body would read a path that does not exist
 void workspace(wantsDocs, { input: door, repos, spec: ({ input }) => specOf(input) });
+
+// A body NAMES its slots: there is no default. `Workspaced<Door>` alone would have typed `repos`
+// as `Record<string, string>`, under which a body's `repos.taregt` compiles and the wrapper accepts
+// it (`Record<"app", string>` extends `Record<string, string>`) — the silent widening ADR-0050
+// forbids. Refused where it is written, before any `workspace()` call could miss it.
+// @ts-expect-error `Workspaced` takes the body's slots; a body with no slot named is not a body
+type SlotlessBody = Workspaced<Door>;
+// @ts-expect-error the same for the handles themselves
+type SlotlessHandles = WorkspaceHandles;
+type Slotless = SlotlessBody | SlotlessHandles | Misspelled;
+void (null as unknown as Slotless);
+// And a named slot is the only key the body can read: a misspelling is a compile error on the
+// read, which is what lets a prompt name a path and be right everywhere (ADR-0051).
+const appPathIsAString: Eq<WorkspaceHandles<"app">["repos"]["app"], string> = true;
+// @ts-expect-error `taregt` is not a slot this body named
+type Misspelled = WorkspaceHandles<"app">["repos"]["taregt"];
 
 // --- 3: the handles are the wrapper's to inject, nobody else's ---------------------------------
 
@@ -178,17 +200,17 @@ const annotatedInputFlows: Eq<InputFrom<typeof itemFed>, { ticket: Door }> = tru
 // one does not, and no type can see which. A body that declares it honestly (the kind tier's
 // workflows do) must NOT be told to widen its door: the field is host-supplied, never sent, never
 // served (ADR-0033). So the guard adds those keys to what it counts as PROVIDED.
-const wantsHostInjection = bodyTakingInput<Workspaced<Door> & HostInjectedInput>();
+const wantsHostInjection = bodyTakingInput<Workspaced<Door, "app"> & HostInjectedInput>();
 void workspace(wantsHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
 // Exactly those keys and no more: one extra field beside them is still rejected, so the carve-out
 // is not a hole in claim 1.
-const wantsMoreThanHostInjection = bodyTakingInput<Workspaced<Door> & HostInjectedInput & { reason: string }>();
+const wantsMoreThanHostInjection = bodyTakingInput<Workspaced<Door, "app"> & HostInjectedInput & { reason: string }>();
 // @ts-expect-error `reason` is nobody's to inject — neither the door, the handles, nor the host
 void workspace(wantsMoreThanHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
 // And the keys are still TYPED. Widening the provided side is what buys this: SUBTRACTING them
 // from what the body demands (`Omit<InputFrom<TBody>, keyof HostInjectedInput>`) would drop the
 // wrong declaration along with the key, and admit this.
-const mistypesHostInjection = bodyTakingInput<Workspaced<Door> & { instanceId: number }>();
+const mistypesHostInjection = bodyTakingInput<Workspaced<Door, "app"> & { instanceId: number }>();
 // @ts-expect-error the host injects an Instance ID string; a body asking for a number never gets one
 void workspace(mistypesHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
 
@@ -196,12 +218,12 @@ void workspace(mistypesHostInjection, { input: door, repos, spec: ({ input }) =>
 // against a union's SHARED keys only, so `reason`/`other` would vanish from the check and every
 // member could demand a field the door never carries — the exact hole claim 1 exists to close.
 const unionDemandsMore = bodyTakingInput<
-  Workspaced<Door & { reason: string }> | Workspaced<Door & { other: string }>
+  Workspaced<Door & { reason: string }, "app"> | Workspaced<Door & { other: string }, "app">
 >();
 // @ts-expect-error no member of the union is satisfied by the door plus the handles
 void workspace(unionDemandsMore, { input: door, repos, spec: ({ input }) => specOf(input) });
 // A union whose members are each satisfied is still fine — one direction, as ever.
-const unionNeedsLess = bodyTakingInput<Workspaced<{ repo: string }> | Workspaced<Door>>();
+const unionNeedsLess = bodyTakingInput<Workspaced<{ repo: string }, "app"> | Workspaced<Door, "app">>();
 void workspace(unionNeedsLess, { input: door, repos, spec: ({ input }) => specOf(input) });
 
 // --- 9: a per-run slot's mapper reads the door, on the wrapper itself ---------------------------
@@ -254,6 +276,11 @@ test("the door's type-level claims are the compiler's; this run pins the runtime
   assert.equal(inputSchemaOf(wrapped), door, "the declared door rides the WRAPPER, not the body");
   assert.equal(inputSchemaOf(permissive), undefined, "no schema declared → the door stays permissive");
   assert.ok(
-    doorIsTheInput && bodyOutputIsTheOutput && permissiveDoorIsUnknown && annotatedInputFlows && mapperSlotsAreSlots,
+    doorIsTheInput &&
+      bodyOutputIsTheOutput &&
+      permissiveDoorIsUnknown &&
+      annotatedInputFlows &&
+      mapperSlotsAreSlots &&
+      appPathIsAString,
   );
 });
