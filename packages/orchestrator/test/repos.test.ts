@@ -357,6 +357,33 @@ test("reconcileBound unlabels every bound resource whose key the walk no longer 
   assert.ok(labels[0]!.includes("j2.dev/bound-"), "kubectl's spelling for removing a label");
 });
 
+test("reconcileBound on a cluster with no Repo CRD unlabels nothing and does not throw", async () => {
+  // An instance that binds nothing runs the reconcile on every boot (server.ts), and
+  // `operator.manage: false` without the operator is a cluster where the type is absent. No type,
+  // no Repos — the complete answer — so the boot announces no error for a failure that is not one.
+  const { exec, calls } = fakeExec({
+    get: () => {
+      throw new Error('error: the server doesn\'t have a resource type "repos"');
+    },
+  });
+  const port = kubectlRepos({ namespace: "inst", credentials: [], env: {}, exec });
+  await port.reconcileBound([]);
+  assert.deepEqual(
+    calls.filter((c) => c.args[0] === "label"),
+    [],
+  );
+});
+
+test("any other refusal of the bound listing propagates — the boot announces it", async () => {
+  const { exec } = fakeExec({
+    get: () => {
+      throw new Error("Error from server (Forbidden): repos.core.j2.dev is forbidden");
+    },
+  });
+  const port = kubectlRepos({ namespace: "inst", credentials: [], env: {}, exec });
+  await assert.rejects(() => port.reconcileBound([]), /Forbidden/);
+});
+
 test("list() maps the resources — the Orchestrator's metadata and the cache agent's per-node status — to RepoStatus", async () => {
   const items = {
     items: [

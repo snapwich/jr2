@@ -245,7 +245,18 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
 
     async reconcileBound(keys) {
       const keep = new Set(keys);
-      const { stdout } = await exec(["get", REPO_RESOURCE, ...base, "-l", `${LABEL_REPO_BOUND}=true`, "-o", "json"]);
+      let stdout: string;
+      try {
+        ({ stdout } = await exec(["get", REPO_RESOURCE, ...base, "-l", `${LABEL_REPO_BOUND}=true`, "-o", "json"]));
+      } catch (err) {
+        // A cluster with no `repos.core.j2.dev` resource type holds no Repos, so "nothing to
+        // unlabel" is the complete answer — the one read that may answer none. An instance that
+        // binds nothing runs this reconcile on every boot (server.ts), and `operator.manage: false`
+        // without the operator is exactly the cluster where the type is absent: an error line there
+        // would report a failure that is not one. Any other refusal still throws.
+        if (!isMissingResourceType(err)) throw err;
+        return;
+      }
       for (const item of itemsOf(stdout)) {
         const name = item.metadata?.name;
         if (name === undefined || keep.has(name)) continue;
@@ -309,4 +320,10 @@ export function repoStatusOf(item: RepoItem): RepoStatus {
 
 function isAlreadyExists(err: unknown): boolean {
   return err instanceof Error && /AlreadyExists|already exists/i.test(err.message);
+}
+
+/** kubectl's words for "this cluster has no such CRD" — the Repo type is the operator's to install
+ * (ADR-0051), and an instance may be deployed where nothing installed it. */
+function isMissingResourceType(err: unknown): boolean {
+  return /doesn't have a resource type/i.test(err instanceof Error ? err.message : String(err));
 }

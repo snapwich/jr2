@@ -680,6 +680,12 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...ctx,
     });
   } else {
+    // The Repo resources are NOT deleted here: eviction is reachability plus age (ADR-0051), and
+    // the orchestrator this converge just rolled out binds nothing, so its boot unlabels every one
+    // of them (server.ts) and `j2 gc` takes them at the TTL. The bare clones under
+    // `/var/lib/j2/<ns>/repos` outlive the agent that would evict them — inert, like the ones
+    // `j2 down` leaves (down.ts), and swept by the agent's own walk if a `workspace()` ever
+    // returns here.
     for (const kind of ["daemonset", "rolebinding", "role", "serviceaccount"]) {
       await kube.deleteObject({ kind, name: REPO_CACHE, namespace, ...ctx });
     }

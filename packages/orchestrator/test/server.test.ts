@@ -88,6 +88,16 @@ function fakeKubectl(fail?: (args: string[]) => string | undefined) {
   return { exec, calls };
 }
 
+/** The first recorded call matching `want` — the boot's Repo pass runs after serving, unawaited. */
+async function until(calls: string[][], want: (args: string[]) => boolean): Promise<string[]> {
+  for (let i = 0; i < 200; i++) {
+    const hit = calls.find(want);
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("the boot never made the call");
+}
+
 /** The announce lines after the first — the boot's Repo lines arrive after serving. */
 async function announcedRepos(lines: string[], count: number): Promise<Array<Record<string, unknown>>> {
   for (let i = 0; i < 200 && lines.length < 1 + count; i++) await new Promise((r) => setTimeout(r, 10));
@@ -247,14 +257,53 @@ test("the same Machine with NO namespace → no port, and a workspace() run faul
 });
 
 test("no registered Machine composes a Sandbox → no data plane, even deployed", async () => {
+  const kubectl = fakeKubectl();
   const inst = await serverMain({
     dir: fixtureDir,
     env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "echo" },
     announce: () => {},
+    exec: kubectl.exec,
   });
   try {
     const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean; repos: unknown[] };
     assert.deepEqual(repos, { dataPlane: false, repos: [] });
+    // …and `GET /repos` answered that WITHOUT reading the cluster: no data plane, no read-through.
+    assert.deepEqual(
+      kubectl.calls.filter((a) => a[0] === "get" && !a.includes("j2.dev/bound=true")),
+      [],
+    );
+  } finally {
+    await inst.close();
+  }
+});
+
+test("an Instance that stopped composing a Sandbox unlabels the Repos its last deploy bound (ADR-0051)", async () => {
+  // The last `workspace()` dropped from the Machines: nothing binds the Repos the previous deploys
+  // labeled, and no cache agent is converged for them any more (`j2 up` deletes the DaemonSet).
+  // The boot still reconciles, because the bound label is `j2 gc`'s only "keep this" — left on,
+  // the resources are uncollectable forever and nothing ever evicts the node caches behind them.
+  const bound = { items: [{ metadata: { name: "app-11111111", labels: { "j2.dev/bound": "true" } } }] };
+  const kubectl = fakeKubectl();
+  const exec: KubectlExec = async (args, opts) =>
+    args[0] === "get" && args.includes("j2.dev/bound=true")
+      ? { stdout: JSON.stringify(bound), stderr: "" }
+      : kubectl.exec(args, opts);
+  const inst = await serverMain({
+    dir: fixtureDir,
+    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "echo" },
+    announce: () => {},
+    exec,
+  });
+  try {
+    const label = await until(kubectl.calls, (a) => a[0] === "label");
+    assert.deepEqual(label.slice(0, 3), ["label", "repos.core.j2.dev", "app-11111111"]);
+    assert.ok(label.includes("j2.dev/bound-"), "kubectl's spelling for removing the label");
+    assert.ok(label.includes("--namespace") && label.includes("echo"), "in the instance's namespace");
+    // The walk binds nothing, so the reconcile is the whole pass: no resource is created or stated.
+    assert.deepEqual(
+      kubectl.calls.filter((a) => a[0] === "create" || a[0] === "patch"),
+      [],
+    );
   } finally {
     await inst.close();
   }

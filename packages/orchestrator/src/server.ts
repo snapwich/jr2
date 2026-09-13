@@ -21,6 +21,9 @@
 // boot then creates one `Repo` resource per identity its Machines bind (ADR-0051) and announces
 // each as `{ repo, url, bound: true }` — or `{ repo, error }` — one line apiece, after serving:
 // a Repo the cluster refuses is a degraded Repo (ADR-0048), never a boot that did not happen.
+// Deployed WITHOUT one, the same pass still runs and binds nothing, which unlabels every Repo a
+// previous deploy bound — an Instance that drops its last `workspace()` leaves `j2 gc` able to
+// collect what it stopped using.
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -81,50 +84,58 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   const dataPlane = carried.composesSandbox && namespace !== undefined;
   let sandbox: SandboxPort | undefined;
   let repos: RepoResources | undefined;
-  if (dataPlane) {
+  // The Repo port hangs off DEPLOYED, not off the data plane: this boot's reconcile is the only
+  // writer that ever REMOVES `j2.dev/bound` (repos.ts), and an Instance that drops its last
+  // `workspace()` still owns the Repos its earlier deploys bound. So the port is built whenever
+  // there is a cluster to drive, and the walk — now naming nothing — unlabels every one of them,
+  // which is what puts them on `j2 gc`'s clock. Gate it on the data plane instead and they stay
+  // bound forever: uncollectable resources, with their node caches behind them.
+  if (namespace !== undefined) {
     const credentials = config?.git?.credentials ?? [];
     // The Repo resources (ADR-0051): created by this process, cloned by the operator's cache agent
     // on every node that needs them. The port resolves `git.credentials` into each resource's
     // `secretRef`, reading a token entry's env var off this process — the Instance Secret is
     // `envFrom` on the Deployment, so `j2 up` is what put it there.
     repos = kubectlRepos({ namespace, credentials, env, ...(opts.exec ? { exec: opts.exec } : {}) });
-    sandbox = kubectlSandbox({
-      // The fence (ADR-0051): a per-run url must match one of these, or the provision refuses it.
-      credentials,
-      // Where a provision records the Repos it names, before the CR names them.
-      repos,
-      // Named here the same way HARNESS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
-      // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
-      // buys: the map is read per provision, so an instance whose `j2-images` ConfigMap is not yet
-      // mounted still BOOTS and serves — only a provision fails, pointing at `j2 up`. That is the
-      // correct blast pattern, and the stale-read window is one kubelet propagation.
-      imagesPath: join(IMAGES_MOUNT, IMAGES_KEY),
-      // The Harness containers' env (ADR-0018): what this instance can REACH (the custom provider
-      // — no Agents, they ride each Turn since ADR-0049), then the instance's own valueFrom
-      // entries (literal values already live in the j2-harness-env Secret below).
-      env: [
-        {
-          name: "J2_HARNESS_JSON",
-          valueFrom: { configMapKeyRef: { name: HARNESS_CONFIGMAP, key: HARNESS_CONFIG_KEY } },
-        },
-        // The echo gate (ADR-0023): the Harness verifies echo bearers against this sha-256. The
-        // digest, never the token — the Agent executes code in the Harness container, and a
-        // digest inverts to nothing (the Instance token itself never enters a Sandbox, ADR-0013).
-        {
-          name: "J2_ECHO_TOKEN_SHA256",
-          value: createHash("sha256").update(instanceToken).digest("base64url"),
-        },
-        ...(config?.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
-      ],
-      envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(config?.harness?.envFrom ?? [])],
-      // Presence only — the PEM itself was materialized into the j2-ca ConfigMap by `j2 up`
-      // (ADR-0020); the in-cluster config eval never reads the file.
-      caBundle: config?.harness?.caBundle !== undefined,
-      orchestratorUrl: namespace ? `http://${ORCHESTRATOR_SERVICE}.${namespace}.svc:${port}` : undefined,
-      signingKey,
-      namespace,
-      ...(opts.exec ? { exec: opts.exec } : {}),
-    });
+    if (dataPlane) {
+      sandbox = kubectlSandbox({
+        // The fence (ADR-0051): a per-run url must match one of these, or the provision refuses it.
+        credentials,
+        // Where a provision records the Repos it names, before the CR names them.
+        repos,
+        // Named here the same way HARNESS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
+        // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
+        // buys: the map is read per provision, so an instance whose `j2-images` ConfigMap is not yet
+        // mounted still BOOTS and serves — only a provision fails, pointing at `j2 up`. That is the
+        // correct blast pattern, and the stale-read window is one kubelet propagation.
+        imagesPath: join(IMAGES_MOUNT, IMAGES_KEY),
+        // The Harness containers' env (ADR-0018): what this instance can REACH (the custom provider
+        // — no Agents, they ride each Turn since ADR-0049), then the instance's own valueFrom
+        // entries (literal values already live in the j2-harness-env Secret below).
+        env: [
+          {
+            name: "J2_HARNESS_JSON",
+            valueFrom: { configMapKeyRef: { name: HARNESS_CONFIGMAP, key: HARNESS_CONFIG_KEY } },
+          },
+          // The echo gate (ADR-0023): the Harness verifies echo bearers against this sha-256. The
+          // digest, never the token — the Agent executes code in the Harness container, and a
+          // digest inverts to nothing (the Instance token itself never enters a Sandbox, ADR-0013).
+          {
+            name: "J2_ECHO_TOKEN_SHA256",
+            value: createHash("sha256").update(instanceToken).digest("base64url"),
+          },
+          ...(config?.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
+        ],
+        envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(config?.harness?.envFrom ?? [])],
+        // Presence only — the PEM itself was materialized into the j2-ca ConfigMap by `j2 up`
+        // (ADR-0020); the in-cluster config eval never reads the file.
+        caBundle: config?.harness?.caBundle !== undefined,
+        orchestratorUrl: `http://${ORCHESTRATOR_SERVICE}.${namespace}.svc:${port}`,
+        signingKey,
+        namespace,
+        ...(opts.exec ? { exec: opts.exec } : {}),
+      });
+    }
   }
 
   const inst = await startInstance({
@@ -135,8 +146,10 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     signingKey,
     sandbox,
     dataPlane,
-    // Read per request, never snapshotted: the Repos as the cluster reports them right now.
-    ...(repos ? { repos: () => repos.list() } : {}),
+    // Read per request, never snapshotted: the Repos as the cluster reports them right now. An
+    // instance without a data plane reports none — `GET /repos` answers `{ dataPlane: false,
+    // repos: [] }` (http.ts), and what its dropped Machines left behind is `j2 gc`'s to name.
+    ...(dataPlane && repos ? { repos: () => repos.list() } : {}),
     // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
     // `j2 up` converges the Deployment behind it whenever any definition declares
     // `workspace: "none"`, so deployed, the address exists exactly when it is needed.
@@ -159,7 +172,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   );
   // After serving, never awaited: the bound Repos' resources (ADR-0051). Serving does not wait on
   // the cluster — a run whose Repo the boot could not record still finds its provision ensuring
-  // it again — and a refusal is one announced line per Repo, in ADR-0048's shape.
+  // it again — and a refusal is one announced line per Repo, in ADR-0048's shape. A deployed
+  // instance that binds nothing still runs this: the walk names no Repo, so the reconcile is the
+  // whole of it, and every resource an earlier deploy bound becomes evictable.
   if (repos) void ensureBound(repos, carried.repos, opts.announce);
   return inst;
 }
