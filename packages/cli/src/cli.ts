@@ -30,7 +30,7 @@ usage: j2 <command> [args]
        [--detach]                   ...or just print the runId and return
   runs                              list live runs
   status [runId]                    print a run's current status (read-through),
-                                    or the instance's repo sync state when given none (ADR-0048)
+                                    or the instance's Repos, per node, when given none (ADR-0048/0051)
   logs <runId> [-f]                 replay a run's status; -f to follow until it settles
   send <runId> --event CANCEL       abandon a live run
   send <runId> --gate <gate> --event <name> [--input <json>]

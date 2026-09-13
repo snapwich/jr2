@@ -222,9 +222,9 @@ Machine, so xstate's own `src` typing and the Machine's parts check them: a Repo
 by the Machine's own word for it and bound by url (ADR-0051), and a `customize` of a slot the Machine does not declare
 is a compile error. The one check the compiler cannot make is the walk's: a registered Machine with an open slot nobody
 bound is refused before anything is built, naming the Machine, the slot, and the `customize` line that fixes it. Nothing
-in `j2.config.ts` is named by code — it holds reach and credentials (`harness`, `git.credentials`, `registry`) — so
-there is no catalog for the Console's start form to offer; a per-run Repo is a url field unless the Machine's door
-enumerates its own.
+in `j2.config.ts` is named by code — it holds reach and credentials (`harness`, `git.credentials`, `registry`) — so the
+Console's start form offers nothing of its own for a per-run Repo: a url field, unless the Machine's door enumerates its
+own.
 
 **Answers**
 

@@ -1,7 +1,7 @@
 // Config surface tests (ADR-0019/0038/0051). `defineConfig` is an identity passthrough;
 // `loadConfig` owns the ONE shape check — `git.credentials`, checked at runtime because an
-// instance is zero-build and nothing typechecks its config before Node imports it. There is no
-// Repo catalog to resolve: a Machine names its Repos itself (ADR-0051).
+// instance is zero-build and nothing typechecks its config before Node imports it. Repos are not
+// here to resolve: a Machine names its own, by url, on its Repo Slots (ADR-0051).
 //
 // What is NOT here any more is the `images` contract. `j2 up` builds every image it deploys and
 // resolves every ref itself (ADR-0038), so there is no config seat for one — the published

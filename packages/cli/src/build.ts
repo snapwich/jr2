@@ -192,15 +192,15 @@ export async function contentHash(paths: string[], salt: string, exclude: Set<st
 }
 
 /** The Dockerfile every instance image is built from — generated, never user-authored (ADR-0019).
- * git + openssh-client: the boot reconcile clones onto the source volume in this container
- * (ADR-0004), and an ssh-url repo shells `ssh` via core.sshCommand (ADR-0047) — git alone leaves
- * every ssh remote unsyncable ("ssh: not found").
+ * No git and no ssh client: the Orchestrator clones nothing (ADR-0051) — the cache agent on each
+ * node does, reading the credential Secret a Repo's `secretRef` names (ADR-0047), and the attach's
+ * git runs inside the Sandbox pod over `kubectl exec` (ADR-0004).
  * kubectl: the Sandbox backend shells it against the pod's ServiceAccount (sandbox-kubectl).
  * tsx: in the bundle the kit's `.ts` sources live under node_modules (materialized, not
  * workspace-linked), where Node's own type stripping refuses to run — so the image runs the
  * entrypoint through tsx. An image-runtime detail only; the repo stays zero-build. */
 export const INSTANCE_DOCKERFILE = `FROM node:24-slim
-RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client ca-certificates curl \\
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \\
   && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.4/bin/linux/$(dpkg --print-architecture)/kubectl" \\
   && chmod +x /usr/local/bin/kubectl \\
   && apt-get purge -y curl && rm -rf /var/lib/apt/lists/* \\

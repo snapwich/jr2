@@ -1,5 +1,5 @@
-// A Repo's identity and its cache key (ADR-0051). The url IS the identity: there is no repo name
-// and no catalog. Two spellings of one repository — `https://`, `git@…:`, `ssh://`, with or without
+// A Repo's identity and its cache key (ADR-0051). The url IS the identity — the string a Machine
+// writes on its Repo Slot. Two spellings of one repository — `https://`, `git@…:`, `ssh://`, with or without
 // `.git`, a trailing `/`, a default port, an upper-case host — resolve to ONE identity (host plus
 // path, scheme and user dropped) and therefore one node cache. The key is the identity made into a
 // DNS-1123 label: the Repo CR's `metadata.name`, the hostPath leaf, the in-pod mount `/repos/<key>`,

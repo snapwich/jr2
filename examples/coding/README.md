@@ -137,7 +137,7 @@ per-cluster operator too.
   works on, under the Machine's own word for it — `/work/target/<branch>` in the pod, `workspace.repos.target` in the
   body. A slot is _bound_ (a url the package writes), _open_ (`open` — a consumer binds it with
   `customize(machine, { repos })`), or _per-run_ (a mapper over the door — every workflow here, because the repository
-  is run input). The url is the identity; there is no catalog and no repo name. `j2.config.ts` declares only
+  is run input). The url is the identity, and the only thing that names a Repo. `j2.config.ts` declares only
   `git.credentials`: how the cluster authenticates, matched by prefix, and the **fence** a per-run url must pass — a url
   matching no entry is refused at attach, so a ticket cannot spend this cluster's token against an arbitrary host.
 

@@ -28,7 +28,7 @@ const runInput = z.object({
   prompt: z.string().describe("The task for the coder, in prose."),
   // This instance's own menu of repositories, as an enum of URLS (ADR-0051) — so the Console's
   // start form offers them rather than a free-text box, and a url outside it is refused at the
-  // door. The url is the identity: there is no catalog and no name to look it up by.
+  // door. The url is the identity: what the caller sends is what the Sandbox clones.
   repo: z.enum(["https://github.com/snapwich/obsidian-tasks.nvim.git"]).describe("Which repository to work in."),
   branch: z.string().describe("The branch to cut and work on."),
   baseRef: z.string().optional().describe("What the branch is cut from and reviewed against. Default: main."),

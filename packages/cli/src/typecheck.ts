@@ -2,8 +2,8 @@
 // string — an actor slot, a composed Machine, a `customize()` of either, a Repo Slot it binds
 // (ADR-0051) — and since ADR-0049 those strings are typed by xstate's own `src` typing and by the
 // Machine's own parts. A type error is therefore the EARLIEST place a wrong name can be caught,
-// and until now `j2 up` walked straight past it: the first sign of a mistyped slot was an
-// invoke-time failure mid-run, after a bundle, three image builds, and a rollout had been spent.
+// so `j2 up` runs the compiler first: a mistyped slot is refused here, before a bundle, three
+// image builds, and a rollout are spent on a Machine that would fail at invoke time mid-run.
 // The one check that is converge-time and not compile-time is an OPEN Repo Slot nobody bound: a
 // `workflows/` export has no type to hang it on, so `j2 up`'s walk refuses it right after this gate.
 //

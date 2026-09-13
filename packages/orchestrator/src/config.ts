@@ -2,8 +2,8 @@
 // identity and reach, what its Harness may reach, and how the cluster authenticates to Repos. What
 // a Sandbox is MADE of and which Repos it attaches are not here — they are `workspace()` options
 // (ADR-0037/0049/0051), and every image ref is resolved by `j2 up` (ADR-0038). There is no `images`
-// block and no Repo catalog, deliberately: neither typed anything a Machine could not carry itself,
-// and an override seat for the Harness ref is the eject hatch ADR-0027 refuses.
+// block and nothing that names a Repo, deliberately: neither would type anything a Machine cannot
+// carry itself, and an override seat for the Harness ref is the eject hatch ADR-0027 refuses.
 //
 // `defineConfig` is an identity passthrough — it exists solely so a `j2.config.ts` gets full
 // type inference and checking against `J2Config` at authoring time, exactly like the config

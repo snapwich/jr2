@@ -1031,8 +1031,8 @@ test("an OPEN Repo Slot on a registered Machine is refused after the gate and be
 });
 
 test("a bound Repo is narrated as the boot's to create; the token env vars git.credentials names ride the Secret", async () => {
-  // `j2 up` clones nothing and mounts no source volume (ADR-0051): the Orchestrator creates a Repo
-  // resource per bound identity at boot and the cache agent clones on first need. What the
+  // `j2 up` clones nothing (ADR-0051): the Orchestrator creates a Repo resource per bound identity
+  // at boot and the cache agent clones on first need, on the node that needs it. What the
   // converge does hold is the credential: every env var an entry names, when set, lands in the
   // Orchestrator's Secret — and nothing an entry does not name.
   const root = await withWorkspace(
@@ -1054,15 +1054,23 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
   assert.equal(instance.stringData.J2_GIT_TOKEN, "wild-secret");
   assert.ok(!("GL_TOKEN" in instance.stringData), "an unset var materializes nothing");
   assert.ok(!("STRAY" in instance.stringData), "and an env var no entry names never enters the Secret");
-  // No source PVC, no deploy-key mount: the Orchestrator neither clones nor holds a key.
-  assert.ok(!items.some((i) => i.kind === "PersistentVolumeClaim" && i.metadata.name === "j2-repos"));
+  // The Orchestrator neither clones nor holds a key: its one claim is its state, its mounts are
+  // state and the image map, and its env is its namespace and content hash — the credential
+  // rides the Secret above and is read only by the cache agent.
+  assert.deepEqual(
+    items.filter((i) => i.kind === "PersistentVolumeClaim").map((i) => i.metadata.name),
+    ["j2-state"],
+  );
   const orch = items.find((i) => i.kind === "Deployment" && i.metadata.name === "j2-orchestrator")!;
   const podSpec = orch.spec.template.spec;
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
     ["state", "images"],
   );
-  assert.ok(!JSON.stringify(podSpec.containers[0].env).includes("J2_REPOS_DIR"));
+  assert.deepEqual(
+    podSpec.containers[0].env.map((e: { name: string }) => e.name),
+    ["J2_NAMESPACE", "J2_CONTENT_HASH"],
+  );
 });
 
 // --- the data plane (ADR-0051): the cache agent DaemonSet, converged with the same switch --------
@@ -1689,7 +1697,7 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
     podSpec.containers.map((c: { name: string }) => c.name),
     ["harness", "adapter"],
   );
-  assert.equal(podSpec.volumes, undefined, "no /work volume, no repos volume");
+  assert.equal(podSpec.volumes, undefined, "no /work — nothing to attach");
 
   // Same wiring a Sandbox's Harness container gets: the harness-config ConfigMap + the env Secret.
   const harness = podSpec.containers[0];

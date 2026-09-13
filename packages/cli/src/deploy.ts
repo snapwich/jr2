@@ -256,9 +256,9 @@ export function instanceObjects(opts: {
                   // instead of needing kube access to read the Deployment's labels.
                   { name: "J2_CONTENT_HASH", value: opts.hash },
                 ],
-                // No source volume and no deploy key (ADR-0051): the Orchestrator creates Repo
-                // resources and never clones — the cache agent on each node does, reading the
-                // credential Secret a Repo's `secretRef` names.
+                // The Orchestrator creates Repo resources and never clones (ADR-0051) — the cache
+                // agent on each node does, reading the credential Secret a Repo's `secretRef`
+                // names — so nothing of git's is mounted here: state and the image map only.
                 volumeMounts: [
                   { name: "state", mountPath: "/instance/.j2" },
                   // The image map, read per provision (ADR-0038). A mount, so `j2 up` rewriting
