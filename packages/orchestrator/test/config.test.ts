@@ -9,9 +9,10 @@
 // (`packages/cli/test/build.test.ts`), where the not-a-kit-checkout branch actually reads them.
 //
 // A stale `images:` key in someone's committed config has NO runtime enforcement: deleting the type
-// is the whole signal (a typecheck error at authoring time), and `loadConfig` deliberately gains no
-// rejection pass for unknown keys — the ADR asks for the seat to be gone, not for a linter. The
-// runtime check below is scoped to what the pass checks: the `git.credentials` entries.
+// is the whole signal (a typecheck error at authoring time — `config-types.test.ts` holds
+// `defineConfig` to it), and `loadConfig` deliberately gains no rejection pass for unknown keys —
+// the ADR asks for the seat to be gone, not for a linter. The runtime check below is scoped to
+// what the pass checks: the `git.credentials` entries.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";

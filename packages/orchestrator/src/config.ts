@@ -5,9 +5,14 @@
 // block and nothing that names a Repo, deliberately: neither would type anything a Machine cannot
 // carry itself, and an override seat for the Harness ref is the eject hatch ADR-0027 refuses.
 //
-// `defineConfig` is an identity passthrough — it exists solely so a `j2.config.ts` gets full
-// type inference and checking against `J2Config` at authoring time, exactly like the config
-// helpers in vite/tsup/etc. No runtime behavior beyond returning its argument.
+// `defineConfig` is an identity passthrough — it exists solely so a `j2.config.ts` is checked
+// against `J2Config` at authoring time and in `j2 up`'s typecheck gate (ADR-0050), exactly like
+// the config helpers in vite/tsup/etc. No runtime behavior beyond returning its argument. It is
+// NOT generic: the parameter is `J2Config` itself, so the literal an author writes gets
+// excess-property checking at every depth. A generic `<T extends J2Config>` would infer `T` as
+// the literal's own type and check nothing an extra key could break — a `tokn` on a
+// `git.credentials` entry would compile, and that entry would admit its prefix through the fence
+// anonymously (ADR-0051). Nothing reads the literal's type back, so the generic buys nothing.
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -216,8 +221,10 @@ export type J2Config = {
   };
 };
 
-/** Identity passthrough that pins a config object's type to `J2Config` for inference. */
-export function defineConfig<T extends J2Config>(c: T): T {
+/** Identity passthrough that checks a config object against `J2Config` where it is written —
+ * excess keys included, at every depth, which is why the parameter is the type and not a generic
+ * bound by it. */
+export function defineConfig(c: J2Config): J2Config {
   return c;
 }
 
