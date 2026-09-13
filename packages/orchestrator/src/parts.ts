@@ -85,8 +85,10 @@ export function repoSlotState(value: RepoSlot<any>): RepoSlotState {
 }
 
 /** A slot key becomes a directory name under `/work`, so it is held to what a path segment can
- * carry — and to what a prompt can name without quoting. */
-export const REPO_SLOT_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+ * carry — and to what a prompt can name without quoting. It starts with a LETTER: the slots are
+ * read in declaration order (the first is the body's `workdir`), and JS puts an integer-like key
+ * such as `"1"` ahead of every other key in `Object.keys`, wherever the author wrote it. */
+export const REPO_SLOT_KEY = /^[A-Za-z][A-Za-z0-9._-]*$/;
 
 /**
  * Refuse a malformed slot value BY NAME, at build time — the same derives-from-a-typo class the
@@ -99,7 +101,8 @@ export function assertRepoSlot(where: string, slot: string, value: unknown): ass
   if (!REPO_SLOT_KEY.test(slot)) {
     throw new Error(
       `${where}: Repo Slot key ${JSON.stringify(slot)} is not a directory name — a slot becomes ` +
-        "`/work/<slot>`, so it must match /^[A-Za-z0-9][A-Za-z0-9._-]*$/ (ADR-0051).",
+        "`/work/<slot>` and its order matters, so it starts with a letter and matches " +
+        "/^[A-Za-z][A-Za-z0-9._-]*$/ (ADR-0051).",
     );
   }
   if (value === open || typeof value === "function") return;

@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { j2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { customize } from "../src/customize.ts";
-import { open } from "../src/parts.ts";
+import { open, sandboxPartsOf } from "../src/parts.ts";
 import {
   workspace,
   workspaceName,
@@ -640,4 +640,15 @@ test("workspace() refuses a missing, empty, or malformed `repos` at build time, 
     /Repo Slot key "\.\.\/x" is not a directory name/,
   );
   assert.throws(() => workspace(body, { repos: { "a b": APP }, spec }), /"a b" is not a directory name/);
+  // An integer-like key would be read FIRST by `Object.keys` wherever it was declared — and the
+  // first slot is the body's `workdir` — so a key starts with a letter.
+  assert.throws(() => workspace(body, { repos: { app: APP, "1": APP }, spec }), /key "1" is not a directory name/);
+  assert.throws(() => workspace(body, { repos: { "2024": APP }, spec }), /key "2024" is not a directory name/);
+  assert.throws(() => workspace(body, { repos: { "0app": APP }, spec }), /key "0app" is not a directory name/);
+});
+
+test("workspace() keeps the Repo Slots in declaration order — the first is the body's `workdir`", () => {
+  const spec = () => ({ branch: "b" });
+  const w = workspace(body, { repos: { app: APP, infra: APP, "v2.x": APP }, spec });
+  assert.deepEqual(Object.keys(sandboxPartsOf(w).repos), ["app", "infra", "v2.x"]);
 });
