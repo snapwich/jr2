@@ -1,8 +1,9 @@
 # operator
 
-The Kubernetes operator that reconciles the generic `Sandbox` CRD into a Pod + Service and reports a `status.endpoint`.
-A standalone Go module (kubebuilder / controller-runtime). See
-[ADR-0001](../docs/adr/0001-operator-owned-generic-sandbox.md). This is **PoC #1** of the j2 orchestrator rewrite.
+The Kubernetes operator that reconciles the generic `Sandbox` CRD into a Pod + Service, reports a `status.endpoint`,
+and keeps one bare cache per node of every `Repo` a Sandbox names. A standalone Go module (kubebuilder /
+controller-runtime). See [ADR-0001](../docs/adr/0001-operator-owned-generic-sandbox.md) and
+[ADR-0051](../docs/adr/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md).
 
 - **Group/Version:** `core.j2.dev/v1alpha1`; **Kinds:** `Sandbox`, `Repo`
 - **Module:** `github.com/snapwich/j2/operator`
@@ -47,8 +48,10 @@ it, which is why the final stage is alpine rather than distroless.
 
 ## What it does (ADR-0001)
 
-The CRD is infrastructure-only — it knows nothing about git, worktrees, or Agents. Agents are injected one layer up as
-plain Kubernetes `Container` fragments in `spec.sidecars`; the operator schedules them without understanding them.
+The `Sandbox` CRD describes infrastructure — containers, volumes, resources, secrets, idle timeout — and the Repos it
+attaches by identity. The operator is git-aware to exactly the extent of the `Repo` CRD and the cache agent; it knows
+nothing about clones, worktrees, or Agents. Agents are injected one layer up as plain Kubernetes `Container` fragments
+in `spec.sidecars`; the operator schedules them without understanding them.
 
 The reconciler (`internal/controller/sandbox_controller.go`):
 
@@ -67,6 +70,7 @@ spec:
   image: <harness image> # primary container, required
   command/args: [...] # optional entrypoint override
   port: 8080 # surfaced in status.endpoint
+  repos: [{ key: <cache key> }...] # Repos to attach; each mounted read-only at /repos/<key> (ADR-0051)
   sidecars: [<corev1.Container>...] # generic; agents live here, operator stays agnostic
   volumes / volumeMounts: [...]
   resources: { requests, limits }
@@ -76,7 +80,8 @@ status:
   phase: Pending | Ready | Terminating
   endpoint: http://<name>.<ns>.svc:8080
   podRef / serviceRef: { name }
-  conditions: [...] # Ready mirrors status.phase
+  node: <node name> # where the pod landed; the key into each Repo's status.nodes[]
+  conditions: [...] # Ready mirrors status.phase; ReposFresh reports the caches' last fetch
 ```
 
 ## Local dev loop
