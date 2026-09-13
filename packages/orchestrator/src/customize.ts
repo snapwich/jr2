@@ -1,8 +1,8 @@
-// `customize(machine, parts)` (ADR-0049): RETUNE what a Machine carries, without editing the
-// module that exports it. A package exports a Machine and nothing beside it — the door, the
-// vocabulary, the Agents and the Sandbox Image all ride the exported object — so the only thing
-// a consumer can be handed is the Machine, and the only honest way to say "same workflow, my
-// model" is a function over it.
+// `customize(machine, parts)` (ADR-0049, ADR-0051): RETUNE what a Machine carries, without
+// editing the module that exports it. A package exports a Machine and nothing beside it — the
+// door, the vocabulary, the Agents, the Sandbox Image and the Repo Slots all ride the exported
+// object — so the only thing a consumer can be handed is the Machine, and the only honest way to
+// say "same workflow, my model, my repository" is a function over it.
 //
 // It is a plain function in the family of `workspace()` and `pool()`, returning a plain
 // `StateMachine`: no j2-owned machine type over xstate's, nothing to survive a later
@@ -17,16 +17,16 @@
 //   - A CHILD override is the same call one level down, recursing. Each level is exactly the
 //     one-level reach ADR-0015 found `provide` has — held by the composer who owns the child
 //     object, never host-side injection into somebody else's Machine.
-//   - The IMAGE is the one part `provide` cannot carry: xstate copies implementations and passes
-//     the CONFIG through by reference, and every part a Machine carries is keyed on that config
-//     (parts.ts, vocabulary.ts). A new image therefore needs a new key — so that field clones the
-//     wrapper's config and rebuilds it with the same implementations, re-attaching what the
-//     original carried.
+//   - The IMAGE and the REPOS are the parts `provide` cannot carry: xstate copies implementations
+//     and passes the CONFIG through by reference, and every part a Machine carries is keyed on
+//     that config (parts.ts, vocabulary.ts). A new image or a bound slot therefore needs a new key
+//     — so those fields clone the wrapper's config and rebuild it with the same implementations,
+//     re-attaching what the original carried.
 //
 // j2's wrappers are TRANSPARENT: `agents`/`actors` route through `workspace()`'s `body` and
 // `pool()`'s `worker`, so a consumer customizing a Workspace-rooted workflow never writes `body`
-// and never has to know that j2 wrapped anything. `image`/`user` travel the same chain in the
-// other direction — down to the `workspace()` that owns the seats.
+// and never has to know that j2 wrapped anything. `image`/`user`/`repos` travel the same chain in
+// the other direction — down to the `workspace()` that owns the seats and the slots.
 //
 // Both halves route on the wrapper's own RECORD of being one, never on a slot's spelling: the
 // runtime reads `wrapperBodyOf` and the types read `J2Wrapper` (parts.ts), which the wrappers
@@ -36,18 +36,21 @@
 // Only DECLARED parts can be customized; none can be added. A consumer who needs a third Agent
 // composes a new Machine — which is the same act, spelled honestly.
 
-import { StateMachine, type AnyStateMachine, type ProvidedActor } from "xstate";
+import { StateMachine, type AnyStateMachine, type InputFrom, type ProvidedActor } from "xstate";
 import type { AgentLogic } from "./actor.ts";
 import { isAgent, type AgentDefinition } from "./agent.ts";
 import { agent } from "./harness-client.ts";
 import {
   asMachine,
+  assertRepoSlot,
   attachSandboxParts,
   attachWrapperBody,
   composesSandbox,
   sandboxPartsOf,
   wrapperBodyOf,
+  type J2Repos,
   type J2Wrapper,
+  type RepoSlot,
   type SandboxParts,
 } from "./parts.ts";
 import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
@@ -107,6 +110,24 @@ type ChildAt<M extends AnyStateMachine, K extends string> = Extract<LogicAt<M, K
 type Reached<M extends AnyStateMachine> = M extends J2Wrapper<infer TBody> ? Reached<TBody> : M;
 
 /**
+ * The `workspace()` a `customize()` reaches for its SEATS and SLOTS — the other direction from
+ * {@link Reached}: down through the wrappers to the first Machine that composes a Sandbox, which
+ * is the one whose `J2Repos` marker says which slots exist (ADR-0051). `never` when no wrapper on
+ * the chain composes one, which is what makes `repos` unavailable there rather than `{}`.
+ */
+type WorkspaceOf<M extends AnyStateMachine> =
+  M extends J2Repos<any> ? M : M extends J2Wrapper<infer TBody> ? WorkspaceOf<TBody> : never;
+
+/** The Repo Slot keys the reached `workspace()` declared. The `never` case is tested by itself,
+ * because `never extends J2Repos<infer TSlots>` is true with nothing to infer from — and an
+ * uninferred `TSlots` widens to `string`, which would offer every key exactly where there are none. */
+type RepoSlotsOf<M extends AnyStateMachine> = [WorkspaceOf<M>] extends [never]
+  ? never
+  : WorkspaceOf<M> extends J2Repos<infer TSlots>
+    ? TSlots
+    : never;
+
+/**
  * What may be retuned on one Machine, mirroring the DECLARATION's own shape and recursively
  * partial (ADR-0049): every key optional, every Agent override a partial definition, every child
  * a `Customize` of that child.
@@ -132,6 +153,11 @@ export type Customize<M extends AnyStateMachine> = {
   image?: string;
   /** The User Container's image (ADR-0005), in the same two shapes. */
   user?: string;
+  /** Bind the Repo Slots the reached `workspace()` declared (ADR-0051) — an open slot to a url,
+   * or a bound or per-run one to a different Binding; any of the three forms, so a consumer can
+   * also bind a mapper over the wrapper's door. A slot the Machine does not declare is a compile
+   * error, and a Machine that composes no Sandbox takes `never`, as `agents` does. */
+  repos?: [RepoSlotsOf<M>] extends [never] ? never : { [K in RepoSlotsOf<M>]?: RepoSlot<InputFrom<WorkspaceOf<M>>> };
 };
 
 /** The same shape with the types erased — what the implementation walks. */
@@ -140,6 +166,7 @@ type LooseParts = {
   actors?: Record<string, LooseParts | undefined>;
   image?: string;
   user?: string;
+  repos?: Record<string, RepoSlot | undefined>;
 };
 
 /**
@@ -148,15 +175,23 @@ type LooseParts = {
  * `deep`/`quick`), and a run of either carries what it was given.
  */
 export function customize<M extends AnyStateMachine>(machine: M, parts: Customize<M>): M {
-  const { agents, actors, image, user } = parts as LooseParts;
+  const { agents, actors, image, user, repos } = parts as LooseParts;
   let out: AnyStateMachine = machine;
-  // Order matters in one direction only: the Sandbox seats REBUILD the wrapper, so they go last
-  // and carry the retuned implementations with them.
+  // Order matters in one direction only: the Sandbox seats and slots REBUILD the wrapper, so they
+  // go last and carry the retuned implementations with them.
   if (agents || actors) out = retune(out, { agents, actors });
-  const seats: SandboxParts = { ...(image !== undefined ? { image } : {}), ...(user !== undefined ? { user } : {}) };
-  if (seats.image !== undefined || seats.user !== undefined) out = reseat(out, seats);
+  const seats: Seats = {
+    ...(image !== undefined ? { image } : {}),
+    ...(user !== undefined ? { user } : {}),
+    ...(repos !== undefined ? { repos } : {}),
+  };
+  if (seats.image !== undefined || seats.user !== undefined || seats.repos !== undefined) out = reseat(out, seats);
   return out as M;
 }
+
+/** What `reseat` carries down the chain: the two image seats and the slot overrides, each present
+ * only when the composer named it. */
+type Seats = { image?: string; user?: string; repos?: Record<string, RepoSlot | undefined> };
 
 /** The slot keys whose logic answers `pred` — what an error names, so the message is the
  * Machine's own declaration rather than advice. */
@@ -215,14 +250,36 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
   return substitute(machine, actors);
 }
 
-/** The Sandbox seats, applied to the `workspace()` the chain reaches. */
-function reseat(machine: AnyStateMachine, seats: SandboxParts): AnyStateMachine {
-  if (composesSandbox(machine)) return rebuild(machine, { ...sandboxPartsOf(machine), ...seats });
+/** The Sandbox seats and slots, applied to the `workspace()` the chain reaches. */
+function reseat(machine: AnyStateMachine, seats: Seats): AnyStateMachine {
+  if (composesSandbox(machine)) {
+    const { repos: override, ...images } = seats;
+    const parts = sandboxPartsOf(machine);
+    const repos = { ...parts.repos };
+    // Only DECLARED slots can be bound (ADR-0051): the Machine's own word for each Repo is the
+    // key, and a key it never declared would attach a repository the body has no handle for.
+    // Binding a per-run slot with a static url is legal — it becomes bound; which slots a
+    // consumer may fix is the package author's call, expressed by the slot's state.
+    for (const [slot, value] of Object.entries(override ?? {})) {
+      if (value === undefined) continue;
+      if (!(slot in parts.repos)) {
+        throw new Error(
+          `customize(): machine "${machine.id}" declares no Repo Slot "${slot}" — its slots are: ` +
+            `${listed(Object.keys(parts.repos))} (ADR-0051)`,
+        );
+      }
+      assertRepoSlot("customize()", slot, value);
+      repos[slot] = value;
+    }
+    return rebuild(machine, { ...parts, ...images, repos });
+  }
   const inner = bodyOf(machine);
   if (!inner) {
+    const named = seats.repos !== undefined ? "`repos`" : "`image`/`user`";
     throw new Error(
-      `customize(): \`image\`/\`user\` say what a SANDBOX is made of, and machine "${machine.id}" ` +
-        "composes none — only a workspace() wrapper carries those two seats (ADR-0049, ADR-0037).",
+      `customize(): ${named} say what a SANDBOX is made of and which Repos it attaches, and machine ` +
+        `"${machine.id}" composes none — only a workspace() wrapper carries those seats and slots ` +
+        "(ADR-0049, ADR-0037, ADR-0051).",
     );
   }
   return substitute(machine, { [inner.slot]: reseat(inner.body, seats) });

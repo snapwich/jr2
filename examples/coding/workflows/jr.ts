@@ -27,7 +27,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assign, fromPromise } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, pool, source, workspace, type RepoName } from "@j2/orchestrator";
+import { agent, defineEvent, j2Setup, pool, source, workspace } from "@j2/orchestrator";
 import { architect, coder, reviewer } from "./_agents.ts";
 
 const exec = promisify(execFile);
@@ -74,10 +74,10 @@ type Ticket = {
   title: string;
   body: string;
   assignee: string;
-  /** Which catalogued repo the work is in — a `RepoName`, so this instance's `j2.config.ts` types
-   * it (ADR-0050) and the `workspace()` spec below needs no re-check. A ticket source that hands
-   * back a plain string narrows it once, here, where the ticket is parsed. */
-  repo: RepoName;
+  /** The repository the work is in — its url, which IS its identity (ADR-0051). The `workspace()`
+   * below binds its per-run slot from this, and `j2.config.ts`'s credentials fence is what admits
+   * it at attach: a ticket cannot point the cluster's token at an arbitrary host. */
+  repo: string;
   baseRef: string;
   branch: string;
 };
@@ -104,12 +104,13 @@ const openPr = fromPromise<{ url: string }, { workdir: string; branch: string; f
 
 // ---------------------------------------------------------------------------------------------
 // The feature body: jr's per-ticket loop, sequential by construction. Runs inside a workspace,
-// which appends `workspace: { workdir, repos, branch }` — the only handles a workflow needs.
+// which appends `workspace: { workdir, repos, branch }` — the only handles a workflow needs;
+// `repos.target` is the feature's repository, under the one slot the wrapper declares.
 
 type BodyInput = {
   feature: Ticket;
   reviewRounds: number; // JR_REVIEW_ROUNDS (5)
-  workspace: { workdir: string; repos: Record<string, string>; branch: string };
+  workspace: { workdir: string; repos: Record<"target", string>; branch: string };
 };
 type BodyCtx = BodyInput & {
   task?: Ticket;
@@ -369,19 +370,19 @@ export const body = j2Setup({
 });
 
 // ---------------------------------------------------------------------------------------------
-// Workspace: j2 owns Sandbox lifecycle; the spec speaks workspace vocabulary only.
+// Workspace: j2 owns Sandbox lifecycle; the spec speaks workspace vocabulary only, and the one
+// Repo Slot is PER-RUN — the ticket names the repository (ADR-0051).
 
 // No `input` schema: this wrapper is a pool WORKER, fed per-item by `itemInput` below and never
 // by a caller (ADR-0033 — the pool declares the run's door), so there is no door to declare here.
-// Permissive means j2 knows nothing about what starts it (`unknown`), so the mapper's parameter
+// Permissive means j2 knows nothing about what starts it (`unknown`), so the mappers' parameter
 // states what the pool feeds it — a claim about a private seam, not a door anything serves. State
 // it in full: this is `itemInput`'s result below, which is also what `body` is fed, so a partial
 // annotation would describe a seam neither end actually has.
+type Item = { feature: Ticket; reviewRounds: number };
 const feature = workspace(body, {
-  spec: ({ input }: { input: { feature: Ticket; reviewRounds: number } }) => ({
-    repos: [{ name: input.feature.repo, baseRef: input.feature.baseRef }],
-    branch: input.feature.branch,
-  }),
+  repos: { target: ({ input }: { input: Item }) => ({ url: input.feature.repo, ref: input.feature.baseRef }) },
+  spec: ({ input }: { input: Item }) => ({ branch: input.feature.branch }),
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -24,15 +24,25 @@
 // No image is named here, by design (ADR-0038): `j2 up` builds every image it deploys and resolves
 // every ref itself — the kit three from source when it runs out of a kit checkout, the published
 // `<kitversion>` tags otherwise. What the AGENTS' toolchain is lives in `images/default/Dockerfile`
-// (ADR-0037), which this instance has because it has `repos`.
+// (ADR-0037), which this instance has because its Machines compose Sandboxes.
+//
+// No Repo is named here either (ADR-0051): each workflow's `workspace()` declares the Repo Slots
+// it attaches, and this instance's workflows take the repository as run input — a door that
+// enumerates the urls it accepts. What this file declares is `git.credentials`: how the cluster
+// authenticates to a Repo, matched by prefix on its identity, and the FENCE a per-run url must
+// pass — a url matching no entry is refused at attach, so a ticket cannot point this cluster's
+// token at an arbitrary host.
 
 import { defineConfig } from "@j2/orchestrator";
 
 const vllm = process.env.VLLM_BASE_URL;
 
-const config = defineConfig({
+export default defineConfig({
   name: "coding",
-  repos: ["https://github.com/snapwich/obsidian-tasks.nvim.git"],
+  git: {
+    // The https token from `.env` (`J2_GIT_TOKEN`), for this org and nothing else.
+    credentials: [{ match: "github.com/snapwich/", token: "J2_GIT_TOKEN" }],
+  },
   harness: {
     provider: vllm
       ? {
@@ -48,14 +58,3 @@ const config = defineConfig({
       : undefined,
   },
 });
-
-// The catalog's names, registered back to the kit so the type system can read them (ADR-0050).
-// `RepoName` becomes "obsidian-tasks.nvim" here — the repository's own name from its url — which
-// is what `workspace()` specs and `repoNames(config)` doors in `workflows/` are typed by.
-declare module "@j2/orchestrator" {
-  interface Register {
-    config: typeof config;
-  }
-}
-
-export default config;

@@ -1,13 +1,15 @@
-// `customize(machine, parts)` (ADR-0049): a composer retunes what an IMPORTED Machine carries —
-// its Agents' definitions, the Machines it composes, and the images its Workspace is made of —
-// and gets back a new Machine that carries everything else unchanged.
+// `customize(machine, parts)` (ADR-0049, ADR-0051): a composer retunes what an IMPORTED Machine
+// carries — its Agents' definitions, the Machines it composes, the images its Workspace is made
+// of, and the Repo Slots it attaches — and gets back a new Machine that carries everything else
+// unchanged.
 //
 // The claims that matter, in order: the override LAYERS over the stock definition; the original
 // is untouched, so one import can be customized twice, differently (the ADR's `deep`/`quick`);
 // only DECLARED parts can be retuned, and naming one that does not exist fails loudly; j2's
 // wrappers are transparent, so a consumer never writes `body` or `worker`; and everything a
-// Machine carries — its vocabulary, its door, its Sandbox seats — is still found on the result,
-// including on the `image` path, which cannot use `provide` and rebuilds instead.
+// Machine carries — its vocabulary, its door, its Sandbox seats, its slots — is still found on
+// the result, including on the `image`/`repos` path, which cannot use `provide` and rebuilds
+// instead.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +20,7 @@ import { customize } from "../src/customize.ts";
 import { fingerprintOf } from "../src/fingerprint.ts";
 import { agent } from "../src/harness-client.ts";
 import { isAgent } from "../src/agent.ts";
-import { partsOf, sandboxPartsOf } from "../src/parts.ts";
+import { open, partsOf, sandboxPartsOf } from "../src/parts.ts";
 import { pool, source } from "../src/pool.ts";
 import { j2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
@@ -147,10 +149,12 @@ test("a slot that composes no Machine fails, naming the ones that do", () => {
 
 // --- The wrappers are transparent (ADR-0049) ---------------------------------------------------
 
-const spec = () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" });
+const spec = () => ({ branch: "feat-1" });
+const APP = "https://example.test/app.git";
+const repos = { app: APP };
 
 test("a workspace() is transparent to its body: the composer never writes `body`", () => {
-  const wrapped = workspace(research(), { spec });
+  const wrapped = workspace(research(), { repos, spec });
   const retuned = customize(wrapped, { agents: { coder: { model: opus } } });
 
   assert.equal(definitionAt(slotAt(retuned, "body"), "coder").model, opus);
@@ -161,7 +165,7 @@ test("a workspace() is transparent to its body: the composer never writes `body`
 
 test("a pool() is transparent to its worker, and a pool of Workspaces to what is inside both", () => {
   const wake = defineEvent({ name: "work_ready", input: z.object({}) });
-  const worker = workspace(research(), { spec });
+  const worker = workspace(research(), { repos, spec });
   const poolMachine = pool(worker, {
     source: source<{ id: string }>({
       next: fromPromise(async (): Promise<{ item: { id: string } | null; open: number }> => ({ item: null, open: 0 })),
@@ -203,12 +207,13 @@ test("a slot an AUTHOR spelled `body` is an ordinary child — transparency foll
 // --- The Sandbox seats: the one part `provide` cannot carry ------------------------------------
 
 test("image/user retune the workspace() the chain reaches, and the original keeps its own", () => {
-  const stock = workspace(research(), { spec, image: "ghcr.io/acme/tools:1", user: "ghcr.io/acme/sshd:1" });
+  const stock = workspace(research(), { repos, spec, image: "ghcr.io/acme/tools:1", user: "ghcr.io/acme/sshd:1" });
   const retuned = customize(stock, { image: "ghcr.io/acme/tools:2" });
 
-  // Layered like a definition: naming `image` alone leaves the User Container seat as declared.
-  assert.deepEqual(sandboxPartsOf(retuned), { image: "ghcr.io/acme/tools:2", user: "ghcr.io/acme/sshd:1" });
-  assert.deepEqual(sandboxPartsOf(stock), { image: "ghcr.io/acme/tools:1", user: "ghcr.io/acme/sshd:1" });
+  // Layered like a definition: naming `image` alone leaves the User Container seat — and the
+  // slots — as declared.
+  assert.deepEqual(sandboxPartsOf(retuned), { image: "ghcr.io/acme/tools:2", user: "ghcr.io/acme/sshd:1", repos });
+  assert.deepEqual(sandboxPartsOf(stock), { image: "ghcr.io/acme/tools:1", user: "ghcr.io/acme/sshd:1", repos });
   // The rebuild is what makes that possible — a `provide()` clone shares the config the seats are
   // keyed on, so the two Machines would be one. It must carry everything else across untouched.
   assert.notEqual(retuned.config, stock.config);
@@ -217,11 +222,11 @@ test("image/user retune the workspace() the chain reaches, and the original keep
 });
 
 test("the door and the transparency survive the rebuild, and both parts can move at once", () => {
-  const stock = workspace(research(), { input: z.object({ topic: z.string() }), spec });
+  const stock = workspace(research(), { input: z.object({ topic: z.string() }), repos, spec });
   const retuned = customize(stock, { image: "ghcr.io/acme/tools:2", agents: { coder: { model: opus } } });
 
   assert.ok(inputSchemaOf(retuned), "the wrapper's door rides the rebuilt config");
-  assert.deepEqual(sandboxPartsOf(retuned), { image: "ghcr.io/acme/tools:2" });
+  assert.deepEqual(sandboxPartsOf(retuned), { image: "ghcr.io/acme/tools:2", repos });
   assert.equal(definitionAt(slotAt(retuned, "body"), "coder").model, opus, "the retuned body rides the rebuild");
   // Still a wrapper: a second customize reaches the body through it, which is what the
   // transparency attachment being copied means.
@@ -229,8 +234,10 @@ test("the door and the transparency survive the rebuild, and both parts can move
   assert.equal(definitionAt(slotAt(again, "body"), "reviewer").model, opus);
 });
 
-test("image/user on a Machine that composes no Sandbox fails, because there is nothing to name", () => {
+test("image/user/repos on a Machine that composes no Sandbox fails, because there is nothing to name", () => {
   assert.throws(() => customize(research(), { image: "ghcr.io/acme/tools:2" }), /composes none/);
+  assert.throws(() => customize(research(), { repos: { app: APP } } as never), /`repos` say what a SANDBOX/);
+  assert.throws(() => customize(research(), { repos: { app: APP } } as never), /composes none/);
   // A pool whose worker is a plain Machine is the same case one level down.
   const workerless = pool(research(), {
     source: source<{ id: string }>({
@@ -248,4 +255,88 @@ test("a plain setup() Machine carries no Agents, and says so", () => {
     states: { idle: {} },
   });
   assert.throws(() => customize(plain, { agents: { coder: { model: opus } } } as never), /its Agents are: none/);
+});
+
+// --- The Repo Slots (ADR-0051): bound through the same chain, on the same rebuild ---------------
+
+test("repos bind the workspace() the chain reaches — an open slot, through a pool and its body", () => {
+  // The consumer's move for a packaged Machine: it exported `target: open`, and the Instance says
+  // which repository — nested through `actors` like every other part, never spelling `body` or
+  // `worker`. The original is untouched, so the package's own object still reads as open.
+  const packaged = workspace(research(), {
+    repos: { target: open, docs: { url: "https://example.test/handbook.git", ref: "v3" } },
+    spec,
+  });
+  const wake = defineEvent({ name: "work_ready", input: z.object({}) });
+  const pooled = pool(packaged, {
+    source: source<{ id: string }>({
+      next: fromPromise(async (): Promise<{ item: { id: string } | null; open: number }> => ({ item: null, open: 0 })),
+      wake,
+    }),
+    itemId: (i) => i.id,
+  });
+
+  const bound = customize(pooled, { repos: { target: "git@github.com:ourorg/app.git" } });
+  const reached = slotAt(bound, "worker");
+  // Layered, like the image seats: the package's own `docs` binding survives untouched.
+  assert.deepEqual(sandboxPartsOf(reached as never), {
+    repos: { target: "git@github.com:ourorg/app.git", docs: { url: "https://example.test/handbook.git", ref: "v3" } },
+  });
+  assert.deepEqual(sandboxPartsOf(packaged).repos, {
+    target: open,
+    docs: { url: "https://example.test/handbook.git", ref: "v3" },
+  });
+  // And the walk of the customized Machine reports the bound url — which is what `j2 up` warms
+  // and what it no longer refuses.
+  const walked = partsOf([bound]);
+  assert.deepEqual(walked.openSlots, []);
+  assert.deepEqual(
+    walked.repos.map((r) => r.identity),
+    ["github.com/ourorg/app", "example.test/handbook"],
+  );
+  assert.deepEqual(partsOf([pooled]).openSlots, [{ machine: "workspace", slot: "target" }], "the import is untouched");
+  // The rebuild is what makes that possible — the same one `image` takes — so everything else the
+  // wrapper carried rides across: the shape, the transparency, the Agents.
+  assert.equal(fingerprintOf(reached as never), fingerprintOf(packaged));
+  assert.equal(definitionAt(slotAt(reached, "body"), "coder").model, haiku);
+});
+
+test("a per-run slot may be rebound statically — it becomes bound; and a bound one may become per-run", () => {
+  // Which slots a consumer may fix is the package author's call, expressed by the slot's state
+  // (ADR-0051): a per-run slot is one the Machine leaves to the run, and a consumer who knows the
+  // answer may write it down. Any of the three forms is accepted, so the other direction holds too.
+  const perRun = workspace(research(), {
+    input: z.object({ repo: z.string() }),
+    repos: { target: ({ input }) => input.repo },
+    spec,
+  });
+  const fixed = customize(perRun, { repos: { target: APP } });
+  assert.deepEqual(sandboxPartsOf(fixed).repos, { target: APP });
+  assert.deepEqual(
+    partsOf([fixed]).repos.map((r) => r.url),
+    [APP],
+  );
+
+  const dynamic = customize(workspace(research(), { repos, spec }), {
+    repos: { app: ({ input }) => (input as { repo: string }).repo },
+  });
+  assert.equal(typeof sandboxPartsOf(dynamic).repos.app, "function");
+  assert.deepEqual(partsOf([dynamic]).repos, [], "a per-run slot contributes nothing to the walk");
+});
+
+test("only DECLARED slots can be bound: an undeclared key fails, naming the Machine's own", () => {
+  const stock = workspace(research(), { repos: { target: open, docs: APP }, spec });
+  assert.throws(
+    () => customize(stock, { repos: { taregt: APP } } as never),
+    /machine "workspace" declares no Repo Slot "taregt" — its slots are: target, docs \(ADR-0051\)/,
+  );
+  // And a binding that names no Repo is refused where the composer wrote it, by slot.
+  assert.throws(
+    () => customize(stock, { repos: { target: "" } }),
+    /customize\(\): Repo Slot "target" is bound to an empty url/,
+  );
+  assert.throws(
+    () => customize(stock, { repos: { target: "./local" } }),
+    /"target" binds "\.\/local", which names no Repo/,
+  );
 });

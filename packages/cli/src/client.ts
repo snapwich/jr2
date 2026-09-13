@@ -6,7 +6,7 @@
 // `fetchImpl` is injectable so tests drive it with a hono `app.request` (no socket) the same way the
 // orchestrator's own http tests do; in production it defaults to the global `fetch`.
 
-import type { MachineDoc } from "@j2/orchestrator";
+import type { MachineDoc, RepoStatus } from "@j2/orchestrator";
 import { parseSSE } from "./sse.ts";
 
 /** A run's current observable state — mirrors the orchestrator's `RunStatus` (run-host.ts). */
@@ -20,19 +20,6 @@ export type RunStatus = {
   /** Why the host set this status, for statuses the Machine did not choose — `drifted` says the
    * workflow changed shape since the run was saved, and names both fingerprints (ADR-0030). */
   reason?: string;
-};
-
-/**
- * One source-volume repo as the reconcile knows it (`GET /repos`) — mirrors the orchestrator's
- * `RepoState` (repos.ts). A repo whose sync failed carries git's own error and the attempt count;
- * the reconcile keeps retrying it, so this is a snapshot of a moving thing (ADR-0048).
- */
-export type RepoState = {
-  name: string;
-  synced: boolean;
-  action?: "cloned" | "fetched" | "adopted";
-  error?: string;
-  attempts?: number;
 };
 
 /** One item on a run's observation feed — mirrors the orchestrator's `RunFeedEvent`. */
@@ -125,11 +112,13 @@ export class J2Client {
     return (await this.json(res, "/runs")) as RunStatus[];
   }
 
-  /** `GET /repos` — the source volume's per-repo sync state (ADR-0048): what synced, and what did
-   * not, with git's own error. What `j2 status` reports when it is given no run. */
-  async repos(): Promise<RepoState[]> {
+  /** `GET /repos` — whether the instance has a data plane, and every Repo resource as the cluster
+   * reports it (ADR-0048/0051): per node, present or not, synced or not, with git's own error. The
+   * cache agent keeps retrying on its own, so this is a snapshot of a moving thing. What
+   * `j2 status` reports when it is given no run. */
+  async repos(): Promise<{ dataPlane: boolean; repos: RepoStatus[] }> {
     const res = await this.fetchImpl(`${this.baseUrl}/repos`, { headers: this.headers() });
-    return (await this.json(res, "/repos")) as RepoState[];
+    return (await this.json(res, "/repos")) as { dataPlane: boolean; repos: RepoStatus[] };
   }
 
   /** `GET /runs/resolve?prefix=` — run ids sharing a prefix, live and settled. The wire half of

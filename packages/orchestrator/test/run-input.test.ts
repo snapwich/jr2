@@ -130,7 +130,8 @@ test("workspace(): the body's schema is NOT the door — the wrapper declares it
   // The body is fed the run input PLUS the injected `workspace` handles, so its contract is the
   // door plus a field no caller can send. Propagating it would 400 every valid start.
   const bare = workspace(wsBody, {
-    spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }),
+    repos: { app: "https://example.test/app.git" },
+    spec: () => ({ branch: "feat-1" }),
   });
   assert.equal(inputSchemaOf(bare), undefined);
   // Nor does the VOCABULARY propagate (ADR-0049): the body's names stay the body's, because the
@@ -141,8 +142,10 @@ test("workspace(): the body's schema is NOT the door — the wrapper declares it
   const door = z.object({ repo: z.string(), branch: z.string().default("feat-1") });
   const declared = workspace(wsBody, {
     input: door,
-    // `input` is inferred from the schema — nothing here annotates a shape by hand.
-    spec: ({ input }) => ({ repos: [{ name: input.repo, baseRef: "main" }], branch: input.branch }),
+    // `input` is inferred from the schema — nothing here annotates a shape by hand, on the spec or
+    // on the per-run slot's mapper.
+    repos: { app: ({ input }) => ({ url: input.repo, ref: "main" }) },
+    spec: ({ input }) => ({ branch: input.branch }),
   });
   assert.equal(inputSchemaOf(declared), door);
 
@@ -160,9 +163,9 @@ test("workspace(): the body's schema is NOT the door — the wrapper declares it
     host.start("wsdoor", {}),
     (err: Error) => err instanceof EventValidationError && /invalid input for workflow "wsdoor"/.test(err.message),
   );
-  const { runId } = await host.start("wsdoor", { repo: "app" });
-  const ctx = host.status(runId)?.context as { spec: { repos: Array<{ name: string }>; branch: string } };
-  assert.deepEqual(ctx.spec, { repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" });
+  const { runId } = await host.start("wsdoor", { repo: "https://example.test/app.git" });
+  const ctx = host.status(runId)?.context as { spec: { branch: string } };
+  assert.deepEqual(ctx.spec, { branch: "feat-1" });
 });
 
 test("workspace(): wrapping a body that declares its own input fails loudly, naming the fix", () => {
@@ -171,7 +174,7 @@ test("workspace(): wrapping a body that declares its own input fails loudly, nam
   // is not what it describes. Silence would leave an author trusting a contract that does not
   // exist, which is the exact drift ADR-0033 closes.
   assert.throws(
-    () => workspace(titledTemplate, { spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "b" }) }),
+    () => workspace(titledTemplate, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) }),
     (err: Error) =>
       /declares its own run input/.test(err.message) && /workspace\(body, \{ input, spec \}\)/.test(err.message),
   );

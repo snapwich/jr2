@@ -105,38 +105,18 @@ const TSCONFIG_JSON = `{
 }
 `;
 
-const CONFIG_TS = `// Instance config (ADR-0009). Its presence at the folder root is what marks this directory as a j2
-// instance — the \`j2\` CLI walks up from cwd to find it. \`defineConfig\` is an identity passthrough
-// that pins the shape to \`J2Config\` for authoring-time inference.
-//
-// \`repos\` is the one irreducible entry: the orchestrator materializes a read-only \`default/\` checkout
-// per repo as the source-of-truth volume every Workspace worktrees against. An entry is a url string —
-// named after the repository, minus \`.git\` — or \`{ name, url, ref }\` when the name must differ (ADR-0004).
-// This starter has none yet (its workflows don't touch a Workspace), so the list is empty.
-//
-// Workspaces (ADR-0012) are opt-in by adding repos — a Workspace needs them (ADR-0031): the orchestrator
-// then reconciles \`repos/\` at boot and drives Sandbox CRs via kubectl in its own namespace (ADR-0019).
-//
-// The \`declare module\` block below is what makes those names TYPED (ADR-0050). A Repo is the one
-// thing a Machine names by string and cannot carry — Agents and Sandbox Images ride the Machine
-// itself (ADR-0049) — so the catalog is declared here and registered back to the kit. A
-// \`workspace()\` spec's \`repos[].name\` is then this catalog's names, and a typo is a compile error
-// that \`j2 up\` refuses on before it builds anything. Keep it beside the export: it is one line of
-// bookkeeping, and without it every repo name silently falls back to \`string\`.
+const CONFIG_TS = `import { defineConfig } from "@j2/orchestrator";
 
-import { defineConfig } from "@j2/orchestrator";
-
-const config = defineConfig({
-  repos: [],
+export default defineConfig({
+  git: {
+    // The fence (ADR-0051): a per-run repo url — run input, a ticket field — must match an entry here or the
+    // attach refuses it, so nothing can spend this cluster's credential against an arbitrary host. \`*\` is
+    // today's two implicit defaults made visible (J2_GIT_TOKEN from .env for https, the j2-git-ssh Secret
+    // for ssh). Narrow it to your hosts (\`match: "github.com/yourorg/"\`) before anything untrusted can start
+    // a run. The longest match wins; the url's scheme picks token vs sshKey.
+    credentials: [{ match: "*", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" }],
+  },
 });
-
-declare module "@j2/orchestrator" {
-  interface Register {
-    config: typeof config;
-  }
-}
-
-export default config;
 `;
 
 // The scaffolded Sandbox Image (ADR-0037). Scaffolding it is the point: `images/default` is the
@@ -172,7 +152,7 @@ const IMAGE_DOCKERFILE = `# A Sandbox Image (ADR-0037): the tools your agents ca
 # workflow module and pass \`image: import.meta.resolve("./my-image")\` to \`workspace()\`, and \`j2 up\`
 # finds it by walking the registered Machines. \`image\` also takes a registry REF (anything that is
 # not a \`file:\` URL) for an image you baked and host yourself, which j2 never builds. This instance
-# has \`repos: []\`, so \`j2 up\` builds nothing here until it has repos to work on.
+# builds it once a registered Machine composes a Sandbox (a \`workspace()\` with \`repos\`).
 
 FROM node:24-slim
 

@@ -26,9 +26,9 @@ class EchoSandbox implements SandboxPort {
     this.provisioned.set(req.name, { runId: req.runId });
     return { endpoint: `http://${req.name}.test`, identity: "pod-1" };
   }
-  async attach(req: { name: string; spec: WorkspaceSpec }) {
-    const repos = Object.fromEntries(req.spec.repos.map((r) => [r.name, `/work/${r.name}/${req.spec.branch}`]));
-    return { workdir: repos[req.spec.repos[0]!.name]!, repos };
+  async attach(req: { name: string; spec: WorkspaceSpec; repos: Array<{ slot: string }> }) {
+    const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
+    return { workdir: repos[req.repos[0]!.slot]!, repos };
   }
   async renew() {
     return { present: true as const, identity: "pod-1" };
@@ -99,7 +99,10 @@ function echoDef(client: MockFlueClient): WorkflowDef {
       finished: { type: "final" },
     },
   });
-  const wrapped = workspace(body, { spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-1" }) });
+  const wrapped = workspace(body, {
+    repos: { app: "https://example.test/app.git" },
+    spec: () => ({ branch: "feat-1" }),
+  });
   return { name: "echoed", machine: wrapped, provide: () => ({}) };
 }
 

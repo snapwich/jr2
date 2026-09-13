@@ -12,6 +12,12 @@
 // All four operations are idempotent (SandboxPort contract): apply is create-or-update, attach
 // guards every clone/worktree, delete ignores absent.
 //
+// WHICH REPOS a Sandbox attaches arrive resolved from the `workspace()`'s Repo Slots (ADR-0051):
+// the CR names each by its cache key, the operator mounts the node's cache read-only at
+// `/repos/<key>` and gates Ready on it, and the attach clones off that mount. The one judgement
+// made here is the FENCE: a per-run url must match a `git.credentials` entry, or it is refused
+// before anything is applied.
+//
 // WHICH IMAGE a Sandbox runs is not an option here (ADR-0037/0038/0049). The request carries what
 // the `workspace()` wrapper statically declared — a `file:` docker context or a registry ref — and
 // the resolved key→ref map arrives as a mounted ConfigMap read on EVERY provision, so a `j2 up`
@@ -51,11 +57,13 @@
 
 import { execFile } from "node:child_process";
 import { join } from "node:path";
+import { matchCredential, type GitCredential, type HarnessEnvFromSource, type HarnessEnvVar } from "./config.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
-import { CA_CONFIGMAP, IMAGES_KEY, IMAGES_MOUNT, REPOS_PVC } from "./names.ts";
+import { CA_CONFIGMAP, IMAGES_KEY, IMAGES_MOUNT, REPOS_MOUNT } from "./names.ts";
+import { repoIdentity } from "./repo-identity.ts";
+import type { RepoResources } from "./repos.ts";
 import { sandboxToken } from "./tokens.ts";
-import type { HarnessEnvFromSource, HarnessEnvVar, RepoName } from "./config.ts";
-import type { WorkspaceSpec, SandboxPort } from "./workspace.ts";
+import type { ProvisionedRepo, SandboxPort, WorkspaceSpec } from "./workspace.ts";
 
 /** Run one kubectl invocation to completion. `input` is piped to stdin (`apply -f -`). */
 export type KubectlExec = (args: string[], opts?: { input?: string }) => Promise<{ stdout: string; stderr: string }>;
@@ -273,18 +281,21 @@ export type KubectlSandboxOptions = {
   readyTimeoutMs?: number;
   pollMs?: number;
   /**
-   * The last sync error for one source-volume repo, or undefined when its last sync succeeded
-   * (ADR-0048) — the supervised reconcile's `errorFor`. The attach is where the degradation bites:
-   * it clones `<reposMount>/<name>/default`, so a repo that has not synced is a checkout that is
-   * absent or stale, and the run that needs it is the one that must hear about it. Absent (no
-   * reconcile wired — tests, a hand-built port) means "nothing known", which asserts nothing.
-   *
-   * It may ANSWER LATE, and the deployed one does: the boot no longer waits for the first pass, so
-   * the entrypoint's implementation waits for it here instead. A run that starts while its repo is
-   * still cloning then waits for the clone rather than racing it into an empty volume — the wait
-   * the boot used to do, moved to the only caller that actually needs it.
+   * The Repo-resource port (ADR-0051, repos.ts): every Repo a provision names must exist as a
+   * `Repo` resource before the CR names it, or the operator reports it missing and the Sandbox
+   * never reaches Ready. A per-run url's resource is created here, at first attach; a bound one
+   * already exists from the boot. Absent (tests, a hand-built port) means the resources are
+   * somebody else's to create.
    */
-  repoError?: (name: string) => string | undefined | Promise<string | undefined>;
+  repos?: RepoResources;
+  /**
+   * The instance's `git.credentials` (ADR-0051) — THE FENCE. A per-run url is run input, a
+   * ticket field, and otherwise a way to spend the cluster's credential against any host: one
+   * whose identity matches no entry is refused here, before a Secret or a CR exists, naming the
+   * list. A bound url is code the instance typechecked and deployed, admitted without a match.
+   * Default: no entries, so every per-run url is refused.
+   */
+  credentials?: readonly GitCredential[];
   /** Process seam, injectable for tests. Defaults shell to the `kubectl` on PATH. */
   exec?: KubectlExec;
 };
@@ -296,6 +307,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const pollMs = opts.pollMs ?? 1_000;
   const exec = opts.exec ?? defaultExec;
+  const credentials = opts.credentials ?? [];
 
   const adapterPort = opts.adapterPort ?? 8081;
   const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
@@ -333,25 +345,27 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * eyes open — ADR-0005: safe.directory is honored only from files this seat's image owns, so an
    * image whose sessions run git carries its own line.)
    *
-   * `/work` read-write plus `/repos` read-only are the single exception, and they are not an
-   * injection but the point: this seat and the Harness mount ONE worktree, so the human and the
-   * Agent see identical files — which is also why ADR-0005's cross-uid pair (the pod's `fsGroup`,
-   * the attach's default ACL) exists at all. `/repos` rides along because it is half of the same
-   * files: the worktrees are `--shared` clones whose alternates resolve objects from
-   * `/repos/<name>/default` (ADR-0004), so a seat with `/work` alone holds checkouts whose every
-   * borrowed object is missing ("unable to normalize alternate object path"). The Adapter is
-   * deliberately not given either: it reads no worktree, and it is the container holding the
-   * pod's only credential, so it gets the narrowest mount set that works. It also carries no
-   * `securityContext`, which the operator reads as the exemption — root is ALLOWED here, because
-   * hardening a seat whose identity is "what j2 does not own" is an opinion, and the standard
-   * managed-access shape (a root sshd that setuids sessions down) must run unmodified.
+   * `/work` read-write plus each Repo's node cache read-only are the single exception, and they
+   * are not an injection but the point: this seat and the Harness mount ONE worktree, so the human
+   * and the Agent see identical files — which is also why ADR-0005's cross-uid pair (the pod's
+   * `fsGroup`, the attach's default ACL) exists at all. The caches ride along because they are
+   * half of the same files: the worktrees are `--shared` clones whose alternates resolve objects
+   * from `/repos/<key>` (ADR-0004/0051), so a seat with `/work` alone holds checkouts whose every
+   * borrowed object is missing ("unable to normalize alternate object path"). The volumes are the
+   * operator's — it defines `repo-<key>` for every key the CR names — so this seat mounts them by
+   * name. The Adapter is deliberately not given either: it reads no worktree, and it is the
+   * container holding the pod's only credential, so it gets the narrowest mount set that works.
+   * It also carries no `securityContext`, which the operator reads as the exemption — root is
+   * ALLOWED here, because hardening a seat whose identity is "what j2 does not own" is an opinion,
+   * and the standard managed-access shape (a root sshd that setuids sessions down) must run
+   * unmodified.
    */
-  const userSidecar = async (refs: ImageRefs, image: string) => ({
+  const userSidecar = async (refs: ImageRefs, image: string, keys: string[]) => ({
     name: "user",
     image: await resolveUserImage(refs, image),
     volumeMounts: [
       { name: "work", mountPath: workRoot },
-      { name: "repos", mountPath: "/repos", readOnly: true },
+      ...keys.map((key) => ({ name: repoVolumeName(key), mountPath: repoMountPath(key), readOnly: true })),
     ],
   });
 
@@ -360,9 +374,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * state left to branch on, and a Sandbox without one is a pod that comes up Ready and then parks
    * its Machine forever on a tool call it cannot make (ADR-0013). A map with no `adapter` fails the
    * read instead (images.ts). The User Container joins it only when the spec named one. */
-  const sidecarsFor = async (name: string, refs: ImageRefs, user?: string) => [
+  const sidecarsFor = async (name: string, refs: ImageRefs, keys: string[], user?: string) => [
     adapterSidecar(name, refs),
-    ...(user !== undefined ? [await userSidecar(refs, user)] : []),
+    ...(user !== undefined ? [await userSidecar(refs, user, keys)] : []),
   ];
 
   // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
@@ -465,9 +479,15 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const crFor = async (
     req: { name: string; runId: string; workflow: string; image?: string; user?: string; workGroup?: number },
     refs: ImageRefs,
+    repos: Array<{ key: string; url: string }>,
   ) => {
     const seat = await seatFor(refs, req.image);
-    const sidecars = await sidecarsFor(req.name, refs, req.user);
+    const sidecars = await sidecarsFor(
+      req.name,
+      refs,
+      repos.map((r) => r.key),
+      req.user,
+    );
     return {
       apiVersion: "core.j2.dev/v1alpha1",
       kind: "Sandbox",
@@ -508,10 +528,14 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // What the AGENT gets: an address on its own loopback, and no credential anywhere. This is
         // the only thing in the pod that tells it how to reach its Machine (ADR-0013).
         sidecars,
+        // The Repos this Sandbox attaches, by cache key (ADR-0051). The operator does the rest: a
+        // `repo-<key>` volume per entry — the node's cache, hostPath, read-only in the primary
+        // container at `/repos/<key>` — a soft affinity toward nodes already holding them, and
+        // `Ready` only once every one is present on the pod's node and fetched since this CR
+        // asked. Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in
+        // a Sandbox can `gc` the object store its `--shared` clones borrow from.
+        repos,
         volumes: [
-          // The in-cluster source volume (ADR-0004/0019): the same PVC the orchestrator's boot
-          // reconcile writes, mounted read-only here. No hostPath, nothing kind-special.
-          { name: "repos", persistentVolumeClaim: { claimName: REPOS_PVC, readOnly: true } },
           // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
           // both load-bearing: every j2-owned seat runs as an unprivileged uid, which cannot mkdir
           // under `/` — so an image-owned `/work` would make every attach fail — and `/work` is
@@ -527,12 +551,10 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
           ...seat.homeVolume,
           ...(opts.caBundle ? [{ name: "ca", configMap: { name: CA_CONFIGMAP } }] : []),
         ],
-        // Read-only is load-bearing twice (ADR-0004): no write contention, and nothing in a
-        // Sandbox can `gc` the object store its `--shared` clones borrow from.
         // CR-level volumeMounts land on the HARNESS container only (the operator's contract) —
-        // exactly the CA-trust asymmetry ADR-0020 wants: the Adapter never inherits it.
+        // exactly the CA-trust asymmetry ADR-0020 wants: the Adapter never inherits it. The Repo
+        // caches are not listed: the operator mounts each `repo-<key>` into this container itself.
         volumeMounts: [
-          { name: "repos", mountPath: "/repos", readOnly: true },
           { name: "work", mountPath: workRoot },
           // Read-only: nothing writes under `/opt/j2` at runtime, and the Agent has code execution
           // in this container — leaving its own runtime writable would let a turn edit it.
@@ -637,15 +659,41 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     ]).catch(() => {});
   };
 
+  /**
+   * Every Repo the provision names, resolved to its identity and key — and FENCED (ADR-0051). A
+   * per-run url is the run's input; one no `git.credentials` entry admits is refused here, before
+   * anything is read or applied, naming the list. A bound url is admitted without a match: it is
+   * code the instance typechecked and deployed. Two slots spelling one repository collapse to one
+   * CR entry (first spelling wins) — one cache, however many slots borrow from it.
+   */
+  const fencedRepos = (name: string, repos: ProvisionedRepo[]): Array<{ key: string; url: string }> => {
+    const byKey = new Map<string, { key: string; url: string }>();
+    for (const repo of repos) {
+      const { identity, key } = repoIdentity(repo.url);
+      if (repo.perRun && !matchCredential(identity, credentials)) {
+        const entries = credentials.map((c) => c.match).join(", ") || "none";
+        throw new Error(
+          `Sandbox "${name}" refuses the per-run repo ${repo.url} for slot "${repo.slot}": no git.credentials ` +
+            `entry matches "${identity}" (entries: ${entries}). A per-run url can spend the cluster's credential ` +
+            "against any host, so j2.config.ts must admit it by prefix (ADR-0051).",
+        );
+      }
+      if (!byKey.has(key)) byKey.set(key, { key, url: repo.url });
+    }
+    return [...byKey.values()];
+  };
+
   return {
     async provision(req) {
-      // Read PER PROVISION, and first (ADR-0038). Not hoisted into `kubectlSandbox()`: a boot-time
+      // The fence first: a refused url costs nothing — no map read, no Secret, no CR.
+      const repos = fencedRepos(req.name, req.repos);
+      // Read PER PROVISION, and next (ADR-0038). Not hoisted into `kubectlSandbox()`: a boot-time
       // read would freeze the map for the process lifetime, which is precisely the Deployment-env
       // behavior the ConfigMap mount was chosen over — the point of the mount is that a `j2 up`
       // reaches future Sandboxes without rolling the Orchestrator. Reading before the Secret apply
       // also means an unknown image name costs nothing: no Secret, no CR, nothing to clean up.
       const refs = await readImageRefs(imagesPath);
-      const cr = await crFor(req, refs);
+      const cr = await crFor(req, refs, repos);
 
       await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start
       await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(cr) });
@@ -692,28 +740,10 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     },
 
     async attach(req) {
-      // Before the exec (ADR-0048): every repo this attach is about to clone must have synced.
-      // A failed sync leaves either no checkout at all or last boot's objects, and both attach
-      // "successfully" into a Sandbox whose worktrees are wrong — a silent, much later failure.
-      // Named here instead: the repo, and git's own reason, to the run that owns the consequence.
-      const unsynced = (
-        await Promise.all(
-          req.spec.repos.map(async (repo) => ({ name: repo.name, error: await opts.repoError?.(repo.name) })),
-        )
-      )
-        // `RepoName`, not `string`: in a registered program the spec's names ARE the catalog's
-        // literals (ADR-0050), and a predicate that widened them would not be assignable to what
-        // it narrows.
-        .filter((r): r is { name: RepoName; error: string } => r.error !== undefined);
-      if (unsynced.length) {
-        throw new Error(
-          `Sandbox "${req.name}" cannot attach ${unsynced.map((r) => `repo "${r.name}" (${r.error})`).join("; ")} — ` +
-            "the source volume's sync for it has not succeeded, so its read-only `default/` checkout is absent or " +
-            "stale. The reconcile keeps retrying (ADR-0048); `j2 status` lists every repo that is not synced, and " +
-            "the fix is on the git side — register the deploy key (ADR-0047), correct the url, or grant the token.",
-        );
-      }
-      const { script, workdir, repos, review } = attachScript(req.spec, { reposMount: "/repos", workRoot });
+      const { script, workdir, repos, review } = attachScript(req.spec, req.repos, {
+        reposMount: REPOS_MOUNT,
+        workRoot,
+      });
       // `-c harness` is unchanged and still correct after ADR-0037: the primary container runs the
       // Sandbox Image, so `git` here is the git the user chose. Never `-c user` — that seat is
       // zero-contract, may hold no git at all, and j2 commands nothing in it (ADR-0005).
@@ -754,52 +784,60 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   };
 }
 
+/** The pod volume the operator defines for one Repo's node cache, and where it lands in the
+ * primary container (ADR-0051). Two halves of one contract with the operator, spelled here so the
+ * User Container's mounts and the attach's clone source agree with it by construction. */
+export const repoVolumeName = (key: string): string => `repo-${key}`;
+export const repoMountPath = (key: string): string => `${REPOS_MOUNT}/${key}`;
+
 /**
- * The post-Ready attach step as one idempotent in-pod script (ADR-0004): per repo, a pod-local
- * `git clone --shared --no-checkout` borrowing objects from the RO `default/` volume, then the
- * branch worktree as a sibling (gwtmux layout: `<repo>/default/` + `<repo>/<branch>/`).
- * With a `reviewSha`, also the detached review worktree (ADR-0028) — another sibling.
- * Exported for the port's tests; the workflow never sees it.
+ * The post-Ready attach step as one idempotent in-pod script (ADR-0004, ADR-0051): per Repo Slot
+ * in declaration order, a pod-local `git clone --shared --no-checkout` borrowing objects from the
+ * node's read-only cache at `/repos/<key>`, then the branch worktree as a sibling (gwtmux layout:
+ * `<slot>/default/` + `<slot>/<branch>/`). With a `reviewSha`, also the detached review worktree
+ * (ADR-0028) — another sibling. `workdir` is the FIRST slot's worktree. Exported for the port's
+ * tests; the workflow never sees it.
  */
 export function attachScript(
   spec: WorkspaceSpec,
+  repos: Array<{ slot: string; url: string; ref?: string }>,
   paths: { reposMount: string; workRoot: string },
 ): { script: string; workdir: string; repos: Record<string, string>; review?: Record<string, string> } {
-  const repos: Record<string, string> = {};
+  const worktrees: Record<string, string> = {};
   const review: Record<string, string> = {};
-  // The RO repos volume is written by the ORCHESTRATOR's uid and read here as the Harness's
-  // unprivileged uid (ADR-0001/0004), so git's dubious-ownership guard would refuse the clone
-  // source. safe.directory is only honored from global/system config (never `-c`), and inside
-  // the pod every path is j2-owned — trusting them all is the honest scope.
+  // The cache is written by the node's cache agent and read here as the Harness's unprivileged
+  // uid (ADR-0001/0004/0051), so git's dubious-ownership guard would refuse the clone source.
+  // safe.directory is only honored from global/system config (never `-c`), and inside the pod
+  // every path is j2-owned — trusting them all is the honest scope.
   // The attach runs via exec, not as a child of the Harness process, so it does NOT inherit the
   // Harness's `umask 002` — without its own, the repo roots it mkdirs land 755 and the work group
   // could never create a file at a tree's top. INSIDE the trees the umask stops mattering: the
   // default ACL stamped below governs everything created beneath a repo root (ADR-0005).
   const lines: string[] = [`umask 002`, `git config --global safe.directory '*'`];
   const branchDir = spec.branch.replace(/\//g, "-");
-  for (const repo of spec.repos) {
-    const dflt = `${paths.workRoot}/${repo.name}/default`;
-    const worktree = `${paths.workRoot}/${repo.name}/${branchDir}`;
-    repos[repo.name] = worktree;
+  for (const repo of repos) {
+    const slotDir = `${paths.workRoot}/${repo.slot}`;
+    const dflt = `${slotDir}/default`;
+    const worktree = `${slotDir}/${branchDir}`;
+    const cache = `${paths.reposMount}/${repoIdentity(repo.url).key}`;
+    worktrees[repo.slot] = worktree;
     lines.push(
-      `mkdir -p ${sq(`${paths.workRoot}/${repo.name}`)}`,
+      `mkdir -p ${sq(slotDir)}`,
       // BEFORE the clone fills it: a default ACL is inherited at creation, never retrofitted, so
       // the stamp must exist while the tree is still empty. From here down, both seats' files land
       // group-writable with zero umask lines in any image (ADR-0005); on a filesystem without
       // POSIX ACLs the helper warns and exits 0, degrading to the umask sharing above.
-      `/opt/j2/bin/work-acl ${sq(`${paths.workRoot}/${repo.name}`)}`,
-      `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared --no-checkout ${sq(`${paths.reposMount}/${repo.name}/default`)} ${sq(dflt)}`,
-      // No baseRef → the repo's own default branch: this clone's `origin/HEAD` tracks the volume
-      // checkout's HEAD, which the reconcile's clone pointed at the remote's default (ADR-0004).
-      `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.baseRef ?? "origin/HEAD")}`,
-      // Fetch/push split (ADR-0005): `git fetch` stays on the volume (the hop the pod can make),
-      // `git push` goes to the REAL remote — read off the volume checkout's own origin, the same
-      // url the reconcile cloned, so nothing plumbs it and a config url change lands on the next
-      // attach. Push still succeeds only with a caller-supplied credential (a forwarded agent in
-      // the User Container); the pod itself holds none. Guarded: an adopted checkout may carry no
-      // origin url, and such a worktree just keeps volume-push (refused by the RO mount).
-      `url="$(git -C ${sq(`${paths.reposMount}/${repo.name}/default`)} config remote.origin.url || true)"; ` +
-        `[ -z "$url" ] || git -C ${sq(dflt)} remote set-url --push origin "$url"`,
+      `/opt/j2/bin/work-acl ${sq(slotDir)}`,
+      `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared --no-checkout ${sq(cache)} ${sq(dflt)}`,
+      // No ref → the Repo's own default branch: this clone's `origin/HEAD` tracks the cache's
+      // HEAD, which the cache agent's clone pointed at the remote's default (ADR-0004).
+      `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.ref ?? "origin/HEAD")}`,
+      // Fetch/push split (ADR-0005): `git fetch` stays on the cache (the hop the pod can make),
+      // `git push` goes to the REAL remote — the Binding's own spelling, so a Machine that bound
+      // over ssh pushes over ssh even when the cache was cloned over https (ADR-0051). Push still
+      // succeeds only with a caller-supplied credential (a forwarded agent in the User Container);
+      // the pod itself holds none.
+      `git -C ${sq(dflt)} remote set-url --push origin ${sq(repo.url)}`,
     );
     if (spec.reviewSha) {
       // The reviewer's seat (ADR-0028): a DETACHED HEAD at the sha under review, so a rogue write
@@ -808,7 +846,7 @@ export function attachScript(
       // (untracked) must not survive into this round — the review worktree's contents are the
       // sha under review, period.
       const reviewDir = `${worktree}-review`;
-      review[repo.name] = reviewDir;
+      review[repo.slot] = reviewDir;
       lines.push(
         `[ -d ${sq(reviewDir)} ] || git -C ${sq(dflt)} worktree add --detach ${sq(reviewDir)} ${sq(spec.reviewSha)}`,
         `git -C ${sq(reviewDir)} checkout --detach -f ${sq(spec.reviewSha)}`,
@@ -816,12 +854,13 @@ export function attachScript(
       );
     }
   }
-  const first = spec.repos[0];
-  if (!first) throw new Error("workspace spec has no repos — nothing to attach");
+  const first = repos[0];
+  if (!first)
+    throw new Error("the attach names no Repo Slot — nothing to attach (a workspace() declares at least one)");
   return {
     script: lines.join("\n"),
-    workdir: repos[first.name]!,
-    repos,
+    workdir: worktrees[first.slot]!,
+    repos: worktrees,
     ...(spec.reviewSha ? { review } : {}),
   };
 }

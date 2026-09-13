@@ -20,7 +20,7 @@ import { coder } from "./_agents.ts";
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 const ship = defineEvent({ name: "ship", input: z.object({ summary: z.string() }) });
 
-type Ws = { workdir: string; repos: Record<string, string>; branch: string };
+type Ws = { workdir: string; repos: Record<"app", string>; branch: string };
 type BodyInput = { instanceId: string; workspace: Ws };
 
 const body = j2Setup({
@@ -64,6 +64,9 @@ const body = j2Setup({
   },
 });
 
+// The one Repo Slot, `app`, BOUND to the seed repository the suite serves in-cluster (ADR-0051):
+// the url is the identity, so this literal is what the walk warms and what the cache clones.
 export const machine = workspace(body, {
-  spec: () => ({ repos: [{ name: "app", baseRef: "main" }], branch: "feat-e2e" }),
+  repos: { app: { url: "http://seed.j2-e2e-seed.svc/app.git", ref: "main" } },
+  spec: () => ({ branch: "feat-e2e" }),
 });

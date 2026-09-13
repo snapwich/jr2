@@ -12,21 +12,20 @@
 //                      survive a pod restart. Absent → minted into `<dir>/.j2/secret` (dev-grade).
 //   J2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
 //                      Sandboxes are driven in it, and the Adapters' route home is Service DNS.
-//   J2_REPOS_DIR       the source volume the boot reconcile populates (default `<dir>/repos`).
-//   J2_GIT_TOKEN       HTTPS token for private repo fetches (from the instance Secret, ADR-0019).
+//   <git.credentials[].token>
+//                      each token env var the config names rides the instance Secret (ADR-0051):
+//                      the Orchestrator materializes it into the Repo's credential Secret.
 //
 // The first stdout line is one JSON object `{ url, workflows }` — the discovery seam a fixture (or
 // a human tailing pod logs) parses instead of racing the socket.
 
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.ts";
-import { startInstance, type RunningInstance } from "./instance.ts";
+import { loadWorkflows, startInstance, type RunningInstance } from "./instance.ts";
 import {
   HARNESS_CONFIGMAP,
   HARNESS_CONFIG_KEY,
-  GIT_SSH_MOUNT,
   HARNESS_ENV_SECRET,
   IMAGES_KEY,
   IMAGES_MOUNT,
@@ -34,7 +33,7 @@ import {
   INSTANCE_HARNESS_SERVICE,
   ORCHESTRATOR_SERVICE,
 } from "./names.ts";
-import { startRepoReconcile, type RepoReconcile } from "./repos.ts";
+import { partsOf } from "./parts.ts";
 import { kubectlSandbox } from "./sandbox-kubectl.ts";
 import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
@@ -66,47 +65,18 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // exactly as before.
   const instanceToken = env.J2_INSTANCE_TOKEN ?? mintInstanceToken();
 
-  // The data-plane switch (ADR-0012/0031): `config.repos` non-empty → reconcile the source
-  // volume, then wire the kubectl Sandbox backend — a Workspace needs repos. Empty/absent → a
-  // workspace-less instance (workspace() invocations fault pointedly).
+  // The data-plane switch (ADR-0012/0031/0051): a registered Machine COMPOSES a Sandbox — read off
+  // the same walk `j2 up` makes — and this process is deployed in a cluster → wire the kubectl
+  // Sandbox backend. Otherwise an instance without a data plane (workspace() invocations fault
+  // pointedly). The walk loads the same modules `startInstance` registers below; Node's module
+  // cache makes them one import.
+  const carried = partsOf((await loadWorkflows(opts.dir)).map((w) => w.machine));
+  const dataPlane = carried.composesSandbox && namespace !== undefined;
   let sandbox: SandboxPort | undefined;
-  let repos: RepoReconcile | undefined;
-  if (config?.repos?.length) {
-    const reposDir = env.J2_REPOS_DIR ?? join(opts.dir, "repos");
-    const sshKeyPath = join(GIT_SSH_MOUNT, "key");
-    // Started, NOT awaited (ADR-0048). A repo that cannot clone — an unregistered deploy key
-    // (ADR-0047), a wrong url, a git host outage — used to throw here, exit the container, and
-    // crash-loop the daemon that hosts every Workflow, including the ones that never touch a repo.
-    // The same blast pattern as the images ConfigMap below: degrade the capability, not the
-    // daemon. Each pass announces per repo (git's own error on a failure) and the loop keeps
-    // retrying the failed ones, so the window a converge opened closes on its own.
-    repos = startRepoReconcile({
-      config,
-      reposDir,
-      creds: {
-        tokenEnv: env.J2_GIT_TOKEN !== undefined ? "J2_GIT_TOKEN" : undefined,
-        sshKeyPath: existsSync(sshKeyPath) ? sshKeyPath : undefined,
-      },
-      onSync: (sync) =>
-        opts.announce(
-          JSON.stringify(
-            sync.error === undefined
-              ? { repo: sync.name, action: sync.action }
-              : { repo: sync.name, error: sync.error },
-          ),
-        ),
-    });
-
+  if (dataPlane) {
     sandbox = kubectlSandbox({
-      // What a repo's sync last did (ADR-0048): the attach reads `<reposDir>/<name>/default` off
-      // the source volume, so a repo that never synced is the moment the degradation bites — and
-      // the run that owns the consequence is the one that hears about it, by name and with git's
-      // own error. The wait for the first pass moved HERE from the boot: an attach that arrives
-      // while the clone is still running waits for it, instead of racing it into an empty volume.
-      repoError: async (name) => {
-        await repos!.first;
-        return repos!.errorFor(name);
-      },
+      // The fence (ADR-0051): a per-run url must match one of these, or the provision refuses it.
+      credentials: config?.git?.credentials ?? [],
       // Named here the same way HARNESS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
       // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
       // buys: the map is read per provision, so an instance whose `j2-images` ConfigMap is not yet
@@ -128,12 +98,12 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
           name: "J2_ECHO_TOKEN_SHA256",
           value: createHash("sha256").update(instanceToken).digest("base64url"),
         },
-        ...(config.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
+        ...(config?.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
       ],
-      envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(config.harness?.envFrom ?? [])],
+      envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(config?.harness?.envFrom ?? [])],
       // Presence only — the PEM itself was materialized into the j2-ca ConfigMap by `j2 up`
       // (ADR-0020); the in-cluster config eval never reads the file.
-      caBundle: config.harness?.caBundle !== undefined,
+      caBundle: config?.harness?.caBundle !== undefined,
       orchestratorUrl: namespace ? `http://${ORCHESTRATOR_SERVICE}.${namespace}.svc:${port}` : undefined,
       signingKey,
       namespace,
@@ -147,9 +117,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     instanceToken,
     signingKey,
     sandbox,
-    // The supervised reconcile (ADR-0048): its per-repo state rides the status surface, and the
-    // instance's `close()` stops its retry loop.
-    repos,
+    dataPlane,
     // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
     // `j2 up` converges the Deployment behind it whenever any definition declares
     // `workspace: "none"`, so deployed, the address exists exactly when it is needed.

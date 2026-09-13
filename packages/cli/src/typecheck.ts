@@ -1,13 +1,11 @@
 // The Instance's own typecheck, run as a converge gate (ADR-0050). A Machine names its parts by
-// string — an actor slot, a composed Machine, a `customize()` of either — and since ADR-0049 those
-// strings are typed by xstate's own `src` typing and by the Machine's own parts. A type error is
-// therefore the EARLIEST place a wrong name can be caught, and until now `j2 up` walked straight
-// past it: the first sign of a mistyped slot was an invoke-time failure mid-run, after a bundle,
-// three image builds, and a rollout had been spent. The one part a Machine CANNOT carry — the Repo,
-// a deployment fact — is typed the other way round: the instance's `j2.config.ts` registers its
-// catalog back to the kit, so `WorkspaceSpec.repos[].name` is that catalog's names and a typo is a
-// type error here too. The port's refusal at attach survives as the second check, for a Machine
-// whose program held no catalog.
+// string — an actor slot, a composed Machine, a `customize()` of either, a Repo Slot it binds
+// (ADR-0051) — and since ADR-0049 those strings are typed by xstate's own `src` typing and by the
+// Machine's own parts. A type error is therefore the EARLIEST place a wrong name can be caught,
+// and until now `j2 up` walked straight past it: the first sign of a mistyped slot was an
+// invoke-time failure mid-run, after a bundle, three image builds, and a rollout had been spent.
+// The one check that is converge-time and not compile-time is an OPEN Repo Slot nobody bound: a
+// `workflows/` export has no type to hang it on, so `j2 up`'s walk refuses it right after this gate.
 //
 // The compiler is the INSTANCE's, resolved from its own `node_modules` (ADR-0043): the instance's
 // program includes @j2/orchestrator's `.ts` sources (zero-build — `exports` point at source), so

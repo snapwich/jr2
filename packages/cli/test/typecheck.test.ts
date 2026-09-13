@@ -6,8 +6,8 @@
 // is exactly the resolution the port must perform: an instance's compiler is the one IT installed
 // (the scaffold pins it, ADR-0043), never one the CLI happens to carry.
 //
-// The last test is the one that gates the PROGRAM rather than the port: an instance staged as npm
-// leaves one — `@j2/orchestrator` as its `files:` list with no `node_modules` of its own, its
+// The last tests are the ones that gate the PROGRAM rather than the port: an instance staged as
+// npm leaves one — `@j2/orchestrator` as its `files:` list with no `node_modules` of its own, its
 // runtime dependencies flat beside it, and the real `tsconfig.instance.json` extends chain. The
 // checkout hides the class of failure it catches, because pnpm links the kit's packages to each
 // other and an instance here resolves the orchestrator's own devDependencies through that link.
@@ -132,15 +132,12 @@ async function mkInstalledInstance(): Promise<string> {
     join(root, "tsconfig.json"),
     `{ "extends": "@j2/orchestrator/tsconfig.instance.json", "include": ["**/*.ts"] }`,
   );
-  // The config carries the scaffold's `declare module` block (ADR-0050) — a BARE specifier, so
-  // this is also where "does the augmentation resolve the way npm laid the package out?" is
-  // answered; in the checkout it resolves through a pnpm link instead.
+  // The config imports the kit by BARE specifier, so this is also where "does the package resolve
+  // the way npm laid it out?" is answered; in the checkout it resolves through a pnpm link instead.
   await writeFile(
     join(root, "j2.config.ts"),
     `import { defineConfig } from "@j2/orchestrator";\n` +
-      `const config = defineConfig({ repos: ["https://example.test/app.git"] });\n` +
-      `declare module "@j2/orchestrator" {\n  interface Register {\n    config: typeof config;\n  }\n}\n` +
-      `export default config;\n`,
+      `export default defineConfig({ git: { credentials: [{ match: "*", token: "J2_GIT_TOKEN" }] } });\n`,
   );
   await mkdir(join(root, "workflows"), { recursive: true });
   await writeFile(
@@ -152,15 +149,22 @@ async function mkInstalledInstance(): Promise<string> {
   return root;
 }
 
-/** A `workspace()` whose spec names one repo — the seat `RepoName` types (ADR-0050). */
-async function writeWorkspaceNaming(root: string, repo: string): Promise<void> {
+/** A packaged `workspace()` that leaves its one Repo Slot OPEN (`_pkg.ts` — imported, never
+ * registered), and a registered Workflow that binds it with `customize()` under `slot` — the
+ * consumer's move (ADR-0051), and the seat the wrapper's `J2Repos` phantom types. */
+async function writeCustomizeBinding(root: string, slot: string): Promise<void> {
   await writeFile(
-    join(root, "workflows", "work.ts"),
-    `import { j2Setup, workspace } from "@j2/orchestrator";\n` +
+    join(root, "workflows", "_pkg.ts"),
+    `import { j2Setup, open, workspace } from "@j2/orchestrator";\n` +
       `const body = j2Setup({ events: [] }).createMachine({\n` +
       `  id: "body",\n  initial: "done",\n  states: { done: { type: "final" } },\n});\n` +
-      `export const machine = workspace(body, {\n` +
-      `  spec: () => ({ repos: [{ name: "${repo}" }], branch: "b" }),\n});\n`,
+      `export const codeReview = workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  await writeFile(
+    join(root, "workflows", "work.ts"),
+    `import { customize } from "@j2/orchestrator";\n` +
+      `import { codeReview } from "./_pkg.ts";\n` +
+      `export const machine = customize(codeReview, { repos: { ${slot}: "https://example.test/app.git" } });\n`,
   );
 }
 
@@ -174,69 +178,20 @@ test("an instance staged as npm installs it typechecks — the kit's own sources
   assert.deepEqual(await tscTypecheck(root), { ok: true, output: "" });
 });
 
-test("a repo entry whose name is not a literal is refused, and the error IS the instruction (ADR-0050)", async () => {
-  // `defineConfig`'s refusal reaches the author only as far as tsc PRINTS it, and tsc prints a type
-  // alias by its name — so the instruction lives inline in `CheckRepoEntry` and this test is what
-  // holds it there. Driven through the real compiler, on the config file the author edits.
-  const root = await mkInstalledInstance();
-  await writeFile(
-    join(root, "j2.config.ts"),
-    `import { defineConfig } from "@j2/orchestrator";\n` +
-      // A url the config computes rather than spells: the type system has no last segment to read.
-      `const url = process.env.APP_REPO ?? "https://example.test/app.git";\n` +
-      `const config = defineConfig({ repos: [{ url }] });\n` +
-      `declare module "@j2/orchestrator" {\n  interface Register {\n    config: typeof config;\n  }\n}\n` +
-      `export default config;\n`,
-  );
-
-  const refused = await tscTypecheck(root);
-  assert.equal(refused.ok, false);
-  assert.match(refused.output, /j2\.config\.ts/, "the error lands on the entry the author wrote");
-  // tsc prints the literal as source, so the instruction's own quotes come back escaped.
-  assert.match(refused.output, /write `name: \\"…\\"` on it \(ADR-0050\)/, "and reads as the instruction itself");
-});
-
-test("the refusal covers every non-literal shape: string shorthand and a computed `name` (ADR-0050)", async () => {
-  // Three ways an entry's name can widen to `string`; the bare-object url is pinned above. The other
-  // two are the shorthand (`repos: [url]`) and an explicit name the config computes — both must be
-  // refused by the same inline instruction, or one shape would silently type every typo.
-  const shapes = {
-    shorthand:
-      `const url = process.env.APP_REPO ?? "https://example.test/app.git";\n` +
-      `const config = defineConfig({ repos: [url] });\n`,
-    computedName:
-      `const name = process.env.APP_NAME ?? "app";\n` +
-      `const config = defineConfig({ repos: [{ url: "https://example.test/app.git", name }] });\n`,
-  };
-  for (const [shape, body] of Object.entries(shapes)) {
-    const root = await mkInstalledInstance();
-    await writeFile(
-      join(root, "j2.config.ts"),
-      `import { defineConfig } from "@j2/orchestrator";\n` +
-        body +
-        `declare module "@j2/orchestrator" {\n  interface Register {\n    config: typeof config;\n  }\n}\n` +
-        `export default config;\n`,
-    );
-    const refused = await tscTypecheck(root);
-    assert.equal(refused.ok, false, `${shape}: refused`);
-    assert.match(refused.output, /j2\.config\.ts/, `${shape}: the error lands on the entry`);
-    assert.match(refused.output, /write `name: \\"…\\"` on it \(ADR-0050\)/, `${shape}: and reads as the instruction`);
-  }
-});
-
-test("the Register reaches an INSTALLED instance: a mistyped repo is what the gate refuses (ADR-0050)", async () => {
-  // The whole claim in one folder, laid out the way npm lays it out — because the augmentation the
-  // scaffold writes names `@j2/orchestrator` by bare specifier, and a checkout's pnpm link is not
-  // proof that an installed tree resolves the same module to augment. Both directions, so the
-  // refusal cannot be an artifact of the folder failing to compile for some other reason.
+test("a customize() of an undeclared Repo Slot is what the gate refuses, in an INSTALLED instance (ADR-0051)", async () => {
+  // The whole claim in one folder, laid out the way npm lays it out: the slots a `workspace()`
+  // declared ride its type as a phantom, read through the wrapper the way its Agents are, so a
+  // consumer binding a slot the package never declared stops at `tsc` — before anything is built.
+  // Both directions, so the refusal cannot be an artifact of the folder failing to compile for
+  // some other reason.
   const root = await mkInstalledInstance();
 
-  await writeWorkspaceNaming(root, "app");
-  assert.deepEqual(await tscTypecheck(root), { ok: true, output: "" }, "the catalog's own name compiles");
+  await writeCustomizeBinding(root, "target");
+  assert.deepEqual(await tscTypecheck(root), { ok: true, output: "" }, "the declared slot binds");
 
-  await writeWorkspaceNaming(root, "ap");
+  await writeCustomizeBinding(root, "taregt");
   const typoed = await tscTypecheck(root);
-  assert.equal(typoed.ok, false, "a repo the catalog does not hold refuses before anything is built");
+  assert.equal(typoed.ok, false, "a slot the Machine does not declare refuses before anything is built");
   assert.match(typoed.output, /workflows\/work\.ts/, "and it names the file the author must fix");
-  assert.match(typoed.output, /"app"/, "quoting the catalog entry it should have been");
+  assert.match(typoed.output, /'taregt'/, "quoting the key it could not place");
 });

@@ -22,7 +22,7 @@
 # workflow module and pass `image: import.meta.resolve("./my-image")` to `workspace()`, and `j2 up`
 # finds it by walking the registered Machines. `image` also takes a registry REF (anything that is
 # not a `file:` URL) for an image you baked and host yourself, which j2 never builds. This instance
-# has `repos: []`, so `j2 up` builds nothing here until it has repos to work on.
+# builds it once a registered Machine composes a Sandbox (a `workspace()` with `repos`).
 
 FROM node:24-slim
 

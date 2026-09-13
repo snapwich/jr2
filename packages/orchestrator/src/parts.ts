@@ -1,7 +1,7 @@
-// The PARTS a Machine carries (ADR-0049): its Agents, and — on a `workspace()` wrapper — the
-// Sandbox Image the pod runs. A Machine carries everything it depends on and composes by invoke,
-// so what a deployment must know about a workflow is no longer a folder or a config block: it is
-// an attachment on the machine object plus a walk over it.
+// The PARTS a Machine carries (ADR-0049, ADR-0051): its Agents, and — on a `workspace()` wrapper
+// — the Sandbox Image the pod runs and the Repo Slots it attaches. A Machine carries everything it
+// depends on and composes by invoke, so what a deployment must know about a workflow is neither a
+// folder nor a config block: it is an attachment on the machine object plus a walk over it.
 //
 // Two halves, one file, because they are one idea:
 //
@@ -11,12 +11,16 @@
 //     LIVE actor's logic, never a build-time closure, so a `provide()` clone and a `customize()`
 //     retune both find the part the actor was actually invoked as. The image is therefore never
 //     persisted — the provisioning state re-reads it off the Machine on restore.
-//   - The WALK. Two callers, both at `j2 up` time (ADR-0018/0019/0031/0037): the custom-provider
-//     preflight probes the models the registered Machines actually name, the Instance Harness
-//     converges when any of them declares `workspace: "none"`, and every `file:` image context a
-//     Machine ships is built and content-tagged. Neither can read an invoke's `input` (it is a
-//     function — dials are not statically recoverable), and neither needs to: identity lives in
-//     the definition and the image is an option, and both are values ON the Machine.
+//   - The WALK. Its callers are the converge and the boot (ADR-0018/0019/0031/0037/0051): the
+//     custom-provider preflight probes the models the registered Machines actually name, the
+//     Instance Harness converges when any of them declares `workspace: "none"`, every `file:`
+//     image context a Machine ships is built and content-tagged, every BOUND Repo is known before
+//     a run can ask for it, an OPEN Repo Slot is refused before anything is built, and whether any
+//     registered Machine composes a Sandbox at all is the data-plane switch. None of these can read
+//     an invoke's `input` (it is a function — dials are not statically recoverable), and none
+//     needs to: identity lives in the definition, the image and the slots are options, and all are
+//     values ON the Machine. A per-run slot is a function too, and the walk reports nothing for
+//     it: which Repo it binds is the run's business, and the fence at attach is its check.
 //
 // The walk is STRUCTURAL, and it descends by the same two mechanisms composition uses:
 //
@@ -37,12 +41,95 @@ import { fileURLToPath } from "node:url";
 import type { AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
 import { isAgent, type AgentDefinition } from "./agent.ts";
 import { isImageContext } from "./images.ts";
+import { repoIdentity } from "./repo-identity.ts";
+
+// --- Repo Slots (ADR-0051) ---------------------------------------------------------------------
+// A `workspace()` names each Repo it attaches under a SLOT — the Machine's own word for it, the
+// key of the body's `workspace.repos` handles, and the directory under `/work`. The slot's VALUE
+// is one of three states, and the walk tells them apart without evaluating anything.
 
 /**
- * The static parts a `workspace()` wrapper carries (ADR-0049, ADR-0037): what the Sandbox is MADE
- * of. Both are image NAMES in ADR-0037's two shapes — a `file:` URL to a docker context the
- * Machine's module ships, or a registry ref — and both resolve to a concrete ref on the port's
- * side, which is what keeps the Machine cluster-agnostic.
+ * The open sentinel: this slot is a consumer's to bind, with `customize(machine, { repos })`.
+ * `Symbol.for`, so an Instance's own copy of this module and the CLI's walk agree on it — a
+ * packaged Machine may be built against one and walked by the other.
+ */
+export const open: unique symbol = Symbol.for("j2.repo.open");
+
+/** What a Repo Slot resolves to (CONTEXT.md "Binding"): the url, and the base the branch
+ * Worktree is cut from — absent, the Repo's own default branch. */
+export type Binding = { url: string; ref?: string };
+
+/**
+ * One Repo Slot's value: BOUND (a url, or `{ url, ref? }`), OPEN (the {@link open} sentinel —
+ * someone downstream binds it), or PER-RUN (a mapper over the wrapper's door, so a run input — a
+ * ticket field — decides). Bound and open are what `j2 up` can see; per-run is the run's business,
+ * fenced at attach by `git.credentials` (ADR-0051).
+ */
+export type RepoSlot<TInput = unknown> =
+  | typeof open
+  | string
+  | Binding
+  | ((args: { input: TInput }) => string | Binding);
+
+/** The three states, read off a slot's value. */
+export type RepoSlotState =
+  | { kind: "open" }
+  | { kind: "bound"; binding: Binding }
+  | { kind: "per-run"; mapper: (args: { input: unknown }) => string | Binding };
+
+/** Classify one slot's value. Assumes the value passed {@link assertRepoSlot}. */
+export function repoSlotState(value: RepoSlot<any>): RepoSlotState {
+  if (value === open) return { kind: "open" };
+  if (typeof value === "function") return { kind: "per-run", mapper: value };
+  return { kind: "bound", binding: typeof value === "string" ? { url: value } : value };
+}
+
+/** A slot key becomes a directory name under `/work`, so it is held to what a path segment can
+ * carry — and to what a prompt can name without quoting. */
+export const REPO_SLOT_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Refuse a malformed slot value BY NAME, at build time — the same derives-from-a-typo class the
+ * spec guard catches for the branch, one build earlier. A bound url is also parsed here: an
+ * identity the walk cannot derive (a relative path, an unknown scheme) is refused where the
+ * author wrote it rather than at the converge that walks it. `where` names the caller
+ * (`workspace()`, `customize()`).
+ */
+export function assertRepoSlot(where: string, slot: string, value: unknown): asserts value is RepoSlot<any> {
+  if (!REPO_SLOT_KEY.test(slot)) {
+    throw new Error(
+      `${where}: Repo Slot key ${JSON.stringify(slot)} is not a directory name — a slot becomes ` +
+        "`/work/<slot>`, so it must match /^[A-Za-z0-9][A-Za-z0-9._-]*$/ (ADR-0051).",
+    );
+  }
+  if (value === open || typeof value === "function") return;
+  const binding = typeof value === "string" ? { url: value } : (value as Partial<Binding> | null | undefined);
+  const bad = (what: string) =>
+    new Error(
+      `${where}: Repo Slot "${slot}" is ${what} — a slot is \`open\`, a url, \`{ url, ref? }\`, or a mapper ` +
+        "`({ input }) => url | { url, ref? }` over the door (ADR-0051).",
+    );
+  if (typeof binding !== "object" || binding === null) throw bad(`not a binding (got ${JSON.stringify(value)})`);
+  if (typeof binding.url !== "string" || !binding.url)
+    throw bad(`bound to an empty url (got ${JSON.stringify(value)})`);
+  if (binding.ref !== undefined && (typeof binding.ref !== "string" || !binding.ref))
+    throw bad(`bound with an empty ref (got ${JSON.stringify(value)})`);
+  try {
+    repoIdentity(binding.url);
+  } catch (err) {
+    throw new Error(
+      `${where}: Repo Slot "${slot}" binds ${JSON.stringify(binding.url)}, which names no Repo — ` +
+        `${err instanceof Error ? err.message : err} (ADR-0051).`,
+    );
+  }
+}
+
+/**
+ * The static parts a `workspace()` wrapper carries (ADR-0049, ADR-0037, ADR-0051): what the
+ * Sandbox is MADE of and which Repos it attaches. The images are NAMES in ADR-0037's two shapes — a
+ * `file:` URL to a docker context the Machine's module ships, or a registry ref — and both resolve
+ * to a concrete ref on the port's side, which is what keeps the Machine cluster-agnostic. The
+ * Repos are Slots, each bound, open, or per-run.
  *
  * They are options rather than `WorkspaceSpec` fields because they are STATIC: `j2 up` must find
  * them by walking the Machine, and a per-run spec is a function of run input that no walk can
@@ -53,6 +140,8 @@ export type SandboxParts = {
   image?: string;
   /** The User Container's image (ADR-0005). Absent → the pod has no third container. */
   user?: string;
+  /** The Repo Slots, in declaration order — the first is the body's `workdir` (ADR-0051). */
+  repos: Record<string, RepoSlot>;
 };
 
 const sandboxParts = new WeakMap<AnyStateMachine["config"], SandboxParts>();
@@ -62,15 +151,17 @@ export function attachSandboxParts(machine: AnyStateMachine, parts: SandboxParts
   sandboxParts.set(machine.config, parts);
 }
 
-/** The Sandbox parts a Machine carries — empty for any Machine that is not a `workspace()`
- * wrapper, which is the honest answer: it composes no Sandbox. */
+/** The Sandbox parts a Machine carries — no images and no slots for any Machine that is not a
+ * `workspace()` wrapper, which is the honest answer: it composes no Sandbox. */
 export function sandboxPartsOf(machine: AnyStateMachine | undefined): SandboxParts {
-  return (machine && sandboxParts.get(machine.config)) ?? {};
+  return (machine && sandboxParts.get(machine.config)) ?? { repos: {} };
 }
 
 /** Does this Machine COMPOSE a Sandbox — i.e. is it a `workspace()` wrapper? Distinct from
- * `sandboxPartsOf(m)` being empty: a wrapper that names neither image carries `{}` and still
- * owns the two seats, which is what `customize({ image })` retunes (ADR-0049). */
+ * `sandboxPartsOf(m)` naming no image: a wrapper that names neither image still owns the two
+ * seats, which is what `customize({ image })` retunes (ADR-0049) — and it always carries at least
+ * one Repo Slot (ADR-0051). Also the data-plane switch, read off the walk: an Instance needs
+ * Sandboxes exactly when a registered Machine composes one. */
 export function composesSandbox(machine: AnyStateMachine): boolean {
   return sandboxParts.has(machine.config);
 }
@@ -117,6 +208,17 @@ declare const wrapperBody: unique symbol;
  */
 export type J2Wrapper<TBody extends AnyStateMachine> = { readonly [wrapperBody]: TBody };
 
+declare const repoSlots: unique symbol;
+
+/**
+ * The TYPE half of a wrapper's Repo Slots (ADR-0051): a `workspace()`'s machine type SAYS which
+ * slots it declared, so `customize()`'s `repos` offers exactly those keys and a slot the Machine
+ * never declared is a compile error — read through `pool()`'s `worker` and `workspace()`'s
+ * `body` the way the image seats are. Phantom, like {@link J2Wrapper}: the property exists in the
+ * type alone, and the runtime reads the same record off `sandboxPartsOf`.
+ */
+export type J2Repos<TSlots extends string> = { readonly [repoSlots]: TSlots };
+
 /**
  * The actor-slot union a j2 wrapper declares, in xstate's own `ProvidedActor` shape. `workspace()`
  * and `pool()` name it in their return types beside {@link J2Wrapper}, so the body's own slots are
@@ -145,8 +247,29 @@ export type CarriedAgent = { name: string; definition: AgentDefinition };
  */
 export type CarriedImage = { url: string; dir: string; name: string };
 
-/** Everything the registered Machines carry that a converge must act on. */
-export type CarriedParts = { agents: CarriedAgent[]; images: CarriedImage[] };
+/**
+ * One Repo a Machine BINDS (ADR-0051) — the Binding as written, plus the identity every spelling
+ * of one repository normalizes to and the key the cluster addresses its cache by (repo-identity.ts).
+ * Deduped by identity: two Machines spelling one repository two ways are one Repo, and the first
+ * spelling in walk order is the one the CR is created with.
+ */
+export type CarriedRepo = { url: string; ref?: string; identity: string; key: string };
+
+/** A Repo Slot left OPEN on a registered Machine — what `j2 up` refuses, naming the Machine
+ * (its id) and the slot, before anything is built (ADR-0051). */
+export type OpenSlot = { machine: string; slot: string };
+
+/** Everything the registered Machines carry that a converge or a boot must act on. */
+export type CarriedParts = {
+  agents: CarriedAgent[];
+  images: CarriedImage[];
+  /** Every bound Repo, deduped by identity, in walk order. */
+  repos: CarriedRepo[];
+  /** Every open slot, in walk order — non-empty is a converge refusal. */
+  openSlots: OpenSlot[];
+  /** Whether any Machine reached, at any depth, composes a Sandbox — the data-plane switch. */
+  composesSandbox: boolean;
+};
 
 /** A machine actor, told apart from a promise/callback/observable one by having a state tree.
  * Structural on purpose: an Instance resolves its OWN `@j2/orchestrator`, so the CLI's walk and a
@@ -190,6 +313,9 @@ function canonical(value: unknown): string {
 export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const agents: CarriedAgent[] = [];
   const images: CarriedImage[] = [];
+  const repos: CarriedRepo[] = [];
+  const openSlots: OpenSlot[] = [];
+  let sandboxed = false;
   const seen = new Set<string>();
   // Cycle guard AND work saver: a Machine reached twice carries the same parts both times, and a
   // Machine that composes itself is legal (a recursive pool worker) but not walkable twice.
@@ -220,6 +346,23 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     images.push({ url, dir, name: basename(dir) });
   };
 
+  // Keyed on the IDENTITY, not the spelling (ADR-0051): `git@github.com:acme/app.git` and
+  // `https://github.com/acme/app` are one Repo and one cache, so they collapse to one entry — the
+  // first spelling wins, and it is the url the CR is created with. A per-run slot contributes
+  // nothing, and an open one is reported for the converge to refuse.
+  const collectRepos = (machine: AnyStateMachine, slots: Record<string, RepoSlot>): void => {
+    for (const [slot, value] of Object.entries(slots)) {
+      const state = repoSlotState(value);
+      if (state.kind === "open") openSlots.push({ machine: machine.id, slot });
+      if (state.kind !== "bound") continue;
+      const { identity, key } = repoIdentity(state.binding.url);
+      const dedupe = canonical(["repo", identity]);
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      repos.push({ ...state.binding, identity, key });
+    }
+  };
+
   const walkStates = (node: StateNode<any, any>, visit: (machine: AnyStateMachine) => void): void => {
     for (const machine of inlineMachines(node)) visit(machine);
     for (const child of Object.values(node.states as Record<string, StateNode<any, any>>)) walkStates(child, visit);
@@ -231,6 +374,10 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     const parts = sandboxPartsOf(machine);
     collectImage(parts.image);
     collectImage(parts.user);
+    if (composesSandbox(machine)) {
+      sandboxed = true;
+      collectRepos(machine, parts.repos);
+    }
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(name, logic.definition);
       else {
@@ -242,5 +389,5 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   };
 
   for (const machine of machines) walk(machine);
-  return { agents, images };
+  return { agents, images, repos, openSlots, composesSandbox: sandboxed };
 }

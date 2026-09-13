@@ -1,7 +1,8 @@
 // The MVP validation workflow: one run = one task prompt = one Workspace. Exists to exercise
-// every j2 mechanism end to end (Sandbox provision/attach off the RO `default/` volume, agent
-// turns, derived menus/accepts, Gate delivery, teardown-on-final) without jr.ts's Pool/Source/tk
-// surface — the workflow-shaped equivalent of a smoke test. Filename → workflow "task-with-review".
+// every j2 mechanism end to end (Sandbox provision/attach off the node's read-only Repo cache,
+// agent turns, derived menus/accepts, Gate delivery, teardown-on-final) without jr.ts's
+// Pool/Source/tk surface — the workflow-shaped equivalent of a smoke test. Filename → workflow
+// "task-with-review".
 //
 // Input: the `runInput` schema below IS the contract — declared once, served as JSON Schema at
 // `GET /workflows/task-with-review`, enforced at the door, and the source of every type here.
@@ -14,8 +15,7 @@
 
 import { assign } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, repoNames, workspace, type Workspaced } from "@j2/orchestrator";
-import config from "../j2.config.ts";
+import { agent, defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
 import { coder, reviewer } from "./_agents.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -26,9 +26,10 @@ import { coder, reviewer } from "./_agents.ts";
 
 const runInput = z.object({
   prompt: z.string().describe("The task for the coder, in prose."),
-  // The catalog itself, as an enum (ADR-0050) — so the Console's start form offers the instance's
-  // repos rather than a free-text box, and a bad name is refused at the door, not at the attach.
-  repo: z.enum(repoNames(config)).describe("Which repo from this instance's j2.config.ts catalog to work in."),
+  // This instance's own menu of repositories, as an enum of URLS (ADR-0051) — so the Console's
+  // start form offers them rather than a free-text box, and a url outside it is refused at the
+  // door. The url is the identity: there is no catalog and no name to look it up by.
+  repo: z.enum(["https://github.com/snapwich/obsidian-tasks.nvim.git"]).describe("Which repository to work in."),
   branch: z.string().describe("The branch to cut and work on."),
   baseRef: z.string().optional().describe("What the branch is cut from and reviewed against. Default: main."),
   reviewRounds: z
@@ -77,7 +78,7 @@ const requestChanges = defineEvent({
 // ASKED for, `workspace.branch` is the branch the attach actually made. The body reads
 // `workspace.branch`, always — it is the fact.
 
-type BodyCtx = Workspaced<RunInput> & {
+type BodyCtx = Workspaced<RunInput, "target"> & {
   rounds: number;
   reviewNotes?: string;
   /** Why the run is parked at humanReview — rides the gate's meta. */
@@ -88,7 +89,7 @@ type BodyCtx = Workspaced<RunInput> & {
 const body = j2Setup({
   types: {} as {
     context: BodyCtx;
-    input: Workspaced<RunInput>;
+    input: Workspaced<RunInput, "target">;
     output: { outcome: "approved" | "lost"; branch: string };
   },
   events: [requestReview, reviewVerdict, approve, requestChanges],
@@ -188,16 +189,15 @@ const body = j2Setup({
 
 // ---------------------------------------------------------------------------------------------
 // Workspace: the wrapper is this workflow's root, so its `input` is the run's door (ADR-0033) and
-// `spec`'s argument is typed by it — nothing here restates a shape. `input.repo` is already a
-// `RepoName` (the door is `z.enum(repoNames(config))`), so it drops straight into the spec: the
-// catalog types both ends, and a name the catalog does not hold never compiles (ADR-0050).
+// both mappers' arguments are typed by it — nothing here restates a shape. The one Repo Slot,
+// `target`, is PER-RUN (ADR-0051): a mapper over the door binds it from `input.repo`, so the body
+// works in `workspace.repos.target` whatever repository the run chose. The fence in
+// `j2.config.ts` is what admits the url at attach.
 
 export const machine = workspace(body, {
   input: runInput,
-  spec: ({ input }) => ({
-    repos: [{ name: input.repo, baseRef: input.baseRef ?? "main" }],
-    branch: input.branch,
-  }),
+  repos: { target: ({ input }) => ({ url: input.repo, ref: input.baseRef ?? "main" }) },
+  spec: ({ input }) => ({ branch: input.branch }),
 });
 
 // --- Prompts (personas live in the Agent definitions; these are per-turn task framings) ------

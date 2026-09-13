@@ -274,8 +274,36 @@ async function withCarriedImage(root: string, dir: string, dockerfile: string): 
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       `export const machine = workspace(body, {\n` +
       `  image: import.meta.resolve("./${dir}"),\n` +
-      `  spec: () => ({ repos: [{ name: "app" }], branch: "b" }),\n` +
+      `  repos: { app: "https://e.test/a.git" },\n` +
+      `  spec: () => ({ branch: "b" }),\n` +
       `});\n`,
+  );
+  return root;
+}
+
+/** A registered Workflow that COMPOSES a Sandbox — a `workspace()` with one bound Repo Slot
+ * (ADR-0051). This is the data-plane switch as `j2 up` reads it: nothing in `j2.config.ts` says
+ * "this instance has Workspaces" any more; the walk does. The url is what the ssh layer sees. */
+async function withWorkspace(root: string, url = "https://e.test/a.git"): Promise<string> {
+  await writeFile(
+    join(root, "workflows", "ws.ts"),
+    `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = j2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  return root;
+}
+
+/** A packaged `workspace()` whose one Repo Slot is left OPEN, registered as-is — what `j2 up`
+ * refuses, naming the `customize` line that binds it (ADR-0051). */
+async function withOpenSlot(root: string): Promise<string> {
+  await writeFile(
+    join(root, "workflows", "packaged.ts"),
+    `import { j2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = j2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) });\n`,
   );
   return root;
 }
@@ -373,8 +401,8 @@ test("the typecheck gate: a folder that does not compile converges nothing (ADR-
   // The FIRST layer, and a refusal rather than a warning: since ADR-0049 a Machine's Agent slots and
   // its composed Machines are typed, so a wrong name is a compile error here instead of an
   // invoke-time failure mid-run — but only if nothing is spent before the compiler answers. Repo
-  // names are typed here too, through the Register the instance's own config fills (ADR-0050);
-  // what the gate itself claims is only that `j2 up` runs the compiler and refuses on its answer.
+  // Slots are typed here too (ADR-0051), so a `customize()` of one the Machine never declared stops
+  // here; what the gate itself claims is only that `j2 up` runs the compiler and refuses on its answer.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const errors = "workflows/task.ts(9,5): error TS2353: Object literal may only specify known properties";
   const bad = mkWorld(root, { typecheck: async () => ({ ok: false, output: errors }) });
@@ -606,7 +634,7 @@ test("a registry pushes every layer; a non-kind context without one fails BEFORE
 test("the Deployment's image annotation makes a second converge spend zero docker; --force overrides it", async () => {
   const kit = await mkKit();
   const root = await withImage(
-    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)),
     "default",
   );
 
@@ -680,7 +708,7 @@ test("the Deployment's image annotation makes a second converge spend zero docke
 test("a silent record consults the host daemon: host-built refs skip their builds, never their delivery (ADR-0041)", async () => {
   const kit = await mkKit();
   const root = await withImage(
-    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)),
     "default",
   );
   const first = mkWorld(root, { kitDir: kit });
@@ -730,7 +758,7 @@ test("the cluster's schedulable nodes choose the platform set, and every built t
   // host and an arm64 image on another, and the wrong one arrived as an opaque rollout timeout.
   const kit = await mkKit();
   const root = await withImage(
-    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)),
     "default",
   );
   const w = mkWorld(root, { kitDir: kit });
@@ -816,10 +844,7 @@ test("a `file:` context the Machine carries is built and keyed by its content DI
   // own node_modules without either side holding a table.
   const kit = await mkKit();
   const root = await withCarriedImage(
-    await withImage(
-      await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
-      "default",
-    ),
+    await withImage(await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)), "default"),
     "toolchain",
     "FROM golang:1.23\nRUN echo hi\n",
   );
@@ -847,9 +872,7 @@ test("a `file:` context the Machine carries is built and keyed by its content DI
 
 test("a Machine that names a registry ref costs no build — deployed, never built (ADR-0037)", async () => {
   const kit = await mkKit();
-  const root = await mkInstance(
-    `export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`,
-  );
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   await writeFile(
     join(root, "workflows", "brought.ts"),
     `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
@@ -857,7 +880,8 @@ test("a Machine that names a registry ref costs no build — deployed, never bui
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       `export const machine = workspace(body, {\n` +
       `  image: "ghcr.io/acme/toolchain:2024-11",\n` +
-      `  spec: () => ({ repos: [{ name: "app" }], branch: "b" }),\n` +
+      `  repos: { app: "https://e.test/a.git" },\n` +
+      `  spec: () => ({ branch: "b" }),\n` +
       `});\n`,
   );
   const w = mkWorld(root, { kitDir: kit });
@@ -873,10 +897,7 @@ test("a mixed-arch node set is built once by buildx, which delivers by pushing",
   // `docker buildx build --push` IS the delivery — a manifest list cannot live in the daemon and
   // `kind load` cannot carry one — so nothing may push it a second time.
   const root = await withImage(
-    await mkInstance(
-      `export default { name: "m", registry: "reg.example.com/j2", repos: [{ name: "a", url: "https://e.test/a.git" }] };\n`,
-      "m",
-    ),
+    await withWorkspace(await mkInstance(`export default { name: "m", registry: "reg.example.com/j2" };\n`, "m")),
     "default",
   );
   const w = mkWorld(root);
@@ -927,10 +948,10 @@ test("a foreign-arch build is preflighted for binfmt — once, before any build 
 
 // --- Sandbox Images (ADR-0037) -----------------------------------------------------------------
 
-test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only with repos to work on", async () => {
+test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only when a Machine composes a Sandbox", async () => {
   const kit = await mkKit();
   const root = await withImage(
-    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)),
     "default",
     "FROM node:24-slim\nRUN apt-get install -y cargo\n",
   );
@@ -977,20 +998,72 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
   assert.equal(await up(["--yes", "--force"], declared.io), 0);
   assert.deepEqual(imagesOf(declared).sandboxUser, { default: "app" });
 
-  // No repos, no Sandbox Image build — said out loud, not skipped silently.
-  const norepos = await withImage(await mkInstance(`export default { name: "n" };\n`, "n"), "default");
-  const w2 = mkWorld(norepos, { kitDir: kit });
+  // No Machine composing a Sandbox, no Sandbox Image build — said out loud, not skipped silently
+  // (ADR-0051: the switch is the walk, not a config key).
+  const nosandbox = await withImage(await mkInstance(`export default { name: "n" };\n`, "n"), "default");
+  const w2 = mkWorld(nosandbox, { kitDir: kit });
   assert.equal(await up(["--yes"], w2.io), 0);
   assert.ok(!w2.built.some((b) => b.includes("j2-sandbox-")));
   assert.ok(!w2.built.some((b) => b.startsWith("extract ")));
-  assert.match(w2.err.join("\n"), /sandbox images: skipped \(no `repos`/);
+  assert.match(w2.err.join("\n"), /sandbox images: skipped \(no registered Machine composes a Sandbox\)/);
   assert.deepEqual(imagesOf(w2).sandbox, {});
 });
 
-test("live workspaces on an older image are reported, and nothing re-images them", async () => {
-  const root = await mkInstance(
-    `export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`,
+// --- the Repo Slots (ADR-0051): the walk's one refusal, and what the boot is handed ------------
+
+test("an OPEN Repo Slot on a registered Machine is refused after the gate and before anything else", async () => {
+  // The one converge-time check the compiler cannot make: a `workflows/` export has no type to
+  // hang it on. So it is the walk's, right after the typecheck — before ownership, before any
+  // build — and it names the Machine, the slot, and the `customize` line that binds it.
+  const root = await withOpenSlot(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(err, /refusing: workflow "packaged" \(machine "workspace"\) leaves Repo Slot "target" open/);
+  assert.match(err, /export const machine = customize\(workspace, \{ repos: \{ target: "<url>" \} \}\)/);
+  assert.match(err, /ADR-0051/);
+  assert.deepEqual(w.kube.applied, [], "not even the namespace");
+  assert.deepEqual(w.built, [], "no bundle, no image build");
+  assert.deepEqual(w.confirms, [], "and no first-contact ask for a folder that cannot deploy");
+});
+
+test("a bound Repo is narrated as the boot's to create; the token env vars git.credentials names ride the Secret", async () => {
+  // `j2 up` clones nothing and mounts no source volume (ADR-0051): the Orchestrator creates a Repo
+  // resource per bound identity at boot and the cache agent clones on first need. What the
+  // converge does hold is the credential: every env var an entry names, when set, lands in the
+  // Orchestrator's Secret — and nothing an entry does not name.
+  const root = await withWorkspace(
+    await mkInstance(
+      `export default { name: "myinst", git: { credentials: [` +
+        `{ match: "github.com/acme/", token: "GH_TOKEN" }, { match: "*", token: "J2_GIT_TOKEN" }, { match: "gitlab.com/", token: "GL_TOKEN" }` +
+        `] } };\n`,
+    ),
   );
+  const w = mkWorld(root, { env: { GH_TOKEN: "gh-secret", J2_GIT_TOKEN: "wild-secret", STRAY: "no" } });
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join("\n"), /repos: 1 bound Repo\(s\) — the Orchestrator creates their Repo resources at boot/);
+  assert.match(w.err.join("\n"), /cache agent clones on first need/);
+
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-instance")!;
+  assert.equal(instance.stringData.GH_TOKEN, "gh-secret");
+  assert.equal(instance.stringData.J2_GIT_TOKEN, "wild-secret");
+  assert.ok(!("GL_TOKEN" in instance.stringData), "an unset var materializes nothing");
+  assert.ok(!("STRAY" in instance.stringData), "and an env var no entry names never enters the Secret");
+  // No source PVC, no deploy-key mount: the Orchestrator neither clones nor holds a key.
+  assert.ok(!items.some((i) => i.kind === "PersistentVolumeClaim" && i.metadata.name === "j2-repos"));
+  const orch = items.find((i) => i.kind === "Deployment" && i.metadata.name === "j2-orchestrator")!;
+  const podSpec = orch.spec.template.spec;
+  assert.deepEqual(
+    podSpec.volumes.map((v: { name: string }) => v.name),
+    ["state", "images"],
+  );
+  assert.ok(!JSON.stringify(podSpec.containers[0].env).includes("J2_REPOS_DIR"));
+});
+
+test("live workspaces on an older image are reported, and nothing re-images them", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   const w = mkWorld(root);
   w.kube.sandboxes = [
     { metadata: { name: "ws-1" }, spec: { image: "j2-sandbox-myinst-default:0ldc0ntent" } },
@@ -1247,7 +1320,13 @@ test("provider preflight: configured but no carried Agent names its models → s
 
 // --- git over ssh: the key source is the user's choice (ADR-0047) --------------------------------
 
-const SSH_CONFIG = `export default { name: "myinst", repos: [{ name: "app", url: "git@github.com:o/app" }] };\n`;
+/** The scaffold's wildcard, minus the token: every ssh url's key is the `j2-git-ssh` Secret. */
+const SSH_CONFIG = `export default { name: "myinst", git: { credentials: [{ match: "*", sshKey: "j2-git-ssh" }] } };\n`;
+/** The bound ssh url the walk finds — what the ssh layer asks about, by url (ADR-0051). */
+const SSH_URL = "git@github.com:o/app";
+/** An instance whose one registered Machine binds `SSH_URL`. */
+const sshInstance = async (name?: string): Promise<string> =>
+  withWorkspace(await mkInstance(SSH_CONFIG, name), SSH_URL);
 /** A private key as its file holds it — the PEM header is what makes a `~/.ssh` file a candidate. */
 const PRIVATE_KEY = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk=\n-----END OPENSSH PRIVATE KEY-----\n";
 const PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockMockMockMockMockMockMockMockMock user@host";
@@ -1272,7 +1351,7 @@ function gitSshSecret(w: World): { stringData: Record<string, string> } | undefi
 
 test("git ssh source: generate — the menu leads with it, the key prints, and up pauses to register", async () => {
   const { home } = await mkSshHome();
-  const w = mkWorld(await mkInstance(SSH_CONFIG), { choose: 0, env: { HOME: home } });
+  const w = mkWorld(await sshInstance(), { choose: 0, env: { HOME: home } });
   const pauses: string[] = [];
   w.io.prompt = async (q) => {
     pauses.push(q);
@@ -1285,8 +1364,10 @@ test("git ssh source: generate — the menu leads with it, the key prints, and u
   assert.equal(w.choices.length, 1, "asked exactly once");
   assert.match(w.choices[0]![0]!, /generate/, "the recommended source is offered first");
   assert.match(w.err.join("\n"), /readable by anyone with/, "the Secret's readability is warned at choice time");
-  assert.equal(gitSshSecret(w)!.stringData.key, PRIVATE_KEY);
-  assert.equal(gitSshSecret(w)!.stringData["key.pub"], `${PUBLIC_KEY}\n`);
+  // Flux's key names (ADR-0051), so a Flux or Argo user's existing Secret serves unchanged.
+  assert.equal(gitSshSecret(w)!.stringData.identity, PRIVATE_KEY);
+  assert.equal(gitSshSecret(w)!.stringData["identity.pub"], `${PUBLIC_KEY}\n`);
+  assert.ok(!("key" in gitSshSecret(w)!.stringData), "never the retired `key`");
   assert.equal(pauses.length, 1, "the converge waits at the moment of truth");
   assert.match(pauses[0]!, /register this public key.*press enter/i);
 
@@ -1294,26 +1375,51 @@ test("git ssh source: generate — the menu leads with it, the key prints, and u
   const tail = w.err.join("");
   const notice = tail.slice(tail.indexOf("converged —"));
   assert.match(notice, /ssh-ed25519 AAAAC3/, "the public key is repeated last");
-  assert.match(notice, /app will not sync/);
-  assert.match(notice, /reconcile retries on its own/);
+  assert.match(notice, /generated into "j2-git-ssh"/, "…and the Secret it landed in");
+  assert.match(notice, /git@github\.com:o\/app will not sync/, "the url, never a name");
+  assert.match(notice, /cache agent retries on its own/);
 });
 
-test("git ssh source: a url-string repo is seen as ssh under its derived name (ADR-0004 shorthand)", async () => {
+test("git ssh: the Secret is the matched entry's `sshKey`; an ssh url no entry keys is warned, not asked", async () => {
+  // Matched by prefix on the identity (ADR-0051): the entry decides the Secret NAME, so two entries
+  // can hold two deploy keys and the ask is per Secret. An ssh url whose entry names no `sshKey`
+  // — or that matches nothing — has no key to ask for: its cache clone fails unless the host allows
+  // anonymous ssh, and the fix is a config line, so it is said once and the converge proceeds.
   const { home } = await mkSshHome();
-  const config = `export default { name: "myinst", repos: ["git@github.com:snapwich/richsnapp-new.git"] };\n`;
-  const w = mkWorld(await mkInstance(config), { choose: 0, env: { HOME: home } });
+  const config =
+    `export default { name: "myinst", git: { credentials: [` +
+    `{ match: "github.com/o/", sshKey: "acme-deploy" }, { match: "github.com/x/" }` +
+    `] } };\n`;
+  const root = await withWorkspace(await mkInstance(config), SSH_URL);
+  await writeFile(
+    join(root, "workflows", "other.ts"),
+    `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = j2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { keyless: "git@github.com:x/y.git", stranger: "ssh://git@gitlab.com/z/z.git" }, spec: () => ({ branch: "b" }) });\n`,
+  );
+  const w = mkWorld(root, { choose: 0, env: { HOME: home } });
   w.io.prompt = async () => "";
   w.io.sshKeygen = async () => ({ privateKey: PRIVATE_KEY, publicKey: `${PUBLIC_KEY}\n` });
 
   assert.equal(await up([], w.io), 0);
-  assert.equal(w.choices.length, 1, "the string entry is an ssh repo — the key source is asked for");
-  assert.match(w.err.join("\n"), /repos richsnapp-new use ssh urls/, "named after the repository, minus .git");
-  assert.ok(gitSshSecret(w), "the Secret is applied for it");
+  assert.equal(w.choices.length, 1, "asked once — for the one Secret an entry names");
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /git@github\.com:o\/app bind over ssh and the "acme-deploy" Secret their git\.credentials entry names does not exist/,
+  );
+  const applied = w.kube.applied.find((m) => m.includes(`"name":"acme-deploy"`));
+  assert.ok(applied, "the Secret is applied under the entry's name");
+  assert.equal(gitSshSecret(w), undefined, "and not under the scaffold's default");
+  assert.match(err, /git@github\.com:x\/y\.git is an ssh url and no git\.credentials entry names a key for it/);
+  assert.match(err, /ssh:\/\/git@gitlab\.com\/z\/z\.git is an ssh url and no git\.credentials entry names a key/);
+  assert.match(err, /anonymous ssh/);
 });
 
 test("git ssh source: a local key — discovered by content, applied, and only its fingerprint printed", async () => {
   const { home, keyPath } = await mkSshHome();
-  const w = mkWorld(await mkInstance(SSH_CONFIG), {
+  const w = mkWorld(await sshInstance(), {
     env: { HOME: home },
     choose: (options) => options.findIndex((o) => o.includes("id_ed25519")),
   });
@@ -1333,7 +1439,7 @@ test("git ssh source: a local key — discovered by content, applied, and only i
     !offered.some((o) => /known_hosts|config|\.pub/.test(o)),
     "only private keys are candidates — not known_hosts, config, or the public halves",
   );
-  assert.equal(gitSshSecret(w)!.stringData.key, PRIVATE_KEY);
+  assert.equal(gitSshSecret(w)!.stringData.identity, PRIVATE_KEY);
   const err = w.err.join("\n");
   assert.match(err, /SHA256:/, "the fingerprint identifies the key");
   assert.ok(!err.includes("AAAAC3"), "key material is never printed");
@@ -1344,16 +1450,16 @@ test("git ssh source: a local key — discovered by content, applied, and only i
 test("git ssh source: another local key by typed path, and a key pasted with echo off", async () => {
   const { home, keyPath } = await mkSshHome();
 
-  const typed = mkWorld(await mkInstance(SSH_CONFIG, "typed"), {
+  const typed = mkWorld(await sshInstance("typed"), {
     env: { HOME: home },
     choose: (options) => options.findIndex((o) => /type a path/.test(o)),
   });
   typed.io.prompt = async () => keyPath;
   typed.io.sshPublicKey = async () => `${PUBLIC_KEY}\n`;
   assert.equal(await up([], typed.io), 0);
-  assert.equal(gitSshSecret(typed)!.stringData.key, PRIVATE_KEY);
+  assert.equal(gitSshSecret(typed)!.stringData.identity, PRIVATE_KEY);
 
-  const pasted = mkWorld(await mkInstance(SSH_CONFIG, "pasted"), {
+  const pasted = mkWorld(await sshInstance("pasted"), {
     env: { HOME: home },
     choose: (options) => options.findIndex((o) => /paste/.test(o)),
   });
@@ -1367,12 +1473,12 @@ test("git ssh source: another local key by typed path, and a key pasted with ech
   assert.equal(await up([], pasted.io), 0);
   assert.equal(hidden.length, 1);
   assert.match(hidden[0]!, /hidden/);
-  assert.match(gitSshSecret(pasted)!.stringData.key!, /cGFzdGVk/);
+  assert.match(gitSshSecret(pasted)!.stringData.identity!, /cGFzdGVk/);
 });
 
 test("git ssh: --yes generates — it never asks, never pauses, and still ends with the notice", async () => {
   const { home } = await mkSshHome();
-  const w = mkWorld(await mkInstance(SSH_CONFIG), {
+  const w = mkWorld(await sshInstance(), {
     env: { HOME: home },
     // A menu answer that would pick a personal key, to prove --yes never reaches the menu.
     choose: (options) => options.findIndex((o) => o.includes("id_ed25519")),
@@ -1383,13 +1489,13 @@ test("git ssh: --yes generates — it never asks, never pauses, and still ends w
 
   assert.equal(await up(["--yes"], w.io), 0);
   assert.equal(w.choices.length, 0, "non-interactive means generate — the dangerous option is never a default");
-  assert.equal(gitSshSecret(w)!.stringData.key, PRIVATE_KEY);
+  assert.equal(gitSshSecret(w)!.stringData.identity, PRIVATE_KEY);
   assert.match(w.err.join("\n"), /will not sync/, "the closing notice does not depend on the pause");
 });
 
 test("git ssh: a passphrase-protected key is refused BY NAME, before anything is applied", async () => {
   const { home } = await mkSshHome();
-  const w = mkWorld(await mkInstance(SSH_CONFIG), {
+  const w = mkWorld(await sshInstance(), {
     env: { HOME: home },
     choose: (options) => options.findIndex((o) => o.includes("id_ed25519")),
   });
@@ -1402,12 +1508,12 @@ test("git ssh: a passphrase-protected key is refused BY NAME, before anything is
 
 test("git ssh: declining every source bails; an existing Secret is never offered against", async () => {
   const { home } = await mkSshHome();
-  const decline = mkWorld(await mkInstance(SSH_CONFIG, "decl"), { env: { HOME: home } }); // → none of these
+  const decline = mkWorld(await sshInstance("decl"), { env: { HOME: home } }); // → none of these
   decline.io.sshKeygen = async () => assert.fail("declined — no key may be generated");
   await assert.rejects(() => up([], decline.io), /j2-git-ssh/);
   assert.equal(gitSshSecret(decline), undefined);
 
-  const has = mkWorld(await mkInstance(SSH_CONFIG, "has"));
+  const has = mkWorld(await sshInstance("has"));
   has.kube.set("myinst", "secret", "j2-git-ssh", { metadata: { name: "j2-git-ssh" } });
   has.io.sshKeygen = async () => assert.fail("Secret exists — no key may be generated");
   assert.equal(await up(["--yes"], has.io), 0);
@@ -1557,7 +1663,7 @@ test("every layer j2 builds is stamped with who owns it", async () => {
   // Sandbox Image builds all pass through here.
   const kit = await mkKit();
   const root = await withImage(
-    await mkInstance(`export default { name: "myinst", repos: [{ name: "app", url: "https://e.test/a.git" }] };\n`),
+    await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`)),
     "default",
   );
   const w = mkWorld(root, { kitDir: kit });

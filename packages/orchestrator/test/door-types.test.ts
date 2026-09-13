@@ -50,25 +50,39 @@ const outputting = setup({
   output: () => ({ outcome: "approved" as const }),
 });
 
-const specOf = (input: Door): WorkspaceSpec => ({
-  repos: [{ name: input.repo, baseRef: "main" }],
-  branch: input.branch,
-});
+const specOf = (input: Door): WorkspaceSpec => ({ branch: input.branch });
+/** Every wrapper below attaches one bound slot: these claims are about the DOOR, and a `workspace()`
+ * always declares at least one Repo Slot (ADR-0051). */
+const repos = { app: "https://example.test/app.git" } as const;
 
 // --- 1/2: the door constrains the body, in ONE direction ---------------------------------------
 
-const wrapped = workspace(exact, { input: door, spec: ({ input }) => specOf(input) });
+const wrapped = workspace(exact, { input: door, repos, spec: ({ input }) => specOf(input) });
 // Requiring a SUBSET is safe: the wrapper hands it the door plus the handles, a superset of what
 // it asked for. This is why the check is assignability and not equality.
-void workspace(needsLess, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(needsLess, { input: door, repos, spec: ({ input }) => specOf(input) });
 // A body that never reads the handles is the same case — it is simply fed more than it declared.
-void workspace(ignoresHandles, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(ignoresHandles, { input: door, repos, spec: ({ input }) => specOf(input) });
 // @ts-expect-error the body demands `reason`, which nothing at this door ever provides — rejected
 // with the guard's named key ("the body's declared input must accept the door plus the injected
 // handles"). This is the claim the whole formulation exists to make.
-void workspace(needsMore, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(needsMore, { input: door, repos, spec: ({ input }) => specOf(input) });
 // @ts-expect-error no overlap at all, rejected the same way
-void workspace(unrelated, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(unrelated, { input: door, repos, spec: ({ input }) => specOf(input) });
+
+// The handles are keyed by the wrapper's DECLARED slots (ADR-0051), so the same check holds a body
+// to the slots it will actually be handed: demanding a slot the wrapper never declared is refused,
+// demanding the declared one — or an index signature over all of them — is fine.
+const wantsApp = bodyTakingInput<Workspaced<Door, "app">>();
+const wantsDocs = bodyTakingInput<Workspaced<Door, "app" | "docs">>();
+void workspace(wantsApp, { input: door, repos, spec: ({ input }) => specOf(input) });
+void workspace(wantsApp, {
+  input: door,
+  repos: { app: "https://a.test/a.git", docs: "https://a.test/d.git" },
+  spec: ({ input }) => specOf(input),
+});
+// @ts-expect-error `docs` is a slot this wrapper never declared — the body would read a path that does not exist
+void workspace(wantsDocs, { input: door, repos, spec: ({ input }) => specOf(input) });
 
 // --- 3: the handles are the wrapper's to inject, nobody else's ---------------------------------
 
@@ -85,6 +99,7 @@ void fromOutside;
 
 void workspace(exact, {
   input: door,
+  repos,
   spec: ({ input }) => {
     const repo: string = input.repo; // inferred from the schema; no annotation anywhere
     void repo;
@@ -99,7 +114,7 @@ void workspace(exact, {
 /** True only when A and B are the same type, both ways — assignability would let `any` pass. */
 type Eq<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 
-const withOutput = workspace(outputting, { input: door, spec: ({ input }) => specOf(input) });
+const withOutput = workspace(outputting, { input: door, repos, spec: ({ input }) => specOf(input) });
 const doorIsTheInput: Eq<InputFrom<typeof wrapped>, Door> = true;
 const bodyOutputIsTheOutput: Eq<OutputFrom<typeof withOutput>, { outcome: "approved" }> = true;
 
@@ -134,10 +149,11 @@ void setup({ actors: { work: wrapped } }).createMachine({
 // --- 7: no door declared → `unknown`, not `any` -------------------------------------------------
 
 const permissive = workspace(ignoresHandles, {
+  repos,
   spec: ({ input }) => {
     // @ts-expect-error nothing is known about what starts this wrapper; the mapper must narrow
     void input.repo;
-    return { repos: [{ name: "app", baseRef: "main" }], branch: "feat" };
+    return { branch: "feat" };
   },
 });
 const permissiveDoorIsUnknown: Eq<InputFrom<typeof permissive>, unknown> = true;
@@ -146,6 +162,7 @@ const permissiveDoorIsUnknown: Eq<InputFrom<typeof permissive>, unknown> = true;
 // it is fed by annotating the mapper — which types the wrapper's input too, without claiming a
 // door that nothing serves or validates.
 const itemFed = workspace(ignoresHandles, {
+  repos,
   spec: ({ input }: { input: { ticket: Door } }) => specOf(input.ticket),
 });
 const annotatedInputFlows: Eq<InputFrom<typeof itemFed>, { ticket: Door }> = true;
@@ -158,18 +175,18 @@ const annotatedInputFlows: Eq<InputFrom<typeof itemFed>, { ticket: Door }> = tru
 // workflows do) must NOT be told to widen its door: the field is host-supplied, never sent, never
 // served (ADR-0033). So the guard adds those keys to what it counts as PROVIDED.
 const wantsHostInjection = bodyTakingInput<Workspaced<Door> & HostInjectedInput>();
-void workspace(wantsHostInjection, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(wantsHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
 // Exactly those keys and no more: one extra field beside them is still rejected, so the carve-out
 // is not a hole in claim 1.
 const wantsMoreThanHostInjection = bodyTakingInput<Workspaced<Door> & HostInjectedInput & { reason: string }>();
 // @ts-expect-error `reason` is nobody's to inject — neither the door, the handles, nor the host
-void workspace(wantsMoreThanHostInjection, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(wantsMoreThanHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
 // And the keys are still TYPED. Widening the provided side is what buys this: SUBTRACTING them
 // from what the body demands (`Omit<InputFrom<TBody>, keyof HostInjectedInput>`) would drop the
 // wrong declaration along with the key, and admit this.
 const mistypesHostInjection = bodyTakingInput<Workspaced<Door> & { instanceId: number }>();
 // @ts-expect-error the host injects an Instance ID string; a body asking for a number never gets one
-void workspace(mistypesHostInjection, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(mistypesHostInjection, { input: door, repos, spec: ({ input }) => specOf(input) });
 
 // A UNION input is checked member-by-member, for the same reason. Subtracting keys compares
 // against a union's SHARED keys only, so `reason`/`other` would vanish from the check and every
@@ -178,10 +195,10 @@ const unionDemandsMore = bodyTakingInput<
   Workspaced<Door & { reason: string }> | Workspaced<Door & { other: string }>
 >();
 // @ts-expect-error no member of the union is satisfied by the door plus the handles
-void workspace(unionDemandsMore, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(unionDemandsMore, { input: door, repos, spec: ({ input }) => specOf(input) });
 // A union whose members are each satisfied is still fine — one direction, as ever.
 const unionNeedsLess = bodyTakingInput<Workspaced<{ repo: string }> | Workspaced<Door>>();
-void workspace(unionNeedsLess, { input: door, spec: ({ input }) => specOf(input) });
+void workspace(unionNeedsLess, { input: door, repos, spec: ({ input }) => specOf(input) });
 
 test("the door's type-level claims are the compiler's; this run pins the runtime half", () => {
   assert.equal(inputSchemaOf(wrapped), door, "the declared door rides the WRAPPER, not the body");

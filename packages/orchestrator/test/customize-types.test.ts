@@ -16,7 +16,10 @@
 //      the wrapper's MARKER, so a slot an author spelled `body` is an ordinary child;
 //   4. an override is a PARTIAL definition: `{ model }` alone is enough, an unknown field is not;
 //   5. the result is the same Machine type, so a customized Machine goes wherever the original
-//      did — invoked as a child, with its door still checked.
+//      did — invoked as a child, with its door still checked;
+//   6. `repos` offers exactly the Repo Slots the reached `workspace()` declared (ADR-0051), in
+//      any of the three forms, through a wrapper chain — and nothing on a Machine that composes
+//      no Sandbox.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -25,6 +28,7 @@ import { z } from "zod";
 import { defineEvent } from "@j2/agent-protocol";
 import { isAgent } from "../src/agent.ts";
 import { customize } from "../src/customize.ts";
+import { open } from "../src/parts.ts";
 import { agent } from "../src/harness-client.ts";
 import { pool, source } from "../src/pool.ts";
 import { j2Setup } from "../src/setup.ts";
@@ -97,7 +101,8 @@ const body = j2Setup({
 
 const wrapped = workspace(body, {
   input: door,
-  spec: ({ input }) => ({ repos: [{ name: input.topic, baseRef: "main" }], branch: "feat" }),
+  repos: { target: open, docs: "https://example.test/handbook.git" },
+  spec: () => ({ branch: "feat" }),
 });
 
 // The body's Agent, reached through the wrapper — the consumer never writes `body` and never has
@@ -176,6 +181,28 @@ void setup({ actors: { deep: customize(wrapped, { agents: { coder: { model: opus
   },
 });
 
+// --- 6: the Repo Slots the reached workspace() declared (ADR-0051) --------------------------------
+
+// Through the wrapper's own type, and through a pool of it: the slots are the workspace()'s, read
+// the way its Agents are read — by the marker, never by a slot's spelling.
+void customize(wrapped, { repos: { target: "git@github.com:ourorg/app.git" } });
+void customize(wrapped, { repos: { target: { url: "git@github.com:ourorg/app.git", ref: "main" } } });
+void customize(pooled, { repos: { target: "git@github.com:ourorg/app.git", docs: open } });
+// A mapper over the WRAPPER's door — `input` is the door's parsed type, so a consumer can bind a
+// slot from run input without restating the shape.
+void customize(wrapped, { repos: { target: ({ input }) => `https://example.test/${input.topic}.git` } });
+
+function refusedRepos(): void {
+  // @ts-expect-error `taregt` is a slot this Machine never declared — the body would have no handle for it
+  void customize(wrapped, { repos: { taregt: "git@github.com:ourorg/app.git" } });
+  // @ts-expect-error the mapper reads the DOOR: `subject` is not on it
+  void customize(wrapped, { repos: { target: ({ input }) => input.subject } });
+  // @ts-expect-error a Machine composing no Sandbox declares no slots — `never`, not `{}`
+  void customize(research, { repos: { target: "git@github.com:ourorg/app.git" } });
+  // @ts-expect-error a binding is one of the three forms; a number is none of them
+  void customize(wrapped, { repos: { target: 42 } });
+}
+
 test("customize()'s type-level claims are the compiler's; this run pins the runtime half", () => {
   // A retune is definition-level and total: what comes back carries the override layered over the
   // stock definition, whatever the type says about the keys.
@@ -187,8 +214,13 @@ test("customize()'s type-level claims are the compiler's; this run pins the runt
   // Declared for the compiler, never called — naming them here is what keeps them from reading as
   // dead code (their `@ts-expect-error` lines ARE the assertions).
   assert.ok(
-    [refusedAgents, refusedChildren, refusedThroughTheWrapper, refusedThroughANamesake, refusedOverrides].every(
-      (f) => !!f,
-    ),
+    [
+      refusedAgents,
+      refusedChildren,
+      refusedThroughTheWrapper,
+      refusedThroughANamesake,
+      refusedOverrides,
+      refusedRepos,
+    ].every((f) => !!f),
   );
 });

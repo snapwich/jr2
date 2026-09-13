@@ -1,19 +1,21 @@
 // `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
-// typecheck → ownership → image resolution → operator → kit images → instance image → the Machine walk →
-// Sandbox Images → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance Harness
-// (ADR-0031: converged by convention when a carried definition declares `workspace: "none"`,
-// deleted when none does) → a report of live workspaces still on an older image. Repos reconcile onto the
-// in-cluster source volume at orchestrator boot (ADR-0004); a configured custom provider is
-// preflighted from inside the cluster. ssh repos ask where their key comes from (ADR-0047), and a
+// typecheck → the Machine walk → ownership → image resolution → operator → kit images → instance
+// image → Sandbox Images → Secret (+ preflight of referenced Secrets) → apply + rollout → Instance
+// Harness (ADR-0031: converged by convention when a carried definition declares `workspace:
+// "none"`, deleted when none does) → a report of live workspaces still on an older image. The
+// Orchestrator creates a Repo resource per Repo the walk found bound, at boot, and the cache agent
+// clones it onto a node on first need (ADR-0051); a configured custom provider is preflighted from
+// inside the cluster. A bound ssh url asks where its deploy key comes from (ADR-0047), and a
 // converge that GENERATED one ends by saying so — the key is dead until a human registers it.
 //
-// The typecheck is FIRST and is a gate (ADR-0050): a Machine names its Agents and its composed
-// Machines by string, and since ADR-0049 those strings are typed, so a wrong name is a compile
-// error rather than an invoke-time failure mid-run. Repo names are typed too, through the Register
-// this instance's `j2.config.ts` fills, so a `workspace()` naming a repo the catalog does not hold
-// stops here as well. Nothing is built, and nothing on the cluster is touched, before the compiler
-// has agreed the folder is coherent.
+// The typecheck is FIRST and is a gate (ADR-0050): a Machine names its Agents, its composed
+// Machines, and its Repo Slots by string, and since ADR-0049 those strings are typed, so a wrong
+// name is a compile error rather than an invoke-time failure mid-run. The walk comes SECOND and is
+// the one converge-time refusal the compiler cannot make (ADR-0051): a registered Machine whose
+// Repo Slot is still open has nothing bound where the run would need a url, and a `workflows/`
+// export has no type to hang that on. Nothing is built, and nothing on the cluster is touched,
+// before the compiler has agreed the folder is coherent and every slot is bound.
 //
 // Images (ADR-0038, as amended by ADR-0045): `j2 up` builds every image it deploys, and every tag is
 // a content address of (its own inputs × the platform set it was built for) — `<hash>-<arch>`, with
@@ -49,14 +51,17 @@ import { parseArgs } from "node:util";
 import {
   defaultImageContext,
   imageContextDigest,
+  isSshUrl,
   loadConfig,
   loadWorkflows,
+  matchCredential,
   partsOf,
   sandboxToken,
   type CarriedAgent,
   type CarriedImage,
+  type CarriedRepo,
   type ImageRefs,
-  type InstanceConfig,
+  type J2Config,
 } from "@j2/orchestrator";
 import {
   assertEmulation,
@@ -81,7 +86,6 @@ import {
 import {
   ANNOTATION_IMAGES,
   compareVersions,
-  GIT_SSH_SECRET,
   INSTANCE_HARNESS_SERVICE,
   instanceHarnessObjects,
   instanceObjects,
@@ -135,12 +139,10 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- typecheck (ADR-0050): the compiler agrees the folder is coherent, before anything is spent -
   // A REFUSAL, not a warning, and it comes before the namespace apply as well as before the builds:
-  // the names a Machine carries (an Agent slot, a composed Machine, a `customize()` of either) are
-  // typed since ADR-0049, so the answer here is the same answer the author's editor gives — and a
-  // converge that shipped a Machine the compiler rejects would surface it as an invoke-time failure
-  // mid-run, minutes and three image builds later. Repo names join them here (ADR-0050): the
-  // Register the config fills types `WorkspaceSpec.repos[].name`, so a typo is a compile error —
-  // and the port's refusal at attach stays the second check, for the Machine compiled elsewhere.
+  // the names a Machine carries (an Agent slot, a composed Machine, a Repo Slot, a `customize()` of
+  // any of them) are typed since ADR-0049/0051, so the answer here is the same answer the author's
+  // editor gives — and a converge that shipped a Machine the compiler rejects would surface it as
+  // an invoke-time failure mid-run, minutes and three image builds later.
   activity(io, "typecheck: tsc --noEmit (the instance's own compiler)");
   const checked = await (io.typecheck ?? tscTypecheck)(root);
   if (!checked.ok) {
@@ -148,6 +150,33 @@ export async function up(args: string[], io: Io): Promise<number> {
     for (const line of checked.output.split("\n")) activity(io, `  ${line}`);
     return 1;
   }
+
+  // --- the Machine walk (ADR-0049, ADR-0051) -----------------------------------------------------
+  // A Machine carries its parts, so this converge LOADS the instance's registered Workflows — the
+  // same discovery and module contract the Orchestrator boots with — and walks them for everything
+  // the later layers need: the Agent definitions whose models are preflighted (ADR-0018), any
+  // `workspace: "none"`, which converges the Instance Harness (ADR-0031), every `file:` docker
+  // context a `workspace()` names, which is built below (ADR-0037), every bound Repo, whose ssh
+  // key is asked for here and whose resource the Orchestrator creates at boot (ADR-0051), and
+  // whether any Machine composes a Sandbox at all — the data-plane switch. It runs right after the
+  // gate and before ownership because it holds the one REFUSAL the compiler cannot make: a Repo
+  // Slot left open on a registered Machine. Nothing about Agents is published, because the
+  // definition rides each Turn.
+  const workflows = await loadWorkflows(root);
+  const carried = partsOf(workflows.map((w) => w.machine));
+  const { agents, images: contexts } = carried;
+  for (const w of workflows) {
+    for (const { machine, slot } of partsOf([w.machine]).openSlots) {
+      activity(
+        io,
+        `refusing: workflow "${w.name}" (machine "${machine}") leaves Repo Slot "${slot}" open — bind it where the ` +
+          `Machine is registered: export const machine = customize(${machine}, { repos: { ${slot}: "<url>" } })  (ADR-0051)`,
+      );
+      return 1;
+    }
+  }
+  const agentNames = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
+  activity(io, `agents: ${agentNames} (carried by ${workflows.length} workflow machine(s))`);
 
   // --- ownership: the cluster is the record (ADR-0019) -------------------------------------------
   const ns = await kube.getJson({ kind: "namespace", name: namespace, ...ctx });
@@ -426,24 +455,11 @@ export async function up(args: string[], io: Io): Promise<number> {
     await staged.dispose();
   }
 
-  // --- the Machine walk (ADR-0049) ---------------------------------------------------------------
-  // A Machine carries its parts, so this converge LOADS the instance's registered Workflows — the
-  // same discovery and module contract the Orchestrator boots with — and walks them for everything
-  // three later layers need: the Agent definitions whose models are preflighted (ADR-0018), any
-  // `workspace: "none"`, which converges the Instance Harness (ADR-0031), and every `file:` docker
-  // context a `workspace()` names, which is built right below (ADR-0037). It runs BEFORE the image
-  // builds because it is what says which images there are; nothing about Agents is published,
-  // because the definition rides each Turn.
-  const workflows = await loadWorkflows(root);
-  const { agents, images: contexts } = partsOf(workflows.map((w) => w.machine));
-  const carried = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
-  activity(io, `agents: ${carried} (carried by ${workflows.length} workflow machine(s))`);
-
   // --- Sandbox Images (ADR-0037/0049): the contexts the Machines carry, plus `images/default` -----
-  // Gated on `repos`, which is already the data-plane switch (ADR-0012/0031): a workspace-less
-  // instance has no Sandboxes, so it must not pay a docker build for an image it can never use.
-  // Said out loud, because a silent skip of a folder you just wrote reads as a bug.
-  if (config.repos?.length) {
+  // Gated on the data-plane switch (ADR-0012/0031/0051): an instance none of whose Machines
+  // composes a Sandbox has no Sandboxes, so it must not pay a docker build for an image it can
+  // never use. Said out loud, because a silent skip of a folder you just wrote reads as a bug.
+  if (carried.composesSandbox) {
     // The scaffolded `images/default` is a PATH CONVENTION, not discovery (ADR-0049/0050): exactly
     // one path is checked, and it is keyed `default` rather than by digest, because that reserved
     // key IS the middle leg of the resolution chain a `workspace()` that names no image lands on.
@@ -514,7 +530,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       converged.sandbox[key] = ref;
     }
   } else {
-    activity(io, "sandbox images: skipped (no `repos` — a workspace-less instance provisions no Sandbox)");
+    activity(io, "sandbox images: skipped (no registered Machine composes a Sandbox)");
   }
 
   // --- secrets -----------------------------------------------------------------------------------
@@ -539,9 +555,13 @@ export async function up(args: string[], io: Io): Promise<number> {
     // the same value; live Adapters keep verifying.
     J2_INSTANCE_HARNESS_TOKEN: sandboxToken(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
   };
-  // Git creds for the in-cluster repos reconcile (ADR-0019): an HTTPS token from `.env` is the
-  // default path for private repos. It rides the ORCHESTRATOR's Secret — never the harness one.
-  if (io.env.J2_GIT_TOKEN) secretData.J2_GIT_TOKEN = io.env.J2_GIT_TOKEN;
+  // Git tokens (ADR-0019/0051): every env var a `git.credentials` entry names, materialized from
+  // `.env` when set. They ride the ORCHESTRATOR's Secret — never the harness one — because the
+  // Orchestrator is what derives each Repo's credential Secret from them at boot; a Sandbox never
+  // holds one.
+  for (const entry of config.git?.credentials ?? []) {
+    if (entry.token !== undefined && io.env[entry.token]) secretData[entry.token] = io.env[entry.token]!;
+  }
 
   // The HARNESS containers' env — a separate Secret (ADR-0013): Agent code executes where these
   // land, so the Instance token/signing key above must be unreachable from it. Values declared in
@@ -572,7 +592,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // Runs BEFORE the apply, because a missing key source is a converge that must not start, and the
   // notice it hands back is owed to the END of the converge — a generated key is dead until a human
   // registers it, and by then this line has scrolled away.
-  const gitSsh = await ensureGitSsh(io, kube, config, namespace, ctx, values.yes === true);
+  const gitSsh = await ensureGitSsh(io, kube, config, carried.repos, namespace, ctx, values.yes === true);
 
   // --- provider preflight (ADR-0019): probe the endpoint FROM INSIDE the cluster ----------------
   await preflightProvider(io, kube, config, agents, namespace, ctx, caPem);
@@ -657,11 +677,11 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   await reportOlderWorkspaces(io, kube, namespace, ctx, converged);
   await sweepAfterConverge(io, { build, kube, context, ctx, converged, instanceImage: tag, previous });
-  noteDeferred(io, config);
+  noteDeferred(io, carried.repos);
   activity(io, `converged — \`j2 run <workflow>\` when ready`);
-  // LAST, after the success line (ADR-0047): the converge succeeded and the repos still cannot be
+  // LAST, after the success line (ADR-0047): the converge succeeded and the Repos still cannot be
   // fetched, so the one thing left to do belongs at the bottom of the scroll, not in the middle.
-  if (gitSsh) reportGeneratedKey(io, gitSsh);
+  for (const notice of gitSsh) reportGeneratedKey(io, notice);
   return 0;
 }
 
@@ -867,96 +887,132 @@ type NodeObject = {
   status?: { nodeInfo?: { architecture?: string } };
 };
 
-/** What a converge that GENERATED a keypair owes its own last line (ADR-0047): the key nobody has
- * registered yet, and the repos that stay unsynced until somebody does. A supplied key produces
- * none of this — it is registered already. */
-type GitSshNotice = { publicKey: string; repos: string[] };
+/** What a converge that GENERATED a keypair owes its own last line (ADR-0047): the Secret it
+ * landed in, the key nobody has registered yet, and the Repos that stay uncloneable until somebody
+ * does. A supplied key produces none of this — it is registered already. */
+type GitSshNotice = { secret: string; publicKey: string; urls: string[] };
 
 /** Where the git ssh key comes from — the three sources ADR-0047 offers, as a pick. */
 type GitSshSource = { kind: "generate" } | { kind: "file"; path: string } | { kind: "paste" };
 
 /**
- * ssh repo urls need a key the CLUSTER holds, and the USER chooses which one (ADR-0047). With no
- * `j2-git-ssh` Secret present, `up` offers three sources: a fresh in-cluster deploy keypair
- * (recommended, listed first, and the only thing `--yes` will ever take), a local key — the
- * `~/.ssh` candidates plus a path typed in — or one pasted with echo off. Declining bails, as
- * before: the reconcile would only fail on an unauthenticated fetch later.
+ * A BOUND ssh url needs a deploy key the CLUSTER holds, and the USER chooses which one
+ * (ADR-0047, ADR-0051). The key lives in the Secret the url's `git.credentials` entry names as its
+ * `sshKey` — the scaffold's wildcard names `j2-git-ssh`; an entry may name any — and this asks
+ * once per such Secret that does not exist yet, listing the urls it will serve. The sources are
+ * ADR-0047's three: a fresh in-cluster deploy keypair (recommended, listed first, and the only
+ * thing `--yes` will ever take), a local key — the `~/.ssh` candidates plus a path typed in — or
+ * one pasted with echo off. Declining bails, as before: the cache agent would only fail on an
+ * unauthenticated clone later. An ssh url whose entry names no `sshKey` — or that matches no
+ * entry — is warned once and not asked about: its cache clone will fail unless the host allows
+ * anonymous ssh, and the fix is a config line, not a key.
  *
  * ADR-0019's flat "personal keys never enter a cluster" is demoted to a DEFAULT, not deleted: a git
  * host allows one deploy key on exactly one repo, so the invariant charged a multi-repo instance N
  * registrations and pushed users into hand-rolled Secrets anyway. j2 still never lifts a personal
  * key silently — only by this explicit, warned pick, and never from a flag (`--yes` generates; the
- * scripted supplied-key path is `kubectl create secret generic j2-git-ssh --from-file=key=…`).
+ * scripted supplied-key path is `kubectl create secret generic <name> --from-file=identity=…`).
  *
- * Returns the notice a generated keypair owes the end of the converge; a supplied key returns none.
+ * Per-run ssh urls are not seen here: they are the run's input, first met at attach (ADR-0051).
+ *
+ * Returns the notices generated keypairs owe the end of the converge; a supplied key returns none.
  */
 async function ensureGitSsh(
   io: Io,
   kube: KubeAdmin,
-  config: InstanceConfig,
+  config: J2Config,
+  repos: CarriedRepo[],
   namespace: string,
   ctx: { context?: string },
   yes: boolean,
-): Promise<GitSshNotice | undefined> {
-  const sshUrls = (config.repos ?? []).filter((r) => /^(git@|ssh:\/\/)/.test(r.url));
-  if (sshUrls.length === 0) return undefined;
-  if (await kube.getJson({ kind: "secret", name: GIT_SSH_SECRET, namespace, ...ctx })) return undefined;
-  const repos = sshUrls.map((r) => r.name);
-
-  // Non-interactive is GENERATE, always (ADR-0047): the dangerous option is never a default, so
-  // there is nothing to ask and nothing a script can silently answer with a personal key.
-  const source: GitSshSource | undefined = yes ? { kind: "generate" } : await chooseGitSshSource(io, repos, namespace);
-  if (!source) {
-    throw new Error(
-      `ssh repos need a "${GIT_SSH_SECRET}" Secret — re-run and pick a key source, create the Secret yourself ` +
-        `(kubectl -n ${namespace} create secret generic ${GIT_SSH_SECRET} --from-file=key=<path>), ` +
-        `or switch the repo urls to https (+ J2_GIT_TOKEN in .env)`,
-    );
-  }
-
-  if (source.kind === "generate") {
-    const { privateKey, publicKey } = await (io.sshKeygen ?? sshKeygen)();
-    await applyGitSshSecret(kube, namespace, ctx, privateKey, publicKey);
-    activity(io, `generated deploy key ${sshFingerprint(publicKey)} — register this PUBLIC key (read access):`);
-    activity(io, `  ${publicKey.trim()}`);
-    // The pause sits exactly where the user must act anyway (ADR-0047): the printed key is useless
-    // until it is registered, and the converge that follows will roll out an Orchestrator whose
-    // first reconcile fails on every one of these repos. `--yes` has nobody to wait for.
-    if (!yes) {
-      await promptLine(io, `register this public key with your git host, then press enter to continue: `);
+): Promise<GitSshNotice[]> {
+  const credentials = config.git?.credentials ?? [];
+  const bySecret = new Map<string, string[]>();
+  for (const repo of repos) {
+    if (!isSshUrl(repo.url)) continue;
+    const entry = matchCredential(repo.identity, credentials);
+    if (entry?.sshKey === undefined) {
+      activity(
+        io,
+        `${repo.url} is an ssh url and no git.credentials entry names a key for it — its cache clone will fail ` +
+          "unless the host allows anonymous ssh",
+      );
+      continue;
     }
-    return { publicKey: publicKey.trim(), repos };
+    bySecret.set(entry.sshKey, [...(bySecret.get(entry.sshKey) ?? []), repo.url]);
   }
 
-  // A key the USER handed over. Read it, derive `key.pub`, and refuse a passphrase-protected one
-  // BEFORE anything is applied (ADR-0047) — the in-cluster clone runs unattended and can answer no
-  // passphrase, and storing a decrypted copy would strip protection the user chose to have.
-  const where = source.kind === "file" ? source.path : "the pasted key";
-  const privateKey =
-    source.kind === "file"
-      ? await readSuppliedKey(source.path)
-      : await readSecretInput(io, `paste the private key (input hidden), ending with its -----END … ----- line:`);
-  if (privateKey.trim() === "") {
-    throw new Error(`no key was read from ${where} — nothing was applied; re-run \`j2 up\` to pick a key source`);
+  const notices: GitSshNotice[] = [];
+  for (const [secret, urls] of bySecret) {
+    if (await kube.getJson({ kind: "secret", name: secret, namespace, ...ctx })) continue;
+
+    // Non-interactive is GENERATE, always (ADR-0047): the dangerous option is never a default, so
+    // there is nothing to ask and nothing a script can silently answer with a personal key.
+    const source: GitSshSource | undefined = yes
+      ? { kind: "generate" }
+      : await chooseGitSshSource(io, secret, urls, namespace);
+    if (!source) {
+      throw new Error(
+        `${urls.join(", ")} bind over ssh and need the "${secret}" Secret — re-run and pick a key source, create ` +
+          `the Secret yourself (kubectl -n ${namespace} create secret generic ${secret} --from-file=identity=<path>), ` +
+          "or bind the urls over https (+ a token in git.credentials)",
+      );
+    }
+
+    if (source.kind === "generate") {
+      const { privateKey, publicKey } = await (io.sshKeygen ?? sshKeygen)();
+      await applyGitSshSecret(kube, namespace, ctx, secret, privateKey, publicKey);
+      activity(io, `generated deploy key ${sshFingerprint(publicKey)} — register this PUBLIC key (read access):`);
+      activity(io, `  ${publicKey.trim()}`);
+      // The pause sits exactly where the user must act anyway (ADR-0047): the printed key is useless
+      // until it is registered, and the cache agent's first clone of every one of these Repos will
+      // fail until it is. `--yes` has nobody to wait for.
+      if (!yes) {
+        await promptLine(io, `register this public key with your git host, then press enter to continue: `);
+      }
+      notices.push({ secret, publicKey: publicKey.trim(), urls });
+      continue;
+    }
+
+    // A key the USER handed over. Read it, derive the public half, and refuse a passphrase-protected
+    // one BEFORE anything is applied (ADR-0047) — the in-cluster clone runs unattended and can
+    // answer no passphrase, and storing a decrypted copy would strip protection the user chose to
+    // have.
+    const where = source.kind === "file" ? source.path : "the pasted key";
+    const privateKey =
+      source.kind === "file"
+        ? await readSuppliedKey(source.path)
+        : await readSecretInput(io, `paste the private key (input hidden), ending with its -----END … ----- line:`);
+    if (privateKey.trim() === "") {
+      throw new Error(`no key was read from ${where} — nothing was applied; re-run \`j2 up\` to pick a key source`);
+    }
+    let publicKey: string;
+    try {
+      publicKey = await (io.sshPublicKey ?? sshPublicKey)(privateKey);
+    } catch (err) {
+      throw new Error(`refusing the key from ${where}: ${err instanceof Error ? err.message : err}`);
+    }
+    await applyGitSshSecret(kube, namespace, ctx, secret, privateKey, publicKey);
+    // The FINGERPRINT, never the material — not the private half, and not the public one either:
+    // this key is the user's own, and its public half identifies them wherever it is registered.
+    activity(io, `git ssh: "${secret}" applied from ${where} — ${sshFingerprint(publicKey)}`);
   }
-  let publicKey: string;
-  try {
-    publicKey = await (io.sshPublicKey ?? sshPublicKey)(privateKey);
-  } catch (err) {
-    throw new Error(`refusing the key from ${where}: ${err instanceof Error ? err.message : err}`);
-  }
-  await applyGitSshSecret(kube, namespace, ctx, privateKey, publicKey);
-  // The FINGERPRINT, never the material — not the private half, and not the public one either:
-  // this key is the user's own, and its public half identifies them wherever it is registered.
-  activity(io, `git ssh: "${GIT_SSH_SECRET}" applied from ${where} — ${sshFingerprint(publicKey)}`);
-  return undefined;
+  return notices;
 }
 
 /** The choice itself, warning first (ADR-0047): a Secret is not a vault, and the two supplied-key
  * options differ from the generated one in exactly how much a reader of it gets. */
-async function chooseGitSshSource(io: Io, repos: string[], namespace: string): Promise<GitSshSource | undefined> {
+async function chooseGitSshSource(
+  io: Io,
+  secret: string,
+  urls: string[],
+  namespace: string,
+): Promise<GitSshSource | undefined> {
   const candidates = await discoverSshKeys(io);
-  activity(io, `repos ${repos.join(", ")} use ssh urls and no "${GIT_SSH_SECRET}" Secret exists.`);
+  activity(
+    io,
+    `${urls.join(", ")} bind over ssh and the "${secret}" Secret their git.credentials entry names does not exist.`,
+  );
   activity(io, `  whichever key you pick lands in a Secret in namespace "${namespace}" — readable by anyone with`);
   activity(io, `  Secret read there, and at rest in etcd. A deploy key leaks read access to the repos you`);
   activity(io, `  register it on; a personal key leaks everything it can reach.`);
@@ -1029,13 +1085,15 @@ async function readSuppliedKey(path: string): Promise<string> {
   }
 }
 
-/** The Secret both key sources converge on: `key` is what the in-cluster clone authenticates with,
- * `key.pub` rides along so the cluster can say which key it holds without holding it up to a
+/** The Secret both key sources converge on, in Flux's key names (ADR-0051) so a Flux or Argo user's
+ * existing Secret serves unchanged: `identity` is what the cache agent authenticates with,
+ * `identity.pub` rides along so the cluster can say which key it holds without holding it up to a
  * human. Trailing newline enforced — ssh refuses a key file that lacks one. */
 async function applyGitSshSecret(
   kube: KubeAdmin,
   namespace: string,
   ctx: { context?: string },
+  secret: string,
   privateKey: string,
   publicKey: string,
 ): Promise<void> {
@@ -1043,9 +1101,9 @@ async function applyGitSshSecret(
     manifest: JSON.stringify({
       apiVersion: "v1",
       kind: "Secret",
-      metadata: { name: GIT_SSH_SECRET, namespace },
+      metadata: { name: secret, namespace },
       type: "Opaque",
-      stringData: { key: newlineTerminated(privateKey), "key.pub": newlineTerminated(publicKey) },
+      stringData: { identity: newlineTerminated(privateKey), "identity.pub": newlineTerminated(publicKey) },
     }),
     ...ctx,
   });
@@ -1065,13 +1123,16 @@ function sshFingerprint(publicKey: string): string {
 }
 
 /** The last word of a converge that generated a keypair (ADR-0047): the key, what stays broken
- * until it is registered, and who fixes it — the reconcile, on its own (ADR-0048), so nobody
+ * until it is registered, and who fixes it — the cache agent, on its own (ADR-0048/0051), so nobody
  * re-runs `j2 up` looking for a button. */
 function reportGeneratedKey(io: Io, notice: GitSshNotice): void {
-  activity(io, `git ssh: a deploy key was generated this converge and nothing has registered it yet:`);
+  activity(
+    io,
+    `git ssh: a deploy key was generated into "${notice.secret}" this converge and nothing has registered it yet:`,
+  );
   activity(io, `  ${notice.publicKey}`);
-  activity(io, `  until it is registered, ${notice.repos.join(", ")} will not sync (the Orchestrator serves anyway)`);
-  activity(io, `  the boot reconcile retries on its own — \`j2 status\` reports each repo's last sync error`);
+  activity(io, `  until it is registered, ${notice.urls.join(", ")} will not sync (the Orchestrator serves anyway)`);
+  activity(io, `  the cache agent retries on its own — \`j2 status\` reports each Repo's last error per node`);
 }
 
 /** Generate an ed25519 keypair with ssh-keygen (no passphrase — it lives only in the Secret). */
@@ -1136,7 +1197,7 @@ async function sshPublicKey(privateKey: string): Promise<string> {
  * alone. Loud on a missing file — a silently absent CA turns up later as a TLS failure inside a
  * pod, the exact hang-shaped outcome preflights exist to prevent.
  */
-async function readCaBundle(root: string, config: InstanceConfig): Promise<string | undefined> {
+async function readCaBundle(root: string, config: J2Config): Promise<string | undefined> {
   if (!config.harness?.caBundle) return undefined;
   const path = join(root, config.harness.caBundle);
   try {
@@ -1158,7 +1219,7 @@ async function readCaBundle(root: string, config: InstanceConfig): Promise<strin
 async function preflightProvider(
   io: Io,
   kube: KubeAdmin,
-  config: InstanceConfig,
+  config: J2Config,
   agents: CarriedAgent[],
   namespace: string,
   ctx: { context?: string },
@@ -1230,9 +1291,13 @@ function providerProbeScript(baseUrl: string, model: string, apiKey?: string): s
   );
 }
 
-/** The layers this slice defers, said out loud rather than silently skipped. */
-function noteDeferred(io: Io, config: InstanceConfig): void {
-  if (config.repos?.length) {
-    activity(io, `repos: ${config.repos.map((r) => r.name).join(", ")} reconcile at orchestrator boot (in-cluster)`);
+/** The layers this converge hands to the cluster, said out loud rather than silently skipped. */
+function noteDeferred(io: Io, repos: CarriedRepo[]): void {
+  if (repos.length) {
+    activity(
+      io,
+      `repos: ${repos.length} bound Repo(s) — the Orchestrator creates their Repo resources at boot; the cache ` +
+        "agent clones on first need (`j2 status` reports sync state)",
+    );
   }
 }

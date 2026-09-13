@@ -39,7 +39,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { accepts } from "hono/accepts";
 import { streamSSE } from "hono/streaming";
 import { EventValidationError, UnknownAddressError } from "./registration.ts";
-import type { RepoState } from "./repos.ts";
+import type { RepoStatus } from "./repos.ts";
 import { mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
 import { observe, type RunHost } from "./run-host.ts";
 import { KIT_VERSION } from "./config.ts";
@@ -252,12 +252,18 @@ export type CreateAppOptions = {
   /** Ping interval for the SSE feeds. Tests shorten it; nothing in production sets it. */
   pingMs?: number;
   /**
-   * The source volume's per-repo sync state (ADR-0048), read per request off the supervised
-   * reconcile — a repo a retry synced minutes after boot reads as synced the next time anyone
-   * asks. Absent for a workspace-less instance (nothing to reconcile) and for the in-process
-   * tests that build an app straight over a host: both answer an empty catalog.
+   * Whether this instance has a data plane at all (ADR-0051): a registered Machine composes a
+   * Sandbox AND the process is deployed in a cluster. `false` is an answer — "this instance runs
+   * no Workspace" — and `j2 status` says so rather than listing nothing.
    */
-  repos?: () => RepoState[];
+  dataPlane?: boolean;
+  /**
+   * The Repo resources as the cluster currently reports them (ADR-0051), read per request off the
+   * port — a cache the agent cloned minutes after boot reads as present the next time anyone asks.
+   * Absent for an instance without a data plane and for the in-process tests that build an app
+   * straight over a host: both answer no Repos.
+   */
+  repos?: () => Promise<RepoStatus[]>;
 };
 
 /**
@@ -506,13 +512,15 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
 
   app.get("/runs", instanceOnly, (c) => c.json(host.list()));
 
-  // The source volume as the reconcile currently knows it (ADR-0048) — what `j2 status` renders,
-  // and the place ADR-0047's "register the key, the reconcile retries" points at. Instance band,
-  // like every other state route: a row names a repo and carries git's own error text, which is
-  // exactly the class of thing the open observation projections strip (ADR-0014). A workspace-less
-  // instance has no catalog and answers `[]` rather than 404 — "this instance syncs nothing" is an
-  // answer, and it is the same answer next boot.
-  app.get("/repos", instanceOnly, (c) => c.json(opts.repos?.() ?? []));
+  // The Repos as the cluster currently reports them (ADR-0048/0051) — what `j2 status` renders,
+  // and the place ADR-0047's "register the key, the cache agent retries" points at. Instance band,
+  // like every other state route: a row names a Repo and carries git's own error text, which is
+  // exactly the class of thing the open observation projections strip (ADR-0014). An instance
+  // without a data plane answers `{ dataPlane: false, repos: [] }` rather than 404 — "this
+  // instance runs no Workspace" is an answer, and it is the same answer next boot.
+  app.get("/repos", instanceOnly, async (c) =>
+    c.json({ dataPlane: opts.dataPlane ?? false, repos: (await opts.repos?.()) ?? [] }),
+  );
 
   // Abbreviated run ids (ADR-0009). Registered before `/runs/:runId` so "resolve" is never captured
   // as a run id. The prefix rides in the query string

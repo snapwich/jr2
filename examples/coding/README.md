@@ -34,11 +34,11 @@ humanReview ──approve──▶ done (final → Workspace teardown)
 humanReview ──request_changes {notes}──▶ coding                [fresh cycle]
 ```
 
-Input (`--input` JSON): `prompt` (the task), `repo` (an enum over `j2.config.ts`'s catalog —
-`z.enum(repoNames(config))`, ADR-0050, so the Console offers this instance's repos rather than a text box), `branch` —
-all required; `baseRef` (default `main`), `reviewRounds` (default 3). The workflow declares this door itself (ADR-0033),
-so a bad `--input` is a 400 naming the shape, `GET /workflows/task-with-review` serves it as JSON Schema, and the
-Console renders typed fields instead of a raw-JSON textarea.
+Input (`--input` JSON): `prompt` (the task), `repo` (an enum of the repository URLS this instance works on — the url is
+the Repo's identity, ADR-0051, so the Console offers a menu rather than a text box), `branch` — all required; `baseRef`
+(default `main`), `reviewRounds` (default 3). The workflow declares this door itself (ADR-0033), so a bad `--input` is a
+400 naming the shape, `GET /workflows/task-with-review` serves it as JSON Schema, and the Console renders typed fields
+instead of a raw-JSON textarea.
 
 **The Gate park is the inspection window.** While `humanReview` is open the Sandbox stays alive: exec in, read the diff,
 and push it if the work should outlive the run — `approve` reaches the final state, which tears the Workspace down, and
@@ -127,16 +127,19 @@ per-cluster operator too.
   `model` and `thinkingLevel`, which turn this ONE turn up or down without changing who the Agent is (ADR-0018).
   Sessions are fresh by default; endpoint and Sandbox resolve ambiently from the enclosing `workspace()`; the workflow
   sees ONE terminal `agent.fault { reason }`.
-- **`workspace(body, { input, spec })` owns Sandbox lifecycle only** and hands the body `{ workdir, repos, branch }` on
-  top of the run input — `Workspaced<RunInput>`. `input` is the wrapper's own declared door (ADR-0033); it types `spec`
-  and checks the body, which may not demand more than the door plus the handles (demanding less is fine). The body never
-  declares the door — what it receives is the door plus handles nobody can send — and one that tries is refused. A body
-  that parks keeps its Sandbox alive — that _is_ the retain policy.
-- **`j2.config.ts` `repos` is the catalog**: the boot reconcile clones each entry onto the in-cluster source volume
-  (`repos/<name>/default`, read-only in pods — ADR-0004); the workflow's `workspace()` spec picks which entries a run
-  mounts — task-with-review takes the name as run input. The config's `declare module` block registers that catalog with
-  the type system (ADR-0050), so a spec's `repos[].name` is a `RepoName` and a typo refuses at `j2 up`'s typecheck gate
-  rather than at attach.
+- **`workspace(body, { input, repos, spec })` owns Sandbox lifecycle only** and hands the body
+  `{ workdir, repos, branch }` on top of the run input — `Workspaced<RunInput, "target">`, the handles keyed by Repo
+  Slot. `input` is the wrapper's own declared door (ADR-0033); it types `spec` and the slot mappers, and checks the
+  body, which may not demand more than the door plus the handles (demanding less is fine). The body never declares the
+  door — what it receives is the door plus handles nobody can send — and one that tries is refused. A body that parks
+  keeps its Sandbox alive — that _is_ the retain policy.
+- **A Repo is a slot on the `workspace()`** (ADR-0051): `repos: { target: … }` names the one repository this Machine
+  works on, under the Machine's own word for it — `/work/target/<branch>` in the pod, `workspace.repos.target` in the
+  body. A slot is _bound_ (a url the package writes), _open_ (`open` — a consumer binds it with
+  `customize(machine, { repos })`), or _per-run_ (a mapper over the door — every workflow here, because the repository
+  is run input). The url is the identity; there is no catalog and no repo name. `j2.config.ts` declares only
+  `git.credentials`: how the cluster authenticates, matched by prefix, and the **fence** a per-run url must pass — a url
+  matching no entry is refused at attach, so a ticket cannot spend this cluster's token against an arbitrary host.
 
 ## workflows/\_agents.ts — the Agent definitions
 

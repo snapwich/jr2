@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { KIT_VERSION } from "../src/config.ts";
-import type { RepoState } from "../src/repos.ts";
+import type { RepoStatus } from "../src/repos.ts";
 import { codingDef, gatedDef, mkStore, waitFor } from "./_fixtures.ts";
 
 /** A host + app pair with the `coding` workflow registered. */
@@ -247,26 +247,32 @@ test("GET /runs/resolve truncates rather than dumping the table", async () => {
   assert.equal(body.truncated, true);
 });
 
-test("GET /repos serves the source volume's sync state — synced, and failed with git's own error", async () => {
-  // ADR-0048's observability half: the reconcile keeps retrying, so this is read per request off
-  // the live reconcile, never a boot-time snapshot. A workspace-less instance (no reconcile wired,
-  // which is what `mkApp` builds) answers an empty catalog rather than 404.
+test("GET /repos serves the data-plane switch and the Repos as the cluster reports them (ADR-0051)", async () => {
+  // ADR-0048's observability half, on ADR-0051's shape: the cache agent keeps retrying on its
+  // own, so this is read per request off the port, never a boot-time snapshot. An instance
+  // without a data plane (what `mkApp` builds) answers `{ dataPlane: false, repos: [] }` rather
+  // than 404 — "no Workspace runs here" is an answer.
   const host = new RunHost({ store: await mkStore() });
-  const state: RepoState[] = [
-    { name: "app", synced: false, error: "git clone failed: Permission denied (publickey).", attempts: 3 },
-    { name: "infra", synced: true, action: "fetched" },
+  const state: RepoStatus[] = [
+    {
+      key: "app-0123abcd",
+      url: "git@github.com:acme/app.git",
+      identity: "github.com/acme/app",
+      bound: true,
+      nodes: [{ node: "n1", present: false, synced: false, lastError: "Permission denied (publickey)." }],
+    },
   ];
-  const app = createApp(host, undefined, { repos: () => state });
+  const app = createApp(host, undefined, { dataPlane: true, repos: async () => state });
 
   const res = await app.request("/repos");
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), state);
+  assert.deepEqual(await res.json(), { dataPlane: true, repos: state });
 
-  // Mutating the reconcile's answer (a retry that finally succeeded) shows on the NEXT read.
-  state[0] = { name: "app", synced: true, action: "cloned" };
-  const after = (await (await app.request("/repos")).json()) as Array<{ name: string; synced: boolean }>;
-  assert.equal(after[0]!.synced, true);
+  // Mutating the port's answer (a clone that finally succeeded) shows on the NEXT read.
+  state[0] = { ...state[0]!, nodes: [{ node: "n1", present: true, synced: true }] };
+  const after = (await (await app.request("/repos")).json()) as { repos: RepoStatus[] };
+  assert.equal(after.repos[0]!.nodes[0]!.present, true);
 
   const none = await (await mkApp()).app.request("/repos");
-  assert.deepEqual(await none.json(), []);
+  assert.deepEqual(await none.json(), { dataPlane: false, repos: [] });
 });

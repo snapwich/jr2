@@ -16,9 +16,9 @@ import {
   type AgentAdmission,
   type AgentRunInput,
   type AgentRunPort,
-  type RepoName,
   type RunFeedEvent,
   type AgentDefinition,
+  type ProvisionedRepo,
   type SandboxPort,
   type WorkflowDef,
   type WorkspaceSpec,
@@ -51,19 +51,23 @@ class MockPort implements AgentRunPort {
   }
 }
 
-/** The Sandbox seam, faked: deterministic endpoint, worktree paths derived from the spec. */
+/** The Sandbox seam, faked: deterministic endpoint, worktree paths derived from the slots. */
 class FakeSandbox implements SandboxPort {
   destroyed: string[] = [];
+  /** The Repo Slots each provision resolved (ADR-0051) — the url the run chose, flagged per-run. */
+  provisioned: ProvisionedRepo[][] = [];
   readonly leaseIntervalMs = 60_000;
-  async provision(): Promise<{ endpoint: string }> {
+  async provision(req: { repos: ProvisionedRepo[] }): Promise<{ endpoint: string }> {
+    this.provisioned.push(req.repos);
     return { endpoint: "http://sandbox.test" };
   }
   async attach(req: {
     name: string;
     spec: WorkspaceSpec;
+    repos: Array<{ slot: string }>;
   }): Promise<{ workdir: string; repos: Record<string, string> }> {
-    const repos = Object.fromEntries(req.spec.repos.map((r) => [r.name, `/work/${r.name}/${req.spec.branch}`]));
-    return { workdir: repos[req.spec.repos[0]!.name]!, repos };
+    const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
+    return { workdir: repos[req.repos[0]!.slot]!, repos };
   }
   async renew(): Promise<{ present: true }> {
     return { present: true };
@@ -87,9 +91,10 @@ async function waitFor(pred: () => boolean): Promise<void> {
   throw new Error("waitFor: predicate never became true");
 }
 
-// `repo` is the instance catalog's own name (ADR-0050): the door is `z.enum(repoNames(config))`,
-// so anything else is refused at the door as well as by the compiler.
-const RUN_INPUT = { prompt: "Make the thing", repo: "obsidian-tasks.nvim" as const, branch: "task/t-1" };
+// `repo` is the URL — the Repo's identity (ADR-0051): the door is an enum of the urls this
+// instance works on, so anything else is refused at the door as well as by the compiler.
+const REPO = "https://github.com/snapwich/obsidian-tasks.nvim.git";
+const RUN_INPUT = { prompt: "Make the thing", repo: REPO as typeof REPO, branch: "task/t-1" };
 
 test("each Machine declares its OWN events; nothing is re-declared upward (ADR-0011, ADR-0049)", () => {
   // The top machine handles the two triage routes and no more — the body's six resolve against
@@ -187,11 +192,10 @@ test("inside the body: the assess Turn CONTINUES the triage conversation on the 
       triager: slot(triager, endpoints, port),
     },
   });
+  type Seam = { repo: string; branch: string };
   const wrapped = workspace(provided, {
-    spec: ({ input }: { input: { repo: RepoName; branch: string } }) => ({
-      repos: [{ name: input.repo, baseRef: "main" }],
-      branch: input.branch,
-    }),
+    repos: { target: ({ input }: { input: Seam }) => ({ url: input.repo, ref: "main" }) },
+    spec: ({ input }: { input: Seam }) => ({ branch: input.branch }),
   });
 
   const sandbox = new FakeSandbox();

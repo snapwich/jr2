@@ -23,7 +23,7 @@ import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
 import { createEchoPush } from "./harness-client.ts";
 import { createApp } from "./http.ts";
-import type { RepoReconcile } from "./repos.ts";
+import type { RepoStatus } from "./repos.ts";
 import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
@@ -42,13 +42,16 @@ export type InstanceOptions = {
   store?: SnapshotStore;
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
-  /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller
-   * (wired when `config.repos` is non-empty); absent = a workspace-less instance. */
+  /** The Sandbox backend for `workspace()` workflows (ADR-0012). Composed by the caller — wired
+   * when a registered Machine composes a Sandbox and the process is deployed (ADR-0051); absent =
+   * an instance without a data plane, whose `workspace()` runs fault pointedly. */
   sandbox?: SandboxPort;
-  /** The supervised source-volume reconcile (ADR-0048), started by the caller and never awaited:
-   * its per-repo state is what `GET /repos` serves, and `close()` stops its retry loop. Absent =
-   * a workspace-less instance, which reconciles nothing and reports no repos. */
-  repos?: RepoReconcile;
+  /** Whether the instance has a data plane (ADR-0051) — what `GET /repos` reports beside the
+   * Repos, so `j2 status` can say "no Workspace runs here" instead of listing nothing. */
+  dataPlane?: boolean;
+  /** The Repo resources as the cluster reports them (ADR-0051), read per request off the port the
+   * caller built. Absent = no data plane, which reports no Repos. */
+  repos?: () => Promise<RepoStatus[]>;
   /** The Instance Harness base URL (ADR-0031) — where a `workspace: "none"` Turn is admitted.
    * The entrypoint derives it from the pod's namespace (deterministic Service DNS); absent,
    * such a Turn without an explicit `endpoint` faults pointedly. */
@@ -79,9 +82,6 @@ export type RunningInstance = {
   instanceToken: string;
   /** Names of the workflows discovered + registered from `<dir>/workflows`. */
   workflows: string[];
-  /** The supervised source-volume reconcile this instance serves (ADR-0048), when it has one —
-   * handed back so a caller can read its state or await its first pass without a second handle. */
-  repos?: RepoReconcile;
   /** What this boot did with the runs it found persisted (ADR-0007, ADR-0030) — resumed, given up
    * on, refused because their Machine changed shape, or errored (left for the next boot to retry).
    * The entrypoint announces everything but the resumed ones. */
@@ -154,9 +154,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // Adapters still bear tokens this key signed. The Instance token is per-boot; the key is not.
   const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));
   const auth = createAuthenticator({ instanceToken, signingKey });
-  // The reconcile's state is read PER REQUEST, never snapshotted here: a repo synced by a retry
-  // minutes after boot must show as synced the next time anyone asks (ADR-0048).
-  const app = createApp(host, auth, { repos: opts.repos ? () => opts.repos!.state() : undefined });
+  // The Repos are read PER REQUEST, never snapshotted here: a cache the agent cloned minutes
+  // after boot must show as present the next time anyone asks (ADR-0048/0051).
+  const app = createApp(host, auth, { dataPlane: opts.dataPlane, repos: opts.repos });
   const server = serve({ fetch: app.fetch, port: opts.port ?? 0, hostname });
   const port = await new Promise<number>((resolve) => {
     server.once("listening", () => resolve((server.address() as AddressInfo).port));
@@ -167,7 +167,6 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     url: `http://${hostname}:${port}`,
     instanceToken,
     workflows: host.workflows(),
-    repos: opts.repos,
     restored,
     reload: async () => {
       importGen++;
@@ -182,9 +181,6 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       return { added, updated, removed, workflows: host.workflows() };
     },
     close: async () => {
-      // The retry loop first (ADR-0048): it outlives every request, so nothing else stops it —
-      // and a fixture that closed its instance must not have git running behind it.
-      opts.repos?.stop();
       // Before `server.close()`, not after: it waits for in-flight requests, and an observation
       // feed is in-flight until its watcher goes away. `host.close()` is what makes them go away.
       await host.close();

@@ -4,15 +4,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { serverMain } from "../src/server.ts";
-
-const execFileAsync = promisify(execFile);
 
 // The same fixture instance folder instance.test.ts serves (holds `workflows/echo.ts`).
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
@@ -55,92 +51,91 @@ test("J2_SIGNING_KEY from env keeps the key out of the pod filesystem", async ()
   }
 });
 
-test("a repos-ful instance boots and serves with NO image map mounted — only a provision fails", async () => {
-  // The blast pattern ADR-0038 chose (images.ts reads the map per provision, never at boot): an
-  // Orchestrator whose `j2-images` ConfigMap has not propagated yet still comes up and serves.
-  // A boot-time read would turn one kubelet propagation window into a CrashLoopBackOff.
-  const dir = await mkdtemp(join(tmpdir(), "j2-server-repos-"));
-  const origin = join(dir, "origin.git");
-  await execFileAsync("git", ["init", "--bare", "-q", origin]);
+/** An instance folder whose one workflow is a `workspace()` — a registered Machine that composes
+ * a Sandbox, which is the data-plane switch (ADR-0051). The body is trivial and no run needs to
+ * reach a cluster: what the boot decides off this Machine is the claim. Imported by absolute path,
+ * like the bootstrap fixture: a temp folder resolves no bare `@j2/orchestrator`. */
+async function mkWorkspaceInstance(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "j2-server-ws-"));
+  await writeFile(join(dir, "j2.config.ts"), `export default { name: "ws" };\n`);
+  await mkdir(join(dir, "workflows"), { recursive: true });
+  const src = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "index.ts")).href;
   await writeFile(
-    join(dir, "j2.config.ts"),
-    `export default { repos: [{ name: "app", url: ${JSON.stringify(origin)} }] };\n`,
+    join(dir, "workflows", "ws.ts"),
+    `import { setup } from ${JSON.stringify(import.meta.resolve("xstate"))};\n` +
+      `import { workspace } from ${JSON.stringify(src)};\n` +
+      `const body = setup({}).createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      `export const machine = workspace(body, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });\n`,
   );
+  return dir;
+}
 
-  const lines: string[] = [];
+const authed = { headers: { authorization: "Bearer tok" } };
+
+test("a registered Machine composing a Sandbox + J2_NAMESPACE → the data plane is wired (ADR-0051)", async () => {
+  // The switch is read off the WALK, not off config: nothing in j2.config.ts says "this instance
+  // has Workspaces". Deployed (J2_NAMESPACE set), the kubectl backend is built and the instance
+  // reports a data plane. The blast pattern ADR-0038 chose still holds: no image map is mounted
+  // here, and the boot serves anyway — only a provision would fail.
+  const dir = await mkWorkspaceInstance();
   const inst = await serverMain({
     dir,
-    env: {
-      PORT: "0",
-      HOST: "127.0.0.1",
-      J2_INSTANCE_TOKEN: "tok",
-      J2_SIGNING_KEY: KEY_B64,
-      J2_REPOS_DIR: join(dir, "repos"),
-    },
-    announce: (line) => lines.push(line),
+    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
+    announce: () => {},
   });
   try {
-    // The reconcile is SUPERVISED, not awaited (ADR-0048) — the boot line comes first now, and the
-    // per-repo announces land as the pass finishes.
-    await inst.repos!.first;
-    // The data-plane switch flipped (a Sandbox backend is wired) and the process is serving.
-    assert.ok(
-      lines.some((l) => l.includes('"repo":"app"') && l.includes('"action":"cloned"')),
-      "the boot reconcile ran",
-    );
-    const res = await fetch(`${inst.url}/runs`, { headers: { authorization: "Bearer tok" } });
-    assert.equal(res.status, 200);
+    const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean };
+    assert.equal(repos.dataPlane, true);
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("a repo that cannot sync does not stop the boot — it is announced, served, and retried (ADR-0048)", async () => {
-  // The failure ADR-0048 exists for: a source j2 cannot clone (an unregistered deploy key, a wrong
-  // url, a git host outage). Awaited, it threw, the container exited, and the kubelet crash-looped
-  // the daemon that hosts every Workflow — including the ones that never touch a repo.
-  const dir = await mkdtemp(join(tmpdir(), "j2-server-badrepo-"));
-  const missing = join(dir, "not-a-repo.git");
-  await writeFile(
-    join(dir, "j2.config.ts"),
-    `export default { repos: [{ name: "app", url: ${JSON.stringify(missing)} }] };\n`,
-  );
-
-  const lines: string[] = [];
+test("the same Machine with NO namespace → no port, and a workspace() run faults 'no Sandbox backend'", async () => {
+  // A Workspace is always a real Sandbox (ADR-0012): a host-booted process has no cluster to drive,
+  // so the switch stays off and the run says exactly why — durably, on the run, naming `j2 up`.
+  const dir = await mkWorkspaceInstance();
   const inst = await serverMain({
     dir,
-    env: {
-      PORT: "0",
-      HOST: "127.0.0.1",
-      J2_INSTANCE_TOKEN: "tok",
-      J2_SIGNING_KEY: KEY_B64,
-      J2_REPOS_DIR: join(dir, "repos"),
-    },
-    announce: (line) => lines.push(line),
+    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64 },
+    announce: () => {},
   });
   try {
-    await inst.repos!.first;
-    // It BOOTED and it SERVES — the whole claim.
-    const res = await fetch(`${inst.url}/runs`, { headers: { authorization: "Bearer tok" } });
-    assert.equal(res.status, 200);
-
-    // The failure is announced with git's own error, on the same feed the successes ride.
-    const failure = lines.find((l) => l.includes('"repo":"app"'))!;
-    const parsed = JSON.parse(failure) as { repo: string; error?: string };
-    assert.equal(parsed.repo, "app");
-    assert.match(parsed.error!, /git clone/, "git's own error, not a j2 paraphrase");
-
-    // …and it rides the status surface the CLI reads, so a human can ask instead of tailing logs.
-    const repos = (await (
-      await fetch(`${inst.url}/repos`, { headers: { authorization: "Bearer tok" } })
-    ).json()) as Array<{ name: string; synced: boolean; error?: string }>;
-    assert.equal(repos.length, 1);
-    assert.equal(repos[0]!.name, "app");
-    assert.equal(repos[0]!.synced, false);
-    assert.match(repos[0]!.error!, /not-a-repo\.git/);
+    const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean };
+    assert.equal(repos.dataPlane, false);
+    const started = (await (
+      await fetch(`${inst.url}/workflows/ws/runs`, {
+        method: "POST",
+        headers: { ...authed.headers, "content-type": "application/json" },
+        body: "{}",
+      })
+    ).json()) as { runId: string };
+    let final: { status: string; fault?: string } | undefined;
+    for (let i = 0; i < 200 && final?.status !== "error"; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+      final = (await (await fetch(`${inst.url}/runs/${started.runId}`, authed)).json()) as typeof final;
+    }
+    assert.equal(final?.status, "error");
+    assert.match(final?.fault ?? "", /no Sandbox backend/);
+    assert.match(final?.fault ?? "", /J2_NAMESPACE unset/);
+    assert.match(final?.fault ?? "", /`j2 up`/);
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("no registered Machine composes a Sandbox → no data plane, even deployed", async () => {
+  const inst = await serverMain({
+    dir: fixtureDir,
+    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "echo" },
+    announce: () => {},
+  });
+  try {
+    const repos = (await (await fetch(`${inst.url}/repos`, authed)).json()) as { dataPlane: boolean; repos: unknown[] };
+    assert.deepEqual(repos, { dataPlane: false, repos: [] });
+  } finally {
+    await inst.close();
   }
 });

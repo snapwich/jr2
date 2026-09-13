@@ -8,8 +8,8 @@
 // the continuation sound: wherever the invocation sits, the Turn lands on the server that holds
 // the history (ADR-0031). Filename → workflow "triaged-task".
 //
-// Input (all run input; `repo` is an enum over this instance's `j2.config.ts` catalog, ADR-0050):
-//   { prompt: string, repo: RepoName, branch: string, baseRef?: string, reviewRounds?: number }
+// Input (all run input; `repo` is an enum of the urls this instance works on, ADR-0051):
+//   { prompt: string, repo: url, branch: string, baseRef?: string, reviewRounds?: number }
 //
 // Shape: triage → answer (done, no Workspace) | code (enter the workspace() body). Body:
 // coder → assess (the triager again: ship | review) — ship goes straight to the humanReview
@@ -18,8 +18,7 @@
 
 import { assign, emit } from "xstate";
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, repoNames, workspace, type Workspaced } from "@j2/orchestrator";
-import config from "../j2.config.ts";
+import { agent, defineEvent, j2Setup, workspace, type Workspaced } from "@j2/orchestrator";
 import { coder, reviewer, triager } from "./_agents.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -29,9 +28,9 @@ import { coder, reviewer, triager } from "./_agents.ts";
 
 const runInput = z.object({
   prompt: z.string().describe("The task or question, in prose. Triage decides whether it needs code."),
-  // The catalog itself, as an enum (ADR-0050): the Console's start form offers this instance's
-  // repos, and the value flows into the workspace() spec already typed as a `RepoName`.
-  repo: z.enum(repoNames(config)).describe("Which repo from this instance's j2.config.ts catalog to work in."),
+  // This instance's own menu of repositories, as an enum of URLS (ADR-0051): the Console's start
+  // form offers them, and the value flows into the workspace()'s per-run slot as the url it is.
+  repo: z.enum(["https://github.com/snapwich/obsidian-tasks.nvim.git"]).describe("Which repository to work in."),
   branch: z.string().describe("The branch to cut and work on, if the task is routed to code."),
   baseRef: z.string().optional().describe("What the branch is cut from and reviewed against. Default: main."),
   reviewRounds: z
@@ -107,7 +106,7 @@ const codeRouteInput = runInput.extend({
   /** Why the triager routed here — frames the coder's task alongside the prompt. */
   reason: z.string(),
 });
-type BodyCtx = Workspaced<z.infer<typeof codeRouteInput>> & {
+type BodyCtx = Workspaced<z.infer<typeof codeRouteInput>, "target"> & {
   rounds: number;
   /** The coder's request_review summary — what the assess turn reports to the triager. */
   summary?: string;
@@ -121,7 +120,7 @@ type BodyOutput = { outcome: "approved" | "lost"; branch: string };
 /** Exported for the mechanics test (jr precedent): the body is drivable under a fake Sandbox
  * port with a mock agent port, which the wrapped export's baked-in slots cannot offer. */
 export const body = j2Setup({
-  types: {} as { context: BodyCtx; input: Workspaced<z.infer<typeof codeRouteInput>>; output: BodyOutput },
+  types: {} as { context: BodyCtx; input: Workspaced<z.infer<typeof codeRouteInput>, "target">; output: BodyOutput },
   events: [requestReview, ship, review, reviewVerdict, approve, requestChanges],
   // The body carries three Agents (ADR-0049). `triager` is declared HERE as well as on the top
   // machine: a slot is per-Machine, and the two are the same Agent only because they name the
@@ -235,16 +234,15 @@ export const body = j2Setup({
   output: ({ context }) => ({ outcome: context.outcome ?? "approved", branch: context.workspace.branch }),
 });
 
-// Workspace: the repo is run input, already narrowed to a `RepoName` by the door's enum (ADR-0050),
-// so it drops into the spec with nothing to re-check. A machine declares the input that STARTS it
-// (ADR-0033) — for this wrapper that is what triage hands down, which types the spec mapper; the
-// run's door is the top machine's, below.
+// Workspace: the repository is run input, so the one Repo Slot is PER-RUN — a mapper over this
+// wrapper's door binds `target` from `input.repo` (ADR-0051), and the fence in `j2.config.ts`
+// admits the url at attach. A machine declares the input that STARTS it (ADR-0033) — for this
+// wrapper that is what triage hands down, which types both mappers; the run's door is the top
+// machine's, below.
 const work = workspace(body, {
   input: codeRouteInput,
-  spec: ({ input }) => ({
-    repos: [{ name: input.repo, baseRef: input.baseRef ?? "main" }],
-    branch: input.branch,
-  }),
+  repos: { target: ({ input }) => ({ url: input.repo, ref: input.baseRef ?? "main" }) },
+  spec: ({ input }) => ({ branch: input.branch }),
 });
 
 // ---------------------------------------------------------------------------------------------

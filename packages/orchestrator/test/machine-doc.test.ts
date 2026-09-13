@@ -447,7 +447,7 @@ test("a workspace() body joins on the stable slot name `body`, not a generated k
   // parked across the upgrade is refused, which is exactly ADR-0030's contract.
   const { workspace } = await import("../src/workspace.ts");
   const inner = createMachine({ id: "body", initial: "coding", states: { coding: {}, shipped: { type: "final" } } });
-  const wrapped = workspace(inner, { spec: () => ({ repos: [{ name: "app" }], branch: "b" }) });
+  const wrapped = workspace(inner, { repos: { app: "https://example.test/app.git" }, spec: () => ({ branch: "b" }) });
 
   const doc = serializeMachine("wrapped", wrapped);
   const running = findState(doc.root, "workspace.running")!;

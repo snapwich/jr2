@@ -7,7 +7,6 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   CA_CONFIGMAP,
-  GIT_SSH_MOUNT,
   GIT_SSH_SECRET,
   HARNESS_ENV_SECRET,
   IMAGES_CONFIGMAP,
@@ -21,20 +20,11 @@ import {
   KIT_VERSION,
   ORCHESTRATOR_PORT,
   ORCHESTRATOR_SERVICE,
-  REPOS_PVC,
   STATE_PVC,
   type HarnessConfig,
 } from "@j2/orchestrator";
 
-export {
-  GIT_SSH_SECRET,
-  HARNESS_CONFIGMAP,
-  HARNESS_ENV_SECRET,
-  INSTANCE_HARNESS_SERVICE,
-  KIT_VERSION,
-  REPOS_PVC,
-  STATE_PVC,
-};
+export { GIT_SSH_SECRET, HARNESS_CONFIGMAP, HARNESS_ENV_SECRET, INSTANCE_HARNESS_SERVICE, KIT_VERSION, STATE_PVC };
 
 export const LABEL_INSTANCE = "j2.dev/instance";
 export const LABEL_VERSION = "j2.dev/version";
@@ -116,18 +106,6 @@ export function instanceObjects(opts: {
       spec: {
         accessModes: ["ReadWriteOnce"],
         resources: { requests: { storage: "1Gi" } },
-      },
-    },
-    {
-      // The in-cluster source volume (ADR-0004/0019): the boot reconcile clones `repos[]` here;
-      // Sandboxes mount it read-only and `--shared`-borrow its objects. RWO suits a single node
-      // (kind); multi-node clusters want an RWX storage class (ADR-0004 storage shape).
-      apiVersion: "v1",
-      kind: "PersistentVolumeClaim",
-      metadata: meta(REPOS_PVC),
-      spec: {
-        accessModes: ["ReadWriteOnce"],
-        resources: { requests: { storage: "5Gi" } },
       },
     },
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(ORCHESTRATOR_SA) },
@@ -258,19 +236,16 @@ export function instanceObjects(opts: {
                 env: [
                   // The entrypoint derives its own Service DNS + Sandbox namespace from these.
                   { name: "J2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
-                  { name: "J2_REPOS_DIR", value: "/repos" },
                   // What `/healthz` reports as this instance's identity. The same content address
                   // the image tag carries (ADR-0019), in-process so a CLI can ask over HTTP
                   // instead of needing kube access to read the Deployment's labels.
                   { name: "J2_CONTENT_HASH", value: opts.hash },
                 ],
+                // No source volume and no deploy key (ADR-0051): the Orchestrator creates Repo
+                // resources and never clones — the cache agent on each node does, reading the
+                // credential Secret a Repo's `secretRef` names.
                 volumeMounts: [
                   { name: "state", mountPath: "/instance/.j2" },
-                  // Writable HERE (the boot reconcile is the volume's one writer, ADR-0004);
-                  // Sandboxes mount the same claim read-only.
-                  { name: "repos", mountPath: "/repos" },
-                  // The optional deploy key (`j2 up`'s ssh offer) — the reconcile's identity.
-                  { name: "git-ssh", mountPath: GIT_SSH_MOUNT, readOnly: true },
                   // The image map, read per provision (ADR-0038). A mount, so `j2 up` rewriting
                   // it costs one kubelet propagation window instead of a rollout.
                   { name: "images", mountPath: IMAGES_MOUNT, readOnly: true },
@@ -297,8 +272,6 @@ export function instanceObjects(opts: {
             ],
             volumes: [
               { name: "state", persistentVolumeClaim: { claimName: STATE_PVC } },
-              { name: "repos", persistentVolumeClaim: { claimName: REPOS_PVC } },
-              { name: "git-ssh", secret: { secretName: GIT_SSH_SECRET, optional: true, defaultMode: 0o400 } },
               { name: "images", configMap: { name: IMAGES_CONFIGMAP } },
             ],
           },

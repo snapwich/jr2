@@ -45,13 +45,27 @@ export const HARNESS_ENV_SECRET = "j2-harness-env";
  * Harness container (and only it) so Agent egress trusts an internal CA. Public data by nature. */
 export const CA_CONFIGMAP = "j2-ca";
 
-/** The optional git deploy-key Secret the `j2 up` ssh offer generates (ADR-0019). */
+/** The scaffold's default deploy-key Secret name (ADR-0047/0051): what `j2 init`'s wildcard
+ * `git.credentials` entry names as its `sshKey`, and what `j2 up`'s ssh offer generates into when
+ * an entry names it. Only a default — an entry may name any Secret. */
 export const GIT_SSH_SECRET = "j2-git-ssh";
 
-/** The snapshot store's PVC (sqlite lives on it — ADR-0019) and the in-cluster source volume the
- * boot reconcile populates + Sandboxes mount read-only (ADR-0004). */
+/** The snapshot store's PVC (sqlite lives on it — ADR-0019). */
 export const STATE_PVC = "j2-state";
-export const REPOS_PVC = "j2-repos";
 
-/** Where the deploy key is mounted in the orchestrator pod (the boot reconcile's ssh identity). */
-export const GIT_SSH_MOUNT = "/etc/j2/git-ssh";
+/** The cache agent (ADR-0051): the per-Instance DaemonSet that clones each Repo onto its node and
+ * fetches it in place, plus its ServiceAccount/Role/RoleBinding, all by this name. */
+export const REPO_CACHE = "j2-repo-cache";
+/** The node directory the cache agent owns — `<REPO_CACHE_HOSTPATH>/<namespace>/repos/<key>` is one
+ * Repo's bare clone on one node, mounted read-only into every Sandbox there that names it. */
+export const REPO_CACHE_HOSTPATH = "/var/lib/j2";
+/** Where a Sandbox sees the node's caches: `/repos/<key>`, one mount per Repo the CR names. */
+export const REPOS_MOUNT = "/repos";
+
+/** Metadata the Orchestrator writes on a `Repo` resource (ADR-0051). `bound` is set when a
+ * registered Machine binds the Repo, so `j2 gc` never evicts it; the identity is what every
+ * spelling of the url normalizes to (repo-identity.ts); `last-attached` is the eviction clock for
+ * a Repo nothing binds. */
+export const LABEL_REPO_BOUND = "j2.dev/bound";
+export const ANNOTATION_REPO_IDENTITY = "j2.dev/identity";
+export const ANNOTATION_REPO_LAST_ATTACHED = "j2.dev/last-attached";

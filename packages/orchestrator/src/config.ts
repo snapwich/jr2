@@ -1,16 +1,13 @@
-// Workflow author configuration: the repos a j2 deployment orchestrates, and what the instance's
-// Harness may reach. What a Sandbox is MADE of is not here — it is a `workspace()` option, either a
-// `file:` docker context the Machine ships or a registry ref (ADR-0037/0049), and every image ref
-// is resolved by `j2 up` (ADR-0038). The `images` block is gone with no replacement key and no env
-// hatch, deliberately: it typed nothing a Machine could carry (ADR-0050), and an override seat for
-// the Harness ref is the eject hatch ADR-0027 refuses.
+// Instance configuration (ADR-0050): the deployment facts a Machine cannot carry — the instance's
+// identity and reach, what its Harness may reach, and how the cluster authenticates to Repos. What
+// a Sandbox is MADE of and which Repos it attaches are not here — they are `workspace()` options
+// (ADR-0037/0049/0051), and every image ref is resolved by `j2 up` (ADR-0038). There is no `images`
+// block and no Repo catalog, deliberately: neither typed anything a Machine could not carry itself,
+// and an override seat for the Harness ref is the eject hatch ADR-0027 refuses.
 //
 // `defineConfig` is an identity passthrough — it exists solely so a `j2.config.ts` gets full
 // type inference and checking against `J2Config` at authoring time, exactly like the config
-// helpers in vite/tsup/etc. No runtime behavior beyond returning its argument. Since ADR-0050 it
-// is also `const`-generic, because the ONE thing this file declares that code names by string —
-// the repo catalog — is read back by the type system through the `Register` below, and a widened
-// `string[]` would have nothing to read.
+// helpers in vite/tsup/etc. No runtime behavior beyond returning its argument.
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -19,104 +16,6 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import { repoIdentity } from "./repo-identity.ts";
-
-/** A catalog entry as the author writes it (ADR-0004). `name` defaults to the repository's own
- * name from the url; the string form is `{ url }`. Name one explicitly when two catalogued
- * repositories share a name — that is the case the explicit form exists for, and also the case a
- * url the config computes rather than spells needs, since the types cannot read a name off it
- * (ADR-0050; `defineConfig` refuses such an entry by name). */
-export type RepoConfig = {
-  name?: string;
-  url: string;
-  ref?: string;
-};
-
-// ------------------------------------------------------------------------------------------------
-// The Register (ADR-0050): the one seam that lets the type system read an Instance's repo catalog.
-//
-// A Repo is the single dependency a Machine names by string and cannot carry — it is a deployment
-// fact, not the Machine's (ADR-0049 moved Agents and Sandbox Images INTO the Machine). So the
-// catalog is declared in `j2.config.ts`, and the config declares ITSELF back to the kit: the
-// scaffold writes `declare module "@j2/orchestrator" { interface Register { config: typeof config } }`
-// beside the export. `RepoName` then derives the catalog's names by the SAME rule `repoName()`
-// applies at runtime, and `WorkspaceSpec.repos[].name` is typed by it — so a mistyped repo is a
-// compile error under `j2 up`'s typecheck gate, one converge before the attach would refuse it.
-//
-// Unregistered (a program with no augmentation — this package's own tests, `features/`, a Machine
-// packaged for someone else's Instance) → `RepoName` is `string`. That is the honest answer: there
-// is no catalog in view. What must NEVER happen is a REGISTERED config widening to `string`,
-// because then the check silently passes for every typo — hence the `defineConfig` refusal below.
-
-/** The interface an Instance's `j2.config.ts` augments with its own config type. Empty here on
- * purpose: the kit ships the seam, the Instance fills it. */
-export interface Register {}
-
-/** The type-level twin of {@link repoName}: the repository's own name from its url — the last
- * segment (`/` and `:` both end one, so scp-style `git@host:org/repo.git` derives like a url),
- * minus a trailing `.git`. A NON-literal url has no last segment to read, so every step passes
- * `string` through unchanged, which is what {@link CheckRepoEntry} refuses. */
-type TrimSeparators<S extends string> = S extends `${infer H}/`
-  ? TrimSeparators<H>
-  : S extends `${infer H}:`
-    ? TrimSeparators<H>
-    : S;
-type LastSegment<S extends string> = S extends `${string}/${infer R}`
-  ? LastSegment<R>
-  : S extends `${string}:${infer R}`
-    ? LastSegment<R>
-    : S;
-type StripDotGit<S extends string> = S extends `${infer H}.git` ? H : S;
-type RepoNameOf<Url extends string> = StripDotGit<LastSegment<TrimSeparators<Url>>>;
-
-/** One catalog entry's resolved name, by `resolveRepos`' rule: an explicit `name` wins, else the
- * url's own. Non-literal in, `string` out — deliberately, so the widening is visible. */
-type NameOfEntry<E> = E extends string
-  ? RepoNameOf<E>
-  : E extends { name: infer N extends string }
-    ? N
-    : E extends { url: infer U extends string }
-      ? RepoNameOf<U>
-      : never;
-
-/** Every name in the registered catalog, or `string` when no config is registered (ADR-0050).
- * `never` when a registered config declares an EMPTY catalog — that Instance has no repo to name,
- * and a Machine that names one there should not compile. */
-export type RepoName = [RegisteredRepos] extends [never]
-  ? string
-  : RegisteredRepos extends readonly unknown[]
-    ? NameOfEntry<RegisteredRepos[number]>
-    : string;
-
-type RegisteredRepos = Register extends { config: { repos: infer R } } ? R : never;
-
-/** Refuse a catalog entry whose resolved name widens to `string`. Never widen instead: a `string`
- * `RepoName` would type-check every typo in every `workspace()` spec in the Instance.
- *
- * The replacement is an object with a `name` whose type IS the instruction, so the compiler's own
- * error carries it: "Property 'name' is missing in type … but required in type '{ name: "j2: …" }'"
- * (a bare non-literal url) or "Type 'string' is not assignable to type '"j2: …"'" (a non-literal
- * `name`). Written INLINE and deliberately not lifted to an alias: tsc prints an alias by its NAME,
- * so the message would never reach the author. */
-type CheckRepoEntry<E> =
-  string extends NameOfEntry<E>
-    ? {
-        name: 'j2: this entry\'s name is not a literal — write `name: "…"` on it (ADR-0050)';
-      }
-    : E;
-
-/** The refusal, positioned so the error lands on the offending ENTRY. A homomorphic mapped type
- * over the const-inferred tuple keeps it readonly and keeps each index its own assignment site. */
-type CheckRepos<T> = T extends { repos: infer R extends readonly unknown[] }
-  ? { repos: { [K in keyof R]: CheckRepoEntry<R[K]> } }
-  : unknown;
-
-/** A Repo as the Instance runs with it: every name resolved, no shorthand left. What `loadConfig`
- * hands every consumer — the reconcile, `j2 up`, the status surface. */
-export type Repo = {
-  name: string;
-  url: string;
-  ref?: string;
-};
 
 // ------------------------------------------------------------------------------------------------
 // `git.credentials` (ADR-0051): how the cluster authenticates to a Repo, and the fence.
@@ -281,13 +180,9 @@ export type J2Config = {
   /** The instance's identity (ADR-0019): its kube namespace defaults to this (`-n` overrides),
    * and `j2 up` labels every object it owns with it. Default: the instance folder's name. */
   name?: string;
-  /** Repos the boot reconcile clones into the in-cluster source volume (`repos/<name>/default`,
-   * ADR-0004/0019). A repo pods should see must be fetchable from the cluster. A NON-EMPTY list
-   * is also the data-plane switch (ADR-0012/0031): a Workspace needs repos, so with them the
-   * instance gets the kubectl Sandbox backend, and without them it is workspace-less
-   * (`workspace()` invocations fault pointedly). */
-  repos?: readonly (string | RepoConfig)[];
-  /** How the cluster authenticates to Repos, and the fence a per-run url must pass (ADR-0051). */
+  /** How the cluster authenticates to Repos, and the fence a per-run url must pass (ADR-0051).
+   * NOT a list of Repos: a Machine names those itself, through its `workspace()`'s Repo Slots, and
+   * whether the instance has a data plane at all is read off the registered Machines. */
   git?: GitConfig;
   /** Agent-runtime config for the stock Harness (see `HarnessConfig`). */
   harness?: HarnessConfig;
@@ -321,52 +216,26 @@ export type J2Config = {
   };
 };
 
-/**
- * Identity passthrough that pins a config object's type to `J2Config` for inference — and, since
- * ADR-0050, KEEPS the literals: `const T` is what makes `repos: ["…/obsidian-tasks.nvim.git"]` an
- * inferred tuple of literal strings rather than `string[]`, which is what {@link RepoName} reads
- * back through the {@link Register}.
- *
- * The `CheckRepos<T>` intersection is a refusal, not a widening: an entry whose resolved name is
- * not a literal (a url read from `process.env`, a name spread in from a variable) is replaced by
- * {@link CheckRepoEntry}'s instruction type, so the compiler rejects that entry and prints what to
- * write. Widening to `string` instead would cost the whole guarantee — every `workspace()` spec in
- * the Instance would accept every typo.
- */
-export function defineConfig<const T extends J2Config>(c: T & CheckRepos<T>): T {
+/** Identity passthrough that pins a config object's type to `J2Config` for inference. */
+export function defineConfig<T extends J2Config>(c: T): T {
   return c;
 }
 
 /**
- * The registered catalog's names, at RUNTIME, in catalog order — for a door that takes a repo
- * name: `repo: z.enum(repoNames(config))` (ADR-0050). The names are resolved by the same
- * `resolveRepos` the boot runs, so the enum and the volume the attach reaches can never disagree,
- * and the type is {@link RepoName} — the same union `WorkspaceSpec.repos[].name` is typed by, so
- * what comes through the door goes straight into a spec.
- */
-export function repoNames(config: J2Config): RepoName[] {
-  return resolveRepos(config.repos ?? [], "repoNames()").map((r) => r.name) as RepoName[];
-}
-
-/** The config as the Instance runs it: `J2Config` with its `repos` resolved to `Repo`s. */
-export type InstanceConfig = Omit<J2Config, "repos"> & { repos?: Repo[] };
-
-/**
  * Load an instance's `j2.config.ts` (default export). Absent file → undefined (an instance
  * can boot configless); a file that fails to IMPORT throws — a broken config must be loud,
- * never silently treated as "no config". The one resolution pass lives here, on the path the
- * host CLI and the in-cluster Orchestrator share: `repos` shorthand becomes `Repo`s, and the
- * entries' SHAPE is checked at runtime — an instance is zero-build, so nothing typechecks this
- * file before Node strips its types and imports it (ADR-0004).
+ * never silently treated as "no config". The one shape check lives here, on the path the host
+ * CLI and the in-cluster Orchestrator share: `git.credentials` is checked at runtime, because an
+ * instance is zero-build and nothing typechecks this file before Node strips its types and
+ * imports it.
  */
-export async function loadConfig(dir: string): Promise<InstanceConfig | undefined> {
+export async function loadConfig(dir: string): Promise<J2Config | undefined> {
   const file = join(dir, "j2.config.ts");
   if (!existsSync(file)) return undefined;
   const mod = (await import(pathToFileURL(file).href)) as { default?: J2Config };
   if (!mod.default) throw new Error(`${file} has no default export (use \`export default defineConfig({…})\`)`);
-  const { repos, ...rest } = mod.default;
-  if (rest.git !== undefined) checkGit(rest.git, file);
-  return repos === undefined ? rest : { ...rest, repos: resolveRepos(repos, file) };
+  if (mod.default.git !== undefined) checkGit(mod.default.git, file);
+  return mod.default;
 }
 
 const NonEmpty = z.string().min(1);
@@ -390,55 +259,3 @@ function checkGit(git: unknown, where: string): void {
 }
 
 const GIT_HINT = "an entry is { match, token?, sshKey? } (ADR-0051)";
-
-const RepoUrl = z.string().min(1);
-const RepoObject = z.object({ name: RepoUrl.optional(), url: RepoUrl, ref: RepoUrl.optional() }).strict();
-
-/**
- * `repos` as written → `Repo`s (ADR-0004): a string is `{ url }`, and a missing `name` is the
- * repository's own — the url's last path segment minus a trailing `.git`. Two entries deriving
- * one name fail by naming both urls: the explicit form is the fix, and a silent second clone
- * into the first one's directory is not. `where` names the file in every error.
- */
-export function resolveRepos(repos: unknown, where: string): Repo[] {
-  if (!Array.isArray(repos)) throw new Error(`${where} at repos: expected an array — ${HINT}`);
-  const out: Repo[] = [];
-  const seen = new Map<string, string>();
-  for (const [i, entry] of repos.entries()) {
-    // Dispatched on the entry's own shape rather than a union, so a bad object names its FIELD
-    // (`repos[0].url`), not just the entry.
-    const parsed = typeof entry === "string" ? RepoUrl.safeParse(entry) : RepoObject.safeParse(entry);
-    if (!parsed.success) {
-      const issue = parsed.error.issues[0];
-      const at = ["", ...(issue?.path ?? [])].map(String).join(".");
-      throw new Error(`${where} at repos[${i}]${at}: ${issue?.message ?? "invalid"} — ${HINT}`);
-    }
-    const config = typeof parsed.data === "string" ? { url: parsed.data } : parsed.data;
-    const name = config.name ?? repoName(config.url);
-    if (name === "")
-      throw new Error(`${where}: cannot derive a repo name from "${config.url}" — name it: { name, url }`);
-    const prior = seen.get(name);
-    if (prior !== undefined) {
-      throw new Error(
-        `${where}: repos "${prior}" and "${config.url}" both resolve to the name "${name}" — name one of them: { name, url }`,
-      );
-    }
-    seen.set(name, config.url);
-    out.push(config.ref === undefined ? { name, url: config.url } : { name, url: config.url, ref: config.ref });
-  }
-  return out;
-}
-
-const HINT = "an entry is a url string or { name?, url, ref? }";
-
-/** The repository's own name from its url: the last path segment, minus a trailing `.git`.
- * `/` and `:` both end a segment, so scp-style `git@host:org/repo.git` derives like
- * `ssh://git@host/org/repo.git`, `https://host/org/repo` and a local path alike. */
-export function repoName(url: string): string {
-  const segment =
-    url
-      .replace(/[/:]+$/, "")
-      .split(/[/:]/)
-      .pop() ?? "";
-  return segment.replace(/\.git$/, "");
-}

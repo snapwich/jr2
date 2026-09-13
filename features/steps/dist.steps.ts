@@ -55,30 +55,19 @@ Given("a standalone instance scaffolded by the installed j2", async function (th
 /**
  * The scaffold's own `j2.config.ts` plus the mirror key — written whole rather than patched, so the
  * step never depends on the template's exact bytes (`j2 init` owns those, and `init.test.ts` guards
- * them). `repos: []` is kept: these scenarios run `ping`, which touches no Workspace at all.
+ * them). No `git` block: these scenarios run `ping`, which touches no Workspace at all.
  *
  * `.env` reaches the CLI and stops there. It is one of the credential files a bundle stage drops
  * (ADR-0043), so nothing about the mirror is baked into the instance image — and nothing needs to
  * be: `kitRegistry` is answered at converge time, when the pod spec's image refs are composed.
  *
- * The `declare module` block is the scaffold's (ADR-0050) and is kept deliberately: it names
- * `@j2/orchestrator` by BARE specifier, so this tier is where it meets a genuinely npm-installed
- * kit — both when Node type-strips this file and when `j2 up`'s gate compiles the folder.
+ * The import names `@j2/orchestrator` by BARE specifier, so this tier is where it meets a
+ * genuinely npm-installed kit — both when Node type-strips this file and when `j2 up`'s gate
+ * compiles the folder.
  */
 const KIT_REGISTRY_CONFIG_TS = `import { defineConfig } from "@j2/orchestrator";
 
-const config = defineConfig({
-  repos: [],
-  kitRegistry: process.env.J2_KIT_REGISTRY,
-});
-
-declare module "@j2/orchestrator" {
-  interface Register {
-    config: typeof config;
-  }
-}
-
-export default config;
+export default defineConfig({ kitRegistry: process.env.J2_KIT_REGISTRY });
 `;
 
 // --- when ----------------------------------------------------------------------------------------

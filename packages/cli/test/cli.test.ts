@@ -180,30 +180,57 @@ test("send resolves before it writes — an unresolvable id never reaches CANCEL
   assert.match(real.err(), new RegExp(`sent CANCEL to ${runId}`), "the message names the run it actually hit");
 });
 
-test("`j2 status` with no run reports the instance's repos, unsynced ones with git's own error", async () => {
-  // ADR-0048's third claim: the reconcile degrades a repo instead of the daemon, so the way to
-  // learn a repo never synced is to ask the instance — not to tail pod logs for a boot line.
+test("`j2 status` with no run reports the data plane and every Repo, failing nodes with git's own error", async () => {
+  // ADR-0048's third claim on ADR-0051's shape: the cache agent degrades a Repo on one node instead
+  // of the daemon, so the way to learn a clone never landed is to ask the instance — not to tail
+  // pod logs. Per NODE, because that is where a cache lives.
   const repos = [
-    { name: "app", synced: false, error: "git clone failed: Permission denied (publickey).", attempts: 4 },
-    { name: "infra", synced: true, action: "fetched" },
+    {
+      key: "app-0123abcd",
+      url: "git@github.com:acme/app.git",
+      identity: "github.com/acme/app",
+      bound: true,
+      nodes: [
+        { node: "kind-worker", present: false, synced: false, lastError: "Permission denied (publickey)." },
+        { node: "kind-worker2", present: true, synced: true },
+      ],
+    },
+    { key: "infra-89abcdef", url: "https://example.test/infra.git", bound: false, nodes: [] },
   ];
   const asked: string[] = [];
   const { io, out, err } = mkIo({
     env: { J2_URL: "http://test" },
     fetch: (url) => {
       asked.push(String(url));
-      return Promise.resolve(Response.json(repos));
+      return Promise.resolve(Response.json({ dataPlane: true, repos }));
     },
   });
 
-  assert.equal(await main(["status"], io), 0, "a degraded repo is a report, not a failure of asking");
+  assert.equal(await main(["status"], io), 0, "a degraded Repo is a report, not a failure of asking");
   assert.ok(
     asked.some((u) => u.endsWith("/repos")),
     "no run named → the instance's own status",
   );
-  assert.deepEqual(JSON.parse(out().trim()), { repos }, "an object on stdout: the instance has more to say later");
-  assert.match(err(), /repo "app" is not synced \(attempt 4\)/);
-  assert.match(err(), /Permission denied \(publickey\)\./, "git's own error, verbatim");
-  assert.doesNotMatch(err(), /"infra"/, "a synced repo needs no line");
-  assert.match(err(), /keeps retrying/, "…and the way out: register the key, the reconcile closes the window");
+  assert.deepEqual(
+    JSON.parse(out().trim()),
+    { dataPlane: true, repos },
+    "an object on stdout: the switch and the Repos",
+  );
+  assert.match(
+    err(),
+    /repo app-0123abcd \(git@github\.com:acme\/app\.git\) on node kind-worker: Permission denied \(publickey\)\./,
+  );
+  assert.doesNotMatch(err(), /kind-worker2/, "a synced node needs no line");
+  assert.doesNotMatch(err(), /infra/, "a Repo no node has tried yet needs no line");
+  assert.match(err(), /keeps retrying/, "…and the way out: register the key, the cache agent closes the window");
+  assert.doesNotMatch(err(), /no data plane/);
+
+  // No data plane is an answer, not an empty list (ADR-0051).
+  const none = mkIo({
+    env: { J2_URL: "http://test" },
+    fetch: () => Promise.resolve(Response.json({ dataPlane: false, repos: [] })),
+  });
+  assert.equal(await main(["status"], none.io), 0);
+  assert.deepEqual(JSON.parse(none.out().trim()), { dataPlane: false, repos: [] });
+  assert.match(none.err(), /no data plane \(no registered Machine composes a Sandbox\)/);
 });

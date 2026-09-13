@@ -1,9 +1,9 @@
-// `workspace(body, { input, image, user, spec })` (ADR-0012, ADR-0049): the j2-owned wrapper
-// Machine that owns ONLY Sandbox lifecycle — provision the Sandbox (out of the STATIC `image`/`user`
-// options it carries) + attach repos/worktrees, run the author's body Machine inside it as the named
-// slot `body`, with `{ workspace: { workdir, repos, branch } }` appended to its input (the
-// mechanism-facing endpoint/sandbox are published ambiently — ADR-0016, ambient.ts), and
-// destroy the Sandbox when the body reaches a final state. Teardown lives INSIDE the
+// `workspace(body, { input, image, user, repos, spec })` (ADR-0012, ADR-0049, ADR-0051): the
+// j2-owned wrapper Machine that owns ONLY Sandbox lifecycle — provision the Sandbox (out of the
+// STATIC `image`/`user`/`repos` options it carries) + attach one worktree per Repo Slot, run the
+// author's body Machine inside it as the named slot `body`, with `{ workspace: { workdir, repos,
+// branch } }` appended to its input (the mechanism-facing endpoint/sandbox are published ambiently
+// — ADR-0016, ambient.ts), and destroy the Sandbox when the body reaches a final state. Teardown lives INSIDE the
 // wrapper's own states because an xstate stop is synchronous — multi-step async cleanup must be
 // states the machine transitions through itself, which forces the thing that provisions to also
 // observe the body's completion (the ADR's load-bearing argument). There is no retain policy: a
@@ -36,8 +36,18 @@ import {
 } from "xstate";
 import type { z } from "zod";
 import { registerAmbientHandles, type AmbientHandles } from "./ambient.ts";
-import type { RepoName } from "./config.ts";
-import { attachSandboxParts, attachWrapperBody, sandboxPartsOf, type J2Wrapper, type WrapperActors } from "./parts.ts";
+import {
+  assertRepoSlot,
+  attachSandboxParts,
+  attachWrapperBody,
+  repoSlotState,
+  sandboxPartsOf,
+  type Binding,
+  type J2Repos,
+  type J2Wrapper,
+  type RepoSlot,
+  type WrapperActors,
+} from "./parts.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInput } from "./vocabulary.ts";
 
@@ -46,22 +56,14 @@ import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInp
  * workspace that went away (ADR-0021). */
 const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
 
-/** What to attach, in workspace vocabulary only (ADR-0012 boundary): which repos on what base ref,
- * the one branch the body works on, and the pod's work group. Derived PER RUN from the wrapper's
- * input, which is what keeps it out here rather than in the options — and which is exactly why the
- * two IMAGES are NOT here (ADR-0049): `j2 up` must find them by walking the Machine, and no walk
- * can evaluate a function of run input. They are static `workspace()` options instead. */
+/** What to attach, in workspace vocabulary only (ADR-0012 boundary): the one branch the body
+ * works on, the pod's work group, and the review sha. Derived PER RUN from the wrapper's input,
+ * which is what keeps it out here rather than in the options — and which is exactly why the two
+ * IMAGES and the REPOS are NOT here (ADR-0049, ADR-0051): `j2 up` must find them by walking the
+ * Machine, and no walk can evaluate a function of run input. They are static `workspace()`
+ * options instead; a Repo that IS a function of run input is a per-run slot, a mapper the walk
+ * can see the shape of even though it cannot see the url. */
 export type WorkspaceSpec = {
-  /** Which catalogued repos to attach (ADR-0004). `name` is a {@link RepoName}: in a program whose
-   * `j2.config.ts` fills the {@link Register}, that is the catalog's own names, so a typo is a
-   * compile error under `j2 up`'s typecheck gate rather than an attach-time refusal (ADR-0050).
-   * Unregistered — this package's tests, a Machine packaged for someone else's Instance — it is
-   * `string`, and the port's runtime refusal is still the check.
-   *
-   * `baseRef` absent → the repo's OWN default branch: the attach bases the worktree on
-   * `origin/HEAD`, which the reconcile's clone pointed at the remote's default (ADR-0004) — so
-   * nothing anywhere hardcodes a guess like `main` against a `master` repo. */
-  repos: Array<{ name: RepoName; baseRef?: string }>;
   branch: string;
   /** The pod's work group (ADR-0005): `fsGroup`, default 2000. The two writing seats may run
    * different uids — each image's own `USER` decides — and POSIX would then make the other seat's
@@ -79,20 +81,21 @@ export type WorkspaceSpec = {
 };
 
 /**
- * What the workspace hands the BODY (ADR-0012, ADR-0016): worktree geography only.
- * `endpoint` and `sandbox` are mechanism-internal now — the Agent actor resolves them ambiently from
+ * What the workspace hands the BODY (ADR-0012, ADR-0016): worktree geography only, keyed by Repo
+ * Slot (ADR-0051) — so a path a prompt names is right in every Instance that consumes the Machine.
+ * `endpoint` and `sandbox` are mechanism-internal — the Agent actor resolves them ambiently from
  * the enclosing wrapper (ambient.ts), so a workflow can no longer forget to thread them (the
  * baba71f incident: `sandbox` omitted, every tool call 403'd, fail-closed but silent).
  */
-export type WorkspaceHandles = {
-  /** The primary working directory: the FIRST spec repo's branch worktree. */
+export type WorkspaceHandles<TSlots extends string = string> = {
+  /** The primary working directory: the FIRST declared slot's branch worktree. */
   workdir: string;
-  /** Every attached repo's branch-worktree path, by repo name. */
-  repos: Record<string, string>;
+  /** Every slot's branch-worktree path: `/work/<slot>/<branch>`. */
+  repos: Record<TSlots, string>;
   branch: string;
-  /** Detached review-worktree paths by repo name (ADR-0028) — present only when the spec carried
+  /** Detached review-worktree paths by slot (ADR-0028) — present only when the spec carried
    * `reviewSha`. The reviewer's seat: hand one of these as its cwd/prompt frame. */
-  review?: Record<string, string>;
+  review?: Partial<Record<TSlots, string>>;
 };
 
 /**
@@ -108,7 +111,7 @@ export type WorkspaceHandles = {
  * That is outside this type on purpose: it depends on where the wrapper sits, and `Workspaced` is
  * the composition the WRAPPER makes.
  */
-export type Workspaced<TInput> = TInput & { workspace: WorkspaceHandles };
+export type Workspaced<TInput, TSlots extends string = string> = TInput & { workspace: WorkspaceHandles<TSlots> };
 
 /**
  * What a renewal learned about the workspace it just stamped (ADR-0021).
@@ -122,6 +125,11 @@ export type Workspaced<TInput> = TInput & { workspace: WorkspaceHandles };
  */
 export type Continuity = { present: false } | { present: true; identity?: string };
 
+/** One Repo Slot as the port receives it at provision (ADR-0051): resolved to a Binding, and
+ * flagged when the run — not the Machine — chose the url, because that is what the credentials
+ * fence keys on. */
+export type ProvisionedRepo = { slot: string; url: string; ref?: string; perRun: boolean };
+
 /**
  * The Sandbox backend a host supplies (`RunHostOptions.sandbox`) — the seam between the
  * workspace Machine and the cluster. All four operations MUST be idempotent: the invoking
@@ -132,8 +140,10 @@ export interface SandboxPort {
    * resolve with the Harness endpoint the orchestrator can reach, and the identity the lease
    * will hold this workspace to. `image`/`user` are the wrapper's static image options
    * (ADR-0037/0005/0049) — a `file:` context or a registry ref, the port resolves both, and a
-   * context the last converge did not build fails here rather than converge-time. `workGroup` is
-   * the pod's `fsGroup`; the port owns the default. */
+   * context the last converge did not build fails here rather than converge-time. `repos` are the
+   * wrapper's slots, resolved, in declaration order (ADR-0051): the port names each Repo on the
+   * CR so the cluster mounts its cache, and refuses a per-run url no `git.credentials` entry
+   * admits. `workGroup` is the pod's `fsGroup`; the port owns the default. */
   provision(req: {
     name: string;
     runId: string;
@@ -141,14 +151,23 @@ export interface SandboxPort {
     image?: string;
     user?: string;
     workGroup?: number;
+    repos: ProvisionedRepo[];
   }): Promise<{ endpoint: string; identity?: string }>;
-  /** Post-Ready attach (ADR-0004): per repo, `git clone --shared --no-checkout` from the RO
-   * `default/` volume, then a branch worktree sibling — and, with `spec.reviewSha`, the detached
-   * review worktree (ADR-0028). Resolves with the worktree paths. */
+  /** Post-Ready attach (ADR-0004): per slot, `git clone --shared --no-checkout` off the node's
+   * read-only cache, then a branch worktree sibling — and, with `spec.reviewSha`, the detached
+   * review worktree (ADR-0028). Resolves with the worktree paths by slot; `stale` names the slots
+   * whose cache could not be fetched before this attach, with git's own error (ADR-0051: freshness
+   * degrades, absence does not). */
   attach(req: {
     name: string;
     spec: WorkspaceSpec;
-  }): Promise<{ workdir: string; repos: Record<string, string>; review?: Record<string, string> }>;
+    repos: Array<{ slot: string; url: string; ref?: string }>;
+  }): Promise<{
+    workdir: string;
+    repos: Record<string, string>;
+    review?: Record<string, string>;
+    stale?: Record<string, string>;
+  }>;
   /**
    * Renew this workspace's keepalive lease AND report what the renewal found — one exchange,
    * because it is one question: is the thing I am keeping alive still the thing I attached to?
@@ -171,8 +190,8 @@ export function sandboxOf(system: AnyActorSystem): SandboxPort {
   const port = runBindingOf(system).sandbox;
   if (!port) {
     throw new Error(
-      "this orchestrator has no Sandbox backend — workspace() needs a cluster with the instance's " +
-        "repos (declare a non-empty `repos` in j2.config.ts and converge with `j2 up` — ADR-0031)",
+      "this orchestrator has no Sandbox backend — a Workspace is always a real Sandbox (ADR-0012); " +
+        "this process is not deployed in a cluster (J2_NAMESPACE unset). `j2 up` the instance and run there.",
     );
   }
   return port;
@@ -199,6 +218,11 @@ export function workspaceName(runId: string, wsId: string): string {
  * (ambient.ts). The body sees only the {@link WorkspaceHandles} subset. */
 type MechanismHandles = AmbientHandles;
 
+/** One slot as the run resolved it (ADR-0051): the Binding, and whether the run's input chose
+ * it. Persisted, so the attach after a restore reuses exactly what was provisioned — a per-run
+ * mapper is not re-evaluated against an input that may since have been re-parsed. */
+export type ResolvedBinding = { url: string; ref?: string; perRun: boolean };
+
 type WsContext = {
   /** The wrapper's own input, passed through to the body untouched (plus `workspace`). */
   runInput: Record<string, unknown>;
@@ -206,6 +230,8 @@ type WsContext = {
   wsId: string;
   /** The resolved spec — computed once from input and persisted, like any other context data. */
   spec: WorkspaceSpec;
+  /** Every slot's resolved Binding, by slot, in declaration order — assigned at provision. */
+  bindings?: Record<string, ResolvedBinding>;
   endpoint?: string;
   /** The pod identity this workspace attached to, captured at provision and persisted so the
    * lease can hold the workspace to it across a restart (ADR-0021). Plain serializable data,
@@ -230,7 +256,12 @@ type WsContext = {
  * `customize()` reaches the body because this Machine IS one, never because a slot is spelled
  * `body`: that name is an author's to choose too (parts.ts).
  */
-export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine = AnyStateMachine> = StateMachine<
+export type WorkspaceMachine<
+  TInput,
+  TOutput,
+  TBody extends AnyStateMachine = AnyStateMachine,
+  TSlots extends string = string,
+> = StateMachine<
   any,
   any,
   any,
@@ -246,7 +277,8 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine = An
   any,
   any
 > &
-  J2Wrapper<TBody>;
+  J2Wrapper<TBody> &
+  J2Repos<TSlots>;
 
 /**
  * The door CONSTRAINS the body (ADR-0033), in one direction only: the body may not demand more
@@ -278,23 +310,27 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine = An
  * demanding MORE than the door provides compiles. Both directions are pinned by
  * `test/door-types.test.ts`, which the typecheck gate runs.
  */
-type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor> =
-  Workspaced<TDoor> & HostInjectedInput extends InputFrom<TBody>
+// The handles are keyed by the wrapper's DECLARED slots (ADR-0051), so a body demanding a slot the
+// wrapper never declared is refused here too; demanding fewer is fine, as with any other field.
+type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor, TSlots extends string> =
+  Workspaced<TDoor, TSlots> & HostInjectedInput extends InputFrom<TBody>
     ? unknown
-    : { "the body's declared input must accept the door plus the injected handles": Workspaced<TDoor> };
+    : { "the body's declared input must accept the door plus the injected handles": Workspaced<TDoor, TSlots> };
 
 /**
- * What the Sandbox is MADE OF (ADR-0037, ADR-0005), as STATIC options on the wrapper rather than
- * fields of the per-run spec (ADR-0049). Static is the whole point: `j2 up` walks the registered
- * Machines to find every `file:` context and build it (parts.ts), and a spec is a function of run
- * input that no walk can evaluate. They are also never persisted — the provisioning state re-reads
- * them off the Machine it was invoked as, so a restore, a `provide()` and a `customize()` all get
- * the image the Machine carries NOW.
+ * What the Sandbox is MADE OF (ADR-0037, ADR-0005) and which Repos it attaches (ADR-0051), as
+ * STATIC options on the wrapper rather than fields of the per-run spec (ADR-0049). Static is the
+ * whole point: `j2 up` walks the registered Machines to find every `file:` context and build it,
+ * every bound Repo and warm it, every open slot and refuse it (parts.ts) — and a spec is a function
+ * of run input that no walk can evaluate. They are also never persisted — the provisioning state
+ * re-reads them off the Machine it was invoked as, so a restore, a `provide()` and a `customize()`
+ * all get the image and the slots the Machine carries NOW.
  *
- * Each is one string in ADR-0037's two shapes: a `file:` URL to a docker context the Machine's
- * module ships (`import.meta.resolve("./image")`), or a registry ref its owner baked and hosts.
+ * Each image is one string in ADR-0037's two shapes: a `file:` URL to a docker context the
+ * Machine's module ships (`import.meta.resolve("./image")`), or a registry ref its owner baked and
+ * hosts.
  */
-export type SandboxOptions = {
+export type SandboxOptions<TSlots extends string = string, TInput = unknown> = {
   /** The Sandbox Image. Absent → the Instance's `images/default`, then the stock Harness. */
   image?: string;
   /** The User Container's image (ADR-0005). Absent → the pod has no third container: there is no
@@ -302,6 +338,14 @@ export type SandboxOptions = {
    * there. One string is the entire authoring surface — env, ports, and resources are deliberately
    * not forwarded. */
   user?: string;
+  /**
+   * The Repo Slots (ADR-0051), keyed by the Machine's own word for each — the key of the body's
+   * `workspace.repos` handles and the directory under `/work`; the FIRST is the body's `workdir`.
+   * Required, at least one: a Workspace exists to work on a repository. Each slot is bound (a url,
+   * or `{ url, ref? }` — the package's own), open (`open` — the consumer binds it with
+   * `customize`), or per-run (a mapper over the door: `({ input }) => input.repo`).
+   */
+  repos: Record<TSlots, RepoSlot<TInput>>;
 };
 
 /**
@@ -309,7 +353,10 @@ export type SandboxOptions = {
  * run-input schema, what the pod is made of, and the mapping from what comes through the door to
  * workspace vocabulary.
  */
-export type WorkspaceOptions<TSchema extends z.ZodObject> = SandboxOptions & {
+export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string = string> = SandboxOptions<
+  TSlots,
+  z.infer<TSchema>
+> & {
   /** The wrapper's OWN declared run input (ADR-0033) — what a caller sends to start a run of it,
    * what types `spec`'s `input`, and what the body is checked against. Deliberately NOT the body's
    * schema: the body is fed the run input PLUS the injected `workspace` handles
@@ -329,7 +376,10 @@ export type WorkspaceOptions<TSchema extends z.ZodObject> = SandboxOptions & {
  * parameter (`spec: ({ input }: { input: Item }) => …`), which types the wrapper's input too. For
  * anything a caller starts, the honest fix is to declare `input`.
  */
-export type PermissiveWorkspaceOptions<TInput = unknown> = SandboxOptions & {
+export type PermissiveWorkspaceOptions<TInput = unknown, TSlots extends string = string> = SandboxOptions<
+  TSlots,
+  TInput
+> & {
   /** Never present on this path. Spelled out so a declared schema can never fall through to the
    * permissive overload, where the body would go unchecked. */
   input?: never;
@@ -344,17 +394,17 @@ export type PermissiveWorkspaceOptions<TInput = unknown> = SandboxOptions & {
  * loudly (RunStatus.fault) and leaves the Sandbox to the operator's idle-timeout GC — the trail
  * stays inspectable, and silent cleanup would destroy the evidence.
  */
-export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMachine>(
-  body: TBody & BodyAcceptsDoor<TBody, z.infer<TSchema>>,
-  options: WorkspaceOptions<TSchema>,
-): WorkspaceMachine<z.infer<TSchema>, OutputFrom<TBody>, TBody>;
-export function workspace<TBody extends AnyStateMachine, TInput = unknown>(
+export function workspace<TSchema extends z.ZodObject, TBody extends AnyStateMachine, TSlots extends string>(
+  body: TBody & BodyAcceptsDoor<TBody, z.infer<TSchema>, TSlots>,
+  options: WorkspaceOptions<TSchema, TSlots>,
+): WorkspaceMachine<z.infer<TSchema>, OutputFrom<TBody>, TBody, TSlots>;
+export function workspace<TBody extends AnyStateMachine, TInput = unknown, TSlots extends string = string>(
   body: TBody,
-  options: PermissiveWorkspaceOptions<TInput>,
-): WorkspaceMachine<TInput, OutputFrom<TBody>, TBody>;
+  options: PermissiveWorkspaceOptions<TInput, TSlots>,
+): WorkspaceMachine<TInput, OutputFrom<TBody>, TBody, TSlots>;
 export function workspace(
   body: AnyStateMachine,
-  options: SandboxOptions & { input?: z.ZodObject; spec: (args: { input: any }) => WorkspaceSpec },
+  options: SandboxOptions<string, any> & { input?: z.ZodObject; spec: (args: { input: any }) => WorkspaceSpec },
 ): AnyStateMachine {
   // A body that still declares its own run input is a dead declaration under the door design: the
   // wrapper never serves it, never validates against it, and feeds the body something it does not
@@ -379,18 +429,31 @@ export function workspace(
       );
     }
   }
+  // The slots, checked NOW for the same reason (ADR-0051): every value is one of the three forms,
+  // every key is a directory name, and there is at least one — a Workspace exists to work on a
+  // repository, and a wrapper with no slot would attach nothing and hand the body no `workdir`.
+  const repos = options.repos;
+  if (typeof repos !== "object" || repos === null || Array.isArray(repos) || Object.keys(repos).length === 0) {
+    throw new Error(
+      'workspace(): `repos` must name at least one Repo Slot — `repos: { app: "https://…" }`, or ' +
+        "`open` for a slot the consumer binds, or a mapper over the door for one the run chooses (ADR-0051).",
+    );
+  }
+  for (const [slot, value] of Object.entries(repos)) assertRepoSlot("workspace()", slot, value);
   const wrapper = buildWorkspaceMachine(body, options.spec);
   // The wrapper is TRANSPARENT to its body (ADR-0049): `customize(machine, { agents })` on a
   // Workspace means the Machine inside, so the composer never spells `body` and never has to know
   // that j2 wrapped anything.
   attachWrapperBody(wrapper, "body");
-  // What the pod is MADE of rides the Machine (ADR-0049), keyed on `machine.config` like the
-  // vocabulary — so a `provide()` clone keeps it, and the provisioning state reads it back off the
-  // Machine it was invoked as instead of closing over these values. That is also what lets `j2 up`
-  // find every `file:` context by walking the registered Machines (parts.ts).
+  // What the pod is MADE of and which Repos it attaches ride the Machine (ADR-0049, ADR-0051),
+  // keyed on `machine.config` like the vocabulary — so a `provide()` clone keeps them, and the
+  // provisioning state reads them back off the Machine it was invoked as instead of closing over
+  // these values. That is also what lets `j2 up` find every `file:` context, every bound Repo and
+  // every open slot by walking the registered Machines (parts.ts).
   attachSandboxParts(wrapper, {
     ...(options.image !== undefined ? { image: options.image } : {}),
     ...(options.user !== undefined ? { user: options.user } : {}),
+    repos: { ...repos },
   });
   // The body's vocabulary stays the BODY's (ADR-0011, ADR-0049): the wrapper declares no events
   // of its own and merges none, because the actors that use the body's names resolve against the
@@ -414,15 +477,6 @@ export function workspace(
 function assertSpec(spec: WorkspaceSpec): void {
   const bad: string[] = [];
   if (typeof spec?.branch !== "string" || !spec.branch) bad.push(`branch (got ${JSON.stringify(spec?.branch)})`);
-  if (!Array.isArray(spec?.repos) || spec.repos.length === 0) bad.push("repos (need at least one)");
-  else
-    spec.repos.forEach((r, i) => {
-      if (typeof r?.name !== "string" || !r.name) bad.push(`repos[${i}].name (got ${JSON.stringify(r?.name)})`);
-      // Optional: absent means "the repo's own default branch" (origin/HEAD, resolved in the
-      // attach). Present-but-empty is still the derives-from-input bug this guard exists for.
-      if (r?.baseRef !== undefined && (typeof r.baseRef !== "string" || !r.baseRef))
-        bad.push(`repos[${i}].baseRef (got ${JSON.stringify(r?.baseRef)})`);
-    });
   if (spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
     bad.push(`reviewSha (got ${JSON.stringify(spec?.reviewSha)})`);
   // A gid, so an integer — a float or a negative becomes a pod the API server rejects at
@@ -440,36 +494,104 @@ function assertSpec(spec: WorkspaceSpec): void {
   }
 }
 
+/**
+ * Resolve every Repo Slot to a Binding, in declaration order (ADR-0051). A bound slot is its
+ * Binding; a per-run slot is its mapper called over the run input, validated like the static forms
+ * because it derives from `j2 run --input` exactly as the spec does; an open slot nobody bound is
+ * a fault BEFORE the port, naming the `customize` line that fixes it — the run-time twin of the
+ * refusal `j2 up`'s walk makes for a registered Machine, reached here only by a Machine that was
+ * never registered as itself (a test seam, a nested invoke of an unbound import).
+ */
+function resolveBindings(
+  machineId: string,
+  slots: Record<string, RepoSlot>,
+  runInput: unknown,
+): Record<string, ResolvedBinding> {
+  const bindings: Record<string, ResolvedBinding> = {};
+  for (const [slot, value] of Object.entries(slots)) {
+    const state = repoSlotState(value);
+    if (state.kind === "open") {
+      throw new Error(
+        `workspace "${machineId}": Repo Slot "${slot}" is open — nobody bound it; ` +
+          `customize(${machineId}, { repos: { ${slot}: "<url>" } }) (ADR-0051)`,
+      );
+    }
+    if (state.kind === "bound") {
+      bindings[slot] = { ...state.binding, perRun: false };
+      continue;
+    }
+    const mapped = state.mapper({ input: runInput });
+    const binding: Binding | undefined =
+      typeof mapped === "string" ? { url: mapped } : typeof mapped === "object" && mapped !== null ? mapped : undefined;
+    const bad: string[] = [];
+    if (typeof binding?.url !== "string" || !binding.url)
+      bad.push(`url (got ${JSON.stringify(binding === undefined ? mapped : binding.url)})`);
+    if (binding?.ref !== undefined && (typeof binding.ref !== "string" || !binding.ref))
+      bad.push(`ref (got ${JSON.stringify(binding.ref)})`);
+    if (bad.length) {
+      throw new Error(
+        `workspace spec invalid: repos.${slot} mapper returned ${bad.join("; ")} — the mapper derives from run ` +
+          "input; does `j2 run --input` carry every field this workflow's workspace() slot reads?",
+      );
+    }
+    bindings[slot] = { ...binding!, perRun: true };
+  }
+  return bindings;
+}
+
+/** The port-facing view of the persisted bindings, in declaration order. */
+function attachedRepos(bindings: Record<string, ResolvedBinding>): Array<{ slot: string; url: string; ref?: string }> {
+  return Object.entries(bindings).map(([slot, b]) => ({
+    slot,
+    url: b.url,
+    ...(b.ref !== undefined ? { ref: b.ref } : {}),
+  }));
+}
+
 function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
-  const provision = fromPromise<{ endpoint: string }, { wsId: string; spec: WorkspaceSpec }>(
-    async ({ input, self, system }) => {
-      assertSpec(input.spec); // before the port: a bad spec must never cost a pod
-      const binding = runBindingOf(system);
-      // The images come off the WRAPPER, at invoke time, not out of context and not out of a
-      // build-time closure (ADR-0049). This state re-runs on every restore, so the re-read is the
-      // whole mechanism: a redeployed instance provisions what the Machine carries NOW, and no
-      // snapshot ever holds an image name — let alone a resolved content-addressed tag, which
-      // would outlive the image it names.
-      const parts = sandboxPartsOf(invokingMachine(self));
-      return sandboxOf(system).provision({
-        name: workspaceName(binding.runId, input.wsId),
-        runId: binding.runId,
-        workflow: binding.workflow,
-        // The image strings straight through (ADR-0037/0005) — the port owns resolution, and the
-        // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
-        ...(parts.image !== undefined ? { image: parts.image } : {}),
-        ...(parts.user !== undefined ? { user: parts.user } : {}),
-        ...(input.spec.workGroup !== undefined ? { workGroup: input.spec.workGroup } : {}),
-      });
-    },
-  );
+  const provision = fromPromise<
+    { endpoint: string; identity?: string; bindings: Record<string, ResolvedBinding> },
+    { wsId: string; spec: WorkspaceSpec; runInput: unknown }
+  >(async ({ input, self, system }) => {
+    assertSpec(input.spec); // before the port: a bad spec must never cost a pod
+    const binding = runBindingOf(system);
+    // The images and the slots come off the WRAPPER, at invoke time, not out of context and not
+    // out of a build-time closure (ADR-0049, ADR-0051). This state re-runs on every restore, so
+    // the re-read is the whole mechanism: a redeployed instance provisions what the Machine
+    // carries NOW, and no snapshot ever holds an image name — let alone a resolved
+    // content-addressed tag, which would outlive the image it names. The RESOLVED bindings are
+    // persisted, because a per-run mapper's answer is this run's fact.
+    const invoking = invokingMachine(self);
+    const parts = sandboxPartsOf(invoking);
+    const bindings = resolveBindings(invoking?.id ?? "workspace", parts.repos, input.runInput);
+    const provisioned = await sandboxOf(system).provision({
+      name: workspaceName(binding.runId, input.wsId),
+      runId: binding.runId,
+      workflow: binding.workflow,
+      // The image strings straight through (ADR-0037/0005) — the port owns resolution, and the
+      // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
+      ...(parts.image !== undefined ? { image: parts.image } : {}),
+      ...(parts.user !== undefined ? { user: parts.user } : {}),
+      ...(input.spec.workGroup !== undefined ? { workGroup: input.spec.workGroup } : {}),
+      repos: Object.entries(bindings).map(([slot, b]) => ({ slot, ...b })),
+    });
+    return { ...provisioned, bindings };
+  });
 
   const attach = fromPromise<
-    { workdir: string; repos: Record<string, string>; review?: Record<string, string> },
-    { wsId: string; spec: WorkspaceSpec }
-  >(async ({ input, system }) =>
-    sandboxOf(system).attach({ name: workspaceName(runBindingOf(system).runId, input.wsId), spec: input.spec }),
-  );
+    { workdir: string; repos: Record<string, string>; review?: Record<string, string>; stale?: Record<string, string> },
+    { wsId: string; spec: WorkspaceSpec; bindings: Record<string, ResolvedBinding> }
+  >(async ({ input, system }) => {
+    const name = workspaceName(runBindingOf(system).runId, input.wsId);
+    const out = await sandboxOf(system).attach({ name, spec: input.spec, repos: attachedRepos(input.bindings) });
+    // Announced, never persisted (ADR-0051): a stale cache is a degraded attach the run proceeds
+    // through on the objects the node holds — the worktree's `origin` is the real remote, so the
+    // Agent's own `git fetch` still reaches the truth. It is a notice, not a fact of the run.
+    for (const [slot, error] of Object.entries(out.stale ?? {})) {
+      console.error(`workspace ${name}: Repo Slot "${slot}" attached from a stale cache — ${error}`);
+    }
+    return out;
+  });
 
   // The ambient registrar (ADR-0016): publishes this wrapper's handles for the parent-chain
   // walk the Agent actor does. An INVOKED actor, co-invoked in `running` beside the body — invoked
@@ -568,12 +690,15 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
           input: ({ context }) => ({
             wsId: (context as unknown as WsContext).wsId,
             spec: (context as unknown as WsContext).spec,
+            runInput: (context as unknown as WsContext).runInput,
           }),
           onDone: {
             target: "attaching",
             actions: assign({
               endpoint: ({ event }) => (event as unknown as { output: { endpoint: string } }).output.endpoint,
               identity: ({ event }) => (event as unknown as { output: { identity?: string } }).output.identity,
+              bindings: ({ event }) =>
+                (event as unknown as { output: { bindings: Record<string, ResolvedBinding> } }).output.bindings,
             }),
           },
         },
@@ -584,6 +709,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
           input: ({ context }) => ({
             wsId: (context as unknown as WsContext).wsId,
             spec: (context as unknown as WsContext).spec,
+            bindings: (context as unknown as WsContext).bindings!,
           }),
           onDone: {
             target: "running",
