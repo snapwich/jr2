@@ -593,8 +593,10 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     const name = workspaceName(runBindingOf(system).runId, input.wsId);
     const out = await sandboxOf(system).attach({ name, spec: input.spec, repos: attachedRepos(input.bindings) });
     // Announced, never persisted (ADR-0051): a stale cache is a degraded attach the run proceeds
-    // through on the objects the node holds — the worktree's `origin` is the real remote, so the
-    // Agent's own `git fetch` still reaches the truth. It is a notice, not a fact of the run.
+    // through on the objects the node holds. The pod cannot heal it — the worktree's `origin`
+    // fetches from the cache, not the remote (ADR-0005: the pod holds no credential) — so stale
+    // lasts until the cache agent's next successful fetch lands in place, which the Agent's own
+    // `git fetch` then picks up. It is a notice, not a fact of the run.
     for (const [slot, error] of Object.entries(out.stale ?? {})) {
       console.error(`workspace ${name}: Repo Slot "${slot}" attached from a stale cache — ${error}`);
     }

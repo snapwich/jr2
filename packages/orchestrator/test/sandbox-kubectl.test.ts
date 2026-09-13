@@ -1033,6 +1033,15 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
     /git -C '\/work\/app\/default' remote set-url --push origin -- 'git@github\.com:acme\/app\.git'/,
   );
   assert.doesNotMatch(script, /config remote\.origin\.url/);
+  // And ONLY push: the fetch url stays the cache the clone was taken from — the pod holds no
+  // credential for the remote (ADR-0005), which is why a stale attach stays stale until the cache
+  // agent's next fetch (ADR-0051). A `set-url` without `--push`, a `remote add`, or a fetch url
+  // rewrite would point the Agent's `git fetch` at a remote it cannot reach.
+  for (const line of script.split("\n")) {
+    if (/\bremote\b/.test(line))
+      assert.match(line, /remote set-url --push origin -- /, `only the push url is set: ${line}`);
+  }
+  assert.doesNotMatch(script, /remote\.origin\.(fetch|url)|remote add|--fetch/);
   // No ref → the Repo's OWN default branch, via the clone's origin/HEAD — never a hardcoded
   // guess like `main` against a `master` repo.
   const defaulted = await port.attach({

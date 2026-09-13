@@ -19,8 +19,9 @@ pointing at `j2 up`.
 - **A Workspace provision needing an unsynced repo fails pointedly**, naming the repo and the last sync error — the
   moment the degradation actually bites is the moment it is reported, to the run that owns the consequence. The line is
   the clone (ADR-0051): a cold node whose clone fails fails the provision; a warm cache whose fetch fails lets the
-  attach proceed on the objects it holds, announced as stale with git's error — the worktree's `origin` is the real
-  remote, so the Agent's own `git fetch` still reaches the truth.
+  attach proceed on the objects it holds, announced as stale with git's error. The pod cannot heal it — the worktree's
+  `origin` fetches from the cache (ADR-0005) — so stale lasts until the cache agent's next successful fetch, which the
+  Agent's own `git fetch` then picks up in place.
 - **Repo sync state is observable**: it lives on each `Repo` resource's status, per node, and `j2 status` reports repos
   that are not synced with their last error — the place ADR-0047's "register the key, the cache agent retries" points
   at.

@@ -939,7 +939,8 @@ export function attachScript(
       // No ref → the Repo's own default branch: this clone's `origin/HEAD` tracks the cache's
       // HEAD, which the cache agent's clone pointed at the remote's default (ADR-0004).
       `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${sq(repo.ref ?? "origin/HEAD")}`,
-      // Fetch/push split (ADR-0005): `git fetch` stays on the cache (the hop the pod can make),
+      // Fetch/push split (ADR-0005): `git fetch` stays on the cache (the hop the pod can make —
+      // which is why a stale attach stays stale until the cache agent's next fetch, ADR-0051),
       // `git push` goes to the REAL remote — the Binding's own spelling, so a Machine that bound
       // over ssh pushes over ssh even when the cache was cloned over https (ADR-0051). Push still
       // succeeds only with a caller-supplied credential (a forwarded agent in the User Container);
