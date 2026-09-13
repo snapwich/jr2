@@ -20,6 +20,26 @@ cache whose refresh failed is `Ready` with `ReposFresh=False`, a cold node that 
 `RepoCloneFailed`. That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the
 Orchestrator's post-Ready step (ADR-0004).
 
+## The cache agent (`/manager repo-cache`)
+
+The same binary is the per-node cache agent (`internal/repocache/`): `j2 up` runs it as a DaemonSet in every Instance
+namespace with a data plane, root-seated over the hostPath `/var/lib/j2/<namespace>/repos`. Keyed by Repo and woken by
+the Sandboxes on its node, it clones a cache the first time a Sandbox there names it, probes a Repo nobody asks for once
+per spec generation (the sync signal `j2 status` shows before any run), fetches on demand before an attach and on
+`spec.refreshInterval`, pins gc on every cache it clones or adopts (ADR-0004), and evicts a cache once its Repo is gone
+and nothing on the node mounts it. Credentials come from `spec.secretRef` alone: an https token rides a credential
+helper in the environment, a deploy key is written to `$HOME/.ssh/<key>`. It writes one thing on the API — its own
+entry in `status.nodes` — under an optimistic lock. To run one by hand against the current kubecontext:
+
+```sh
+# from operator/
+go run ./cmd repo-cache --cache-dir /tmp/j2-cache --namespace <ns> --node <name>
+```
+
+`--namespace` and `--node` default to `J2_NAMESPACE` and `NODE_NAME` (the DaemonSet's downward API); `--min-backoff`
+and `--max-backoff` bound the retry after a failed clone or probe. The image carries `git` and `ssh` for it, which is
+why the final stage is alpine rather than distroless.
+
 ## What it does (ADR-0001)
 
 The CRD is infrastructure-only — it knows nothing about git, worktrees, or Agents. Agents are injected one layer up as
@@ -81,6 +101,8 @@ make test          # envtest-backed controller suite + fast fake-client unit tes
 - `internal/controller/sandbox_controller_test.go` — envtest: owned Pod+Service creation, Pending→Ready transition,
   endpoint/refs.
 - `internal/controller/idletimeout_test.go` — fake-client: orphan idle-GC fires; owned Sandbox survives and provisions.
+- `internal/repocache/agent_test.go`, `creds_test.go` — fake-client + fake git: clone on demand, probe once per
+  generation, on-demand and interval fetch, stale-not-absent on a failed fetch, eviction, the sweep, credential shapes.
 
 > The Makefile pins `GOTOOLCHAIN` to the `go` version in `go.mod` so local builds are reproducible and match CI. This
 > avoids two `GOTOOLCHAIN=auto` drift bugs: the `golangci-lint custom` build producing a linter that refused the newer

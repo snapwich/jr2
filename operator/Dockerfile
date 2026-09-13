@@ -21,11 +21,15 @@ COPY . .
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+# The same image is the manager and the cache agent (`/manager repo-cache`,
+# ADR-0051), so it carries what the agent execs: git, ssh, and the CA bundle
+# for https remotes. The manager keeps its non-root seat; the cache agent's
+# DaemonSet overrides it to root, because a node agent writes a hostPath the
+# kubelet creates root-owned.
+FROM alpine:3.21
+RUN apk add --no-cache git openssh-client ca-certificates
 WORKDIR /
-COPY --from=builder /workspace/manager .
+COPY --from=builder /workspace/manager /manager
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

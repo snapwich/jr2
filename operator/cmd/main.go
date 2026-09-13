@@ -37,6 +37,7 @@ import (
 
 	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
 	"github.com/snapwich/j2/operator/internal/controller"
+	"github.com/snapwich/j2/operator/internal/repocache"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -54,6 +55,12 @@ func init() {
 
 // nolint:gocyclo
 func main() {
+	// The same binary is the cache agent (ADR-0051): `/manager repo-cache …`
+	// runs one node's agent instead of the manager, with its own flags.
+	if len(os.Args) > 1 && os.Args[1] == "repo-cache" {
+		os.Exit(repocache.Main(os.Args[2:]))
+	}
+
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
