@@ -34,20 +34,20 @@ machine is the one piece of its vocabulary that pattern missed.
   schema (`z.infer`), so a workflow states its shape once and the workspace mapping is checked against it — the drift
   this ADR exists to close, closed in the one place that used to re-declare the shape by hand. The same schema checks
   the _body_, in **one direction only**: the body may not demand more than the wrapper will hand it, which is
-  `Workspaced<door>`; demanding _less_ is safe, because it is fed a superset. So a body reading a field the door never
-  carries is a build error at the `workspace()` call instead of an `undefined` mid-run. One field sits outside that
-  check, named as `HostInjectedInput`: the host adds `instanceId` to the input of the machine a run _starts_ with, so a
-  root-placed wrapper hands its body the door, the handles, _and_ that — while a nested one does not, and no type can
-  see which. It is not door material either (no caller sends it, `start` overwrites it after the parse, nothing serves
-  it), so widening the door would be the wrong fix. The guard takes the permissive answer: it counts those keys as
-  _provided_, so a body may declare the field honestly. Counting them as provided rather than subtracting them from what
-  the body demands is deliberate — subtraction would drop the keys from the comparison and with them two cases the check
-  owns: a body that mistypes `instanceId`, and a body whose input is a union, which subtraction compares on its members'
-  shared keys alone. The typed wrapper also checks the seam above it — a parent invoking a nested `workspace()` has its
-  input mapper checked against that wrapper's door, and gets the body's output typed back. With no schema declared the
-  door is permissive, so there is nothing to infer and the mapper's argument is `unknown` — an honest "j2 does not
-  know", not `any`; a wrapper fed by something other than a caller (a pool worker) states what it is fed by annotating
-  the parameter, as `PoolSpec.cap`/`itemInput` do.
+  `Workspaced<door, slots>`; demanding _less_ is safe, because it is fed a superset. So a body reading a field the door
+  never carries is a build error at the `workspace()` call instead of an `undefined` mid-run. One field sits outside
+  that check, named as `HostInjectedInput`: the host adds `instanceId` to the input of the machine a run _starts_ with,
+  so a root-placed wrapper hands its body the door, the handles, _and_ that — while a nested one does not, and no type
+  can see which. It is not door material either (no caller sends it, `start` overwrites it after the parse, nothing
+  serves it), so widening the door would be the wrong fix. The guard takes the permissive answer: it counts those keys
+  as _provided_, so a body may declare the field honestly. Counting them as provided rather than subtracting them from
+  what the body demands is deliberate — subtraction would drop the keys from the comparison and with them two cases the
+  check owns: a body that mistypes `instanceId`, and a body whose input is a union, which subtraction compares on its
+  members' shared keys alone. The typed wrapper also checks the seam above it — a parent invoking a nested `workspace()`
+  has its input mapper checked against that wrapper's door, and gets the body's output typed back. With no schema
+  declared the door is permissive, so there is nothing to infer and the mapper's argument is `unknown` — an honest "j2
+  does not know", not `any`; a wrapper fed by something other than a caller (a pool worker) states what it is fed by
+  annotating the parameter, as `PoolSpec.cap`/`itemInput` do.
 - **The schema is structure, so it is open.** Workflow-detail JSON (`GET /workflows/:name`, the address ADR-0032's
   negotiation kept) serves it as JSON Schema — same band as the Machine doc, and what drives the Console's start form
   before any token is entered. The _submit_ stays `authenticated`; schema open, trigger guarded.
@@ -67,7 +67,7 @@ machine is the one piece of its vocabulary that pattern missed.
   author reading a wrapped workflow could not tell, without opening the factory, which declaration the runtime serves.
 - **Derive from xstate's `types.input`.** Impossible: TypeScript types are erased; there is nothing at runtime to serve
   or validate with.
-- **Constrain the body by pinning its `TInput` slot** (`body: StateMachine<…, Workspaced<door>, …>`). Rejected as
+- **Constrain the body by pinning its `TInput` slot** (`body: StateMachine<…, Workspaced<door, slots>, …>`). Rejected as
   unsound, not as style: `StateMachine`'s members include methods, method parameters are bivariant, and a body demanding
   _more_ than the door provides therefore compiles — the one case the constraint exists to catch. The shipped
   formulation intersects the body with a conditional guard whose failure branch is an object type keyed by the sentence

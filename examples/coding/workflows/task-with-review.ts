@@ -72,7 +72,8 @@ const requestChanges = defineEvent({
 
 // ---------------------------------------------------------------------------------------------
 // The body. It receives the run input PLUS the handles `workspace()` injects — that composition
-// is `Workspaced<RunInput>`, and it is exactly why the door is declared on the wrapper.
+// is `Workspaced<RunInput, "target">`, keyed by the one Repo Slot the wrapper declares (ADR-0051),
+// and it is exactly why the door is declared on the wrapper.
 //
 // `branch` appears on both halves and they are not the same claim: the door's is what the caller
 // ASKED for, `workspace.branch` is the branch the attach actually made. The body reads
