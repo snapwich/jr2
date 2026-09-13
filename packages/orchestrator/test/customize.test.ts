@@ -330,6 +330,12 @@ test("only DECLARED slots can be bound: an undeclared key fails, naming the Mach
     () => customize(stock, { repos: { taregt: APP } } as never),
     /machine "workspace" declares no Repo Slot "taregt" — its slots are: target, docs \(ADR-0051\)/,
   );
+  // A prototype key is not a declared slot either: the check reads the declaration's own keys,
+  // so the runtime refuses exactly what the compiler refuses.
+  assert.throws(
+    () => customize(stock, { repos: { constructor: APP } } as never),
+    /machine "workspace" declares no Repo Slot "constructor" — its slots are: target, docs \(ADR-0051\)/,
+  );
   // And a binding that names no Repo is refused where the composer wrote it, by slot.
   assert.throws(
     () => customize(stock, { repos: { target: "" } }),

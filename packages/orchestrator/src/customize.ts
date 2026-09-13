@@ -258,11 +258,14 @@ function reseat(machine: AnyStateMachine, seats: Seats): AnyStateMachine {
     const repos = { ...parts.repos };
     // Only DECLARED slots can be bound (ADR-0051): the Machine's own word for each Repo is the
     // key, and a key it never declared would attach a repository the body has no handle for.
-    // Binding a per-run slot with a static url is legal — it becomes bound; which slots a
+    // The check is on the declaration's OWN keys — `in` would also answer yes for `constructor`
+    // and every other prototype key, and this runtime twin of the compile-time check must give
+    // the compiler's answer for the calls the compiler never sees (an untyped call, a widened
+    // key). Binding a per-run slot with a static url is legal — it becomes bound; which slots a
     // consumer may fix is the package author's call, expressed by the slot's state.
     for (const [slot, value] of Object.entries(override ?? {})) {
       if (value === undefined) continue;
-      if (!(slot in parts.repos)) {
+      if (!Object.hasOwn(parts.repos, slot)) {
         throw new Error(
           `customize(): machine "${machine.id}" declares no Repo Slot "${slot}" — its slots are: ` +
             `${listed(Object.keys(parts.repos))} (ADR-0051)`,
