@@ -339,7 +339,8 @@ function repoCacheObjects(opts: {
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(REPO_CACHE) },
     {
       // What one agent writes on the API is its own node's entry in each Repo's status; it reads
-      // the Repos and the Sandboxes that name them, and the credential Secret a Repo's `secretRef`
+      // the Repos, the pods on its node that mount their caches (demand and eviction are a pod's
+      // mount, not a Sandbox resource — ADR-0051), and the credential Secret a Repo's `secretRef`
       // names — nothing it could create or delete.
       apiVersion: "rbac.authorization.k8s.io/v1",
       kind: "Role",
@@ -347,7 +348,7 @@ function repoCacheObjects(opts: {
       rules: [
         { apiGroups: ["core.j2.dev"], resources: ["repos"], verbs: ["get", "list", "watch"] },
         { apiGroups: ["core.j2.dev"], resources: ["repos/status"], verbs: ["get", "patch", "update"] },
-        { apiGroups: ["core.j2.dev"], resources: ["sandboxes"], verbs: ["get", "list", "watch"] },
+        { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
         { apiGroups: [""], resources: ["secrets"], verbs: ["get"] },
       ],
     },
@@ -379,7 +380,7 @@ function repoCacheObjects(opts: {
                 command: ["/manager", "repo-cache"],
                 env: [
                   // The downward API names the node this pod is the writer for, and the namespace
-                  // whose Repos and Sandboxes it watches (the agent's `--node` / `--namespace`).
+                  // whose Repos and pods it watches (the agent's `--node` / `--namespace`).
                   { name: "NODE_NAME", valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } } },
                   { name: "J2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
                   { name: "HOME", value: REPO_CACHE_HOME },

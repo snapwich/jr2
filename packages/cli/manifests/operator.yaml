@@ -6071,8 +6071,7 @@ spec:
               node:
                 description: |-
                   Node is the node the Pod was scheduled onto, once it was — the node
-                  whose Repo caches this Sandbox mounts (ADR-0051). The cache agent on
-                  that node reads it to learn which Repos it must hold.
+                  whose Repo caches this Sandbox mounts (ADR-0051).
                 type: string
               phase:
                 description: 'Phase is a coarse lifecycle summary: Pending -> Ready

@@ -21,12 +21,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	"github.com/snapwich/j2/operator/internal/repocache"
 )
 
 const (
-	// repoCacheRoot is the node directory the cache agent's DaemonSet owns;
-	// `j2 up` mounts `<repoCacheRoot>/<namespace>/repos` into the agent.
-	repoCacheRoot = "/var/lib/j2"
 	// reposMount is the in-pod root under which each Repo's cache is mounted
 	// read-only, one leaf per key.
 	reposMount = "/repos"
@@ -74,11 +72,11 @@ func repoVolumeName(key string) string {
 }
 
 // repoHostPath is where the Instance's cache agent keeps the Repo's bare clone
-// on every node: one directory per Instance namespace, one leaf per key. The
-// DaemonSet mounts the namespace directory; the Sandbox mounts one leaf,
-// read-only.
+// on every node: the agent's own convention, so the volume path the operator
+// writes is the path by which the agent recognizes a pod that mounts the
+// cache. The Sandbox mounts one leaf, read-only.
 func repoHostPath(namespace, key string) string {
-	return repoCacheRoot + "/" + namespace + "/repos/" + key
+	return repocache.HostPath(namespace, key)
 }
 
 // repoMountPath is where a Sandbox's primary container sees one Repo's cache,

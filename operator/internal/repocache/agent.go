@@ -28,17 +28,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
@@ -48,7 +52,16 @@ const (
 	// defaultRefreshInterval applies when a Repo's spec carries none (the CRD
 	// defaults it; a resource that skipped admission may not).
 	defaultRefreshInterval = 5 * time.Minute
-	// evictRetry is how long a deleted Repo whose cache a Sandbox on this node
+	// defaultCloneTimeout bounds one `git clone`; defaultFetchTimeout bounds
+	// one `git fetch` or `git ls-remote`. A git child that hangs — a
+	// black-holed network, a remote that never answers — would otherwise hold
+	// this node's one reconcile worker, and with it every other Repo's
+	// on-demand fetch, for as long as it hangs. ADR-0051's "freshness
+	// degrades, absence does not" assumes a fetch FAILS; the budget is what
+	// turns a hang into a failure.
+	defaultCloneTimeout = 30 * time.Minute
+	defaultFetchTimeout = 5 * time.Minute
+	// evictRetry is how long a deleted Repo whose cache a pod on this node
 	// still mounts waits before the agent looks again.
 	evictRetry = time.Minute
 	// sweepInterval is how often the agent re-walks its directory for caches
@@ -62,39 +75,43 @@ const (
 )
 
 // Agent is one node's cache agent. Reconciles are keyed by Repo and driven by
-// the Repo itself and by every Sandbox that names it, so controller-runtime's
-// per-object queue is the single writer per key: no reconcile of one cache
-// overlaps another.
+// the Repo itself and by every pod on this node that mounts its cache, so
+// controller-runtime's per-object queue is the single writer per key: no
+// reconcile of one cache overlaps another.
 type Agent struct {
 	client.Client
 	// Git runs one git invocation; the real one execs the binary.
 	Git Git
 	// CacheDir holds one bare clone per key (the DaemonSet's hostPath mount).
 	CacheDir string
-	// Namespace is the Instance's; every Repo and Sandbox the agent sees is in it.
+	// Namespace is the Instance's; every Repo and pod the agent sees is in it.
 	Namespace string
 	// Node is the node this agent runs on — the entry it owns in every Repo's
-	// status, and the `status.node` a Sandbox must carry to count as demand.
+	// status, and the `spec.nodeName` a pod must carry to count as demand.
 	Node string
 	// Home is where ssh material is written ($HOME, an emptyDir).
 	Home string
+	// CloneTimeout bounds one clone and FetchTimeout one fetch or probe; zero
+	// means the default.
+	CloneTimeout time.Duration
+	FetchTimeout time.Duration
 	// Now is the clock; tests fix it.
 	Now func() time.Time
 }
 
 // The agent's RBAC is `j2 up`'s to grant (the DaemonSet's Role, not the
-// operator's): repos get/list/watch, repos/status get/update/patch, sandboxes
+// operator's): repos get/list/watch, repos/status get/update/patch, pods
 // get/list/watch, secrets get — all namespaced.
 
-// Reconcile brings `<cache-dir>/<key>` to what the Repo and this node's
-// Sandboxes ask for (ADR-0051):
+// Reconcile brings `<cache-dir>/<key>` to what the Repo and the pods on this
+// node ask for (ADR-0051):
 //
-//   - the Repo is gone → remove the cache once no Sandbox on this node mounts it;
-//   - no cache and a Sandbox here names it → clone (a cold node pays once);
+//   - the Repo is gone → remove the cache once no pod on this node mounts it;
+//   - no cache and a pod here mounts it → clone (a cold node pays once);
 //   - no cache and nobody asks → probe the remote once per spec generation, so
 //     `j2 status` sees a private repo's error before any run does (ADR-0048);
-//   - a cache → pin gc, then fetch when a Sandbox created since the last
-//     attempt asks, when the refresh interval elapsed, or when the spec changed.
+//   - a cache → pin gc, then fetch when a pod created since the last attempt
+//     asks, when the refresh interval elapsed, or when the spec changed.
 //
 // A clone or probe that fails returns an error so the queue retries with
 // backoff; a fetch that fails degrades the cache to stale and waits for the
@@ -106,7 +123,7 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 
 	wanted, asked, err := a.demand(ctx, key)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("list Sandboxes: %w", err)
+		return ctrl.Result{}, fmt.Errorf("list pods: %w", err)
 	}
 
 	var repo corev1alpha1.Repo
@@ -115,7 +132,7 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 			return ctrl.Result{}, err
 		}
 		if wanted {
-			log.Info("Repo deleted but a Sandbox on this node still mounts its cache; evicting later", "key", key)
+			log.Info("Repo deleted but a pod on this node still mounts its cache; evicting later", "key", key)
 			return ctrl.Result{RequeueAfter: evictRetry}, nil
 		}
 		if err := a.remove(key); err != nil {
@@ -137,31 +154,73 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 	return a.refresh(ctx, &repo, dir, asked)
 }
 
-// demand reports whether any Sandbox on this node names the key, and the
-// creation time of the newest one — the instant its Ready compares the
-// cache's lastFetched against, and so the instant a fetch must postdate.
+// demand reports whether any pod on this node mounts the key's cache, and
+// the creation time of the newest one. Demand is read off pods, not Sandbox
+// resources: a Sandbox holds no finalizer, so its resource is gone the moment
+// it is deleted while its pod is still terminating, and a cache is evicted
+// "once no pod on that node mounts it" (ADR-0051) — a live bind mount, not a
+// resource. A pod is created after its Sandbox, so a fetch after the newest
+// pod's creation is a fetch after the Sandbox's, which is what its Ready
+// compares the cache's lastFetched against.
 func (a *Agent) demand(ctx context.Context, key string) (wanted bool, asked time.Time, err error) {
-	var list corev1alpha1.SandboxList
+	var list corev1.PodList
 	if err := a.List(ctx, &list, client.InNamespace(a.Namespace)); err != nil {
 		return false, time.Time{}, err
 	}
 	for i := range list.Items {
-		sandbox := &list.Items[i]
-		if sandbox.Status.Node != a.Node {
+		pod := &list.Items[i]
+		if !a.mounts(pod, key) {
 			continue
 		}
-		for _, ref := range sandbox.Spec.Repos {
-			if ref.Key != key {
-				continue
-			}
-			wanted = true
-			if sandbox.CreationTimestamp.After(asked) {
-				asked = sandbox.CreationTimestamp.Time
-			}
-			break
+		wanted = true
+		if pod.CreationTimestamp.After(asked) {
+			asked = pod.CreationTimestamp.Time
 		}
 	}
 	return wanted, asked, nil
+}
+
+// mounts reports whether a pod on this node has a volume over the key's cache
+// directory. A pod that has already terminated (phase Succeeded or Failed)
+// holds no mount; one that is terminating (a DeletionTimestamp, any other
+// phase) still does, until the kubelet is done with it.
+func (a *Agent) mounts(pod *corev1.Pod, key string) bool {
+	if pod.Spec.NodeName != a.Node || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return false
+	}
+	for _, k := range a.keysOf(pod) {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// keysOf lists the Repo keys a pod's hostPath volumes name under this
+// Instance's node directory — the leaf of `HostPath(namespace, key)`.
+func (a *Agent) keysOf(pod *corev1.Pod) []string {
+	prefix := HostDir(a.Namespace) + "/"
+	var keys []string
+	for _, volume := range pod.Spec.Volumes {
+		if volume.HostPath == nil || !strings.HasPrefix(volume.HostPath.Path, prefix) {
+			continue
+		}
+		key := strings.TrimPrefix(volume.HostPath.Path, prefix)
+		if key == "" || strings.Contains(key, "/") {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+// remote bounds one git call that talks to the remote. The reconcile context
+// itself has no deadline.
+func (a *Agent) remote(ctx context.Context, budget, fallback time.Duration) (context.Context, context.CancelFunc) {
+	if budget <= 0 {
+		budget = fallback
+	}
+	return context.WithTimeout(ctx, budget)
 }
 
 // clone creates the cache for a Repo a Sandbox on this node is waiting on.
@@ -197,7 +256,10 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 	if err := os.WriteFile(a.marker(key), nil, 0o644); err != nil {
 		return ctrl.Result{}, fmt.Errorf("mark clone: %w", err)
 	}
-	if _, err := a.Git.Run(ctx, "", env, "clone", "--bare", "--", repo.Spec.URL, dir); err != nil {
+	cloneCtx, cancel := a.remote(ctx, a.CloneTimeout, defaultCloneTimeout)
+	_, err = a.Git.Run(cloneCtx, "", env, "clone", "--bare", "--", repo.Spec.URL, dir)
+	cancel()
+	if err != nil {
 		return failed(err)
 	}
 	if err := a.pin(ctx, dir); err != nil {
@@ -238,7 +300,9 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 	}
 	env, err := a.credentials(ctx, repo)
 	if err == nil {
-		_, err = a.Git.Run(ctx, "", env, "ls-remote", "--heads", "--", repo.Spec.URL)
+		probeCtx, cancel := a.remote(ctx, a.FetchTimeout, defaultFetchTimeout)
+		_, err = a.Git.Run(probeCtx, "", env, "ls-remote", "--heads", "--", repo.Spec.URL)
+		cancel()
 	}
 	if err != nil {
 		entry.Synced = false
@@ -290,7 +354,9 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 		env, err = a.credentials(ctx, repo)
 	}
 	if err == nil {
-		_, err = a.Git.Run(ctx, dir, env, "fetch", "origin")
+		fetchCtx, cancel := a.remote(ctx, a.FetchTimeout, defaultFetchTimeout)
+		_, err = a.Git.Run(fetchCtx, dir, env, "fetch", "origin")
+		cancel()
 	}
 	if err != nil {
 		next.Synced = false
@@ -359,7 +425,7 @@ func (a *Agent) config(ctx context.Context, dir string, args ...string) error {
 	return err
 }
 
-// Sweep walks the cache directory for clones no Repo names: one a Sandbox on
+// Sweep walks the cache directory for clones no Repo names: one a pod on
 // this node still mounts is adopted — pinned, never refreshed, evicted once
 // nothing mounts it (ADR-0004); one nothing mounts is removed. It runs at
 // startup and then on an interval; Repos that exist are the reconciler's.
@@ -386,7 +452,7 @@ func (a *Agent) Sweep(ctx context.Context) error {
 		}
 		wanted, _, err := a.demand(ctx, key)
 		if err != nil {
-			return fmt.Errorf("list Sandboxes: %w", err)
+			return fmt.Errorf("list pods: %w", err)
 		}
 		if wanted {
 			if err := a.pin(ctx, a.dir(key)); err != nil {
@@ -397,7 +463,7 @@ func (a *Agent) Sweep(ctx context.Context) error {
 		if err := a.remove(key); err != nil {
 			return err
 		}
-		log.Info("Removed a cache no Repo names and no Sandbox mounts", "key", key)
+		log.Info("Removed a cache no Repo names and no pod mounts", "key", key)
 	}
 	return nil
 }
@@ -448,6 +514,23 @@ func (a *Agent) unmark(key string) error {
 func (a *Agent) dir(key string) string    { return filepath.Join(a.CacheDir, key) }
 func (a *Agent) marker(key string) string { return filepath.Join(a.CacheDir, key+cloningSuffix) }
 
+// hostRoot is the node directory the cache agent's DaemonSet owns; `j2 up`
+// mounts `HostDir(namespace)` into the agent as its `--cache-dir`.
+const hostRoot = "/var/lib/j2"
+
+// HostDir is the node directory holding one Instance's caches: what the
+// DaemonSet mounts, and the prefix a Sandbox pod's cache volumes share.
+func HostDir(namespace string) string {
+	return hostRoot + "/" + namespace + "/repos"
+}
+
+// HostPath is where a node keeps one Repo's bare clone for one Instance —
+// the path the operator mounts read-only into a Sandbox pod there, and the
+// path by which the agent recognizes a pod that mounts the cache.
+func HostPath(namespace, key string) string {
+	return HostDir(namespace) + "/" + key
+}
+
 // now is the current instant at the API's own granularity, so what the agent
 // writes compares exactly with what it reads back.
 func (a *Agent) now() metav1.Time {
@@ -473,22 +556,34 @@ func refreshInterval(repo *corev1alpha1.Repo) time.Duration {
 	return defaultRefreshInterval
 }
 
-// reposOfSandbox maps a Sandbox event on this node to the Repos it names, so
-// a Sandbox landing here (or leaving) reconciles exactly those caches.
-func (a *Agent) reposOfSandbox(_ context.Context, obj client.Object) []reconcile.Request {
-	sandbox, ok := obj.(*corev1alpha1.Sandbox)
-	if !ok || sandbox.Status.Node != a.Node {
+// reposOfPod maps a pod event on this node to the Repos whose caches it
+// mounts, so a pod landing here (or leaving) reconciles exactly those caches.
+func (a *Agent) reposOfPod(_ context.Context, obj client.Object) []reconcile.Request {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok || pod.Spec.NodeName != a.Node {
 		return nil
 	}
-	requests := make([]reconcile.Request, 0, len(sandbox.Spec.Repos))
-	for _, ref := range sandbox.Spec.Repos {
-		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Namespace: sandbox.Namespace, Name: ref.Key}})
+	keys := a.keysOf(pod)
+	requests := make([]reconcile.Request, 0, len(keys))
+	for _, key := range keys {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Namespace: pod.Namespace, Name: key}})
 	}
 	return requests
 }
 
+// repoEvents is what wakes the agent about a Repo: its creation, its
+// deletion, and a spec change (a new generation) — never a status write. The
+// agent is the one writer of its own status entry, and a failed clone or
+// probe writes that entry and then returns an error for the backoff; the
+// write's own event would otherwise re-queue the key at once, ahead of the
+// backoff, and a bad credential would be retried once per second from every
+// node.
+func repoEvents() predicate.Predicate {
+	return predicate.GenerationChangedPredicate{}
+}
+
 // SetupWithManager registers the reconciler — keyed by Repo, woken by the
-// Sandboxes on this node — with a failure backoff between minBackoff and
+// pods on this node — with a failure backoff between minBackoff and
 // maxBackoff, and the sweep as a runnable that starts once the cache is synced.
 func (a *Agent) SetupWithManager(mgr ctrl.Manager, minBackoff, maxBackoff time.Duration) error {
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
@@ -512,8 +607,8 @@ func (a *Agent) SetupWithManager(mgr ctrl.Manager, minBackoff, maxBackoff time.D
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1alpha1.Repo{}).
-		Watches(&corev1alpha1.Sandbox{}, handler.EnqueueRequestsFromMapFunc(a.reposOfSandbox)).
+		For(&corev1alpha1.Repo{}, builder.WithPredicates(repoEvents())).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(a.reposOfPod)).
 		WithOptions(controller.Options{
 			RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](minBackoff, maxBackoff),
 		}).

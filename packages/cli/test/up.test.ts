@@ -1164,14 +1164,15 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
   assert.deepEqual(env.J2_NAMESPACE.valueFrom, { fieldRef: { fieldPath: "metadata.namespace" } });
   // Every node, because a node with no agent is a node no Sandbox can be placed on.
   assert.deepEqual(podSpec.tolerations, [{ operator: "Exists" }]);
-  // It is an API client (its own status entry, the Repos, the Sandboxes on its node, the
-  // credential Secret a Repo names) — read-mostly, and never a creator or deleter of anything.
+  // It is an API client (its own status entry, the Repos, the pods on its node that mount a
+  // cache, the credential Secret a Repo names) — read-mostly, and never a creator or deleter of
+  // anything.
   assert.equal(podSpec.serviceAccountName, "j2-repo-cache");
   assert.equal(podSpec.automountServiceAccountToken, true);
   assert.deepEqual(objects.Role!.rules, [
     { apiGroups: ["core.j2.dev"], resources: ["repos"], verbs: ["get", "list", "watch"] },
     { apiGroups: ["core.j2.dev"], resources: ["repos/status"], verbs: ["get", "patch", "update"] },
-    { apiGroups: ["core.j2.dev"], resources: ["sandboxes"], verbs: ["get", "list", "watch"] },
+    { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
     { apiGroups: [""], resources: ["secrets"], verbs: ["get"] },
   ]);
 

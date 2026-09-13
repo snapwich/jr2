@@ -83,7 +83,9 @@ func (a *Agent) credentials(ctx context.Context, repo *corev1alpha1.Repo) ([]str
 // sshEnv writes the deploy key under $HOME/.ssh (an emptyDir, mode 0600) and
 // points ssh at it. A Secret that carries known_hosts pins the host strictly
 // through its own file; without one the host key is accepted on first contact
-// and remembered in the shared known_hosts for the agent's lifetime.
+// and remembered in the shared known_hosts for the agent's lifetime. BatchMode
+// is ssh's own no-prompt guard (GIT_TERMINAL_PROMPT covers git, not ssh): a
+// passphrase or host-key question fails the call instead of hanging it.
 func (a *Agent) sshEnv(env []string, key string, identity, knownHosts []byte) ([]string, error) {
 	sshDir := filepath.Join(a.Home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
@@ -106,7 +108,7 @@ func (a *Agent) sshEnv(env []string, key string, identity, knownHosts []byte) ([
 		}
 	}
 	return append(env, "GIT_SSH_COMMAND="+fmt.Sprintf(
-		"ssh -i %s -o IdentitiesOnly=yes -o UserKnownHostsFile=%s -o StrictHostKeyChecking=%s",
+		"ssh -i %s -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=%s -o StrictHostKeyChecking=%s",
 		identityFile, knownHostsFile, strict)), nil
 }
 

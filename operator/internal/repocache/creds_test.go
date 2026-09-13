@@ -113,7 +113,7 @@ func TestSshKeyIsWrittenPrivateAndAcceptsNewHostsWithoutKnownHosts(t *testing.T)
 	if !ok {
 		t.Fatalf("expected GIT_SSH_COMMAND, got %v", env)
 	}
-	want := "ssh -i " + identityFile + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + filepath.Join(a.Home, ".ssh", "known_hosts") + " -o StrictHostKeyChecking=accept-new"
+	want := "ssh -i " + identityFile + " -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile=" + filepath.Join(a.Home, ".ssh", "known_hosts") + " -o StrictHostKeyChecking=accept-new"
 	if cmd != want {
 		t.Fatalf("want %q\n got %q", want, cmd)
 	}

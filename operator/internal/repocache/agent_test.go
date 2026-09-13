@@ -33,6 +33,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
@@ -51,18 +52,25 @@ const (
 // pinned is the `git config` call that writes one gc pin.
 func pinned(kv [2]string) []string { return []string{gitConfig, kv[0], kv[1]} }
 
-// fakeGit records every invocation and answers from a table keyed by the
-// first argument. A clone that succeeds leaves a bare repo's HEAD behind, as
-// git would; nothing else touches the disk.
+// fakeGit records every invocation — its arguments, its environment, and
+// how much of a budget its context carried (zero for none) — and answers
+// from a table keyed by the first argument. A clone that succeeds leaves a
+// bare repo's HEAD behind, as git would; nothing else touches the disk.
 type fakeGit struct {
-	calls [][]string
-	envs  [][]string
-	fail  map[string]string // subcommand → error text (git's words)
+	calls   [][]string
+	envs    [][]string
+	budgets []time.Duration
+	fail    map[string]string // subcommand → error text (git's words)
 }
 
-func (g *fakeGit) Run(_ context.Context, dir string, env []string, args ...string) (string, error) {
+func (g *fakeGit) Run(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	g.calls = append(g.calls, args)
 	g.envs = append(g.envs, env)
+	var budget time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = time.Until(deadline)
+	}
+	g.budgets = append(g.budgets, budget)
 	if msg, ok := g.fail[args[0]]; ok {
 		if args[0] == gitClone {
 			// git writes HEAD and config before it fetches; a failure mid-way
@@ -120,7 +128,7 @@ func newAgent(t *testing.T, git *fakeGit, objs ...client.Object) *Agent {
 		git.fail = map[string]string{}
 	}
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithStatusSubresource(&corev1alpha1.Repo{}, &corev1alpha1.Sandbox{}).
+		WithStatusSubresource(&corev1alpha1.Repo{}).
 		WithObjects(objs...).Build()
 	return &Agent{
 		Client:    c,
@@ -141,16 +149,33 @@ func repo(generation int64, nodes ...corev1alpha1.RepoNodeStatus) *corev1alpha1.
 	}
 }
 
-// sandboxOn is a Sandbox scheduled onto `on`, naming the key, created at t.
-func sandboxOn(name, on string, created time.Time) *corev1alpha1.Sandbox {
-	return &corev1alpha1.Sandbox{
+// podOn is a Sandbox's pod scheduled onto `on`, mounting the key's cache the
+// way the operator mounts it — a hostPath volume at HostPath(ns, key) —
+// created at t.
+func podOn(name, on string, created time.Time) *corev1.Pod {
+	return podMounting(name, on, created, key)
+}
+
+func podMounting(name, on string, created time.Time, keys ...string) *corev1.Pod {
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, CreationTimestamp: metav1.NewTime(created)},
-		Spec: corev1alpha1.SandboxSpec{
-			Image: "harness:latest",
-			Repos: []corev1alpha1.SandboxRepo{{Key: key, URL: repoURL}},
+		Spec: corev1.PodSpec{
+			NodeName:   on,
+			Containers: []corev1.Container{{Name: "harness", Image: "harness:latest"}},
+			Volumes: []corev1.Volume{{
+				Name:         "work",
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			}},
 		},
-		Status: corev1alpha1.SandboxStatus{Node: on},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
 	}
+	for _, k := range keys {
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name:         "repo-" + k,
+			VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: HostPath(ns, k)}},
+		})
+	}
+	return pod
 }
 
 func ts(t time.Time) *metav1.Time { v := metav1.NewTime(t); return &v }
@@ -187,7 +212,7 @@ func TestClonesWhenASandboxOnThisNodeNamesTheRepo(t *testing.T) {
 	// needs it — pinned before anything fetches (ADR-0004), and reported
 	// present and fetched at once so the Sandbox's Ready can pass.
 	git := &fakeGit{}
-	a := newAgent(t, git, repo(1), sandboxOn("sb", node, fixedNow.Add(-time.Minute)))
+	a := newAgent(t, git, repo(1), podOn("sb", node, fixedNow.Add(-time.Minute)))
 
 	res, err := reconcile1(t, a)
 	if err != nil {
@@ -264,7 +289,7 @@ func TestTheURLReachesGitOnlyBehindADoubleDash(t *testing.T) {
 	operand(git, "probe")
 
 	git = &fakeGit{}
-	a = newAgent(t, git, withURL(repo(1)), sandboxOn("sb", node, fixedNow.Add(-time.Minute)))
+	a = newAgent(t, git, withURL(repo(1)), podOn("sb", node, fixedNow.Add(-time.Minute)))
 	if _, err := reconcile1(t, a); err != nil {
 		t.Fatalf("clone: %v", err)
 	}
@@ -281,14 +306,116 @@ func TestTheURLReachesGitOnlyBehindADoubleDash(t *testing.T) {
 	operand(git, "re-point")
 }
 
-func TestASandboxOnAnotherNodeIsNotDemand(t *testing.T) {
+func TestAPodOnAnotherNodeIsNotDemand(t *testing.T) {
 	git := &fakeGit{}
-	a := newAgent(t, git, repo(1), sandboxOn("sb", "node-b", fixedNow))
+	a := newAgent(t, git, repo(1), podOn("sb", "node-b", fixedNow))
 	if _, err := reconcile1(t, a); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if got := git.subcommands(); !slices.Equal(got, []string{"ls-remote"}) {
-		t.Fatalf("another node's Sandbox should leave this node probing, not cloning: %v", got)
+		t.Fatalf("another node's pod should leave this node probing, not cloning: %v", got)
+	}
+}
+
+func TestATerminatedPodIsNotDemandButATerminatingOneIs(t *testing.T) {
+	// A pod whose containers are done (Failed, Succeeded) holds no mount; one
+	// the kubelet is still tearing down does, until it is gone.
+	failed := podOn("sb-failed", node, fixedNow)
+	failed.Status.Phase = corev1.PodFailed
+	git := &fakeGit{}
+	a := newAgent(t, git, repo(1), failed)
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := git.subcommands(); !slices.Equal(got, []string{"ls-remote"}) {
+		t.Fatalf("a Failed pod mounts nothing, so this node probes: %v", got)
+	}
+
+	terminating := podOn("sb-terminating", node, fixedNow)
+	terminating.DeletionTimestamp = ts(fixedNow)
+	terminating.Finalizers = []string{"kubernetes"}
+	git = &fakeGit{}
+	b := newAgent(t, git, repo(1), terminating)
+	if _, err := reconcile1(t, b); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !git.has(gitClone, "--bare", "--", repoURL, b.dir(key)) {
+		t.Fatalf("a terminating pod still mounts the cache and is demand, got %v", git.calls)
+	}
+}
+
+func TestRemoteGitCallsAreBudgetedAndLocalOnesAreNot(t *testing.T) {
+	// A git child that hangs would hold this node's one worker and every
+	// other Repo's fetch with it: each call to the remote carries its budget —
+	// clone its own, fetch and probe theirs — while `git config` in the cache
+	// carries none.
+	budgetOf := func(git *fakeGit, sub string) time.Duration {
+		t.Helper()
+		for i, c := range git.calls {
+			if c[0] == sub {
+				return git.budgets[i]
+			}
+		}
+		t.Fatalf("no %s call in %v", sub, git.calls)
+		return 0
+	}
+	within := func(got, want time.Duration) bool { return got > want-time.Minute && got <= want }
+
+	git := &fakeGit{}
+	a := newAgent(t, git, repo(1), podOn("sb", node, fixedNow))
+	a.CloneTimeout, a.FetchTimeout = 7*time.Minute, 3*time.Minute
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if got := budgetOf(git, gitClone); !within(got, 7*time.Minute) {
+		t.Fatalf("the clone must carry CloneTimeout, got %v", got)
+	}
+	if got := budgetOf(git, gitConfig); got != 0 {
+		t.Fatalf("a local git config call needs no budget, got %v", got)
+	}
+
+	git = &fakeGit{}
+	b := newAgent(t, git, repo(1))
+	b.FetchTimeout = 3 * time.Minute
+	if _, err := reconcile1(t, b); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if got := budgetOf(git, "ls-remote"); !within(got, 3*time.Minute) {
+		t.Fatalf("the probe must carry FetchTimeout, got %v", got)
+	}
+
+	git = &fakeGit{}
+	old := fixedNow.Add(-10 * time.Minute)
+	c := newAgent(t, git, repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(old), LastFetched: ts(old), ObservedGeneration: 1}))
+	makePresent(t, c)
+	if _, err := reconcile1(t, c); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got := budgetOf(git, "fetch"); !within(got, defaultFetchTimeout) {
+		t.Fatalf("an unset FetchTimeout means the default, got %v", got)
+	}
+}
+
+func TestOwnStatusWritesDoNotWakeTheAgent(t *testing.T) {
+	// The agent writes its node's entry and then returns an error for the
+	// backoff; if that write's event re-queued the key the backoff would never
+	// apply and a bad credential would be retried once per second from every
+	// node. A Repo wakes the agent on creation, deletion, and a spec change.
+	events := repoEvents()
+	before := repo(1)
+	after := repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: false, Synced: false, LastAttempt: ts(fixedNow), LastError: "fatal: Authentication failed"})
+	after.ResourceVersion = "2"
+	if events.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: after}) {
+		t.Fatal("a status-only write must not wake the agent")
+	}
+	if !events.Update(event.UpdateEvent{ObjectOld: before, ObjectNew: repo(2)}) {
+		t.Fatal("a spec change (new generation) must wake the agent")
+	}
+	if !events.Create(event.CreateEvent{Object: before}) {
+		t.Fatal("a new Repo must wake the agent")
+	}
+	if !events.Delete(event.DeleteEvent{Object: before}) {
+		t.Fatal("a deleted Repo must wake the agent, so it evicts")
 	}
 }
 
@@ -357,14 +484,15 @@ func TestProbeFailureIsReportedAndRetried(t *testing.T) {
 	}
 }
 
-func TestFetchesOnDemandWhenASandboxWasCreatedSinceTheLastAttempt(t *testing.T) {
-	// ADR-0051: on demand before an attach — a Sandbox created after the last
-	// attempt asks for a fetch, so its Ready sees lastFetched ≥ its creation.
+func TestFetchesOnDemandWhenAPodWasCreatedSinceTheLastAttempt(t *testing.T) {
+	// ADR-0051: on demand before an attach — a pod created after the last
+	// attempt asks for a fetch, so its Sandbox's Ready sees lastFetched ≥ its
+	// creation (the pod is the younger of the two).
 	git := &fakeGit{}
 	last := fixedNow.Add(-time.Minute)
 	a := newAgent(t, git,
 		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}),
-		sandboxOn("sb", node, fixedNow.Add(-30*time.Second)),
+		podOn("sb", node, fixedNow.Add(-30*time.Second)),
 	)
 	dir := makePresent(t, a)
 
@@ -451,7 +579,7 @@ func TestFetchFailureKeepsLastFetchedAndDegradesToStale(t *testing.T) {
 	old := fixedNow.Add(-10 * time.Minute)
 	a := newAgent(t, git,
 		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(old), LastFetched: ts(old), ObservedGeneration: 1}),
-		sandboxOn("sb", node, fixedNow),
+		podOn("sb", node, fixedNow),
 	)
 	makePresent(t, a)
 
@@ -481,7 +609,7 @@ func TestCloneFailureLeavesNoCacheAndReports(t *testing.T) {
 	// ADR-0051: a half clone is never present; the error is the Repo's status
 	// for the operator's RepoCloneFailed and `j2 status`.
 	git := &fakeGit{fail: map[string]string{"clone": "fatal: repository 'https://github.com/acme/app.git/' not found"}}
-	a := newAgent(t, git, repo(1), sandboxOn("sb", node, fixedNow))
+	a := newAgent(t, git, repo(1), podOn("sb", node, fixedNow))
 
 	_, err := reconcile1(t, a)
 	if err == nil {
@@ -507,7 +635,7 @@ func TestCloneFailureKeepsTheDirectoryTheKubeletMade(t *testing.T) {
 	// the agent clones; a bind mount follows the inode, so the agent empties
 	// the directory and clones into it again rather than replacing it.
 	git := &fakeGit{fail: map[string]string{"clone": "fatal: early EOF"}}
-	a := newAgent(t, git, repo(1), sandboxOn("sb", node, fixedNow))
+	a := newAgent(t, git, repo(1), podOn("sb", node, fixedNow))
 	if err := os.MkdirAll(a.dir(key), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +654,7 @@ func TestAHalfCloneWithItsMarkerIsDiscarded(t *testing.T) {
 	// A crash between the marker and the pin leaves HEAD behind; the marker
 	// says it was never finished.
 	git := &fakeGit{}
-	a := newAgent(t, git, repo(1), sandboxOn("sb", node, fixedNow))
+	a := newAgent(t, git, repo(1), podOn("sb", node, fixedNow))
 	makePresent(t, a)
 	if err := os.WriteFile(a.marker(key), nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -539,11 +667,16 @@ func TestAHalfCloneWithItsMarkerIsDiscarded(t *testing.T) {
 	}
 }
 
-func TestADeletedRepoIsEvictedOnlyOnceNothingOnThisNodeMountsIt(t *testing.T) {
+func TestADeletedRepoIsEvictedOnlyOnceNoPodOnThisNodeMountsIt(t *testing.T) {
 	// ADR-0051: the cache agent removes the node copy on CR deletion, once no
-	// pod on that node mounts it.
+	// pod on that node mounts it. The pod is what holds the bind mount: here
+	// its Sandbox resource is already gone (no finalizer holds it) and the
+	// pod is still terminating.
 	git := &fakeGit{}
-	a := newAgent(t, git, sandboxOn("sb", node, fixedNow))
+	terminating := podOn("sb", node, fixedNow)
+	terminating.DeletionTimestamp = ts(fixedNow)
+	terminating.Finalizers = []string{"kubernetes"}
+	a := newAgent(t, git, terminating)
 	dir := makePresent(t, a)
 
 	res, err := reconcile1(t, a)
@@ -551,7 +684,7 @@ func TestADeletedRepoIsEvictedOnlyOnceNothingOnThisNodeMountsIt(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if !present(dir) {
-		t.Fatal("a cache a Sandbox on this node still mounts must survive the Repo's deletion")
+		t.Fatal("a cache a pod on this node still mounts must survive the Repo's deletion")
 	}
 	if res.RequeueAfter != evictRetry {
 		t.Fatalf("expected a later look at eviction, got %v", res.RequeueAfter)
@@ -574,7 +707,7 @@ func TestSweepAdoptsWhatIsMountedAndRemovesTheRest(t *testing.T) {
 	// ADR-0004: a checkout found with no Repo resource is adopted and pinned
 	// but not refreshed, and evicted like any other once nothing mounts it.
 	git := &fakeGit{}
-	a := newAgent(t, git, repo(1), sandboxOn("sb", node, fixedNow))
+	a := newAgent(t, git, repo(1), podOn("sb", node, fixedNow))
 	// Named by a Repo: the reconciler's business, not the sweep's.
 	makePresent(t, a)
 	mounted := filepath.Join(a.CacheDir, "orphan-mounted")
@@ -587,9 +720,7 @@ func TestSweepAdoptsWhatIsMountedAndRemovesTheRest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	sb := sandboxOn("sb-orphan", node, fixedNow)
-	sb.Spec.Repos = []corev1alpha1.SandboxRepo{{Key: "orphan-mounted", URL: "https://example.test/orphan.git"}}
-	if err := a.Create(context.Background(), sb); err != nil {
+	if err := a.Create(context.Background(), podMounting("sb-orphan", node, fixedNow, "orphan-mounted")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -597,7 +728,7 @@ func TestSweepAdoptsWhatIsMountedAndRemovesTheRest(t *testing.T) {
 		t.Fatalf("sweep: %v", err)
 	}
 	if !present(mounted) {
-		t.Fatal("an adopted cache a Sandbox mounts must stay")
+		t.Fatal("an adopted cache a pod mounts must stay")
 	}
 	if _, err := os.Stat(unmounted); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("a cache no Repo names and nothing mounts must be removed")
@@ -621,7 +752,7 @@ func TestAMissingSecretIsReportedWithoutTouchingGit(t *testing.T) {
 	git := &fakeGit{}
 	r := repo(1)
 	r.Spec.SecretRef = &corev1.LocalObjectReference{Name: "j2-git-ssh"}
-	a := newAgent(t, git, r, sandboxOn("sb", node, fixedNow))
+	a := newAgent(t, git, r, podOn("sb", node, fixedNow))
 
 	if _, err := reconcile1(t, a); err == nil {
 		t.Fatal("expected an error so the queue retries once the Secret exists")
@@ -658,16 +789,28 @@ func TestReportReplacesOnlyThisNodesEntry(t *testing.T) {
 	}
 }
 
-func TestReposOfSandboxMapsOnlyThisNode(t *testing.T) {
+func TestReposOfPodMapsOnlyThisNodesCacheMounts(t *testing.T) {
 	a := newAgent(t, &fakeGit{})
-	here := a.reposOfSandbox(context.Background(), sandboxOn("sb", node, fixedNow))
+	here := a.reposOfPod(context.Background(), podOn("sb", node, fixedNow))
 	if len(here) != 1 || here[0].Name != key || here[0].Namespace != ns {
 		t.Fatalf("expected one request for the key, got %v", here)
 	}
-	if elsewhere := a.reposOfSandbox(context.Background(), sandboxOn("sb", "node-b", fixedNow)); len(elsewhere) != 0 {
-		t.Fatalf("a Sandbox on another node is not this agent's, got %v", elsewhere)
+	if elsewhere := a.reposOfPod(context.Background(), podOn("sb", "node-b", fixedNow)); len(elsewhere) != 0 {
+		t.Fatalf("a pod on another node is not this agent's, got %v", elsewhere)
 	}
-	if unscheduled := a.reposOfSandbox(context.Background(), sandboxOn("sb", "", fixedNow)); len(unscheduled) != 0 {
-		t.Fatalf("an unscheduled Sandbox asks nothing of any node yet, got %v", unscheduled)
+	if unscheduled := a.reposOfPod(context.Background(), podOn("sb", "", fixedNow)); len(unscheduled) != 0 {
+		t.Fatalf("an unscheduled pod asks nothing of any node yet, got %v", unscheduled)
+	}
+	// Only volumes over this Instance's cache directory are cache mounts: a
+	// hostPath elsewhere, another Instance's directory, or the directory
+	// itself (the agent's own mount) names no Repo.
+	other := podOn("other", node, fixedNow)
+	other.Spec.Volumes = []corev1.Volume{
+		{Name: "docker", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/run/docker.sock"}}},
+		{Name: "theirs", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: HostPath("other-ns", key)}}},
+		{Name: "cache", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: HostDir(ns)}}},
+	}
+	if got := a.reposOfPod(context.Background(), other); len(got) != 0 {
+		t.Fatalf("no volume over a cache leaf, so no request, got %v", got)
 	}
 }

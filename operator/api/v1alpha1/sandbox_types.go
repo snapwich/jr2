@@ -203,8 +203,7 @@ type SandboxStatus struct {
 	ServiceRef *corev1.LocalObjectReference `json:"serviceRef,omitempty"`
 
 	// Node is the node the Pod was scheduled onto, once it was — the node
-	// whose Repo caches this Sandbox mounts (ADR-0051). The cache agent on
-	// that node reads it to learn which Repos it must hold.
+	// whose Repo caches this Sandbox mounts (ADR-0051).
 	// +optional
 	Node string `json:"node,omitempty"`
 
