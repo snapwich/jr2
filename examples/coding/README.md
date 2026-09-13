@@ -103,7 +103,7 @@ agent-fault):
 
 ```sh
 kubectl -n coding get sandboxes           # the run's Workspace pod
-kubectl -n coding exec -it <pod> -c harness -- sh   # inspect: git -C /work/obsidian-tasks.nvim/<branch> log -p main..
+kubectl -n coding exec -it <pod> -c harness -- sh   # inspect: git -C /work/target/<branch> log -p main..
 # keep the work? push it from inside the pod BEFORE approving — that shell is the agent's own
 # container, with your images/default toolchain and the same worktrees (ADR-0037)
 
