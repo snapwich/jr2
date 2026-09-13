@@ -78,12 +78,13 @@ Converge + run (from `examples/coding`, or any folder under it — the CLI walks
 beside it; a var already set in your shell wins over the file):
 
 ```sh
-j2 up                 # converges the current context: operator → kit images → instance image →
-                      # Sandbox Images (+ their preflight) → the Machine walk → Secrets (+
-                      # preflights) → provider preflight → rollout. Idempotent; re-run after any
+j2 up                 # converges the current context: typecheck → the Machine walk (an open Repo
+                      # Slot is refused HERE, before anything is built — ADR-0051) → operator →
+                      # kit images → instance image → Sandbox Images (+ their preflight) → Secrets
+                      # (+ preflights) → provider preflight → rollout. Idempotent; re-run after any
                       # change — unmoved images cost no docker. First contact asks; --yes for CI.
 
-j2 run task-with-review --input '{"prompt":"Fix the ...","repo":"obsidian-tasks.nvim","branch":"task/mvp-1"}'
+j2 run task-with-review --input '{"prompt":"Fix the ...","repo":"https://github.com/snapwich/obsidian-tasks.nvim.git","branch":"task/mvp-1"}'
 j2 logs <runId> -f                        # re-attach to the status feed
 ```
 
