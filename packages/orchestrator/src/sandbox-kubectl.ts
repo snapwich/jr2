@@ -950,9 +950,9 @@ function staleSlots(
 
 /**
  * The post-Ready attach step as one idempotent in-pod script (ADR-0004, ADR-0051): per Repo Slot
- * in declaration order, a pod-local `git clone --shared --no-checkout` borrowing objects from the
- * node's read-only cache at `/repos/<key>`, then the branch worktree as a sibling (gwtmux layout:
- * `<slot>/default/` + `<slot>/<branch>/`). With a `reviewSha`, also the detached review worktree
+ * in declaration order, a pod-local `git clone --shared` borrowing objects from the node's
+ * read-only cache at `/repos/<key>` — `<slot>/default/`, a checkout of the Repo's default branch
+ * — then the branch worktree as a sibling (gwtmux layout: `<slot>/default/` + `<slot>/<branch>/`). With a `reviewSha`, also the detached review worktree
  * (ADR-0028) — another sibling. `workdir` is the FIRST slot's worktree. Exported for the port's
  * tests; the workflow never sees it.
  */
@@ -986,7 +986,7 @@ export function attachScript(
       // group-writable with zero umask lines in any image (ADR-0005); on a filesystem without
       // POSIX ACLs the helper warns and exits 0, degrading to the umask sharing above.
       `/opt/j2/bin/work-acl ${sq(slotDir)}`,
-      `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared --no-checkout ${sq(cache)} ${sq(dflt)}`,
+      `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared ${sq(cache)} ${sq(dflt)}`,
       // No ref → the Repo's own default branch: this clone's `origin/HEAD` tracks the cache's
       // HEAD, which the cache agent's clone pointed at the remote's default (ADR-0004).
       `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${repo.ref === undefined ? sq("origin/HEAD") : baseOf(dflt, repo.ref)}`,
@@ -1027,7 +1027,7 @@ export function attachScript(
 /**
  * The commit-ish a Binding's `ref` names inside the pod-local clone, as a shell expression: the
  * remote-tracking branch `refs/remotes/origin/<ref>` when the clone has one, else `<ref>` as
- * written (a tag, a sha). A `--no-checkout` clone holds ONE local branch — the default — so a bare
+ * written (a tag, a sha). A fresh clone holds ONE local branch — the default — so a bare
  * branch name is never a local ref here, and git's "worktree add" DWIM would then create the BASE
  * branch tracking `origin/<ref>` and discard `-b`: the Agent would commit on, and push to, the base
  * it was meant to branch FROM. Naming the remote-tracking ref outright leaves nothing to guess.

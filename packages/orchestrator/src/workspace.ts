@@ -162,8 +162,8 @@ export interface SandboxPort {
     workGroup?: number;
     repos: ProvisionedRepo[];
   }): Promise<{ endpoint: string; identity?: string }>;
-  /** Post-Ready attach (ADR-0004): per slot, `git clone --shared --no-checkout` off the node's
-   * read-only cache, then a branch worktree sibling — and, with `spec.reviewSha`, the detached
+  /** Post-Ready attach (ADR-0004): per slot, `git clone --shared` off the node's read-only
+   * cache (the `default/` checkout), then a branch worktree sibling — and, with `spec.reviewSha`, the detached
    * review worktree (ADR-0028). Resolves with the worktree paths by slot; `stale` names the slots
    * whose cache could not be fetched before this attach, with git's own error (ADR-0051: freshness
    * degrades, absence does not). */
@@ -504,6 +504,12 @@ export function workspace(
 function assertSpec(spec: WorkspaceSpec): void {
   const bad: string[] = [];
   if (typeof spec?.branch !== "string" || !spec.branch) bad.push(`branch (got ${JSON.stringify(spec?.branch)})`);
+  // The branch Worktree is a SIBLING of the pod-local clone at `<slot>/default/` (ADR-0004), so
+  // the one branch name that is not a worktree directory is `default`.
+  else if (spec.branch === "default")
+    bad.push(
+      'branch "default" (the pod-local clone\'s own directory — a branch Worktree sits beside `default/`, ADR-0004)',
+    );
   if (spec?.reviewSha !== undefined && (typeof spec.reviewSha !== "string" || !spec.reviewSha))
     bad.push(`reviewSha (got ${JSON.stringify(spec?.reviewSha)})`);
   // A gid, so an integer — a float or a negative becomes a pod the API server rejects at

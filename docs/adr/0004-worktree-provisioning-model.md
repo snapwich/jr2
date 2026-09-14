@@ -95,16 +95,19 @@ working trees are its siblings, matching the layout [gwtmux](https://github.com/
 the slot the Machine gave the repository (ADR-0051):
 
 ```
-/work/<slot>/default/        the per-Sandbox `git clone --shared --no-checkout` (holds the pod-local .git)
+/work/<slot>/default/        the per-Sandbox `git clone --shared` (holds the pod-local .git; the default branch checked out)
 /work/<slot>/<branch>/        `git worktree add` siblings, one per branch worked
 ```
 
 Because the layout is identical to the one used outside the cluster, existing worktree tooling works **unchanged** when
 you exec into a Sandbox. Object resolution falls through: a branch worktree shares the per-Sandbox `default/.git`, whose
 alternates point at the read-only cache — existing objects are read from the cache, new commits land in the pod-local
-`.git`. `default/` is cloned `--no-checkout`: work happens in the branch worktrees, so its working tree is never
-materialized. `origin`'s push url is the binding's own spelling, so a Machine that bound over ssh pushes over ssh even
-when the cache was cloned over https.
+`.git`. `default/` is a checkout of the Repo's default branch, as gwtmux's `default/` is outside the cluster: work
+happens in the branch worktrees, and `default/` is the reference tree a human or a tool finds where it expects one. Not
+`--no-checkout`: an empty working tree reads as every tracked file deleted to `git status`, which misleads an Agent that
+looks. The branch name `default` is refused by the spec guard: the branch Worktree is a sibling of that directory, never
+it. `origin`'s push url is the binding's own spelling, so a Machine that bound over ssh pushes over ssh even when the
+cache was cloned over https.
 
 This does **not** reintroduce jr's contention: the shared `.git` here is _per-Sandbox_, and it is accessed serially
 under the standing invariant that **one Agent runs at a time per Workspace** — structural since ADR-0012 (one sequential

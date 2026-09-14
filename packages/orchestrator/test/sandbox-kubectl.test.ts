@@ -1088,8 +1088,8 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
   // repository derives (ADR-0051) — and the pod-local layout is `/work/<slot>/{default,<branch>}`.
   const appKey = repoKey("git@github.com:acme/app.git");
   const infraKey = repoKey("https://example.test/infra.git");
-  assert.match(script, new RegExp(`git clone --shared --no-checkout '/repos/${appKey}' '/work/app/default'`));
-  assert.match(script, new RegExp(`git clone --shared --no-checkout '/repos/${infraKey}' '/work/infra/default'`));
+  assert.match(script, new RegExp(`git clone --shared '/repos/${appKey}' '/work/app/default'`));
+  assert.match(script, new RegExp(`git clone --shared '/repos/${infraKey}' '/work/infra/default'`));
   // A Binding's `ref` is the BASE the branch is cut from (ADR-0051) — named through the clone's
   // remote-tracking ref when one exists, else as written (a tag, a sha). Bare, git's DWIM would
   // make the base branch itself and discard `-b` (see the real-git test below).
@@ -1192,9 +1192,9 @@ test("attachScript quotes hostile refs and urls, and rejects an empty slot list"
 });
 
 test("attachScript cuts the branch worktree FROM a Binding's ref, never ON it (real git)", async (t) => {
-  // ADR-0051: `ref` is the base the branch Worktree is cut from. The pod-local clone is
-  // `--no-checkout` off the cache, so only the default branch exists locally and every other
-  // branch is `origin/<name>`; handed a bare `develop`, git's "worktree add" DWIM creates a local
+  // ADR-0051: `ref` is the base the branch Worktree is cut from. The pod-local clone is a fresh
+  // clone off the cache, so only the default branch exists locally and every other branch is
+  // `origin/<name>`; handed a bare `develop`, git's "worktree add" DWIM creates a local
   // `develop` tracking `origin/develop` and silently drops `-b` — the Agent would commit on, and
   // push to, the base. This drives the emitted worktree line through real git in a temp layout
   // shaped like the pod's (`/repos/<key>` cache, `/work/<slot>/default`) for each ref kind.

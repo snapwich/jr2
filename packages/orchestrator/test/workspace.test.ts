@@ -210,6 +210,19 @@ test("restore-reconcile: Sandbox present → the body resumes parked, nothing is
   assert.equal((await second.read(runId))?.status, "done");
 });
 
+test("a branch named `default` faults BEFORE any pod exists — that directory is the clone's (ADR-0004)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const clash = workspace(body, { repos: { app: APP }, spec: () => ({ branch: "default" }) });
+  host.register({ name: "clash", machine: clash, provide: () => ({}) });
+  const { runId } = await host.start("clash", { prompt: "x" });
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.equal(final?.status, "error");
+  assert.match(final?.fault ?? "", /workspace spec invalid: branch "default"/);
+  assert.ok(!sandbox.calls.some((c) => c.startsWith("provision:")), "faulted before the port");
+});
+
 test("a spec deriving undefined fields (missing run input) faults BEFORE any pod exists", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
