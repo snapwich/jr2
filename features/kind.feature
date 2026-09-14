@@ -19,8 +19,9 @@ Feature: a workspace() run drives a real Sandbox on kind
     just e2e-kind
   Bring-up is the product's own path (ADR-0010/0019/0038): each scenario runs `j2 up` into a fresh
   namespace of the shared cluster, and that converge builds and loads every image it deploys —
-  Harness, Adapter, operator, the instance, and the instance's `images/default`. Nothing is
-  instance-bound to the cluster itself.
+  Harness, Adapter, operator, the instance, and the instance's own images (`images/default`, and
+  `images/user` for the one workflow that seats a human). Nothing is instance-bound to the cluster
+  itself.
 
   Rule: the wrapper provisions a real Sandbox, attaches the worktree, and destroys it on final
 
@@ -55,6 +56,62 @@ Feature: a workspace() run drives a real Sandbox on kind
       # The cache agent's own account, read the way a human reads it — the Sandbox went Ready only
       # once the Repo was present and fetched on its node (ADR-0048/0051).
       And j2 status reports repo "http://seed.j2-e2e-seed.svc/app.git" present on the node
+
+  Rule: a fetch inside the pod reaches the remote's now
+    ADR-0053. `origin`'s fetch url is a COMMAND, not a path: git runs the program on the runtime
+    volume, which asks the Adapter on localhost, waits for the landing, and only then execs
+    `git upload-pack` against the node cache. So the ask crosses a loopback route, a Sandbox-token
+    route, an annotation on the CR, the operator's copy of it onto the pod, a DaemonSet, and a real
+    remote — and every one of those is real only here. What it buys is the case the grill took: a
+    human pushes a fix, and the Agent's next `git fetch` has it, in seconds rather than at the
+    5-minute interval or the next attach.
+
+    The seed is WRITTEN to for the first time (steps/seed.ts), always on a branch of the pushing
+    scenario's own: one repository is shared by every worker, so a scenario moves no ref another
+    scenario's Sandbox has cloned.
+
+    Scenario: a commit pushed a moment ago arrives on the next git fetch in the pod
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
+      When a commit is pushed to the seed on a branch of its own
+      And the Harness container fetches "origin" in repo "app"
+      # NO polling: one fetch returned, and the ref is already there. A cache that only refreshed
+      # on its interval would answer the same fetch with the objects it happened to hold, and pass
+      # a polling version of this scenario five minutes later.
+      Then the pushed commit is the head of that branch in repo "app"
+      And the fetch cost seconds, not the cache's refresh interval
+      # The mark and the landing, read off the CR the way a human reads it: the Orchestrator wrote
+      # one annotation per Repo key, and the operator's standing entry says which fetch answered it
+      # — a fetch that STARTED before the ask does not (ADR-0053).
+      And the Sandbox's ask for repo "http://seed.j2-e2e-seed.svc/app.git" is answered by the fetch its status reports
+
+    Scenario: origin fetches through the program and pushes to the remote itself
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
+      # What `git remote -v` shows a human: the program named by absolute path with the Repo's
+      # IDENTITY as its argument — never the cache key, which is a derived directory name (ADR-0004)
+      # — and, on the push line, the Binding's own spelling, unchanged. A push still goes to the
+      # remote with the caller's own credential, never the Agent's (ADR-0005).
+      Then origin in repo "app" fetches through the program and pushes to "http://seed.j2-e2e-seed.svc/app.git"
+
+    Scenario: the human's seat fetches the same way, from a read-only runtime
+      Given the kind instance is serving
+      # The one kind workflow that composes the third seat: a musl image with git, no j2 knowledge,
+      # and nothing injected into its process (ADR-0005).
+      When I start the "seated" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
+      When a commit is pushed to the seed on a branch of its own
+      # The fetch url lives in the SHARED `default/.git/config`, so this seat runs the same program
+      # the Agent's does — a static binary, because the libc here is not j2's (ADR-0037) — and
+      # lands the refs in the one worktree both seats mount.
+      And the User Container fetches "origin" in repo "app"
+      Then the pushed commit is the head of that branch in repo "app"
+      And the User Container holds the program, on a read-only "/opt/j2"
 
   Rule: a live Sandbox survives an orchestrator restart, and the run re-attaches to it
 

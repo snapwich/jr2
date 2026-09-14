@@ -216,6 +216,104 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(sandbox.Status.PodRef.Name).To(Equal(original.Name), "the name cannot reveal the swap — only the UID can")
 		})
 
+		It("carries an ask onto the pod and answers it on status.repos, leaving Ready alone (ADR-0053)", func() {
+			// A fetch inside the pod asks the cache: the Orchestrator marks the ask
+			// on this CR, the operator copies it onto the pod — where the cache
+			// agent reads demand — and the standing per-key entry says whether the
+			// node has fetched since. Ready is not part of it: it was taken once,
+			// when the pod passed the gate, and a Sandbox outlives its creation.
+			const repoKey = "app-0a1b2c3d"
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			sandbox.Spec.Repos = []corev1alpha1.SandboxRepo{{Key: repoKey, URL: "https://github.com/acme/app.git"}}
+			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
+
+			repo := &corev1alpha1.Repo{
+				ObjectMeta: metav1.ObjectMeta{Name: repoKey, Namespace: resourceNamespace},
+				Spec:       corev1alpha1.RepoSpec{URL: "https://github.com/acme/app.git"},
+			}
+			Expect(k8sClient.Create(ctx, repo)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1alpha1.Repo{ObjectMeta: metav1.ObjectMeta{Name: repoKey, Namespace: resourceNamespace}}))).To(Succeed())
+			})
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			binding := &corev1.Binding{
+				ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
+				Target:     corev1.ObjectReference{Kind: "Node", Name: "node-a"},
+			}
+			Expect(k8sClient.SubResource("binding").Create(ctx, pod, binding)).To(Succeed())
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			By("reaching Ready on a cache fetched since creation — a creation is an ask")
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			landed := metav1.NewTime(sandbox.CreationTimestamp.Add(time.Second))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: &landed, LastFetched: &landed}}
+			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
+			Expect(sandbox.Status.Repos).To(HaveLen(1))
+			Expect(sandbox.Status.Repos[0].Key).To(Equal(repoKey))
+			Expect(sandbox.Status.Repos[0].Asked).To(Equal(sandbox.CreationTimestamp))
+			Expect(sandbox.Status.Repos[0].Fetched).NotTo(BeNil())
+			Expect(sandbox.Status.Repos[0].Error).To(BeEmpty())
+
+			By("marking an ask on the CR: the entry goes unanswered and the ask reaches the pod")
+			ask := metav1.NewTime(landed.Add(time.Minute))
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			sandbox.Annotations = map[string]string{corev1alpha1.AskedAnnotation(repoKey): ask.UTC().Format(time.RFC3339)}
+			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			Expect(pod.Annotations).To(HaveKeyWithValue(corev1alpha1.AskedAnnotation(repoKey), ask.UTC().Format(time.RFC3339)))
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Repos[0].Asked).To(Equal(ask))
+			Expect(sandbox.Status.Repos[0].Fetched.Time).To(Equal(landed.Time), "the older landing is still named — it dates the cache, it just does not answer the ask")
+			Expect(sandbox.Status.Repos[0].Attempted.Time).To(Equal(landed.Time))
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady), "Ready is sticky and this is not its business")
+
+			By("answering the ask once the node fetched after it")
+			after := metav1.NewTime(ask.Add(time.Second))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: &after, LastFetched: &after}}
+			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Repos[0].Fetched).NotTo(BeNil())
+			Expect(sandbox.Status.Repos[0].Fetched.Time).To(Equal(after.Time))
+
+			By("reporting git's words when the attempt for a later ask failed — the caller serves the cache and says so")
+			second := metav1.NewTime(after.Add(time.Minute))
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			sandbox.Annotations[corev1alpha1.AskedAnnotation(repoKey)] = second.UTC().Format(time.RFC3339)
+			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
+			failed := metav1.NewTime(second.Add(time.Second))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
+			repo.Status.Nodes = []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true, Synced: false, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: &failed, LastFetched: &after, LastError: "fatal: unable to access: timed out"}}
+			Expect(k8sClient.Status().Update(ctx, repo)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Repos[0].Fetched.Time).To(Equal(after.Time), "git's words, beside the time the cache's objects are as of")
+			Expect(sandbox.Status.Repos[0].Error).To(Equal("fatal: unable to access: timed out"))
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
+		})
+
 		It("holds Ready until every Repo it names is on its node, and reports whether it is fresh", func() {
 			// ADR-0051's gate: the pod being Ready is necessary, not sufficient. The
 			// cache the attach will clone from must be present on THIS node; whether

@@ -59,6 +59,20 @@ export function repoKey(url: string): string {
   return repoIdentity(url).key;
 }
 
+/**
+ * The cache key of an identity that is ALREADY resolved — what `repoIdentity` produced, carried as
+ * a string and handed back later. The ask a pod makes names the Repo's IDENTITY (ADR-0053: a key
+ * is a derived directory name, never the name a human reads in `git remote -v`), so the route that
+ * answers it turns that identity into the key the Sandbox mounts. `repoKey` cannot: it takes a
+ * URL, and `github.com/acme/app` is not one — no scheme, no colon, not absolute.
+ *
+ * Exact, never lenient: a spelling that is not the identity yields a key nothing mounts, which is
+ * the caller's answer.
+ */
+export function repoKeyOfIdentity(identity: string): string {
+  return keyOf(identity);
+}
+
 function resolveRemote(raw: string): Omit<RepoIdentity, "key"> | undefined {
   if (!raw.includes("://")) {
     const scp = SCP_STYLE.exec(raw);

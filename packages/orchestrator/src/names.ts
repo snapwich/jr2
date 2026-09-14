@@ -69,3 +69,10 @@ export const REPOS_MOUNT = "/repos";
 export const LABEL_REPO_BOUND = "j2.dev/bound";
 export const ANNOTATION_REPO_IDENTITY = "j2.dev/identity";
 export const ANNOTATION_REPO_LAST_ATTACHED = "j2.dev/last-attached";
+
+/** The mark one ask leaves on a Sandbox CR, per Repo key (ADR-0053): a timestamp the Orchestrator
+ * writes when something inside the pod asks for a fetch. The operator copies it onto the pod, and
+ * the node's cache agent takes `asked` as the later of the pod's creation and this — so a fetch
+ * that started before the ask does not satisfy it. The Lease's shape: an annotation, written by
+ * the Orchestrator, read by the operator. */
+export const askedAnnotation = (key: string): string => `j2.dev/asked-${key}`;

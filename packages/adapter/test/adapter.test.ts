@@ -6,7 +6,8 @@
 //   - `tools/call` becomes one authenticated delivery, and the receipt comes back;
 //   - a settled turn has an EMPTY menu rather than a stale one, and picking against it still fails;
 //   - the Sandbox token is on every request (the Agent's own container has no such thing);
-//   - a `deferred`/`poll` event is REFUSED, not degraded to a fire-and-forget tool.
+//   - a `deferred`/`poll` event is REFUSED, not degraded to a fire-and-forget tool;
+//   - an ask (ADR-0053) is forwarded to this Sandbox's fetch route and its answer relayed unread.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -303,4 +304,170 @@ test("a surface read whose window closes names the address, not `fetch failed`",
   });
 
   await assert.rejects(() => client.surface("iid-1"), /ECONNREFUSED 10\.96\.0\.7:4000/);
+});
+
+// The ask (ADR-0053): `POST /fetch` on the same loopback listener. Its caller is not the Agent and
+// not MCP — it is `j2-upload-pack`, the program git runs for `origin`'s fetch url, on behalf of
+// whoever typed `git fetch` in the pod. What is asserted is that the Adapter forwards the one verb,
+// scoped to this Sandbox and carrying the token, and hands the answer back unread.
+
+/** A fake Orchestrator for the ask path: records the ask, answers what the test dictates. */
+function fakeAskOrchestrator(
+  answer: Response | (() => Promise<Response>),
+  opts: { sandbox?: string } = { sandbox: "ws-1" },
+) {
+  const seen: Array<{ url: string; bearer: string; body: unknown; method: string }> = [];
+  const fetchImpl: typeof globalThis.fetch = async (input, init) => {
+    seen.push({
+      url: String(input),
+      bearer: String((init?.headers as Record<string, string> | undefined)?.authorization),
+      body: JSON.parse(String(init?.body)) as unknown,
+      method: String(init?.method),
+    });
+    return typeof answer === "function" ? await answer() : answer.clone();
+  };
+  return {
+    seen,
+    client: new OrchestratorClient({
+      url: "http://orchestrator.invalid",
+      token: TOKEN,
+      sandbox: opts.sandbox,
+      fetch: fetchImpl,
+      askTimeoutMs: 500,
+    }),
+  };
+}
+
+/** Ask the way the program does: one POST to the loopback listener, and read what comes back. */
+async function ask(orchestrator: OrchestratorClient, body: string) {
+  const adapter = await startAdapter({ orchestrator, port: 0 });
+  try {
+    const res = await fetch(`${adapter.url}/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+    });
+    return { status: res.status, body: await res.text() };
+  } finally {
+    await adapter.close();
+  }
+}
+
+test("an ask becomes one authenticated POST to this Sandbox's fetch route", async () => {
+  const { seen, client } = fakeAskOrchestrator(Response.json({ fetched: "2026-09-13T10:00:00.000Z" }));
+
+  const answer = await ask(client, JSON.stringify({ identity: "github.com/acme/app" }));
+
+  assert.deepEqual(seen, [
+    {
+      // The Sandbox is named in the path, and the token is checked against it: this pod can ask for
+      // the caches it mounts and nothing else.
+      url: "http://orchestrator.invalid/sandboxes/ws-1/fetch",
+      bearer: `Bearer ${TOKEN}`,
+      body: { identity: "github.com/acme/app" },
+      method: "POST",
+    },
+  ]);
+  assert.equal(answer.status, 200);
+  assert.deepEqual(JSON.parse(answer.body), { fetched: "2026-09-13T10:00:00.000Z" });
+});
+
+test("a stale landing is relayed exactly as the Orchestrator wrote it", async () => {
+  // The Adapter forms no opinion about freshness. `stale` is the Orchestrator's verdict and the
+  // program's decision — serve the cache, warn on stderr — so anything read or reshaped here would
+  // be a second opinion about a question that already has one (ADR-0053).
+  const stale = { stale: "fatal: could not read Username for 'https://github.com'", asOf: "2026-09-13T09:00:00.000Z" };
+  const { client } = fakeAskOrchestrator(Response.json(stale));
+
+  const answer = await ask(client, JSON.stringify({ identity: "github.com/acme/app" }));
+
+  assert.equal(answer.status, 200);
+  assert.deepEqual(JSON.parse(answer.body), stale);
+});
+
+test("a refused ask keeps the Orchestrator's status — the program is told, not fooled", async () => {
+  // A Repo the Sandbox does not mount is a 404 naming the identity, and a 404 must arrive as a 404:
+  // the program falls through to the cache on anything that is not a landing, and a status the
+  // Adapter softened would hide a scope error behind a freshness one.
+  const { client } = fakeAskOrchestrator(
+    new Response(JSON.stringify({ error: 'this Sandbox mounts no Repo "github.com/acme/other"' }), { status: 404 }),
+  );
+
+  const answer = await ask(client, JSON.stringify({ identity: "github.com/acme/other" }));
+
+  assert.equal(answer.status, 404);
+  assert.match(JSON.parse(answer.body).error as string, /mounts no Repo/);
+});
+
+test("an Orchestrator that never answered is an answer, and it names the address", async () => {
+  // The ask never throws its way back to git: every failure is the same instruction to the program
+  // — serve the cache and say so — and `fetch failed` in a human's terminal diagnoses nothing.
+  const { client } = fakeAskOrchestrator(async () => {
+    throw new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect ECONNREFUSED 10.96.0.7:4000"), { code: "ECONNREFUSED" }),
+    });
+  });
+
+  const answer = await ask(client, JSON.stringify({ identity: "github.com/acme/app" }));
+
+  assert.equal(answer.status, 502);
+  assert.match(
+    JSON.parse(answer.body).error as string,
+    /sandboxes\/ws-1\/fetch: connect ECONNREFUSED 10\.96\.0\.7:4000/,
+  );
+});
+
+test("an Orchestrator that outruns the ask's budget answers too, rather than hanging the fetch", async () => {
+  // The route's own wait is bounded (ADR-0053), so a hop that outlives it is a lost request. The
+  // program has its own deadline behind this one; going quiet here would spend it for nothing.
+  const fetchImpl: typeof globalThis.fetch = (_input, init) =>
+    new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      assert.ok(signal, "the ask carries its own deadline");
+      signal.addEventListener("abort", () => reject(signal.reason as Error));
+    });
+  const client = new OrchestratorClient({
+    url: "http://orchestrator.invalid",
+    token: TOKEN,
+    sandbox: "ws-1",
+    fetch: fetchImpl,
+    askTimeoutMs: 20,
+  });
+
+  const answer = await ask(client, JSON.stringify({ identity: "github.com/acme/app" }));
+
+  assert.equal(answer.status, 502);
+  assert.match((JSON.parse(answer.body) as { error: string }).error, /timeout|abort/i);
+});
+
+test("an ask with no identity is refused before the Orchestrator is troubled", async () => {
+  const { seen, client } = fakeAskOrchestrator(Response.json({ fetched: "2026-09-13T10:00:00.000Z" }));
+
+  assert.equal((await ask(client, JSON.stringify({}))).status, 400);
+  assert.equal((await ask(client, "not json")).status, 400);
+  assert.deepEqual(seen, [], "nothing was forwarded");
+});
+
+test("an Adapter with no Sandbox says so — the Instance Harness mounts no Repo", async () => {
+  // ADR-0031's placement pairs a Harness with an Adapter and no worktree, so there is no cache to
+  // ask for and nothing to name in the path. The ability is ambient in a Workspace pod and absent
+  // here, which is the answer, not a failure.
+  const { seen, client } = fakeAskOrchestrator(Response.json({ fetched: "2026-09-13T10:00:00.000Z" }), {});
+
+  const answer = await ask(client, JSON.stringify({ identity: "github.com/acme/app" }));
+
+  assert.equal(answer.status, 404);
+  assert.match(JSON.parse(answer.body).error as string, /serves no Sandbox/);
+  assert.deepEqual(seen, []);
+});
+
+test("the ask is POST, and every other path is still the Agent's or nothing", async () => {
+  const adapter = await startAdapter({ orchestrator: fakeAskOrchestrator(Response.json({})).client, port: 0 });
+  try {
+    assert.equal((await fetch(`${adapter.url}/fetch`)).status, 405, "a GET is not an ask");
+    assert.equal((await fetch(`${adapter.url}/healthz`)).status, 200, "the health route is untouched");
+    assert.equal((await fetch(`${adapter.url}/fetches`)).status, 404, "and the Adapter forwards no other verb");
+  } finally {
+    await adapter.close();
+  }
 });

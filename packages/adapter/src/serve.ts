@@ -12,8 +12,12 @@
 // endpoint specifically, because 404 is not a free status code in Streamable HTTP: it is how a
 // server says "your session expired, reinitialize", so spending it on "your turn is over" was
 // overloading a transport signal with an application one.
+//
+// Beside it sits the one route that is not the Agent's: `POST /fetch`, the ask a `git fetch` inside
+// the pod makes on its way to the node cache (ADR-0053). Same listener, same loopback, same reason
+// — the credential that reaches the Orchestrator is in this container and in no other.
 
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { type OrchestratorClient, serverForTurn } from "./adapter.ts";
@@ -30,6 +34,32 @@ export type RunningAdapter = { url: string; close: () => Promise<void> };
 
 const MCP_PATH = /^\/mcp\/([^/]+)$/;
 
+/** Collect a request body, which every route here reads before it can act. */
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (chunk: Buffer) => (body += chunk));
+    req.on("end", () => resolve(body));
+  });
+}
+
+/**
+ * The Repo identity an ask names, or `undefined` when the body does not carry one.
+ *
+ * Identity, never the cache key: a key is a derived directory name and not the name a human reads
+ * in `git remote -v` (ADR-0004/0053). The Adapter does not interpret it — the Orchestrator derives
+ * the key and checks it against the Sandbox's slots — so all this decides is whether there is
+ * something to forward.
+ */
+function askedIdentity(body: string): string | undefined {
+  try {
+    const asked = JSON.parse(body) as { identity?: unknown };
+    return typeof asked.identity === "string" && asked.identity ? asked.identity : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Serve the Agent's MCP surface. One endpoint, one caller, one pod. */
 export async function startAdapter(opts: AdapterOptions): Promise<RunningAdapter> {
   const hostname = opts.hostname ?? "127.0.0.1";
@@ -41,6 +71,32 @@ export async function startAdapter(opts: AdapterOptions): Promise<RunningAdapter
       res.end(JSON.stringify({ ok: true }));
       return;
     }
+
+    // The ask (ADR-0053). Not part of the Agent's Menu and not addressed by an instance id: the
+    // caller is `j2-upload-pack`, run by git for whoever typed `git fetch` in this pod — the Agent
+    // in the Harness container, or a human in any seat of it. What comes back is the Orchestrator's
+    // own answer, status and bytes unread, because the program reads it and this process has no
+    // better opinion about freshness than the wait that produced it.
+    if (url.pathname === "/fetch") {
+      if (req.method !== "POST") {
+        res.writeHead(405, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: `the ask is POST /fetch, not ${req.method} (ADR-0053)` }));
+        return;
+      }
+      void (async () => {
+        const identity = askedIdentity(await readBody(req));
+        if (!identity) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `the ask needs {"identity":"<host/path>"} (ADR-0053)` }));
+          return;
+        }
+        const answer = await opts.orchestrator.ask(identity);
+        res.writeHead(answer.status, { "content-type": "application/json" });
+        res.end(answer.body);
+      })();
+      return;
+    }
+
     const match = MCP_PATH.exec(url.pathname);
     if (!match) {
       res.writeHead(404, { "content-type": "application/json" });
@@ -49,9 +105,7 @@ export async function startAdapter(opts: AdapterOptions): Promise<RunningAdapter
     }
     const instanceId = decodeURIComponent(match[1] as string);
 
-    let body = "";
-    req.on("data", (chunk: Buffer) => (body += chunk));
-    req.on("end", () => {
+    void readBody(req).then((body) => {
       void (async () => {
         try {
           // Build THIS turn's server from the Orchestrator's live registration. A settled run or an

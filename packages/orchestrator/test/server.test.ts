@@ -126,6 +126,19 @@ test("a registered Machine composing a Sandbox + J2_NAMESPACE → the data plane
       kubectl.calls.some((a) => a[0] === "get" && a[1] === "repos.core.j2.dev" && a.includes("ws")),
       "GET /repos asked the namespace's Repo resources",
     );
+    // And the pod's route out is wired to the same cluster (ADR-0053): the ask reads the Sandbox
+    // CR first, to see whether the pod mounts the Repo at all. This one mounts nothing (the fake
+    // answers an empty object), so it is refused — what matters here is that the port is THERE.
+    const ask = await fetch(`${inst.url}/sandboxes/sb-1/fetch`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok" },
+      body: JSON.stringify({ identity: "github.com/acme/app" }),
+    });
+    assert.equal(ask.status, 404);
+    assert.ok(
+      kubectl.calls.some((a) => a[0] === "get" && a[1] === "sandbox" && a[2] === "sb-1" && a.includes("ws")),
+      "the ask read the Sandbox in the namespace",
+    );
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });

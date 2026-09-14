@@ -19,7 +19,8 @@
 #      baked on their own registry is runnable without j2 ever touching it.
 #
 # So **/opt/j2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/work-acl · bin/init-copy · lib/*.so · src/ · node_modules/ · package.json
+#   bin/node · bin/rg · bin/work-acl · bin/j2-upload-pack · bin/init-copy · lib/*.so · src/ ·
+#   node_modules/ · package.json
 # — is copied verbatim onto a volume that lands in a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
 # this repo never sees. `/opt/j2` and not `/app`, because a user's base may already use /app and a
@@ -107,6 +108,38 @@ RUN set -eux; \
     getfacl -d --omit-header /tmp/acl-smoke | grep -qx 'group::rwx'
 
 # ---------------------------------------------------------------------------------------------
+# j2-upload-pack stage — discarded. The program behind `origin`'s FETCH url in every Sandbox
+# (ADR-0053): git's built-in `ext::` transport runs it, it asks the Adapter on localhost for a
+# fetch of the Repo, waits for the landing, then execs `git upload-pack` on the node cache. Its
+# source is the operator's Go module, because the ask and the cache agent that answers it are one
+# decision; nothing about it is operator-specific at runtime.
+#
+# STATIC, the work-acl rule (ADR-0037): it runs in whatever image the user brought, and in the
+# User Container beside it (ADR-0005), on a libc j2 does not control. `ext::` names it by absolute
+# path, so that seat needs no PATH and j2 injects no env.
+# ---------------------------------------------------------------------------------------------
+FROM golang:1.26 AS uploadpack
+
+# TARGETARCH is BuildKit's and per-stage, as in the vendor stage above.
+ARG TARGETARCH
+
+WORKDIR /operator
+# The program imports the standard library and nothing else. That is why this stage downloads no
+# modules and copies no more of the operator than the two packages it builds — a controller change
+# does not rebuild it. An import beyond stdlib fails HERE, and would owe a `go mod download` and a
+# wider copy.
+COPY operator/go.mod operator/go.sum ./
+COPY operator/cmd/j2-upload-pack ./cmd/j2-upload-pack
+COPY operator/internal/uploadpack ./internal/uploadpack
+
+# The smoke is the same proof the vendored rg and work-acl give: the blob built here RUNS on this
+# TARGETARCH. With no arguments the program prints its usage and exits 1, which is the whole of
+# what it can prove outside a pod.
+RUN set -eux; \
+    CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /out/j2-upload-pack ./cmd/j2-upload-pack; \
+    /out/j2-upload-pack 2>&1 | grep -q '^usage: j2-upload-pack'
+
+# ---------------------------------------------------------------------------------------------
 # The image itself.
 # ---------------------------------------------------------------------------------------------
 FROM node:24-slim
@@ -114,6 +147,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 
 COPY --from=vendor /opt/j2/bin /opt/j2/bin
 COPY --from=vendor /opt/j2/lib /opt/j2/lib
+
+# Beside work-acl, and published with it: the fetch url lives in the shared `default/.git/config`,
+# so every seat that holds the checkouts holds the program (ADR-0053).
+COPY --from=uploadpack --chmod=0755 /out/j2-upload-pack /opt/j2/bin/j2-upload-pack
 
 WORKDIR /opt/j2
 ENV NODE_ENV=production

@@ -22,9 +22,11 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   the landing, then execs `git upload-pack /repos/<key>` and gets out of the way. Git speaks its ordinary protocol and
   prints its ordinary output; refs update once, at the end. What the caller sees is a fetch on a slow handshake, never
   an early return and never a partial state. `git fetch`, `git pull`, `git ls-remote origin`, and `git fetch --dry-run`
-  all pass through it, so every fetch inside a pod is a fetch of the remote's now; nothing else in git talks to a
-  remote, so `status`, `log`, and `rebase` stay local. The push url is unchanged: the Binding's own spelling, the
-  caller's own credential, never the Agent's (ADR-0005).
+  all pass through it, so every fetch inside a pod is a fetch of the remote's now. `git archive --remote=origin` is the
+  one other read git asks a remote for, and the program serves it the same way — the same ask, then `git upload-archive`
+  against the same cache — because the path url served it and a decision about fetching may not quietly take it away.
+  Nothing else in git talks to a remote, so `status`, `log`, and `rebase` stay local. The push url is unchanged: the
+  Binding's own spelling, the caller's own credential, never the Agent's (ADR-0005).
 
 - **The ask rides the Sandbox CR and reaches the agent through the pod.** The program asks the Adapter on `localhost`;
   the Adapter, with the Sandbox token it already holds, asks the Orchestrator; the Orchestrator patches one annotation

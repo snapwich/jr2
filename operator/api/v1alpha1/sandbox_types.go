@@ -228,11 +228,60 @@ type SandboxStatus struct {
 	// +optional
 	Node string `json:"node,omitempty"`
 
+	// Repos is the standing report on the caches this Sandbox mounts
+	// (ADR-0053), one entry per key in spec.repos, in that order, computed on
+	// every reconcile once the Pod has a node. It is what a fetch inside the
+	// pod waits on: the program asks the Adapter, the Orchestrator marks the
+	// ask on this CR, and the entry for that key says whether the node fetched
+	// since. `Ready` is untouched by it — that stays the gate it was, sticky
+	// and taken once per Pod life; this is the standing answer the gate's
+	// verdict could not give, because a Sandbox outlives its own creation.
+	// +listType=map
+	// +listMapKey=key
+	// +optional
+	Repos []SandboxRepoStatus `json:"repos,omitempty"`
+
 	// Conditions represent the current state of the Sandbox resource.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// SandboxRepoStatus is what one Repo cache this Sandbox mounts has done about
+// what was asked of it (ADR-0053). The operator computes it from the Repo
+// resource's entry for the Pod's node; the cache agent is still that entry's
+// only writer, and this is a reading of it against this Sandbox's own ask.
+type SandboxRepoStatus struct {
+	// Key is the Repo cache key, as spec.repos names it.
+	// +required
+	Key string `json:"key"`
+
+	// Asked is what this Sandbox asked the node for: the later of its own
+	// creation and the `j2.dev/asked-<key>` annotation, because a creation is
+	// an ask (ADR-0051) and every ask after it is one too.
+	// +required
+	Asked metav1.Time `json:"asked"`
+
+	// Fetched is when the node's cache last landed objects — the node's own
+	// stamp, taken at the attempt's START, which is what makes a coalesced ask
+	// correct. At or after `asked` it is the landing a caller waits for;
+	// before it, it is the time the cache's objects are as of, which is what a
+	// degraded answer names. Absent means nothing has ever fetched this cache.
+	// +optional
+	Fetched *metav1.Time `json:"fetched,omitempty"`
+
+	// Attempted is when the node last tried anything against the remote,
+	// whatever came of it. Paired with `error` it is how a caller tells a
+	// fetch that failed for this ask from one that has not run yet.
+	// +optional
+	Attempted *metav1.Time `json:"attempted,omitempty"`
+
+	// Error is git's own words for an attempt made for this ask that did not
+	// succeed; empty otherwise. A caller that sees it serves the cache as it
+	// stands and says so — freshness degrades, absence does not (ADR-0051).
+	// +optional
+	Error string `json:"error,omitempty"`
 }
 
 // +kubebuilder:object:root=true

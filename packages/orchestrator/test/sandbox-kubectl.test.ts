@@ -285,12 +285,15 @@ test("the User Container is the zero-contract seat: own entrypoint, /work, and N
   assert.deepEqual(user, {
     name: "user",
     image: "j2-sandbox-inst-rust:r00",
-    // Both halves of the one exception: the worktrees, and the RO caches their `--shared` clones
+    // The one exception and its halves: the worktrees, the RO caches their `--shared` clones
     // resolve objects from (ADR-0004/0051) — /work without /repos/<key> is a checkout with every
-    // borrowed object missing. Mounted by the volume NAME the operator defines per key. No env:
-    // safe.directory stays the image's own line (ADR-0005).
+    // borrowed object missing — and the runtime volume, because `origin`'s fetch url is a program
+    // on it (ADR-0053), so /work without /opt/j2 is a checkout whose `git fetch` dies. Mounted by
+    // the volume NAME the operator defines per key. Still no env: `ext::` names the program by
+    // absolute path, and safe.directory stays the image's own line (ADR-0005).
     volumeMounts: [
       { name: "work", mountPath: "/work" },
+      { name: "runtime", mountPath: "/opt/j2", readOnly: true },
       { name: `repo-${APP_KEY}`, mountPath: `/repos/${APP_KEY}`, readOnly: true },
     ],
   });
@@ -1126,15 +1129,34 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
     /git -C '\/work\/app\/default' remote set-url --push origin -- 'git@github\.com:acme\/app\.git'/,
   );
   assert.doesNotMatch(script, /config remote\.origin\.url/);
-  // And ONLY push: the fetch url stays the cache the clone was taken from — the pod holds no
-  // credential for the remote (ADR-0005), which is why a stale attach stays stale until the cache
-  // agent's next fetch (ADR-0051). A `set-url` without `--push`, a `remote add`, or a fetch url
-  // rewrite would point the Agent's `git fetch` at a remote it cannot reach.
+  // The FETCH url is a command, not a path (ADR-0053): git's `ext::` transport, the program on the
+  // runtime volume, the service git substitutes for `%S`, and the Repo's IDENTITY — the name a
+  // human reads in `git remote -v`, never the cache key. Nothing in the url says where the objects
+  // are: the program reads that off the checkout's alternates.
+  assert.match(
+    script,
+    /git -C '\/work\/app\/default' remote set-url origin -- 'ext::\/opt\/j2\/bin\/j2-upload-pack %S github\.com\/acme\/app'\n/,
+  );
+  assert.match(
+    script,
+    /git -C '\/work\/infra\/default' remote set-url origin -- 'ext::\/opt\/j2\/bin\/j2-upload-pack %S example\.test\/infra'\n/,
+  );
+  // At the Adapter's default port the url names no address — the program falls back to the same
+  // one, so spelling it would put a number in every `git remote -v` that says nothing.
+  assert.doesNotMatch(script, /j2-upload-pack %S [^ ']+ /);
+  // And the policy that lets git run it at all. `ext` is on git's own "known scary" list, so its
+  // built-in default is `never` and the url above would die with `fatal: transport 'ext' not
+  // allowed` before the program ever ran. `user` is what ADR-0053 argues for: a fetch a person or
+  // the Agent runs, never one git makes for itself out of a url j2 did not write.
+  assert.match(script, /git -C '\/work\/app\/default' config protocol\.ext\.allow user\n/);
+  assert.doesNotMatch(script, /protocol\.ext\.allow (always|never)/);
+  // Exactly two remote lines per slot, and no other way of writing a remote: a `remote add` or a
+  // refspec rewrite would point the Agent's `git fetch` somewhere the pod cannot reach.
   for (const line of script.split("\n")) {
     if (/\bremote\b/.test(line))
-      assert.match(line, /remote set-url --push origin -- /, `only the push url is set: ${line}`);
+      assert.match(line, /remote set-url (--push )?origin -- /, `remotes are set, never added: ${line}`);
   }
-  assert.doesNotMatch(script, /remote\.origin\.(fetch|url)|remote add|--fetch/);
+  assert.doesNotMatch(script, /remote\.origin\.fetch|remote add|--fetch/);
   // No ref → the Repo's OWN default branch, via the clone's origin/HEAD — never a hardcoded
   // guess like `main` against a `master` repo.
   const defaulted = await port.attach({
@@ -1161,6 +1183,54 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
 });
 
 const PATHS = { reposMount: "/repos", workRoot: "/work" };
+
+test("the fetch url names the Adapter only when the composition moved it off 8081", async () => {
+  // The program defaults to `http://127.0.0.1:8081` and reads `$J2_ADAPTER_URL` before that, so a
+  // pod at the default port gets a url that says nothing about it (ADR-0053). A pod whose Adapter
+  // was moved must say so: the User Container gets no env, so the url is the only place it can.
+  const { exec, calls } = fakeExec({ exec: () => "" });
+  await kubectlSandbox({ exec, adapterPort: 9090 }).attach({
+    name: "sb-port",
+    spec: { branch: "b" },
+    repos: [{ slot: "app", url: APP_URL }],
+  });
+  assert.match(
+    calls[0]!.args.at(-1)!,
+    /remote set-url origin -- 'ext::\/opt\/j2\/bin\/j2-upload-pack %S example\.test\/app http:\/\/127\.0\.0\.1:9090'/,
+  );
+  // The default is the same url minus that argument, whether the port was left unset or spelled.
+  const { exec: e2, calls: c2 } = fakeExec({ exec: () => "" });
+  await kubectlSandbox({ exec: e2, adapterPort: 8081 }).attach({
+    name: "sb-default",
+    spec: { branch: "b" },
+    repos: [{ slot: "app", url: APP_URL }],
+  });
+  assert.match(c2[0]!.args.at(-1)!, /j2-upload-pack %S example\.test\/app'/);
+});
+
+test("the fetch url escapes what git's ext:: transport would read as syntax", () => {
+  // Git splits an `ext::` url on spaces and reads `%` as a placeholder introducer, so an identity
+  // carrying either is syntax unless it is escaped: a percent-encoded forge path
+  // (`My%20Project`, Azure DevOps) dies with `fatal: Bad remote-ext placeholder '%2'` before the
+  // program runs — every fetch in the pod, not a degraded one — and a literal space splits the
+  // identity in two, handing the program half an identity and the other half as an adapter url.
+  // Git's own spellings are `%%` and `% `, and the program receives the identity back exactly as
+  // written, which is what the Orchestrator derives the cache key from.
+  const { script } = attachScript(
+    { branch: "b" },
+    [
+      { slot: "azure", url: "https://dev.azure.com/org/My Project/_git/repo" },
+      { slot: "spaced", url: "git@host:team space/app.git" },
+    ],
+    PATHS,
+  );
+  assert.match(script, /%S dev\.azure\.com\/org\/My%%20Project\/_git\/repo'/);
+  assert.match(script, /%S host\/team% space\/app'/);
+  // `%S` is git's own placeholder, not an argument: it survives unescaped, once per url.
+  for (const line of script.split("\n")) {
+    if (line.includes("j2-upload-pack")) assert.equal(line.match(/%S/g)?.length, 1);
+  }
+});
 
 test("attachScript with a reviewSha adds the detached review worktree beside every branch worktree", () => {
   // ADR-0028: the reviewer's seat — `<branchDir>-review`, DETACHED at the sha under review, so a

@@ -327,6 +327,11 @@ async function mkKit(): Promise<string> {
     "deploy/harness/Dockerfile": "FROM node:24-slim\n",
     "deploy/adapter/Dockerfile": "FROM node:24-alpine\n",
     "operator/Dockerfile": "FROM golang:1.23\n",
+    // The Harness image builds `j2-upload-pack` out of the operator module too (ADR-0053).
+    "operator/go.mod": "module github.com/snapwich/j2/operator\n",
+    "operator/go.sum": "",
+    "operator/cmd/j2-upload-pack/main.go": "package main\n",
+    "operator/internal/uploadpack/uploadpack.go": "package uploadpack\n",
     "packages/harness/package.json": `{"name":"@j2/harness"}`,
     "packages/adapter/package.json": `{"name":"@j2/adapter"}`,
   };

@@ -23,6 +23,7 @@ import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
 import { createEchoPush } from "./harness-client.ts";
 import { createApp } from "./http.ts";
+import type { FetchAnswer } from "./repo-fetch.ts";
 import type { RepoStatus } from "./repos.ts";
 import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
@@ -52,6 +53,9 @@ export type InstanceOptions = {
   /** The Repo resources as the cluster reports them (ADR-0051), read per request off the port the
    * caller built. Absent = no data plane, which reports no Repos. */
   repos?: () => Promise<RepoStatus[]>;
+  /** The ask a pod makes when something inside it fetches (ADR-0053), off the port the caller
+   * built. Absent = no data plane, so no Sandbox to ask for. */
+  fetchRepo?: (sandbox: string, identity: string) => Promise<FetchAnswer>;
   /** The Instance Harness base URL (ADR-0031) — where a `workspace: "none"` Turn is admitted.
    * The entrypoint derives it from the pod's namespace (deterministic Service DNS); absent,
    * such a Turn without an explicit `endpoint` faults pointedly. */
@@ -156,7 +160,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   const auth = createAuthenticator({ instanceToken, signingKey });
   // The Repos are read PER REQUEST, never snapshotted here: a cache the agent cloned minutes
   // after boot must show as present the next time anyone asks (ADR-0048/0051).
-  const app = createApp(host, auth, { dataPlane: opts.dataPlane, repos: opts.repos });
+  const app = createApp(host, auth, { dataPlane: opts.dataPlane, repos: opts.repos, fetchRepo: opts.fetchRepo });
   const server = serve({ fetch: app.fetch, port: opts.port ?? 0, hostname });
   const port = await new Promise<number>((resolve) => {
     server.once("listening", () => resolve((server.address() as AddressInfo).port));

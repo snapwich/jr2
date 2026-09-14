@@ -103,6 +103,17 @@ export function mayDeliverToAgent(principal: Principal, registrationSandbox: str
   return registrationSandbox !== undefined && registrationSandbox === principal.sandbox;
 }
 
+/**
+ * May this principal ask for a fetch on this Sandbox (ADR-0053)? A Sandbox token may ask for its
+ * OWN pod and no other — the scope is the caches that pod mounts, and the route refuses a Repo it
+ * does not. The Instance token may, on the same grounds it may deliver to any agent surface: it is
+ * the operator. Nothing else can hold either, so there is no third case.
+ */
+export function mayAskForSandbox(principal: Principal, sandbox: string): boolean {
+  if (principal.kind === "instance") return true;
+  return principal.sandbox === sandbox;
+}
+
 function sign(key: Buffer, value: string): string {
   return createHmac("sha256", key).update(value).digest("base64url");
 }

@@ -81,6 +81,16 @@ export class E2EWorld {
   branchHeadBefore?: string;
   /** @kind: the detached review worktree's in-pod path (ADR-0028), carried between steps. */
   reviewDir?: string;
+  /** @kind: the branch this scenario pushed its own commit to on the seed (ADR-0053). Never
+   * `main`: the seed is one shared repository, so a scenario moves only a ref of its own. */
+  pushedBranch?: string;
+  /** @kind: the sha the seed reported for that push — what a `git fetch` inside the pod must
+   * reach, and the remote's own word for "now". */
+  pushedSha?: string;
+  /** @kind: how long the last `git fetch` inside the pod took, in ms. The claim it serves is that
+   * the ask costs a round trip and not a refresh interval (ADR-0053). */
+  fetchMs?: number;
+
   /** @kind: the tag of the labeled image the sweep scenario planted on every node (ADR-0039) —
    * garbage by construction, since no root will ever name it. */
   plantedImage?: string;

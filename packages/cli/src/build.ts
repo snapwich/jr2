@@ -396,7 +396,23 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     // volume. Naming the two files by hand is the desynchronization this over-hash rule exists to
     // delete — an init-copy edit would move no tag, and `j2 up` would report convergence onto pods
     // injecting the previous script. The directory covers whatever the next `COPY` adds.
-    sources: ["packages/harness", "deploy/harness"],
+    //
+    // And the ONE thing this image builds from outside those two trees: `j2-upload-pack`, the
+    // program behind `origin`'s fetch url in every Sandbox (ADR-0053). Its source lives in the
+    // operator's Go module, because the ask and the cache agent that answers it are one decision —
+    // so the harness image's address has to cover it, or an edit to the program would move no tag
+    // and `j2 up` would report convergence onto pods running the previous one. Its packages and
+    // not the whole module: the rest of `operator/` addresses the operator image, and the program
+    // imports the standard library alone — which the Dockerfile's builder stage enforces by
+    // copying no more than this and downloading nothing.
+    sources: [
+      "packages/harness",
+      "deploy/harness",
+      "operator/go.mod",
+      "operator/go.sum",
+      "operator/cmd/j2-upload-pack",
+      "operator/internal/uploadpack",
+    ],
     exclude: KIT_PACKAGE_EXCLUDE,
   },
   adapter: {

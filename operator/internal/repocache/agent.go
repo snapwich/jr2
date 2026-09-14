@@ -128,8 +128,9 @@ type Agent struct {
 //   - no cache and a pod here mounts it → clone (a cold node pays once);
 //   - no cache and nobody asks → probe the remote once per spec generation, so
 //     `j2 status` sees a private repo's error before any run does (ADR-0048);
-//   - a cache → pin gc, then fetch when a pod created since the last attempt
-//     asks, when the refresh interval elapsed, or when the spec changed.
+//   - a cache → pin gc, then fetch when a pod on this node asks — by having
+//     been created, or by carrying an ask marked since the last attempt
+//     (ADR-0053) — when the refresh interval elapsed, or when the spec changed.
 //
 // A clone, probe, or pin that fails returns an error so the queue retries with
 // backoff; a fetch that fails degrades the cache to stale and waits for the
@@ -176,14 +177,16 @@ func (a *Agent) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, e
 	return a.refresh(ctx, &repo, dir, asked)
 }
 
-// demand reports whether any pod on this node mounts the key's cache, and
-// the creation time of the newest one. Demand is read off pods, not Sandbox
-// resources: a Sandbox holds no finalizer, so its resource is gone the moment
-// it is deleted while its pod is still terminating, and a cache is evicted
-// "once no pod on that node mounts it" (ADR-0051) — a live bind mount, not a
-// resource. A pod is created after its Sandbox, so a fetch after the newest
+// demand reports whether any pod on this node mounts the key's cache, and the
+// latest instant one of them asked for it. Demand is read off pods, not
+// Sandbox resources: a Sandbox holds no finalizer, so its resource is gone the
+// moment it is deleted while its pod is still terminating, and a cache is
+// evicted "once no pod on that node mounts it" (ADR-0051) — a live bind mount,
+// not a resource. A pod is created after its Sandbox, so a fetch after the
 // pod's creation is a fetch after the Sandbox's, which is what its Ready
-// compares the cache's lastFetched against.
+// compares the cache's lastFetched against; an ask copied onto the pod after
+// that (ADR-0053) moves the same bar forward, and the newest bar over the pods
+// here wins.
 func (a *Agent) demand(ctx context.Context, key string) (wanted bool, asked time.Time, err error) {
 	var list corev1.PodList
 	if err := a.List(ctx, &list, client.InNamespace(a.Namespace)); err != nil {
@@ -195,11 +198,39 @@ func (a *Agent) demand(ctx context.Context, key string) (wanted bool, asked time
 			continue
 		}
 		wanted = true
-		if pod.CreationTimestamp.After(asked) {
-			asked = pod.CreationTimestamp.Time
+		if at := askOf(ctx, pod, key); at.After(asked) {
+			asked = at
 		}
 	}
 	return wanted, asked, nil
+}
+
+// askOf is when a pod last asked this node for one key: its creation, because
+// a creation is an ask (ADR-0051), or the `j2.dev/asked-<key>` annotation the
+// operator copied from the Sandbox when that is later (ADR-0053). A garbage
+// value is treated as absent, loudly.
+//
+// The ask is raised to the next whole second (AskedAt), the granularity this
+// agent stamps every attempt at and the granularity a metav1.Time survives a
+// round trip at — so the bar an ask raises is a bar `lastFetched` can clear,
+// and only a fetch that began at or after the ask clears it. The operator
+// raises the same annotation the same way, so what this node fetches for and
+// what the Sandbox's status calls answered are one bar.
+func askOf(ctx context.Context, pod *corev1.Pod, key string) time.Time {
+	created := pod.CreationTimestamp.Time
+	raw, ok := pod.Annotations[corev1alpha1.AskedAnnotation(key)]
+	if !ok {
+		return created
+	}
+	asked, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		logf.FromContext(ctx).Info("unparseable ask annotation on a pod; treating as absent", "pod", pod.Name, "key", key, "value", raw, "error", err.Error())
+		return created
+	}
+	if asked = corev1alpha1.AskedAt(asked); asked.After(created) {
+		return asked
+	}
+	return created
 }
 
 // mounts reports whether a pod on this node has a volume over the key's cache
@@ -351,11 +382,30 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 	return ctrl.Result{}, nil
 }
 
-// refresh keeps a present cache pinned and fetched. The fetch is on demand
-// (a Sandbox created since the last attempt), on the interval, or on a spec
-// change — which also re-points origin, since the url may be what changed.
-// An on-demand fetch carries the short budget: a Sandbox is held on it, and
-// freshness degrades where absence does not.
+// refresh keeps a present cache pinned and fetched. The fetch is on demand (a
+// pod on this node asked since the last attempt — by being created, or by an
+// ask marked on it afterwards), on the interval, or on a spec change — which
+// also re-points origin, since the url may be what changed. An on-demand fetch
+// carries the short budget: something is held on it, and freshness degrades
+// where absence does not.
+//
+// `lastAttempt` and, on success, `lastFetched` are both stamped with the
+// instant the attempt STARTED, not the instant it finished. That is what makes
+// the ask a coalescer (ADR-0053): however many fetches are in flight before
+// one lands, the remote is fetched once, and a fetch that started before the
+// ask does not count as answering it.
+//
+// Every stamp is the attempt's start AT THE SECOND, and an ask is raised to
+// the NEXT whole second (AskedAt) so that no fetch which began before it can
+// answer it. So an attempt that begins inside the ask's own second would be
+// stamped BELOW the bar it was made for, and nothing it reports could settle
+// that ask — the node would fetch once more at the top of the next second,
+// and every `git fetch` in a pod would cost the remote two round trips. When
+// that ask is the only reason to fetch, the agent waits for the top of the
+// ask's second instead and fetches ONCE with a stamp that clears it: under a
+// second of waiting for a whole remote round trip, and the landing arrives
+// sooner, not later. A fetch that is due anyway — the interval, a spec change,
+// a first attempt — runs at once and comes back for the ask afterwards.
 //
 // A pin that fails — a `git config` write refused by a checkout another uid
 // owns, a read-only or full disk — is a failed attempt on a present cache:
@@ -391,9 +441,17 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 	}
 	stale := entry == nil || !entry.Present || entry.ObservedGeneration < repo.Generation
 	onDemand := asked.After(last)
-	due := last.IsZero() || onDemand || !now.Time.Before(last.Add(interval))
-	if !stale && !due {
+	dueAnyway := last.IsZero() || stale || !now.Time.Before(last.Add(interval))
+	if !dueAnyway && !onDemand {
 		return ctrl.Result{RequeueAfter: last.Add(interval).Sub(now.Time)}, nil
+	}
+	// The ask is the only reason to fetch, and the stamp this attempt would
+	// leave — `now`, at the second — sits below the bar the ask raised. Fetching
+	// now would settle nothing; wait for the top of the ask's second and fetch
+	// once (ADR-0053). Measured against the raw clock, so the wait is the
+	// remainder of this second and not a whole one.
+	if !dueAnyway && asked.After(now.Time) {
+		return ctrl.Result{RequeueAfter: asked.Sub(a.clock())}, nil
 	}
 
 	next := corev1alpha1.RepoNodeStatus{
@@ -430,6 +488,14 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 	}
 	if err := a.report(ctx, repo, next); err != nil {
 		return ctrl.Result{}, err
+	}
+	// A fetch that was due anyway may have begun inside an ask's own second, so
+	// its stamp sits below that ask's bar and settles nothing for it (ADR-0053).
+	// Come back at the top of that second for one more, rather than sleep out
+	// the interval — which is what would make a `git fetch` in the pod wait
+	// out its caller's budget for a landing that had already happened.
+	if asked.After(now.Time) {
+		return ctrl.Result{RequeueAfter: asked.Sub(now.Time)}, nil
 	}
 	return ctrl.Result{RequeueAfter: interval}, nil
 }
@@ -602,11 +668,16 @@ func HostPath(namespace, key string) string {
 // now is the current instant at the API's own granularity, so what the agent
 // writes compares exactly with what it reads back.
 func (a *Agent) now() metav1.Time {
-	clock := a.Now
-	if clock == nil {
-		clock = time.Now
+	return metav1.NewTime(a.clock().Truncate(time.Second))
+}
+
+// clock is the raw instant — what a wait is measured from, where a stamp is
+// `now`. Tests fix it.
+func (a *Agent) clock() time.Time {
+	if a.Now == nil {
+		return time.Now()
 	}
-	return metav1.NewTime(clock().Truncate(time.Second))
+	return a.Now()
 }
 
 // present reports a bare clone at dir. The kubelet creates the directory
@@ -625,7 +696,10 @@ func refreshInterval(repo *corev1alpha1.Repo) time.Duration {
 }
 
 // reposOfPod maps a pod event on this node to the Repos whose caches it
-// mounts, so a pod landing here (or leaving) reconciles exactly those caches.
+// mounts, so a pod landing here (or leaving) reconciles exactly those caches —
+// and so does an ask the operator copies onto a pod already here (ADR-0053),
+// which is an update like any other. No predicate filters these: the annotation
+// the ask rides on changes nothing else about the pod.
 func (a *Agent) reposOfPod(_ context.Context, obj client.Object) []reconcile.Request {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok || pod.Spec.NodeName != a.Node {

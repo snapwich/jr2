@@ -10,8 +10,20 @@
 // workers racing to seed the same cluster converge on the same objects; the wait is per process.
 // The namespace outlives the suite on purpose — it is cluster furniture, not a scenario's state,
 // and the next run's apply is a no-op.
+//
+// Since ADR-0053 the repository is also WRITTEN to: a scenario pushes a commit and then asks a pod
+// to fetch it. nginx serves the dumb HTTP protocol and accepts no push, so the write goes in
+// through a second container that mounts the same volume and idles for `kubectl exec` — the host
+// pushes over the container's own filesystem, never over the wire. Every push lands on a branch of
+// the pusher's own (`pushToSeed`), so parallel workers sharing this one repository never race for
+// a ref, and `main` — the branch every kind workflow's Binding names — is never moved under a
+// Sandbox that already cloned it.
 
-import { spawn } from "node:child_process";
+import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+
+const exec = promisify(execFile);
 
 /** The seed Repo's url — the identity every kind workflow binds and the fence admits. */
 export const SEED_URL = "http://seed.j2-e2e-seed.svc/app.git";
@@ -68,6 +80,16 @@ spec:
             - name: srv
               mountPath: /usr/share/nginx/html
               readOnly: true
+        # The write seat (ADR-0053). Read-write on the same volume nginx reads, commanded to idle:
+        # its image's own entrypoint is \`git\`, which would exit at once. Nothing dials it — it
+        # exists for \`kubectl exec\`, which is how a scenario pushes without a credential and
+        # without a smart HTTP server.
+        - name: git
+          image: ${GIT_IMAGE}
+          command: ["sh", "-ec", "while true; do sleep 3600; done"]
+          volumeMounts:
+            - name: srv
+              mountPath: /srv
       volumes:
         - name: srv
           emptyDir: {}
@@ -114,4 +136,51 @@ function kubectl(args: string[], stdin?: string): Promise<void> {
     );
     if (stdin !== undefined) child.stdin!.end(stdin);
   });
+}
+
+/**
+ * Push one commit to the seed, on a branch of the caller's own, and answer its sha (ADR-0053).
+ *
+ * Everything happens inside the write seat: a throwaway clone of the bare repository over the
+ * container's own filesystem, one commit, a push back, and `update-server-info` — which is what
+ * the DUMB HTTP protocol reads, so a push nobody re-indexed is a push no cache agent can see.
+ * The branch is the caller's, never `main`: parallel workers share this one repository, and a
+ * scenario that moved a branch a live Sandbox already cloned would be changing another scenario's
+ * remote under it.
+ *
+ * The sha comes back from the seed itself rather than from the local commit, because what the
+ * scenarios assert is that the POD reached the remote's now — and the remote's word for "now" is
+ * the only honest source of it.
+ */
+export async function pushToSeed(branch: string): Promise<string> {
+  // The branch rides into a shell line, so its shape is checked rather than quoted around: the
+  // callers generate it, and a fixture that can be injected into is a fixture nobody trusts.
+  assert.match(branch, /^[a-z0-9][a-z0-9-]{0,40}$/, "a seed branch is a plain lower-case label");
+  const script = [
+    `w=$(mktemp -d)`,
+    `git clone -q /srv/app.git "$w"`,
+    `git -C "$w" checkout -q -b ${branch}`,
+    `printf '%s\\n' ${branch} > "$w/fetch-probe.txt"`,
+    `git -C "$w" add -A`,
+    `git -C "$w" -c user.email=e2e@j2 -c user.name=e2e commit -qm 'a commit the pod must be able to reach'`,
+    `git -C "$w" push -q origin ${branch}`,
+    `rm -rf "$w"`,
+    `git -C /srv/app.git update-server-info`,
+    `git -C /srv/app.git rev-parse refs/heads/${branch}`,
+  ].join("\n");
+  const { stdout } = await exec("kubectl", [
+    "--namespace",
+    NAMESPACE,
+    "exec",
+    "deployment/seed",
+    "-c",
+    "git",
+    "--",
+    "sh",
+    "-ec",
+    script,
+  ]);
+  const sha = stdout.trim().split("\n").pop() ?? "";
+  assert.match(sha, /^[0-9a-f]{40}$/, `the seed reported the pushed commit (got ${JSON.stringify(stdout)})`);
+  return sha;
 }

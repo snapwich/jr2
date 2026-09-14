@@ -40,6 +40,7 @@ import {
   ORCHESTRATOR_SERVICE,
 } from "./names.ts";
 import { partsOf, type CarriedRepo } from "./parts.ts";
+import { kubectlRepoFetches, type RepoFetches } from "./repo-fetch.ts";
 import { kubectlRepos, type RepoResources } from "./repos.ts";
 import { kubectlSandbox, type KubectlExec } from "./sandbox-kubectl.ts";
 import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
@@ -84,6 +85,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   const dataPlane = carried.composesSandbox && namespace !== undefined;
   let sandbox: SandboxPort | undefined;
   let repos: RepoResources | undefined;
+  let fetches: RepoFetches | undefined;
   // The Repo port hangs off DEPLOYED, not off the data plane: this boot's reconcile is the only
   // writer that ever REMOVES `j2.dev/bound` (repos.ts), and an Instance that drops its last
   // `workspace()` still owns the Repos its earlier deploys bound. So the port is built whenever
@@ -98,6 +100,11 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // `envFrom` on the Deployment, so `j2 up` is what put it there.
     repos = kubectlRepos({ namespace, credentials, env, ...(opts.exec ? { exec: opts.exec } : {}) });
     if (dataPlane) {
+      // The ask a pod makes when something inside it fetches (ADR-0053): it marks the Sandbox CR
+      // and waits on the same status the provision waits on. Gated on the DATA PLANE, unlike the
+      // Repo port above — there is nothing to ask for where no Sandbox is ever composed, and the
+      // only caller is a pod that would have to exist to call it.
+      fetches = kubectlRepoFetches({ namespace, ...(opts.exec ? { exec: opts.exec } : {}) });
       sandbox = kubectlSandbox({
         // The fence (ADR-0051): a per-run url must match one of these, or the provision refuses it.
         credentials,
@@ -152,6 +159,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // instance without a data plane reports none — `GET /repos` answers `{ dataPlane: false,
     // repos: [] }` (http.ts), and what its dropped Machines left behind is `j2 gc`'s to name.
     ...(dataPlane && repos ? { repos: () => repos.list() } : {}),
+    // The pod's route out (ADR-0053), same shape: read per request, off the port.
+    ...(fetches ? { fetchRepo: (name: string, identity: string) => fetches.fetch(name, identity) } : {}),
     // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
     // `j2 up` converges the Deployment behind it whenever any definition declares
     // `workspace: "none"`, so deployed, the address exists exactly when it is needed.

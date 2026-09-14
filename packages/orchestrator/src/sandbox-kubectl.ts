@@ -41,7 +41,8 @@
 //                             proves a registry ref, whose first appearance is this provision
 //   container     harness     the Sandbox Image, command overridden, /work + /opt/j2 mounted
 //   container     adapter     j2-owned, the pod's only credential holder (below)
-//   container     user        optional, the image's own entrypoint, /work and NOTHING else
+//   container     user        optional, the image's own entrypoint, the checkouts (/work, plus
+//                             /repos and /opt/j2 read-only) and NOTHING else
 //
 // This is also where the ADAPTER is injected (ADR-0013). The operator needs no change to carry it:
 // ADR-0001 made `Sidecars` generic container fragments it schedules WITHOUT understanding, so the
@@ -90,6 +91,15 @@ const RUNTIME_STAGE = "/mnt/j2";
 /** The primary container's command (ADR-0037). Absolute, so it never depends on the image's
  * `WORKDIR`, and identical to the stock Harness image's own `CMD` — one runtime, two placements. */
 const HARNESS_COMMAND = [`${RUNTIME_MOUNT}/bin/node`, `${RUNTIME_MOUNT}/src/main.ts`];
+
+/** The program `origin`'s fetch url runs (ADR-0053), on the runtime volume beside `work-acl`. It
+ * asks the node cache for a fetch and then serves the cache, so every seat that holds the
+ * checkouts must hold this volume — which is why the User Container mounts it (ADR-0005). */
+const UPLOAD_PACK = `${RUNTIME_MOUNT}/bin/j2-upload-pack`;
+
+/** The Adapter's port on the pod's loopback. The program defaults to this address too, so the
+ * fetch url names it only when the composition moved it (attachScript). */
+const DEFAULT_ADAPTER_PORT = 8081;
 
 /** ADR-0005's default work group. Convention, not config: the pod's `fsGroup` is granted to every
  * container as a supplemental group, so the Harness writes `/work` whatever the number and no
@@ -336,7 +346,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const exec = opts.exec ?? defaultKubectlExec;
   const credentials = opts.credentials ?? [];
 
-  const adapterPort = opts.adapterPort ?? 8081;
+  const adapterPort = opts.adapterPort ?? DEFAULT_ADAPTER_PORT;
   const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
   const base = ["--namespace", ns, ...(opts.context ? ["--context", opts.context] : [])];
 
@@ -364,23 +374,28 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
 
   /**
    * The User Container (ADR-0005): the opt-in third seat, composed only when the wrapper's static
-   * `user` option names an image (ADR-0049). The ZERO-CONTRACT seat — j2 injects nothing, probes nothing, overrides nothing. So:
-   * no `command` (its own entrypoint runs, untouched), no `env`, no `envFrom`, no `/opt/j2`, no CA
-   * bundle, no ports, no resources. Every key j2 forwarded would be a crack in "j2 puts nothing in
-   * it", and widening the one authoring string to an object stays compatible if a concrete need
-   * ever argues its own way in. (Git's dubious-ownership guard is the line's cost, accepted with
+   * `user` option names an image (ADR-0049). The ZERO-CONTRACT seat — j2 injects nothing, probes
+   * nothing, overrides nothing. So: no `command` (its own entrypoint runs, untouched), no `env`,
+   * no `envFrom`, no CA bundle, no ports, no resources. Every key j2 forwarded would be a crack in
+   * "j2 puts nothing in it", and widening the one authoring string to an object stays compatible
+   * if a concrete need ever argues its own way in. (Git's dubious-ownership guard is the line's
+   * cost, accepted with
    * eyes open — ADR-0005: safe.directory is honored only from files this seat's image owns, so an
    * image whose sessions run git carries its own line.)
    *
-   * `/work` read-write plus each Repo's node cache read-only are the single exception, and they
+   * `/work` read-write plus the checkouts' two read-only halves are the single exception, and they
    * are not an injection but the point: this seat and the Harness mount ONE worktree, so the human
    * and the Agent see identical files — which is also why ADR-0005's cross-uid pair (the pod's
    * `fsGroup`, the attach's default ACL) exists at all. The caches ride along because they are
    * half of the same files: the worktrees are `--shared` clones whose alternates resolve objects
    * from `/repos/<key>` (ADR-0004/0051), so a seat with `/work` alone holds checkouts whose every
-   * borrowed object is missing ("unable to normalize alternate object path"). The volumes are the
-   * operator's — it defines `repo-<key>` for every key the CR names — so this seat mounts them by
-   * name. The Adapter is deliberately not given either: it reads no worktree, and it is the
+   * borrowed object is missing ("unable to normalize alternate object path"). `/opt/j2` is the
+   * other half (ADR-0053): `origin`'s fetch url is a program on that volume, so a seat without it
+   * holds checkouts whose `git fetch` dies — and with it the human gets the same fetch as the
+   * Agent, with no credential of their own. Nothing else follows it in: `ext::` names the program
+   * by absolute path, so this seat still gets no env, no command, and no probe. The repo volumes
+   * are the operator's — it defines `repo-<key>` for every key the CR names — so this seat mounts
+   * them by name. The Adapter is deliberately not given any of the three: it reads no worktree, and it is the
    * container holding the pod's only credential, so it gets the narrowest mount set that works.
    * It also carries no `securityContext`, which the operator reads as the exemption — root is
    * ALLOWED here, because hardening a seat whose identity is "what j2 does not own" is an opinion,
@@ -392,6 +407,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     image: await resolveUserImage(refs, image),
     volumeMounts: [
       { name: "work", mountPath: workRoot },
+      { name: "runtime", mountPath: RUNTIME_MOUNT, readOnly: true },
       ...keys.map((key) => ({ name: repoVolumeName(key), mountPath: repoMountPath(key), readOnly: true })),
     ],
   });
@@ -847,6 +863,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       const { script, workdir, repos, review } = attachScript(req.spec, req.repos, {
         reposMount: REPOS_MOUNT,
         workRoot,
+        // The fetch url names the Adapter only when it is somewhere unexpected (ADR-0053).
+        ...(adapterPort !== DEFAULT_ADAPTER_PORT ? { adapterUrl: `http://127.0.0.1:${adapterPort}` } : {}),
       });
       // `-c harness` is unchanged and still correct after ADR-0037: the primary container runs the
       // Sandbox Image, so `git` here is the git the user chose. Never `-c user` — that seat is
@@ -976,7 +994,7 @@ function staleSlots(
 export function attachScript(
   spec: WorkspaceSpec,
   repos: Array<{ slot: string; url: string; ref?: string }>,
-  paths: { reposMount: string; workRoot: string },
+  paths: { reposMount: string; workRoot: string; adapterUrl?: string },
 ): { script: string; workdir: string; repos: Record<string, string>; review?: Record<string, string> } {
   const worktrees: Record<string, string> = {};
   const review: Record<string, string> = {};
@@ -994,7 +1012,8 @@ export function attachScript(
     const slotDir = `${paths.workRoot}/${repo.slot}`;
     const dflt = `${slotDir}/default`;
     const worktree = `${slotDir}/${branchDir}`;
-    const cache = `${paths.reposMount}/${repoIdentity(repo.url).key}`;
+    const { identity, key } = repoIdentity(repo.url);
+    const cache = `${paths.reposMount}/${key}`;
     worktrees[repo.slot] = worktree;
     lines.push(
       `mkdir -p ${sq(slotDir)}`,
@@ -1007,13 +1026,31 @@ export function attachScript(
       // No ref → the Repo's own default branch: this clone's `origin/HEAD` tracks the cache's
       // HEAD, which the cache agent's clone pointed at the remote's default (ADR-0004).
       `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${repo.ref === undefined ? sq("origin/HEAD") : baseOf(dflt, repo.ref)}`,
-      // Fetch/push split (ADR-0005): `git fetch` stays on the cache (the hop the pod can make —
-      // which is why a stale attach stays stale until the cache agent's next fetch, ADR-0051),
-      // `git push` goes to the REAL remote — the Binding's own spelling, so a Machine that bound
-      // over ssh pushes over ssh even when the cache was cloned over https (ADR-0051). Push still
-      // succeeds only with a caller-supplied credential (a forwarded agent in the User Container);
-      // the pod itself holds none. `--` keeps the url an operand, never an option.
+      // Fetch/push split (ADR-0005). The FETCH url is a command, not a path (ADR-0053): git's
+      // built-in `ext::` transport runs the program on the runtime volume, which asks the node
+      // cache to fetch the remote, waits for the landing, then serves the cache — so every fetch
+      // inside the pod is a fetch of the remote's now, and a stale attach is stale only until the
+      // next fetch anyone in the pod runs. Git substitutes `%S` with the service it wants
+      // (`git-upload-pack`), and splits the rest on spaces with no quoting of its own, so the
+      // url's arguments carry none: the Repo's IDENTITY, never the cache key — that is the name a
+      // human reads in `git remote -v`, and a key is a derived directory name (ADR-0004). The
+      // program discovers the cache from the checkout's alternates, so the url says nothing about
+      // where the objects are. `git push` goes to the REAL remote — the Binding's own spelling, so
+      // a Machine that bound over ssh pushes over ssh even when the cache was cloned over https
+      // (ADR-0051). Push still succeeds only with a caller-supplied credential (a forwarded agent
+      // in the User Container); the pod itself holds none. `--` keeps the url an operand, never an
+      // option.
+      `git -C ${sq(dflt)} remote set-url origin -- ${sq(fetchUrl(identity, paths.adapterUrl))}`,
       `git -C ${sq(dflt)} remote set-url --push origin -- ${sq(repo.url)}`,
+      // `ext` is on git's own "known scary" list, so its built-in default is `never` and the url
+      // above would die with `fatal: transport 'ext' not allowed` before the program ever ran.
+      // `user` is the policy ADR-0053 argues for, said out loud: a fetch A PERSON OR THE AGENT
+      // runs is allowed, and a recursive one git makes for itself (a submodule url, anything with
+      // `GIT_PROTOCOL_FROM_USER=0`) is still refused — so a repository cannot smuggle a program
+      // into this pod through a url j2 did not write. Repo-level, on the pod-local clone: the
+      // linked worktrees share this config, so the branch worktree and the review worktree inherit
+      // it with no env and no `--global`.
+      `git -C ${sq(dflt)} config protocol.ext.allow user`,
     );
     if (spec.reviewSha) {
       // The reviewer's seat (ADR-0028): a DETACHED HEAD at the sha under review, so a rogue write
@@ -1039,6 +1076,31 @@ export function attachScript(
     repos: worktrees,
     ...(spec.reviewSha ? { review } : {}),
   };
+}
+
+/**
+ * `origin`'s fetch url for one Repo (ADR-0053): the `ext::` transport, the program's absolute path
+ * on the runtime volume, the service git asks for, and the Repo's identity. The Adapter's address
+ * rides as a third argument only when the composition moved the Adapter off its default port —
+ * the program reads `$J2_ADAPTER_URL` and then falls back to that same address, so spelling it out
+ * unconditionally would put a number in every `git remote -v` that says nothing.
+ */
+function fetchUrl(identity: string, adapterUrl?: string): string {
+  return `ext::${UPLOAD_PACK} %S ${extArg(identity)}${adapterUrl !== undefined ? ` ${extArg(adapterUrl)}` : ""}`;
+}
+
+/**
+ * One argument of an `ext::` url, in git's own escaping. Git splits the url on spaces and reads
+ * `%` as a placeholder introducer — `%S` is the service it substitutes — so it DIES on a `%` it
+ * does not recognize (`fatal: Bad remote-ext placeholder '%2'`) and silently splits an argument
+ * that holds a space. An identity carries both: a forge path may be percent-encoded
+ * (`dev.azure.com/org/My%20Project/_git/repo`) and an scp-style url may hold a literal space. Git
+ * spells those two `%%` and `% `, and the program receives the identity back exactly as written —
+ * which it must, because the Orchestrator derives the cache key from that same string. The
+ * placeholder j2 writes itself (`%S`) is not escaped: it is git's, not an argument's.
+ */
+function extArg(value: string): string {
+  return value.replace(/%/g, "%%").replace(/ /g, "% ");
 }
 
 /**

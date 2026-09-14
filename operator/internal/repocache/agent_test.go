@@ -106,6 +106,17 @@ func (g *fakeGit) has(args ...string) bool {
 	return slices.ContainsFunc(g.calls, func(c []string) bool { return slices.Equal(c, args) })
 }
 
+// count is how many times exactly this invocation was made.
+func (g *fakeGit) count(args ...string) int {
+	n := 0
+	for _, c := range g.calls {
+		if slices.Equal(c, args) {
+			n++
+		}
+	}
+	return n
+}
+
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -654,6 +665,232 @@ func TestFetchesOnDemandWhenAPodWasCreatedSinceTheLastAttempt(t *testing.T) {
 	}
 	if res.RequeueAfter != defaultRefreshInterval {
 		t.Fatalf("expected a requeue at the refresh interval, got %v", res.RequeueAfter)
+	}
+}
+
+// TestAnAskOnAPodIsDemandAfterItsCreation pins the in-pod fetch (ADR-0053):
+// a pod older than the last attempt asks for nothing, until the operator
+// copies an ask onto it. The ask is a mark, not a queue — the newest ask over
+// the pods on this node is the bar, and a fetch that already started after it
+// satisfies every pod that raised it.
+func TestAnAskOnAPodIsDemandAfterItsCreation(t *testing.T) {
+	last := fixedNow.Add(-time.Minute)
+	born := fixedNow.Add(-10 * time.Minute)
+	entryAt := func() corev1alpha1.RepoNodeStatus {
+		return corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}
+	}
+	asked := func(ask string) *corev1.Pod {
+		pod := podOn("sb", node, born)
+		if ask != "" {
+			pod.Annotations = map[string]string{corev1alpha1.AskedAnnotation(key): ask}
+		}
+		return pod
+	}
+	fetches := func(t *testing.T, pod *corev1.Pod) bool {
+		t.Helper()
+		git := &fakeGit{}
+		a := newAgent(t, git, repo(1, entryAt()), pod)
+		makePresent(t, a)
+		if _, err := reconcile1(t, a); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		return git.has("fetch", "origin")
+	}
+
+	if fetches(t, asked("")) {
+		t.Fatal("a pod older than the last attempt asks for nothing; the interval is what fetches")
+	}
+	if fetches(t, asked(last.Add(-time.Minute).UTC().Format(time.RFC3339))) {
+		t.Fatal("an ask the last attempt already answered must not fetch again — the mark coalesces")
+	}
+	if !fetches(t, asked(fixedNow.Add(-30*time.Second).UTC().Format(time.RFC3339))) {
+		t.Fatal("an ask marked since the last attempt is demand")
+	}
+	if fetches(t, asked("whenever")) {
+		t.Fatal("an unparseable ask is treated as absent")
+	}
+	// The agent stamps every attempt at the second, and the ask is raised to
+	// the NEXT one: an attempt that began half a second before the ask cannot
+	// hold what the ask is about, so it does not answer it. The cost of being
+	// wrong this way round is a wait of under a second before the next fetch;
+	// the other way round is a `git fetch` that reports success without the
+	// commit (ADR-0053).
+	if !fetches(t, asked(last.Add(500*time.Millisecond).UTC().Format(time.RFC3339Nano))) {
+		t.Fatal("an ask made after the attempt began, inside its second, is still an ask")
+	}
+	if fetches(t, asked(last.UTC().Format(time.RFC3339))) {
+		t.Fatal("an attempt that began at the ask's own instant answers it — the mark coalesces")
+	}
+}
+
+// TestTheNewestAskOverTheNodesPodsWins pins the coalescer over pods: two
+// Sandboxes on this node share one cache, so the bar is the later of their
+// asks and one fetch answers both (ADR-0053).
+func TestTheNewestAskOverTheNodesPodsWins(t *testing.T) {
+	last := fixedNow.Add(-time.Minute)
+	born := fixedNow.Add(-10 * time.Minute)
+	quiet := podOn("quiet", node, born)
+	loud := podOn("loud", node, born)
+	loud.Annotations = map[string]string{corev1alpha1.AskedAnnotation(key): fixedNow.Add(-30 * time.Second).UTC().Format(time.RFC3339)}
+
+	git := &fakeGit{}
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}),
+		quiet, loud,
+	)
+	makePresent(t, a)
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !git.has("fetch", "origin") {
+		t.Fatalf("one pod's ask is the whole node's demand, got %v", git.calls)
+	}
+	e := entry(t, a)
+	if !e.LastFetched.Time.Equal(fixedNow) {
+		t.Fatalf("the attempt's start is what answers both asks, got %+v", e)
+	}
+}
+
+// TestAnAskInsideTheAttemptsOwnSecondWaitsForTheTopOfTheNextAndFetchesOnce
+// pins what ADR-0053's rounding costs, and that it costs a wait rather than a
+// fetch. Every stamp this agent writes is the attempt's start AT THE SECOND,
+// and an ask is raised to the NEXT whole second so that no fetch which began
+// before it can answer it — so an attempt that began inside the ask's own
+// second would be stamped BELOW the bar it was made for, and nothing it
+// reported could settle that ask. Fetching then would buy the remote a second
+// round trip for every `git fetch` in a pod; the agent waits out the rest of
+// the second instead and fetches once, stamped at the bar. Sleeping out the
+// refresh interval is the one thing it may not do: that is a `git fetch` in
+// the pod waiting out its caller's whole budget.
+func TestAnAskInsideTheAttemptsOwnSecondWaitsForTheTopOfTheNextAndFetchesOnce(t *testing.T) {
+	last := fixedNow.Add(-time.Minute)
+	pod := podOn("sb", node, fixedNow.Add(-10*time.Minute))
+	// The Orchestrator marks the CR with milliseconds, and the agent wakes in
+	// the same second — its clock, kept at the second, reads `now` as fixedNow.
+	pod.Annotations = map[string]string{
+		corev1alpha1.AskedAnnotation(key): fixedNow.Add(300 * time.Millisecond).UTC().Format(time.RFC3339Nano),
+	}
+
+	git := &fakeGit{}
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}),
+		pod,
+	)
+	a.Now = func() time.Time { return fixedNow.Add(450 * time.Millisecond) }
+	makePresent(t, a)
+	result, err := reconcile1(t, a)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if git.has("fetch", "origin") {
+		t.Fatalf("a fetch begun inside the ask's own second could not answer it, so none is made, got %v", git.calls)
+	}
+	if e := entry(t, a); !e.LastAttempt.Time.Equal(last) {
+		t.Fatalf("waiting is not an attempt; the entry stands as it was, got %+v", e)
+	}
+	// The remainder of THIS second on the raw clock — not a whole one.
+	if result.RequeueAfter != 550*time.Millisecond {
+		t.Fatalf("the agent comes back at the top of the ask's second, not in %s", result.RequeueAfter)
+	}
+
+	// At the top of that second, the fetch — once — with the stamp that answers.
+	a.Now = func() time.Time { return fixedNow.Add(time.Second + 20*time.Millisecond) }
+	result, err = reconcile1(t, a)
+	if err != nil {
+		t.Fatalf("reconcile at the ask's second: %v", err)
+	}
+	if n := git.count("fetch", "origin"); n != 1 {
+		t.Fatalf("one ask, one fetch; got %d in %v", n, git.calls)
+	}
+	if e := entry(t, a); !e.LastFetched.Time.Equal(fixedNow.Add(time.Second)) {
+		t.Fatalf("the stamp is the attempt's start, at the ask's second, got %+v", e)
+	}
+	if result.RequeueAfter != defaultRefreshInterval {
+		t.Fatalf("an answered ask owes no second fetch; the next wake is the interval, got %s", result.RequeueAfter)
+	}
+}
+
+// TestAFetchDueAnywayInsideAnAsksSecondRunsNowAndComesBackForTheAsk is the
+// other side of that wait: a fetch the interval (or a spec change, or a first
+// attempt) owes runs at once, whatever second it is — and since its stamp
+// cannot settle an ask raised to the next second, the agent comes back at the
+// top of that second for it rather than sleeping out the interval.
+func TestAFetchDueAnywayInsideAnAsksSecondRunsNowAndComesBackForTheAsk(t *testing.T) {
+	last := fixedNow.Add(-defaultRefreshInterval - time.Second)
+	pod := podOn("sb", node, fixedNow.Add(-10*time.Minute))
+	pod.Annotations = map[string]string{
+		corev1alpha1.AskedAnnotation(key): fixedNow.Add(300 * time.Millisecond).UTC().Format(time.RFC3339Nano),
+	}
+
+	git := &fakeGit{}
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}),
+		pod,
+	)
+	makePresent(t, a)
+	result, err := reconcile1(t, a)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !git.has("fetch", "origin") {
+		t.Fatalf("the interval is due; the ask does not postpone it, got %v", git.calls)
+	}
+	if e := entry(t, a); !e.LastFetched.Time.Equal(fixedNow) {
+		t.Fatalf("the stamp is the attempt's start, got %+v", e)
+	}
+	if result.RequeueAfter != time.Second {
+		t.Fatalf("that stamp cannot settle the ask, so the agent comes back at the top of its second, not in %s", result.RequeueAfter)
+	}
+}
+
+// TestAnAnsweredAskSleepsTheInterval is the other half: a fetch whose stamp
+// clears the bar owes nothing more, so the next wake is the refresh interval
+// and a fetch in the pod costs the remote exactly one round trip.
+func TestAnAnsweredAskSleepsTheInterval(t *testing.T) {
+	last := fixedNow.Add(-time.Minute)
+	pod := podOn("sb", node, fixedNow.Add(-10*time.Minute))
+	// Marked a moment BEFORE this attempt's second, so the ask is raised to the
+	// second this attempt is stamped with and the stamp answers it.
+	pod.Annotations = map[string]string{
+		corev1alpha1.AskedAnnotation(key): fixedNow.Add(-300 * time.Millisecond).UTC().Format(time.RFC3339Nano),
+	}
+
+	git := &fakeGit{}
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}),
+		pod,
+	)
+	makePresent(t, a)
+	result, err := reconcile1(t, a)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !git.has("fetch", "origin") {
+		t.Fatalf("an ask marked since the last attempt is demand, got %v", git.calls)
+	}
+	if result.RequeueAfter != defaultRefreshInterval {
+		t.Fatalf("an answered ask owes no second fetch; the next wake is the interval, got %s", result.RequeueAfter)
+	}
+}
+
+// TestAnAskOnAPodElsewhereIsNotDemand: the ask rides a pod, and a pod on
+// another node is not this node's demand — the same rule a creation follows.
+func TestAnAskOnAPodElsewhereIsNotDemand(t *testing.T) {
+	last := fixedNow.Add(-time.Minute)
+	elsewhere := podOn("sb", "node-b", fixedNow.Add(-10*time.Minute))
+	elsewhere.Annotations = map[string]string{corev1alpha1.AskedAnnotation(key): fixedNow.UTC().Format(time.RFC3339)}
+
+	git := &fakeGit{}
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}),
+		elsewhere,
+	)
+	makePresent(t, a)
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if git.has("fetch", "origin") {
+		t.Fatalf("an ask on another node's pod is not demand here, got %v", git.calls)
 	}
 }
 

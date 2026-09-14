@@ -13,6 +13,7 @@
 //   # the Agent's Adapter, and nothing else
 //   GET  /agents/:iid/surface          accepts + schemas + semantics             [Sandbox token]
 //   POST /agents/:iid/events           validate + deliver → the turn receipt      [Sandbox token]
+//   POST /sandboxes/:name/fetch        ask the node cache to fetch one Repo      [Sandbox token]
 //
 // The token is not decoration: an Agent has code execution in its Harness container and shares the
 // pod's network namespace, so it can reach these routes. A Sandbox token may deliver ONLY to an
@@ -40,7 +41,8 @@ import { accepts } from "hono/accepts";
 import { streamSSE } from "hono/streaming";
 import { EventValidationError, UnknownAddressError } from "./registration.ts";
 import type { RepoStatus } from "./repos.ts";
-import { mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
+import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
+import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
 import { observe, type RunHost } from "./run-host.ts";
 import { KIT_VERSION } from "./config.ts";
 
@@ -264,6 +266,13 @@ export type CreateAppOptions = {
    * straight over a host: both answer no Repos.
    */
   repos?: () => Promise<RepoStatus[]>;
+  /**
+   * The ask a pod makes when something inside it fetches (ADR-0053), off the port the caller
+   * built: mark the Sandbox CR for one Repo key, wait for the landing on its status, answer.
+   * Absent for an instance without a data plane and for the in-process tests: no Sandbox, so no
+   * ask, and the route says so rather than waiting on a cluster that is not there.
+   */
+  fetchRepo?: (sandbox: string, identity: string) => Promise<FetchAnswer>;
 };
 
 /**
@@ -704,6 +713,38 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     } catch (err) {
       if (err instanceof UnknownAddressError) return c.json({ error: errMessage(err) }, 404);
       if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
+      throw err;
+    }
+  });
+
+  // The pod's one route out (ADR-0053). A `git fetch` inside a Sandbox runs a program on the
+  // runtime volume, which asks the Adapter on localhost, which forwards to this. What lands here
+  // is one identity; what goes back is the landing, or the cache as it stands with git's own words
+  // — freshness degrades, absence does not, so this answers 200 either way and the program prints
+  // the warning. The caller waits on the ask the way an attach waits on Ready: same status, same
+  // per-key entry, one wait.
+  //
+  // Scoped by the token to ITS OWN pod, and then by the CR to the Repos that pod mounts. Neither
+  // is decoration: without the first, one feature's Sandbox could spend the cluster's credential
+  // on another's; without the second, on any Repo in the namespace.
+  app.post("/sandboxes/:name/fetch", authenticated, async (c) => {
+    const name = c.req.param("name");
+    if (!mayAskForSandbox(principalOf(c), name)) {
+      return c.json({ error: `this token cannot ask for Sandbox "${name}"` }, 403);
+    }
+    if (!opts.fetchRepo) {
+      return c.json({ error: "this instance runs no Workspace, so it holds no Repo cache to ask" }, 404);
+    }
+    const body = await readJson(c.req.text());
+    const identity = body.identity;
+    if (typeof identity !== "string" || identity === "") {
+      return c.json({ error: "a fetch names the Repo's identity: { identity }" }, 400);
+    }
+    try {
+      return c.json(await opts.fetchRepo(name, identity));
+    } catch (err) {
+      // The scope refusal, and the only one: a Repo this Sandbox does not mount.
+      if (err instanceof UnmountedRepoError) return c.json({ error: errMessage(err) }, 404);
       throw err;
     }
   });

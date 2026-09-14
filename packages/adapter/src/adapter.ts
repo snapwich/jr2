@@ -10,8 +10,14 @@
 //
 // It is a translator, and holds no state of its own:
 //
-//   tools/list            → GET  {orchestrator}/agents/:iid/surface   → the invoking state's events
-//   tools/call <name>     → POST {orchestrator}/agents/:iid/events    → validate + deliver
+//   tools/list            → GET  {orchestrator}/agents/:iid/surface     → the invoking state's events
+//   tools/call <name>     → POST {orchestrator}/agents/:iid/events      → validate + deliver
+//   POST /fetch           → POST {orchestrator}/sandboxes/:name/fetch   → ask the node cache
+//
+// The third one is not the Agent's to say (ADR-0053): `j2-upload-pack`, the program git runs for
+// `origin`'s fetch url, asks on behalf of whoever ran `git fetch` — the Agent, or a human at a
+// shell in any seat of the pod. It is the pod's only route out, and the Adapter forwards this one
+// verb and no other, because the credential that makes it possible is here and nowhere else.
 //
 // The iid comes from the URL the Agent connects to (`/mcp/:iid`), and flue's Harness names it: a
 // `defineAgent` initializer re-runs on every submission with `{ id, env }`, where `id` IS the agent
@@ -164,6 +170,10 @@ export type OrchestratorOptions = {
   url: string;
   /** The Sandbox token (`J2_SANDBOX_TOKEN`), from the Secret mounted into this container alone. */
   token: string;
+  /** This pod's Sandbox (`J2_SANDBOX`) — the name the ask route is addressed by, and the scope the
+   * token is checked against (ADR-0053). Absent on the Instance Harness, which mounts no Repo and
+   * therefore has nothing to fetch. */
+  sandbox?: string;
   /** Injectable for tests. Defaults to global `fetch`. */
   fetch?: typeof globalThis.fetch;
   /** Surface-read retry ladder and window (ADR-0042) — see `surface`. Defaults 250ms → 5s
@@ -174,25 +184,45 @@ export type OrchestratorOptions = {
   /** Where the routability line goes when a surface read had to retry — see `routabilityLine`.
    * Default `console.warn`; tests capture it. */
   log?: (line: string) => void;
+  /** How long an ask may wait on the Orchestrator (ADR-0053). Default 85s: longer than the route's
+   * own 60s + 15s budget, so a slow remote comes back as `stale` with the cache's timestamp rather
+   * than as a transport failure here; shorter than the program's 90s, so the answer wins the race
+   * against the program giving up on us. Tests shrink it. */
+  askTimeoutMs?: number;
 };
+
+/**
+ * What the Orchestrator answered an ask, relayed rather than read (ADR-0053).
+ *
+ * The Adapter is a translator on this path too, and a thinner one than on the Menu: it forwards the
+ * verb and hands back the status and the bytes. `fetched` vs `stale` is between the Orchestrator
+ * and the program that asked, and the program's fall-through — serve the cache, warn on stderr —
+ * is the same for every answer that is not a landing. Parsing here would add a second opinion about
+ * freshness to a decision that already has one.
+ */
+export type AskAnswer = { status: number; body: string };
 
 /** The Orchestrator, as the Adapter uses it: read this turn's surface, deliver this turn's pick. */
 export class OrchestratorClient {
   private readonly url: string;
   private readonly token: string;
+  private readonly sandbox: string | undefined;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly retryInitialMs: number;
   private readonly retryMaxMs: number;
   private readonly retryWindowMs: number;
+  private readonly askTimeoutMs: number;
   private readonly log: (line: string) => void;
 
   constructor(opts: OrchestratorOptions) {
     this.url = opts.url.replace(/\/+$/, "");
     this.token = opts.token;
+    this.sandbox = opts.sandbox;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.retryInitialMs = opts.retryInitialMs ?? 250;
     this.retryMaxMs = opts.retryMaxMs ?? 5_000;
     this.retryWindowMs = opts.retryWindowMs ?? 90_000;
+    this.askTimeoutMs = opts.askTimeoutMs ?? 85_000;
     this.log = opts.log ?? ((line: string) => console.warn(line));
   }
 
@@ -253,6 +283,46 @@ export class OrchestratorClient {
     });
     if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}"`);
     return (await this.ok(res)) as DeliveryReceipt;
+  }
+
+  /**
+   * Ask the Orchestrator to have this pod's node cache fetch one Repo from its remote, and wait for
+   * the landing (ADR-0053). One ask per `git fetch` inside the pod; the Orchestrator marks the
+   * Sandbox CR and answers when the cache agent has reported a fetch no older than the mark.
+   *
+   * The Sandbox is named in the path and the token is checked against it, so this call can reach
+   * the caches this pod mounts and nothing else — the same scope the Menu calls have, and the
+   * reason no seat in the pod needed a git credential to get here.
+   *
+   * It does NOT retry. The wait it makes is already the long one, the caller is a fetch a person or
+   * an Agent is watching, and a second ask would only re-mark an annotation the first one set. Every
+   * failure — transport, status, timeout — is the same answer to the program: serve the cache and
+   * say so on stderr. So a rejection here is turned into an answer rather than thrown.
+   */
+  async ask(identity: string): Promise<AskAnswer> {
+    if (!this.sandbox) {
+      return {
+        status: 404,
+        body: JSON.stringify({ error: "this Adapter serves no Sandbox, so it mounts no Repo to fetch (ADR-0053)" }),
+      };
+    }
+    const url = `${this.url}/sandboxes/${encodeURIComponent(this.sandbox)}/fetch`;
+    try {
+      const res = await this.fetchImpl(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${this.token}` },
+        body: JSON.stringify({ identity }),
+        signal: AbortSignal.timeout(this.askTimeoutMs),
+      });
+      return { status: res.status, body: await res.text() };
+    } catch (err) {
+      // `fetch failed` diagnoses nothing, and this string is what the program prints inside the
+      // warning line a human reads under their own `git fetch` — so name the errno and the address.
+      return {
+        status: 502,
+        body: JSON.stringify({ error: `the Orchestrator never answered ${url}: ${transportDetail(err)}` }),
+      };
+    }
   }
 
   /** A non-2xx `{ error }` becomes a throw — including 401/403, which must be LOUD: a silently

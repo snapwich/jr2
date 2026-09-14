@@ -115,6 +115,12 @@ function kitFiles(harnessSrc: string): Record<string, string> {
     "deploy/adapter/Dockerfile": "FROM node:24-alpine\n",
     "operator/Dockerfile": "FROM golang:1.23\n",
     "operator/main.go": "package main\n",
+    // The Harness image builds `j2-upload-pack` out of the operator module too (ADR-0053), so its
+    // address covers these and a checkout without them is not one either image can be built from.
+    "operator/go.mod": "module github.com/snapwich/j2/operator\n",
+    "operator/go.sum": "",
+    "operator/cmd/j2-upload-pack/main.go": "package main\n",
+    "operator/internal/uploadpack/uploadpack.go": "package uploadpack\n",
     "packages/harness/package.json": `{"name":"@j2/harness"}`,
     "packages/harness/src/main.ts": harnessSrc,
     "packages/adapter/package.json": `{"name":"@j2/adapter"}`,

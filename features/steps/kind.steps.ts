@@ -25,13 +25,21 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { IMAGES_CONFIGMAP, IMAGES_KEY, repoKey, type RepoStatus } from "@j2/orchestrator";
-import { ensureSeed, SEED_URL } from "./seed.ts";
+import { IMAGES_CONFIGMAP, IMAGES_KEY, repoIdentity, repoKey, type RepoStatus } from "@j2/orchestrator";
+import { ensureSeed, pushToSeed, SEED_URL } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
 
-type SandboxCR = { metadata: { name: string }; status?: { phase?: string } };
+/** One entry of the Sandbox's standing per-Repo report (ADR-0053): what was asked of the node's
+ * cache for that key, and which fetch answered it. Spelled here rather than imported because it is
+ * the OPERATOR's shape — the CR is what a user reads, so the tier reads it the same way. */
+type SandboxRepoStatus = { key: string; asked: string; fetched?: string; attempted?: string; error?: string };
+
+type SandboxCR = {
+  metadata: { name: string; annotations?: Record<string, string> };
+  status?: { phase?: string; repos?: SandboxRepoStatus[] };
+};
 
 /** Run kubectl in the scenario's namespace (the isolation unit — ADR-0010/0019). */
 async function kubectl(world: E2EWorld, args: string[]): Promise<string> {
@@ -877,6 +885,245 @@ Then("every node still holds the images this instance's map names", async functi
   }
 });
 
+// --- the fetch inside the pod (ADR-0053) -----------------------------------------------------------
+//
+// `origin`'s fetch url is a PROGRAM on the runtime volume, not a path: git runs it, it asks the
+// Adapter on localhost, the ask rides the Sandbox CR onto the pod, the node's cache agent fetches
+// the remote, and only then does `git upload-pack` serve the cache. Every leg of that exists
+// nowhere else — a static binary on a mounted volume, a loopback route, a CR annotation the
+// operator copies onto the pod, a DaemonSet, and a real remote — so this is the one tier that can
+// watch a commit pushed a moment ago arrive on the next `git fetch`.
+
+/** How long a fetch inside the pod may take before it stops being evidence. The Orchestrator's own
+ * wait is 60s plus slack, and the cache's refresh interval — the latency this decision deletes —
+ * is 5 minutes; a fetch past this bound either fell through to the cache (which the ref assertion
+ * catches first) or waited on something ADR-0053 budgeted for nobody. */
+const IN_POD_FETCH_BUDGET_MS = 120_000;
+
+/** The pod-local clone a Repo Slot's worktrees borrow from — where `origin` lives (ADR-0004). */
+const clonePath = (slot: string): string => `/work/${slot}/default`;
+
+/**
+ * Run one `git fetch` in a named seat of the Sandbox, and time it. Both seats mount the SAME
+ * `/work`, so both drive the same `origin` out of the same config — which is the point of the
+ * User Container variant: the program, not the seat, is what makes a fetch reach the remote.
+ *
+ * The output is folded onto stdout and the exit code printed, rather than let `kubectl` throw:
+ * ADR-0053's degrade path writes one warning line to stderr and STILL exits 0, so a fetch that
+ * served stale objects looks exactly like a fresh one from the outside. Keeping both here puts
+ * that line in the failure message of whichever assertion catches it.
+ */
+async function fetchInSeat(world: E2EWorld, seat: "harness" | "user", remote: string, slot: string): Promise<void> {
+  await waitForAttached(world); // the clone cannot be fetched before the attach made it
+  const pod = (await waitForReadySandbox(world)).metadata.name;
+  const started = Date.now();
+  world.podSays = await kubectl(world, [
+    "exec",
+    `pod/${pod}`,
+    "-c",
+    seat,
+    "--",
+    "sh",
+    "-c",
+    `git -C '${clonePath(slot)}' fetch ${remote} 2>&1; echo "j2-fetch-exit=$?"`,
+  ]);
+  world.fetchMs = Date.now() - started;
+  assert.match(
+    world.podSays,
+    /j2-fetch-exit=0\b/,
+    `\`git fetch ${remote}\` failed in the ${seat} seat — the program serves the cache even when the ` +
+      `remote fetch fails (ADR-0053), so a NON-zero exit means git never reached the program at all: ` +
+      `${world.podSays.trim()}`,
+  );
+}
+
+/**
+ * The remote moves (ADR-0053's concrete case: a human pushes a fix the Agent must have now). On a
+ * branch of this scenario's own — the seed is one shared repository and the tier runs `--parallel`
+ * — so what the pod must see is a ref no other scenario can touch.
+ */
+When(
+  "a commit is pushed to the seed on a branch of its own",
+  { timeout: 120_000 },
+  async function (this: E2EWorld): Promise<void> {
+    this.pushedBranch = `fresh-${randomBytes(4).toString("hex")}`;
+    this.pushedSha = await pushToSeed(this.pushedBranch);
+  },
+);
+
+/** The Agent's seat. `git fetch` is the verb — there is no j2 verb for this, and nothing in the
+ * Menu: a fetch is not something the Agent SAYS, it is something it does (ADR-0053). */
+When(
+  "the Harness container fetches {string} in repo {string}",
+  { timeout: 180_000 },
+  async function (this: E2EWorld, remote: string, slot: string): Promise<void> {
+    await fetchInSeat(this, "harness", remote, slot);
+  },
+);
+
+/** The human's seat (ADR-0005/0053): the same fetch, from an image with no j2 knowledge, no env of
+ * j2's, and no credential of its own — reaching a remote it cannot address, through a static
+ * program on a read-only mount. */
+When(
+  "the User Container fetches {string} in repo {string}",
+  { timeout: 180_000 },
+  async function (this: E2EWorld, remote: string, slot: string): Promise<void> {
+    await fetchInSeat(this, "user", remote, slot);
+  },
+);
+
+/**
+ * The claim itself, and it is asserted with NO polling on purpose: one `git fetch` has returned,
+ * and the commit pushed seconds ago is already the remote-tracking head. A cache that only
+ * refreshed on its interval would answer the same fetch with the objects it happened to hold and
+ * pass a polling version of this test five minutes later.
+ *
+ * Read from the HARNESS seat whichever seat did the fetching: `/work` is one volume, so the refs
+ * the User Container updated are the Agent's refs too — one worktree, two seats (ADR-0005).
+ */
+Then(
+  "the pushed commit is the head of that branch in repo {string}",
+  async function (this: E2EWorld, slot: string): Promise<void> {
+    assert.ok(this.pushedBranch && this.pushedSha, "a commit was pushed to the seed in a prior step");
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const head = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "git",
+      "-C",
+      clonePath(slot),
+      "rev-parse",
+      `refs/remotes/origin/${this.pushedBranch}`,
+    ]);
+    assert.equal(
+      head.trim(),
+      this.pushedSha,
+      `the fetch served the remote's now, not the cache's last refresh (git said: ${this.podSays?.trim()})`,
+    );
+  },
+);
+
+/** What the decision is FOR: the latency of a fetch is a round trip through the node agent, not
+ * the interval that used to be the only path from a remote into a pod. */
+Then("the fetch cost seconds, not the cache's refresh interval", function (this: E2EWorld): void {
+  assert.ok(this.fetchMs !== undefined, "a fetch inside the pod was timed in a prior step");
+  assert.ok(
+    this.fetchMs < IN_POD_FETCH_BUDGET_MS,
+    `the fetch took ${this.fetchMs}ms — an ask is one remote round trip through the node agent ` +
+      `(ADR-0053), and the 5-minute refresh interval is what it replaced`,
+  );
+});
+
+/**
+ * The trace the ask leaves, read off the CR the way a human would (ADR-0053). Two halves of one
+ * mechanism: the Orchestrator's MARK — one annotation per Repo key, timestamp value, the Lease's
+ * shape — and the operator's standing per-key entry saying which fetch answered it. The entry's
+ * own `asked` is the later of the pod's birth and the mark, so it can never be older than the
+ * annotation; `fetched` at or after it is the landing the program waited for.
+ *
+ * The annotation is SPELLED here rather than imported, for the reason `ROUTABILITY_MARKER` gives
+ * below: the Orchestrator writes it in TypeScript and the operator reads it in Go, so no import
+ * can enforce the agreement — and a literal on this side is the third witness that the two spell
+ * it the same.
+ */
+Then(
+  "the Sandbox's ask for repo {string} is answered by the fetch its status reports",
+  async function (this: E2EWorld, url: string): Promise<void> {
+    const key = repoKey(url);
+    const name = (await waitForReadySandbox(this)).metadata.name;
+    const cr = JSON.parse(await kubectl(this, ["get", "sandbox", name, "-o", "json"])) as SandboxCR;
+    const mark = cr.metadata.annotations?.[`j2.dev/asked-${key}`];
+    assert.ok(
+      mark,
+      `the Sandbox carries j2.dev/asked-${key} (annotations: ${JSON.stringify(cr.metadata.annotations)})`,
+    );
+    const entry = cr.status?.repos?.find((r) => r.key === key);
+    assert.ok(entry, `the Sandbox reports a standing entry for ${key} (status: ${JSON.stringify(cr.status)})`);
+    const at = (stamp: string | undefined): number => (stamp ? Date.parse(stamp) : Number.NaN);
+    assert.ok(
+      at(entry.asked) >= at(mark),
+      `the entry's ask is the later of the pod's birth and the mark (asked ${entry.asked}, mark ${mark})`,
+    );
+    assert.ok(
+      at(entry.fetched) >= at(entry.asked),
+      `a fetch that started BEFORE the ask does not answer it (entry: ${JSON.stringify(entry)})`,
+    );
+  },
+);
+
+/** Escape one string for use inside a RegExp — the urls and identities below are full of dots. */
+const rx = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * What a human reads in `git remote -v` (ADR-0053). The fetch line is a COMMAND — git's built-in
+ * `ext::` transport, the program's absolute path on the runtime volume, git's own `%S` service
+ * substituted, and the Repo's IDENTITY. Never the cache key: a key is a derived directory name
+ * (ADR-0004), not a name a human should have to read. The push line is untouched — the Binding's
+ * own spelling, the caller's own credential, never the Agent's (ADR-0005).
+ */
+Then(
+  "origin in repo {string} fetches through the program and pushes to {string}",
+  async function (this: E2EWorld, slot: string, url: string): Promise<void> {
+    await waitForAttached(this);
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const out = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "git",
+      "-C",
+      clonePath(slot),
+      "remote",
+      "-v",
+    ]);
+    const lines = out.trim().split("\n");
+    const fetch = lines.find((l) => l.endsWith("(fetch)")) ?? "";
+    const push = lines.find((l) => l.endsWith("(push)")) ?? "";
+    const { identity, key } = repoIdentity(url);
+    assert.match(
+      fetch,
+      new RegExp(`^origin\\s+ext::/opt/j2/bin/j2-upload-pack %S ${rx(identity)}\\s+\\(fetch\\)$`),
+      `origin fetches through the program, named by identity (got: ${JSON.stringify(lines)})`,
+    );
+    assert.ok(!fetch.includes(key), `the url carries the identity, never the derived cache key ${key}`);
+    assert.match(
+      push,
+      new RegExp(`^origin\\s+${rx(url)}\\s+\\(push\\)$`),
+      "the push url is the Binding's own spelling",
+    );
+  },
+);
+
+/**
+ * The seat's half of ADR-0053: `/opt/j2` is there, holding the program, and it is READ-ONLY —
+ * ADR-0005's `/repos` argument applied once more, not a second exception. Presence is asserted
+ * first and for a reason: a seat with no mount at all would also refuse the write, and would then
+ * pass a test that only watched the write fail.
+ */
+Then(
+  "the User Container holds the program, on a read-only {string}",
+  async function (this: E2EWorld, mount: string): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const out = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "user",
+      "--",
+      "sh",
+      "-c",
+      `[ -x /opt/j2/bin/j2-upload-pack ] && echo program=present; touch '${mount}/.j2-ro-probe' 2>/dev/null && echo wrote=yes || echo wrote=no`,
+    ]);
+    assert.match(out, /program=present/, `the runtime volume reached the User Container (said: ${out.trim()})`);
+    assert.match(out, /wrote=no/, `${mount} is mounted read-only in the User Container (said: ${out.trim()})`);
+  },
+);
+
 // --- failure diagnostics ---------------------------------------------------------------------------
 //
 // A @kind scenario's namespace is deleted the moment it ends, which takes the only witnesses with
@@ -1050,6 +1297,10 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
     ["harness-history.json", iid ? probe(() => harnessHistory(world, iid)) : "<no instanceId in j2 status>\n"],
     ["pods.txt", probe(() => kubectl(world, ["get", "pods", "-o", "wide"]))],
     ["sandboxes.yaml", probe(() => kubectl(world, ["get", "sandbox", "-o", "yaml"]))],
+    // The other side of an ask (ADR-0051/0053): the cache agent writes its per-node verdict here —
+    // when it last fetched, when it last attempted, and git's own words when that failed. A
+    // Sandbox entry that never answered an ask is explained on this resource and nowhere else.
+    ["repos.yaml", probe(() => kubectl(world, ["get", "repo", "-o", "yaml"]))],
     ["events.txt", probe(() => kubectl(world, ["get", "events", "--sort-by=.metadata.creationTimestamp"]))],
     // The Service the Orchestrator dials the Harness through: `phase: Ready` is computed from the
     // POD's readiness, and the EndpointSlice behind the ClusterIP is programmed after that — so

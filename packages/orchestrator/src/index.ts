@@ -26,6 +26,7 @@ export * from "./workspace.ts";
 export * from "./images.ts";
 export * from "./sandbox-kubectl.ts";
 export * from "./repos.ts";
+export * from "./repo-fetch.ts";
 // Type-only: what a workflow event delivery looks like (the registration TABLE stays internal —
 // ADR-0011: workflows speak only defineEvent/agent/gate).
 export type { DeliveredEvent } from "./registration.ts";

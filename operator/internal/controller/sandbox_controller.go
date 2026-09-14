@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -89,8 +90,11 @@ type SandboxReconciler struct {
 // reported back. The Pod and Service are owned by the Sandbox so deleting the CR
 // garbage-collects them; a Sandbox whose keepalive lease has lapsed past
 // spec.idleTimeout deletes itself (ADR-0001). The Repos the spec names are read
-// (never written) to place the Pod near their caches and to hold Ready until
-// every one is present on its node and fetched (ADR-0051).
+// (never written) to place the Pod near their caches, to hold Ready until every
+// one is present on its node and fetched (ADR-0051), and to report per key what
+// the node has done about what this Sandbox asked it for (ADR-0053) — the ask
+// itself an annotation the Orchestrator marks on the CR and this controller
+// copies onto the Pod, where the cache agent reads it.
 func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -132,6 +136,10 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	pod, err := r.reconcilePod(ctx, &sandbox, repos)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile pod: %w", err)
+	}
+
+	if err := r.reconcileAsks(ctx, &sandbox, pod); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile asks: %w", err)
 	}
 
 	if err := r.reconcileStatus(ctx, &sandbox, pod, repos); err != nil {
@@ -225,6 +233,107 @@ func (r *SandboxReconciler) reposFor(ctx context.Context, sandbox *corev1alpha1.
 		repos[ref.Key] = repo
 	}
 	return repos, nil
+}
+
+// reconcileAsks copies every ask the Sandbox carries onto its Pod (ADR-0053).
+// The mark rides the CR because the Orchestrator writes CRs, and it has to
+// reach the Pod because the cache agent reads demand off pods alone: a Sandbox
+// holds no finalizer, so its resource is gone while its pod is still
+// terminating, and a cache is held by a live bind mount, not by a resource
+// (ADR-0051). This is the one thing the operator writes onto a Pod it already
+// created — annotations are the part of a Pod the API server lets change, and
+// the copy is exactly what "the operator copies it onto the pod as it copies
+// everything else the pod needs from the CR" asks for.
+//
+// Only a value that differs is written: the annotation is a timestamp the
+// Orchestrator advances, so an unchanged ask must not cost a PATCH on every
+// lease renewal.
+func (r *SandboxReconciler) reconcileAsks(ctx context.Context, sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) error {
+	changed := map[string]string{}
+	for name, value := range sandbox.Annotations {
+		if strings.HasPrefix(name, corev1alpha1.AskedAnnotationPrefix) && pod.Annotations[name] != value {
+			changed[name] = value
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	base := client.MergeFrom(pod.DeepCopy())
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string, len(changed))
+	}
+	maps.Copy(pod.Annotations, changed)
+	return r.Patch(ctx, pod, base)
+}
+
+// repoStatuses is the standing report on the caches this Sandbox mounts
+// (ADR-0053): per key, what the Sandbox asked its node for and what that
+// node's cache agent has done about it since. It is pure — the Sandbox, the
+// node its Pod runs on, and the Repo resources by key — and it is recomputed
+// on every reconcile, unlike the Ready gate, which is taken once per Pod life.
+//
+// Nothing is reported before the Pod has a node: there is no cache to report
+// on yet, and an entry left from a Pod this one replaced would describe
+// another node's disk.
+func repoStatuses(ctx context.Context, sandbox *corev1alpha1.Sandbox, node string, repos map[string]*corev1alpha1.Repo) []corev1alpha1.SandboxRepoStatus {
+	if node == "" || len(sandbox.Spec.Repos) == 0 {
+		return nil
+	}
+	out := make([]corev1alpha1.SandboxRepoStatus, 0, len(sandbox.Spec.Repos))
+	for _, ref := range sandbox.Spec.Repos {
+		asked := askedFor(ctx, sandbox, ref.Key)
+		status := corev1alpha1.SandboxRepoStatus{Key: ref.Key, Asked: asked}
+		// A Repo that does not exist, or a node whose agent has not reported,
+		// leaves the ask unanswered — never an error. The caller waits, and its
+		// own budget decides when waiting is over; a missing Repo is the Ready
+		// gate's verdict to give, not this entry's.
+		if repo := repos[ref.Key]; repo != nil {
+			if entry := nodeEntry(repo, node); entry != nil {
+				// `fetched` and `attempted` are the node's own stamps, reported
+				// whatever they say: a reader compares them against `asked` in
+				// the same entry, and a landing OLDER than the ask is exactly
+				// what a degraded answer has to name — "serving the cache as of
+				// <fetched>" (ADR-0053). Hiding it would leave the caller with
+				// nothing to date its objects by. `error` is the one field
+				// scoped to the ask, because git's words about an attempt made
+				// before it are not an answer to this one.
+				status.Attempted = entry.LastAttempt
+				status.Fetched = entry.LastFetched
+				if !entry.Synced && entry.LastAttempt != nil && !entry.LastAttempt.Before(&asked) {
+					status.Error = entry.LastError
+				}
+			}
+		}
+		out = append(out, status)
+	}
+	return out
+}
+
+// askedFor resolves what this Sandbox asked its node for on one key: the later
+// of its own creation and the key's ask annotation, because a creation is an
+// ask (ADR-0051) and every ask the Orchestrator marks after it is one too. A
+// garbage annotation is treated as absent, loudly — the rule the keepalive
+// lease follows.
+//
+// The ask is raised to the next whole second (AskedAt), the granularity every
+// stamp that can answer it is kept at, and the cache agent raises its own copy
+// the same way — so the two agree on the bar, and the bar is one a fetch that
+// began BEFORE the ask can never clear (ADR-0053).
+func askedFor(ctx context.Context, sandbox *corev1alpha1.Sandbox, key string) metav1.Time {
+	created := sandbox.CreationTimestamp
+	raw, ok := sandbox.Annotations[corev1alpha1.AskedAnnotation(key)]
+	if !ok {
+		return created
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		logf.FromContext(ctx).Info("unparseable ask annotation; treating as absent", "key", key, "value", raw, "error", err.Error())
+		return created
+	}
+	if asked := metav1.NewTime(corev1alpha1.AskedAt(ts)); asked.After(created.Time) {
+		return asked
+	}
+	return created
 }
 
 // reconcilePod ensures the Sandbox's Pod exists. Pods are largely immutable, so
@@ -493,6 +602,9 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// itself gates on the Pod's nodeName below, and the cache agent reads
 	// demand off the pods on its node, never off this field.
 	sandbox.Status.Node = pod.Spec.NodeName
+	// Standing, per key, and recomputed every time: what a fetch inside the pod
+	// waits on (ADR-0053). Ready below is the gate it always was.
+	sandbox.Status.Repos = repoStatuses(ctx, sandbox, pod.Spec.NodeName, repos)
 
 	cond := metav1.Condition{
 		Type:               conditionReady,
@@ -672,6 +784,12 @@ func (r *SandboxReconciler) sandboxesNamingRepo(ctx context.Context, obj client.
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// The Sandbox is watched without a predicate, deliberately: an ask is an
+// annotation, so a GenerationChangedPredicate here would drop the very event
+// this controller exists to carry onto the Pod (ADR-0053). The Repo watch is
+// bare for the same reason from the other side — a cache landing is a status
+// write, and the standing per-key entry is computed from it.
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.Sandbox{}).
