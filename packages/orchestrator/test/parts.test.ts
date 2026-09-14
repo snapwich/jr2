@@ -379,3 +379,22 @@ test("composesSandbox is true through a pool and a child, false for a plain Mach
     "an Agent alone is no Sandbox",
   );
 });
+
+test("the stamps are read by a SECOND copy of this module — the installed CLI's walk over an Instance's own kit (ADR-0043)", async () => {
+  // An installed `j2` resolves `@j2/orchestrator` from its own global prefix and the Instance
+  // resolves it from its own node_modules: `workspace()` runs in one copy, `partsOf` in the other.
+  // A query string makes Node load a second instance of this module, with its own module scope —
+  // a WeakMap here would be empty there, and the walk would report no Sandbox at all.
+  const copy = new URL("../src/parts.ts?installed-copy", import.meta.url).href;
+  const other = (await import(copy)) as typeof import("../src/parts.ts");
+  assert.notEqual(other.partsOf, partsOf, "the import must be a distinct module instance");
+  const machine = wsRepos({ app: "https://example.test/app.git" });
+  assert.equal(other.composesSandbox(machine), true, "the data-plane switch");
+  assert.deepEqual(Object.keys(other.sandboxPartsOf(machine).repos), ["app"]);
+  assert.equal(other.wrapperBodyOf(machine), "body");
+  assert.deepEqual(
+    other.partsOf([machine]).repos.map((r) => r.identity),
+    ["example.test/app"],
+    "the bound Repo the boot creates a CR for",
+  );
+});

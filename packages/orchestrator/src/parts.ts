@@ -147,17 +147,27 @@ export type SandboxParts = {
   repos: Record<string, RepoSlot>;
 };
 
-const sandboxParts = new WeakMap<AnyStateMachine["config"], SandboxParts>();
+// The stamps below are written ON `machine.config` under `Symbol.for` keys, never held in a
+// module-local WeakMap, for the reason `open` and `asMachine` give: an Instance resolves its OWN
+// `@j2/orchestrator`, and the installed CLI walks with ITS copy (ADR-0043) — a WeakMap the
+// Instance's `workspace()` filled is one the CLI's `partsOf` never sees, and the walk then reports
+// a Machine that composes no Sandbox: no Sandbox Image built, no cache agent converged, and a
+// provision that parks on a mount nothing serves. `machine.config` is the key either way, because
+// a `.provide()` clone shares it (ADR-0011) and a `customize()` clone re-stamps. A symbol property
+// is invisible to `JSON.stringify` and `Object.keys`, so xstate and the fingerprint read past it.
+const SANDBOX_PARTS: unique symbol = Symbol.for("j2.sandbox.parts");
+const WRAPPER_BODY: unique symbol = Symbol.for("j2.wrapper.body");
+type Stamped = { [SANDBOX_PARTS]?: SandboxParts; [WRAPPER_BODY]?: string };
 
 /** Attach a wrapper's static Sandbox parts. j2-internal: `workspace()` calls it. */
 export function attachSandboxParts(machine: AnyStateMachine, parts: SandboxParts): void {
-  sandboxParts.set(machine.config, parts);
+  (machine.config as Stamped)[SANDBOX_PARTS] = parts;
 }
 
 /** The Sandbox parts a Machine carries — no images and no slots for any Machine that is not a
  * `workspace()` wrapper, which is the honest answer: it composes no Sandbox. */
 export function sandboxPartsOf(machine: AnyStateMachine | undefined): SandboxParts {
-  return (machine && sandboxParts.get(machine.config)) ?? { repos: {} };
+  return (machine?.config as Stamped | undefined)?.[SANDBOX_PARTS] ?? { repos: {} };
 }
 
 /** Does this Machine COMPOSE a Sandbox — i.e. is it a `workspace()` wrapper? Distinct from
@@ -166,7 +176,7 @@ export function sandboxPartsOf(machine: AnyStateMachine | undefined): SandboxPar
  * one Repo Slot (ADR-0051). Also the data-plane switch, read off the walk: an Instance needs
  * Sandboxes exactly when a registered Machine composes one. */
 export function composesSandbox(machine: AnyStateMachine): boolean {
-  return sandboxParts.has(machine.config);
+  return (machine.config as Stamped)[SANDBOX_PARTS] !== undefined;
 }
 
 // The slot a j2 WRAPPER is transparent to (ADR-0049): `workspace()`'s `body`, `pool()`'s
@@ -177,19 +187,18 @@ export function composesSandbox(machine: AnyStateMachine): boolean {
 // Recorded, not inferred: a slot named `body` is a name any author may choose, and routing a
 // customize through it because of its spelling would retune a different Machine than the
 // composer named. The wrappers stamp this the same way they stamp everything else a Machine
-// carries — keyed on `machine.config`, so a `provide()` clone and a `customize()` retune keep it.
-
-const wrapperBodies = new WeakMap<AnyStateMachine["config"], string>();
+// carries — on `machine.config`, so a `provide()` clone and a `customize()` retune keep it, and
+// under a `Symbol.for` key, so a second module copy reads it (see `SANDBOX_PARTS`).
 
 /** Mark this Machine a j2 wrapper over `slot`. j2-internal: `workspace()`/`pool()` call it. */
 export function attachWrapperBody(machine: AnyStateMachine, slot: string): void {
-  wrapperBodies.set(machine.config, slot);
+  (machine.config as Stamped)[WRAPPER_BODY] = slot;
 }
 
 /** The slot a j2 wrapper is transparent to — undefined for every Machine an author wrote, which
  * is where a `customize()` stops descending and starts resolving. */
 export function wrapperBodyOf(machine: AnyStateMachine): string | undefined {
-  return wrapperBodies.get(machine.config);
+  return (machine.config as Stamped)[WRAPPER_BODY];
 }
 
 declare const wrapperBody: unique symbol;
