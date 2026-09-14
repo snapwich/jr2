@@ -77,11 +77,11 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   with a comment saying to narrow it before anything untrusted can start a run — so the open fence is in the user's file
   and commit, never implied.
 - **Freshness degrades, absence does not.** A fetch that fails on a warm cache lets the attach proceed on the objects it
-  has, announced as stale with git's own error. Stale stays stale from inside the pod: the worktree's `origin` fetches
-  from the cache, not the remote (the pod holds no credential — ADR-0005), so the Agent's own `git fetch` returns the
-  cache's objects and reaches the truth only once the cache agent's next successful fetch lands in place — on the
-  interval, or before the next attach that names the repository. A clone that fails on a cold node fails that provision
-  pointedly, naming the repository and the error, and the CR status carries it for `j2 status` (ADR-0048's pattern).
+  has, announced as stale with git's own error. A stale attach is stale until the next fetch anyone inside the pod runs:
+  the worktree's `origin` asks the cache, and the cache asks the remote (ADR-0053) — the pod still holds no credential
+  (ADR-0005), and the same failure lets that fetch fall through to the cache's objects with a warning on stderr. A clone
+  that fails on a cold node fails that provision pointedly, naming the repository and the error, and the CR status
+  carries it for `j2 status` (ADR-0048's pattern).
 - **Eviction is reachability plus age.** `j2 gc` deletes a `Repo` CR that no registered Machine binds and no run has
   attached within its TTL; the cache agent removes the node copy on CR deletion, once no pod on that node mounts it.
 

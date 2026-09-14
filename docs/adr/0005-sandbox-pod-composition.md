@@ -18,8 +18,9 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
   ports are not forwarded, because every key j2 forwarded would be a crack in "j2 puts nothing in it"; widening the
   string to an object stays compatible if a concrete need ever argues its own way in (the routable-port follow-up below
   is the known candidate). In the pod it is the container named `user` (`kubectl exec -c user`). It runs its **own
-  entrypoint, untouched**: j2 injects nothing, probes nothing, and overrides nothing — the zero-contract seat, which is
-  exactly why it exists. Two jobs no other seat can do:
+  entrypoint, untouched**: j2 injects nothing into its process — no env, no command, no probe — and overrides nothing;
+  it mounts only what the checkouts need to be checkouts (below). The zero-contract seat, which is exactly why it
+  exists. Two jobs no other seat can do:
   - **Unattended services.** A container's one command belongs to the Harness in the primary seat (ADR-0037), so an
     image's own services — an sshd for managed access, an IDE server, a metrics agent — need a container whose command
     j2 deliberately does not own. A system built _on_ j2 that hands people access to their Sandboxes automates through
@@ -28,12 +29,14 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
     private mount namespace, where the Agent executes nothing. The human sshs in with agent forwarding, works, and the
     socket is gone on disconnect; at no point does it share a filesystem with code the Agent runs.
 
-The Harness and User containers mount `/work` read-write **and `/repos` read-only** — the node's Repo cache, one bare
-checkout per Repo the Sandbox names (ADR-0004, ADR-0051) — so human and agent see identical files. `/repos` is not a
-second exception but half of the first: the worktrees are `--shared` clones whose alternates resolve objects from
-`/repos/<key>`, so a seat holding `/work` alone holds checkouts whose every borrowed object is missing — git in the User
-Container dies on "unable to normalize alternate object path". The Adapter mounts neither — the pod's credential holder
-has no business in the working tree.
+The Harness and User containers mount `/work` read-write, **`/repos` read-only** — the node's Repo cache, one bare
+checkout per Repo the Sandbox names (ADR-0004, ADR-0051) — **and `/opt/j2` read-only**, the runtime volume — so human
+and agent see identical files. Neither `/repos` nor `/opt/j2` is a second exception; each is half of the first. The
+worktrees are `--shared` clones whose alternates resolve objects from `/repos/<key>`, so a seat holding `/work` alone
+holds checkouts whose every borrowed object is missing — git in the User Container dies on "unable to normalize
+alternate object path". And their `origin` fetches through a program on `/opt/j2` (ADR-0053), so a seat without that
+volume holds checkouts whose `git fetch` dies. The Adapter mounts none of the three — the pod's credential holder has no
+business in the working tree.
 
 One git wall stays the image's own: git's dubious-ownership guard fires in the User Container whenever its uid differs
 from the Harness's (the attach created the trees), and `safe.directory` is honored only from system/global config —
@@ -43,15 +46,16 @@ scrub container env — so the image would still owe a line for sshd while carry
 mechanisms where one honest one serves. A User Container image whose sessions run git carries its own
 `git config --global --add safe.directory '*'` (or ships it in `/etc/gitconfig`).
 
-The worktrees' remotes encode which hop each seat can make: `git fetch origin` reads the node cache (refreshed by the
-cache agent — the hop the pod can make), while origin's **push url** is the real remote in the Binding's own spelling —
-the attach sets it from the slot the Machine bound (ADR-0051), so a Machine that bound over ssh pushes over ssh even
-when the cache was cloned over https, and nothing else plumbs it. A push therefore succeeds exactly when a caller
-supplies the credential — a human's forwarded agent in the User Container — and never for the Agent, because the pod
-holds none (the credential-visibility story above, unchanged). Creating a pull request is a GitHub API call on top: the
-human's own `gh` login in their session. An UNATTENDED publish (workflow pushes a branch, opens a PR) is deliberately
-absent: it belongs to the Orchestrator, which already holds the git credential and can fetch a branch out of a pod
-without one (`ext::kubectl exec … git upload-pack`) — a future decision, not a pod-composition change.
+The worktrees' remotes encode which hop each seat can make: `git fetch origin` asks the node cache, and the cache asks
+the remote with the cluster's credential (ADR-0053 — the hop the pod can make, from any seat, with no credential of its
+own), while origin's **push url** is the real remote in the Binding's own spelling — the attach sets it from the slot
+the Machine bound (ADR-0051), so a Machine that bound over ssh pushes over ssh even when the cache was cloned over
+https, and nothing else plumbs it. A push therefore succeeds exactly when a caller supplies the credential — a human's
+forwarded agent in the User Container — and never for the Agent, because the pod holds none (the credential-visibility
+story above, unchanged). Creating a pull request is a GitHub API call on top: the human's own `gh` login in their
+session. An UNATTENDED publish (workflow pushes a branch, opens a PR) is deliberately absent: it belongs to the
+Orchestrator, which already holds the git credential and can fetch a branch out of a pod without one
+(`ext::kubectl exec … git upload-pack`) — a future decision, not a pod-composition change.
 
 ## Sharing `/work` across uids
 

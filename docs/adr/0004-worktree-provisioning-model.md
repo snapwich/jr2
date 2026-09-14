@@ -51,10 +51,11 @@ it buys nothing gc pinning does not, and a repack costs a full re-upload.
 The catalog is the set of `Repo` custom resources in the Instance's namespace (ADR-0051): the Orchestrator creates one
 per repository its Machines bind, at boot from the walk and at first attach for a per-run url, and the operator
 reconciles each onto the nodes that need it. A cache is cloned when missing and fetched when present — on the resource's
-interval, and on demand before every attach, so a Workspace starts from the remote's now. `fetch` only **adds** objects
-— safe under the invariant by nature. A repository that fails to sync degrades that repository, never the Instance: a
-cold clone that fails fails the one provision that needed it, pointedly; a fetch that fails on a warm cache lets the
-attach proceed on what the cache holds, announced as stale
+interval, on demand before every attach, so a Workspace starts from the remote's now, and on demand for every fetch run
+inside a pod — the worktrees' `origin` asks the cache, and the cache asks the remote (ADR-0053). `fetch` only **adds**
+objects — safe under the invariant by nature. A repository that fails to sync degrades that repository, never the
+Instance: a cold clone that fails fails the one provision that needed it, pointedly; a fetch that fails on a warm cache
+lets the attach proceed on what the cache holds, announced as stale
 ([ADR-0048](0048-the-orchestrator-boots-without-its-repos.md)). The cache agent runs in-cluster, so every repository
 must be **fetchable from the cluster** (an HTTPS token or deploy-key Secret for private ones — ADR-0019, ADR-0047); a
 working copy that exists only on someone's host is not a valid source. Local-path urls are cloned like any other url,

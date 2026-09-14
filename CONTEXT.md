@@ -99,11 +99,12 @@ and warns when empty, never refuses. _Avoid_: worker, candidate node, eligible n
 
 **User Container**: The optional third container in a Sandbox pod — a user-owned image a `workspace()` names statically,
 in the same two shapes as the Sandbox Image and beside it (`user`, ADR-0049), running its own entrypoint with `/work`
-mounted read-write and nothing injected (ADR-0005). The zero-contract seat: j2 never builds, probes, or commands it. For
-services that must run unattended (an sshd for managed access) and for sessions whose credentials must stay out of the
-Agent's mount namespace (a forwarded ssh agent). Not port isolation — the pod has one network namespace. _Avoid_:
-sidecar (its deployment shape, not what it is), debug container (an ephemeral attach is a one-off mechanism, not a
-seat), dev container
+mounted read-write, the checkouts' two read-only halves (`/repos`, `/opt/j2`) beside it, and nothing injected into its
+process (ADR-0005, ADR-0053). The zero-contract seat: j2 never builds, probes, or commands it. For services that must
+run unattended (an sshd for managed access) and for sessions whose credentials must stay out of the Agent's mount
+namespace (a forwarded ssh agent). Not port isolation — the pod has one network namespace. _Avoid_: sidecar (its
+deployment shape, not what it is), debug container (an ephemeral attach is a one-off mechanism, not a seat), dev
+container
 
 **Instance ID**: The identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id` on the Harness
 wire. Successive prompts to the same `(Agent name, instance id)` continue one conversation; j2 computes ids and persists
@@ -210,9 +211,10 @@ the Lease asserts outward), health (a probe concept, about serving)
 
 **Repo**: A git repository, identified by its url — host plus path; scheme, user, and `.git` do not distinguish two
 spellings of one Repo. A Machine names one only through a Repo Slot; the cluster keeps one read-only cache of it per
-node for Workspaces to clone against (ADR-0051). There is no catalog and no repo name: `j2.config.ts` declares nothing
-about a Repo, and the set the Instance holds is whatever its Machines bind plus whatever its runs have attached.
-_Avoid_: project, source, remote, catalog entry, repo name
+node for Workspaces to clone against and fetch through — a fetch inside a pod asks the cache, and the cache asks the
+remote (ADR-0051, ADR-0053). There is no catalog and no repo name: `j2.config.ts` declares nothing about a Repo, and the
+set the Instance holds is whatever its Machines bind plus whatever its runs have attached. _Avoid_: project, source,
+remote, catalog entry, repo name
 
 **Repo Slot**: The name a `workspace()` gives one Repo it attaches — the key in its `repos` option, the key of the
 body's `workspace.repos` handles, and the directory under `/work`. A slot is **bound** (the Machine wrote the url),
