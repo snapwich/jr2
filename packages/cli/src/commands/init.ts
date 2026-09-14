@@ -116,6 +116,10 @@ export default defineConfig({
     // a run. The longest match wins; the url's scheme picks token vs sshKey.
     credentials: [{ match: "*", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" }],
   },
+  // Where Sandboxes land (ADR-0052): by default wherever an ordinary pod lands — not cordoned, no taint — and
+  // the Repo cache agent follows the same set. No node label is needed. To admit a tainted pool or narrow to
+  // a labeled one, name it in raw pod-spec shapes; \`j2 up\` reports the Sandbox nodes it sees.
+  // sandbox: { nodeSelector: { pool: "agents" }, tolerations: [{ key: "gpu", operator: "Exists" }] },
 });
 `;
 

@@ -181,6 +181,32 @@ export type HarnessConfig = {
   caBundle?: string;
 };
 
+/** One pod-spec toleration, verbatim (ADR-0052): `nodeSelector` and `tolerations` are the raw
+ * Kubernetes shapes, the stance `HarnessEnvVar` takes for `EnvVar`. */
+export type Toleration = {
+  key?: string;
+  operator?: "Exists" | "Equal";
+  value?: string;
+  effect?: "NoSchedule" | "PreferNoSchedule" | "NoExecute";
+  tolerationSeconds?: number;
+};
+
+/**
+ * Where an Instance's Sandboxes may land (ADR-0052). Absent, a Sandbox node is wherever an
+ * ordinary pod lands — not cordoned, no taint — and no j2 label is ever required. Both keys ride
+ * the Sandbox pod verbatim, the Repo cache agent's DaemonSet takes the same two so a cache is only
+ * ever where a Sandbox can reach it, and `j2 up` reads the same predicate off the nodes to report
+ * the set. A Machine says nothing about placement: a node label is a deployment fact (ADR-0050).
+ * These two are the default class; a per-Machine `classes` map is the deferred extension.
+ */
+export type SandboxPlacement = {
+  /** Pod `spec.nodeSelector`: a node must carry every label. */
+  nodeSelector?: Readonly<Record<string, string>>;
+  /** Pod `spec.tolerations`, verbatim — no `tolerationSeconds` is added, so a tolerated `NoExecute`
+   * taint keeps a Sandbox through it for as long as its Lease is renewed. */
+  tolerations?: readonly Toleration[];
+};
+
 export type J2Config = {
   /** The instance's identity (ADR-0019): its kube namespace defaults to this (`-n` overrides),
    * and `j2 up` labels every object it owns with it. Default: the instance folder's name. */
@@ -191,6 +217,9 @@ export type J2Config = {
   git?: GitConfig;
   /** Agent-runtime config for the stock Harness (see `HarnessConfig`). */
   harness?: HarnessConfig;
+  /** Which nodes are this Instance's Sandbox nodes (see `SandboxPlacement`, ADR-0052). Absent →
+   * wherever an ordinary pod lands. */
+  sandbox?: SandboxPlacement;
   /** Image registry prefix (deployment-varying — resolve from env). Absent → images are
    * `kind load`-ed; present → pushed. A non-kind cluster without one fails loudly (ADR-0019). */
   registry?: string;

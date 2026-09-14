@@ -24,6 +24,7 @@ import {
   REPO_CACHE_HOSTPATH,
   STATE_PVC,
   type HarnessConfig,
+  type SandboxPlacement,
 } from "@j2/orchestrator";
 
 export {
@@ -102,7 +103,7 @@ export function instanceObjects(opts: {
   /** The data plane (ADR-0051): present iff a registered Machine composes a Sandbox, carrying the
    * resolved operator ref — the same binary is the cache agent (`/manager repo-cache`). Absent, no
    * DaemonSet and none of its RBAC is applied; `up` deletes a stale one. */
-  repoCache?: { image: string };
+  repoCache?: { image: string; placement?: SandboxPlacement };
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "j2" };
   const meta = (name: string, extra: Record<string, string> = {}): KubeManifest => ({
@@ -314,7 +315,7 @@ const REPO_CACHE_MOUNT = "/cache";
 const REPO_CACHE_HOME = "/home/j2";
 
 /**
- * The data plane's node half (ADR-0051, ADR-0004): the cache agent as a DaemonSet, one pod per node,
+ * The data plane's node half (ADR-0051, ADR-0004): the cache agent as a DaemonSet, one pod per Sandbox node,
  * each the one writer of `/var/lib/j2/<namespace>/repos` on its node — the hostPath the operator
  * mounts one leaf of, read-only, into every Sandbox there that names the key. It runs the operator
  * image (`/manager repo-cache`), so the kit's operator ref is resolved even when the operator layer
@@ -324,18 +325,21 @@ const REPO_CACHE_HOME = "/home/j2";
  * root, and a Sandbox's mount of the leaf may exist before the agent has written anything there.
  * Everything else is hardened as the operator's baseline is — no capabilities, no escalation, a
  * read-only root filesystem (the two writable places are the emptyDirs below), the default seccomp
- * profile. It tolerates everything, because a node no agent lands on is a node no Sandbox can be
- * placed on. The ServiceAccount token IS mounted: the agent is a client of the Repo resources and
+ * profile. It carries the Sandbox pod's own `nodeSelector` and `tolerations` and nothing wider
+ * (ADR-0052), so an agent lands on exactly the nodes a Sandbox can be placed on. The ServiceAccount token IS mounted: the agent is a client of the Repo resources and
  * of the pods on its node (never of Sandboxes — demand is a pod's mount), unlike a Sandbox, whose
  * north star is never reaching the API.
  */
 function repoCacheObjects(opts: {
   image: string;
+  /** The Instance's Sandbox node predicate (ADR-0052): the same `nodeSelector` and `tolerations`
+   * every Sandbox pod carries, so the agent runs on exactly the Sandbox nodes. */
+  placement?: SandboxPlacement;
   namespace: string;
   labels: Record<string, string>;
   meta: (name: string, extra?: Record<string, string>) => KubeManifest;
 }): KubeManifest[] {
-  const { image, namespace, labels, meta } = opts;
+  const { image, namespace, labels, meta, placement } = opts;
   return [
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(REPO_CACHE) },
     {
@@ -372,7 +376,12 @@ function repoCacheObjects(opts: {
           spec: {
             serviceAccountName: REPO_CACHE,
             automountServiceAccountToken: true,
-            tolerations: [{ operator: "Exists" }],
+            // One agent per Sandbox node (ADR-0052): the pod's own placement, verbatim. A node no
+            // Sandbox can reach gets no agent — a cache there is a clone nobody reads, and an
+            // affinity term the scheduler cannot honor. (The DaemonSet controller still adds its
+            // own toleration for `unschedulable`, so a cordoned Sandbox node keeps its agent.)
+            ...(placement?.nodeSelector ? { nodeSelector: placement.nodeSelector } : {}),
+            ...(placement?.tolerations?.length ? { tolerations: placement.tolerations } : {}),
             containers: [
               {
                 name: "agent",

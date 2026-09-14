@@ -126,6 +126,21 @@ type SandboxSpec struct {
 	// +optional
 	IdleTimeout *metav1.Duration `json:"idleTimeout,omitempty"`
 
+	// NodeSelector places the Pod (ADR-0052): the Instance's
+	// `sandbox.nodeSelector`, copied onto the Pod verbatim. Absent, the Pod
+	// lands wherever an ordinary pod lands. The operator merges nothing with
+	// it; its own soft affinity toward nodes holding this Sandbox's Repo caches
+	// sits beside it, and a preference never conflicts with a requirement.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations place the Pod (ADR-0052): the Instance's
+	// `sandbox.tolerations`, copied onto the Pod verbatim — no
+	// tolerationSeconds is added, so a tolerated NoExecute taint keeps the
+	// Sandbox through it for as long as its lease is renewed.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
 	// Repos are the Repos this Sandbox attaches, named by cache key
 	// (ADR-0051). For each entry the operator adds a pod volume named
 	// `repo-<key>` — the node's cache for that Repo (hostPath

@@ -57,7 +57,13 @@
 
 import { execFile } from "node:child_process";
 import { join } from "node:path";
-import { matchCredential, type GitCredential, type HarnessEnvFromSource, type HarnessEnvVar } from "./config.ts";
+import {
+  matchCredential,
+  type GitCredential,
+  type HarnessEnvFromSource,
+  type HarnessEnvVar,
+  type SandboxPlacement,
+} from "./config.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
 import { CA_CONFIGMAP, IMAGES_KEY, IMAGES_MOUNT, REPOS_MOUNT } from "./names.ts";
 import { repoIdentity } from "./repo-identity.ts";
@@ -253,6 +259,10 @@ export type KubectlSandboxOptions = {
   /** Whole-Secret/ConfigMap env for the Harness container (`harness.envFrom`) — how a real
    * Harness gets its model API key without the value ever touching j2 config. */
   envFrom?: HarnessEnvFromSource[];
+  /** Where a Sandbox may land (ADR-0052): the Instance's `sandbox.nodeSelector` and
+   * `sandbox.tolerations`, written on the CR verbatim and copied onto the pod by the operator, which
+   * merges nothing with them. Absent → wherever an ordinary pod lands. */
+  placement?: SandboxPlacement;
   /** The instance ships a private-CA bundle (ADR-0020): mount the `j2-ca` ConfigMap into the
    * HARNESS container and point NODE_EXTRA_CA_CERTS at it — never the Adapter, which speaks plain
    * HTTP to the Orchestrator's Service (the same asymmetry as env/envFrom above). */
@@ -528,6 +538,13 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // default is what makes that possible — the operator hardens only what says nothing.
         securityContext: seat.securityContext,
         idleTimeout: opts.idleTimeout ?? "30m",
+        // Placement (ADR-0052): the Instance's word on which nodes are Sandbox nodes, raw pod-spec
+        // shapes the operator copies verbatim. Absent keys are absent here too — the CR says
+        // nothing, and the pod lands wherever an ordinary pod lands. The operator's own soft
+        // affinity toward nodes holding this Sandbox's caches sits beside these untouched: a
+        // preference never conflicts with a requirement.
+        ...(opts.placement?.nodeSelector ? { nodeSelector: opts.placement.nodeSelector } : {}),
+        ...(opts.placement?.tolerations?.length ? { tolerations: opts.placement.tolerations } : {}),
         // The work group (ADR-0005), the ownership half of cross-uid sharing on `/work`.
         // Kubernetes grants it as a supplemental group to every container, and puts a setgid
         // group on the volume root that propagates down; the WRITABILITY half is the default ACL

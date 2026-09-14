@@ -57,8 +57,11 @@ const (
 	// Ready reasons a Repo cache can hold a Sandbox at, and the two ReposFresh
 	// reasons. The Orchestrator's port keys on RepoCloneFailed to fail a
 	// provision at once instead of burning its Ready budget (ADR-0051).
-	reasonRepoMissing     = "RepoMissing"
-	reasonRepoPending     = "RepoPending"
+	reasonRepoMissing = "RepoMissing"
+	reasonRepoPending = "RepoPending"
+	// reasonUnschedulable is the scheduler's own reason for a Pod no node
+	// admits (ADR-0052), restated when its condition carries none.
+	reasonUnschedulable   = "Unschedulable"
 	reasonRepoCloneFailed = "RepoCloneFailed"
 	reasonFetched         = "Fetched"
 	reasonFetchFailed     = "FetchFailed"
@@ -311,6 +314,12 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			// ADR-0051 chose. Never a hard requirement, so node count never
 			// bounds placement.
 			Affinity: repoAffinityFor(sandbox, repos),
+			// Verbatim (ADR-0052): the Instance's word on which nodes are
+			// Sandbox nodes, carried by the CR so this operator reads no
+			// config. Nothing is merged in — the affinity above is a
+			// preference and these are requirements, so they never meet.
+			NodeSelector: sandbox.Spec.NodeSelector,
+			Tolerations:  sandbox.Spec.Tolerations,
 			// Isolation north star: an untrusted Agent must not reach the
 			// Kubernetes API. Don't mount the SA token, and run every j2-owned
 			// container non-root under the default seccomp profile. (Egress
@@ -494,6 +503,20 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	}
 	var fresh *metav1.Condition
 	ready := podReady(pod)
+	// A Pod the scheduler could not place (ADR-0052): the Sandbox node set is
+	// empty right now, or the CR's selector and tolerations admit no node. The
+	// scheduler's own words name the taint or label, and they are what
+	// `j2 status` and the provisioning run show while the run waits — the set
+	// moves, so this is a state the Sandbox waits in, never a verdict.
+	if !ready {
+		if unscheduled := podUnscheduled(pod); unscheduled != nil {
+			cond.Reason = reasonUnschedulable
+			if unscheduled.Reason != "" {
+				cond.Reason = unscheduled.Reason
+			}
+			cond.Message = unscheduled.Message
+		}
+	}
 	if ready && !admitted {
 		var reason, message string
 		ready, reason, message, fresh = reposReadiness(sandbox, pod.Spec.NodeName, repos)

@@ -121,6 +121,27 @@ const readyStatus = JSON.stringify({
   status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-1" },
 });
 
+test("the Instance's `sandbox` placement rides the CR verbatim; absent, the CR says nothing (ADR-0052)", async () => {
+  const placement = {
+    nodeSelector: { pool: "agents" },
+    tolerations: [{ key: "gpu", operator: "Exists" as const, effect: "NoSchedule" as const }],
+  };
+  const placed = fakeExec({ apply: () => "applied", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, placement, exec: placed.exec });
+  await port.provision({ name: "sb-p", runId: "run-1", workflow: "coding", ...withApp });
+  const spec = crOf(placed.calls).spec;
+  // Raw pod-spec shapes, copied by the operator onto the pod with nothing merged in — its own soft
+  // affinity toward nodes holding the caches is a preference, and never meets these requirements.
+  assert.deepEqual(spec.nodeSelector, { pool: "agents" });
+  assert.deepEqual(spec.tolerations, [{ key: "gpu", operator: "Exists", effect: "NoSchedule" }]);
+
+  const bare = fakeExec({ apply: () => "applied", patch: () => "ok", get: () => readyStatus });
+  const unplaced = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec: bare.exec });
+  await unplaced.provision({ name: "sb-u", runId: "run-2", workflow: "coding", ...withApp });
+  assert.ok(!("nodeSelector" in crOf(bare.calls).spec), "no key at all — wherever an ordinary pod lands");
+  assert.ok(!("tolerations" in crOf(bare.calls).spec));
+});
+
 test("provision applies the labeled CR naming its Repos by cache key, gates on Ready", async () => {
   let gets = 0;
   const { exec, calls } = fakeExec({

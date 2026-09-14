@@ -312,6 +312,20 @@ func (in *SandboxSpec) DeepCopyInto(out *SandboxSpec) {
 		*out = new(metav1.Duration)
 		**out = **in
 	}
+	if in.NodeSelector != nil {
+		in, out := &in.NodeSelector, &out.NodeSelector
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+	if in.Tolerations != nil {
+		in, out := &in.Tolerations, &out.Tolerations
+		*out = make([]v1.Toleration, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.Repos != nil {
 		in, out := &in.Repos, &out.Repos
 		*out = make([]SandboxRepo, len(*in))

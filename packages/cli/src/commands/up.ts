@@ -111,6 +111,7 @@ import {
   type KubeObject,
   type RolloutTarget,
 } from "../kube.ts";
+import { buildNodes, sandboxNodes, type NodeObject } from "../nodes.ts";
 import { activity, chooseOrBail, confirmOrBail, promptLine, readSecretInput, type Io } from "../output.ts";
 import { kindCluster, sweepImages } from "../sweep.ts";
 import { tscTypecheck } from "../typecheck.ts";
@@ -236,10 +237,12 @@ export async function up(args: string[], io: Io): Promise<number> {
   // this failure class started. `platforms` skips DERIVATION, so it skips the read too — the key
   // exists for the cases the nodes cannot answer (a pool scaled to zero, a set to trim), and a
   // converge that was told the answer must not still need permission to ask the question.
-  const schedulable =
-    config.platforms === undefined
-      ? (await kube.listJson<NodeObject>({ kind: "node", ...ctx })).filter((n) => n.spec?.unschedulable !== true)
-      : [];
+  //
+  // "Schedulable" is the union of where an ordinary pod lands (the Orchestrator's own placement)
+  // and the Instance's Sandbox nodes (ADR-0052): a tainted pool no Sandbox reaches is not a platform
+  // this instance owes an image. The same read reports the Sandbox nodes themselves below.
+  const nodes = config.platforms === undefined ? await kube.listJson<NodeObject>({ kind: "node", ...ctx }) : [];
+  const schedulable = buildNodes(nodes, config.sandbox);
   const {
     platforms,
     skipped,
@@ -257,6 +260,26 @@ export async function up(args: string[], io: Io): Promise<number> {
   );
   for (const arch of skipped) {
     activity(io, `  skipping node arch ${arch} — the kit publishes no Kit image for it, so no pod there could run`);
+  }
+  // The Sandbox nodes (ADR-0052), when a Machine will need one and the nodes were read: the set
+  // the scheduler will use, at this moment. Empty WARNS and the converge goes on — a pool that
+  // autoscales from zero, a node cordoned mid-converge, a GPU box joining tomorrow are all the
+  // ordinary case, and a refusal would make `j2 up` a point-in-time check of a moving set. The
+  // truth while a run waits is the operator's: a Pending Sandbox carries the scheduler's own
+  // words in its Ready condition, and `j2 status` shows them.
+  if (carried.composesSandbox && config.platforms === undefined) {
+    const { nodes: candidates, excluded } = sandboxNodes(nodes, config.sandbox);
+    if (candidates.length > 0) {
+      activity(io, `sandbox nodes: ${candidates.map((n) => n.metadata.name).join(", ")}`);
+    } else {
+      activity(io, "warning: no Sandbox node right now — a Sandbox stays Pending until one appears:");
+      for (const { name, reason } of excluded) activity(io, `  ${name}: ${reason}`);
+      activity(
+        io,
+        "  a Sandbox lands where an ordinary pod lands; to admit a tainted or labeled node, set " +
+          "`sandbox: { nodeSelector, tolerations }` in j2.config.ts (raw pod-spec shapes, ADR-0052).",
+      );
+    }
   }
   // A multi-platform build is `docker buildx build --push`: it delivers by pushing, and there is
   // nowhere to push without a registry. By CONSTRUCTION this never fires — a mixed-arch cluster is
@@ -636,7 +659,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       harness: config.harness,
       caBundle: caPem,
       imageRefs: converged,
-      repoCache: carried.composesSandbox ? { image: operatorImage! } : undefined,
+      repoCache: carried.composesSandbox ? { image: operatorImage!, placement: config.sandbox } : undefined,
     }),
     ...ctx,
   });
@@ -663,7 +686,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // over from a Machine that dropped its `workspace()` is deleted with its RBAC: the layer
   // converges toward the Machines like the Instance Harness does.
   if (carried.composesSandbox) {
-    activity(io, "repo cache: waiting for the cache agent on every node");
+    activity(io, "repo cache: waiting for the cache agent on every Sandbox node");
     await awaitRollout(kube, {
       kind: "daemonset",
       name: REPO_CACHE,
@@ -939,15 +962,6 @@ async function verifyRunningImage(
 type PodObject = {
   metadata: { name: string; deletionTimestamp?: string };
   spec: { containers: Array<{ name?: string; image: string }> };
-};
-
-/** A cluster node, read for the one fact that decides what every image is built for (ADR-0045):
- * the architecture it runs. `spec.unschedulable` is the cordon — a node nothing can be placed on is
- * not a platform this instance needs images for. */
-type NodeObject = {
-  metadata: { name: string };
-  spec?: { unschedulable?: boolean };
-  status?: { nodeInfo?: { architecture?: string } };
 };
 
 /** What a converge that GENERATED a keypair owes its own last line (ADR-0047): the Secret it

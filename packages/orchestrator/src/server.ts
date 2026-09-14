@@ -130,6 +130,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
         // Presence only — the PEM itself was materialized into the j2-ca ConfigMap by `j2 up`
         // (ADR-0020); the in-cluster config eval never reads the file.
         caBundle: config?.harness?.caBundle !== undefined,
+        // Which nodes are Sandbox nodes (ADR-0052) — the CR carries it, the operator reads no config.
+        ...(config?.sandbox ? { placement: config.sandbox } : {}),
         orchestratorUrl: `http://${ORCHESTRATOR_SERVICE}.${namespace}.svc:${port}`,
         signingKey,
         namespace,

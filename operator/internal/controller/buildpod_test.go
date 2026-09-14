@@ -418,3 +418,36 @@ func TestBuildPodWithoutCachesAddsNothing(t *testing.T) {
 		t.Fatalf("a Repo resource that does not exist contributes no term, got %+v", missing.Spec.Affinity)
 	}
 }
+
+// TestBuildPodCarriesPlacementVerbatim: the CR's nodeSelector and tolerations
+// are the Pod's, untouched (ADR-0052) — and the operator's own soft Repo
+// affinity sits beside them, a preference next to requirements.
+func TestBuildPodCarriesPlacementVerbatim(t *testing.T) {
+	r := &SandboxReconciler{}
+	tolerations := []corev1.Toleration{{Key: "gpu", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}}
+	sandbox := sandboxFor(corev1alpha1.SandboxSpec{
+		Image:        testHarnessImage,
+		Port:         8080,
+		NodeSelector: map[string]string{"pool": "agents"},
+		Tolerations:  tolerations,
+		Repos:        []corev1alpha1.SandboxRepo{{Key: "app-0a1b2c3d", URL: "https://example.test/app.git"}},
+	})
+	repos := map[string]*corev1alpha1.Repo{
+		"app-0a1b2c3d": {Status: corev1alpha1.RepoStatus{Nodes: []corev1alpha1.RepoNodeStatus{{Node: "node-a", Present: true}}}},
+	}
+	pod := r.buildPod(sandbox, repos)
+	if got := pod.Spec.NodeSelector; len(got) != 1 || got["pool"] != "agents" {
+		t.Fatalf("nodeSelector = %v, want the CR's verbatim", got)
+	}
+	if got := pod.Spec.Tolerations; len(got) != 1 || got[0] != tolerations[0] {
+		t.Fatalf("tolerations = %v, want the CR's verbatim (no tolerationSeconds added)", got)
+	}
+	if pod.Spec.Affinity == nil || pod.Spec.Affinity.NodeAffinity == nil {
+		t.Fatalf("the Repo affinity is gone — placement must sit beside it, not replace it")
+	}
+
+	bare := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
+	if bare.Spec.NodeSelector != nil || bare.Spec.Tolerations != nil {
+		t.Fatalf("a CR that says nothing places nothing: selector=%v tolerations=%v", bare.Spec.NodeSelector, bare.Spec.Tolerations)
+	}
+}

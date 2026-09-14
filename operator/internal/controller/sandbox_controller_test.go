@@ -144,6 +144,46 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
 		})
 
+		It("reports the scheduler's own words while no node admits the Pod (ADR-0052)", func() {
+			// The Sandbox node set is empty right now — a pool scaled to zero, every node
+			// tainted — or the CR's selector admits none. Not a verdict: the set moves,
+			// so the Sandbox waits, and what `j2 status` shows meanwhile is the taint or
+			// label the scheduler named.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.Conditions = []corev1.PodCondition{{
+				Type:    corev1.PodScheduled,
+				Status:  corev1.ConditionFalse,
+				Reason:  corev1.PodReasonUnschedulable,
+				Message: "0/3 nodes are available: 3 node(s) had untolerated taint {gpu: true}.",
+			}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
+			ready := meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Reason).To(Equal("Unschedulable"))
+			Expect(ready.Message).To(ContainSubstring("untolerated taint {gpu: true}"))
+
+			By("returning to the plain not-Ready reason once a node took it")
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			ready = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+			Expect(ready.Reason).To(Equal("PodNotReady"))
+		})
+
 		It("republishes a new podUID when the Pod is replaced under the same Sandbox", func() {
 			// The divergence this field exists for: an eviction or node loss takes the Pod
 			// but not the CR, and the replacement comes up with an empty `work` volume — so

@@ -85,8 +85,8 @@ class FakeCluster implements KubeAdmin {
   /** The cluster's nodes, as ADR-0045's platform derivation reads them: one schedulable amd64 node,
    * the everyday single-arch cluster, so every test that is not about platforms builds `-amd64`. */
   nodes: Array<{
-    metadata: { name: string };
-    spec?: { unschedulable?: boolean };
+    metadata: { name: string; labels?: Record<string, string> };
+    spec?: { unschedulable?: boolean; taints?: Array<{ key: string; value?: string; effect: string }> };
     status?: { nodeInfo?: { architecture?: string } };
   }> = [{ metadata: { name: "kind-test-control-plane" }, status: { nodeInfo: { architecture: "amd64" } } }];
   imageMaps: Array<{ metadata: { name: string; namespace?: string }; data?: Record<string, string> }> = [];
@@ -1165,8 +1165,11 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
   const env = Object.fromEntries(agent.env.map((e: { name: string }) => [e.name, e]));
   assert.deepEqual(env.NODE_NAME.valueFrom, { fieldRef: { fieldPath: "spec.nodeName" } });
   assert.deepEqual(env.J2_NAMESPACE.valueFrom, { fieldRef: { fieldPath: "metadata.namespace" } });
-  // Every node, because a node with no agent is a node no Sandbox can be placed on.
-  assert.deepEqual(podSpec.tolerations, [{ operator: "Exists" }]);
+  // Exactly the Sandbox nodes (ADR-0052): no placement configured, so no tolerations and no
+  // selector — the agent lands where an ordinary pod lands, which is where a Sandbox lands.
+  assert.equal(podSpec.tolerations, undefined);
+  assert.equal(podSpec.nodeSelector, undefined);
+  assert.match(w.err.join("\n"), /^sandbox nodes: kind-test-control-plane$/m);
   // It is an API client (its own status entry, the Repos, the pods on its node that mount a
   // cache, the credential Secret a Repo names) — read-mostly, and never a creator or deleter of
   // anything.
@@ -1190,6 +1193,114 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
   assert.ok(w.kube.rollouts.includes("myinst/daemonset/j2-repo-cache"), `got: ${w.kube.rollouts.join(", ")}`);
   assert.match(w.err.join("\n"), /repo cache: verified — 1 pod\(s\) running ghcr\.io\/snapwich\/j2-operator:/);
   assert.ok(!w.kube.deleted.some((d) => d.includes("j2-repo-cache")), "nothing of its own is deleted");
+});
+
+test("`sandbox.nodeSelector`/`tolerations` ride the cache agent verbatim, and the Sandbox nodes are reported (ADR-0052)", async () => {
+  const root = await withWorkspace(
+    await mkInstance(
+      `export default { name: "myinst", sandbox: { nodeSelector: { pool: "agents" }, ` +
+        `tolerations: [{ key: "gpu", operator: "Exists", effect: "NoSchedule" }] } };\n`,
+    ),
+  );
+  const w = mkWorld(root);
+  w.kube.nodes = [
+    {
+      metadata: { name: "cp" },
+      spec: { taints: [{ key: "node-role.kubernetes.io/control-plane", effect: "NoSchedule" }] },
+      status: { nodeInfo: { architecture: "amd64" } },
+    },
+    { metadata: { name: "plain" }, status: { nodeInfo: { architecture: "amd64" } } },
+    {
+      metadata: { name: "gpu-1", labels: { pool: "agents" } },
+      spec: { taints: [{ key: "gpu", value: "true", effect: "NoSchedule" }] },
+      status: { nodeInfo: { architecture: "amd64" } },
+    },
+  ];
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const podSpec = findRepoCache(w).DaemonSet!.spec.template.spec;
+  assert.deepEqual(podSpec.nodeSelector, { pool: "agents" });
+  assert.deepEqual(podSpec.tolerations, [{ key: "gpu", operator: "Exists", effect: "NoSchedule" }]);
+  const err = w.err.join("\n");
+  // The admitted pool joins the build set beside the Orchestrator's own node; the control plane,
+  // tainted and untolerated, is not a platform this instance owes an image.
+  assert.match(err, /platforms: linux\/amd64 \(from 2 schedulable node\(s\)\)/);
+  assert.match(err, /^sandbox nodes: gpu-1$/m);
+});
+
+test("no Sandbox node right now is a warning, never a refusal — the set moves (ADR-0052)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  w.kube.nodes = [
+    {
+      metadata: { name: "cp" },
+      spec: { taints: [{ key: "node-role.kubernetes.io/control-plane", effect: "NoSchedule" }] },
+      status: { nodeInfo: { architecture: "amd64" } },
+    },
+    { metadata: { name: "old" }, spec: { unschedulable: true }, status: { nodeInfo: { architecture: "amd64" } } },
+  ];
+  // The build set is empty too, and ADR-0045's answer for that stands: `platforms` names it.
+  await assert.rejects(up(["--yes"], w.io), /this cluster's schedulable nodes report no architecture at all/);
+
+  const pinned = await withWorkspace(
+    await mkInstance(`export default { name: "p", platforms: ["linux/amd64"] };\n`, "p"),
+  );
+  const p = mkWorld(pinned);
+  p.kube.nodes = w.kube.nodes;
+  assert.equal(await up(["--yes"], p.io), 0, "told the platform, the converge needs no node at all");
+  assert.ok(findRepoCache(p).DaemonSet, "the data plane converges regardless");
+
+  // With nodes readable and none admitting a Sandbox: every exclusion is named, and the fix line.
+  const sole = mkWorld(root);
+  sole.kube.nodes = [
+    {
+      metadata: { name: "cp" },
+      spec: { taints: [{ key: "node-role.kubernetes.io/control-plane", effect: "NoSchedule" }] },
+      status: { nodeInfo: { architecture: "amd64" } },
+    },
+    {
+      metadata: { name: "gpu-1" },
+      spec: { taints: [{ key: "gpu", value: "true", effect: "NoSchedule" }] },
+      status: { nodeInfo: { architecture: "amd64" } },
+    },
+  ];
+  // No ordinary-pod node either, so derivation fails before the report; pin the platform to see it.
+  const pinnedRoot = await withWorkspace(
+    await mkInstance(`export default { name: "q", platforms: ["linux/amd64"] };\n`, "q"),
+  );
+  const q = mkWorld(pinnedRoot);
+  q.kube.nodes = sole.kube.nodes;
+  assert.equal(await up(["--yes"], q.io), 0);
+  // `platforms` skips the node read, and the report with it — a converge told the answer asks no
+  // question of the nodes (ADR-0045).
+  assert.doesNotMatch(q.err.join("\n"), /sandbox nodes|no Sandbox node/);
+});
+
+test("the Sandbox-node warning names each exclusion and the config line (ADR-0052)", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  w.kube.nodes = [
+    // An ordinary-pod node exists (the Orchestrator lands), but the selector admits none of them.
+    { metadata: { name: "plain" }, status: { nodeInfo: { architecture: "amd64" } } },
+    {
+      metadata: { name: "gpu-1" },
+      spec: { taints: [{ key: "gpu", value: "true", effect: "NoSchedule" }] },
+      status: { nodeInfo: { architecture: "amd64" } },
+    },
+  ];
+  const selective = await withWorkspace(
+    await mkInstance(`export default { name: "s", sandbox: { nodeSelector: { pool: "agents" } } };\n`, "s"),
+  );
+  const s = mkWorld(selective);
+  s.kube.nodes = w.kube.nodes;
+  assert.equal(await up(["--yes"], s.io), 0, "warned, converged");
+  const err = s.err.join("\n");
+  assert.match(err, /warning: no Sandbox node right now — a Sandbox stays Pending until one appears:/);
+  assert.match(err, /^  plain: lacks the label pool that sandbox.nodeSelector requires$/m);
+  assert.match(err, /^  gpu-1: lacks the label pool that sandbox.nodeSelector requires$/m);
+  assert.match(err, /set `sandbox: \{ nodeSelector, tolerations \}` in j2.config.ts/);
+  assert.ok(findRepoCache(s).DaemonSet, "the data plane converges regardless");
+  assert.deepEqual(findRepoCache(s).DaemonSet!.spec.template.spec.nodeSelector, { pool: "agents" });
 });
 
 test("the Orchestrator's Role reaches the Repo resources it creates", async () => {

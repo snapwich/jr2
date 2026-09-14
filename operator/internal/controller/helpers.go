@@ -64,6 +64,21 @@ func podReady(pod *corev1.Pod) bool {
 	return false
 }
 
+// podUnscheduled returns the Pod's PodScheduled condition when it is False —
+// the scheduler found no node for it (ADR-0052) — and nil otherwise.
+func podUnscheduled(pod *corev1.Pod) *corev1.PodCondition {
+	if pod == nil {
+		return nil
+	}
+	for i := range pod.Status.Conditions {
+		c := &pod.Status.Conditions[i]
+		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse {
+			return c
+		}
+	}
+	return nil
+}
+
 // repoVolumeName is the pod volume that carries one Repo's node cache
 // (ADR-0051). A sidecar that needs the cache mounts this name; the primary
 // container gets it mounted by the operator.
