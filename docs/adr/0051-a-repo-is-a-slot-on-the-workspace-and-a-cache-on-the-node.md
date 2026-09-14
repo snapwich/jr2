@@ -46,13 +46,13 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   one cache. A door that offers a menu of repositories is the Instance's own `z.enum` of urls.
 - **The cluster keeps a bare cache per node, not a volume.** Each repository is a `Repo` custom resource the operator
   reconciles (spec: url, refresh interval; status: per node — synced, generation, last error). A cache agent runs as a
-  DaemonSet per Instance with a hostPath directory: it clones a repository onto its node the first time a Sandbox there
-  needs it, fetches in place on the interval and on demand before an attach, and pins gc exactly as ADR-0004 requires.
-  The Sandbox CR names the repositories it needs by identity; the operator mounts each node cache read-only, sets a soft
-  node affinity toward nodes whose status holds them, and reports `Ready` only once every one is present and has been
-  fetched since the CR asked. The Orchestrator's attach then runs unchanged: `git clone --shared` off the mount,
-  worktree beside it. A Sandbox that lands on a cold node pays one clone there, once — the same economics as an image
-  pull, and the reason a Sandbox can run on any node.
+  DaemonSet per Instance over its Sandbox nodes (ADR-0052) with a hostPath directory: it clones a repository onto its
+  node the first time a Sandbox there needs it, fetches in place on the interval and on demand before an attach, and
+  pins gc exactly as ADR-0004 requires. The Sandbox CR names the repositories it needs by identity; the operator mounts
+  each node cache read-only, sets a soft node affinity toward nodes whose status holds them, and reports `Ready` only
+  once every one is present and has been fetched since the CR asked. The Orchestrator's attach then runs unchanged:
+  `git clone --shared` off the mount, worktree beside it. A Sandbox that lands on a cold node pays one clone there, once
+  — the same economics as an image pull, and the reason a Sandbox can run on any node.
 - **The Orchestrator creates `Repo` CRs; it does not sync them.** At boot it walks its registered Machines and creates
   one CR per bound identity, so a statically known repository is KNOWN before a run can ask: the cache agent on every
   node probes it (`git ls-remote`) as soon as the CR exists, so a wrong url or a credential that does not reach shows in

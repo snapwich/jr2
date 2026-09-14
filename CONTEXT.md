@@ -91,6 +91,12 @@ the Machine's module ships, built by `j2 up`, or a registry ref. j2 mounts the H
 `/opt/j2`, so the image carries zero j2 layers and its floor is glibc + git (ADR-0037). _Avoid_: workspace image (a
 Workspace is a Machine; the image is the pod's), agent image, harness image (the kit's own), toolchain
 
+**Sandbox node**: A node a Sandbox may be placed on: not cordoned, matching the Instance's `sandbox.nodeSelector`, and
+carrying no taint its `sandbox.tolerations` do not tolerate — by default, wherever an ordinary pod lands, no j2 label
+required. The Repo cache agent runs on exactly the Sandbox nodes. The set moves as nodes come and go; `j2 up` reports it
+and warns when empty, never refuses. _Avoid_: worker, candidate node, eligible node, data-plane node, schedulable node
+(ADR-0045's wider set: any node not cordoned)
+
 **User Container**: The optional third container in a Sandbox pod — a user-owned image a `workspace()` names statically,
 in the same two shapes as the Sandbox Image and beside it (`user`, ADR-0049), running its own entrypoint with `/work`
 mounted read-write and nothing injected (ADR-0005). The zero-contract seat: j2 never builds, probes, or commands it. For

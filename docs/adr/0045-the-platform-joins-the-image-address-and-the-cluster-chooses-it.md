@@ -19,11 +19,13 @@ whole).
   the naming layer. Every `docker build` passes `--platform` explicitly — the daemon default and
   `DOCKER_DEFAULT_PLATFORM` stop being steering, which deletes the manual step whose forgetting was the failure.
 - **The cluster's nodes choose the platform set.** `j2 up` reads the schedulable nodes' `.status.nodeInfo.architecture`
-  and intersects with the **supported set** — the platforms the kit releases for (`linux/amd64`, `linux/arm64`), one
-  constant beside `KIT_IMAGES` that `just kit-push` builds from too, so the two cannot drift. A node arch outside the
-  supported set is reported and skipped, never built for: an instance image for `s390x` is dead weight, since no kit
-  image could sit beside it in the pod. An empty intersection is a loud error. Reading a singleton set is not an
-  assumption; only a non-singleton set involves judgement, and that case builds rather than guesses (next bullet).
+  — the union of the nodes an ordinary pod lands on (the Orchestrator's placement) and the Instance's Sandbox nodes
+  (ADR-0052), so a tainted pool no Sandbox reaches is never built for — and intersects with the **supported set** — the
+  platforms the kit releases for (`linux/amd64`, `linux/arm64`), one constant beside `KIT_IMAGES` that `just kit-push`
+  builds from too, so the two cannot drift. A node arch outside the supported set is reported and skipped, never built
+  for: an instance image for `s390x` is dead weight, since no kit image could sit beside it in the pod. An empty
+  intersection is a loud error. Reading a singleton set is not an assumption; only a non-singleton set involves
+  judgement, and that case builds rather than guesses (next bullet).
 - **A multi-arch node set gets a multi-arch build**: `docker buildx build --platform <set> --push`, the `just kit-push`
   mechanism. This path only ever runs where it can deliver, **by construction**: a mixed-arch cluster is never kind
   (kind nodes are containers on one host, one arch), and the non-kind transport branch already requires `registry` — so
@@ -32,9 +34,9 @@ whole).
 - **`platforms` is the one escape hatch** — a deployment-varying config key (env-carried, like `registry`) holding
   docker platform strings. **Absolute**: when set, derivation is skipped and the list is the build set — still
   intersected with the supported set, so `s390x` gets the same named error. It exists for the two cases derivation
-  cannot see: autoscale-from-zero (the target pool has no nodes yet) and set pollution (an amd64 GPU pool beside arm64
-  workers costs a needless qemu build; the key trims it). Not additive/subtractive — cleverness the rare case does not
-  earn.
+  cannot see: autoscale-from-zero (the target pool has no nodes yet) and set pollution (an UNTAINTED amd64 pool beside
+  arm64 workers costs a needless qemu build; the key trims it — a tainted one is already outside the set, ADR-0052). Not
+  additive/subtractive — cleverness the rare case does not earn.
 - **Foreign-arch builds are preflighted.** When the build set contains a platform the host cannot run natively, `RUN`
   steps need binfmt emulation; without it docker fails mid-build with the same cryptic `exec format error` this ADR
   exists to delete. So the converge checks emulation is available before spending any build, and the error names the fix
