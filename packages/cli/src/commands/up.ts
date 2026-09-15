@@ -164,31 +164,39 @@ export async function up(args: string[], io: Io): Promise<number> {
   // context a `workspace()` names, which is built below (ADR-0037), every bound Repo, whose ssh
   // key is asked for here and whose resource the Orchestrator creates at boot (ADR-0051), and
   // whether any Machine composes a Sandbox at all — the data-plane switch. It runs right after the
-  // gate and before ownership because it holds the one REFUSAL the compiler cannot make: a Repo
-  // Slot left open on a registered Machine. Nothing about Agents is published, because the
-  // definition rides each Turn.
+  // gate and before ownership because it holds the one REFUSAL the compiler cannot make: a part
+  // left Open on a registered Machine — a Repo Slot with no url, an Agent with no model
+  // (ADR-0054). Nothing about Agents is published, because the definition rides each Turn.
   const workflows = await loadWorkflows(root);
   const carried = partsOf(workflows.map((w) => w.machine));
   const { agents, images: contexts } = carried;
   // The Machine is named by where it sits under the registered root — the slot chain a
   // `customize()` walks — and the fix line nests the same way, so it pastes into
   // `workflows/<name>.ts` with the imported Machine and the url filled in.
+  // The two kinds of Open part are refused in ONE listing, in walk order within each kind: a
+  // composer fixing a packaged Machine fixes both in the same edit, and a converge that refused
+  // the Repo Slot, then the Agent one run later, would cost them two rounds to learn one thing.
   for (const w of workflows) {
-    for (const { slot, path } of partsOf([w.machine]).openSlots) {
+    const walked = partsOf([w.machine]);
+    const opened = [
+      ...walked.openSlots.map((o) => ({ ...o, part: "repo" as const, what: `Repo Slot "${o.slot}"`, adr: "ADR-0051" })),
+      ...walked.openAgents.map((o) => ({ ...o, part: "agent" as const, what: `Agent "${o.slot}"`, adr: "ADR-0054" })),
+    ];
+    for (const { slot, path, part, what, adr } of opened) {
       if (path === undefined) {
         activity(
           io,
-          `refusing: workflow "${w.name}" leaves Repo Slot "${slot}" open on a Machine invoked inline — no ` +
+          `refusing: workflow "${w.name}" leaves ${what} open on a Machine invoked inline — no ` +
             "customize() reaches an actor without a slot key; declare that Machine under setup({ actors }) and " +
-            "bind the slot there  (ADR-0049, ADR-0051)",
+            `bind it there  (ADR-0049, ${adr})`,
         );
         return 1;
       }
       const where = path.length ? ` (on the Machine composed as ${path.map((k) => `"${k}"`).join(" → ")})` : "";
       activity(
         io,
-        `refusing: workflow "${w.name}" leaves Repo Slot "${slot}" open${where} — bind it where the Machine is ` +
-          `registered: export const machine = ${customizeLine("<import>", path, slot)}  (ADR-0051)`,
+        `refusing: workflow "${w.name}" leaves ${what} open${where} — bind it where the Machine is ` +
+          `registered: export const machine = ${customizeLine("<import>", path, slot, part)}  (${adr})`,
       );
       return 1;
     }
@@ -1309,12 +1317,14 @@ async function preflightProvider(
   // "vllm/Qwen/Qwen3-32B" → the endpoint's model id is everything after the provider prefix; a
   // definition on a different provider is not this endpoint's business. A workflow's per-turn dial cannot be probed here — invoke `input` is a
   // function, so it is not statically recoverable; it is checked at admission instead.
+  // An Open model is nobody's model yet (ADR-0054), so there is nothing to probe for it. The walk
+  // already refused the converge above, so this filter is the type's, not the flow's.
   const prefix = `${provider.id}/`;
   const models = [
     ...new Set(
       agents
         .map((a) => a.definition.model)
-        .filter((m) => m.startsWith(prefix))
+        .filter((m): m is string => typeof m === "string" && m.startsWith(prefix))
         .map((m) => m.slice(prefix.length)),
     ),
   ];

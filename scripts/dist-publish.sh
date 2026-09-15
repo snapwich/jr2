@@ -2,7 +2,7 @@
 #
 # The release loop's publish (ADR-0043): the kit, delivered the way a user receives it.
 #
-#   1. the three instance-facing packages → the local npm registry
+#   1. the four instance-facing packages → the local npm registry
 #   2. the three Kit images at their PUBLISHED tags → the local image registry the nodes pull from
 #   3. the `j2` binary → a throwaway global npm prefix
 #
@@ -65,7 +65,7 @@ cd "$root"
 # — the manifests are, and this script must not be the thing that finds that out. Read them back
 # first: the day the "we are ready" commit points them at npmjs, this local dev-loop command has to
 # refuse rather than push the working tree to the world.
-for pkg in cli orchestrator agent-protocol; do
+for pkg in cli orchestrator agent-protocol machines; do
   named="$(node -p "require('./packages/$pkg/package.json').publishConfig?.registry ?? ''")"
   if [[ "$named" != "$registry" ]]; then
     echo "packages/$pkg publishes to '${named:-<none>}', not $registry — this loop publishes locally only" >&2
@@ -73,7 +73,7 @@ for pkg in cli orchestrator agent-protocol; do
   fi
 done
 
-# Only the three instance-facing packages are public (ADR-0043), so `-r` skips the rest.
+# Only the instance-facing packages are public (ADR-0043, ADR-0054), so `-r` skips the rest.
 #
 # `--force` is what makes the WIPE hold. Without it `pnpm publish -r` asks whether each version is
 # already published and answers from pnpm's own metadata cache (~/.cache/pnpm/metadata-v1.3/

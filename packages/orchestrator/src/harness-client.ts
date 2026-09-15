@@ -35,7 +35,7 @@
 
 import { agentActorWith } from "./actor.ts";
 import type { AgentAdmission, AgentAdmitOptions, AgentLogic, AgentRunInput, AgentRunPort } from "./actor.ts";
-import type { AgentDefinition, ThinkingLevel } from "./agent.ts";
+import type { AgentDeclaration, AgentDefinition, ThinkingLevel } from "./agent.ts";
 import {
   LIVE_LONG_POLL,
   STREAM_NEXT_OFFSET_HEADER,
@@ -353,9 +353,13 @@ export function createEchoPush(options: {
  * `input.endpoint` (which Sandbox's Harness — or the wire-compatible dev stub; either way it's
  * only a URL, one code path). Lives here, not in actor.ts, so the actor logic and its unit tests
  * never touch the wire.
+ *
+ * It takes a DECLARATION (ADR-0054), so a packaged Machine may write `agent({ model: open, … })`
+ * and leave the one part it cannot honestly fill to whoever registers it. What rides the Turn is
+ * still an `AgentDefinition`: the actor narrows on start and refuses an Open one there.
  */
-export function agent(definition: AgentDefinition): AgentLogic {
-  return agentActorWith((endpoint) => createHarnessAgentRunClient({ baseUrl: endpoint }), definition);
+export function agent(declaration: AgentDeclaration): AgentLogic {
+  return agentActorWith((endpoint) => createHarnessAgentRunClient({ baseUrl: endpoint }), declaration);
 }
 
 /** A stream read worth retrying (server hiccup) — internal to the reconnect loop, never thrown out. */

@@ -11,7 +11,8 @@ import { z } from "zod";
 import { defineEvent, eventMap } from "@j2/agent-protocol";
 import { agentActorWith, type AgentRunOptions } from "../src/actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
-import type { AgentDefinition } from "../src/agent.ts";
+import type { AgentDeclaration, AgentDefinition } from "../src/agent.ts";
+import { open } from "../src/open.ts";
 import { registerAmbientHandles, type AmbientHandles } from "../src/ambient.ts";
 import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry, type RunBinding } from "../src/registration.ts";
 import { attachVocabulary } from "../src/vocabulary.ts";
@@ -29,9 +30,10 @@ function harness(
   client: AgentRunPort,
   input: AgentRunInput,
   options?: AgentRunOptions,
-  /** The slot's DEFINITION (ADR-0049) — what places the Turn (ADR-0031). It is a closure over the
-   * logic, not a host lookup, so a test states it exactly where the Machine would: at the slot. */
-  definition: AgentDefinition = { model: "test/model", instructions: "i" },
+  /** The slot's DECLARATION (ADR-0049) — what places the Turn (ADR-0031). It is a closure over the
+   * logic, not a host lookup, so a test states it exactly where the Machine would: at the slot.
+   * A DECLARATION, because an Open model is one of the things the actor has to answer for. */
+  definition: AgentDeclaration = { model: "test/model", instructions: "i" },
   bindingExtra?: Partial<RunBinding>,
   ambient?: AmbientHandles,
 ) {
@@ -131,6 +133,19 @@ test("registers its event surface on start; delivery lands on the invoking state
   table.deliver(agentAddress("inst-42"), "ping", {});
   await tick();
   assert.ok(received.some((e) => e.type === "ping"));
+});
+
+test("an Open model is refused at start — the second fence, before a Turn is admitted (ADR-0054)", () => {
+  // `j2 up`'s walk is the first fence and covers every registered Machine; this is what catches an
+  // import nobody registered as itself. It refuses BEFORE admitting, because the wire takes a
+  // string and a Symbol would leave the Harness with a slot key and no model.
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, baseInput, undefined, { model: open, instructions: "i" });
+  const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
+  assert.ok(errEvent, "the invoke must error at start");
+  assert.match(String(errEvent?.error?.message), /agent "coder" has an Open model/);
+  assert.match(String(errEvent?.error?.message), /agents: \{ coder: \{ model: "<provider>\/<model>" \} \}/);
+  assert.deepEqual(mock.definitions, [], "nothing was admitted");
 });
 
 test("no endpoint and no enclosing workspace → the invoke errors loudly, NAMING the definition's workspace (ADR-0031)", () => {

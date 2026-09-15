@@ -75,7 +75,7 @@ script refuses a `J2_DIST_DIR` inside the checkout, and the `@dist` converge ass
 `j2 init` renders `"@j2/orchestrator"` and `"@j2/cli"` at the **exact** running `KIT_VERSION` — exact, not caret,
 because 0.x minors break (the same reasoning that pinned pi exact, ADR-0027). One template serves both worlds; init
 grows no checkout/installed branch, because a branch means the tested output and the shipped output diverge.
-`examples/starter` carries the same literal, so the byte-for-byte mirror test survives and becomes the version-bump
+`templates/default` carries the same literal, so the byte-for-byte mirror test survives and becomes the version-bump
 tripwire. The checkout resolves the exact version to its own packages via `linkWorkspacePackages: true`; kit inter-deps
 stay `workspace:*` (publish rewrites them at pack). The scaffold names no package manager — no `packageManager` field, a
 PM-neutral install hint — and instances upgrade the kit by editing two dep lines, which pre-1.0 is a feature.
@@ -130,7 +130,7 @@ dispatch row plus its tests, no design change.
 
 - ADR-0009's consequences are amended: the instance-facing packages publish to npm; harness/adapter ship in Kit images.
 - Scaffolded instances pin exact and bump manually; a `j2 upgrade` verb can exist later if that ever hurts.
-- The checkout's `pnpm-workspace.yaml` gains `linkWorkspacePackages: true`; `examples/starter` trades `workspace:*` for
+- The checkout's `pnpm-workspace.yaml` gains `linkWorkspacePackages: true`; `templates/default` trades `workspace:*` for
   the exact version literal.
 - The npmjs `@j2` scope must be claimed early regardless of readiness — the localhost guard protects against accidents,
   not squatters.

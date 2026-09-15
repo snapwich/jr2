@@ -276,7 +276,7 @@ void workspace(unionNeedsLess, { input: door, repos, spec: ({ input }) => specOf
 
 // The slot seat is `SandboxOptions<TSlots, TInput>` threading the door into `RepoSlot<TInput>`.
 // customize-types.test.ts pins the same mapper through `WorkspaceOf<M>` — a different seat — so a
-// slip to `RepoSlot<any>` here would pass every other pin (examples/coding's mappers compile under
+// slip to `RepoSlot<any>` here would pass every other pin (a real Instance's mappers compile under
 // `any`). The mapper's `input` is the PARSED door, uninstructed, and an open slot rides beside it.
 const perRun = workspace(wantsApp, {
   input: door,

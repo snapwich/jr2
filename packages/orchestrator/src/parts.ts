@@ -15,8 +15,9 @@
 //     custom-provider preflight probes the models the registered Machines actually name, the
 //     Instance Harness converges when any of them declares `workspace: "none"`, every `file:`
 //     image context a Machine ships is built and content-tagged, every BOUND Repo is known before
-//     a run can ask for it, an OPEN Repo Slot is refused before anything is built, and whether any
-//     registered Machine composes a Sandbox at all is the data-plane switch. None of these can read
+//     a run can ask for it, an OPEN part — a Repo Slot with no url, an Agent with no model
+//     (ADR-0054) — is refused before anything is built, and whether any registered Machine
+//     composes a Sandbox at all is the data-plane switch. None of these can read
 //     an invoke's `input` (it is a function — dials are not statically recoverable), and none
 //     needs to: identity lives in the definition, the image and the slots are options, and all are
 //     values ON the Machine. A per-run slot is a function too, and the walk reports nothing for
@@ -39,8 +40,9 @@
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnyActorRef, AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
-import { isAgent, type AgentDefinition } from "./agent.ts";
+import { isAgent, isOpenAgent, type AgentDeclaration } from "./agent.ts";
 import { isImageContext } from "./images.ts";
+import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
 
 // --- Repo Slots (ADR-0051) ---------------------------------------------------------------------
@@ -48,12 +50,11 @@ import { repoIdentity } from "./repo-identity.ts";
 // key of the body's `workspace.repos` handles, and the directory under `/work`. The slot's VALUE
 // is one of three states, and the walk tells them apart without evaluating anything.
 
-/**
- * The open sentinel: this slot is a consumer's to bind, with `customize(machine, { repos })`.
- * `Symbol.for`, so an Instance's own copy of this module and the CLI's walk agree on it — a
- * packaged Machine may be built against one and walked by the other.
- */
-export const open: unique symbol = Symbol.for("j2.repo.open");
+// The sentinel itself lives in open.ts, a module with nothing else in it: since ADR-0054 it marks
+// an Agent's model too, and agent.ts must read it without importing this file (the walk imports
+// agent.ts, not the other way round). Re-exported here because a Repo Slot is where a composer
+// meets it first, and `import { open } from "@j2/orchestrator"` is the only spelling anyone writes.
+export { open } from "./open.ts";
 
 /** What a Repo Slot resolves to (CONTEXT.md "Binding"): the url, and the base the branch
  * Worktree is cut from — absent, the Repo's own default branch. */
@@ -246,8 +247,9 @@ export type WrapperActors<TSlot extends string, TBody extends AnyStateMachine, T
   | { src: TMechanism; logic: UnknownActorLogic; id: string | undefined };
 
 /** One Agent a Machine carries: the SLOT KEY it is declared under (its name everywhere — the
- * Harness route, the minted iid, the markers) and the definition that slot runs. */
-export type CarriedAgent = { name: string; definition: AgentDefinition };
+ * Harness route, the minted iid, the markers) and the declaration that slot runs — Open model and
+ * all (ADR-0054), because a converge that could not see an unbound Agent could not refuse it. */
+export type CarriedAgent = { name: string; definition: AgentDeclaration };
 
 /**
  * One docker context a Machine ships (ADR-0037's built origin) — a `file:` URL a module named with
@@ -268,8 +270,10 @@ export type CarriedImage = { url: string; dir: string; name: string };
 export type CarriedRepo = { url: string; ref?: string; identity: string; key: string };
 
 /**
- * A Repo Slot left OPEN on a registered Machine — what `j2 up` refuses, before anything is built,
- * naming the Machine, the slot, and the `customize` line that binds it (ADR-0051).
+ * A part left OPEN on a registered Machine — a Repo Slot with no url (ADR-0051), an Agent with no
+ * model (ADR-0054) — and what `j2 up` refuses, before anything is built, naming the Machine, the
+ * slot, and the `customize` line that binds it. One shape for both, because a composer fixes both
+ * the same way and the walk locates both the same way.
  *
  * The Machine is named by WHERE it sits, not by its xstate id: `path` is the chain of actor-slot
  * keys a `customize()` of the registered root walks to reach the `workspace()` that declares the
@@ -283,15 +287,25 @@ export type CarriedRepo = { url: string; ref?: string; identity: string; key: st
  */
 export type OpenSlot = { slot: string; path: readonly string[] | undefined };
 
+/** Which kind of Open part a fix line binds — the two `customize()` keys (ADR-0051, ADR-0054). */
+export type OpenPart = "repo" | "agent";
+
 /**
- * The `customize` line that binds an open slot (ADR-0051), given the identifier the composer
- * holds the registered Machine by: `customize(codeReview, { repos: { target: "<url>" } })` for a
- * slot on the root, nested through `actors` for one on a composed Machine —
+ * The `customize` line that binds an Open part, given the identifier the composer holds the
+ * registered Machine by: `customize(codeReview, { repos: { target: "<url>" } })` for a part on the
+ * root, nested through `actors` for one on a composed Machine —
  * `customize(top, { actors: { review: { repos: { target: "<url>" } } } })`. The same nesting
  * `customize()` accepts, so the line pastes.
+ *
+ * An Agent binds through `agents` instead, and the placeholder is the model spelling ADR-0018
+ * demands — `<provider>/<model>`, not a bare model id, since the prefix is what picks the
+ * endpoint. `repo` is the default because a Repo Slot was the first Open part and reads as the
+ * unmarked case.
  */
-export function customizeLine(machine: string, path: readonly string[], slot: string): string {
-  const inner = path.reduceRight((parts, key) => `{ actors: { ${key}: ${parts} } }`, `{ repos: { ${slot}: "<url>" } }`);
+export function customizeLine(machine: string, path: readonly string[], slot: string, part: OpenPart = "repo"): string {
+  const binds =
+    part === "agent" ? `{ agents: { ${slot}: { model: "<provider>/<model>" } } }` : `{ repos: { ${slot}: "<url>" } }`;
+  const inner = path.reduceRight((parts, key) => `{ actors: { ${key}: ${parts} } }`, binds);
   return `customize(${machine}, ${inner})`;
 }
 
@@ -319,8 +333,11 @@ export type CarriedParts = {
   images: CarriedImage[];
   /** Every bound Repo, deduped by identity, in walk order. */
   repos: CarriedRepo[];
-  /** Every open slot, in walk order — non-empty is a converge refusal. */
+  /** Every open Repo Slot, in walk order — non-empty is a converge refusal. */
   openSlots: OpenSlot[];
+  /** Every Agent whose model is still Open (ADR-0054), in walk order — the same refusal, by the
+   * same route, and the reason these are two lists rather than one: the fix lines differ. */
+  openAgents: OpenSlot[];
   /** Whether any Machine reached, at any depth, composes a Sandbox — the data-plane switch. */
   composesSandbox: boolean;
 };
@@ -342,16 +359,21 @@ function inlineMachines(node: StateNode<any, any>): AnyStateMachine[] {
   });
 }
 
-/** `JSON.stringify` with object keys sorted at every depth — a value's identity, not its spelling. */
+/** `JSON.stringify` with object keys sorted at every depth — a value's identity, not its spelling.
+ * Symbols are spelled out rather than dropped: `JSON.stringify` silently omits a symbol-valued
+ * key, which would make an Open Agent (ADR-0054) collapse into a bound one that differs in nothing
+ * but its model. */
 function canonical(value: unknown): string {
   return JSON.stringify(value, (_key, v) =>
-    v !== null && typeof v === "object" && !Array.isArray(v)
-      ? Object.fromEntries(
-          Object.keys(v as Record<string, unknown>)
-            .sort()
-            .map((k) => [k, (v as Record<string, unknown>)[k]]),
-        )
-      : v,
+    typeof v === "symbol"
+      ? v.toString()
+      : v !== null && typeof v === "object" && !Array.isArray(v)
+        ? Object.fromEntries(
+            Object.keys(v as Record<string, unknown>)
+              .sort()
+              .map((k) => [k, (v as Record<string, unknown>)[k]]),
+          )
+        : v,
   );
 }
 
@@ -369,13 +391,14 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const images: CarriedImage[] = [];
   const repos: CarriedRepo[] = [];
   const openSlots: OpenSlot[] = [];
+  const openAgents: OpenSlot[] = [];
   let sandboxed = false;
   const seen = new Set<string>();
   // Cycle guard AND work saver: a Machine reached twice carries the same parts both times, and a
   // Machine that composes itself is legal (a recursive pool worker) but not walkable twice.
   const walked = new Set<AnyStateMachine>();
 
-  const collectAgent = (name: string, definition: AgentDefinition): void => {
+  const collectAgent = (path: OpenSlot["path"], name: string, definition: AgentDeclaration): void => {
     // Keyed on the PAIR, serialized whole: a separator character inside a template literal is
     // either ambiguous (a slot key may contain it) or, if chosen for being impossible, a control
     // byte that makes this module binary to git — invisible to diff, blame and grep, forever.
@@ -385,6 +408,10 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     if (seen.has(key)) return;
     seen.add(key);
     agents.push({ name, definition });
+    // Reported, not withheld: the Agent is still carried (a `workspace: "none"` one still
+    // converges the Instance Harness), and it is the converge's job to refuse it by name —
+    // `j2 up`'s preflight simply has no model to probe for it (ADR-0054).
+    if (isOpenAgent(definition)) openAgents.push({ slot: name, path });
   };
 
   // Only the BUILT origin is collected: a registry ref is deployed-never-built, so there is
@@ -437,7 +464,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     }
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
-      if (isAgent(logic)) collectAgent(name, logic.definition);
+      if (isAgent(logic)) collectAgent(path, name, logic.definition);
       else {
         const child = asMachine(logic);
         if (child) walk(child, path === undefined ? undefined : name === body ? path : [...path, name]);
@@ -447,5 +474,5 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   };
 
   for (const machine of machines) walk(machine, []);
-  return { agents, images, repos, openSlots, composesSandbox: sandboxed };
+  return { agents, images, repos, openSlots, openAgents, composesSandbox: sandboxed };
 }

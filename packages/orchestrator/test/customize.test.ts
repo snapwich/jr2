@@ -177,7 +177,7 @@ test("a pool() is transparent to its worker, and a pool of Workspaces to what is
   const retuned = customize(poolMachine, { agents: { reviewer: { model: opus } } });
   assert.deepEqual(
     partsOf([retuned])
-      .agents.map((a) => `${a.name}:${a.definition.model}`)
+      .agents.map((a) => `${a.name}:${String(a.definition.model)}`)
       .sort(),
     [`coder:${haiku}`, `reviewer:${opus}`],
   );
@@ -255,6 +255,57 @@ test("a plain setup() Machine carries no Agents, and says so", () => {
     states: { idle: {} },
   });
   assert.throws(() => customize(plain, { agents: { coder: { model: opus } } } as never), /its Agents are: none/);
+});
+
+// --- The Open model (ADR-0054): bound by the same override that retunes a bound one -------------
+
+/** What a package exports (ADR-0054): the same two Agents, but the model is nobody's answer yet. */
+function unbound() {
+  return j2Setup({
+    events: [done],
+    actors: { coder: agent({ ...coderDef, model: open }), reviewer: agent({ ...reviewerDef, model: open }) },
+  }).createMachine({
+    id: "unbound",
+    initial: "coding",
+    states: {
+      coding: { invoke: { src: "coder", input: { prompt: "go" } }, on: { done: "finished" } },
+      finished: { type: "final" },
+    },
+  });
+}
+
+test("an Agent override BINDS an Open model, and the layering is the one it already had", () => {
+  const packaged = unbound();
+  const bound = customize(packaged, { agents: { coder: { model: opus }, reviewer: { model: haiku } } });
+
+  // The author's instructions and workspace access survive: a composer states the one part the
+  // package could not, and nothing else.
+  assert.deepEqual(definitionAt(bound, "coder"), { ...coderDef, model: opus });
+  assert.deepEqual(definitionAt(bound, "reviewer"), { ...reviewerDef, model: haiku });
+  // And the walk of the customized Machine no longer reports them — which is what `j2 up` stops
+  // refusing.
+  assert.deepEqual(partsOf([bound]).openAgents, []);
+  assert.deepEqual(
+    partsOf([bound]).agents.map((a) => a.definition.model),
+    [opus, haiku],
+  );
+  // The import is untouched, like every other customize: the package's own object still reads Open.
+  assert.deepEqual(partsOf([packaged]).openAgents, [
+    { slot: "coder", path: [] },
+    { slot: "reviewer", path: [] },
+  ]);
+});
+
+test("a customize that retunes an Open Agent WITHOUT a model leaves it Open — and the walk says so", () => {
+  // The failure this guards is the quiet one: a composer who dialed `thinkingLevel` and thought
+  // they had bound the Agent. The override is layered, so the model stays the sentinel, and the
+  // converge refuses by name rather than a run faulting at the first Turn.
+  const bound = customize(unbound(), { agents: { coder: { thinkingLevel: "high" } } });
+  assert.deepEqual(definitionAt(bound, "coder"), { ...coderDef, model: open, thinkingLevel: "high" });
+  assert.deepEqual(partsOf([bound]).openAgents, [
+    { slot: "coder", path: [] },
+    { slot: "reviewer", path: [] },
+  ]);
 });
 
 // --- The Repo Slots (ADR-0051): bound through the same chain, on the same rebuild ---------------

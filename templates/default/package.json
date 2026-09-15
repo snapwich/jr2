@@ -1,9 +1,9 @@
 {
-  "name": "example-starter",
+  "name": "j2-template-default",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Model j2 instance (ADR-0009): the folder `j2 init` scaffolds and `j2 up` deploys.",
+  "description": "The default template `j2 init` renders (ADR-0009/0054): the model of an Instance, kept byte-equal to the CLI's inline templates.",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },

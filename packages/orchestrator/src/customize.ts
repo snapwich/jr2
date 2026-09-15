@@ -138,9 +138,12 @@ type RepoSlotsOf<M extends AnyStateMachine> = [WorkspaceOf<M>] extends [never]
  */
 export type Customize<M extends AnyStateMachine> = {
   /** Retune an Agent this Machine carries: the override is layered over the stock definition, so
-   * `{ model }` alone keeps the instructions the author wrote. A Machine carrying no Agent takes
-   * `never` rather than `{}`: an empty object type accepts any literal, which would make the one
-   * case with nothing to name the one case with nothing checked. */
+   * `{ model }` alone keeps the instructions the author wrote — and BINDS the model when the
+   * author left it Open (ADR-0054), which is the common consumer line for a packaged Machine. The
+   * override is a `Partial<AgentDefinition>`, never a declaration: a composer binds, and binding
+   * to `open` again is not a thing anyone means. A Machine carrying no Agent takes `never` rather
+   * than `{}`: an empty object type accepts any literal, which would make the one case with
+   * nothing to name the one case with nothing checked. */
   agents?: [AgentSlots<Reached<M>>] extends [never]
     ? never
     : { [K in AgentSlots<Reached<M>>]?: Partial<AgentDefinition> };
@@ -232,8 +235,10 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
           "a Machine that needs another Agent is a new Machine.",
       );
     }
-    // The override is layered OVER the stock definition, never merged into it: `{ model }` alone
-    // keeps the author's instructions, and the result is one whole definition the Turn carries.
+    // The override is layered OVER the stock declaration, never merged into it: `{ model }` alone
+    // keeps the author's instructions, and the result is one whole declaration the slot carries —
+    // bound, if the model was Open and this override named one; still Open if it did not, and the
+    // walk reports it again (ADR-0054).
     actors[name] = agent({ ...logic.definition, ...override });
   }
   for (const [name, childParts] of Object.entries(parts.actors ?? {})) {

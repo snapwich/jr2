@@ -1006,8 +1006,9 @@ const execCommand: RunCommand = async (command, args, cwd) => {
  * in the user's own pnpm monorepo takes `pnpm deploy`, because that instance carries no lockfile of
  * its own — the workspace root holds it.
  *
- * - Workspace member (the kit checkout's `examples/*`): `pnpm deploy --legacy`, unchanged. pnpm is
- *   a contributor prerequisite, like go for the operator, never a product dependency.
+ * - Workspace member (the kit checkout's `templates/*` and `features/kind-instance`): `pnpm deploy
+ *   --legacy`, unchanged. pnpm is a contributor prerequisite, like go for the operator, never a
+ *   product dependency.
  * - Standalone: stage a copy ({@link BUNDLE_STAGE_EXCLUDE}) and run a frozen production install
  *   from the committed lockfile ({@link lockfileInstall}) inside it.
  */

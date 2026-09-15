@@ -301,6 +301,19 @@ async function withWorkspace(root: string, url = "https://e.test/a.git"): Promis
   return root;
 }
 
+/** A packaged Machine whose one Agent is left OPEN — no model, the one part a package cannot
+ * honestly fill (ADR-0054). Registered as-is, so the walk refuses it exactly as it refuses an open
+ * Repo Slot, and with the `agents` line instead of the `repos` one. */
+async function withOpenAgent(root: string): Promise<string> {
+  await writeFile(
+    join(root, "workflows", "packaged.ts"),
+    `import { agent, j2Setup, open } from ${JSON.stringify(KIT_SRC)};\n` +
+      `export const machine = j2Setup({ events: [], actors: { coder: agent({ model: open, instructions: "i" }) } })\n` +
+      `  .createMachine({ id: "task", initial: "working", states: { working: { invoke: { src: "coder", input: { prompt: "go" } } } } });\n`,
+  );
+  return root;
+}
+
 /** A packaged `workspace()` whose one Repo Slot is left OPEN, registered as-is — what `j2 up`
  * refuses, naming the `customize` line that binds it (ADR-0051). `under` composes it one level
  * down instead: invoked from an author Machine's `review` slot, the shape a packaged Machine
@@ -1068,6 +1081,28 @@ test("an OPEN Repo Slot on a COMPOSED Machine is refused with the nested `actors
   );
   assert.deepEqual(w.kube.applied, []);
   assert.deepEqual(w.built, []);
+});
+
+test("an OPEN Agent is refused the same way, with the `agents` line that binds the model (ADR-0054)", async () => {
+  // The sibling of the Repo Slot refusal, and the reason `open` widened: a package cannot pick a
+  // vendor, so the kit's own Machines ship with no model and the composer states one. The line is
+  // ADR-0018's two-part spelling, because the provider prefix is what picks the endpoint.
+  const root = await withOpenAgent(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /refusing: workflow "packaged" leaves Agent "coder" open — bind it where the Machine is registered/,
+  );
+  assert.match(
+    err,
+    /export const machine = customize\(<import>, \{ agents: \{ coder: \{ model: "<provider>\/<model>" \} \} \}\)/,
+  );
+  assert.match(err, /ADR-0054/);
+  assert.deepEqual(w.kube.applied, [], "not even the namespace");
+  assert.deepEqual(w.built, [], "no bundle, no image build");
+  assert.deepEqual(w.confirms, [], "and no first-contact ask for a folder that cannot deploy");
 });
 
 test("a bound Repo is narrated as the boot's to create; the token env vars git.credentials names ride the Secret", async () => {

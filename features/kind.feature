@@ -354,3 +354,40 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then j2 status no longer lists repo "http://seed.j2-e2e-seed.svc/other.git"
       And j2 status still lists repo "http://seed.j2-e2e-seed.svc/app.git" as bound
       And no node holds the cache of repo "http://seed.j2-e2e-seed.svc/other.git" any more
+
+  Rule: a shipped Machine runs as a consumer registers it
+    ADR-0054. `@j2/machines` ships Machines for END USERS, and an example nobody can import is not
+    a shipped Machine — so the kit packages them, and the only proof one works in j2 is the stock
+    Harness driving it in a real Sandbox. Every Machine the kit ships owns a scenario here.
+
+    `workflows/task.ts` in this instance is the whole consumer story: `customize(task, { repos,
+    agents })`, binding the two parts the package left Open — the repository it cannot know and the
+    model it cannot pay for — over this tier's fixture repo and scripted model. Registering it is
+    ONE line, and this Rule walks what that line bought.
+
+    The loop is the claim. One human steers one Agent, so `request_changes` continues the SAME
+    conversation rather than briefing a fresh coder — and a conversation is a fact about the
+    Harness on the pod, invisible to the Orchestrator, which sees two invokes either way.
+
+    Scenario: the kit's task Machine walks its review Gate and ends where the human says
+      Given the kind instance is serving
+      When I start the "task" workflow with prompt "add a --json flag to the status command" detached
+      Then the run's Sandbox becomes Ready
+      And the model's first turn carries the prompt "add a --json flag to the status command"
+      When the Agent in the Sandbox calls "finish" with summary "added the flag"
+      Then the run parks at the "review" Gate, with summary "added the flag"
+      And the Gate names the branch j2/task-<run id> and the worktree it was cut in
+      And the turn behind it is over at the Harness
+      When I send "request_changes" to the Gate with notes "rename the flag to --format"
+      # Continuity, not merely a second request: ONE conversation holds the first prompt, the turn
+      # that ended on it, and the notes. A coder briefed from scratch would derive another iid, and
+      # the prompt would be nowhere on the pod.
+      Then the coder's conversation carries the prompt "add a --json flag to the status command" and then the notes "rename the flag to --format"
+      When the Agent in the Sandbox calls "finish" with summary "renamed it to --format"
+      And I send "approve" to the Gate
+      # approve reaches a final state, which is what tears the Workspace down (ADR-0012) — the
+      # branch and anything unpushed on it go with the pod, as the Gate's park was the window to
+      # act on them.
+      Then the run's status shows "done"
+      And the run's body settled as "approved"
+      And the run's Sandbox is destroyed

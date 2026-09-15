@@ -128,7 +128,7 @@ test("the walk terminates on a Machine that composes itself", () => {
   assert.deepEqual(partsOf([recursive]).agents, [{ name: "coder", definition: def("vllm/qwen") }]);
 });
 
-const NOTHING = { agents: [], images: [], repos: [], openSlots: [], composesSandbox: false };
+const NOTHING = { agents: [], images: [], repos: [], openSlots: [], openAgents: [], composesSandbox: false };
 
 test("no Agents anywhere is an empty answer — a workflow may invoke none, and compose no Sandbox", () => {
   const plain = setup({}).createMachine({ id: "plain", initial: "idle", states: { idle: {} } });
@@ -204,7 +204,7 @@ test("workspace() refuses an empty image at build time, not at the first provisi
 // --- the jr shape, whole (ADR-0049) -------------------------------------------------------------
 
 test("a workspace() inside a j2Setup() inside a pool() — every part, at every depth", () => {
-  // The shape a real workflow actually has (examples/coding's `jr`), and the one a converge must
+  // The shape a real jr-shaped workflow has, and the one a converge must
   // read in a single pass: the Pool schedules a worker Machine, the worker composes a Workspace,
   // and the Agents sit one level below that. Two wrapper kinds, an author Machine between them,
   // and both image seats — nothing here is reachable from the root's own `implementations.actors`.
@@ -256,6 +256,7 @@ test("a workspace() inside a j2Setup() inside a pool() — every part, at every 
     // workspace is a Sandbox two wrappers down.
     repos: [{ url: "git@github.com:acme/app.git", identity: "github.com/acme/app", key: APP_KEY }],
     openSlots: [{ slot: "docs", path: ["feature"] }],
+    openAgents: [],
     composesSandbox: true,
   });
 });
@@ -354,6 +355,84 @@ test("customizeLine renders the fix as the nesting `customize()` accepts", () =>
     customizeLine("top", ["review", "feature"], "docs"),
     `customize(top, { actors: { review: { actors: { feature: { repos: { docs: "<url>" } } } } } })`,
   );
+  // An Agent binds through `agents`, and the placeholder is ADR-0018's two-part spelling: the
+  // provider prefix is what picks the endpoint, so `<model>` alone would be a line that pastes and
+  // then fails at the next converge.
+  assert.equal(
+    customizeLine("task", [], "coder", "agent"),
+    `customize(task, { agents: { coder: { model: "<provider>/<model>" } } })`,
+  );
+  assert.equal(
+    customizeLine("top", ["review"], "coder", "agent"),
+    `customize(top, { actors: { review: { agents: { coder: { model: "<provider>/<model>" } } } } })`,
+  );
+});
+
+// --- the Open model (ADR-0054) ----------------------------------------------------------------
+
+/** A leaf Machine whose one Agent is Open — what a package exports, since it cannot pay for a
+ * model (ADR-0054). */
+function unbound(id: string, slot: string) {
+  return j2Setup({ events: [], actors: { [slot]: agent({ model: open, instructions: "i" }) } }).createMachine({
+    id,
+    initial: "working",
+    states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go" } } } },
+  });
+}
+
+test("an Open Agent is reported beside the open Repo Slots, and names no model to preflight", () => {
+  const packaged = unbound("packaged", "coder");
+  const parts = partsOf([packaged]);
+
+  assert.deepEqual(parts.openAgents, [{ slot: "coder", path: [] }]);
+  // Still CARRIED: the converge reads `workspace` off it to decide the Instance Harness, and the
+  // refusal has to name a slot it walked. What it does not contribute is a model — the preflight
+  // probes strings, and this Agent has none yet.
+  assert.deepEqual(parts.agents, [{ name: "coder", definition: { model: open, instructions: "i" } }]);
+  assert.deepEqual(
+    parts.agents.map((a) => a.definition.model).filter((m) => typeof m === "string"),
+    [],
+  );
+});
+
+test("an Open Agent is located by the same `customize()` route a Repo Slot is — through wrappers and all", () => {
+  const packaged = workspace(unbound("body", "coder"), { repos: { target: open }, spec: () => ({ branch: "b" }) });
+  const host = j2Setup({ events: [], actors: { review: packaged } }).createMachine({
+    id: "host",
+    initial: "reviewing",
+    states: { reviewing: { invoke: { src: "review" } } },
+  });
+  const parts = partsOf([host]);
+  // The wrapper's `body` is transparent to `customize()`, so it is absent from both routes — the
+  // two Open parts of one packaged Machine are bound by one nesting, in one edit.
+  assert.deepEqual(parts.openSlots, [{ slot: "target", path: ["review"] }]);
+  assert.deepEqual(parts.openAgents, [{ slot: "coder", path: ["review"] }]);
+
+  // Invoked INLINE, the Machine sits under an actor with no slot key: nothing a `customize()` can
+  // name, so the path is undefined and the refusal says so instead of printing a line.
+  const inline = j2Setup({ events: [] }).createMachine({
+    id: "inline",
+    initial: "reviewing",
+    states: { reviewing: { invoke: { src: packaged } } },
+  });
+  assert.deepEqual(partsOf([inline]).openAgents, [{ slot: "coder", path: undefined }]);
+});
+
+test("an Open Agent and a bound one under the same slot key do not collapse", () => {
+  // The dedupe key is the definition serialized whole, and `JSON.stringify` drops a symbol-valued
+  // key — so without the canonicalizer's symbol case these two would be one entry, and the walk
+  // would report an Open Agent or a model, never both.
+  const bound = carrier("bound", "coder", "vllm/qwen");
+  const both = j2Setup({ events: [], actors: { bound, unbound: unbound("unbound", "coder") } }).createMachine({
+    id: "both",
+    initial: "idle",
+    states: { idle: {} },
+  });
+  assert.deepEqual(partsOf([both]).agents, [
+    { name: "coder", definition: def("vllm/qwen") },
+    { name: "coder", definition: { model: open, instructions: "i" } },
+  ]);
+  assert.deepEqual(partsOf([both]).openAgents, [{ slot: "coder", path: ["unbound"] }]);
 });
 
 test("composesSandbox is true through a pool and a child, false for a plain Machine — the data-plane switch", () => {

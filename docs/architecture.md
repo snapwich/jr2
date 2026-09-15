@@ -235,53 +235,52 @@ own.
 
 ## 4. Composing a Workflow
 
-The jr workflow (`examples/coding/workflows/jr.ts`), drawn as its layers. Each layer is an xstate Machine or actor the
-kit exports, and each knows nothing about the layer outside it. The highlighted layer is plain xstate: the author's
-code, with no kit type in it beyond `j2Setup`.
+`task`, the kit's first shipped Machine (`@j2/machines`, ADR-0054), drawn as its layers. Each layer is an xstate Machine
+or actor the kit exports, and each knows nothing about the layer outside it. The highlighted layer is plain xstate: the
+Machine author's code, with no kit type in it beyond `j2Setup`.
 
 ```mermaid
 flowchart TB
-  subgraph pool["pool(feature, { source, cap }) — the run's root, and its door (ADR-0033)"]
-    src["source()<br/>the Work Source's Ready-set, re-queried, never materialized"]
-    triage["triage: drained · deadlocked · waiting"]
-
-    subgraph ws["workspace(body) — one per Source item"]
-      sbx["Sandbox + Worktree<br/>created on entry, torn down on final, Lease renewed while it runs"]
+  subgraph consumer["workflows/task.ts — customize(task, { repos: { target }, agents: { coder } })"]
+    subgraph ws["workspace(body, { input, repos: { target: open } }) — the run's root, and its door (ADR-0033)"]
+      sbx["Sandbox + Worktree on j2/task-&lt;run id&gt;<br/>created on entry, torn down on final, Lease renewed while it runs"]
 
       subgraph body["body — plain xstate; receives the run input plus the handles workspace() injects"]
         direction TB
-        subgraph working["working"]
-          claim["claimTask"] --> coding["coding<br/>invoke coder"]
-          coding -->|request_review| reviewing["reviewing<br/>invoke reviewer"]
-          reviewing -->|"review_verdict: changes"| coding
-          reviewing -->|"review_verdict: approved"| closing["closingTask"] --> claim
-        end
-        working -->|"chain drained"| arch["architectReview<br/>invoke architect"]
-        arch --> pr["openingPr"] --> human["humanReview<br/>invoke gate"]
-        human -->|approve| settled(["settled"])
-        human -->|request_changes| arch
-        working -.->|"agent.fault · cap · workspace.lost"| esc["escalated<br/>push branch, then invoke gate"]
-        esc -->|resume| working
-        esc -->|dismiss| settled
+        working["working<br/>invoke coder — an Agent slot whose model is open"]
+        working -->|"finish { summary }"| review["review<br/>invoke gate — meta: summary · reason · branch · workdir"]
+        working -.->|"agent.fault — next turn starts a fresh conversation"| review
+        review -->|"request_changes { notes } — same conversation"| working
+        review -->|approve| done(["done — { outcome: approved, branch }"])
+        working -.->|workspace.lost| lost(["lost — { outcome: lost }"])
       end
     end
-
-    src -->|"next item"| ws
-    ws -->|"completion"| triage
   end
 
   classDef author fill:#fde68a,stroke:#b45309,color:#111
   class body author
 ```
 
-Reading from the outside in: `pool()` owns spawn, collect, wake, and drain, and declares the run's input; `source()`
-owns "what is ready" and re-queries it, so the Machine never encodes dependency edges (ADR-0017). `workspace()` wraps
-the body in a child Machine that creates the Sandbox and Worktree on entry and tears them down on final (ADR-0012),
-injecting `workspace` handles the body reads. The body is the author's: states that invoke one of its Agent slots
-(`actors: { coder: agent(def) }`, `src: "coder"` — ADR-0049), and states that invoke `gate` to park on an outside
-decision. The events on the arrows are the body's `defineEvent` vocabulary; a state's outgoing agent events become its
-Menu, and a state's outgoing external events become its Gate's accepted set (ADR-0015). One Agent per state is what
-keeps each Turn on one task.
+Reading from the outside in: the consumer's `workflows/task.ts` is one `customize` call and an `export const machine` —
+that file is the Workflow, and the name is all it adds (CONTEXT.md). `workspace()` declares the run's door and wraps the
+body in a child Machine that creates the Sandbox and Worktree on entry and tears them down on final (ADR-0012),
+injecting `workspace` handles the body reads. The body is the Machine author's: `working` invokes the `coder` Agent slot
+(`actors: { coder: agent(def) }`, `src: "coder"` — ADR-0049), `review` invokes `gate` to park on the human's decision.
+The events on the arrows are the body's `defineEvent` vocabulary; a state's outgoing agent events become its Menu, and a
+state's outgoing external events become its Gate's accepted set (ADR-0015). One Agent per state is what keeps each Turn
+on one task.
+
+Two of `task`'s parts are **Open** (ADR-0051/0054): the Repo Slot `target` has no url and the `coder` has no model,
+because a package cannot know your repository or pay for your model. `j2 up` walks the registered Machines and refuses
+an Open part nobody bound, printing the `customize` line above — so the failure mode of forgetting is a converge that
+stops, never a run that quietly spends money on a model the user never chose. `task` also never pushes: the Gate park
+retains the Sandbox, so a human execs in, reads the branch, and pushes it with their own credential before answering
+(ADR-0005/0053).
+
+A jr-shaped workflow — many tasks at once, drawn from a Work Source under a concurrency cap — is these same pieces with
+one more stacked on top: `pool()` owns spawn, collect, wake and drain and declares the run's door, `source()` owns "what
+is ready" and re-queries it so the Machine never encodes dependency edges (ADR-0017), and each worker the Pool spawns is
+a `workspace()` over a body exactly like this one.
 
 Nesting is xstate's `invoke`, so a Workflow can import another Machine and run it as a child actor. Vocabulary is
 per-Machine: the nested Machine keeps its own defs, the parent neither sees nor re-declares them, and the kit's
@@ -302,6 +301,7 @@ runs (ADR-0030).
 
 **Answers**
 
-- **Composition** — three layers, each a kit export, each ignorant of the outer one; the body is plain xstate.
+- **Composition** — the kit ships the Machine, the consumer ships one `customize` line; each layer is ignorant of the
+  outer one, and the body is plain xstate.
 - **Non-determinism** — the arrows are the whole vocabulary. What an Agent can do to the run is drawn, not prompted.
 - **Isolation** — `workspace()` is where a Sandbox begins and ends; the body never creates or cleans one.

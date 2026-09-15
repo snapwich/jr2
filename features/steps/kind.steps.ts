@@ -120,7 +120,14 @@ type WsStatus = {
   context: { endpoint?: string; output?: { outcome?: string } };
   /** The body lives here: a wrapper's own `value` is only ever provisioning/attaching/running. */
   children: RunChild[];
+  /** The run's OPEN GATES, as `GET /runs/:id` lists them (ADR-0011) — the discovery listing a
+   * human acts on, and the one `j2 send --gate` names. Settled run → []. */
+  gates?: OpenGate[];
 };
+
+/** One open Gate on the run, as the status listing reports it: the id `j2 send --gate` takes, the
+ * names it accepts, and the `meta` the invoking state published for callers to read. */
+type OpenGate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
 
 async function wsStatus(world: E2EWorld): Promise<WsStatus> {
   const r = await world.runCli(["status", world.runId!]);
@@ -1412,6 +1419,238 @@ Then(
     throw new Error(
       `${holding.join(", ")} still hold ${cacheDirOn(this.namespace!, key)} — the resource is gone and no pod ` +
         `mounts the cache, so the cache agent owes its removal (ADR-0051)`,
+    );
+  },
+);
+
+// --- a shipped Machine, registered the way a consumer registers it (ADR-0054) ----------------------
+//
+// `@j2/machines` ships Machines for END USERS, and the only proof one works in j2 is the stock
+// Harness driving it in a real Sandbox — so every Machine the kit ships owns a scenario here, over
+// `workflows/task.ts`, which is one `customize` line and nothing else. What these steps read is the
+// Machine's own surface: the Gate it parks at, the `meta` it publishes there, the branch it chose,
+// and the ONE conversation its coder keeps across the round trip.
+//
+// Only two steps know they are about `task`: its conversation address and its default branch. The
+// rest is how a human works any parked run — find the Gate by asking the run, deliver with
+// `j2 send`, read the branch off the Gate's own meta.
+
+/**
+ * Where `task`'s coder conversation lives on the pod (ADR-0016/0054). The Machine PINS it —
+ * `conversation: "coder"`, `scope: "g<generation>"` — so j2 derives `<runId>/<pin>/<agent>/<scope>`
+ * and every Turn of the run addresses that one conversation. Spelled out rather than discovered
+ * because it IS the claim: a `request_changes` that briefed a fresh coder would derive a different
+ * iid, and this address would answer 404 with the first prompt nowhere on the pod. It is also how a
+ * human finds the conversation — `curl localhost:8080/agents/coder/<iid>?view=history`.
+ */
+const taskCoderIid = (runId: string, generation = 0): string => `${runId}/coder/coder/g${generation}`;
+
+/** A conversation as its Harness reports it (`?view=history` — ADR-0027): `settlements` is the
+ * asserted contract, `messages` the best-effort record of what was said. Read over a port-forward
+ * to the run's Sandbox, the only place either is true. */
+type Conversation = { messages: Array<{ role: string; text: string }>; settlements: Array<{ outcome: string }> };
+
+/** The conversation at `iid`, or `undefined` when this Harness holds none. A 404 is a real answer
+ * here, not a failure: it is what a Machine that started a SECOND conversation leaves behind at
+ * the address the first one pinned. */
+async function conversationOf(world: E2EWorld, agent: string, iid: string): Promise<Conversation | undefined> {
+  const pod = (await waitForReadySandbox(world)).metadata.name;
+  let found: Conversation | undefined;
+  await withPodForward(world, pod, 8080, async (localUrl) => {
+    const res = await fetch(`${localUrl}/agents/${agent}/${encodeURIComponent(iid)}?view=history`);
+    if (res.status === 404) {
+      await res.text();
+      return;
+    }
+    assert.equal(res.status, 200, "the Harness serves the conversation history");
+    const body = (await res.json()) as Partial<Conversation>;
+    found = { messages: body.messages ?? [], settlements: body.settlements ?? [] };
+  });
+  return found;
+}
+
+/**
+ * The run's ONE open Gate, read off `j2 status` — the discovery listing (ADR-0011), which is where
+ * a human learns the id `j2 send --gate` wants. Polled, because parking is a transition like any
+ * other; "exactly one" is asserted because a second live Gate would make `j2 send` ambiguous for
+ * the human too.
+ */
+async function openGate(world: E2EWorld): Promise<OpenGate> {
+  let last: WsStatus | undefined;
+  for (let i = 0; i < 240; i++) {
+    last = await wsStatus(world);
+    const gates = last.gates ?? [];
+    if (gates.length === 1) return gates[0]!;
+    assert.ok(gates.length <= 1, `the run has more than one open Gate: ${JSON.stringify(gates)}`);
+    await sleep(500);
+  }
+  throw new Error(`the run never opened a Gate (last: ${JSON.stringify(last)})`);
+}
+
+/** The shipped Machine's door (ADR-0054): one prompt, and everything else defaulted — which is
+ * what makes the branch assertion below meaningful. */
+When(
+  "I start the {string} workflow with prompt {string} detached",
+  async function (this: E2EWorld, wf: string, prompt: string): Promise<void> {
+    await this.runCli(["run", wf, "--detach", "--input", JSON.stringify({ prompt })]);
+    this.runId = this.resultJson<{ runId: string }>().runId;
+  },
+);
+
+/**
+ * The caller's prose reached the model — the whole reason `task` has a door. Asserted off the
+ * provider's own recorded request, so what is checked is the text pi put on the wire, not what the
+ * Machine believed it sent: between the two sit the input mapper, the admission, the Harness's
+ * prompt handling and pi's session.
+ */
+Then("the model's first turn carries the prompt {string}", async function (this: E2EWorld, prompt: string) {
+  assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+  const provider = this.provider;
+  for (let i = 0; i < 240; i++) {
+    if (provider.calls.some((c) => c.stream && c.raw.includes(prompt))) return;
+    await sleep(500);
+  }
+  throw new Error(
+    `no turn request ever carried the door's prompt (${provider.calls.filter((c) => c.stream).length} turn ` +
+      `request(s) recorded of ${provider.calls.length})`,
+  );
+});
+
+/**
+ * The park that IS the Machine (ADR-0054): the human's decision, as an addressable resource. The
+ * Gate id is checked by its LEAF only — it derives from the actor path, so the prefix is the
+ * composition's business and pinning it whole would break the moment `task` were composed under
+ * something else. The accepted set is derived from the state's external transitions (ADR-0015), so
+ * asserting it here is asserting the derivation, not a literal the Machine wrote down.
+ */
+Then(
+  "the run parks at the {string} Gate, with summary {string}",
+  { timeout: 300_000 },
+  async function (this: E2EWorld, state: string, summary: string): Promise<void> {
+    const gate = await openGate(this);
+    assert.match(gate.gate, new RegExp(`${rx(state)}$`), "the Gate id derives from the state key (ADR-0011)");
+    assert.deepEqual(
+      gate.accepts.map((a) => a.name).sort(),
+      ["approve", "request_changes"],
+      "the accepted set derives from the state's external transitions (ADR-0015)",
+    );
+    assert.equal(gate.meta?.summary, summary, "the coder's own account of the turn, where a human reads it");
+  },
+);
+
+/**
+ * The default branch (ADR-0054): `j2/task-<run id>`, where the id is the run's seed Instance ID —
+ * the one `j2 status` reports, and the only per-run id a door mapper can see. Two concurrent runs
+ * of the same Workflow therefore cut two branches and neither owns the other's.
+ *
+ * The `workdir` beside it is what makes the Gate an INSPECTION window rather than a notification:
+ * a human execs into the still-live pod (parking is retention, ADR-0012), reads that directory,
+ * pushes the branch if the work should outlive the run, and only then answers. So the claim is not
+ * that the Machine published two strings — it is that the directory it named holds the branch it
+ * named, in the pod, right now.
+ */
+Then(
+  // The `/` is escaped because a bare one opens an alternation in a Cucumber expression; the step
+  // reads unescaped in the .feature, which is where it has to be readable.
+  "the Gate names the branch j2\\/task-<run id> and the worktree it was cut in",
+  async function (this: E2EWorld): Promise<void> {
+    const gate = await openGate(this);
+    const instanceId = await runInstanceId(this);
+    assert.equal(gate.meta?.branch, `j2/task-${instanceId}`, "the branch is named for the run (ADR-0054)");
+    const workdir = String(gate.meta?.workdir ?? "");
+    assert.ok(workdir, `the Gate carries the worktree a human execs into (got: ${JSON.stringify(gate.meta)})`);
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const current = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "git",
+      "-C",
+      workdir,
+      "branch",
+      "--show-current",
+    ]);
+    assert.equal(current.trim(), gate.meta?.branch, "the directory the Gate names holds the branch it names");
+  },
+);
+
+/**
+ * ADR-0024, on this Machine: the pick that moved it out of `working` ended the turn behind it, at
+ * the Harness. Waited for rather than merely noted, because the next `request_changes` starts a
+ * turn on the SAME conversation — so an abort still in flight would leave the previous turn's
+ * request parked at the scripted model beside the new one, and the tier's release matches on the
+ * offered Menu, which both share here.
+ */
+Then("the turn behind it is over at the Harness", { timeout: 180_000 }, async function (this: E2EWorld) {
+  const iid = taskCoderIid(this.runId!);
+  for (let i = 0; i < 90; i++) {
+    const conversation = await conversationOf(this, "coder", iid);
+    if ((conversation?.settlements.length ?? 0) >= 1) return;
+    await sleep(1000);
+  }
+  throw new Error(`no turn of /agents/coder/${iid} ever settled — the state exit owes the submission an end`);
+});
+
+/** The human's half of the loop, through the surface a human has (ADR-0011/0013): `j2 send` into
+ * the Gate the run listed. An Agent cannot reach this route at all — a Sandbox token is refused
+ * here unconditionally, which is the line between reporting an outcome and approving one's own
+ * work. */
+When("I send {string} to the Gate with notes {string}", async function (this: E2EWorld, event: string, notes: string) {
+  const gate = await openGate(this);
+  const r = await this.runCli([
+    "send",
+    this.runId!,
+    "--gate",
+    gate.gate,
+    "--event",
+    event,
+    "--input",
+    JSON.stringify({ notes }),
+  ]);
+  assert.equal(r.code, 0, `j2 send ${event} failed: ${r.stderr}`);
+});
+
+When("I send {string} to the Gate", async function (this: E2EWorld, event: string): Promise<void> {
+  const gate = await openGate(this);
+  const r = await this.runCli(["send", this.runId!, "--gate", gate.gate, "--event", event]);
+  assert.equal(r.code, 0, `j2 send ${event} failed: ${r.stderr}`);
+});
+
+/**
+ * CONTINUITY, not a second request (ADR-0054). One human steering one Agent wants the Agent to
+ * remember what it did, so `request_changes` continues the pinned conversation instead of briefing
+ * a fresh one — and the Harness's own history is the only place that is observable: the
+ * Orchestrator sees two invokes either way.
+ *
+ * Three things at ONE address: the door's prompt, framed as the first Turn; a settled turn behind
+ * it; and the human's notes as a LATER user message. A `task` that started over would derive a
+ * different iid (a new `scope`, which is what a terminal fault does on purpose) and this address
+ * would hold the notes alone — or nothing at all.
+ */
+Then(
+  "the coder's conversation carries the prompt {string} and then the notes {string}",
+  { timeout: 300_000 },
+  async function (this: E2EWorld, prompt: string, notes: string): Promise<void> {
+    const iid = taskCoderIid(this.runId!);
+    let last: Conversation | undefined;
+    for (let i = 0; i < 150; i++) {
+      last = await conversationOf(this, "coder", iid);
+      const said = last?.messages ?? [];
+      const first = said.findIndex((m) => m.role === "user" && m.text.includes(prompt));
+      const later = said.findIndex((m) => m.role === "user" && m.text.includes(notes));
+      if (first >= 0 && later > first) {
+        assert.ok(
+          (last?.settlements.length ?? 0) >= 1,
+          "the turn the notes answer is part of the same conversation's record",
+        );
+        return;
+      }
+      await sleep(1000);
+    }
+    throw new Error(
+      `/agents/coder/${iid} does not hold the prompt and then the notes (${last === undefined ? "no such conversation — the second Turn started a new one" : JSON.stringify(last.messages)})`,
     );
   },
 );

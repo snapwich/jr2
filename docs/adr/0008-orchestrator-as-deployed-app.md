@@ -37,8 +37,8 @@ and an HTTP API shaped as "durable run addressed by id" (`POST` to start/feed, `
 - The deployable unit is an **instance image** (engine + the instance's workflow modules), built and delivered by
   `j2 up` (ADR-0019; a CI-only `j2 build` is planned), run as one `replicas: 1` `Deployment` + `Service`. The two-repo
   pattern (instance code → image; manifests → GitOps) is expected, and the instance folder carries both.
-- Concrete workflows do **not** live in the j2 source repo — only the kit and `examples/` do. A user's workflows live in
-  their `j2 init` instance folder.
+- Concrete workflows do **not** live in the j2 source repo — only the kit, the Machines it ships (`@j2/machines`,
+  ADR-0054), and the `templates/default` model instance do. A user's workflows live in their `j2 init` instance folder.
 - j2 ships and deploys only its **`Sandbox` operator** (its own CRD), deployed once per cluster. The snapshot store and
   the model backend are **dependencies you provide** — j2 points at them (`DATABASE_URL`, model env), it does not own or
   operate them. Instances are deployed per user/project.

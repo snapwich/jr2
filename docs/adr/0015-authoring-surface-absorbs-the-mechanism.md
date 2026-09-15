@@ -1,10 +1,10 @@
 # Workflows are authored through `j2Setup`; vocabulary and agent menus derive from the machine
 
-The jr-parity exercise (`examples/coding/`) produced a working model but a bad consumer API: mechanism plumbing
-(manifests, tool lists, event-union bookkeeping) dominated the workflow. The redesign grill (2026-07-13/14, full record
-in [docs/design/workflow-api/](../design/workflow-api/proposal.md)) settled the split: **the consumer writes pure
-workflow — states, transitions, prompts, policy — and j2 absorbs everything else through convention.** This ADR covers
-the authoring surface; [ADR-0016](0016-agent-turn-mechanics-are-internal.md) covers the agent turn;
+The jr-parity exercise produced a working model but a bad consumer API: mechanism plumbing (manifests, tool lists,
+event-union bookkeeping) dominated the workflow. The redesign grill (2026-07-13/14, full record in
+[docs/design/workflow-api/](../design/workflow-api/proposal.md)) settled the split: **the consumer writes pure workflow
+— states, transitions, prompts, policy — and j2 absorbs everything else through convention.** This ADR covers the
+authoring surface; [ADR-0016](0016-agent-turn-mechanics-are-internal.md) covers the agent turn;
 [ADR-0017](0017-pool-over-a-source-port.md) covers the run loop.
 
 ## `j2Setup`: an xstate `setup()` analog, not a DSL

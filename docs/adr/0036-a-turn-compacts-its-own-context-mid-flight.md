@@ -2,8 +2,8 @@
 
 The retired flue runtime compacted a conversation automatically; the
 [ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md) rewrite dropped it without recording the
-loss. `examples/coding/j2.config.ts` and `packages/orchestrator/src/config.ts` kept declaring `contextWindow` for a
-reader that no longer existed. This ADR is the unrecorded regression, decided.
+loss. `packages/orchestrator/src/config.ts` kept declaring `contextWindow` for a reader that no longer existed. This ADR
+is the unrecorded regression, decided.
 
 The failure is live, not projected. Run `588b0f5e` (`task-with-review`, a real bug hunt on a 131k window) investigated
 for 161 tool calls at ~800 tokens each, filled the window, and ended mid-sentence with no menu pick. The no-signal

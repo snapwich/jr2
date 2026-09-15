@@ -10,17 +10,24 @@
 // external events authors with `j2Setup({ events: [...] })`; ping accepts none, so plain
 // xstate `setup()` is all it needs.
 //
-// An Agent is the next step, and it is one more entry in this same `actors` map — a Machine CARRIES
-// its Agents as actor slots (ADR-0049):
+// The next step is a Machine the kit already ships (ADR-0054). `@j2/machines` exports `task` — one
+// prompt, one Workspace, one human says done — and a Workflow is only the name an Instance
+// registers a Machine under, so the whole of `workflows/task.ts` is:
 //
-//   actors: { coder: agent({ model: "anthropic/claude-sonnet-4-6", instructions: "…" }) }
-//   states: { coding: { invoke: { src: "coder", input: { prompt: "…" } } } }
+//   import { customize } from "@j2/orchestrator";
+//   import { task } from "@j2/machines";
 //
-// The slot key IS the Agent's name; there is no `agents/` folder and no roster anywhere, and the
-// definition rides each Turn. `j2 up` finds it by walking this Machine — and typechecks the folder
-// first, so a slot name that does not exist is a compile error, never a failed run (ADR-0050).
-// `ping` stays Agent-free on purpose: it is the workflow that runs before any model provider,
-// Harness, or Sandbox exists.
+//   export const machine = customize(task, {
+//     repos: { target: { url: "https://github.com/you/repo.git" } },
+//     agents: { coder: { model: "anthropic/claude-sonnet-4-6" } },
+//   });
+//
+// A packaged Machine leaves the parts it cannot honestly fill OPEN: it does not know your
+// repository and cannot pay for your model. `j2 up` refuses an Open part nobody bound and prints
+// the `customize` line that binds it, so forgetting one stops the converge instead of spending
+// money on a model you never chose. Add `@j2/machines` to this folder's dependencies when you
+// write that file. `ping` stays Agent-free on purpose: it is the workflow that runs before any
+// model provider, Harness, or Sandbox exists.
 
 import { setup, assign, fromPromise } from "xstate";
 

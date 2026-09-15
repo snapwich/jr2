@@ -1,6 +1,6 @@
 {
-  // The tsconfig a j2 INSTANCE extends (`j2 init` scaffolds one that does; `examples/*` are the
-  // model). It ships inside @j2/orchestrator rather than extending the repo's tsconfig.base.json
+  // The tsconfig a j2 INSTANCE extends (`j2 init` scaffolds one that does; `templates/default` is
+  // the model). It ships inside @j2/orchestrator rather than extending the repo's tsconfig.base.json
   // because an instance scaffolded outside this repo resolves it from node_modules — a relative
   // extends would dangle. Kit packages keep tsconfig.base.json; this is the contract with users.
   //

@@ -955,17 +955,17 @@ test("the instance's own shape decides the bundle, not the CLI's provenance", as
   assert.equal(calls[0]?.args[0], "install", "the standalone instance still installs from its lockfile");
 
   // The mirror case: a workspace member takes `pnpm deploy --legacy` unchanged, and needs no
-  // lockfile of its own — the workspace root holds it (examples/*, in this checkout).
+  // lockfile of its own — the workspace root holds it (templates/*, in this checkout).
   const root = await mkTree(
-    { "pnpm-workspace.yaml": "packages:\n  - examples/*\n", "examples/starter/package.json": `{"name":"starter"}` },
+    { "pnpm-workspace.yaml": "packages:\n  - templates/*\n", "templates/default/package.json": `{"name":"default"}` },
     "j2-workspace-",
   );
-  const member = join(root, "examples", "starter");
+  const member = join(root, "templates", "default");
   const out = await bundleOut();
   const member_ = recordingRun();
   await bundleInstance(member, out, member_.run);
   assert.deepEqual(member_.calls, [
-    { command: "pnpm", args: ["--filter", "starter", "--prod", "deploy", "--legacy", out], cwd: member },
+    { command: "pnpm", args: ["--filter", "default", "--prod", "deploy", "--legacy", out], cwd: member },
   ]);
   await assert.rejects(stat(out), "pnpm deploy writes the bundle itself — nothing is staged for it");
 });

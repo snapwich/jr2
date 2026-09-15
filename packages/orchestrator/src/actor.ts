@@ -43,7 +43,7 @@
 // at all, and restore is a fresh process, so there is nothing to infer it from.
 
 import { fromCallback, type CallbackActorLogic } from "xstate";
-import type { AgentDefinition, ThinkingLevel } from "./agent.ts";
+import { requireBoundAgent, type AgentDeclaration, type AgentDefinition, type ThinkingLevel } from "./agent.ts";
 import { ambientHandlesFor } from "./ambient.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
@@ -297,13 +297,15 @@ export type AgentLogic = CallbackActorLogic<AgentRunReceiveEvent, AgentTurnInput
  * stopped) abandons local consumption and destroys the registration; a failed settlement
  * surfaces as `agent.fault` so the Machine can react rather than hang on a dead run.
  *
- * The `definition` is a CLOSURE, not a lookup: the Turn's placement (ADR-0031) reads it off the
+ * The `declaration` is a CLOSURE, not a lookup: the Turn's placement (ADR-0031) reads it off the
  * logic the invoke actually named, so two Machines carrying different `coder`s each resolve their
- * own, and no roster is consulted anywhere (ADR-0049).
+ * own, and no roster is consulted anywhere (ADR-0049). It is the AUTHOR's declaration, model
+ * possibly Open — narrowed to the wire's definition on start (ADR-0054), before anything is
+ * admitted and before placement is resolved, so that everything below this line reads a model.
  */
 export function agentActorWith(
   portFactory: AgentRunPortFactory,
-  definition: AgentDefinition,
+  declaration: AgentDeclaration,
   options: AgentRunOptions = {},
 ): AgentLogic {
   const nudgeBudget = options.nudgeBudget ?? 2;
@@ -322,6 +324,11 @@ export function agentActorWith(
           `derives the menu), or pass \`agentName\`/\`instanceId\`/\`tools\` explicitly`,
       );
     }
+
+    // The second fence (ADR-0054): a Turn is never admitted under an Open model. `j2 up`'s walk is
+    // the first and catches every registered Machine; this one catches what it never walked, and
+    // refuses HERE rather than sending a Symbol the wire would drop silently.
+    const definition = requireBoundAgent(input.agentName, declaration);
 
     // Resolve the Harness coordinates (ADR-0016/0031). Explicit input wins (the workspace-less
     // stub path); then the DEFINITION decides: `workspace: "none"` pins the Turn to the Instance
@@ -549,5 +556,7 @@ export function agentActorWith(
   });
   // The brand (ADR-0049): a readable property, so `isAgent` is a plain shape test and a reader —
   // `j2 up`'s model preflight, a Machine doc — can name what this slot runs without invoking it.
-  return Object.assign(logic, { definition });
+  // The DECLARATION, not the narrowed definition: an Open model is exactly what those readers
+  // must be able to see and refuse (ADR-0054).
+  return Object.assign(logic, { definition: declaration });
 }

@@ -11,6 +11,7 @@
     "images"
   ],
   "dependencies": {
+    "@j2/machines": "workspace:*",
     "@j2/orchestrator": "workspace:*",
     "xstate": "^5.18.0",
     "zod": "^4.4.3"

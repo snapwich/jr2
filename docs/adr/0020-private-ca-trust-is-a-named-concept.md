@@ -1,13 +1,13 @@
 # Private-CA trust is a named concept, not volume plumbing
 
-Running examples/coding against a real vLLM (2026-07-19) hit an endpoint that is HTTPS-only behind an ingress whose cert
-chains to a private CA. The host trusts that CA; pods do not — so every j2-owned egress point fails the same way: the
-Harness's model calls, and `j2 up`'s own provider preflight (which probes from a throwaway in-cluster pod, ADR-0019).
-The tempting fix was generic `volumes`/`volumeMounts` passthrough on `sandbox` — the CRD already carries both, and
-`harness.env`/`envFrom` set the precedent of corev1 shapes passed through verbatim. But trusting a CA is not pod-shaped
-config: it is an _intent_ ("this instance's egress must trust this CA") that j2 alone can thread through every place it
-owns an outbound TLS connection — including the preflight pod, which no instance-authored volume can ever reach. A
-passthrough would also make the one-intent story a three-part incantation (hand-managed ConfigMap + mount +
+Running the jr-parity exercise against a real vLLM (2026-07-19) hit an endpoint that is HTTPS-only behind an ingress
+whose cert chains to a private CA. The host trusts that CA; pods do not — so every j2-owned egress point fails the same
+way: the Harness's model calls, and `j2 up`'s own provider preflight (which probes from a throwaway in-cluster pod,
+ADR-0019). The tempting fix was generic `volumes`/`volumeMounts` passthrough on `sandbox` — the CRD already carries
+both, and `harness.env`/`envFrom` set the precedent of corev1 shapes passed through verbatim. But trusting a CA is not
+pod-shaped config: it is an _intent_ ("this instance's egress must trust this CA") that j2 alone can thread through
+every place it owns an outbound TLS connection — including the preflight pod, which no instance-authored volume can ever
+reach. A passthrough would also make the one-intent story a three-part incantation (hand-managed ConfigMap + mount +
 `NODE_EXTRA_CA_CERTS` via `harness.env`), the runbook shape ADR-0019 exists to kill.
 
 ## Decision

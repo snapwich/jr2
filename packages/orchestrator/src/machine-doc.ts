@@ -60,7 +60,7 @@ export type MachineStateDoc = {
    * runtime — it can be conditional, looped, or have a computed `src` — so no amount of static
    * analysis recovers it, and the subgraph beneath it would simply be absent from the diagram while
    * the machine ran correctly. That silence is the hazard, not the omission: it once erased the
-   * whole feature pipeline from `examples/coding` with no signal at all. So the doc carries the
+   * whole feature pipeline of a multi-stage Machine with no signal at all. So the doc carries the
    * fact it cannot see, and callers say so out loud (`opaqueStates`, surfaced on the page).
    */
   opaqueActions?: boolean;

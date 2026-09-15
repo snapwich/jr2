@@ -192,7 +192,7 @@ test("a spawnChild'd machine is attached to the state that spawns it", () => {
   assert.equal(child.machine?.id, "wrapper");
 });
 
-// The regression that motivated `opaqueActions`: `examples/coding` moved its `spawnChild` inside an
+// The regression that motivated `opaqueActions`: a multi-stage Machine moved its `spawnChild` into an
 // `enqueueActions` closure to dodge an xstate typing wall, and its entire feature pipeline vanished
 // from the diagram — silently, while the machine still ran correctly. We cannot see into the
 // closure (it resolves at runtime, and may spawn conditionally or with a computed src), so the

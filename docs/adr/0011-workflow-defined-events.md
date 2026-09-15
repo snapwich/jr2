@@ -1,8 +1,8 @@
 # Control events are workflow-defined and delivered by closure, not routed
 
-Two decisions, out of the jr-parity design exercise (`examples/coding/`): **j2 ships the event mechanism and zero
-events**, and **an event binds to a Machine state through the actor that exposes it** — delivery is a closure created at
-invoke time, so no routing layer exists anywhere.
+Two decisions, out of the jr-parity design exercise: **j2 ships the event mechanism and zero events**, and **an event
+binds to a Machine state through the actor that exposes it** — delivery is a closure created at invoke time, so no
+routing layer exists anywhere.
 
 ## `defineEvent`: mechanism, not policy
 

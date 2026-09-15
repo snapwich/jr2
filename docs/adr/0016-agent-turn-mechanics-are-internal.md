@@ -3,7 +3,7 @@
 Second of the workflow-API redesign trio ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md) has the context;
 full record in [docs/design/workflow-api/](../design/workflow-api/proposal.md)). `agentRun`'s consumer input shrinks to
 workflow vocabulary — `{ agent, prompt }` plus opt-ins below — because everything else it used to take was j2 handing
-the consumer values j2 already had. Each absorption follows, with what it deletes from `examples/coding/`.
+the consumer values j2 already had. Each absorption follows, with what it deletes from a jr-shaped workflow.
 
 The opt-ins include two optional dials, `model` and `thinkingLevel`
 ([ADR-0018](0018-instance-agents-are-definitions-j2-assembles-the-harness.md) draws the identity-vs-dial line and states
@@ -60,8 +60,8 @@ conversation. `session: "continue"` + `scope` opts into same-instance-id continu
 `(run, enclosing child id, agent, scope)`; the per-invocation prompt lands as the next user turn; the tool menu still
 re-derives from the invoking state (one conversation can travel across states). Mid-turn restore re-attaches the
 in-flight turn in both modes — `session` governs only what a _new invocation_ means. `scope` is the one place
-conversation identity legitimately needs a consumer word; it is not conventioned away. (This corrects
-`examples/coding/`'s "same iid = jr's resume machinery, free" — an inversion of jr's actual semantics.)
+conversation identity legitimately needs a consumer word; it is not conventioned away. (This corrects the jr-parity
+exercise's "same iid = jr's resume machinery, free" — an inversion of jr's actual semantics.)
 
 A `continue` invocation onto a live iid does **not** fail loudly — it queues. The Harness accepts and queues: prompts
 for one instance enter one per-instance queue in admission order, and a Submission is promoted only when it is the first

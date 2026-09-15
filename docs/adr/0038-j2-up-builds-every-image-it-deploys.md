@@ -150,5 +150,5 @@ of build-it-yourself-first image on top of that.
   [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: only a workspace-member
   instance leans on it. A standalone instance invokes whichever package manager wrote its lockfile, and `pnpm deploy` is
   never reached.)
-- **`just` recipes stop being load-bearing**, and the `images:` lines in `features/kind-instance/j2.config.ts` and
-  `examples/coding/j2.config.ts` are deleted with the block.
+- **`just` recipes stop being load-bearing**, and the `images:` line in `features/kind-instance/j2.config.ts` is deleted
+  with the block.

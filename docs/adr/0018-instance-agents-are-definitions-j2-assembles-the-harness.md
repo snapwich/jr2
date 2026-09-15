@@ -1,6 +1,6 @@
 # The instance authors Agent definitions; j2 assembles the Harness
 
-Building the first real Harness (examples/coding, 2026-07-18) landed a **full harness-framework project** in the
+Building the first real Harness (the jr-parity exercise, 2026-07-18) landed a **full harness-framework project** in the
 instance — package.json, runtime config, Dockerfile, per-agent source (under flue, the embedded framework since retired
 — [ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)). That put j2 mechanism in the user's
 hands: the [ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md) Adapter leash (connect the MCP surface per Submission

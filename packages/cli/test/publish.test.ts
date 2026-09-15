@@ -28,7 +28,7 @@ async function manifest(pkg: string): Promise<Manifest> {
 }
 
 /** The prod-resolution chain an instance pulls from npm. */
-const PUBLIC = ["cli", "orchestrator", "agent-protocol"];
+const PUBLIC = ["cli", "orchestrator", "agent-protocol", "machines"];
 /** Reached as Kit images instead, never via npm install (ADR-0027, ADR-0037). */
 const PRIVATE = ["harness", "adapter"];
 

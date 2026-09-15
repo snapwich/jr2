@@ -4,7 +4,7 @@ Third of the workflow-API redesign trio ([ADR-0015](0015-authoring-surface-absor
 [ADR-0016](0016-agent-turn-mechanics-are-internal.md); full record in
 [docs/design/workflow-api/](../design/workflow-api/proposal.md)). The top of every jr-shaped workflow — claim ready
 items, run one child per item under a cap, wake on push or poll, settle when done — was ~90 lines of hand-rolled
-bookkeeping in `examples/coding/` (`active[]`, `spawnChild`/`stopChild`, `xstate.done.actor.*` casts, the
+bookkeeping in the jr-parity exercise (`active[]`, `spawnChild`/`stopChild`, `xstate.done.actor.*` casts, the
 discover/saturated/settling/idle choreography, and a comment-enforced "keep `spawnChild` top-level or visualize goes
 blind" footgun). No xstate-ecosystem primitive exists for this (verified: the canonical v5 pattern _is_ the hand-rolled
 loop), so j2 ships one.

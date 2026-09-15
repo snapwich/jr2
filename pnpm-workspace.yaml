@@ -6,12 +6,12 @@ linkWorkspacePackages: true
 
 packages:
   - packages/*
-  # Model instance folders (ADR-0009): npm packages whose @j2/* deps resolve to this checkout's
-  # packages through `linkWorkspacePackages` above — whether they spell the dep `workspace:*`
-  # (examples/coding) or as the exact version the scaffold writes (examples/starter, ADR-0043). Not
-  # kit packages — they ship no build of their own (example-coding does carry a cluster-free
-  # mechanics test in the default gate).
-  - examples/*
+  # The folder `j2 init` renders (ADR-0054): each member is a model Instance (ADR-0009) — an npm
+  # package whose @j2/* deps are the exact version the scaffold writes (ADR-0043) and resolve to
+  # this checkout's packages through `linkWorkspacePackages` above. Not kit packages — they ship no
+  # build of their own. `default` is the one template today; `j2 init --template <name>` is the
+  # obvious next step, hence the plural.
+  - templates/*
   # System e2e acceptance suite (ADR-0010): black-box Cucumber.js specs that drive the real `j2`
   # binary. A package so it owns its own `xstate`/cucumber deps (scaffolded instances resolve them).
   - features
