@@ -34,16 +34,16 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "operator-system"
+const namespace = "j2-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "operator-controller-manager"
+const serviceAccountName = "j2-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "operator-controller-manager-metrics-service"
+const metricsServiceName = "j2-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "operator-metrics-binding"
+const metricsRoleBindingName = "j2-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -176,7 +176,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=operator-metrics-reader",
+				"--clusterrole=j2-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
 			_, err := utils.Run(cmd)
