@@ -41,6 +41,10 @@ Feature: the kit, as a user installs it
       Then stdout is the terminal status with reply "pong: dist"
       And the command exits 0
       And the cluster pulled its Kit images from the local registry
+      # The other end of the loop, from the same installed binary: `j2 down` takes the namespace
+      # and everything `j2 up` converged into it (ADR-0019) — the one verb this tier had never run.
+      When I take the instance down
+      Then the instance's namespace is gone
 
     Scenario: a pnpm instance in a temp dir converges and runs
       Given a standalone instance scaffolded by the installed j2

@@ -34,3 +34,17 @@ Feature: The CLI contract
       When I check the status of run id "ab"
       Then the command exits 2
       And stderr says the run id is too short
+
+  Rule: a payload the workflow's declared input refuses is refused at the door
+    ADR-0033. A Machine declares the input a run of it starts with; the orchestrator judges the
+    payload against that declaration before any run exists, and the CLI relays the verdict — the
+    workflow by name and what the schema expected — as a runtime error, exit 1. Nothing was started,
+    so there is no run to read.
+
+    Scenario: a run started with a payload the schema rejects exits 1 naming the field
+      Given a fresh instance
+      And the instance also has the "intake" workflow
+      And the orchestrator is serving
+      When I start "intake" with input '{"subject": 5}'
+      Then the command exits 1
+      And stderr refuses the input for workflow "intake" naming "subject"

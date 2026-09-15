@@ -3,6 +3,7 @@
 
 import { When, Then } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
+import { setTimeout as sleep } from "node:timers/promises";
 import { E2EWorld } from "./world.ts";
 
 type RunStatus = { runId: string; status: string; context: { reply?: string } };
@@ -43,6 +44,36 @@ When("I check the status of run id {string}", async function (this: E2EWorld, ru
 
 When("I run an unknown command", async function (this: E2EWorld): Promise<void> {
   await this.runCli(["frobnicate"]);
+});
+
+/** A start with a caller-chosen payload — what the workflow's declared input schema judges
+ * (ADR-0033). Detached: the refusal is the door's, and there is no feed to attach to. */
+When("I start {string} with input {string}", async function (this: E2EWorld, wf: string, input: string) {
+  await this.runCli(["run", wf, "--detach", "--input", input]);
+});
+
+/** `j2 logs <runId>` with no `-f`: the feed replays the run's current status on attach, and the
+ * verb prints that and stops — on a settled run, its terminal status, once. */
+When("I read the logs of that run", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.runId, "a runId was carried from a prior step");
+  await this.runCli(["logs", this.runId]);
+});
+
+/**
+ * `j2 logs -f` on a LIVE run, ended from outside: the follow is started and left running, the run
+ * is cancelled by a second invocation, and the follow must then print the settled status and
+ * exit on its own. The two invocations overlap on purpose — that is what "follows until it
+ * settles" means — and `last` is the follow's, assigned after both are done.
+ */
+When("I follow the logs of that run while it is cancelled", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.runId, "a runId was carried from a prior step");
+  const following = this.runCli(["logs", this.runId, "-f"]);
+  // Let the follow attach before the run ends, so what it sees is a delta and not only a replay;
+  // either way the assertion holds, since a settled run streams its final status once.
+  await sleep(500);
+  const cancel = await this.runCli(["send", this.runId, "--event", "CANCEL"]);
+  assert.equal(cancel.code, 0, `j2 send CANCEL failed: ${cancel.stderr}`);
+  this.last = await following;
 });
 
 /** `j2 status` with NO run names the instance (ADR-0048/0051): its data-plane switch and the
@@ -90,6 +121,32 @@ Then("it reports no data plane", function (this: E2EWorld): void {
 Then("the status is {string}", function (this: E2EWorld, status: string): void {
   assert.equal(this.resultJson<RunStatus>().status, status);
 });
+
+/** A drifted run is kept and readable by id (ADR-0030), but it is not LIVE: `j2 runs` lists the
+ * runs the host resumed, and a refused one was never registered. */
+Then("the run is absent from the runs list", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.runId, "a runId was carried from a prior step");
+  const r = await this.runCli(["runs"]);
+  assert.equal(r.code, 0, `j2 runs failed: ${r.stderr}`);
+  const list = this.resultJson<Array<{ runId: string }>>();
+  assert.ok(!list.some((run) => run.runId === this.runId), "a run the boot refused is not a live run");
+});
+
+/** The last status line the follow printed — a `-f` prints one per delta and ends on the
+ * settled one, so the terminal line is the run's end. */
+Then("the last status printed is {string}", function (this: E2EWorld, status: string): void {
+  assert.equal(this.resultJson<RunStatus>().status, status);
+});
+
+/** The door's refusal (ADR-0033), as the CLI relays it: the workflow by name, and the field the
+ * declared schema rejected — the same words `POST /workflows/:name/runs` answers 400 with. */
+Then(
+  "stderr refuses the input for workflow {string} naming {string}",
+  function (this: E2EWorld, wf: string, field: string): void {
+    assert.match(this.last?.stderr ?? "", new RegExp(`error: invalid input for workflow "${wf}"`));
+    assert.match(this.last?.stderr ?? "", new RegExp(field), "the refusal names what the schema expected");
+  },
+);
 
 Then("the reply is {string}", function (this: E2EWorld, reply: string): void {
   assert.equal(this.resultJson<RunStatus>().context.reply, reply);

@@ -27,6 +27,10 @@ const exec = promisify(execFile);
 
 /** The seed Repo's url — the identity every kind workflow binds and the fence admits. */
 export const SEED_URL = "http://seed.j2-e2e-seed.svc/app.git";
+// Two more urls on the same host appear in kind.feature, spelled there rather than here because
+// the scenarios read them the way a user types them: `other.git` below, an identity no workflow
+// binds (the per-run Repo `j2 gc` may evict, ADR-0051); and `missing.git`, which nothing serves
+// — the fence admits it and every clone fails with git's own words (ADR-0048).
 
 const NAMESPACE = "j2-e2e-seed";
 
@@ -41,6 +45,12 @@ const MAKE_REPO = [
   "git -C /tmp/w -c user.email=e2e@j2 -c user.name=e2e commit -qm init",
   "git clone -q --bare /tmp/w /srv/app.git",
   "git -C /srv/app.git update-server-info",
+  // A SECOND repository, same content, its own identity (ADR-0051): every kind workflow binds
+  // `app.git`, so in every scenario's namespace that Repo is bound and `j2 gc` never evicts it.
+  // The eviction scenario needs a Repo nothing binds, and a per-run url spelling `app.git`
+  // differently would normalize to the same identity — so it names this one instead.
+  "git clone -q --bare /tmp/w /srv/other.git",
+  "git -C /srv/other.git update-server-info",
 ].join(" && ");
 
 const MANIFEST = `

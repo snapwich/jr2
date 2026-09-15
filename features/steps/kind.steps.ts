@@ -1124,6 +1124,298 @@ Then(
   },
 );
 
+// --- the Instance Harness (ADR-0031) ---------------------------------------------------------------
+//
+// A `workspace: "none"` Agent's Turn is admitted at the Instance Harness — the Deployment `j2 up`
+// converged because a registered Machine carries such a definition — and nowhere else, even when
+// the Machine invoking it sits inside a `workspace()`. Where a conversation lives is a fact only
+// the Harnesses themselves can answer (ADR-0024/0027: a settlement is invisible to the
+// Orchestrator by construction), so both are asked the same question over the same wire: the
+// Instance Harness must hold the conversation, the run's Sandbox must not.
+
+/** The Instance Harness's Deployment/Service/pod-label name — spelled the way `kubectl get pods`
+ * shows it (ADR-0010: a black-box step names what a user sees, and imports nothing from the kit
+ * it tests at arm's length). */
+const INSTANCE_HARNESS = "j2-instance-harness";
+
+/** The Instance Harness's Running pod in this scenario's namespace — converged by `j2 up`
+ * whenever a carried definition declares `workspace: "none"`, which the kind instance's `advisor`
+ * does, so it is there in every scenario whether or not one uses it. */
+async function instanceHarnessPod(world: E2EWorld): Promise<string> {
+  for (let i = 0; i < 60; i++) {
+    const out = await kubectl(world, [
+      "get",
+      "pods",
+      "-l",
+      `app=${INSTANCE_HARNESS}`,
+      "--field-selector=status.phase=Running",
+      "-o",
+      "jsonpath={.items[0].metadata.name}",
+    ]);
+    if (out.trim()) return out.trim();
+    await sleep(1000);
+  }
+  throw new Error(
+    `no Running ${INSTANCE_HARNESS} pod in ${world.namespace} — \`j2 up\` converges it whenever a carried ` +
+      `Agent definition declares workspace: "none" (ADR-0031); the kind instance's advisor does`,
+  );
+}
+
+/** What a Harness answers when asked for one conversation: 200 with its history, or 404 — the
+ * `?view=history` wire (ADR-0027), read over a port-forward to the pod. */
+async function conversationStatus(world: E2EWorld, pod: string, agent: string, iid: string): Promise<number> {
+  let status = 0;
+  await withPodForward(world, pod, 8080, async (localUrl) => {
+    const res = await fetch(`${localUrl}/agents/${agent}/${encodeURIComponent(iid)}?view=history`);
+    status = res.status;
+    await res.text();
+  });
+  return status;
+}
+
+/** The run's instance id — the iid every Agent of the kind fixtures is admitted under. */
+async function runInstanceId(world: E2EWorld): Promise<string> {
+  const r = await world.runCli(["status", world.runId!]);
+  assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+  const { instanceId } = world.resultJson<{ instanceId: string }>();
+  assert.ok(instanceId, "the run reports its instance id");
+  return instanceId;
+}
+
+/**
+ * The scripted model answers a parked turn — whichever Harness parked it. The step for the
+ * Sandbox's Agent waits for the workspace to attach first; this one does not, because the turn it
+ * releases is admitted at the Instance Harness (ADR-0031) and there may be no Workspace at all.
+ */
+When(
+  "the model answers {string} with summary {string}",
+  async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    await this.provider.release(tool, { summary });
+  },
+);
+
+/**
+ * ADR-0028's `"none"`, seen on the wire: the turn's request carries this state's one Menu tool and
+ * NOT ONE of the Working tools — not read-only, not bash, nothing. The stock Harness under
+ * `J2_MENU_ONLY` is what withholds them, so this is the Instance Harness's own contract, asserted
+ * off the request it actually sent.
+ */
+Then(
+  "the model was offered {string} from the Menu and no Working tools",
+  async function (this: E2EWorld, tool: string): Promise<void> {
+    assert.ok(this.provider, "the scenario's scripted model is running");
+    const provider = this.provider;
+    let seen: string[][] = [];
+    for (let i = 0; i < 240; i++) {
+      seen = provider.calls.filter((c) => c.stream).map((c) => c.tools);
+      if (seen.some((tools) => tools.includes(`mcp__j2__${tool}`))) break;
+      await sleep(500);
+    }
+    const turn = seen.find((tools) => tools.includes(`mcp__j2__${tool}`));
+    assert.ok(turn, `no turn was offered "mcp__j2__${tool}" (offered: ${JSON.stringify(seen)})`);
+    assert.deepEqual(
+      turn.filter((t) => t.startsWith("mcp__j2__")),
+      [`mcp__j2__${tool}`],
+      "the turn sees this state's Menu and no other's (ADR-0015)",
+    );
+    const working = turn.filter((t) => WORKING_TOOLS.includes(t));
+    assert.deepEqual(working, [], `a Menu-only Agent is offered no Working tool (ADR-0028); got ${turn.join(", ")}`);
+  },
+);
+
+Then(
+  "the Instance Harness holds the {string} conversation of the run",
+  { timeout: 180_000 },
+  async function (this: E2EWorld, agent: string): Promise<void> {
+    const iid = await runInstanceId(this);
+    const pod = await instanceHarnessPod(this);
+    let last = 0;
+    for (let i = 0; i < 90; i++) {
+      last = await conversationStatus(this, pod, agent, iid);
+      if (last === 200) return;
+      await sleep(1000);
+    }
+    throw new Error(
+      `the Instance Harness never held /agents/${agent}/${iid} (last HTTP ${last}) — a workspace: "none" ` +
+        `Turn is admitted there and nowhere else (ADR-0031)`,
+    );
+  },
+);
+
+/** The other half of definition-wins: the run HAS a Sandbox, and its Harness never saw the
+ * advisor's conversation. Asked after the Instance Harness answered 200 for the same (agent, iid),
+ * so a 404 here is placement, not timing. */
+Then("the run's Sandbox holds no {string} conversation", async function (this: E2EWorld, agent: string): Promise<void> {
+  const iid = await runInstanceId(this);
+  const pod = (await waitForReadySandbox(this)).metadata.name;
+  const status = await conversationStatus(this, pod, agent, iid);
+  assert.equal(
+    status,
+    404,
+    `the Sandbox's Harness answered ${status} for /agents/${agent}/${iid} — nearest-wins placement, which ADR-0031 rejects`,
+  );
+});
+
+Then("no Sandbox was provisioned for the run", async function (this: E2EWorld): Promise<void> {
+  assert.deepEqual(await sandboxesFor(this), [], "a Menu-only workflow composes no Sandbox and provisions none");
+});
+
+// --- a Repo that cannot sync (ADR-0048) ------------------------------------------------------------
+
+/**
+ * The instance's own report of a Repo whose every attempt fails: `j2 status` with no run lists
+ * the resource with the cache agent's per-node entry — absent (no clone), not synced, and git's
+ * words as `lastError` — and spells the same on stderr, the line a human acts on. Polled, because
+ * the boot states the resource and the agent's probe lands a moment later.
+ */
+Then(
+  "j2 status reports repo {string} absent with git's error",
+  { timeout: 180_000 },
+  async function (this: E2EWorld, url: string): Promise<void> {
+    const key = repoKey(url);
+    let last: RepoStatus | undefined;
+    for (let i = 0; i < 90; i++) {
+      const r = await this.runCli(["status"]);
+      assert.equal(r.code, 0, `j2 status must still answer with a degraded Repo (ADR-0048): ${r.stderr}`);
+      const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
+      last = repos.find((repo) => repo.key === key);
+      const failed = last?.nodes.find((n) => !n.present && !n.synced && n.lastError);
+      if (failed) {
+        assert.match(
+          r.stderr,
+          new RegExp(`repo ${rx(key)} \\(${rx(url)}\\) on node ${rx(failed.node)}: absent — `),
+          "the failing node is spelled out on stderr with git's own error",
+        );
+        assert.match(failed.lastError ?? "", /not found/i, `git's own words name the cause: ${failed.lastError}`);
+        return;
+      }
+      await sleep(1000);
+    }
+    throw new Error(`no node ever reported Repo ${key} (${url}) absent with an error (last: ${JSON.stringify(last)})`);
+  },
+);
+
+/**
+ * The moment the degradation bites is the moment it is reported, to the run that owns the
+ * consequence (ADR-0048): the operator holds the Sandbox on its Repo, the cache agent's clone onto
+ * the pod's node fails, and the provision fails BY NAME — the Repo, the node, git's words — rather
+ * than burning the Repo budget. The fault is the run's, readable through `j2 status <runId>`.
+ */
+Then(
+  "the run faults naming repo {string} and git's error",
+  { timeout: 300_000 },
+  async function (this: E2EWorld, url: string): Promise<void> {
+    const key = repoKey(url);
+    let last: WsStatus & { fault?: string } = await wsStatus(this);
+    for (let i = 0; i < 240 && last.status !== "error"; i++) {
+      await sleep(1000);
+      last = await wsStatus(this);
+    }
+    assert.equal(last.status, "error", `the run never faulted (last: ${JSON.stringify(last)})`);
+    const fault = last.fault ?? "";
+    assert.match(
+      fault,
+      new RegExp(`Repo "${rx(key)}" could not be cloned onto node \\S+: `),
+      `the fault names the Repo and the node (fault: ${fault})`,
+    );
+    assert.match(fault, /not found/i, `…and carries git's own error (fault: ${fault})`);
+  },
+);
+
+// --- the Repo sweep (ADR-0051) ---------------------------------------------------------------------
+//
+// `j2 gc --repo-ttl` deletes the RESOURCE; the bytes on each node are the cache agent's to
+// reclaim, once nothing there mounts them. Both halves are asserted, and the second on the node
+// itself: a sweep whose narration says "swept 1" but whose bare clone stays on disk is the
+// defect this scenario exists to see. The TTL is one minute rather than `0`, and the sweep is
+// repeated until the Repo is that old: the sweep is cluster-wide and the tier runs `--parallel`,
+// so a zero TTL would take another scenario's per-run Repo out from under its live Sandbox.
+
+/** One Repo's bare clone on a node (ADR-0051): `<hostPath>/<namespace>/repos/<key>`, read on the
+ * kind node itself — the layout `j2 status`'s runbook names for a human with node access. */
+const cacheDirOn = (namespace: string, key: string): string => `/var/lib/j2/${namespace}/repos/${key}`;
+
+/** Every node of the cluster that still holds this Repo's cache directory. */
+async function nodesHoldingCache(world: E2EWorld, key: string): Promise<string[]> {
+  assert.ok(world.namespace, "a @kind scenario has its namespace set");
+  const dir = cacheDirOn(world.namespace, key);
+  const holding: string[] = [];
+  for (const node of await kindNodes()) {
+    const { stdout } = await exec("docker", ["exec", node, "sh", "-c", `[ -d '${dir}' ] && echo yes || echo no`]);
+    if (stdout.trim() === "yes") holding.push(node);
+  }
+  return holding;
+}
+
+Then("a node still holds the cache of repo {string}", async function (this: E2EWorld, url: string): Promise<void> {
+  const key = repoKey(url);
+  const holding = await nodesHoldingCache(this, key);
+  assert.ok(
+    holding.length > 0,
+    `no node holds ${cacheDirOn(this.namespace!, key)} — the run's clone should outlive the run`,
+  );
+});
+
+When(
+  "I sweep Repos no run attached within {string}, once repo {string} is that old",
+  { timeout: 300_000 },
+  async function (this: E2EWorld, ttl: string, url: string): Promise<void> {
+    const key = repoKey(url);
+    for (let i = 0; i < 24; i++) {
+      // No `-n`: `j2 gc` reads every instance namespace on the cluster (ADR-0039/0051).
+      const r = await this.runCli(["gc", "--repo-ttl", ttl], { namespaced: false });
+      assert.equal(r.code, 0, `j2 gc failed: ${r.stderr}`);
+      const left = await kubectl(this, ["get", "repos.core.j2.dev", key, "--ignore-not-found", "-o", "name"]);
+      if (!left.trim()) {
+        assert.match(r.stderr, /repos: swept \d+ Repo resource\(s\)/, "the sweep narrates what it took");
+        return;
+      }
+      await sleep(10_000);
+    }
+    throw new Error(`Repo ${key} was never swept under --repo-ttl ${ttl} (last gc said: ${this.last?.stderr})`);
+  },
+);
+
+Then("j2 status no longer lists repo {string}", async function (this: E2EWorld, url: string): Promise<void> {
+  const key = repoKey(url);
+  const r = await this.runCli(["status"]);
+  assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+  const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
+  assert.ok(!repos.some((repo) => repo.key === key), `Repo ${key} is still listed after the sweep`);
+});
+
+Then("j2 status still lists repo {string} as bound", async function (this: E2EWorld, url: string): Promise<void> {
+  const key = repoKey(url);
+  const r = await this.runCli(["status"]);
+  assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+  const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
+  const bound = repos.find((repo) => repo.key === key);
+  assert.equal(
+    bound?.bound,
+    true,
+    `the Repo a Machine binds is never on the sweep's clock (got: ${JSON.stringify(bound)})`,
+  );
+});
+
+Then(
+  "no node holds the cache of repo {string} any more",
+  { timeout: 180_000 },
+  async function (this: E2EWorld, url: string): Promise<void> {
+    const key = repoKey(url);
+    let holding: string[] = [];
+    for (let i = 0; i < 150; i++) {
+      holding = await nodesHoldingCache(this, key);
+      if (holding.length === 0) return;
+      await sleep(1000);
+    }
+    throw new Error(
+      `${holding.join(", ")} still hold ${cacheDirOn(this.namespace!, key)} — the resource is gone and no pod ` +
+        `mounts the cache, so the cache agent owes its removal (ADR-0051)`,
+    );
+  },
+);
+
 // --- failure diagnostics ---------------------------------------------------------------------------
 //
 // A @kind scenario's namespace is deleted the moment it ends, which takes the only witnesses with

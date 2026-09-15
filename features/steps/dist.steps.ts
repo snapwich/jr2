@@ -121,7 +121,24 @@ When("I converge it onto the cluster", { timeout: 900_000 }, async function (thi
   assert.match(r.stderr, /images: installed kit/, "the installed CLI took installed mode, not checkout mode");
 });
 
+/** `j2 down --yes`, from the installed binary: removes the instance's namespace and sweeps the
+ * images its roots no longer protect (ADR-0019/0039). `--yes` because the verb always confirms,
+ * and there is no one at the prompt. */
+When("I take the instance down", { timeout: 300_000 }, async function (this: E2EWorld): Promise<void> {
+  const r = await this.runCli(["down", "--yes"]);
+  assert.equal(r.code, 0, `j2 down failed: ${r.stderr}`);
+  assert.match(r.stderr, /removed/, "down reports the instance removed");
+});
+
 // --- then ----------------------------------------------------------------------------------------
+
+/** The namespace IS the instance (ADR-0019): gone means removed. `j2 down` waits on the delete, so
+ * this asks once and expects kubectl's NotFound — spelled the way a user would check. */
+Then("the instance's namespace is gone", async function (this: E2EWorld): Promise<void> {
+  assert.ok(this.namespace, "a @dist scenario has its namespace set in setupDist");
+  const left = await kubectlOut(["get", "namespace", this.namespace, "--ignore-not-found", "-o", "name"]);
+  assert.equal(left.trim(), "", `namespace ${this.namespace} still exists after j2 down`);
+});
 
 /**
  * The claim ADR-0044 adds to this tier: the Kit images this cluster runs came out of a REGISTRY.

@@ -112,6 +112,7 @@ Feature: Agents and gates drive a run from outside
       When the "guarded" workflow is replaced with the "guarded-reshaped" fixture and the orchestrator restarts
       Then the boot reports the run as drifted
       And the run reads as drifted, still parked at "working", and says why
+      And the run is absent from the runs list
 
   Rule: CANCEL ends a run, and ending it ends its Agents' turns
     ADR-0025. `j2 send --event CANCEL` is the human saying "abandon this". It is not a park: the

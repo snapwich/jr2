@@ -288,3 +288,69 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
       When the Agent runs "j2-toolchain" through its bash Working tool
       Then the model was shown the tool result "j2-toolchain-ok"
+
+  Rule: a Menu-only Agent's Turn runs on the Instance Harness, and needs no Sandbox
+    ADR-0031. An Agent whose definition declares `workspace: "none"` (ADR-0028) has no worktree to
+    run in, so `j2 up` converges an Instance Harness — a Harness + Adapter pod with no Workspace —
+    whenever a registered Machine carries such a definition, and the Turn is admitted THERE. No
+    config names or enables it: the kind instance's `advisor` definition is the whole reason the
+    Deployment exists in every scenario's namespace. Placement is definition-wins: even invoked
+    inside a `workspace()`, the advisor's conversation lives on the Instance Harness and never on
+    the run's Sandbox, because a conversation is an Instance ID on ONE server.
+
+    Scenario: a workflow with no Workspace runs its Agent on the Instance Harness
+      Given the kind instance is serving
+      When I start the "advised" workflow detached
+      Then the model was offered "advise" from the Menu and no Working tools
+      And the Instance Harness holds the "advisor" conversation of the run
+      When the model answers "advise" with summary "ship it"
+      Then the run's status shows "done"
+      And no Sandbox was provisioned for the run
+
+    Scenario: inside a Workspace, the Menu-only Agent still runs on the Instance Harness
+      Given the kind instance is serving
+      When I start the "consulted" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the model was offered "advise" from the Menu and no Working tools
+      And the Instance Harness holds the "advisor" conversation of the run
+      And the run's Sandbox holds no "advisor" conversation
+      When the model answers "advise" with summary "keep it small"
+      And the Agent in the Sandbox calls "finish" with summary "done"
+      Then the run's body settled as "finished"
+      And the run's Sandbox is destroyed
+
+  Rule: a Repo that cannot sync degrades the instance, never the boot
+    ADR-0048. The Orchestrator states its bound Repos at boot and never syncs them; the cache agent
+    does, retries a failure with backoff, and writes git's own words to the resource. The kind
+    instance binds one url its fence admits and nothing serves (`unsynced`), so EVERY scenario's
+    boot carries a Repo that fails its probe — and serves anyway: that is the claim, and the rest
+    of this file passing is its evidence. `j2 status` names the Repo with the error, and the one
+    run that needs the cache faults at provision naming both, while no other run is held on it.
+
+    Scenario: the instance serves, status names git's error, and the run that needs the Repo faults by name
+      Given the kind instance is serving
+      Then j2 status reports repo "http://seed.j2-e2e-seed.svc/missing.git" absent with git's error
+      When I start the "unsynced" workflow detached
+      Then the run faults naming repo "http://seed.j2-e2e-seed.svc/missing.git" and git's error
+
+  Rule: the Repo sweep takes a Repo nothing binds and no run attached lately, resource and node copy both
+    ADR-0051. Eviction is reachability plus age: `j2 gc --repo-ttl` deletes a `Repo` resource no
+    registered Machine binds and no run has attached within the TTL, and that deletion is what
+    lets each node's cache agent remove its bare clone once nothing there mounts it. A per-run
+    Repo is the one on that clock — a bound one (`app.git`, in every namespace) never is. The
+    other seed repository is named so the per-run identity is one no Machine binds; the same
+    url spelled differently would be the bound Repo.
+
+    Scenario: a per-run Repo outlives its run until the sweep, and the sweep clears it off the node
+      Given the kind instance is serving
+      When I start the "perrun" workflow with repo "http://seed.j2-e2e-seed.svc/other.git" detached
+      Then the run's Sandbox becomes Ready
+      And j2 status reports repo "http://seed.j2-e2e-seed.svc/other.git" present on the node
+      When the Agent in the Sandbox calls "finish" with summary "done"
+      Then the run's body settled as "finished"
+      And the run's Sandbox is destroyed
+      And a node still holds the cache of repo "http://seed.j2-e2e-seed.svc/other.git"
+      When I sweep Repos no run attached within "1m", once repo "http://seed.j2-e2e-seed.svc/other.git" is that old
+      Then j2 status no longer lists repo "http://seed.j2-e2e-seed.svc/other.git"
+      And j2 status still lists repo "http://seed.j2-e2e-seed.svc/app.git" as bound
+      And no node holds the cache of repo "http://seed.j2-e2e-seed.svc/other.git" any more

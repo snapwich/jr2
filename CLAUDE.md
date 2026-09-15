@@ -29,15 +29,16 @@ tier's config never sets `operator.manage: false`), so it is exactly two command
 it (ADR-0043). Only the REGISTRY is faked: a suite fixture publishes `@j2/{cli,orchestrator,agent-protocol}` into an
 ephemeral verdaccio, builds the three Kit images at their published tags, and `npm i -g @j2/cli` into a throwaway
 prefix; each scenario then drives that INSTALLED binary — `j2 init` a temp dir outside any checkout or git repo, install
-with npm (one scenario) or pnpm (the other), `j2 up`, `j2 run ping`. So `npm pack`, the `files:` lists, the
-exact-version pin the scaffold writes, the lockfile-dispatched bundle install, and installed mode itself execute here
-and in no other tier. Publish is once per suite run, so the profile is deliberately serial; scenarios isolate by
-namespace like `@kind`. Two commands: `just e2e-dist-up`, then `just e2e-dist` — and `just dist-up` is the same loop
-with a human at the wheel. **`@console` (opt-in, needs a Playwright chromium):** browser scenarios for the Console's UX
-— a Playwright page held inside Cucumber steps against the same per-scenario orchestrator; no docker (ADR-0010 as
-amended, ADR-0032). Excluded from the default e2e profile; store logic stays unit-tested in `console-store.test.ts`.
-**Harness conformance (ADR-0027; in `@j2/harness`, no infra):** the claims the socket-free tests cannot see, driven
-through the real turn loop — pi at the exact pin, the real `@j2/adapter` over a real socket, a scripted provider that
-chooses each turn's shape. Not a separate tier: it runs in the default `test` gate as part of `pnpm -r test`.
-`@j2/harness` owns the pi pin; conformance is the canary for pi bumps (0.x minors break), and since ADR-0038 `@kind` is
-a **second** canary — it drives the same turn loop in a real pod — so **run both before bumping pi**.
+with npm (one scenario) or pnpm (the other), `j2 up`, `j2 run ping`, and (npm) `j2 down`. So `npm pack`, the `files:`
+lists, the exact-version pin the scaffold writes, the lockfile-dispatched bundle install, and installed mode itself
+execute here and in no other tier. Publish is once per suite run, so the profile is deliberately serial; scenarios
+isolate by namespace like `@kind`. Two commands: `just e2e-dist-up`, then `just e2e-dist` — and `just dist-up` is the
+same loop with a human at the wheel. **`@console` (opt-in, needs a Playwright chromium):** browser scenarios for the
+Console's UX — a Playwright page held inside Cucumber steps against the same per-scenario orchestrator; no docker
+(ADR-0010 as amended, ADR-0032). Excluded from the default e2e profile; store logic stays unit-tested in
+`console-store.test.ts`. **Harness conformance (ADR-0027; in `@j2/harness`, no infra):** the claims the socket-free
+tests cannot see, driven through the real turn loop — pi at the exact pin, the real `@j2/adapter` over a real socket, a
+scripted provider that chooses each turn's shape. Not a separate tier: it runs in the default `test` gate as part of
+`pnpm -r test`. `@j2/harness` owns the pi pin; conformance is the canary for pi bumps (0.x minors break), and since
+ADR-0038 `@kind` is a **second** canary — it drives the same turn loop in a real pod — so **run both before bumping
+pi**.

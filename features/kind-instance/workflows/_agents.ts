@@ -1,16 +1,16 @@
-// The @kind tier's one Agent (ADR-0018/0049). A definition is plain data a MACHINE carries: both
-// fixture workflows (`sandboxed`, `handoff`) declare it as their `coder` slot, so the name the
-// Harness routes on (`/agents/coder/<iid>`, which the kind steps read history from) is the slot
-// key and nothing else names it.
+// The @kind tier's Agents (ADR-0018/0049). A definition is plain data a MACHINE carries: the
+// fixture workflows declare `coder` as their `coder` slot, so the name the Harness routes on
+// (`/agents/coder/<iid>`, which the kind steps read history from) is the slot key and nothing
+// else names it.
 //
-// It is REQUIRED, not decoration: the pod runs the stock Harness (ADR-0038), which needs a
+// They are REQUIRED, not decoration: the pod runs the stock Harness (ADR-0038), which needs a
 // definition for the name it is admitted under, and `j2 up`'s provider preflight probes exactly
 // the models the definitions name — so this is also what makes the converge exercise the fake
 // endpoint.
 //
 // `_`-prefixed, so workflow discovery skips it: this module is imported, never registered.
 //
-// The instructions are honest prose rather than a script. What this Agent does on a turn is
+// The instructions are honest prose rather than a script. What an Agent does on a turn is
 // decided by the scripted MODEL (`features/steps/fake-provider.ts`), which parks until a scenario
 // releases it — a real Agent that is still thinking, from the Machine's side.
 
@@ -27,6 +27,24 @@ export const coder = {
 worktree and a branch to work in.
 
 - Work only inside the named worktree; your Working tools run in that container.
+- You MUST end your turn by calling exactly one of the tools your Menu offers (surfaced as
+  mcp__j2__<name>). Do not end your turn without calling one — an uncalled tool parks the
+  whole workflow.`,
+} satisfies AgentDefinition;
+
+/**
+ * The tier's MENU-ONLY Agent (ADR-0028/0031): `workspace: "none"` withholds the whole Working
+ * toolset and places every Turn of it on the Instance Harness — the Deployment `j2 up` converges
+ * for this instance because this definition exists, and where the Turn lands even when the
+ * Machine invoking it sits inside a `workspace()`. No `cwd`: nothing of its consumes one.
+ */
+export const advisor = {
+  model: "fake/model-x",
+  description: "The @kind tier's advisor: converses and picks from its Menu; touches no Workspace.",
+  workspace: "none",
+  instructions: `You advise a small autonomous team. You have no worktree and no tools but your
+Menu.
+
 - You MUST end your turn by calling exactly one of the tools your Menu offers (surfaced as
   mcp__j2__<name>). Do not end your turn without calling one — an uncalled tool parks the
   whole workflow.`,

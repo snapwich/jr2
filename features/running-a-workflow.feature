@@ -40,3 +40,26 @@ Feature: Running a workflow
       And I check the status of that run
       Then the status is "done"
       And the reply is "pong: hi"
+
+  Rule: logs replays a run's status, and follows a live one until it settles
+    ADR-0009. `j2 logs <runId>` re-attaches to the run's feed: the orchestrator replays the current
+    status on attach, so even a settled run answers with where it ended. `-f` keeps streaming
+    deltas and returns on its own once the run is no longer active — the verb for watching a run
+    someone else started, or one `run --detach` let go of.
+
+    Background:
+      Given a fresh instance
+      And the instance also has a long-running workflow
+      And the orchestrator is serving
+
+    Scenario: logs on a settled run prints its terminal status once
+      When I run "ping" with message "hi"
+      And I read the logs of that run
+      Then stdout is the terminal status with reply "pong: hi"
+      And the command exits 0
+
+    Scenario: logs -f on a live run returns when the run settles
+      When I start the "loop" workflow detached
+      And I follow the logs of that run while it is cancelled
+      Then the last status printed is "cancelled"
+      And the command exits 0
