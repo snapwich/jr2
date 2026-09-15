@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -241,12 +242,7 @@ func (a *Agent) mounts(pod *corev1.Pod, key string) bool {
 	if pod.Spec.NodeName != a.Node || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 		return false
 	}
-	for _, k := range a.keysOf(pod) {
-		if k == key {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(a.keysOf(pod), key)
 }
 
 // keysOf lists the Repo keys a pod's hostPath volumes name under this

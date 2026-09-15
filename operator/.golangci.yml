@@ -29,6 +29,8 @@ linters:
       logcheck:
         type: "module"
         description: Checks Go logging calls for Kubernetes logging conventions.
+    goconst:
+      ignore-tests: true
     depguard:
       rules:
         forbid-sort-pkg:
