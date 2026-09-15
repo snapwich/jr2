@@ -14,7 +14,8 @@ workflow, graph
 **Workflow**: A Machine registered under a name — the unit an Orchestrator instance runs and `j2 run` addresses. Lives
 as a code module in the instance's `workflows/` directory (contract: `export const machine`); the Machine carries
 everything it needs (ADR-0049), so a Workflow is a name and nothing more. **Not** declarative config, and **not**
-shipped by the kit — a packaged Machine becomes a Workflow when a workflows file exports it. _Avoid_: app, pipeline
+shipped by the kit — the kit ships Machines (`@j2/machines`), and a packaged Machine becomes a Workflow when a workflows
+file exports it, its Open parts bound. _Avoid_: app, pipeline
 
 **Orchestrator**: The runtime that executes Machines. A single-writer daemon (`replicas: 1`, always in-cluster —
 ADR-0019) persisting run snapshots to its store (sqlite by default, Postgres opt-in). `replicas: 1` means single
@@ -220,6 +221,11 @@ remote, catalog entry, repo name
 body's `workspace.repos` handles, and the directory under `/work`. A slot is **bound** (the Machine wrote the url),
 **open** (the Machine left it for a composer to bind with `customize`), or **per-run** (a mapper over the door binds it
 from input). Bound and open are what `j2 up` can see; per-run is the run's business. _Avoid_: role, alias, repo name
+
+**Open**: A part a Machine declares but deliberately leaves for its composer to bind with `customize()` — a Repo Slot
+with no url, an Agent with no model. The shape a packaged Machine ships in, because a package cannot know the repository
+or pay for the model. `j2 up` refuses an Open part nobody bound and names the line that binds it; a run never sees one.
+_Avoid_: unset, default (an Open part has none — that is the point), placeholder
 
 **Binding**: The `{ url, ref? }` a Repo Slot resolves to. `ref` is the base the branch Worktree is cut from; absent, the
 Repo's own default branch. _Avoid_: config, catalog entry

@@ -1,4 +1,0 @@
-{
-  "extends": "@j2/orchestrator/tsconfig.instance.json",
-  "include": ["**/*.ts"]
-}
