@@ -19,11 +19,21 @@ export const machine = customize(task, {
 
 ## The Open parts
 
-A packaged Machine leaves the parts a package cannot honestly fill **Open** — a Repo Slot with no url, an Agent with no
-model — because a package cannot know your repository or pay for your model. `j2 up` walks the registered Machines,
-refuses an Open part nobody bound before anything is built, and prints the `customize` line that binds it.
+A packaged Machine leaves the parts a package cannot honestly fill **Open** — a Repo Slot with no url, a slot map with
+no slots, an Agent with no model — because a package cannot know your repository or pay for your model. `j2 up` walks
+the registered Machines, refuses an Open part nobody bound before anything is built, and prints the `customize` line
+that binds it.
 
-`task` has two: the Repo Slot `target` and the Agent `coder`. Both are bound above.
+`task` has two: its Repo Slots, Open as a map, and the Agent `coder`. Both are bound above. The slot names are yours:
+`task` reads none of them. The first you write is where the coder works; any others are checked out beside it and the
+coder is told where they are, so a change that targets a library, or wants a handbook to hand, is one more line —
+
+```ts
+repos: {
+  target: { url: "https://github.com/you/repo.git" },
+  reference: { url: "https://github.com/you/lib.git", ref: "v3" },
+},
+```
 
 ## Peer dependencies
 

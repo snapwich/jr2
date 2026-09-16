@@ -587,6 +587,20 @@ test("an OPEN slot nobody bound faults before the port, naming the customize lin
   assert.match(fault3, /workflow "top": Repo Slot "target" is open/);
   assert.match(fault3, /customize\(<import>, \{ actors: \{ review: \{ repos: \{ target: "<url>" \} \} \} \}\)/);
 
+  // A map declared Open whole faults the same way, with no slot to name: the line leaves `<slot>`
+  // to the composer, whose word it is (ADR-0051).
+  const host4 = new RunHost({ store: await mkStore(), sandbox: new FakeSandbox() });
+  host4.register({
+    name: "mapped",
+    machine: workspace(recorder, { repos: open, spec: () => ({ branch: "b" }) }),
+    provide: () => ({}),
+  });
+  const run4 = await host4.start("mapped");
+  await waitFor(() => host4.status(run4.runId) === undefined);
+  const fault4 = (await host4.read(run4.runId))?.fault ?? "";
+  assert.match(fault4, /workflow "mapped": Repo Slots are open — nobody named any/);
+  assert.match(fault4, /customize\(<import>, \{ repos: \{ <slot>: "<url>" \} \}\)/);
+
   // Bound by the consumer, the SAME Machine runs: the binding is read off the Machine the run
   // was invoked as, exactly like the image (ADR-0049).
   const bound = new FakeSandbox();

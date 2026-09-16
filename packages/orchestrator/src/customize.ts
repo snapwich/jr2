@@ -34,7 +34,9 @@
 // answer for a Machine whose author happened to name a slot `body`.
 //
 // Only DECLARED parts can be customized; none can be added. A consumer who needs a third Agent
-// composes a new Machine — which is the same act, spelled honestly.
+// composes a new Machine — which is the same act, spelled honestly. A `workspace()` that declared
+// its slot MAP Open (`repos: open`, ADR-0051) declared exactly this: every slot is the composer's
+// to name, so the map they write is the declaration, not an addition to one.
 
 import { StateMachine, type AnyStateMachine, type InputFrom, type ProvidedActor } from "xstate";
 import type { AgentLogic } from "./actor.ts";
@@ -46,6 +48,7 @@ import {
   attachSandboxParts,
   attachWrapperBody,
   composesSandbox,
+  open,
   sandboxPartsOf,
   wrapperBodyOf,
   type J2Repos,
@@ -159,7 +162,9 @@ export type Customize<M extends AnyStateMachine> = {
   /** Bind the Repo Slots the reached `workspace()` declared (ADR-0051) — an open slot to a url,
    * or a bound or per-run one to a different Binding; any of the three forms, so a consumer can
    * also bind a mapper over the wrapper's door. A slot the Machine does not declare is a compile
-   * error, and a Machine that composes no Sandbox takes `never`, as `agents` does. */
+   * error, and a Machine that composes no Sandbox takes `never`, as `agents` does. A `workspace()`
+   * that declared its map Open takes any keys — they are the composer's words, the first is the
+   * `workdir` — and at least one, checked at the call. */
   repos?: [RepoSlotsOf<M>] extends [never] ? never : { [K in RepoSlotsOf<M>]?: RepoSlot<InputFrom<WorkspaceOf<M>>> };
 };
 
@@ -260,6 +265,7 @@ function reseat(machine: AnyStateMachine, seats: Seats): AnyStateMachine {
   if (composesSandbox(machine)) {
     const { repos: override, ...images } = seats;
     const parts = sandboxPartsOf(machine);
+    if (parts.repos === open) return rebuild(machine, { ...parts, ...images, repos: nameSlots(machine, override) });
     const repos = { ...parts.repos };
     // Only DECLARED slots can be bound (ADR-0051): the Machine's own word for each Repo is the
     // key, and a key it never declared would attach a repository the body has no handle for.
@@ -291,6 +297,32 @@ function reseat(machine: AnyStateMachine, seats: Seats): AnyStateMachine {
     );
   }
   return substitute(machine, { [inner.slot]: reseat(inner.body, seats) });
+}
+
+/**
+ * The composer's half of an Open slot MAP (ADR-0051): the Machine said `repos: open`, so the map
+ * written here IS the declaration — every key is the composer's word for a Repo, the first is the
+ * body's `workdir`, and each value is any of the three slot forms (a composer building a further
+ * package may leave one `open` for the next composer). Held to the same checks `workspace()` runs
+ * on a declared map, because it is the same map one call later: a directory-shaped key, a valid
+ * binding, and at least one slot. A `customize` that names no `repos` leaves the map Open, and
+ * the walk reports it again.
+ */
+function nameSlots(machine: AnyStateMachine, override: Seats["repos"]): SandboxParts["repos"] {
+  if (override === undefined) return open;
+  const repos: Record<string, RepoSlot> = {};
+  for (const [slot, value] of Object.entries(override)) {
+    if (value === undefined) continue;
+    assertRepoSlot("customize()", slot, value);
+    repos[slot] = value;
+  }
+  if (Object.keys(repos).length === 0) {
+    throw new Error(
+      `customize(): machine "${machine.id}" declares its Repo Slots open as a map — name at least one: ` +
+        '`repos: { app: "https://…" }`; the first is the workdir (ADR-0051).',
+    );
+  }
+  return repos;
 }
 
 /**

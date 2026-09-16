@@ -151,12 +151,12 @@ async function waitFor(pred: () => boolean): Promise<void> {
 }
 
 /** One run of the bound Machine over both fakes, started and waiting on its first Turn. */
-async function startRun(input: Record<string, unknown>) {
+async function startRun(input: Record<string, unknown>, machine: AnyStateMachine = bound) {
   const port = new MockPort();
   const endpoints: string[] = [];
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
-  host.register({ name: "task", machine: wire(bound, port, endpoints), provide: () => ({}) } satisfies WorkflowDef);
+  host.register({ name: "task", machine: wire(machine, port, endpoints), provide: () => ({}) } satisfies WorkflowDef);
   const { runId, instanceId } = await host.start("task", input);
   await waitFor(() => port.admits.length === 1);
   return { port, endpoints, sandbox, host, runId, instanceId };
@@ -179,9 +179,9 @@ test("the door demands a prompt and nothing else (ADR-0054)", () => {
 test("as shipped, the walk reports both parts Open; the consumer's customize closes both", () => {
   const shipped = partsOf([task]);
   assert.deepEqual(
-    shipped.openSlots.map((o) => o.slot),
-    ["target"],
-    "a package cannot know the repository",
+    shipped.openSlots,
+    [{ slot: undefined, path: [] }],
+    "a package cannot know the repository — nor name the slots: the map is Open whole (ADR-0051)",
   );
   assert.deepEqual(
     shipped.openAgents.map((o) => o.slot),
@@ -199,7 +199,7 @@ test("as shipped, the walk reports both parts Open; the consumer's customize clo
   );
 
   const consumed = partsOf([bound]);
-  assert.deepEqual(consumed.openSlots, [], "the Repo Slot is bound");
+  assert.deepEqual(consumed.openSlots, [], "the Repo Slots are named and bound");
   assert.deepEqual(consumed.openAgents, [], "the model is bound");
   assert.deepEqual(
     consumed.repos.map((r) => r.url),
@@ -244,6 +244,29 @@ test("working → finish parks at the review Gate, with the branch and workdir a
     workdir: `/work/target/j2/task-${instanceId}`,
   });
   assert.equal(sandbox.destroyed.length, 0, "parking IS retention: the Sandbox is alive to exec into");
+});
+
+test("more than one slot: the first the consumer wrote is the workdir, the rest are framed as reading material", async () => {
+  // The map is the consumer's whole (ADR-0051): `task` names no slot, so a consumer who wants the
+  // coder to read a second checkout writes a second key, and the body — which reads `workdir`
+  // and enumerates the rest — tells the coder where it is. No second Machine, no second file.
+  const LIB = "https://github.com/acme/lib.git";
+  const twoRepo = customize(task, {
+    repos: { target: { url: REPO }, reference: { url: LIB, ref: "v3" } },
+    agents: { coder: { model: MODEL } },
+  });
+  const { port, sandbox } = await startRun({ prompt: PROMPT, branch: "wip" }, twoRepo);
+  assert.deepEqual(sandbox.provisioned[0], [
+    { slot: "target", url: REPO, perRun: false },
+    { slot: "reference", url: LIB, ref: "v3", perRun: false },
+  ]);
+  const prompt = port.admits[0]!.prompt ?? "";
+  assert.match(prompt, /Work in \/work\/target\/wip, on branch wip/);
+  assert.match(prompt, /Also checked out beside it, for you to read:\n- reference: \/work\/reference\/wip/);
+  assert.doesNotMatch(prompt, /- target:/, "the workdir is not listed twice");
+  // One slot: nothing beside it, so nothing is said about it.
+  const one = await startRun({ prompt: PROMPT, branch: "wip" });
+  assert.doesNotMatch(one.port.admits[0]!.prompt ?? "", /Also checked out/);
 });
 
 test("request_changes continues the SAME conversation, and approve ends the run and the Sandbox", async () => {

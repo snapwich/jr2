@@ -19,7 +19,8 @@
 //      did — invoked as a child, with its door still checked;
 //   6. `repos` offers exactly the Repo Slots the reached `workspace()` declared (ADR-0051), in
 //      any of the three forms, through a wrapper chain — and nothing on a Machine that composes
-//      no Sandbox.
+//      no Sandbox; a `workspace()` that declared its map Open takes any keys, since naming them
+//      is the composer's half.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -211,6 +212,30 @@ function refusedRepos(): void {
   void customize(wrapped, { repos: { target: 42 } });
 }
 
+// An Open MAP (`repos: open`): the wrapper's slots infer as `string`, so `repos` takes the
+// composer's own keys — as many as they write — in the same three forms, and still refuses a
+// value that is none of them.
+const anySlots = j2Setup({
+  events: [done],
+  types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, string> },
+  actors: { coder: agent({ model: haiku, instructions: "c" }) },
+}).createMachine({ id: "anySlots", context: {}, initial: "idle", states: { idle: {} } });
+const mapped = workspace(anySlots, { input: door, repos: open, spec: () => ({ branch: "feat" }) });
+void customize(mapped, {
+  repos: { target: "git@github.com:ourorg/app.git", reference: { url: "https://example.test/lib.git" } },
+});
+void customize(mapped, { repos: { target: ({ input }) => `https://example.test/${input.topic}.git` } });
+void customize(mapped, { agents: { coder: { model: opus } } });
+
+function refusedUnderOpenMap(): void {
+  // @ts-expect-error still one of the three forms per slot
+  void customize(mapped, { repos: { target: 42 } });
+  // @ts-expect-error the mapper still reads the DOOR
+  void customize(mapped, { repos: { target: ({ input }) => input.subject } });
+  // @ts-expect-error a body that NAMES a slot cannot sit under an Open map: the composer may never write that word
+  void workspace(body, { input: door, repos: open, spec: () => ({ branch: "feat" }) });
+}
+
 test("customize()'s type-level claims are the compiler's; this run pins the runtime half", () => {
   // A retune is definition-level and total: what comes back carries the override layered over the
   // stock definition, whatever the type says about the keys.
@@ -229,6 +254,7 @@ test("customize()'s type-level claims are the compiler's; this run pins the runt
       refusedThroughANamesake,
       refusedOverrides,
       refusedRepos,
+      refusedUnderOpenMap,
     ].every((f) => !!f),
   );
 });

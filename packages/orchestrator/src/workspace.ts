@@ -42,12 +42,14 @@ import {
   attachSandboxParts,
   attachWrapperBody,
   customizeLine,
+  open,
   repoSlotState,
   sandboxPartsOf,
   type Binding,
   type J2Repos,
   type J2Wrapper,
   type RepoSlot,
+  type SandboxParts,
   type WrapperActors,
 } from "./parts.ts";
 import { runBindingOf, type AnyActorSystem } from "./registration.ts";
@@ -92,7 +94,10 @@ export type WorkspaceSpec = {
  * `TSlots` has NO default on purpose (ADR-0050): a body names the slots it reads, and
  * `workspace()` holds those names to the ones the wrapper declares. A default of `string` would
  * type `repos` as `Record<string, string>`, under which a misspelled slot reads as a path — the
- * silent widening the slot key exists to refuse.
+ * silent widening the slot key exists to refuse. `string` WRITTEN is a different statement: the
+ * body names no slot at all — it works in `workdir` and enumerates the rest — which is the body
+ * under a wrapper that declares its map Open (`repos: open`, ADR-0051), where the slots are the
+ * composer's words and no body could name them.
  */
 export type WorkspaceHandles<TSlots extends string> = {
   /** The primary working directory: the FIRST declared slot's branch worktree. */
@@ -323,8 +328,27 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSl
 // wrapper never declared is refused here too; demanding fewer is fine, as with any other field.
 type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor, TSlots extends string> =
   Workspaced<TDoor, TSlots> & HostInjectedInput extends InputFrom<TBody>
-    ? unknown
+    ? BodyNamesNoSlotUnderOpenMap<TBody, TSlots>
     : { "the body's declared input must accept the door plus the injected handles": Workspaced<TDoor, TSlots> };
+
+/**
+ * The one case assignability cannot see (ADR-0051): a wrapper that declares its map Open
+ * (`repos: open`) hands the body `Record<string, string>`, and TypeScript relates that to a body's
+ * `Record<"target", string>` — an index signature satisfies a mapped type's named keys — so the
+ * check above would pass a body that names a slot the composer may never write. Under an Open
+ * map the body must name NO slot: its handles' keys are `string`, which is how a body says "I
+ * work in `workdir` and read whatever else is attached". A body that names one is refused here,
+ * where the wrapper is written.
+ */
+type BodyNamesNoSlotUnderOpenMap<TBody extends AnyStateMachine, TSlots extends string> = string extends TSlots
+  ? InputFrom<TBody> extends { workspace: { repos: infer THandles } }
+    ? string extends keyof THandles
+      ? unknown
+      : {
+          "a body under an Open slot map (repos: open) names no slot — its handles are Workspaced<…, string>": keyof THandles;
+        }
+    : unknown
+  : unknown;
 
 /**
  * The handles half of {@link BodyAcceptsDoor} alone, for the wrapper with NO declared door. The
@@ -338,7 +362,7 @@ type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor, TSlots extends string
 type BodyAcceptsSlots<TBody extends AnyStateMachine, TSlots extends string> =
   InputFrom<TBody> extends { workspace: infer THandles }
     ? WorkspaceHandles<TSlots> extends THandles
-      ? unknown
+      ? BodyNamesNoSlotUnderOpenMap<TBody, TSlots>
       : { "the body's declared handles must accept the Repo Slots the wrapper declares": WorkspaceHandles<TSlots> }
     : unknown;
 
@@ -374,8 +398,13 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
    * Required, at least one: a Workspace exists to work on a repository. Each slot is bound (a url,
    * or `{ url, ref? }` — the package's own), open (`open` — the consumer binds it with
    * `customize`), or per-run (a mapper over the door: `({ input }) => input.repo`).
+   *
+   * Or the whole map Open (`repos: open`): the Machine names no slot, the composer names every
+   * one with `customize`, and the first they write is the `workdir`. The shape a packaged Machine
+   * takes when its body reads `workdir` alone and can work beside any number of other checkouts
+   * (`@j2/machines`'s `task`). Under it `TSlots` is `string`, and the body's handles must say so.
    */
-  repos: Record<TSlots, RepoSlot<TInput>>;
+  repos: Record<TSlots, RepoSlot<TInput>> | typeof open;
 };
 
 /**
@@ -459,14 +488,18 @@ export function workspace(
   // The slots, checked NOW for the same reason (ADR-0051): every value is one of the three forms,
   // every key is a directory name, and there is at least one — a Workspace exists to work on a
   // repository, and a wrapper with no slot would attach nothing and hand the body no `workdir`.
+  // An Open map defers all of that to the `customize` that fills it, which runs the same checks.
   const repos = options.repos;
-  if (typeof repos !== "object" || repos === null || Array.isArray(repos) || Object.keys(repos).length === 0) {
-    throw new Error(
-      'workspace(): `repos` must name at least one Repo Slot — `repos: { app: "https://…" }`, or ' +
-        "`open` for a slot the consumer binds, or a mapper over the door for one the run chooses (ADR-0051).",
-    );
+  if (repos !== open) {
+    if (typeof repos !== "object" || repos === null || Array.isArray(repos) || Object.keys(repos).length === 0) {
+      throw new Error(
+        'workspace(): `repos` must name at least one Repo Slot — `repos: { app: "https://…" }`, or ' +
+          "`open` for a slot the consumer binds, or a mapper over the door for one the run chooses — or be " +
+          "`open` whole, for a map the consumer names (ADR-0051).",
+      );
+    }
+    for (const [slot, value] of Object.entries(repos)) assertRepoSlot("workspace()", slot, value);
   }
-  for (const [slot, value] of Object.entries(repos)) assertRepoSlot("workspace()", slot, value);
   const wrapper = buildWorkspaceMachine(body, options.spec);
   // The wrapper is TRANSPARENT to its body (ADR-0049): `customize(machine, { agents })` on a
   // Workspace means the Machine inside, so the composer never spells `body` and never has to know
@@ -480,7 +513,7 @@ export function workspace(
   attachSandboxParts(wrapper, {
     ...(options.image !== undefined ? { image: options.image } : {}),
     ...(options.user !== undefined ? { user: options.user } : {}),
-    repos: { ...repos },
+    repos: repos === open ? open : { ...repos },
   });
   // The body's vocabulary stays the BODY's (ADR-0011, ADR-0049): the wrapper declares no events
   // of its own and merges none, because the actors that use the body's names resolve against the
@@ -539,19 +572,23 @@ function assertSpec(spec: WorkspaceSpec): void {
  */
 function resolveBindings(
   where: { workflow: string; path: string[] | undefined },
-  slots: Record<string, RepoSlot>,
+  slots: SandboxParts["repos"],
   runInput: unknown,
 ): Record<string, ResolvedBinding> {
+  const unbound = (slot: string | undefined): Error => {
+    const fix =
+      where.path === undefined
+        ? "no customize() reaches a Machine invoked inline; declare it under setup({ actors }) and bind the slots there"
+        : `bind them where the Machine is registered: export const machine = ${customizeLine("<import>", where.path, slot)}`;
+    const what =
+      slot === undefined ? "Repo Slots are open — nobody named any" : `Repo Slot "${slot}" is open — nobody bound it`;
+    return new Error(`workflow "${where.workflow}": ${what}; ${fix} (ADR-0051)`);
+  };
+  if (slots === open) throw unbound(undefined);
   const bindings: Record<string, ResolvedBinding> = {};
   for (const [slot, value] of Object.entries(slots)) {
     const state = repoSlotState(value);
-    if (state.kind === "open") {
-      const fix =
-        where.path === undefined
-          ? "no customize() reaches a Machine invoked inline; declare it under setup({ actors }) and bind the slot there"
-          : `bind it where the Machine is registered: export const machine = ${customizeLine("<import>", where.path, slot)}`;
-      throw new Error(`workflow "${where.workflow}": Repo Slot "${slot}" is open — nobody bound it; ${fix} (ADR-0051)`);
-    }
+    if (state.kind === "open") throw unbound(slot);
     if (state.kind === "bound") {
       bindings[slot] = { ...state.binding, perRun: false };
       continue;

@@ -371,8 +371,40 @@ test("a per-run slot may be rebound statically — it becomes bound; and a bound
   const dynamic = customize(workspace(research(), { repos, spec }), {
     repos: { app: ({ input }) => (input as { repo: string }).repo },
   });
-  assert.equal(typeof sandboxPartsOf(dynamic).repos.app, "function");
+  assert.equal(typeof (sandboxPartsOf(dynamic).repos as Record<string, unknown>).app, "function");
   assert.deepEqual(partsOf([dynamic]).repos, [], "a per-run slot contributes nothing to the walk");
+});
+
+test("an Open slot MAP takes the composer's whole map — any keys, the first is the workdir, at least one", () => {
+  // The Machine said `repos: open` (ADR-0051): it names no slot, so the map the composer writes IS
+  // the declaration. Nothing to check a key against, and nothing to add to — the composer's words
+  // are the slots, in the order they wrote them.
+  const stock = workspace(research(), { repos: open, spec });
+  assert.equal(sandboxPartsOf(stock).repos, open);
+  assert.deepEqual(partsOf([stock]).openSlots, [{ slot: undefined, path: [] }], "reported once, with no slot to name");
+
+  const named = customize(stock, { repos: { target: APP, reference: "https://example.test/handbook.git" } });
+  assert.deepEqual(sandboxPartsOf(named).repos, { target: APP, reference: "https://example.test/handbook.git" });
+  assert.deepEqual(partsOf([named]).openSlots, []);
+  assert.deepEqual(
+    partsOf([named]).repos.map((r) => r.identity),
+    ["example.test/app", "example.test/handbook"],
+  );
+  assert.equal(sandboxPartsOf(stock).repos, open, "the import is untouched");
+
+  // The same checks a declared map gets, because it is the same map one call later.
+  assert.throws(
+    () => customize(stock, { repos: {} }),
+    /machine "workspace" declares its Repo Slots open as a map — name at least one/,
+  );
+  assert.throws(() => customize(stock, { repos: { "1": APP } }), /Repo Slot key "1" is not a directory name/);
+  assert.throws(() => customize(stock, { repos: { target: "" } }), /Repo Slot "target" is bound to an empty url/);
+  // A composer building a further package may leave a slot open for the next composer: the map is
+  // then a declared one with an open slot, and the walk reports that slot by name.
+  const repackaged = customize(stock, { repos: { target: open, docs: APP } });
+  assert.deepEqual(partsOf([repackaged]).openSlots, [{ slot: "target", path: [] }]);
+  // Naming no `repos` at all leaves the map Open — an image retune alone changes nothing about it.
+  assert.equal(sandboxPartsOf(customize(stock, { image: "ghcr.io/acme/tools:2" })).repos, open);
 });
 
 test("only DECLARED slots can be bound: an undeclared key fails, naming the Machine's own", () => {

@@ -14,8 +14,9 @@ import { customize } from "@j2/orchestrator";
 import { task } from "@j2/machines";
 
 export const machine = customize(task, {
-  // The same Repo the tier's other workflows bind (ADR-0051), under the SLOT NAME the package
-  // chose: `target`, not `app`. The slot key is the Machine's word, the url is ours.
+  // The same Repo the tier's other workflows bind (ADR-0051). `task` leaves its slot map Open, so
+  // the slot name is ours too — `target` is the word this file chooses, and being the first (and
+  // only) slot, it is where the coder works.
   repos: { target: { url: "http://seed.j2-e2e-seed.svc/app.git", ref: "main" } },
   // The one model this instance has (`j2.config.ts`'s `fake` provider): a real Agent definition at
   // a real model id, so `j2 up`'s provider preflight probes it like any other.

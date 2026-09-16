@@ -48,7 +48,10 @@ import { repoIdentity } from "./repo-identity.ts";
 // --- Repo Slots (ADR-0051) ---------------------------------------------------------------------
 // A `workspace()` names each Repo it attaches under a SLOT — the Machine's own word for it, the
 // key of the body's `workspace.repos` handles, and the directory under `/work`. The slot's VALUE
-// is one of three states, and the walk tells them apart without evaluating anything.
+// is one of three states, and the walk tells them apart without evaluating anything. A Machine
+// whose body names no slot — it works in `workdir` and reads whatever else is attached — declares
+// the whole MAP Open instead (`repos: open`): the composer names every slot, and the first is the
+// workdir. Open at the map is the same word as Open at a slot, one level up (CONTEXT.md).
 
 // The sentinel itself lives in open.ts, a module with nothing else in it: since ADR-0054 it marks
 // an Agent's model too, and agent.ts must read it without importing this file (the walk imports
@@ -144,8 +147,9 @@ export type SandboxParts = {
   image?: string;
   /** The User Container's image (ADR-0005). Absent → the pod has no third container. */
   user?: string;
-  /** The Repo Slots, in declaration order — the first is the body's `workdir` (ADR-0051). */
-  repos: Record<string, RepoSlot>;
+  /** The Repo Slots, in declaration order — the first is the body's `workdir` (ADR-0051) — or
+   * {@link open} for a map the composer fills whole. */
+  repos: Record<string, RepoSlot> | typeof open;
 };
 
 // The stamps below are written ON `machine.config` under `Symbol.for` keys, never held in a
@@ -284,8 +288,11 @@ export type CarriedRepo = { url: string; ref?: string; identity: string; key: st
  * INLINE (a machine object written straight onto `invoke.src`): an actor with no slot key is one
  * no `customize()` can name, so no line binds that slot — declaring it under `setup({ actors })`
  * does.
+ *
+ * `slot` is `undefined` for a `workspace()` that declared its whole map Open (`repos: open`,
+ * ADR-0051): there is no slot to name, because naming the slots is what the composer does.
  */
-export type OpenSlot = { slot: string; path: readonly string[] | undefined };
+export type OpenSlot = { slot: string | undefined; path: readonly string[] | undefined };
 
 /** Which kind of Open part a fix line binds — the two `customize()` keys (ADR-0051, ADR-0054). */
 export type OpenPart = "repo" | "agent";
@@ -300,11 +307,19 @@ export type OpenPart = "repo" | "agent";
  * An Agent binds through `agents` instead, and the placeholder is the model spelling ADR-0018
  * demands — `<provider>/<model>`, not a bare model id, since the prefix is what picks the
  * endpoint. `repo` is the default because a Repo Slot was the first Open part and reads as the
- * unmarked case.
+ * unmarked case. An Open MAP has no slot to print (`slot` undefined): the placeholder `<slot>`
+ * stands where the composer's own word goes, since choosing it is the composer's half of the line.
  */
-export function customizeLine(machine: string, path: readonly string[], slot: string, part: OpenPart = "repo"): string {
+export function customizeLine(
+  machine: string,
+  path: readonly string[],
+  slot: string | undefined,
+  part: OpenPart = "repo",
+): string {
   const binds =
-    part === "agent" ? `{ agents: { ${slot}: { model: "<provider>/<model>" } } }` : `{ repos: { ${slot}: "<url>" } }`;
+    part === "agent"
+      ? `{ agents: { ${slot}: { model: "<provider>/<model>" } } }`
+      : `{ repos: { ${slot ?? "<slot>"}: "<url>" } }`;
   const inner = path.reduceRight((parts, key) => `{ actors: { ${key}: ${parts} } }`, binds);
   return `customize(${machine}, ${inner})`;
 }
@@ -333,7 +348,8 @@ export type CarriedParts = {
   images: CarriedImage[];
   /** Every bound Repo, deduped by identity, in walk order. */
   repos: CarriedRepo[];
-  /** Every open Repo Slot, in walk order — non-empty is a converge refusal. */
+  /** Every open Repo Slot, in walk order — non-empty is a converge refusal. An Open MAP
+   * (`repos: open`) is one entry with no `slot`. */
   openSlots: OpenSlot[];
   /** Every Agent whose model is still Open (ADR-0054), in walk order — the same refusal, by the
    * same route, and the reason these are two lists rather than one: the fix lines differ. */
@@ -430,8 +446,13 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   // Keyed on the IDENTITY, not the spelling (ADR-0051): `git@github.com:acme/app.git` and
   // `https://github.com/acme/app` are one Repo and one cache, so they collapse to one entry — the
   // first spelling wins, and it is the url the CR is created with. A per-run slot contributes
-  // nothing, and an open one is reported for the converge to refuse.
-  const collectRepos = (path: OpenSlot["path"], slots: Record<string, RepoSlot>): void => {
+  // nothing, and an open one is reported for the converge to refuse — as is an Open map, which
+  // has no slot to report and is refused by the same route.
+  const collectRepos = (path: OpenSlot["path"], slots: SandboxParts["repos"]): void => {
+    if (slots === open) {
+      openSlots.push({ slot: undefined, path });
+      return;
+    }
     for (const [slot, value] of Object.entries(slots)) {
       const state = repoSlotState(value);
       if (state.kind === "open") openSlots.push({ slot, path });

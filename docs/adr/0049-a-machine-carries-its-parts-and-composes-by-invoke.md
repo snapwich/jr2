@@ -86,7 +86,9 @@ because they are one problem: **what a Machine depends on that is not inside it.
   is inside the Machine.
 - `defineAgent` retires in favor of `agent()`; `AgentTurnInput.agent` goes; `deriveMenus` keys on agent-slot logic
   instead of `src === "agentRun"`; the unit-test seam becomes `provide({ actors: { researcher: fake } })`.
-- Only declared parts can be customized; none can be added. A consumer who needs a third Agent composes a new Machine.
+- Only declared parts can be customized; none can be added. A consumer who needs a third Agent composes a new Machine. A
+  `workspace()` that declares its Repo Slot map Open (`repos: open`, ADR-0051) has declared every slot as the composer's
+  to name, so the map they write is the declaration, not an addition.
 - **`import.meta.resolve` stays** in any Machine that ships a context; there is no other way for an ES module to name a
   folder it owns.
 - The ledger records which slot a Turn ran as, not the definition's text. If per-Turn auditability of instructions is

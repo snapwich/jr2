@@ -36,14 +36,17 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   preflights, the door value overrides it for one run's Turns. Nothing in j2 changes for this — it is the Machine's own
   four lines.
 - **The first Machine is `task`: one prompt, one Workspace, one human says done.** Door
-  `{ prompt, branch?, model?, thinkingLevel? }`, branch defaulting to `j2/task-<run id>`; one Open Repo Slot `target`;
-  one Agent `coder` with an Open model. `working` invokes `coder`; its `finish { summary }` parks at the `review` Gate
-  (meta: summary, branch, workdir), as does a terminal `agent.fault` (meta: reason). `approve` reaches the final state
-  and tears the Workspace down; `request_changes { notes }` **continues the same conversation**
-  (`conversation: "coder"`) — one human steering one Agent wants the Agent to remember what it did, unlike ADR-0049's
-  coder⇄reviewer handoff, which is lossy on purpose. No round cap: the human is the cap. Rejected: a per-run Repo on the
-  door — a packaged door cannot enumerate the Instance's repos, and "a Workflow is a name" reads best when the name
-  means "a prompt against THIS repo"; two repos are two files.
+  `{ prompt, branch?, model?, thinkingLevel? }`, branch defaulting to `j2/task-<run id>`; the Repo Slots Open as a map
+  (`repos: open`, ADR-0051) — the consumer names them, the first is where the coder works, any others are checkouts the
+  first Turn frames for the coder to read; one Agent `coder` with an Open model. `working` invokes `coder`; its
+  `finish { summary }` parks at the `review` Gate (meta: summary, branch, workdir), as does a terminal `agent.fault`
+  (meta: reason). `approve` reaches the final state and tears the Workspace down; `request_changes { notes }`
+  **continues the same conversation** (`conversation: "coder"`) — one human steering one Agent wants the Agent to
+  remember what it did, unlike ADR-0049's coder⇄reviewer handoff, which is lossy on purpose. No round cap: the human is
+  the cap. Rejected: a per-run Repo on the door — a packaged door cannot enumerate the Instance's repos, and "a Workflow
+  is a name" reads best when the name means "a prompt against THIS repo". Rejected: a named `target: open` slot — the
+  body reads `workdir`, never `repos.target`, so the name claimed a shape the body did not have and shut out the one
+  thing a task commonly wants beside its repository: another checkout to read.
 - **The Machine does not push.** ADR-0005/0053: the Agent holds no credential and the push url is the caller's own
   spelling with the caller's own credential. The Gate park is the inspection window — exec in, review, push, then
   `approve`, and unpushed commits go with the pod, as ADR-0012 always said. A credentialed push out of the pod is a

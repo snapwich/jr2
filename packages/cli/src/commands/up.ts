@@ -179,7 +179,13 @@ export async function up(args: string[], io: Io): Promise<number> {
   for (const w of workflows) {
     const walked = partsOf([w.machine]);
     const opened = [
-      ...walked.openSlots.map((o) => ({ ...o, part: "repo" as const, what: `Repo Slot "${o.slot}"`, adr: "ADR-0051" })),
+      ...walked.openSlots.map((o) => ({
+        ...o,
+        part: "repo" as const,
+        // An Open MAP names no slot — the composer does — so it is refused as "the Repo Slots".
+        what: o.slot === undefined ? "its Repo Slots" : `Repo Slot "${o.slot}"`,
+        adr: "ADR-0051",
+      })),
       ...walked.openAgents.map((o) => ({ ...o, part: "agent" as const, what: `Agent "${o.slot}"`, adr: "ADR-0054" })),
     ];
     for (const { slot, path, part, what, adr } of opened) {

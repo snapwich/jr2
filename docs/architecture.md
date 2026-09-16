@@ -270,12 +270,13 @@ The events on the arrows are the body's `defineEvent` vocabulary; a state's outg
 state's outgoing external events become its Gate's accepted set (ADR-0015). One Agent per state is what keeps each Turn
 on one task.
 
-Two of `task`'s parts are **Open** (ADR-0051/0054): the Repo Slot `target` has no url and the `coder` has no model,
-because a package cannot know your repository or pay for your model. `j2 up` walks the registered Machines and refuses
-an Open part nobody bound, printing the `customize` line above — so the failure mode of forgetting is a converge that
-stops, never a run that quietly spends money on a model the user never chose. `task` also never pushes: the Gate park
-retains the Sandbox, so a human execs in, reads the branch, and pushes it with their own credential before answering
-(ADR-0005/0053).
+Two of `task`'s parts are **Open** (ADR-0051/0054): the Repo Slots are Open as a map — the body names none, so the
+consumer names every one, the first being where the coder works and the rest checkouts it is told to read — and the
+`coder` has no model, because a package cannot know your repository or pay for your model. `j2 up` walks the registered
+Machines and refuses an Open part nobody bound, printing the `customize` line above — so the failure mode of forgetting
+is a converge that stops, never a run that quietly spends money on a model the user never chose. `task` also never
+pushes: the Gate park retains the Sandbox, so a human execs in, reads the branch, and pushes it with their own
+credential before answering (ADR-0005/0053).
 
 A jr-shaped workflow — many tasks at once, drawn from a Work Source under a concurrency cap — is these same pieces with
 one more stacked on top: `pool()` owns spawn, collect, wake and drain and declares the run's door, `source()` owns "what

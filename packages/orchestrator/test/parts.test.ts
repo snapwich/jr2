@@ -266,7 +266,7 @@ test("a workspace() inside a j2Setup() inside a pool() — every part, at every 
 /** The cache key `github.com/acme/app` normalizes to (repo-identity.ts) — one for every spelling. */
 const APP_KEY = repoKey("https://github.com/acme/app");
 
-const wsRepos = (repos: Record<string, RepoSlot>) =>
+const wsRepos = (repos: Record<string, RepoSlot> | typeof open) =>
   workspace(carrier("body", "coder", "vllm/qwen"), { repos, spec: () => ({ branch: "feat-1" }) });
 
 test("bound urls are collected with their identity and key, deduped by IDENTITY across spellings", () => {
@@ -323,6 +323,20 @@ test("open slots are reported with their `customize()` route from the root — w
     { slot: "target", path: ["review"] },
     { slot: "docs", path: ["review"] },
   ]);
+  // A map declared Open whole (`repos: open`) is one entry with no slot to name — the composer
+  // names them — on the same route, so `j2 up` refuses it by the same line with `<slot>` left to
+  // the composer.
+  const mapped = j2Setup({ events: [], actors: { review: wsRepos(open) } }).createMachine({
+    id: "host",
+    initial: "reviewing",
+    states: { reviewing: { invoke: { src: "review" } } },
+  });
+  assert.deepEqual(partsOf([mapped]).openSlots, [{ slot: undefined, path: ["review"] }]);
+  assert.equal(partsOf([mapped]).composesSandbox, true);
+  assert.equal(
+    customizeLine("top", ["review"], undefined),
+    'customize(top, { actors: { review: { repos: { <slot>: "<url>" } } } })',
+  );
   const workReady = defineEvent({ name: "work_ready", input: z.object({}) });
   const pooled = pool(host, {
     source: source<{ id: string }>({

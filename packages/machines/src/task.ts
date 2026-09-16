@@ -3,12 +3,17 @@
 // human answers, and a loop between them that ends when the human ends it.
 //
 // Both of the parts a package cannot honestly fill are left OPEN (CONTEXT.md, ADR-0051/0054): the
-// Repo Slot `target` has no url, because the package cannot know the repository, and the Agent
-// `coder` has no model, because the package cannot pay for one. A consumer binds both on the line
-// that registers this Machine as a Workflow:
+// Repo Slots are Open as a MAP, because the package cannot know the repository — nor how many
+// checkouts the task wants beside it — and the Agent `coder` has no model, because the package
+// cannot pay for one. A consumer binds both on the line that registers this Machine as a
+// Workflow, naming every slot: the first is the one the coder works in, and any others are
+// attached beside it for the coder to read (a library the change targets, a handbook):
 //
 //   export const machine = customize(task, {
-//     repos: { target: { url: "https://github.com/you/repo.git" } },
+//     repos: {
+//       target: { url: "https://github.com/you/repo.git" },
+//       reference: { url: "https://github.com/you/lib.git" }, // optional: more checkouts to read
+//     },
 //     agents: { coder: { model: "anthropic/claude-sonnet-4-6" } },
 //   });
 //
@@ -43,7 +48,7 @@ import {
 //
 // No `repo` field, deliberately (ADR-0054): a packaged door cannot enumerate the Instance's
 // repositories, and "a Workflow is a name" reads best when the name means "a prompt against THIS
-// repository". Two repositories are two `workflows/` files over two `customize` calls.
+// repository". The repositories are the Workflow's `customize` line, not the run's input.
 
 /** Mirrors `ThinkingLevel` as a value, since the door needs a zod enum and the type is a type.
  * `satisfies` is what keeps the two from drifting: a level added to the type fails here. */
@@ -105,11 +110,14 @@ const requestChanges = defineEvent({
 });
 
 // ---------------------------------------------------------------------------------------------
-// The body. It receives the door PLUS the handles `workspace()` injects — `Workspaced<…, "target">`,
-// keyed by the one Repo Slot the wrapper declares (ADR-0051) — and, because the wrapper is this
-// Machine's ROOT, the field the host injects beside the door (`instanceId`, ADR-0033).
+// The body. It receives the door PLUS the handles `workspace()` injects and, because the wrapper is
+// this Machine's ROOT, the field the host injects beside the door (`instanceId`, ADR-0033).
+//
+// `Workspaced<…, string>` — the body names NO slot (ADR-0051): it works in `workdir`, which is
+// whatever the consumer wrote first, and frames every other checkout the handles carry. That is
+// what lets the wrapper leave the slot map Open; a body that named `repos.target` could not.
 
-type BodyInput = Workspaced<TaskInput & HostInjectedInput, "target">;
+type BodyInput = Workspaced<TaskInput & HostInjectedInput, string>;
 
 type BodyContext = BodyInput & {
   /**
@@ -154,7 +162,8 @@ export const body = j2Setup({
       workspace: "write",
       instructions: `You are a software engineer working alone on one task, in a container of your own.
 
-- Work only inside the worktree the conversation names. Nothing you write outside it survives.
+- Edit only inside the worktree the conversation names as yours. Nothing you write outside it
+  survives. Any other checkout it names is there for you to read.
 - Commit your work on the named branch. You cannot push, and you do not need to: a human reads the
   branch in this container before the run ends.
 - Read before you write, and prefer the smallest change that does the task.
@@ -264,10 +273,11 @@ export const body = j2Setup({
 
 export const task = workspace(body, {
   input: door,
-  // The one Repo Slot, OPEN (ADR-0051/0054): the package names the slot, the consumer names the
-  // Repo. `target` is the body's `workdir` because it is the only slot; a second repository is a
-  // second slot on a Machine of the consumer's own.
-  repos: { target: open },
+  // The Repo Slots, OPEN as a map (ADR-0051/0054): the consumer names every slot and every Repo.
+  // The package names none, because the body reads none — the first slot the consumer writes is
+  // the `workdir`, and the rest are checkouts the coder is told about and may read. A named
+  // `target: open` would have said "one repository", which is not what the body knows.
+  repos: open,
   spec: ({ input }) => ({ branch: branchOf(input) }),
 });
 
@@ -302,13 +312,22 @@ function branchOf(input: TaskInput): string {
  * because the conversation holds nothing yet; every Turn after it carries the human's notes alone,
  * because the coder remembers the rest (ADR-0054's continued conversation). A post-fault Turn is a
  * first Turn again — that is what `turns` counts.
+ *
+ * The geography is every slot the handles carry (ADR-0051): the `workdir` is where the work goes,
+ * and each other checkout is named by the consumer's own word for it, at the path the attach put
+ * it — the only way the coder can learn what is beside it, since the package never knew.
  */
 function coderPrompt(context: BodyContext): string {
   const notes = context.notes ? `\n\nThe human reviewed your work and asks for changes:\n${context.notes}` : "";
   if (context.turns > 0) return notes.trimStart() || "Continue.";
+  const { workdir, branch, repos } = context.workspace;
+  const beside = Object.entries(repos)
+    .filter(([, path]) => path !== workdir)
+    .map(([slot, path]) => `\n- ${slot}: ${path}`)
+    .join("");
   return (
     `${context.prompt}${notes}\n\n` +
-    `Work in ${context.workspace.workdir}, on branch ${context.workspace.branch}. ` +
-    `Commit what you do there, then call finish.`
+    `Work in ${workdir}, on branch ${branch}. Commit what you do there, then call finish.` +
+    (beside ? `\n\nAlso checked out beside it, for you to read:${beside}` : "")
   );
 }

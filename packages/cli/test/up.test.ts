@@ -318,8 +318,11 @@ async function withOpenAgent(root: string): Promise<string> {
  * refuses, naming the `customize` line that binds it (ADR-0051). `under` composes it one level
  * down instead: invoked from an author Machine's `review` slot, the shape a packaged Machine
  * actually arrives in. */
-async function withOpenSlot(root: string, under?: "child"): Promise<string> {
-  const packaged = `workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) })`;
+async function withOpenSlot(root: string, under?: "child" | "map"): Promise<string> {
+  // `map`: the slot MAP is Open whole (`repos: open`) — no slot for the walk to name, because the
+  // composer names them (ADR-0051).
+  const repos = under === "map" ? "open" : "{ target: open }";
+  const packaged = `workspace(body, { repos: ${repos}, spec: () => ({ branch: "b" }) })`;
   await writeFile(
     join(root, "workflows", "packaged.ts"),
     `import { j2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
@@ -1079,6 +1082,23 @@ test("an OPEN Repo Slot on a COMPOSED Machine is refused with the nested `actors
     err,
     /export const machine = customize\(<import>, \{ actors: \{ review: \{ repos: \{ target: "<url>" \} \} \} \}\)/,
   );
+  assert.deepEqual(w.kube.applied, []);
+  assert.deepEqual(w.built, []);
+});
+
+test("an OPEN Repo Slot MAP is refused as the Repo Slots, with the composer's `<slot>` left in the line", async () => {
+  // `repos: open` (ADR-0051): the Machine names no slot, so the refusal cannot either — it names
+  // the Machine and the line, and the placeholder is the composer's own word to fill.
+  const root = await withOpenSlot(await mkInstance(`export default { name: "myinst" };\n`), "map");
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /refusing: workflow "packaged" leaves its Repo Slots open — bind it where the Machine is registered/,
+  );
+  assert.match(err, /export const machine = customize\(<import>, \{ repos: \{ <slot>: "<url>" \} \}\)/);
+  assert.match(err, /ADR-0051/);
   assert.deepEqual(w.kube.applied, []);
   assert.deepEqual(w.built, []);
 });

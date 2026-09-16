@@ -32,6 +32,20 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   are the in-pod paths (`/work/<slot>/<branch>`): a slot key is collision-free by construction and the same in every
   Instance that consumes the package, so a prompt can name a path and be right everywhere.
 
+- **A Machine whose body names no slot declares the whole map Open: `repos: open`.** A body that works in `workdir` and
+  reads whatever else is attached — `@j2/machines`'s `task` — knows nothing a slot name could say, and a `target: open`
+  on it would claim "one repository" where the body claims nothing. So the map is the Open part, one level up from a
+  slot: the composer names every slot with `customize`, the first they write is the `workdir`, and the rest are
+  checkouts the body frames for its Agent to read. The body's handles are typed `Workspaced<…, string>`, which is its
+  statement that it names no slot; `workspace()` refuses a body that names one under an Open map, since the composer may
+  never write that word. The walk reports an Open map as one Open part with no slot, and `j2 up` refuses it by the same
+  route, with `<slot>` left in the line for the composer to fill. Rejected: `customize` adding keys to a declared map —
+  a slot a Machine never declared is a compile error on purpose (a typo cannot mint a clone), and a body that named
+  `target` could say nothing about a `reference` it never knew of; the map-level Open says what the body actually knows.
+  Rejected: a second Machine of the consumer's own, wrapping the exported body with more slots — composition is the
+  right act for a different BODY, but the same body with more checkouts beside it is a binding, and `customize` is where
+  bindings go.
+
 - **The consumer binds with `customize`**, in the same call as Agents and the image, nested through `actors` like every
   other part: `customize(codeReview, { repos: { target: "git@github.com:ourorg/app.git" } })`. Any of the three forms is
   accepted, so a consumer can also bind a mapper over the child's door. A slot the Machine does not declare is a compile
@@ -106,9 +120,12 @@ decision: **what a Machine says about a repository, and what the cluster does wi
 - The operator becomes git-aware, which ADR-0001 kept it from being: the `Repo` CRD and the cache agent are its. The
   Sandbox CRD stays free of git semantics beyond a list of identities; clone and worktree remain the Orchestrator's
   post-`Ready` step (ADR-0004).
-- `workspace()`'s `repos` is required with at least one slot; a Machine that composes no Sandbox has no repos to
-  customize, and the data-plane switch ("does this Instance need Sandboxes") is "a registered Machine composes a
-  Sandbox", read off the walk, not "config has repos".
+- `workspace()`'s `repos` is required with at least one slot, or `open` whole — in which case the `customize` that names
+  the map is held to the same rule; a Machine that composes no Sandbox has no repos to customize, and the data-plane
+  switch ("does this Instance need Sandboxes") is "a registered Machine composes a Sandbox", read off the walk, not
+  "config has repos".
+- Every slot gets a branch worktree cut at the run's branch, a reference checkout included. A slot has no read-only
+  mode; that is a decision of its own if it is ever wanted.
 - The Console's start form loses the catalog dropdown: a per-run repository is a url field unless the Machine's door
   enumerates its own.
 - The volume paths change: the in-pod source mount is `/repos/<key>` where `<key>` is derived from the identity, and the
