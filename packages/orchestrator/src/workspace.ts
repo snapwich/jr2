@@ -1,8 +1,8 @@
 // `workspace(body, { input, image, user, repos, spec })` (ADR-0012, ADR-0049, ADR-0051): the
 // j2-owned wrapper Machine that owns ONLY Sandbox lifecycle — provision the Sandbox (out of the
 // STATIC `image`/`user`/`repos` options it carries) + attach one worktree per Repo Slot, run the
-// author's body Machine inside it as the named slot `body`, with `{ workspace: { workdir, repos,
-// branch } }` appended to its input (the mechanism-facing endpoint/sandbox are published ambiently
+// author's body Machine inside it as the named slot `body`, with `{ workspace: { repos, branch } }`
+// appended to its input (the mechanism-facing endpoint/sandbox are published ambiently
 // — ADR-0016, ambient.ts), and destroy the Sandbox when the body reaches a final state. Teardown lives INSIDE the
 // wrapper's own states because an xstate stop is synchronous — multi-step async cleanup must be
 // states the machine transitions through itself, which forces the thing that provisions to also
@@ -95,14 +95,17 @@ export type WorkspaceSpec = {
  * `workspace()` holds those names to the ones the wrapper declares. A default of `string` would
  * type `repos` as `Record<string, string>`, under which a misspelled slot reads as a path — the
  * silent widening the slot key exists to refuse. `string` WRITTEN is a different statement: the
- * body names no slot at all — it works in `workdir` and enumerates the rest — which is the body
+ * body names no slot at all — it enumerates them, in the order the composer wrote — which is the body
  * under a wrapper that declares its map Open (`repos: open`, ADR-0051), where the slots are the
  * composer's words and no body could name them.
  */
 export type WorkspaceHandles<TSlots extends string> = {
-  /** The primary working directory: the FIRST declared slot's branch worktree. */
-  workdir: string;
-  /** Every slot's branch-worktree path: `/work/<slot>/<branch>`. */
+  /** Every slot's branch-worktree path: `/work/<slot>/<branch>`, keyed in DECLARATION ORDER. The
+   * kit gives no slot a privileged meaning — there is no `workdir` — because which tree an Agent
+   * works in is a fact about that Agent's Turn, not about the Workspace: a body that names its
+   * slots frames each Agent with its own, and a body that names none may give the order a
+   * meaning of its own (`task`: the first is the one the coder edits). The order is the kit's
+   * promise; the meaning is the Machine's (ADR-0051). */
   repos: Record<TSlots, string>;
   branch: string;
   /** Detached review-worktree paths by slot (ADR-0028) — present only when the spec carried
@@ -177,7 +180,6 @@ export interface SandboxPort {
     spec: WorkspaceSpec;
     repos: Array<{ slot: string; url: string; ref?: string }>;
   }): Promise<{
-    workdir: string;
     repos: Record<string, string>;
     review?: Record<string, string>;
     stale?: Record<string, string>;
@@ -337,7 +339,7 @@ type BodyAcceptsDoor<TBody extends AnyStateMachine, TDoor, TSlots extends string
  * `Record<"target", string>` — an index signature satisfies a mapped type's named keys — so the
  * check above would pass a body that names a slot the composer may never write. Under an Open
  * map the body must name NO slot: its handles' keys are `string`, which is how a body says "I
- * work in `workdir` and read whatever else is attached". A body that names one is refused here,
+ * enumerate whatever is attached". A body that names one is refused here,
  * where the wrapper is written.
  */
 type BodyNamesNoSlotUnderOpenMap<TBody extends AnyStateMachine, TSlots extends string> = string extends TSlots
@@ -394,15 +396,15 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
   user?: string;
   /**
    * The Repo Slots (ADR-0051), keyed by the Machine's own word for each — the key of the body's
-   * `workspace.repos` handles and the directory under `/work`; the FIRST is the body's `workdir`.
-   * Required, at least one: a Workspace exists to work on a repository. Each slot is bound (a url,
+   * `workspace.repos` handles and the directory under `/work`. The handles keep this map's order,
+   * and the kit reads nothing into it. Required, at least one: a Workspace exists to work on a repository. Each slot is bound (a url,
    * or `{ url, ref? }` — the package's own), open (`open` — the consumer binds it with
    * `customize`), or per-run (a mapper over the door: `({ input }) => input.repo`).
    *
    * Or the whole map Open (`repos: open`): the Machine names no slot, the composer names every
-   * one with `customize`, and the first they write is the `workdir`. The shape a packaged Machine
-   * takes when its body reads `workdir` alone and can work beside any number of other checkouts
-   * (`@j2/machines`'s `task`). Under it `TSlots` is `string`, and the body's handles must say so.
+   * one with `customize`, in an order the Machine may give a meaning to. The shape a packaged
+   * Machine takes when its body enumerates its checkouts rather than naming them (`@j2/machines`'s
+   * `task`, whose first slot is the one the coder edits). Under it `TSlots` is `string`, and the body's handles must say so.
    */
   repos: Record<TSlots, RepoSlot<TInput>> | typeof open;
 };
@@ -487,7 +489,7 @@ export function workspace(
   }
   // The slots, checked NOW for the same reason (ADR-0051): every value is one of the three forms,
   // every key is a directory name, and there is at least one — a Workspace exists to work on a
-  // repository, and a wrapper with no slot would attach nothing and hand the body no `workdir`.
+  // repository, and a wrapper with no slot would attach nothing and hand the body no checkout.
   // An Open map defers all of that to the `customize` that fills it, which runs the same checks.
   const repos = options.repos;
   if (repos !== open) {
@@ -655,7 +657,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
   });
 
   const attach = fromPromise<
-    { workdir: string; repos: Record<string, string>; review?: Record<string, string>; stale?: Record<string, string> },
+    { repos: Record<string, string>; review?: Record<string, string>; stale?: Record<string, string> },
     { wsId: string; spec: WorkspaceSpec; bindings: Record<string, ResolvedBinding> }
   >(async ({ input, system }) => {
     const name = workspaceName(runBindingOf(system).runId, input.wsId);
@@ -796,7 +798,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
                 const ctx = context as WsContext;
                 const out = (
                   event as unknown as {
-                    output: { workdir: string; repos: Record<string, string>; review?: Record<string, string> };
+                    output: { repos: Record<string, string>; review?: Record<string, string> };
                   }
                 ).output;
                 return {
@@ -806,7 +808,6 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
                   // registration — is the one the Adapter's token is scoped to, by construction
                   // (ADR-0013).
                   sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),
-                  workdir: out.workdir,
                   repos: out.repos,
                   branch: ctx.spec.branch,
                   ...(out.review ? { review: out.review } : {}),
@@ -831,11 +832,11 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
             src: "body",
             input: ({ context }: { context: WsContext }) => {
               const ctx = context;
-              const { workdir, repos, branch, review } = ctx.handles!;
+              const { repos, branch, review } = ctx.handles!;
               // Body-facing subset only (ADR-0016): endpoint/sandbox are mechanism-internal.
               return {
                 ...ctx.runInput,
-                workspace: { workdir, repos, branch, ...(review ? { review } : {}) } satisfies WorkspaceHandles<string>,
+                workspace: { repos, branch, ...(review ? { review } : {}) } satisfies WorkspaceHandles<string>,
               };
             },
             onDone: {

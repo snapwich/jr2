@@ -1069,7 +1069,7 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
   assert.deepEqual(out.stale, {
     infra: `Repo "${infraKey}" on node kind-worker is stale: fatal: unable to access 'https://example.test/infra.git/': Could not resolve host`,
   });
-  assert.equal(out.workdir, "/work/app/b", "the attach PROCEEDED — stale is a notice, not a refusal");
+  assert.equal(out.repos.app, "/work/app/b", "the attach PROCEEDED — stale is a notice, not a refusal");
 
   // Fresh (the common case): no `stale` key at all, and a later fresh provision of the same name
   // forgets an earlier verdict.
@@ -1097,9 +1097,10 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
     { slot: "app", url: "git@github.com:acme/app.git", ref: "main" },
     { slot: "infra", url: "https://example.test/infra.git", ref: "v2" },
   ];
-  const { workdir, repos: paths } = await port.attach({ name: "sb-3", spec, repos });
-  assert.equal(workdir, "/work/app/feat-login", "the FIRST slot's worktree");
+  const { repos: paths, ...rest } = await port.attach({ name: "sb-3", spec, repos });
   assert.deepEqual(paths, { app: "/work/app/feat-login", infra: "/work/infra/feat-login" });
+  assert.deepEqual(Object.keys(paths), ["app", "infra"], "declaration order — the one thing the kit promises about it");
+  assert.deepEqual(rest, {}, "no slot is privileged: the attach names no `workdir` (ADR-0051)");
 
   const argv = calls[0]!.args;
   assert.deepEqual(argv.slice(0, 2), ["exec", "pod/sb-3"]);
@@ -1164,7 +1165,7 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
     spec,
     repos: [{ slot: "app", url: "git@github.com:acme/app.git" }],
   });
-  assert.equal(defaulted.workdir, "/work/app/feat-login");
+  assert.equal(defaulted.repos.app, "/work/app/feat-login");
   const defaultedScript = calls[calls.length - 1]!.args.at(-1)!;
   assert.match(defaultedScript, /worktree add '\/work\/app\/feat-login' -b 'feat\/login' 'origin\/HEAD'/);
   assert.match(script, /\[ -d '\/work\/app\/default\/\.git' \] \|\|/, "clone is guarded (idempotent re-run)");
@@ -1320,12 +1321,13 @@ test("attachScript cuts the branch worktree FROM a Binding's ref, never ON it (r
   for (const [i, c] of cases.entries()) {
     await t.test(`ref ${c.ref === undefined ? "(absent)" : c.ref}`, async () => {
       const workRoot = join(root, `work${i}`);
-      const { script, workdir } = attachScript(
+      const { script, repos } = attachScript(
         { branch: c.head },
         [{ slot: "app", url, ...(c.ref === undefined ? {} : { ref: c.ref }) }],
         { reposMount, workRoot },
       );
       execFileSync("sh", ["-ec", attachable(script).join("\n")], { stdio: ["ignore", "pipe", "pipe"] });
+      const workdir = repos.app!;
       assert.equal(git(workdir, "branch", "--show-current"), c.head, "the worktree is ON the new branch");
       assert.equal(git(workdir, "rev-parse", "HEAD"), c.at, "cut FROM the ref");
       assert.equal(

@@ -32,19 +32,28 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   are the in-pod paths (`/work/<slot>/<branch>`): a slot key is collision-free by construction and the same in every
   Instance that consumes the package, so a prompt can name a path and be right everywhere.
 
-- **A Machine whose body names no slot declares the whole map Open: `repos: open`.** A body that works in `workdir` and
-  reads whatever else is attached — `@j2/machines`'s `task` — knows nothing a slot name could say, and a `target: open`
-  on it would claim "one repository" where the body claims nothing. So the map is the Open part, one level up from a
-  slot: the composer names every slot with `customize`, the first they write is the `workdir`, and the rest are
-  checkouts the body frames for its Agent to read. The body's handles are typed `Workspaced<…, string>`, which is its
-  statement that it names no slot; `workspace()` refuses a body that names one under an Open map, since the composer may
-  never write that word. The walk reports an Open map as one Open part with no slot, and `j2 up` refuses it by the same
-  route, with `<slot>` left in the line for the composer to fill. Rejected: `customize` adding keys to a declared map —
-  a slot a Machine never declared is a compile error on purpose (a typo cannot mint a clone), and a body that named
-  `target` could say nothing about a `reference` it never knew of; the map-level Open says what the body actually knows.
-  Rejected: a second Machine of the consumer's own, wrapping the exported body with more slots — composition is the
-  right act for a different BODY, but the same body with more checkouts beside it is a binding, and `customize` is where
-  bindings go.
+- **The handles are the slot map and the branch — no slot is the `workdir`.** `workspace.repos` keeps the slots in
+  declaration order, and j2 reads nothing into that order. Which checkout an Agent works in is a fact about that Agent's
+  Turn, not about the Workspace: a body with a `backend` and a `frontend` slot frames one Agent with the first path and
+  another with the second, and either may read the other's tree. A body that names no slot may give the order a meaning
+  of its own and document it (`task`: the first slot is the one the coder edits). The order is the kit's promise — a
+  slot key starts with a letter, because JS reads an integer-like key first wherever it was written — and the meaning is
+  the Machine's. Rejected: a `workdir` handle, the first declared slot's worktree — it made a singular "primary repo" a
+  property of every Workspace, which is wrong for a body whose Agents work in different slots or in more than one, and
+  it hid a rule in key order that the body never chose.
+
+- **A Machine whose body names no slot declares the whole map Open: `repos: open`.** A body that enumerates whatever is
+  attached — `@j2/machines`'s `task` — knows nothing a slot name could say, and a `target: open` on it would claim "one
+  repository" where the body claims nothing. So the map is the Open part, one level up from a slot: the composer names
+  every slot with `customize`, in the order the Machine documents. The body's handles are typed `Workspaced<…, string>`,
+  which is its statement that it names no slot; `workspace()` refuses a body that names one under an Open map, since the
+  composer may never write that word. The walk reports an Open map as one Open part with no slot, and `j2 up` refuses it
+  by the same route, with `<slot>` left in the line for the composer to fill. Rejected: `customize` adding keys to a
+  declared map — a slot a Machine never declared is a compile error on purpose (a typo cannot mint a clone), and a body
+  that named `target` could say nothing about a `reference` it never knew of; the map-level Open says what the body
+  actually knows. Rejected: a second Machine of the consumer's own, wrapping the exported body with more slots —
+  composition is the right act for a different BODY, but the same body with more checkouts beside it is a binding, and
+  `customize` is where bindings go.
 
 - **The consumer binds with `customize`**, in the same call as Agents and the image, nested through `actors` like every
   other part: `customize(codeReview, { repos: { target: "git@github.com:ourorg/app.git" } })`. Any of the three forms is

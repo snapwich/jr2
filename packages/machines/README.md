@@ -25,8 +25,9 @@ the registered Machines, refuses an Open part nobody bound before anything is bu
 that binds it.
 
 `task` has two: its Repo Slots, Open as a map, and the Agent `coder`. Both are bound above. The slot names are yours:
-`task` reads none of them. The first you write is where the coder works; any others are checked out beside it and the
-coder is told where they are, so a change that targets a library, or wants a handbook to hand, is one more line —
+`task` reads none of them. Their order is `task`'s convention (j2 itself gives no slot a meaning): the first you write
+is where the coder works; any others are checked out beside it and the coder is told where they are, so a change that
+targets a library, or wants a handbook to hand, is one more line —
 
 ```ts
 repos: {

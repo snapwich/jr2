@@ -163,8 +163,8 @@ export type Customize<M extends AnyStateMachine> = {
    * or a bound or per-run one to a different Binding; any of the three forms, so a consumer can
    * also bind a mapper over the wrapper's door. A slot the Machine does not declare is a compile
    * error, and a Machine that composes no Sandbox takes `never`, as `agents` does. A `workspace()`
-   * that declared its map Open takes any keys — they are the composer's words, the first is the
-   * `workdir` — and at least one, checked at the call. */
+   * that declared its map Open takes any keys — they are the composer's words, in the order the
+   * Machine documents — and at least one, checked at the call. */
   repos?: [RepoSlotsOf<M>] extends [never] ? never : { [K in RepoSlotsOf<M>]?: RepoSlot<InputFrom<WorkspaceOf<M>>> };
 };
 
@@ -301,8 +301,8 @@ function reseat(machine: AnyStateMachine, seats: Seats): AnyStateMachine {
 
 /**
  * The composer's half of an Open slot MAP (ADR-0051): the Machine said `repos: open`, so the map
- * written here IS the declaration — every key is the composer's word for a Repo, the first is the
- * body's `workdir`, and each value is any of the three slot forms (a composer building a further
+ * written here IS the declaration — every key is the composer's word for a Repo, the order is
+ * kept for the body, and each value is any of the three slot forms (a composer building a further
  * package may leave one `open` for the next composer). Held to the same checks `workspace()` runs
  * on a declared map, because it is the same map one call later: a directory-shaped key, a valid
  * binding, and at least one slot. A `customize` that names no `repos` leaves the map Open, and
@@ -319,7 +319,7 @@ function nameSlots(machine: AnyStateMachine, override: Seats["repos"]): SandboxP
   if (Object.keys(repos).length === 0) {
     throw new Error(
       `customize(): machine "${machine.id}" declares its Repo Slots open as a map — name at least one: ` +
-        '`repos: { app: "https://…" }`; the first is the workdir (ADR-0051).',
+        '`repos: { app: "https://…" }` (ADR-0051).',
     );
   }
   return repos;

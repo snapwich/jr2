@@ -19,7 +19,7 @@ re-attaches to a Submission whose model is already fixed server-side and never r
 `agentRun` walks `self._parent` to the nearest registered ancestor. Invoked-actor registration (not an entry action) is
 what makes this restore-safe: invoked actors restart on snapshot restore, entry actions do not. Not under a workspace →
 fail loudly, unless input carries an explicit `endpoint` (the dev-stub, workspace-less path). Body-facing workspace
-handles are `{ workdir, repos, branch }` ([ADR-0012](0012-workspace-wrapper-machine.md)).
+handles are `{ repos, branch }` ([ADR-0012](0012-workspace-wrapper-machine.md)).
 
 **[ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)'s token scoping survives and strengthens**: the registration
 records the Sandbox resolved from the enclosing wrapper — the same deterministic `workspaceName()` the token was minted

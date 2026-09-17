@@ -28,7 +28,7 @@ class EchoSandbox implements SandboxPort {
   }
   async attach(req: { name: string; spec: WorkspaceSpec; repos: Array<{ slot: string }> }) {
     const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
-    return { workdir: repos[req.repos[0]!.slot]!, repos };
+    return { repos };
   }
   async renew() {
     return { present: true as const, identity: "pod-1" };
@@ -53,7 +53,7 @@ function echoDef(client: MockFlueClient): WorkflowDef {
   const body = j2Setup({
     types: {} as {
       context: { instanceId: string; tag: string };
-      input: { instanceId: string; tag?: string; workspace: { workdir: string } };
+      input: { instanceId: string; tag?: string; workspace: { branch: string } };
       emitted: { type: "note"; message: string };
     },
     events: [doneEvent, requestReviewEvent],

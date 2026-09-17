@@ -221,8 +221,10 @@ remote, catalog entry, repo name
 body's `workspace.repos` handles, and the directory under `/work`. A slot is **bound** (the Machine wrote the url),
 **open** (the Machine left it for a composer to bind with `customize`), or **per-run** (a mapper over the door binds it
 from input). Bound and open are what `j2 up` can see; per-run is the run's business. A Machine whose body names no slot
-declares the whole map Open (`repos: open`): the composer names every slot, and the first is the `workdir`. _Avoid_:
-role, alias, repo name
+declares the whole map Open (`repos: open`): the composer names every slot. The handles keep the slots in declaration
+order and j2 gives no slot a meaning — there is no `workdir`; which checkout an Agent works in is that Machine's
+statement (a named slot in its prompt, or a convention over the order, as `task`'s "the first is the one the coder
+edits"). _Avoid_: role, alias, repo name, workdir, primary repo
 
 **Open**: A part a Machine declares but deliberately leaves for its composer to bind with `customize()` — a Repo Slot
 with no url, a Repo Slot map with no slots, an Agent with no model. The shape a packaged Machine ships in, because a

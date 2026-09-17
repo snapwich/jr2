@@ -49,9 +49,9 @@ import { repoIdentity } from "./repo-identity.ts";
 // A `workspace()` names each Repo it attaches under a SLOT — the Machine's own word for it, the
 // key of the body's `workspace.repos` handles, and the directory under `/work`. The slot's VALUE
 // is one of three states, and the walk tells them apart without evaluating anything. A Machine
-// whose body names no slot — it works in `workdir` and reads whatever else is attached — declares
-// the whole MAP Open instead (`repos: open`): the composer names every slot, and the first is the
-// workdir. Open at the map is the same word as Open at a slot, one level up (CONTEXT.md).
+// whose body names no slot — it enumerates whatever is attached — declares the whole MAP Open
+// instead (`repos: open`): the composer names every slot, in an order the Machine may give a
+// meaning to. Open at the map is the same word as Open at a slot, one level up (CONTEXT.md).
 
 // The sentinel itself lives in open.ts, a module with nothing else in it: since ADR-0054 it marks
 // an Agent's model too, and agent.ts must read it without importing this file (the walk imports
@@ -89,9 +89,10 @@ export function repoSlotState(value: RepoSlot<any>): RepoSlotState {
 }
 
 /** A slot key becomes a directory name under `/work`, so it is held to what a path segment can
- * carry — and to what a prompt can name without quoting. It starts with a LETTER: the slots are
- * read in declaration order (the first is the body's `workdir`), and JS puts an integer-like key
- * such as `"1"` ahead of every other key in `Object.keys`, wherever the author wrote it. */
+ * carry — and to what a prompt can name without quoting. It starts with a LETTER: the handles
+ * keep declaration order, which a Machine may give a meaning to (`task`: the first slot is the
+ * one the coder edits), and JS puts an integer-like key such as `"1"` ahead of every other key in
+ * `Object.keys`, wherever the author wrote it. */
 export const REPO_SLOT_KEY = /^[A-Za-z][A-Za-z0-9._-]*$/;
 
 /**
@@ -147,7 +148,7 @@ export type SandboxParts = {
   image?: string;
   /** The User Container's image (ADR-0005). Absent → the pod has no third container. */
   user?: string;
-  /** The Repo Slots, in declaration order — the first is the body's `workdir` (ADR-0051) — or
+  /** The Repo Slots, in declaration order — which the handles keep (ADR-0051) — or
    * {@link open} for a map the composer fills whole. */
   repos: Record<string, RepoSlot> | typeof open;
 };

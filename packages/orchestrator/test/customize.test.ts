@@ -375,7 +375,7 @@ test("a per-run slot may be rebound statically — it becomes bound; and a bound
   assert.deepEqual(partsOf([dynamic]).repos, [], "a per-run slot contributes nothing to the walk");
 });
 
-test("an Open slot MAP takes the composer's whole map — any keys, the first is the workdir, at least one", () => {
+test("an Open slot MAP takes the composer's whole map — any keys, in the composer's order, at least one", () => {
   // The Machine said `repos: open` (ADR-0051): it names no slot, so the map the composer writes IS
   // the declaration. Nothing to check a key against, and nothing to add to — the composer's words
   // are the slots, in the order they wrote them.

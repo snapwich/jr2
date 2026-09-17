@@ -168,7 +168,6 @@ const READ: AgentDefinition = { model: "test/model", instructions: "i", workspac
 const AMBIENT: AmbientHandles = {
   endpoint: "http://ws-1.harness.local:8080",
   sandbox: "ws-1",
-  workdir: "/work/app/main",
   repos: { app: "/work/app/main" },
   branch: "main",
 };

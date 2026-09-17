@@ -21,7 +21,6 @@ import type { AnyActorRef } from "xstate";
 export type AmbientHandles = {
   endpoint: string;
   sandbox: string;
-  workdir: string;
   /** Every Repo Slot's branch-worktree path, by slot (ADR-0051). */
   repos: Record<string, string>;
   branch: string;

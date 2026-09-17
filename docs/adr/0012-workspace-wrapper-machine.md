@@ -8,7 +8,7 @@ CONTEXT.md's "Workspace = child Machine bound to a unit of work" concrete.
 
 ```
 provisioning:  create Sandbox CR → await phase: Ready → attach repos/worktrees (post-Ready, ADR-0004)
-running:       invoke body; input = parent input + { workspace: { workdir, repos, branch } }
+running:       invoke body; input = parent input + { workspace: { repos, branch } }
 teardown:      destroy the CR
 done:          final; workspace output = body output
 ```
@@ -31,11 +31,12 @@ workspace-domain: the branch to cut, and what the attach needs to cut it. Which 
 they are slots on the wrapper's options (`repos: { target: open, docs: { url, ref } }`, ADR-0051), static so `j2 up` can
 see them, each bound by the Machine, by a composer's `customize`, or by a mapper over the door. Workflow configuration
 (review rounds, budgets, ticket data) passes through to the body untouched; the workspace never sees it. In return the
-body gets what it needs to operate inside the Sandbox: `{ workdir, repos: Record<slot, path>, branch }`, the handles
-keyed by the slots the wrapper declared. The Harness `endpoint` and the Sandbox name are mechanism-facing, not
-body-facing — `agentRun` resolves them **ambiently** from the enclosing wrapper (a registrar actor co-invoked in
-`running`, ADR-0016), so the body cannot mis-thread them. Keeping this boundary is what lets one helper serve any
-workflow rather than coupling to coding-shaped ones.
+body gets what it needs to operate inside the Sandbox: `{ repos: Record<slot, path>, branch }`, the handles keyed by the
+slots the wrapper declared, in declaration order. No handle names a primary checkout: which tree an Agent works in is a
+fact about that Agent's Turn, which the body states (ADR-0051). The Harness `endpoint` and the Sandbox name are
+mechanism-facing, not body-facing — `agentRun` resolves them **ambiently** from the enclosing wrapper (a registrar actor
+co-invoked in `running`, ADR-0016), so the body cannot mis-thread them. Keeping this boundary is what lets one helper
+serve any workflow rather than coupling to coding-shaped ones.
 
 The wrapper's `input` beside it is the door the spec maps FROM — the wrapper's own declared run-input schema, which also
 types the mapping ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)). It sits on the wrapper and not on

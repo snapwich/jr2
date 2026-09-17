@@ -1543,7 +1543,7 @@ Then(
  * the one `j2 status` reports, and the only per-run id a door mapper can see. Two concurrent runs
  * of the same Workflow therefore cut two branches and neither owns the other's.
  *
- * The `workdir` beside it is what makes the Gate an INSPECTION window rather than a notification:
+ * The `worktree` beside it — the first slot's, `task`'s own convention — is what makes the Gate an INSPECTION window rather than a notification:
  * a human execs into the still-live pod (parking is retention, ADR-0012), reads that directory,
  * pushes the branch if the work should outlive the run, and only then answers. So the claim is not
  * that the Machine published two strings — it is that the directory it named holds the branch it
@@ -1557,7 +1557,7 @@ Then(
     const gate = await openGate(this);
     const instanceId = await runInstanceId(this);
     assert.equal(gate.meta?.branch, `j2/task-${instanceId}`, "the branch is named for the run (ADR-0054)");
-    const workdir = String(gate.meta?.workdir ?? "");
+    const workdir = String(gate.meta?.worktree ?? "");
     assert.ok(workdir, `the Gate carries the worktree a human execs into (got: ${JSON.stringify(gate.meta)})`);
     const pod = (await waitForReadySandbox(this)).metadata.name;
     const current = await kubectl(this, [

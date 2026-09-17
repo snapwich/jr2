@@ -248,7 +248,7 @@ flowchart TB
       subgraph body["body — plain xstate; receives the run input plus the handles workspace() injects"]
         direction TB
         working["working<br/>invoke coder — an Agent slot whose model is open"]
-        working -->|"finish { summary }"| review["review<br/>invoke gate — meta: summary · reason · branch · workdir"]
+        working -->|"finish { summary }"| review["review<br/>invoke gate — meta: summary · reason · branch · worktree"]
         working -.->|"agent.fault — next turn starts a fresh conversation"| review
         review -->|"request_changes { notes } — same conversation"| working
         review -->|approve| done(["done — { outcome: approved, branch }"])

@@ -88,10 +88,10 @@ class FakeSandbox implements SandboxPort {
     name: string;
     spec: WorkspaceSpec;
     repos: Array<{ slot: string }>;
-  }): Promise<{ workdir: string; repos: Record<string, string> }> {
+  }): Promise<{ repos: Record<string, string> }> {
     this.specs.push(req.spec);
     const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
-    return { workdir: repos[req.repos[0]!.slot]!, repos };
+    return { repos };
   }
   async renew(): Promise<{ present: true }> {
     return { present: true };
@@ -212,7 +212,7 @@ test("as shipped, the walk reports both parts Open; the consumer's customize clo
 
 // --- The loop (ADR-0054) -------------------------------------------------------------------------
 
-test("working → finish parks at the review Gate, with the branch and workdir a human needs", async () => {
+test("working → finish parks at the review Gate, with the branch and worktree a human needs", async () => {
   const { port, endpoints, sandbox, host, runId, instanceId } = await startRun({ prompt: PROMPT });
 
   // The first Turn: framed with the task and the geography, on the Workspace's own Harness
@@ -241,15 +241,17 @@ test("working → finish parks at the review Gate, with the branch and workdir a
   assert.deepEqual(gate.meta, {
     summary: "added the flag; tests green",
     branch: `j2/task-${instanceId}`,
-    workdir: `/work/target/j2/task-${instanceId}`,
+    worktree: `/work/target/j2/task-${instanceId}`,
   });
   assert.equal(sandbox.destroyed.length, 0, "parking IS retention: the Sandbox is alive to exec into");
 });
 
-test("more than one slot: the first the consumer wrote is the workdir, the rest are framed as reading material", async () => {
+test("more than one slot: the first the consumer wrote is the one the coder edits, the rest are framed as reading material", async () => {
   // The map is the consumer's whole (ADR-0051): `task` names no slot, so a consumer who wants the
-  // coder to read a second checkout writes a second key, and the body — which reads `workdir`
-  // and enumerates the rest — tells the coder where it is. No second Machine, no second file.
+  // coder to read a second checkout writes a second key. The kit hands the body the slots in the
+  // order they were written and reads nothing into it; "the first is the one the coder edits" is
+  // THIS Machine's convention, and the body tells the coder where the rest are. No second
+  // Machine, no second file.
   const LIB = "https://github.com/acme/lib.git";
   const twoRepo = customize(task, {
     repos: { target: { url: REPO }, reference: { url: LIB, ref: "v3" } },
@@ -263,7 +265,15 @@ test("more than one slot: the first the consumer wrote is the workdir, the rest 
   const prompt = port.admits[0]!.prompt ?? "";
   assert.match(prompt, /Work in \/work\/target\/wip, on branch wip/);
   assert.match(prompt, /Also checked out beside it, for you to read:\n- reference: \/work\/reference\/wip/);
-  assert.doesNotMatch(prompt, /- target:/, "the workdir is not listed twice");
+  assert.doesNotMatch(prompt, /- target:/, "the coder's own worktree is not listed twice");
+  // The convention is ORDER, not a name: swap the keys and the coder edits the other checkout.
+  const swapped = customize(task, {
+    repos: { reference: { url: LIB, ref: "v3" }, target: { url: REPO } },
+    agents: { coder: { model: MODEL } },
+  });
+  const flipped = (await startRun({ prompt: PROMPT, branch: "wip" }, swapped)).port.admits[0]!.prompt ?? "";
+  assert.match(flipped, /Work in \/work\/reference\/wip, on branch wip/);
+  assert.match(flipped, /for you to read:\n- target: \/work\/target\/wip/);
   // One slot: nothing beside it, so nothing is said about it.
   const one = await startRun({ prompt: PROMPT, branch: "wip" });
   assert.doesNotMatch(one.port.admits[0]!.prompt ?? "", /Also checked out/);
@@ -311,7 +321,7 @@ test("a terminal agent.fault parks at the same Gate, and the NEXT Turn is a fres
   assert.deepEqual(gate.meta, {
     reason: "submission settled failed: provider unavailable",
     branch: "wip",
-    workdir: "/work/target/wip",
+    worktree: "/work/target/wip",
   });
 
   host.sendToGate(runId, gate.gate, { type: "request_changes", notes: "try again, smaller steps" });

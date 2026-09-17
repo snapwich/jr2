@@ -860,7 +860,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     },
 
     async attach(req) {
-      const { script, workdir, repos, review } = attachScript(req.spec, req.repos, {
+      const { script, repos, review } = attachScript(req.spec, req.repos, {
         reposMount: REPOS_MOUNT,
         workRoot,
         // The fetch url names the Adapter only when it is somewhere unexpected (ADR-0053).
@@ -871,7 +871,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       // zero-contract, may hold no git at all, and j2 commands nothing in it (ADR-0005).
       await exec(["exec", `pod/${req.name}`, ...base, "-c", "harness", "--", "sh", "-ec", script]);
       const stale = staleSlots(req.repos, staleByName.get(req.name));
-      return { workdir, repos, ...(review ? { review } : {}), ...(stale ? { stale } : {}) };
+      return { repos, ...(review ? { review } : {}), ...(stale ? { stale } : {}) };
     },
 
     leaseIntervalMs,
@@ -988,14 +988,14 @@ function staleSlots(
  * in declaration order, a pod-local `git clone --shared` borrowing objects from the node's
  * read-only cache at `/repos/<key>` — `<slot>/default/`, a checkout of the Repo's default branch
  * — then the branch worktree as a sibling (gwtmux layout: `<slot>/default/` + `<slot>/<branch>/`). With a `reviewSha`, also the detached review worktree
- * (ADR-0028) — another sibling. `workdir` is the FIRST slot's worktree. Exported for the port's
+ * (ADR-0028) — another sibling. `repos` keeps the slots' declaration order. Exported for the port's
  * tests; the workflow never sees it.
  */
 export function attachScript(
   spec: WorkspaceSpec,
   repos: Array<{ slot: string; url: string; ref?: string }>,
   paths: { reposMount: string; workRoot: string; adapterUrl?: string },
-): { script: string; workdir: string; repos: Record<string, string>; review?: Record<string, string> } {
+): { script: string; repos: Record<string, string>; review?: Record<string, string> } {
   const worktrees: Record<string, string> = {};
   const review: Record<string, string> = {};
   // The cache is written by the node's cache agent and read here as the Harness's unprivileged
@@ -1067,12 +1067,10 @@ export function attachScript(
       );
     }
   }
-  const first = repos[0];
-  if (!first)
+  if (repos.length === 0)
     throw new Error("the attach names no Repo Slot — nothing to attach (a workspace() declares at least one)");
   return {
     script: lines.join("\n"),
-    workdir: worktrees[first.slot]!,
     repos: worktrees,
     ...(spec.reviewSha ? { review } : {}),
   };

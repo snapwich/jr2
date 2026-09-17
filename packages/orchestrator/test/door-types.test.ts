@@ -163,7 +163,7 @@ const fromOutside: InputFrom<typeof wrapped> = {
   branch: "feat",
   // @ts-expect-error a caller cannot send `workspace` — the handles do not exist until a Sandbox
   // is provisioned and attached, which is the whole reason the door sits on the wrapper.
-  workspace: { workdir: "/w", repos: {}, branch: "feat" },
+  workspace: { repos: {}, branch: "feat" },
 };
 void fromOutside;
 

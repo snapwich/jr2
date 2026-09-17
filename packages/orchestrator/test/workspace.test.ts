@@ -62,11 +62,11 @@ class FakeSandbox implements SandboxPort {
     name: string;
     spec: WorkspaceSpec;
     repos: Array<{ slot: string; url: string; ref?: string }>;
-  }): Promise<{ workdir: string; repos: Record<string, string> }> {
+  }): Promise<{ repos: Record<string, string> }> {
     this.calls.push(`attach:${req.name}`);
     this.attached.push(req.repos);
     const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
-    return { workdir: repos[req.repos[0]!.slot]!, repos };
+    return { repos };
   }
   async renew(name: string): Promise<{ present: false } | { present: true; identity?: string }> {
     this.calls.push(`renew:${name}`);
@@ -89,9 +89,9 @@ const renews = (sandbox: FakeSandbox): number => sandbox.calls.filter((c) => c.s
  * the wrapper PROPAGATES this vocabulary onto the exported machine (ADR-0015). */
 const body = j2Setup({
   types: {} as {
-    context: { handles?: { workdir: string; branch: string } };
+    context: { handles?: { repos: Record<string, string>; branch: string } };
     // Body-facing handles only (ADR-0016): endpoint/sandbox never reach workflow code.
-    input: { workspace: { workdir: string; repos: Record<string, string>; branch: string } };
+    input: { workspace: { repos: Record<string, string>; branch: string } };
   },
   events: [approveDef],
 }).createMachine({
@@ -105,7 +105,7 @@ const body = j2Setup({
     },
     done: {
       type: "final",
-      output: ({ context }) => ({ status: "done", workdir: context.handles?.workdir }),
+      output: ({ context }) => ({ status: "done", app: context.handles?.repos.app }),
     },
     lost: { type: "final", output: () => ({ status: "lost" }) },
   },
@@ -158,8 +158,8 @@ test("lifecycle: provision → attach → body(input+handles) → body final →
   assert.ok(renews(sandbox) > 0, "the lease stamped while the body held its gate");
   const final = await host.read(runId);
   assert.equal(final?.status, "done");
-  const ctx = final?.context as { output?: { status: string; workdir?: string } };
-  assert.deepEqual(ctx.output, { status: "done", workdir: "/work/app/feat-1" });
+  const ctx = final?.context as { output?: { status: string; app?: string } };
+  assert.deepEqual(ctx.output, { status: "done", app: "/work/app/feat-1" });
 });
 
 test("restore-reconcile: Sandbox CR gone → workspace.lost lands in the restored body's policy", async () => {
@@ -433,7 +433,7 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
   // Sandbox (the ADR-0013 token scope) with zero workflow plumbing.
   const endpoints: string[] = [];
   const ambientBody = j2Setup({
-    types: {} as { context: Record<string, never>; input: { workspace: { workdir: string } } },
+    types: {} as { context: Record<string, never>; input: { workspace: { branch: string } } },
     events: [approveDef],
     actors: {
       coder: agentActorWith(
@@ -480,8 +480,8 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
 /** A body that records the handles it was given and finishes — the geography is the claim. */
 const recorder = j2Setup({
   types: {} as {
-    context: { handles?: { workdir: string; repos: Record<string, string>; branch: string } };
-    input: { workspace: { workdir: string; repos: Record<string, string>; branch: string } };
+    context: { handles?: { repos: Record<string, string>; branch: string } };
+    input: { workspace: { repos: Record<string, string>; branch: string } };
   },
   events: [],
 }).createMachine({
@@ -492,7 +492,7 @@ const recorder = j2Setup({
   output: ({ event }) => (event as { output?: unknown }).output,
 });
 
-test("slots resolve in declaration order; the handles are keyed by slot and workdir is the FIRST slot", async () => {
+test("slots resolve in declaration order; the handles are keyed by slot, in that order, and name no workdir", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   const two = workspace(recorder, {
@@ -517,9 +517,16 @@ test("slots resolve in declaration order; the handles are keyed by slot and work
       { slot: "app", url: APP },
     ],
   ]);
-  const out = (await host.read(runId))?.context as { output?: { workdir: string; repos: Record<string, string> } };
-  assert.equal(out.output?.workdir, "/work/docs/feat/x", "the first declared slot, not the alphabetical one");
+  const out = (await host.read(runId))?.context as { output?: Record<string, unknown> };
+  // The kit gives no slot a privileged meaning (ADR-0051): the handles are the map and the branch.
+  // What it does promise is the ORDER — a Machine may read a meaning into it (`task` does).
+  assert.deepEqual(Object.keys(out.output ?? {}).sort(), ["branch", "repos"]);
   assert.deepEqual(out.output?.repos, { docs: "/work/docs/feat/x", app: "/work/app/feat/x" });
+  assert.deepEqual(
+    Object.keys(out.output?.repos as object),
+    ["docs", "app"],
+    "declaration order, not alphabetical — through the persisted snapshot too",
+  );
 });
 
 test("a per-run slot's mapper is called with the run input, validated, and flagged for the fence", async () => {
@@ -668,13 +675,13 @@ test("workspace() refuses a missing, empty, or malformed `repos` at build time, 
   );
   assert.throws(() => workspace(body, { repos: { "a b": APP }, spec }), /"a b" is not a directory name/);
   // An integer-like key would be read FIRST by `Object.keys` wherever it was declared — and the
-  // first slot is the body's `workdir` — so a key starts with a letter.
+  // handles promise declaration order, which a Machine may read — so a key starts with a letter.
   assert.throws(() => workspace(body, { repos: { app: APP, "1": APP }, spec }), /key "1" is not a directory name/);
   assert.throws(() => workspace(body, { repos: { "2024": APP }, spec }), /key "2024" is not a directory name/);
   assert.throws(() => workspace(body, { repos: { "0app": APP }, spec }), /key "0app" is not a directory name/);
 });
 
-test("workspace() keeps the Repo Slots in declaration order — the first is the body's `workdir`", () => {
+test("workspace() keeps the Repo Slots in declaration order — the order the handles promise", () => {
   const spec = () => ({ branch: "b" });
   const w = workspace(body, { repos: { app: APP, infra: APP, "v2.x": APP }, spec });
   assert.deepEqual(Object.keys(sandboxPartsOf(w).repos), ["app", "infra", "v2.x"]);

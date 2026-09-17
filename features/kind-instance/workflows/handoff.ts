@@ -20,7 +20,7 @@ import { coder } from "./_agents.ts";
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
 const ship = defineEvent({ name: "ship", input: z.object({ summary: z.string() }) });
 
-type Ws = { workdir: string; repos: Record<"app", string>; branch: string };
+type Ws = { repos: Record<"app", string>; branch: string };
 type BodyInput = { instanceId: string; workspace: Ws };
 
 const body = j2Setup({

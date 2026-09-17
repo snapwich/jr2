@@ -6,8 +6,10 @@
 // Repo Slots are Open as a MAP, because the package cannot know the repository — nor how many
 // checkouts the task wants beside it — and the Agent `coder` has no model, because the package
 // cannot pay for one. A consumer binds both on the line that registers this Machine as a
-// Workflow, naming every slot: the first is the one the coder works in, and any others are
-// attached beside it for the coder to read (a library the change targets, a handbook):
+// Workflow, naming every slot. The ORDER is this Machine's convention, not the kit's (ADR-0051:
+// the handles keep declaration order and the kit reads nothing into it): the FIRST slot is the
+// one the coder works in, and any others are attached beside it for the coder to read (a library
+// the change targets, a handbook):
 //
 //   export const machine = customize(task, {
 //     repos: {
@@ -113,9 +115,10 @@ const requestChanges = defineEvent({
 // The body. It receives the door PLUS the handles `workspace()` injects and, because the wrapper is
 // this Machine's ROOT, the field the host injects beside the door (`instanceId`, ADR-0033).
 //
-// `Workspaced<…, string>` — the body names NO slot (ADR-0051): it works in `workdir`, which is
-// whatever the consumer wrote first, and frames every other checkout the handles carry. That is
-// what lets the wrapper leave the slot map Open; a body that named `repos.target` could not.
+// `Workspaced<…, string>` — the body names NO slot (ADR-0051): it works in the FIRST checkout the
+// handles carry, which is whatever the consumer wrote first (`worktreeOf`), and frames every
+// other one. That is what lets the wrapper leave the slot map Open; a body that named
+// `repos.target` could not.
 
 type BodyInput = Workspaced<TaskInput & HostInjectedInput, string>;
 
@@ -235,10 +238,10 @@ export const body = j2Setup({
           meta: {
             ...(context.summary !== undefined ? { summary: context.summary } : {}),
             ...(context.reason !== undefined ? { reason: context.reason } : {}),
-            // The branch the attach actually made and the directory it made it in — what an
-            // `exec` needs, and what a push would name.
+            // The branch the attach actually made and the worktree the coder committed in — what
+            // an `exec` needs, and what a push would name.
             branch: context.workspace.branch,
-            workdir: context.workspace.workdir,
+            worktree: worktreeOf(context).path,
           },
         }),
       },
@@ -275,7 +278,8 @@ export const task = workspace(body, {
   input: door,
   // The Repo Slots, OPEN as a map (ADR-0051/0054): the consumer names every slot and every Repo.
   // The package names none, because the body reads none — the first slot the consumer writes is
-  // the `workdir`, and the rest are checkouts the coder is told about and may read. A named
+  // the one the coder edits (this Machine's convention, `worktreeOf`), and the rest are checkouts
+  // the coder is told about and may read. A named
   // `target: open` would have said "one repository", which is not what the body knows.
   repos: open,
   spec: ({ input }) => ({ branch: branchOf(input) }),
@@ -313,21 +317,33 @@ function branchOf(input: TaskInput): string {
  * because the coder remembers the rest (ADR-0054's continued conversation). A post-fault Turn is a
  * first Turn again — that is what `turns` counts.
  *
- * The geography is every slot the handles carry (ADR-0051): the `workdir` is where the work goes,
- * and each other checkout is named by the consumer's own word for it, at the path the attach put
- * it — the only way the coder can learn what is beside it, since the package never knew.
+ * The geography is every slot the handles carry (ADR-0051): the first is where the work goes, and
+ * each other checkout is named by the consumer's own word for it, at the path the attach put it —
+ * the only way the coder can learn what is beside it, since the package never knew.
  */
 function coderPrompt(context: BodyContext): string {
   const notes = context.notes ? `\n\nThe human reviewed your work and asks for changes:\n${context.notes}` : "";
   if (context.turns > 0) return notes.trimStart() || "Continue.";
-  const { workdir, branch, repos } = context.workspace;
+  const { branch, repos } = context.workspace;
+  const worktree = worktreeOf(context);
   const beside = Object.entries(repos)
-    .filter(([, path]) => path !== workdir)
+    .filter(([slot]) => slot !== worktree.slot)
     .map(([slot, path]) => `\n- ${slot}: ${path}`)
     .join("");
   return (
     `${context.prompt}${notes}\n\n` +
-    `Work in ${workdir}, on branch ${branch}. Commit what you do there, then call finish.` +
+    `Work in ${worktree.path}, on branch ${branch}. Commit what you do there, then call finish.` +
     (beside ? `\n\nAlso checked out beside it, for you to read:${beside}` : "")
   );
+}
+
+/**
+ * The checkout the coder edits: the FIRST slot the consumer wrote. This is `task`'s convention,
+ * not the kit's — the handles keep the slots in declaration order and give none a meaning
+ * (ADR-0051) — so it is decided here, in one place, and stated on the line that registers the
+ * Machine. The wrapper refuses a map with no slot, so the first always exists.
+ */
+function worktreeOf(context: Pick<BodyContext, "workspace">): { slot: string; path: string } {
+  const [slot, path] = Object.entries(context.workspace.repos)[0]!;
+  return { slot, path };
 }
