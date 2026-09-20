@@ -143,7 +143,7 @@ export class E2EWorld {
     this.namespace = `jr2e2e-${randomBytes(3).toString("hex")}`;
     this.dir = KIND_DIR;
     this.provider = await startFakeProvider();
-    this.extraEnv.JR2_FAKE_PROVIDER_URL = `http://${await kindHostAddress()}:${this.provider.port}/v1`;
+    this.extraEnv.JR2_FAKE_PROVIDER_URL = `http://${await kindHostAddress(this.provider.port)}:${this.provider.port}/v1`;
   }
 
   /**
@@ -354,35 +354,88 @@ export class E2EWorld {
 }
 
 /**
- * The address a POD reaches this host on (@kind). `localhost` never works from a pod (ADR-0019
- * says so where `HarnessProvider.baseUrl` is declared), and the scripted provider runs host-side —
- * so the tier needs the kind bridge's GATEWAY, which is this host's address on the docker network
- * every kind node is attached to.
+ * The address a POD reaches this host on (@kind). `localhost` never works from a pod (ADR-0019 says
+ * so where `HarnessProvider.baseUrl` is declared), and the scripted provider runs host-side — so the
+ * tier has to find the one address that routes back, and the answer is not the same on every
+ * machine.
  *
- * The fallback, if a docker daemon is ever not local to the test process: run the fake provider
- * in-cluster as a Deployment + Service and point the config at its Service DNS. Host-side is
- * preferred while the daemon IS local — zero images, zero manifests, and an ephemeral port per
- * scenario, which is what keeps `--parallel` safe.
+ * On Linux the docker daemon IS this host, so the kind bridge's gateway is this host's address on
+ * the network every node is attached to. Under a VM-backed daemon (colima, Docker Desktop) that
+ * gateway is the VM, and a pod dialing it reaches nothing — the host is behind a NAME the VM
+ * publishes instead. Measured on colima: `host.docker.internal`, `host.lima.internal` and
+ * `192.168.5.2` all answer; the bridge gateway `172.18.0.1` does not. On Linux the names are
+ * meaningless and the gateway is the only answer. So the order is platform-derived, and the winner
+ * is VERIFIED rather than assumed.
+ *
+ * Verified against the REAL listener, not by resolving a name: the provider is already up when this
+ * runs, so a `curl` from inside a kind node tests the exact thing that has to work, for one
+ * `docker exec`. The node is the right vantage point — a pod's egress routes through it.
+ *
+ * Memoized per process (and released on failure, so a bad attempt is not inherited). `--parallel`
+ * gives the tier four processes, so this costs four `docker exec`s per suite run, not one per
+ * scenario.
+ *
+ * The remaining fallback, if a daemon ever publishes the host under no reachable address at all:
+ * run the provider in-cluster as a Deployment + Service and point the config at its Service DNS.
+ * Host-side is preferred while ANY address answers — zero images, zero manifests, and an ephemeral
+ * port per scenario, which is what keeps `--parallel` safe.
  */
-async function kindHostAddress(): Promise<string> {
-  const gateway = await new Promise<string>((resolve, reject) => {
-    execFile(
-      "docker",
-      ["network", "inspect", "kind", "-f", "{{(index .IPAM.Config 0).Gateway}}"],
-      (err, stdout, stderr) =>
-        err
-          ? reject(
-              new Error(
-                `could not resolve the kind bridge gateway (docker network inspect kind): ${stderr || err.message}\n` +
-                  `  the @kind tier serves its scripted model from the HOST, so pods must be able to dial back;\n` +
-                  `  is the cluster up (\`just e2e-kind-up\`) and is this docker daemon the local one?`,
-              ),
-            )
-          : resolve(stdout.trim()),
+let hostAddress: Promise<string> | undefined;
+
+function kindHostAddress(port: number): Promise<string> {
+  hostAddress ??= resolveHostAddress(port).catch((err: unknown) => {
+    hostAddress = undefined;
+    throw err;
+  });
+  return hostAddress;
+}
+
+async function resolveHostAddress(port: number): Promise<string> {
+  const node = (await dockerOut(["network", "inspect", "kind", "-f", "{{range .Containers}}{{.Name}}\n{{end}}"]))
+    .split("\n")
+    .map((n) => n.trim())
+    .find(Boolean);
+  assert.ok(node, "the kind docker network has a node attached — is the cluster up (`just e2e-kind-up`)?");
+
+  // Every IPAM entry that actually CARRIES a gateway, IPv4 first. Indexing entry 0 is what broke
+  // here: docker lists the IPv6 subnet first on this machine, and it has no Gateway at all.
+  const ipam = JSON.parse(await dockerOut(["network", "inspect", "kind", "-f", "{{json .IPAM.Config}}"])) as Array<{
+    Gateway?: string;
+  }>;
+  const gateways = ipam
+    .map((c) => c.Gateway)
+    .filter((g): g is string => Boolean(g))
+    .sort((a, b) => Number(a.includes(":")) - Number(b.includes(":")));
+  const published = ["host.docker.internal", "host.lima.internal"];
+  const candidates = process.platform === "linux" ? [...gateways, ...published] : [...published, ...gateways];
+
+  for (const candidate of candidates) {
+    if (await answers(node, candidate, port)) return candidate;
+  }
+  throw new Error(
+    `no address reaches this host from inside the kind cluster (tried ${candidates.join(", ")})\n` +
+      `  the @kind tier serves its scripted model from the HOST, so pods must be able to dial back;\n` +
+      `  is the cluster up (\`just e2e-kind-up\`), and does this docker daemon publish the host at all?`,
+  );
+}
+
+/** Does the host's provider answer on this address, asked from inside a kind node? Any HTTP reply
+ * proves the route; curl only fails the exit code when it could not connect. */
+async function answers(node: string, address: string, port: number): Promise<boolean> {
+  try {
+    await dockerOut(["exec", node, "curl", "-s", "--max-time", "3", "-o", "/dev/null", `http://${address}:${port}/`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function dockerOut(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("docker", args, (err, stdout, stderr) =>
+      err ? reject(new Error(`docker ${args.slice(0, 2).join(" ")}: ${stderr || err.message}`)) : resolve(stdout),
     );
   });
-  assert.ok(gateway, "the kind docker network reported a gateway address");
-  return gateway;
 }
 
 /** kubectl, for the World's own teardown (steps have their own namespace-aware helper). */

@@ -5,6 +5,13 @@ tmp/
 .jr2/
 *.tsbuildinfo
 
+# The e2e tier's scratch, and the evidence a FAILED @kind scenario dumps into it before its
+# namespace goes (ADR-0010). That evidence is verbatim kubectl and Harness output — a truncated
+# yaml, a `<unavailable: …>` placeholder — so prettier parses it, fails, and one failed @kind run
+# breaks the format gate until someone deletes the directory. It is a sibling of `tmp/` above, and
+# `features/.gitignore` already has it; prettier does not read that file.
+features/.tmp/
+
 # pnpm owns this file's format.
 pnpm-lock.yaml
 

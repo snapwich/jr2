@@ -129,18 +129,24 @@ export function ensureSeed(): Promise<void> {
 }
 
 async function seed(): Promise<void> {
-  await kubectl(["apply", "-f", "-"], MANIFEST);
+  // The memo above is per PROCESS, and `--parallel` gives the tier four of them — so four workers
+  // apply this manifest at once, against the one piece of cluster-scoped state the tier has (every
+  // other object it touches is namespaced per scenario). `kubectl apply` creates with GET-then-POST,
+  // so the workers that lose the race are told AlreadyExists — which is not a failure here: the
+  // object exists, which is the whole ask of an `ensure`. The rollout wait below is the real
+  // rendezvous, and it is idempotent for all four.
+  await kubectl(["apply", "-f", "-"], MANIFEST, /* tolerate */ /AlreadyExists/);
   await kubectl(["--namespace", NAMESPACE, "rollout", "status", "deployment/seed", "--timeout=300s"]);
 }
 
-function kubectl(args: string[], stdin?: string): Promise<void> {
+function kubectl(args: string[], stdin?: string, tolerate?: RegExp): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn("kubectl", args, { stdio: [stdin === undefined ? "ignore" : "pipe", "ignore", "pipe"] });
     let stderr = "";
     child.stderr!.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", reject);
     child.on("close", (code) =>
-      code === 0
+      code === 0 || (tolerate && tolerate.test(stderr))
         ? resolve()
         : reject(new Error(`kubectl ${args.join(" ")} exited ${code}: ${stderr.trim()} (seeding ${SEED_URL})`)),
     );

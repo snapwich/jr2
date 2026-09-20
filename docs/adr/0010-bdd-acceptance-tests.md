@@ -46,9 +46,20 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   product's own path (ADR-0019): one shared VANILLA kind cluster and nothing else, then **`jr2 up` per scenario into a
   fresh namespace** — which since ADR-0038 builds and loads every image it deploys, so no image is pre-loaded by hand.
   Namespace-as-identity makes the scenario the isolation unit here too, so nothing is instance-bound to the cluster.
-  **The tier runs parallel, and three properties are what make that safe.** Scenario isolation (own namespace, own
-  scripted model port); no shared mutable image name between concurrent converges of one checkout — a Sandbox Image
-  builds straight to its content tag, with no intermediate, because the Harness arrives by volume at pod time
+  **The host address the pods dial back on is discovered, not assumed.** The scripted provider runs host-side, so the
+  tier needs the one address that routes from a pod back to this process — and it is not the same on every machine. On
+  Linux the daemon IS the host, so the kind bridge's gateway is the answer. Under a VM-backed daemon (colima, Docker
+  Desktop) that gateway is the VM: measured on colima, `172.18.0.1` reaches nothing while `host.docker.internal`,
+  `host.lima.internal` and `192.168.5.2` all answer — and on Linux those names mean nothing. So the candidates are
+  ordered by platform and the winner is VERIFIED, by `curl`ing the provider that is already listening from inside a kind
+  node (a pod's egress routes through it), for the price of one `docker exec` memoized per worker process. Taking the
+  bridge network's first IPAM entry is what broke: docker lists the IPv6 subnet first on some hosts and it carries no
+  gateway at all, so the tier now reads every entry that HAS one, IPv4 first. Failing to find any address is one error
+  naming every candidate tried, not an assertion in each scenario's `Before` hook. Measured: **22/22 on macOS/colima,
+  ~3m20 warm at degree 4** against the ~1m35 Linux figure below — the VM is slower, not different. **The tier runs
+  parallel, and three properties are what make that safe.** Scenario isolation (own namespace, own scripted model port);
+  no shared mutable image name between concurrent converges of one checkout — a Sandbox Image builds straight to its
+  content tag, with no intermediate, because the Harness arrives by volume at pod time
   ([ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)) — while
   [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) makes a warm scenario's converge build nothing
   (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the two seats that dial a Sandbox
@@ -89,6 +100,14 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   the _next_ turn, which is the only place these claims are visible. Not a separate tier: it runs as part of
   `pnpm -r test` (no docker, no cluster), and it is the canary for pi bumps — **run it before bumping the pin**. (A
   predecessor tier that ran the retired foreign harness runtime at its pin dissolved into this suite — ADR-0027.)
+- **Shared cluster state is the one thing a scenario cannot own, and the pool is PROCESSES.** `--parallel` runs cucumber
+  workers as separate processes, so a fixture memoized "once per process" runs once per WORKER — four times,
+  concurrently, against one cluster. The tier has exactly one such fixture: the git seed (`steps/seed.ts`) it serves
+  in-cluster, which is cluster-scoped where everything else is namespaced per scenario. `kubectl apply` creates with
+  GET-then-POST, so the workers that lose that race are told `AlreadyExists` — which an `ensure` treats as success,
+  because the object being there is the whole ask. The rollout wait that follows is the real rendezvous, and it is
+  idempotent for every worker. (The same property is why the `@dist` profile is serial: its publish would otherwise
+  stand up one verdaccio per worker on a single port.)
 - **A workspace package, not a bare folder.** `./features/` is `@jr2/e2e` so it owns its own `xstate` (+ cucumber)
   dependency: a scaffolded instance's `workflows/*.ts` `import "xstate"`, resolved by walking up from the temp dir, and
   the repo root has no `xstate`. The package's `node_modules` satisfies it. It is top-level (not under `packages/cli/`)
