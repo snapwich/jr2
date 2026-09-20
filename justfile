@@ -74,6 +74,22 @@ e2e-kind:
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
     KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:kind
 
+# A COLD host builds every image the tier deploys four times over: the tier runs four workers, and
+# the first scenario of each converges its own namespace from nothing — Harness, Adapter, operator,
+# instance, Sandbox Image — with no cross-process lock on a build, so four identical cold builds
+# contend for the same cores and the first step of all four scenarios can pass its 10 minute bound
+# (measured on a 4-core hosted runner: every worker's first scenario timed out, everything after
+# passed on the warm cache). A maintainer's box is warm from the last run; a runner never is. So
+# ONE scenario first, serially: it spends every build once (ADR-0041 — a build the host holds is
+# not spent again), and the parallel tier that follows finds them. Any scenario that converges
+# and provisions a Sandbox would do; the first Rule's is the one that changes least.
+#
+# Not folded into `e2e-kind`: a warm box pays a scenario's run time for nothing, and this recipe
+# names the cold case — the release job calls it, a cold box may.
+e2e-kind-warm:
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e exec cucumber-js --profile kind --parallel 1 kind.feature:28
+
 # render the operator install manifest shipped inside the npm package (ADR-0019; check in the result)
 operator-manifest:
     kubectl kustomize operator/config/default > packages/cli/manifests/operator.yaml

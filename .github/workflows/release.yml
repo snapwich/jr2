@@ -116,6 +116,12 @@ jobs:
       - name: kind cluster
         run: just e2e-kind-up
 
+      # The runner is cold and the tier is parallel: four workers' first converges built every image
+      # four times over and all four timed out (v0.1.1's run). One scenario first, serially, spends
+      # each build once; the recipe says why.
+      - name: Warm the Kit and instance images
+        run: just e2e-kind-warm
+
       - name: "@kind tier"
         run: just e2e-kind
 
@@ -124,6 +130,18 @@ jobs:
       # mode itself.
       - name: "@dist tier"
         run: just e2e-dist
+
+      # A failed @kind scenario dumps its evidence — pod logs, the Harness's own history view with
+      # the failure message verbatim, the Sandbox CRs — into this folder before its namespace goes
+      # (features/steps/kind.steps.ts), and on a hosted runner the folder goes with the runner. So
+      # it is kept, on failure only: the log alone says WHICH scenario failed; this says why.
+      - name: Keep the @kind failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: kind-failures
+          path: features/.tmp/kind-failures
+          if-no-files-found: ignore
 
       # --- everything below this line is irreversible ---
 
