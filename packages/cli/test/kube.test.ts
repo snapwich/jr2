@@ -5,7 +5,17 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { oneShotFailure, rolloutFailure, rolloutStatusArgs, type KubeAdmin } from "../src/kube.ts";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  kubectlKube,
+  oneShotFailure,
+  REACH_BUDGET_MS,
+  rolloutFailure,
+  rolloutStatusArgs,
+  type KubeAdmin,
+} from "../src/kube.ts";
 
 /** What `promisify(execFile)` rejects with: a message built from stderr, plus both streams. */
 function execFileRejection(stdout: string, stderr: string): Error {
@@ -361,4 +371,35 @@ test("a pod that never started outranks the ones that came up", async () => {
   assert.match(err.message, /pod jr2-orchestrator-new-x \(Pending\)/, "the pod that did not come up is shown");
   assert.match(err.message, /Insufficient memory/, "…with the scheduler's own words about it");
   assert.match(err.message, /1 further pod\(s\) not shown/);
+});
+
+// The BOUND on target resolution (ADR-0019), against a real child process — the only fixture that
+// can witness it, because an injected `KubePort` never reaches the `execFile` where the deadline
+// lives. A shim `kubectl` that sleeps stands in for a cluster whose API server accepts the
+// connection and then says nothing, which is the shape a dropped SYN or a dead VPN actually takes:
+// not refused, just silent. Measured before this bound existed: `--request-timeout=5s` alone bought
+// a 25s command, because kubectl retries API discovery five times behind it.
+test("a kubectl that never answers is killed, and the wait is bounded", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-kube-shim-"));
+  try {
+    await writeFile(join(dir, "kubectl"), "#!/bin/sh\nsleep 600\n", { mode: 0o755 });
+    // PREPENDED, not replaced: the shim must win over a real `kubectl`, while the shim itself still
+    // finds `sleep`. Replacing PATH outright leaves the shim unable to run.
+    const path = process.env.PATH;
+    process.env.PATH = `${dir}:${path ?? ""}`;
+    const started = Date.now();
+    try {
+      await assert.rejects(
+        () => kubectlKube.readSecret({ namespace: "ns", name: "jr2-instance", key: "JR2_INSTANCE_TOKEN" }),
+        /no answer after 10s/,
+      );
+    } finally {
+      process.env.PATH = path;
+    }
+    const spent = Date.now() - started;
+    assert.ok(spent >= REACH_BUDGET_MS, `waited for the budget, not less (${spent}ms)`);
+    assert.ok(spent < REACH_BUDGET_MS * 2, `gave up on the budget, not on the child's own clock (${spent}ms)`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

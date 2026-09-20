@@ -9,6 +9,26 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
+/** How long a RUN-VERB waits to find out whether the cluster is there (ADR-0019). Matches the
+ * Harness client's connect bound (`harness-client.ts`), so the two seats that dial across a
+ * network agree on what "too long" means. It bounds resolution only: `jr2 up` waits on rollouts
+ * for minutes, and says so with its own `--timeout`.
+ *
+ * Spent TWICE, because `--request-timeout` bounds one server request and kubectl retries API
+ * discovery behind it — a 5s flag was measured buying a 25s command. The flag makes each attempt
+ * give up promptly; `timeout` (execFile kills the child) is what bounds the command. */
+export const REACH_BUDGET_MS = 10_000;
+
+const reachArgs = [`--request-timeout=${REACH_BUDGET_MS}ms`];
+
+/** Why a bounded kubectl did not answer, in a phrase a verb can put after a dash. */
+function unreachable(e: unknown): string {
+  const err = e as { killed?: boolean; stderr?: string; message?: string };
+  if (err.killed) return `no answer after ${REACH_BUDGET_MS / 1000}s`;
+  const said = (err.stderr ?? "").trim().split("\n").filter(Boolean).pop();
+  return said ?? err.message ?? "kubectl failed";
+}
+
 // The fixed in-namespace object names live with the orchestrator (its entrypoint consumes them
 // too); re-exported here for the CLI's own modules.
 export { INSTANCE_SECRET, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "@jr2/orchestrator";
@@ -16,7 +36,9 @@ export { INSTANCE_SECRET, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "@jr2/o
 export type KubePort = {
   /** The current kubectl context, or undefined when there is none configured. */
   currentContext(): Promise<string | undefined>;
-  /** One decoded key of a Secret; undefined when the Secret (or key) is absent. */
+  /** One decoded key of a Secret; undefined when the Secret (or key) is ABSENT. Rejects when the
+   * cluster could not answer at all — the two are different faults (ADR-0019), and a caller that
+   * merged them would send a user with a dead VPN off to check a context that is correct. */
   readSecret(opts: { namespace: string; name: string; key: string; context?: string }): Promise<string | undefined>;
   /** Forward a Service port to an ephemeral local port for the life of the command. */
   portForward(opts: {
@@ -717,21 +739,30 @@ export const kubectlKube: KubePort = {
     }
   },
 
+  // `--ignore-not-found` is what separates the two faults BY EXIT CODE rather than by matching on
+  // kubectl's English: an absent Secret exits 0 with empty stdout, and everything else — no route,
+  // no credentials, RBAC refusing the read — exits non-zero and is reported rather than swallowed.
   async readSecret({ namespace, name, key, context }) {
     try {
-      const { stdout } = await exec("kubectl", [
-        ...ctxArgs(context),
-        "--namespace",
-        namespace,
-        "get",
-        "secret",
-        name,
-        "-o",
-        `jsonpath={.data.${key}}`,
-      ]);
+      const { stdout } = await exec(
+        "kubectl",
+        [
+          ...ctxArgs(context),
+          "--namespace",
+          namespace,
+          "get",
+          "secret",
+          name,
+          "--ignore-not-found",
+          "-o",
+          `jsonpath={.data.${key}}`,
+          ...reachArgs,
+        ],
+        { timeout: REACH_BUDGET_MS },
+      );
       return stdout ? Buffer.from(stdout, "base64").toString("utf8") : undefined;
-    } catch {
-      return undefined; // absent Secret and unreachable cluster look the same to a verb: not deployed here
+    } catch (e) {
+      throw new Error(unreachable(e));
     }
   },
 
@@ -749,14 +780,30 @@ export const kubectlKube: KubePort = {
       ]);
       let out = "";
       let err = "";
+      // The forward is long-lived by design, so the bound is on its FIRST BYTE, not on the child:
+      // silence here is the same unreachable cluster the Secret read just survived, and a verb that
+      // waits forever for the announcement has only moved the hang one line down.
+      const gaveUp = setTimeout(() => {
+        child.kill();
+        reject(new Error(`kubectl port-forward: no answer after ${REACH_BUDGET_MS / 1000}s`));
+      }, REACH_BUDGET_MS);
+      gaveUp.unref?.();
+      const settle =
+        <T>(f: (v: T) => void) =>
+        (v: T) => {
+          clearTimeout(gaveUp);
+          f(v);
+        };
+      const done = settle(resolve);
+      const failed = settle(reject);
       child.stdout.on("data", (d: Buffer) => {
         out += d.toString();
         const m = /Forwarding from 127\.0\.0\.1:(\d+)/.exec(out);
-        if (m) resolve({ url: `http://127.0.0.1:${m[1]}`, close: () => child.kill() });
+        if (m) done({ url: `http://127.0.0.1:${m[1]}`, close: () => child.kill() });
       });
       child.stderr.on("data", (d: Buffer) => (err += d.toString()));
-      child.on("error", (e) => reject(new Error(`kubectl port-forward failed: ${e.message}`)));
-      child.on("close", (code) => reject(new Error(`kubectl port-forward exited (${code}): ${err.trim()}`)));
+      child.on("error", (e) => failed(new Error(`kubectl port-forward failed: ${e.message}`)));
+      child.on("close", (code) => failed(new Error(`kubectl port-forward exited (${code}): ${err.trim()}`)));
     });
   },
 };

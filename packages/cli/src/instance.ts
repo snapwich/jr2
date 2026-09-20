@@ -82,9 +82,19 @@ export async function resolveTarget(io: Io, opts: TargetOptions): Promise<Target
   activity(io, `→ context ${context} / namespace ${namespace}`);
 
   const ctx = opts.context ? { context: opts.context } : {};
-  const token =
-    io.env.JR2_TOKEN ??
-    (await kube.readSecret({ namespace, name: INSTANCE_SECRET, key: "JR2_INSTANCE_TOKEN", ...ctx }));
+  // Two faults, two fixes (ADR-0019). The Secret read is the first thing that crosses the network,
+  // so it is where a dead ADDRESS is caught; an empty answer from a cluster that DID reply is the
+  // identity being absent, which is the one `jr2 up` fixes. Telling a user to check a context that
+  // is correct because their VPN is down costs a debugging session.
+  let secret: string | undefined;
+  try {
+    secret =
+      io.env.JR2_TOKEN ??
+      (await kube.readSecret({ namespace, name: INSTANCE_SECRET, key: "JR2_INSTANCE_TOKEN", ...ctx }));
+  } catch (e) {
+    throw new Error(`cannot reach the cluster — context ${context}: ${(e as Error).message}`);
+  }
+  const token = secret;
   if (!token) {
     throw new Error(
       `not deployed here — right context? (context ${context}, namespace ${namespace}; \`jr2 up\` deploys)`,

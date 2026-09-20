@@ -121,6 +121,36 @@ test("namespace precedence: -n flag > config.name > folder name; --context is pa
   }
 });
 
+// The pair of faults ADR-0019 keeps apart. Same verb, same context, two different fixes: one is
+// `jr2 up`, the other is the network — so a message that merged them would send a user whose VPN
+// is down to go and check a context that was right all along.
+test("a cluster that cannot answer is named as unreachable, not as 'not deployed here'", async () => {
+  const root = await mkInstance();
+  try {
+    const io = mkIo({
+      cwd: root,
+      env: {},
+      kube: {
+        currentContext: async () => "kind-test",
+        readSecret: async () => {
+          throw new Error("no answer after 10s");
+        },
+        portForward: async () => assert.fail("no forward without a Secret"),
+      },
+    });
+    await assert.rejects(
+      () => resolveTarget(io, {}),
+      (e: Error) => {
+        assert.match(e.message, /cannot reach the cluster — context kind-test: no answer after 10s/);
+        assert.doesNotMatch(e.message, /not deployed here/, "the wrong fix is not suggested");
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a cluster with no instance errors with 'not deployed here'", async () => {
   const root = await mkInstance();
   try {

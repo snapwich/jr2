@@ -80,6 +80,21 @@ loudly narrated, safe to re-run:
 - **CLI transport**: run-verbs port-forward the Orchestrator Service via the kube API for the duration of the command
   and read the Instance token from its Secret — kube RBAC is the real gate. `--url`/`JR2_URL` (+ token env) is the
   escape hatch for ingress-exposed instances and callers without cluster creds.
+- **A dead ADDRESS and an absent IDENTITY are two faults, and resolution names which.** They share a verb and a context
+  but not a fix: one is the network, the other is `jr2 up`. A cluster that answered and holds no instance Secret is "not
+  deployed here — right context?"; a cluster that could not answer at all is "cannot reach the cluster — context X: …",
+  carrying kubectl's own reason. Merging them — which is the easy shape, since both end in no token — sends a user whose
+  VPN is down to go and check a context that was right all along. They are told apart by EXIT CODE, not by matching on
+  kubectl's English: the Secret read passes `--ignore-not-found`, so an absent Secret exits 0 with empty output and
+  everything else (no route, no credentials, RBAC refusing the read) exits non-zero and is reported.
+- **Resolution is bounded; converge is not.** A run-verb waits **10s** to find out whether the cluster is there — the
+  same bound the Harness client puts on its own dial, so the two seats that cross a network agree on what "too long"
+  means — and then fails with the reason above. Unbounded, it does not fail at all: a cluster whose API server accepts
+  the connection and says nothing (a dropped SYN, a sleeping VPN) makes `jr2 runs` hang with no ceiling, which is the
+  one outcome a CLI must never have. The bound is spent twice over, because `--request-timeout` bounds a single server
+  request while kubectl retries API discovery behind it — measured, a 5s flag bought a 25s command — so the flag makes
+  each attempt give up promptly and a process deadline is what bounds the command. It covers the resolution path only:
+  `jr2 up` legitimately waits on rollouts for minutes and says so with its own `--timeout`.
 
 ## Sharing is npm; the instance repo is a deployment assembly
 

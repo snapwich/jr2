@@ -225,9 +225,10 @@ export class E2EWorld {
    * garbage by asking the WHOLE cluster (ADR-0039), so a namespace flag would narrow nothing — and
    * a step must invoke it the way a user does. */
   async runCli(args: string[], opts: { namespaced?: boolean } = {}): Promise<CliResult> {
+    const base = this.sealedEnv();
     const env: NodeJS.ProcessEnv = this.server
-      ? { ...process.env, ...this.extraEnv, JR2_URL: this.server.url, JR2_TOKEN: this.server.token }
-      : { ...process.env, ...this.extraEnv };
+      ? { ...base, ...this.extraEnv, JR2_URL: this.server.url, JR2_TOKEN: this.server.token }
+      : { ...base, ...this.extraEnv };
     const full = this.namespace && opts.namespaced !== false ? [...args, "-n", this.namespace] : args;
     if (this.dist) env.PATH = `${this.dist.binDir}:${process.env.PATH ?? ""}`;
     const child = this.dist
@@ -242,6 +243,29 @@ export class E2EWorld {
     });
     this.last = { stdout, stderr, code };
     return this.last;
+  }
+
+  /**
+   * The ambient environment, with everything that STEERS jr2 taken out of it — the tier's isolation
+   * unit is the scenario (ADR-0010), and an inherited variable makes the developer's shell a
+   * silent participant in it. Two classes go:
+   *
+   * - every `JR2_*`, because they say where to talk and as whom. An exported `JR2_URL` would point
+   *   a whole suite at someone's deployed instance; `JR2_NAMESPACE` flips the orchestrator's
+   *   data plane on. Each tier adds back exactly what it means to set, through `extraEnv` and the
+   *   server's own pair — and the ones a scenario's config reads (`JR2_KIT_REGISTRY`) come from the
+   *   instance's `.env`, which is a file the step wrote, not an inheritance.
+   * - `KUBECONFIG`, but only where there is no cluster in the story. `@kind` and `@dist` own a
+   *   namespace on a real cluster and need the real one; everywhere else a run-verb that falls
+   *   through to the kube path must find nothing, rather than whatever cluster the developer last
+   *   used. This is the leak that made `cli-contract.feature`'s exit-code scenario hang for 120s
+   *   against an unreachable home cluster instead of failing in milliseconds.
+   */
+  private sealedEnv(): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(env)) if (key.startsWith("JR2_")) delete env[key];
+    if (!this.namespace) env.KUBECONFIG = "/dev/null";
+    return env;
   }
 
   /** Scaffold the instance with the real `jr2 init` (gives it `ping` + config). */
@@ -276,7 +300,11 @@ export class E2EWorld {
     const proc = spawn(process.execPath, [SERVER_BIN], {
       cwd: this.dir,
       env: {
-        ...process.env,
+        // Sealed like the CLI's, and for a sharper reason: the entrypoint's data-plane switch is
+        // `composesSandbox && JR2_NAMESPACE !== undefined` (`server.ts`), so one exported variable
+        // would turn `features/workspace.feature`'s "faults pointedly, having no cluster" into a
+        // real Sandbox provisioned on whatever cluster the developer was pointed at.
+        ...this.sealedEnv(),
         PORT: "0",
         HOST: "127.0.0.1",
         JR2_INSTANCE_TOKEN: this.token,

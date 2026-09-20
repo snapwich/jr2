@@ -20,9 +20,21 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   served the same way.
 - **`Feature` → `Rule` → `Scenario` maps to criteria.** A `Rule` is one acceptance criterion; a `Scenario` is an example
   of it. This is organizational only — `Rule`s carry no shared state.
-- **`Scenario` is the isolation unit.** Each scenario gets its own scaffolded temp instance (via the real `jr2 init`),
-  its own server process + sqlite store, torn down in an `After` hook. Nothing is shared across scenarios, so the suite
-  is safe under `cucumber-js --parallel`.
+- **`Scenario` is the isolation unit — and the environment is part of it.** Each scenario gets its own scaffolded temp
+  instance (via the real `jr2 init`), its own server process + sqlite store, torn down in an `After` hook. It also gets
+  its own **environment**: the World spawns nothing from the ambient one, because a tier that inherits the developer's
+  shell has made that shell a silent participant in every scenario. Two classes are sealed. Every `JR2_*` variable is
+  scrubbed, since they say where to talk and as whom — an exported `JR2_URL` would point a whole suite at someone's
+  deployed instance, and `JR2_NAMESPACE` reaches the entrypoint's data-plane switch
+  (`composesSandbox && namespace !== undefined`), which would turn `workspace.feature`'s "no cluster, so it faults
+  pointedly" into a real Sandbox provisioned on whatever cluster was configured. Each tier adds back exactly what it
+  means to set, and the variables a scenario's own config reads arrive through the instance's `.env`, a file the step
+  wrote. `KUBECONFIG` is pinned to `/dev/null` wherever there is no cluster in the story, so a run-verb falling through
+  to the kube path finds nothing rather than the last cluster a human used; `@kind` and `@dist` own a namespace on a
+  real cluster and keep the real one. (The leak this closes was not theoretical: `cli-contract.feature`'s exit-code
+  scenario hung for its full 120s timeout against an unreachable home cluster, where it should fail in milliseconds —
+  and it hung only on the machine that had one.) Nothing is shared across scenarios, so the suite is safe under
+  `cucumber-js --parallel`.
 - **An opt-in `@kind` tier for the data plane** (added once the `workspace()` slice landed — ADR-0012). Workspaces are
   always real Sandboxes, so the only way to test them is against a real cluster: the `@kind` scenarios drive the
   operator's Sandbox CR, a pod, the node's read-only Repo cache, an in-pod git worktree, and the Harness endpoint —
