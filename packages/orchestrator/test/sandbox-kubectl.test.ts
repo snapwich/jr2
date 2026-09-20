@@ -1290,8 +1290,13 @@ test("attachScript cuts the branch worktree FROM a Binding's ref, never ON it (r
   // `develop` tracking `origin/develop` and silently drops `-b` — the Agent would commit on, and
   // push to, the base. This drives the emitted worktree line through real git in a temp layout
   // shaped like the pod's (`/repos/<key>` cache, `/work/<slot>/default`) for each ref kind.
+  // The developer's own git config is not part of the layout under test, and it is free to break
+  // it: a global `commit.gpgsign = true` fails every commit below, because a temp repo has no
+  // signing key. `/dev/null` for both config files is the seal — the only settings that reach git
+  // here are the ones this test passes, which is also why `commit` still names a `user.email`.
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
   const git = (cwd: string, ...args: string[]) =>
-    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   const root = await mkdtemp(join(tmpdir(), "j2-attach-"));
   const src = join(root, "src");
   await mkdir(src);
