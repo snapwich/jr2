@@ -1,6 +1,7 @@
 {
   "name": "jr2",
   "private": true,
+  "license": "MIT",
   "packageManager": "pnpm@10.9.0",
   "engines": {
     "node": ">=22"

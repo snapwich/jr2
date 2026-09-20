@@ -1,6 +1,7 @@
 {
   "name": "@jr2/machines",
   "version": "0.0.0",
+  "license": "MIT",
   "private": false,
   "publishConfig": {
     "registry": "http://localhost:4873"

@@ -33,3 +33,7 @@ scaffolding exists so far.
 - Node.js >= 22, pnpm
 - Go >= 1.24, [kubebuilder](https://kubebuilder.io/) (operator)
 - Docker, [kind](https://kind.sigs.k8s.io/), kubectl, [just](https://github.com/casey/just)
+
+## License
+
+[MIT](./LICENSE) © Rich Snapp
