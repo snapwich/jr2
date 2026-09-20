@@ -34,7 +34,7 @@ const (
 func sandboxLabels(sandbox *corev1alpha1.Sandbox) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": "jr2-operator",
-		"sandbox.jr2.dev/name":          sandbox.Name,
+		"sandbox.jr2.dev/name":         sandbox.Name,
 	}
 }
 

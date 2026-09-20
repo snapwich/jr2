@@ -73,8 +73,8 @@ func TestHttpsTokenRidesTheEnvironmentThroughACredentialHelper(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"GIT_TERMINAL_PROMPT": "0",
-		"JR2_GIT_USERNAME":     "x-access-token",
-		"JR2_GIT_PASSWORD":     "ghp_secret",
+		"JR2_GIT_USERNAME":    "x-access-token",
+		"JR2_GIT_PASSWORD":    "ghp_secret",
 		"GIT_CONFIG_COUNT":    "1",
 		"GIT_CONFIG_KEY_0":    "credential.helper",
 		"GIT_CONFIG_VALUE_0":  `!f() { echo "username=$JR2_GIT_USERNAME"; echo "password=$JR2_GIT_PASSWORD"; }; f`,

@@ -14,7 +14,8 @@
     "prepare": "husky"
   },
   "lint-staged": {
-    "*.{ts,mts,js,mjs,cjs,json,md,yml,yaml,html,css}": "prettier --write"
+    "*.{ts,mts,js,mjs,cjs,json,md,yml,yaml,html,css}": "prettier --write",
+    "*.go": "gofmt -w"
   },
   "devDependencies": {
     "husky": "^9.1.0",
