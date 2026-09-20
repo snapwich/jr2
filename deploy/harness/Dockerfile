@@ -118,7 +118,13 @@ RUN set -eux; \
 # User Container beside it (ADR-0005), on a libc jr2 does not control. `ext::` names it by absolute
 # path, so that seat needs no PATH and jr2 injects no env.
 # ---------------------------------------------------------------------------------------------
-FROM golang:1.26 AS uploadpack
+# On the BUILD platform, cross-compiling: Go needs no emulation to target another arch, and the
+# Go toolchain does not survive one — under qemu user-mode (the foreign half of a multi-arch
+# `just kit-push`, ADR-0044) the compiler dies with `fatal error: fault`, the runtime's
+# signal-based preemption meeting an emulator that delivers signals differently. Native compile,
+# foreign binary; the smoke below still runs the foreign binary, under binfmt, for the few
+# milliseconds it takes to print usage.
+FROM --platform=$BUILDPLATFORM golang:1.26 AS uploadpack
 
 # TARGETARCH is BuildKit's and per-stage, as in the vendor stage above.
 ARG TARGETARCH
@@ -132,12 +138,15 @@ COPY operator/go.mod operator/go.sum ./
 COPY operator/cmd/jr2-upload-pack ./cmd/jr2-upload-pack
 COPY operator/internal/uploadpack ./internal/uploadpack
 
-# The smoke is the same proof the vendored rg and work-acl give: the blob built here RUNS on this
-# TARGETARCH. With no arguments the program prints its usage and exits 1, which is the whole of
-# what it can prove outside a pod.
+# The smoke is the same proof the vendored rg and work-acl give: the blob built here RUNS on the
+# TARGETARCH — binfmt dispatches by the ELF's own arch, so a foreign blob runs emulated here and a
+# wrong-arch blob fails to exec at all. With no arguments the program prints its usage and exits 1,
+# which is the whole of what it can prove outside a pod. `asyncpreemptoff` because this run may be
+# the emulated one, and the preemption signal is what the emulator mishandles (above); the blob
+# shipped is unchanged — GODEBUG is the process's, not the binary's.
 RUN set -eux; \
     CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /out/jr2-upload-pack ./cmd/jr2-upload-pack; \
-    /out/jr2-upload-pack 2>&1 | grep -q '^usage: jr2-upload-pack'
+    GODEBUG=asyncpreemptoff=1 /out/jr2-upload-pack 2>&1 | grep -q '^usage: jr2-upload-pack'
 
 # ---------------------------------------------------------------------------------------------
 # The image itself.

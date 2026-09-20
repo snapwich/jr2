@@ -1,5 +1,8 @@
-# Build the manager binary
-FROM golang:1.26 AS builder
+# Build the manager binary — on the BUILD platform, cross-compiling to TARGETARCH below. The Go
+# toolchain does not survive qemu user-mode emulation (`fatal error: fault`), and the foreign half
+# of a multi-arch `just kit-push` (ADR-0044) is exactly that; this is kubebuilder's own
+# `docker-buildx` pattern, applied in place instead of sed-ed into a Dockerfile.cross.
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
