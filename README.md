@@ -25,14 +25,27 @@ ship as the three Kit images (ADR-0038).
 
 ## Status
 
-Greenfield. Design in progress via `/grill-with-docs`; see [CONTEXT.md](./CONTEXT.md) and [docs/adr/](./docs/adr/). Only
-scaffolding exists so far.
+Pre-1.0. Design in progress via `/grill-with-docs`; see [CONTEXT.md](./CONTEXT.md) and [docs/adr/](./docs/adr/). The
+instance-facing packages publish to npm as `@jr2/{cli,orchestrator,agent-protocol,machines}`; 0.x minors break.
 
 ## Prerequisites
 
-- Node.js >= 22, pnpm
+- Node.js >= 24, pnpm
 - Go >= 1.24, [kubebuilder](https://kubebuilder.io/) (operator)
 - Docker, [kind](https://kind.sigs.k8s.io/), kubectl, [just](https://github.com/casey/just)
+
+## Releasing
+
+One release train (ADR-0019/0055): the npm version is the Kit image tag, every manifest carries the one number, and the
+tag push is the release.
+
+```sh
+just release minor          # bump, gate, commit `release: x.y.0`, tag vx.y.0
+git push origin main vx.y.0
+```
+
+The tag runs `.github/workflows/release.yml`: every tier on a runner kind cluster, the Kit images to `ghcr.io/snapwich`,
+then npm by trusted publishing. No dev box holds an npm token; that absence is the guard.
 
 ## License
 

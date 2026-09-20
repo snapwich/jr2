@@ -120,8 +120,8 @@ sandbox-sample:
 # --- the manual release loop (ADR-0043/0044; requires docker + kind, and network every run) ---
 #
 # EVERY run, not just the first: the npm registry's storage is wiped on each `up` — that wipe is what
-# lets 0.0.0 republish without stamping a version — so verdaccio's uplink cache is cold again and
-# the whole dependency tree resolves through npmjs.
+# lets the version `main` carries republish without stamping another — so verdaccio's uplink cache
+# is cold again and the whole dependency tree resolves through npmjs.
 #
 # The kit as a USER gets it: packages resolved from a registry, Kit images PULLED from a registry,
 # the `jr2` binary installed globally, an instance folder that lives nowhere near this checkout. Only
@@ -134,7 +134,6 @@ sandbox-sample:
 # mode by walking up from its own real path, so a global prefix under the kit root would run the
 # very mode this loop exists to skip (ADR-0043; scripts/dist-publish.sh refuses it outright).
 dist_dir := env_var_or_default("TMPDIR", "/tmp") / "jr2-dist"
-dist_registry := "http://localhost:4873"
 
 # publish the kit locally, push its images at the published tags, install the CLI globally
 dist-up:
@@ -147,6 +146,9 @@ dist-up:
     # runs the identical bring-up unattended — the two faces of one loop cannot drift.
     scripts/dist-publish.sh
     ver="$(node -p 'require("./packages/orchestrator/package.json").version')"
+    # Both addresses ASKED of their scripts: each port has one owner (ADR-0055 retired the manifest
+    # line that used to fix the npm one).
+    registry="$(scripts/dist-registry.sh address)"
     kit_registry="$(scripts/dist-image-registry.sh address)"
 
     cat <<MSG
@@ -158,7 +160,7 @@ dist-up:
     Then live like a user — outside this checkout, outside any git repo:
 
       jr2 init /tmp/demo && cd /tmp/demo
-      npm install --registry {{ dist_registry }}
+      npm install --registry $registry
       # an installed kit BUILDS no Kit image — it pulls the published tags, so point the cluster at
       # the loop's stand-in home instead of ghcr.io/snapwich (ADR-0044):
       #   kitRegistry: process.env.JR2_KIT_REGISTRY  →  jr2.config.ts
@@ -186,13 +188,14 @@ dist-packages:
     set -euo pipefail
     scripts/dist-registry.sh up
     scripts/dist-publish.sh --packages-only
+    registry="$(scripts/dist-registry.sh address)"
 
     cat <<MSG
 
     Live like a user, outside this checkout, with the CHECKOUT binary:
 
       node {{ justfile_directory() }}/packages/cli/bin/jr2.js init /tmp/demo && cd /tmp/demo
-      npm install --registry {{ dist_registry }}
+      npm install --registry $registry
       # a non-kind cluster needs a registry it can pull from — the scaffold names none:
       #   registry: "registry.example.com"  →  jr2.config.ts
       node {{ justfile_directory() }}/packages/cli/bin/jr2.js up --context <ctx>
@@ -219,8 +222,8 @@ dist-down:
 # The only setup a human owes it is a cluster: the tier's own suite fixture stands up both
 # registries, publishes the kit, pushes the Kit images at their published tags, and installs the
 # `jr2` binary into a throwaway prefix — once per suite run, in a temp dir of its own, so it borrows
-# no state from `dist-up` and leaves none behind. The PORTS are the exception, because the packages'
-# publishConfig fixes one of them: the tier refuses to start while a manual loop holds it
+# no state from `dist-up` and leaves none behind. The PORTS are the exception, because both faces
+# default to the same two: the tier refuses to start while a manual loop holds them
 # (`just dist-down`).
 #
 # The cluster is vanilla but not featureless since ADR-0044 — deploy/kind.yaml tells containerd that
@@ -237,3 +240,16 @@ e2e-dist-up:
 e2e-dist:
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
     KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:dist
+
+# --- the release (ADR-0055; the tag push is the release) ---
+#
+# LOCKSTEP: one version across every manifest and the scaffold's exact pins, bumped together here,
+# never rewritten at publish time. The recipe bumps, runs the unit gate, commits `release: <ver>`
+# and tags `v<ver>`; the human pushes `main` and the tag, and .github/workflows/release.yml does
+# the rest in order — check the tag against the manifests, every tier on a runner kind cluster,
+# Kit images to their home, THEN npm. The guard against an accidental publish is the credential:
+# no dev box holds an npmjs token, and the job holds none either (trusted publishing).
+
+# bump every manifest (patch|minor|major|x.y.z), gate, commit, and tag — then `git push origin main v<ver>`
+release bump:
+    scripts/release.sh {{ bump }}

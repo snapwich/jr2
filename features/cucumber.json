@@ -17,7 +17,7 @@
     "tags": "@console"
   },
   "dist": {
-    "//": "Deliberately SERIAL — no `parallel` key (ADR-0043). The suite fixture publishes the kit and installs it ONCE per run, and cucumber's parallel workers are separate PROCESSES: each would stand up its own verdaccio on the one port `publishConfig` allows. Scenarios still isolate the way @kind's do — a fresh namespace and a temp instance folder each — so the serialization costs the publish, not the runs.",
+    "//": "Deliberately SERIAL — no `parallel` key (ADR-0043). The suite fixture publishes the kit and installs it ONCE per run, and cucumber's parallel workers are separate PROCESSES: each would stand up its own verdaccio on the one port scripts/dist-registry.sh defaults to. Scenarios still isolate the way @kind's do — a fresh namespace and a temp instance folder each — so the serialization costs the publish, not the runs.",
     "paths": ["*.feature"],
     "import": ["steps/**/*.ts"],
     "tags": "@dist"

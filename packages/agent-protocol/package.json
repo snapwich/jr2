@@ -1,10 +1,31 @@
 {
   "name": "@jr2/agent-protocol",
   "version": "0.0.0",
+  "description": "The jr2 Orchestrator↔Agent wire: defineEvent and nothing else.",
   "license": "MIT",
   "private": false,
   "publishConfig": {
-    "registry": "http://localhost:4873"
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/snapwich/jr2.git",
+    "directory": "packages/agent-protocol"
+  },
+  "homepage": "https://github.com/snapwich/jr2#readme",
+  "bugs": {
+    "url": "https://github.com/snapwich/jr2/issues"
+  },
+  "keywords": [
+    "jr2",
+    "agents",
+    "agentic",
+    "xstate",
+    "kubernetes",
+    "workflow"
+  ],
+  "engines": {
+    "node": ">=24"
   },
   "type": "module",
   "exports": {

@@ -1,0 +1,55 @@
+# The light gate (ADR-0055): everything that needs no docker, on every push and PR. Minutes.
+# The heavy tiers — @kind and @dist, which need a kind cluster, network, and docker builds —
+# run on the release tag (release.yml) and by hand (`just e2e-kind`, `just e2e-dist`) when a
+# change touches build, deploy, or dist code.
+name: kit / CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+jobs:
+  test:
+    permissions:
+      contents: read
+    name: Unit + default e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      # pnpm before node: setup-node's pnpm cache needs the binary on PATH. Both versions come from
+      # the root manifest — `packageManager` and `engines.node` — the one place each is written.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: package.json
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Format
+        run: pnpm format:check
+
+      # `pnpm -r test` includes the harness conformance suite (ADR-0027): pi at its pin, the real
+      # adapter over a real socket, a scripted provider — no infra.
+      - name: Unit + conformance
+        run: pnpm -r --if-present test
+
+      # Black-box (ADR-0010): each scenario spawns the real `jr2` binary against a real
+      # orchestrator process. No docker, no cluster.
+      - name: Default e2e profile
+        run: pnpm --filter @jr2/e2e test:e2e

@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { sandboxToken } from "@jr2/orchestrator";
+import { KIT_VERSION, sandboxToken } from "@jr2/orchestrator";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
@@ -605,8 +605,8 @@ test("a kit checkout builds the Harness, Adapter, and operator; installed from n
   // The published <kitversion> refs are what the map names, and what the Instance Harness runs —
   // at the canonical home, because a bare tag is `docker.io/library/` and nothing is there
   // (ADR-0044).
-  assert.equal(imagesOf(installed).harness, "ghcr.io/snapwich/jr2-harness:0.0.0");
-  assert.equal(imagesOf(installed).adapter, "ghcr.io/snapwich/jr2-adapter:0.0.0");
+  assert.equal(imagesOf(installed).harness, `ghcr.io/snapwich/jr2-harness:${KIT_VERSION}`);
+  assert.equal(imagesOf(installed).adapter, `ghcr.io/snapwich/jr2-adapter:${KIT_VERSION}`);
 });
 
 test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come from the home (ADR-0044)", async () => {
@@ -617,9 +617,9 @@ test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come 
   const w = mkWorld(mirrored);
   assert.equal(await up(["--yes"], w.io), 0);
   const images = imagesOf(w);
-  assert.equal(images.harness, "zot.example.test/jr2-harness:0.0.0");
-  assert.equal(images.adapter, "zot.example.test/jr2-adapter:0.0.0");
-  assert.equal(images.operator, "zot.example.test/jr2-operator:0.0.0");
+  assert.equal(images.harness, `zot.example.test/jr2-harness:${KIT_VERSION}`);
+  assert.equal(images.adapter, `zot.example.test/jr2-adapter:${KIT_VERSION}`);
+  assert.equal(images.operator, `zot.example.test/jr2-operator:${KIT_VERSION}`);
   assert.match(w.err.join("\n"), /zot\.example\.test/, "the mirror is narrated, never silently used");
   assert.ok(
     !w.built.some((b) => /^(build|push) (zot|ghcr)/.test(b)),
@@ -633,7 +633,7 @@ test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come 
   );
   const w2 = mkWorld(both);
   assert.equal(await up(["--yes"], w2.io), 0);
-  assert.equal(imagesOf(w2).harness, "zot.example.test/jr2-harness:0.0.0");
+  assert.equal(imagesOf(w2).harness, `zot.example.test/jr2-harness:${KIT_VERSION}`);
   assert.ok(
     w2.built.some((b) => b.startsWith("push reg.example.com/jr2/jr2-instance-b:")),
     `the instance image still goes to registry (got: ${w2.built.join(", ")})`,
@@ -641,7 +641,7 @@ test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come 
 
   const home = mkWorld(await mkInstance(`export default { name: "h" };\n`, "h"));
   assert.equal(await up(["--yes"], home.io), 0);
-  assert.equal(imagesOf(home).harness, "ghcr.io/snapwich/jr2-harness:0.0.0");
+  assert.equal(imagesOf(home).harness, `ghcr.io/snapwich/jr2-harness:${KIT_VERSION}`);
 });
 
 test("a registry pushes every layer; a non-kind context without one fails BEFORE any build", async () => {
@@ -1946,7 +1946,7 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   // This world is NOT a kit checkout (mkWorld's default kitDir is the instance folder), so the
   // resolved ref is the published one — the branch a real instance takes (ADR-0038), at the
   // canonical home (ADR-0044).
-  assert.equal(harness.image, "ghcr.io/snapwich/jr2-harness:0.0.0", "the stock image at the kit version");
+  assert.equal(harness.image, `ghcr.io/snapwich/jr2-harness:${KIT_VERSION}`, "the stock image at the kit version");
   assert.deepEqual(harness.env[0], {
     name: "JR2_HARNESS_JSON",
     valueFrom: { configMapKeyRef: { name: "jr2-harness", key: "harness.json" } },

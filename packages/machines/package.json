@@ -1,10 +1,31 @@
 {
   "name": "@jr2/machines",
   "version": "0.0.0",
+  "description": "The Machines the jr2 kit ships: packaged xstate Machines that leave their parts Open for a composer to bind.",
   "license": "MIT",
   "private": false,
   "publishConfig": {
-    "registry": "http://localhost:4873"
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/snapwich/jr2.git",
+    "directory": "packages/machines"
+  },
+  "homepage": "https://github.com/snapwich/jr2#readme",
+  "bugs": {
+    "url": "https://github.com/snapwich/jr2/issues"
+  },
+  "keywords": [
+    "jr2",
+    "agents",
+    "agentic",
+    "xstate",
+    "kubernetes",
+    "workflow"
+  ],
+  "engines": {
+    "node": ">=24"
   },
   "type": "module",
   "exports": {

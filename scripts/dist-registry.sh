@@ -2,16 +2,18 @@
 #
 # The release loop's stand-in for npm (ADR-0043): verdaccio, up or down.
 #
-#   dist-registry.sh up     wipe the storage, start verdaccio, wait for it to answer
-#   dist-registry.sh down   stop it and leave nothing listening on the port
+#   dist-registry.sh up       wipe the storage, start verdaccio, wait for it to answer
+#   dist-registry.sh down     stop it and leave nothing listening on the port
+#   dist-registry.sh address  print the url the loop publishes to and installs from
 #
 # `up` is idempotent — it stops a previous run first, then deletes the storage. The wipe is the
-# point: a fresh registry every run is what lets 0.0.0 republish, so no version is ever stamped
-# and no manifest is ever edited before publish.
+# point: a fresh registry every run is what lets the version `main` carries republish, so no
+# version is ever stamped and no manifest is ever edited before publish (ADR-0043/0055).
 #
 # Env: JR2_DIST_DIR (runtime state, default <tmp>/jr2-dist — OUTSIDE the checkout, see
-# scripts/dist-publish.sh's guard), JR2_DIST_PORT (default 4873 — the port the packages'
-# publishConfig names, so moving it moves the guard too).
+# scripts/dist-publish.sh's guard), JR2_DIST_PORT (default 4873). The PORT has one owner — this
+# default — and `address` is how the @dist fixture and the justfile ask for it rather than spell
+# it a second time (the same shape scripts/dist-image-registry.sh gives its port).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -51,8 +53,8 @@ stop() {
 
 # The pid file is this loop's only record of its registry, and an interrupted run destroys it: the
 # @dist fixture keeps its state in a temp dir whose name nobody else holds, so a Ctrl-C before
-# teardown leaves a verdaccio no caller can name. The port is FIXED by publishConfig (ADR-0043), so
-# that orphan makes both faces of the loop unrunnable — `down` must be able to clear it. It kills by
+# teardown leaves a verdaccio no caller can name. The port is one default shared by both faces of
+# the loop, so that orphan makes both unrunnable — `down` must be able to clear it. It kills by
 # EVIDENCE, never by port alone: only a process that identifies itself as verdaccio is taken.
 port_holders() {
   lsof -t -i "tcp:$port" -sTCP:LISTEN 2>/dev/null && return 0
@@ -80,7 +82,7 @@ case "${1:-}" in
     stop
     # Anything still answering after that is an orphan, and starting over the top of it is worse
     # than failing: the wipe below would miss ITS storage, the new process would lose the bind, and
-    # the loop would publish 0.0.0 into a registry that already holds it — the unexplained version
+    # the loop would publish a version into a registry that already holds it — the unexplained version
     # conflict the @dist fixture's guard exists to prevent.
     if answering && ! stop_orphan; then
       echo "port $port is held by something that is not verdaccio; free it before running the loop" >&2
@@ -129,8 +131,11 @@ case "${1:-}" in
     fi
     if [[ -n "$ran" ]]; then echo "verdaccio stopped"; else echo "verdaccio was not running"; fi
     ;;
+  address)
+    echo "http://localhost:$port"
+    ;;
   *)
-    echo "usage: $(basename "$0") up|down" >&2
+    echo "usage: $(basename "$0") up|down|address" >&2
     exit 2
     ;;
 esac

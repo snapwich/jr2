@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -16,7 +16,10 @@ const REPO = fileURLToPath(new URL("../../../", import.meta.url));
 
 type Manifest = {
   private?: boolean;
-  publishConfig?: { registry?: string };
+  publishConfig?: { registry?: string; access?: string };
+  engines?: { node?: string };
+  description?: string;
+  repository?: { type?: string; url?: string; directory?: string };
   files?: string[];
   bin?: Record<string, string>;
   types?: string;
@@ -32,29 +35,47 @@ const PUBLIC = ["cli", "orchestrator", "agent-protocol", "machines"];
 /** Reached as Kit images instead, never via npm install (ADR-0027, ADR-0037). */
 const PRIVATE = ["harness", "adapter"];
 
-/** The registry the guard names. Read from `@jr2/cli` rather than written down twice: moving the
- * guard must move every reader with it (the @dist fixture reads the same field). */
-async function guardedRegistry(): Promise<string> {
-  const registry = (await manifest("cli")).publishConfig?.registry;
-  assert.ok(registry, "@jr2/cli's publishConfig names the registry the kit may publish to");
-  return registry;
-}
-
-test("the publish set is the instance's prod chain, and its guard is the manifest", async () => {
-  // `private: true` was the accidental-publish guard; losing it moves the guard into
-  // publishConfig, which outranks CLI and env registry settings (ADR-0043). Publishing to npmjs is
-  // then a deliberate, reviewable edit — never an absence-of-flag accident.
-  const registry = await guardedRegistry();
-  assert.match(registry, /^http:\/\/localhost:\d+$/, "the only registry the kit may publish to is local");
-
+test("the publish set is the instance's prod chain, and no manifest names a registry", async () => {
+  // `private: true` was the accidental-publish guard, then a localhost `publishConfig.registry`
+  // was (ADR-0043) — and that line had no exit, because `publishConfig` outranks `--registry`, so
+  // the edit that let the kit reach npmjs broke every reader of the guard at once. The guard is
+  // now the CREDENTIAL (ADR-0055): no dev box holds an npmjs token, and the release job publishes
+  // by trusted publishing on a pushed tag. So the assertion inverts — a registry line in any
+  // manifest would silently pin a release to wherever it points, past every flag the job passes.
   for (const pkg of PUBLIC) {
     const m = await manifest(pkg);
     assert.equal(m.private, false, `packages/${pkg} publishes`);
-    assert.equal(m.publishConfig?.registry, registry, `packages/${pkg} carries the same localhost guard`);
+    assert.equal(
+      m.publishConfig?.registry,
+      undefined,
+      `packages/${pkg} names no registry — the guard is the credential`,
+    );
+    // A scoped package's first publish is a 402 without this.
+    assert.equal(m.publishConfig?.access, "public", `packages/${pkg} publishes public`);
   }
   for (const pkg of PRIVATE) {
     const m = await manifest(pkg);
     assert.equal(m.private, true, `packages/${pkg} reaches users as a Kit image, not as an npm package`);
+  }
+});
+
+test("every published package says where it runs and where it comes from", async () => {
+  // Every runtime the kit runs in is Node 24 (both Kit Dockerfiles, the instance Dockerfile, the
+  // `registerHooks` bin), and a published package is the one place a user's package manager can
+  // learn that before an install that would fail later (ADR-0055).
+  const { node } = (await manifest("cli")).engines ?? {};
+  assert.ok(node, "@jr2/cli declares the Node it runs on");
+  for (const pkg of PUBLIC) {
+    const m = await manifest(pkg);
+    assert.equal(m.engines?.node, node, `packages/${pkg} runs on the same Node as the CLI`);
+    assert.ok(m.description, `packages/${pkg} has a description for its npm page`);
+    assert.equal(m.repository?.directory, `packages/${pkg}`, `packages/${pkg} points its npm page at its folder`);
+    // README and LICENSE are packed whatever `files:` says; they have to exist to be packed.
+    for (const file of ["README.md", "LICENSE"]) {
+      await access(join(REPO, "packages", pkg, file)).catch(() => {
+        assert.fail(`packages/${pkg}/${file} is missing — the tarball's npm page would be empty`);
+      });
+    }
   }
 });
 

@@ -24,7 +24,7 @@
 # publishing locally is exactly what must stay guarded.
 #
 # Env: JR2_DIST_DIR (runtime state, default <tmp>/jr2-dist — outside the checkout, see the guard
-# below), JR2_DIST_PORT (default 4873 — the port the packages' publishConfig names),
+# below), JR2_DIST_PORT (default 4873 — the same default scripts/dist-registry.sh serves),
 # JR2_DIST_IMAGE_PORT (default 5001 — read through scripts/dist-image-registry.sh, never here).
 set -euo pipefail
 
@@ -61,24 +61,17 @@ export NPM_CONFIG_USERCONFIG="$dir/npmrc"
 
 cd "$root"
 
-# `publishConfig` OUTRANKS the `--registry` flag below (ADR-0043), so the flag is not the guarantee
-# — the manifests are, and this script must not be the thing that finds that out. Read them back
-# first: the day the "we are ready" commit points them at npmjs, this local dev-loop command has to
-# refuse rather than push the working tree to the world.
-for pkg in cli orchestrator agent-protocol machines; do
-  named="$(node -p "require('./packages/$pkg/package.json').publishConfig?.registry ?? ''")"
-  if [[ "$named" != "$registry" ]]; then
-    echo "packages/$pkg publishes to '${named:-<none>}', not $registry — this loop publishes locally only" >&2
-    exit 1
-  fi
-done
-
+# `--registry` IS the guarantee here. The manifests used to carry a localhost `publishConfig`
+# that outranked it (ADR-0043) — and that line had no exit, because the edit that let a release
+# reach npmjs broke this loop with it. The guard is now the credential (ADR-0055): the npmrc above
+# holds a fake token for localhost and nothing else, so a run that somehow addressed npmjs would
+# fail ENEEDAUTH before it pushed a byte.
 # Only the instance-facing packages are public (ADR-0043, ADR-0054), so `-r` skips the rest.
 #
 # `--force` is what makes the WIPE hold. Without it `pnpm publish -r` asks whether each version is
 # already published and answers from pnpm's own metadata cache (~/.cache/pnpm/metadata-v1.3/
 # localhost+4873), which outlives the registry it describes: one previous run of this loop teaches
-# that cache that @jr2/cli@0.0.0 exists, and every run after it publishes NOTHING — reporting "there
+# that cache that @jr2/cli at this checkout's version exists, and every run after it publishes NOTHING — reporting "there
 # are no new packages that should be published" and exiting 0, so the failure lands minutes later
 # as an E404 on an install, pointing at everything except the publish that did not happen. The
 # ephemeral registry is precisely the mechanism that deletes version bookkeeping (ADR-0043), so a

@@ -43,7 +43,10 @@ Losing `private: true` loses the accidental-publish guard, so the guard moves in
 The manifest names the only registry it may publish to. `publishConfig` outranks CLI and env registry settings at
 publish time, so a stray `--registry` cannot leak past it, and a publish with no verdaccio up fails connection-refused.
 Publishing to npmjs becomes a deliberate, reviewable **edit** — changing that line is the "we are ready" commit — never
-an absence-of-flag accident.
+an absence-of-flag accident. (**Amended by
+[ADR-0055](0055-a-release-is-a-pushed-tag-and-the-publish-guard-is-the-credential.md)**: the same precedence that made
+the line a guard made it unreleasable — the edit broke every reader of the guard at once. The line is gone; the guard is
+that no dev box holds an npmjs credential, and the release job publishes by trusted publishing on a pushed tag.)
 
 In the loop, Kit images need no registry at all on kind: build from the checkout, tag with the published names
 (`jr2-harness:<version>`), `kind load` — the same delivery checkout mode already uses. Registry-prefixed kit refs for

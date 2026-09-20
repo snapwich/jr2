@@ -69,17 +69,16 @@ export async function closeInstalledKit(): Promise<void> {
 }
 
 async function bringUp(): Promise<InstalledKit> {
-  // The registry is READ from the guard, never repeated here: `publishConfig` names the only
-  // registry a package may publish to (ADR-0043), so a fixture that picked its own port would
-  // publish nowhere — and moving the guard must move the loop with it, not break it.
-  const manifest = JSON.parse(await readFile(join(REPO, "packages", "cli", "package.json"), "utf8")) as {
-    publishConfig?: { registry?: string };
-  };
-  const registry = manifest.publishConfig?.registry;
-  assert.ok(registry, "@jr2/cli's publishConfig names the registry the loop publishes to (ADR-0043)");
+  // Asked of the script, never spelled here: the port has one owner (scripts/dist-registry.sh's
+  // default, or JR2_DIST_PORT), and a fixture that wrote `localhost:4873` a second time could
+  // publish into a registry nothing serves. It used to be read from the manifests' localhost
+  // `publishConfig` — the guard ADR-0055 retired, because the line had no exit.
+  const { stdout: address } = await exec(script("dist-registry.sh"), ["address"]);
+  const registry = address.trim();
+  assert.ok(registry, "scripts/dist-registry.sh names the registry the loop publishes to (ADR-0043)");
 
-  // The guard fixes the port, so the loop's two faces cannot both hold it: anything already
-  // answering there is a `just dist-up` left standing, whose storage this fixture will not wipe.
+  // One default port, so the loop's two faces cannot both hold it: anything already answering
+  // there is a `just dist-up` left standing, whose storage this fixture will not wipe.
   // Said here, because the alternative is a publish that fails as an unexplained version conflict.
   const taken = await fetch(`${registry}/-/ping`).then(
     () => true,
@@ -98,10 +97,12 @@ async function bringUp(): Promise<InstalledKit> {
     "the @dist tier needs a kind cluster as the current kube context — `just e2e-dist-up`",
   );
 
-  // The scripts take their whole configuration from these two variables, so the fixture's registry
-  // storage, npmrc, and global prefix never touch a `just dist-up` a developer left standing.
+  // The scripts take their whole configuration from JR2_DIST_DIR (and a JR2_DIST_PORT the user may
+  // have set, which `process.env` already carries and `address` above already reflected), so the
+  // fixture's registry storage, npmrc, and global prefix never touch a `just dist-up` a developer
+  // left standing.
   const dir = await mkdtemp(join(tmpdir(), "jr2-dist-"));
-  const env: NodeJS.ProcessEnv = { ...process.env, JR2_DIST_DIR: dir, JR2_DIST_PORT: new URL(registry).port };
+  const env: NodeJS.ProcessEnv = { ...process.env, JR2_DIST_DIR: dir };
   state = { dir, env };
   await exec(script("dist-registry.sh"), ["up"], { env, maxBuffer: BIG });
   // The second stand-in (ADR-0044): the Kit image home. Up before the publish, which pushes the

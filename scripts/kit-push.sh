@@ -45,16 +45,16 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #
 # The cross-check is not ceremony: `KIT_VERSION` — the constant `publishedKitRefs()` actually builds
 # its refs from — is read out of `@jr2/orchestrator`'s manifest (packages/orchestrator/src/config.ts),
-# and `@jr2/cli` depends on it by `workspace:*`, so the two are one number in every published kit. If
-# they ever disagree, this script would push tags nobody resolves and the failure would surface as a
-# pull error on somebody's cluster. Refuse instead.
+# and `@jr2/cli` depends on it by `workspace:*`, so the two are one number in every published kit. The
+# kit is LOCKSTEP (ADR-0055) and scripts/release.sh owns what that means — every `packages/*`
+# manifest and every exact `@jr2/*` pin — so it is asked, not re-implemented: a manifest that
+# disagrees means a hand edit slipped past `just release`, and this script would push tags nobody
+# resolves, surfacing as a pull error on somebody's cluster. Refuse instead.
 version="$(node -p "require('$root/packages/cli/package.json').version")"
-kit_version="$(node -p "require('$root/packages/orchestrator/package.json').version")"
-if [[ "$version" != "$kit_version" ]]; then
-  echo "@jr2/cli is v$version but @jr2/orchestrator (KIT_VERSION, the tag an installed kit resolves) is" >&2
-  echo "v$kit_version — one release train (ADR-0019); publish them at one version before pushing images" >&2
+"$root/scripts/release.sh" --check "$version" >/dev/null || {
+  echo "the kit is not at one version — \`just release\` moves every manifest together (ADR-0019/0055)" >&2
   exit 1
-fi
+}
 
 # The three Kit images: repo, Dockerfile, build context (contexts are relative to the kit root).
 #
