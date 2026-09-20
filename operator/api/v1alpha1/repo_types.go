@@ -59,7 +59,7 @@ type RepoAttempt string
 
 const (
 	// RepoAttemptProbe is `git ls-remote` for a Repo no pod on the node mounts
-	// yet: the sync signal `j2 status` shows before any run asks, and never a
+	// yet: the sync signal `jr2 status` shows before any run asks, and never a
 	// verdict on a Sandbox.
 	RepoAttemptProbe RepoAttempt = "Probe"
 	// RepoAttemptClone is the bare clone a pod on the node is waiting on.
@@ -125,7 +125,7 @@ type RepoStatus struct {
 
 	// Conditions carries `Synced`: True when every reporting node is synced,
 	// False with the first node's error when any is not, Unknown while no node
-	// has reported. It is what `j2 status` and `kubectl get repos` read.
+	// has reported. It is what `jr2 status` and `kubectl get repos` read.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -142,8 +142,8 @@ type RepoStatus struct {
 // Repo is the Schema for the repos API: a git repository the Instance keeps a
 // per-node cache of (ADR-0051). The Orchestrator creates one per repository
 // its Machines bind (at boot) or a run attaches (at first attach), labels the
-// bound ones `j2.dev/bound: "true"`, and annotates `j2.dev/identity` and
-// `j2.dev/last-attached`; `j2 gc` evicts by that label and age.
+// bound ones `jr2.dev/bound: "true"`, and annotates `jr2.dev/identity` and
+// `jr2.dev/last-attached`; `jr2 gc` evicts by that label and age.
 type Repo struct {
 	metav1.TypeMeta `json:",inline"`
 

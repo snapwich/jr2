@@ -2,7 +2,7 @@
 //
 // Nothing in the pod holds a git credential, and nothing in it may talk to a remote — the node's
 // cache agent is the only thing that fetches (ADR-0051). So a `git fetch` in a pod is a program on
-// the runtime volume (`j2-upload-pack`, operator/cmd) asking the Adapter on localhost, the Adapter
+// the runtime volume (`jr2-upload-pack`, operator/cmd) asking the Adapter on localhost, the Adapter
 // asking the Orchestrator with the Sandbox token it already holds, and this port marking the
 // Sandbox CR: one annotation per Repo key, timestamp value. The operator copies the mark onto the
 // pod, the agent reads its demand off pods alone, and the landing comes back on the Sandbox's

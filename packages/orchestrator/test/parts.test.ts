@@ -1,4 +1,4 @@
-// The parts walk (ADR-0049, ADR-0051): what `j2 up` and the boot learn about a workflow by walking
+// The parts walk (ADR-0049, ADR-0051): what `jr2 up` and the boot learn about a workflow by walking
 // the Machine it registered. The walk must reach every way a Machine composes (a named slot, an
 // imported child Machine, a `workspace()` body, a `pool()` worker), must NOT collapse two Machines'
 // same-named Agents (exactly what a flat roster could not hold), must report every `file:` docker
@@ -11,10 +11,10 @@ import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
 import { customizeLine, open, partsOf } from "../src/parts.ts";
 import { agent } from "../src/harness-client.ts";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { pool, source } from "../src/pool.ts";
 import { workspace } from "../src/workspace.ts";
-import { defineEvent } from "@j2/agent-protocol";
+import { defineEvent } from "@jr2/agent-protocol";
 import { z } from "zod";
 import { repoKey } from "../src/repo-identity.ts";
 import type { RepoSlot } from "../src/parts.ts";
@@ -27,7 +27,7 @@ const def = (model: string, workspaceAccess?: "write" | "read" | "none") => ({
 
 /** A leaf Machine carrying one Agent under `slot`. */
 function carrier(id: string, slot: string, model: string, workspaceAccess?: "write" | "read" | "none") {
-  return j2Setup({ events: [], actors: { [slot]: agent(def(model, workspaceAccess)) } }).createMachine({
+  return jr2Setup({ events: [], actors: { [slot]: agent(def(model, workspaceAccess)) } }).createMachine({
     id,
     initial: "working",
     states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go" } } } },
@@ -35,7 +35,7 @@ function carrier(id: string, slot: string, model: string, workspaceAccess?: "wri
 }
 
 test("a Machine's own slots are found by the brand, and nothing else is", () => {
-  const machine = j2Setup({
+  const machine = jr2Setup({
     events: [],
     actors: {
       coder: agent(def("anthropic/claude-x")),
@@ -49,7 +49,7 @@ test("a Machine's own slots are found by the brand, and nothing else is", () => 
 
 test("the walk descends into composed Machines — a named child slot (ADR-0049)", () => {
   const child = carrier("child", "reviewer", "vllm/qwen");
-  const parent = j2Setup({ events: [], actors: { triager: agent(def("anthropic/claude-x")), child } }).createMachine({
+  const parent = jr2Setup({ events: [], actors: { triager: agent(def("anthropic/claude-x")), child } }).createMachine({
     id: "parent",
     initial: "triaging",
     states: { triaging: { invoke: { src: "child" } } },
@@ -86,7 +86,7 @@ test("the walk reaches a workspace() body and a pool() worker — the kit's own 
 test("two Machines may each carry a `coder` — both are reported (what a roster could not hold)", () => {
   const deep = carrier("deep", "coder", "anthropic/claude-opus");
   const quick = carrier("quick", "coder", "anthropic/claude-haiku");
-  const parent = j2Setup({ events: [], actors: { deep, quick } }).createMachine({
+  const parent = jr2Setup({ events: [], actors: { deep, quick } }).createMachine({
     id: "parent",
     initial: "idle",
     states: { idle: {} },
@@ -100,12 +100,12 @@ test("two Machines may each carry a `coder` — both are reported (what a roster
 
 test("identical definitions collapse — one definition carried by three Machines is preflighted once", () => {
   const shared = def("vllm/qwen");
-  const one = j2Setup({ events: [], actors: { coder: agent(shared) } }).createMachine({
+  const one = jr2Setup({ events: [], actors: { coder: agent(shared) } }).createMachine({
     id: "one",
     initial: "idle",
     states: { idle: {} },
   });
-  const two = j2Setup({ events: [], actors: { coder: agent({ ...shared }) } }).createMachine({
+  const two = jr2Setup({ events: [], actors: { coder: agent({ ...shared }) } }).createMachine({
     id: "two",
     initial: "idle",
     states: { idle: {} },
@@ -117,8 +117,8 @@ test("identical definitions collapse — one definition carried by three Machine
 
 test("the walk terminates on a Machine that composes itself", () => {
   // Legal (a recursive worker); walking it twice is not. The cycle guard is what makes the
-  // converge's walk safe on any registered Machine, not just the shapes j2 ships.
-  const recursive = j2Setup({ events: [], actors: { coder: agent(def("vllm/qwen")) } }).createMachine({
+  // converge's walk safe on any registered Machine, not just the shapes jr2 ships.
+  const recursive = jr2Setup({ events: [], actors: { coder: agent(def("vllm/qwen")) } }).createMachine({
     id: "recursive",
     initial: "idle",
     states: { idle: {} },
@@ -147,9 +147,9 @@ const ws = (image?: string, user?: string) =>
   });
 
 test("a `file:` image is a context to build; a registry ref is not, and neither is silence", () => {
-  // The whole reason the image is an OPTION and not a spec field: `j2 up` must find it statically.
-  // A ref is deployed-never-built (ADR-0037/0039 — what j2 did not stamp, j2 does not touch), and
-  // an absent one is the `images/default` fallback, which is a path convention `j2 up` checks
+  // The whole reason the image is an OPTION and not a spec field: `jr2 up` must find it statically.
+  // A ref is deployed-never-built (ADR-0037/0039 — what jr2 did not stamp, jr2 does not touch), and
+  // an absent one is the `images/default` fallback, which is a path convention `jr2 up` checks
   // itself rather than something a Machine carries.
   assert.deepEqual(partsOf([ws("file:///srv/pkg/image")]).images, [
     { url: "file:///srv/pkg/image", dir: "/srv/pkg/image", name: "image" },
@@ -180,7 +180,7 @@ test("one context named by two Workspaces is built once, and survives a provide(
 test("the image is found through composition, not just at the root", () => {
   // A packaged Machine ships its own context; the Instance registers something that INVOKES it.
   const inner = ws("file:///srv/pkg/image");
-  const outer = j2Setup({ events: [], actors: { research: inner } }).createMachine({
+  const outer = jr2Setup({ events: [], actors: { research: inner } }).createMachine({
     id: "outer",
     initial: "researching",
     states: { researching: { invoke: { src: "research" } } },
@@ -203,12 +203,12 @@ test("workspace() refuses an empty image at build time, not at the first provisi
 
 // --- the jr shape, whole (ADR-0049) -------------------------------------------------------------
 
-test("a workspace() inside a j2Setup() inside a pool() — every part, at every depth", () => {
+test("a workspace() inside a jr2Setup() inside a pool() — every part, at every depth", () => {
   // The shape a real jr-shaped workflow has, and the one a converge must
   // read in a single pass: the Pool schedules a worker Machine, the worker composes a Workspace,
   // and the Agents sit one level below that. Two wrapper kinds, an author Machine between them,
   // and both image seats — nothing here is reachable from the root's own `implementations.actors`.
-  const body = j2Setup({
+  const body = jr2Setup({
     events: [],
     actors: { coder: agent(def("vllm/qwen")), reviewer: agent(def("anthropic/claude-x", "read")) },
   }).createMachine({
@@ -224,7 +224,7 @@ test("a workspace() inside a j2Setup() inside a pool() — every part, at every 
     spec: () => ({ branch: "feat-1" }),
   });
 
-  const worker = j2Setup({
+  const worker = jr2Setup({
     events: [],
     actors: { triager: agent(def("anthropic/claude-haiku", "none")), feature },
   }).createMachine({ id: "worker", initial: "triaging", states: { triaging: { invoke: { src: "feature" } } } });
@@ -239,7 +239,7 @@ test("a workspace() inside a j2Setup() inside a pool() — every part, at every 
   });
 
   assert.deepEqual(partsOf([top]), {
-    // In walk order, and every one of them is a model `j2 up` preflights (ADR-0018) — the
+    // In walk order, and every one of them is a model `jr2 up` preflights (ADR-0018) — the
     // `workspace: "none"` triager is also what converges the Instance Harness (ADR-0031).
     agents: [
       { name: "triager", definition: def("anthropic/claude-haiku", "none") },
@@ -301,7 +301,7 @@ test("a per-run slot contributes nothing — which Repo it binds is the run's bu
   assert.equal(parts.composesSandbox, true);
 });
 
-test("open slots are reported with their `customize()` route from the root — what `j2 up` refuses by name", () => {
+test("open slots are reported with their `customize()` route from the root — what `jr2 up` refuses by name", () => {
   // The Machine is named by where it sits, never by the wrapper's xstate id (every `workspace()`
   // shares one): the path is the `actors` nesting a `customize()` of the registered root writes
   // to reach the wrapper, so the refusal's fix line pastes.
@@ -314,7 +314,7 @@ test("open slots are reported with their `customize()` route from the root — w
 
   // Composed under a child slot, then under a pool: the path is the author-written slots alone —
   // `customize()` is transparent to `worker` and `body`, so the route is too.
-  const host = j2Setup({ events: [], actors: { review: packaged } }).createMachine({
+  const host = jr2Setup({ events: [], actors: { review: packaged } }).createMachine({
     id: "host",
     initial: "reviewing",
     states: { reviewing: { invoke: { src: "review" } } },
@@ -324,9 +324,9 @@ test("open slots are reported with their `customize()` route from the root — w
     { slot: "docs", path: ["review"] },
   ]);
   // A map declared Open whole (`repos: open`) is one entry with no slot to name — the composer
-  // names them — on the same route, so `j2 up` refuses it by the same line with `<slot>` left to
+  // names them — on the same route, so `jr2 up` refuses it by the same line with `<slot>` left to
   // the composer.
-  const mapped = j2Setup({ events: [], actors: { review: wsRepos(open) } }).createMachine({
+  const mapped = jr2Setup({ events: [], actors: { review: wsRepos(open) } }).createMachine({
     id: "host",
     initial: "reviewing",
     states: { reviewing: { invoke: { src: "review" } } },
@@ -352,7 +352,7 @@ test("open slots are reported with their `customize()` route from the root — w
 
   // Invoked INLINE, the wrapper sits under an actor with no slot key — nothing a `customize()`
   // can name — so the path is undefined and the refusal says so instead of printing a line.
-  const inline = j2Setup({ events: [] }).createMachine({
+  const inline = jr2Setup({ events: [] }).createMachine({
     id: "inline",
     initial: "reviewing",
     states: { reviewing: { invoke: { src: packaged } } },
@@ -387,7 +387,7 @@ test("customizeLine renders the fix as the nesting `customize()` accepts", () =>
 /** A leaf Machine whose one Agent is Open — what a package exports, since it cannot pay for a
  * model (ADR-0054). */
 function unbound(id: string, slot: string) {
-  return j2Setup({ events: [], actors: { [slot]: agent({ model: open, instructions: "i" }) } }).createMachine({
+  return jr2Setup({ events: [], actors: { [slot]: agent({ model: open, instructions: "i" }) } }).createMachine({
     id,
     initial: "working",
     states: { working: { invoke: { id: slot, src: slot, input: { prompt: "go" } } } },
@@ -411,7 +411,7 @@ test("an Open Agent is reported beside the open Repo Slots, and names no model t
 
 test("an Open Agent is located by the same `customize()` route a Repo Slot is — through wrappers and all", () => {
   const packaged = workspace(unbound("body", "coder"), { repos: { target: open }, spec: () => ({ branch: "b" }) });
-  const host = j2Setup({ events: [], actors: { review: packaged } }).createMachine({
+  const host = jr2Setup({ events: [], actors: { review: packaged } }).createMachine({
     id: "host",
     initial: "reviewing",
     states: { reviewing: { invoke: { src: "review" } } },
@@ -424,7 +424,7 @@ test("an Open Agent is located by the same `customize()` route a Repo Slot is �
 
   // Invoked INLINE, the Machine sits under an actor with no slot key: nothing a `customize()` can
   // name, so the path is undefined and the refusal says so instead of printing a line.
-  const inline = j2Setup({ events: [] }).createMachine({
+  const inline = jr2Setup({ events: [] }).createMachine({
     id: "inline",
     initial: "reviewing",
     states: { reviewing: { invoke: { src: packaged } } },
@@ -437,7 +437,7 @@ test("an Open Agent and a bound one under the same slot key do not collapse", ()
   // key — so without the canonicalizer's symbol case these two would be one entry, and the walk
   // would report an Open Agent or a model, never both.
   const bound = carrier("bound", "coder", "vllm/qwen");
-  const both = j2Setup({ events: [], actors: { bound, unbound: unbound("unbound", "coder") } }).createMachine({
+  const both = jr2Setup({ events: [], actors: { bound, unbound: unbound("unbound", "coder") } }).createMachine({
     id: "both",
     initial: "idle",
     states: { idle: {} },
@@ -451,7 +451,7 @@ test("an Open Agent and a bound one under the same slot key do not collapse", ()
 
 test("composesSandbox is true through a pool and a child, false for a plain Machine — the data-plane switch", () => {
   const inner = wsRepos({ app: "https://example.test/app.git" });
-  const outer = j2Setup({ events: [], actors: { research: inner } }).createMachine({
+  const outer = jr2Setup({ events: [], actors: { research: inner } }).createMachine({
     id: "outer",
     initial: "researching",
     states: { researching: { invoke: { src: "research" } } },
@@ -474,7 +474,7 @@ test("composesSandbox is true through a pool and a child, false for a plain Mach
 });
 
 test("the stamps are read by a SECOND copy of this module — the installed CLI's walk over an Instance's own kit (ADR-0043)", async () => {
-  // An installed `j2` resolves `@j2/orchestrator` from its own global prefix and the Instance
+  // An installed `jr2` resolves `@jr2/orchestrator` from its own global prefix and the Instance
   // resolves it from its own node_modules: `workspace()` runs in one copy, `partsOf` in the other.
   // A query string makes Node load a second instance of this module, with its own module scope —
   // a WeakMap here would be empty there, and the walk would report no Sandbox at all.

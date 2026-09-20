@@ -1,14 +1,14 @@
 // The @kind tier's scripted MODEL (ADR-0038). The pod runs the STOCK Harness now — the dev Harness
 // image and its hand-rolled MCP client are gone — so the only thing this tier still fakes is the
 // LLM. Substitution moved from the image to the provider: `harness.provider` already accepts any
-// OpenAI-compatible `baseUrl`, so pointing the instance at this endpoint runs the real `@j2/harness`
+// OpenAI-compatible `baseUrl`, so pointing the instance at this endpoint runs the real `@jr2/harness`
 // with pi, the real Menu over MCP, and the real Working tools, while the test still chooses every
 // turn's shape. That is what makes this tier a SECOND pi canary beside the conformance suite.
 //
 // Ported from `packages/harness/test/support/rig.ts`'s `startFakeProvider`, with four deltas the
 // @kind placement forces:
 //
-//  1. NON-STREAMING answers. `j2 up`'s provider preflight (ADR-0019) POSTs `/chat/completions`
+//  1. NON-STREAMING answers. `jr2 up`'s provider preflight (ADR-0019) POSTs `/chat/completions`
 //     WITHOUT `stream` and demands `choices[0].message.tool_calls`, on every scenario's converge —
 //     a stream-only fake would fail 100% of scenarios at `Given the kind instance is serving`.
 //     `GET /models` must answer too.
@@ -34,14 +34,14 @@ import type { AddressInfo, Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /** One request body as the provider received it. `tools` is where the per-turn Menu is visible:
- * the Menu the invoking state derived (as `mcp__j2__<name>`, the model-facing name `menu.ts`
+ * the Menu the invoking state derived (as `mcp__jr2__<name>`, the model-facing name `menu.ts`
  * mints) plus the Working tools the definition's `workspace` left in place (ADR-0028). */
 export type RecordedCall = {
   /** Model-facing tool names, in the order the Harness offered them. */
   tools: string[];
   /** The model id the request named — `<model>` after the provider prefix (ADR-0018). */
   model?: string;
-  /** True for a turn request; false for `j2 up`'s converge-time preflight, which never streams. */
+  /** True for a turn request; false for `jr2 up`'s converge-time preflight, which never streams. */
   stream: boolean;
   /** The whole body, serialized — where a tool RESULT is visible (the messages a step asserts on). */
   raw: string;
@@ -57,7 +57,7 @@ export type FakeProvider = {
   /**
    * Answer the parked turn request that was offered `tool` with a call to it, then let the stream
    * finish. `tool` is the bare name (`finish`, or a Working tool like `bash`); the Menu's
-   * `mcp__j2__` prefix is matched and emitted for you. Waits for such a request to arrive.
+   * `mcp__jr2__` prefix is matched and emitted for you. Waits for such a request to arrive.
    */
   release(tool: string, args: Record<string, unknown>): Promise<void>;
   close(): Promise<void>;
@@ -110,7 +110,7 @@ export async function startFakeProvider(): Promise<FakeProvider> {
       calls.push(call);
 
       if (!call.stream) {
-        // `j2 up`'s preflight (ADR-0019): one trivial completion that MUST answer with tool_calls,
+        // `jr2 up`'s preflight (ADR-0019): one trivial completion that MUST answer with tool_calls,
         // proving the endpoint can do tool calling at all. It offers a single `ping` tool; answer
         // whatever it offered, so the probe's own contract is what decides the name.
         answerPreflight(res, call.tools[0] ?? "ping");
@@ -150,7 +150,7 @@ export async function startFakeProvider(): Promise<FakeProvider> {
     port,
     calls,
     release: async (tool, args) => {
-      const wanted = [`mcp__j2__${tool}`, tool];
+      const wanted = [`mcp__jr2__${tool}`, tool];
       const entry = await until(
         () => held.find((h) => !h.done && h.call.tools.some((t) => wanted.includes(t))),
         // Lazily rendered: what makes a miss debuggable is the menus seen by the TIME IT GAVE UP,
@@ -183,7 +183,7 @@ function finish(entry: Held): void {
   clearInterval(entry.keepalive);
 }
 
-/** The non-streaming answer shape `j2 up`'s probe reads: `choices[0].message.tool_calls`. */
+/** The non-streaming answer shape `jr2 up`'s probe reads: `choices[0].message.tool_calls`. */
 function answerPreflight(res: ServerResponse, toolName: string): void {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(
@@ -208,7 +208,7 @@ function answerPreflight(res: ServerResponse, toolName: string): void {
   );
 }
 
-/** Finish a parked stream as one tool call. The name is the MODEL-FACING one (`mcp__j2__<tool>`
+/** Finish a parked stream as one tool call. The name is the MODEL-FACING one (`mcp__jr2__<tool>`
  * for a Menu pick — `menu.ts` mints it and pi matches on it), and `finish_reason: "tool_calls"` is
  * what makes pi execute rather than end the turn. */
 function streamToolCall(res: ServerResponse, name: string, args: string): void {

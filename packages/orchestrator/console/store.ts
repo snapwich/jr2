@@ -148,7 +148,7 @@ export function applyFrame(store: Store, frame: Frame): Store {
 
     case "gone": {
       // `gone` is its own fact, not an inference from a terminal status: a run can leave the live
-      // set without one (`j2 stop`). A run we never saw live is a no-op — it began and ended inside
+      // set without one (`jr2 stop`). A run we never saw live is a no-op — it began and ended inside
       // a reconnect window, which is ordinary. Its inbox card goes either way: a gate exists exactly
       // while its invoking state is entered (ADR-0011), and this run has no entered states left.
       const gates = mapWithout(store.gates, frame.runId);

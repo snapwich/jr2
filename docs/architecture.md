@@ -1,11 +1,11 @@
-# j2 architecture
+# jr2 architecture
 
-Four pictures of j2, each answering one question, each drawn in the terms [CONTEXT.md](../CONTEXT.md) defines. The
+Four pictures of jr2, each answering one question, each drawn in the terms [CONTEXT.md](../CONTEXT.md) defines. The
 decisions behind the shapes are in [docs/adr/](./adr/); this page cites them but does not restate them.
 
 ## The problems
 
-j2 exists to solve these. Each diagram below ends with an **Answers** list that points back here.
+jr2 exists to solve these. Each diagram below ends with an **Answers** list that points back here.
 
 1. **Non-determinism.** A workflow is a Machine: readable before it runs, drawn by the Console while it runs. You review
    how the work happens, not only what comes out.
@@ -16,7 +16,7 @@ j2 exists to solve these. Each diagram below ends with an **Answers** list that 
    schedules it.
 4. **Composition.** Infra pieces and agentic pieces are xstate: Workspace, Pool, Source, and Gate wrap or feed a body
    that stays ignorant of them, and each state frames one Agent's Turn. A Workflow nests another as an actor.
-5. **Model agnostic.** One Harness, j2's own, hosts any provider. An Agent is a model plus instructions, and a Turn may
+5. **Model agnostic.** One Harness, jr2's own, hosts any provider. An Agent is a model plus instructions, and a Turn may
    set Dials.
 6. **Headless.** The Orchestrator is an HTTP API. The CLI, the Console, and webhooks are clients of it.
 7. **Local to shared.** The same Instance folder converges into a kind cluster on a laptop or a shared cluster. Only the
@@ -31,7 +31,7 @@ that hold a credential for the Orchestrator.
 ```mermaid
 flowchart LR
   subgraph outside["Outside the cluster"]
-    cli["j2 CLI"]
+    cli["jr2 CLI"]
     browser["Browser"]
     hook["Webhook / CI"]
     provider["Model provider"]
@@ -182,9 +182,9 @@ highlighted fork is the one decision the user makes.
 ```mermaid
 flowchart TB
   subgraph setup["Setup"]
-    init["j2 init my-instance"] --> folder["Instance folder<br/>j2.config.ts · workflows/ · images/default/ · manifests"]
+    init["jr2 init my-instance"] --> folder["Instance folder<br/>jr2.config.ts · workflows/ · images/default/ · manifests"]
     folder --> install["npm install<br/>pins the kit at one exact version"]
-    install --> up["j2 up"]
+    install --> up["jr2 up"]
     up --> tsc["typecheck the instance (tsc --noEmit)<br/>a wrong Agent slot, child or Repo Slot refuses here"]
     tsc --> imgs["walk the Machines: build the instance image + every file: Sandbox Image context<br/>resolve Kit images: ghcr.io/snapwich or kitRegistry"]
     imgs --> ctx{"current kubectl context"}
@@ -195,9 +195,9 @@ flowchart TB
   end
 
   subgraph usage["Usage — every client is a client of the same API"]
-    run["j2 run ‹workflow›"] --> api["Orchestrator HTTP API"]
-    send["j2 send ‹gate› ‹event›"] --> api
-    status["j2 status · j2 runs · j2 logs"] --> api
+    run["jr2 run ‹workflow›"] --> api["Orchestrator HTTP API"]
+    send["jr2 send ‹gate› ‹event›"] --> api
+    status["jr2 status · jr2 runs · jr2 logs"] --> api
     console["Browser: the Console"] --> api
     hook["Webhook / CI"] --> api
     api --> runs["runs: Machines driving Agents in Sandboxes"]
@@ -209,12 +209,12 @@ flowchart TB
   class ctx fork
 ```
 
-`j2 up` is one converging command against the current context (ADR-0019): it typechecks the instance with the compiler
+`jr2 up` is one converging command against the current context (ADR-0019): it typechecks the instance with the compiler
 the folder itself installed and refuses on errors (ADR-0050 — nothing is built and nothing is applied), reads the
 folder, builds and loads or pushes every image it will deploy (ADR-0038), applies the operator if the cluster's is older
 (never downgrades), and converges the Orchestrator and the Instance Harness. Kit images come from the canonical home or
-a self-hosted mirror (ADR-0044). Steady state spends a directory walk and no docker. `j2 down` and `j2 gc` sweep what
-`j2 up` left unreachable (ADR-0039). Everything after converge is HTTP: the CLI starts runs, answers Gates, and reads
+a self-hosted mirror (ADR-0044). Steady state spends a directory walk and no docker. `jr2 down` and `jr2 gc` sweep what
+`jr2 up` left unreachable (ADR-0039). Everything after converge is HTTP: the CLI starts runs, answers Gates, and reads
 status through the same routes the Console and any webhook use.
 
 What the gate can see is decided by where each name lives (ADR-0050). Agents, Sandbox Images, and Repos ride the
@@ -222,7 +222,7 @@ Machine, so xstate's own `src` typing and the Machine's parts check them: a Repo
 by the Machine's own word for it and bound by url (ADR-0051), and a `customize` of a slot the Machine does not declare
 is a compile error. The one check the compiler cannot make is the walk's: a registered Machine with an open slot nobody
 bound is refused before anything is built, naming the Machine, the slot, and the `customize` line that fixes it. Nothing
-in `j2.config.ts` is named by code — it holds reach and credentials (`harness`, `git.credentials`, `registry`) — so the
+in `jr2.config.ts` is named by code — it holds reach and credentials (`harness`, `git.credentials`, `registry`) — so the
 Console's start form offers nothing of its own for a per-run Repo: a url field, unless the Machine's door enumerates its
 own.
 
@@ -235,15 +235,15 @@ own.
 
 ## 4. Composing a Workflow
 
-`task`, the kit's first shipped Machine (`@j2/machines`, ADR-0054), drawn as its layers. Each layer is an xstate Machine
-or actor the kit exports, and each knows nothing about the layer outside it. The highlighted layer is plain xstate: the
-Machine author's code, with no kit type in it beyond `j2Setup`.
+`task`, the kit's first shipped Machine (`@jr2/machines`, ADR-0054), drawn as its layers. Each layer is an xstate
+Machine or actor the kit exports, and each knows nothing about the layer outside it. The highlighted layer is plain
+xstate: the Machine author's code, with no kit type in it beyond `jr2Setup`.
 
 ```mermaid
 flowchart TB
   subgraph consumer["workflows/task.ts — customize(task, { repos: { target }, agents: { coder } })"]
     subgraph ws["workspace(body, { input, repos: { target: open } }) — the run's root, and its door (ADR-0033)"]
-      sbx["Sandbox + Worktree on j2/task-&lt;run id&gt;<br/>created on entry, torn down on final, Lease renewed while it runs"]
+      sbx["Sandbox + Worktree on jr2/task-&lt;run id&gt;<br/>created on entry, torn down on final, Lease renewed while it runs"]
 
       subgraph body["body — plain xstate; receives the run input plus the handles workspace() injects"]
         direction TB
@@ -272,7 +272,7 @@ on one task.
 
 Two of `task`'s parts are **Open** (ADR-0051/0054): the Repo Slots are Open as a map — the body names none, so the
 consumer names every one, the first being where the coder works and the rest checkouts it is told to read — and the
-`coder` has no model, because a package cannot know your repository or pay for your model. `j2 up` walks the registered
+`coder` has no model, because a package cannot know your repository or pay for your model. `jr2 up` walks the registered
 Machines and refuses an Open part nobody bound, printing the `customize` line above — so the failure mode of forgetting
 is a converge that stops, never a run that quietly spends money on a model the user never chose. `task` also never
 pushes: the Gate park retains the Sandbox, so a human execs in, reads the branch, and pushes it with their own
@@ -296,7 +296,7 @@ override layered over the stock definition, leaving the imported object untouche
 own `provide`, one level per key; the kit's wrappers are transparent, so a `workspace()`-rooted workflow is customized
 by naming the body's Agents and never `body`. Two customizations of one import are two Machines — the `deep`/`quick`
 pair — and one run can hold both, each Turn admitted with the definition ITS Machine carries. Only DECLARED parts can be
-retuned: a name the Machine does not carry is a compile error, which is what `j2 up`'s typecheck gate stops at
+retuned: a name the Machine does not carry is a compile error, which is what `jr2 up`'s typecheck gate stops at
 (ADR-0050). The shape is untouched by a retune, so the two share a fingerprint and neither drifts the other's parked
 runs (ADR-0030).
 

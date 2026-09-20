@@ -1,5 +1,5 @@
 // `main` dispatch + output discipline (ADR-0009), end-to-end through the verbs against a socket-free
-// app (injected via `io.fetch` + `J2_URL`). Asserts the stdout=result / stderr=activity split, exit
+// app (injected via `io.fetch` + `JR2_URL`). Asserts the stdout=result / stderr=activity split, exit
 // codes, and that `run` streams then prints the terminal RunStatus as the one stdout line.
 
 import { test } from "node:test";
@@ -29,7 +29,7 @@ test("help → exit 0", async () => {
 });
 
 test("a run-control verb with no orchestrator → exit 1 error on stderr", async () => {
-  // cwd "/" has no j2.config.ts above it, and no --url/J2_URL → resolveBaseUrl throws.
+  // cwd "/" has no jr2.config.ts above it, and no --url/JR2_URL → resolveBaseUrl throws.
   const { io, err } = mkIo({ cwd: "/", env: {} });
   assert.equal(await main(["runs"], io), 1);
   assert.match(err(), /error:/);
@@ -38,7 +38,7 @@ test("a run-control verb with no orchestrator → exit 1 error on stderr", async
 test("run attaches: terminal RunStatus on stdout, activity on stderr", async () => {
   const { app } = await mkHarness();
   const { io, out, err } = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: (url, init) => Promise.resolve(app.request(url, init)),
   });
 
@@ -53,7 +53,7 @@ test("run attaches: terminal RunStatus on stdout, activity on stderr", async () 
 test("run --detach prints only the runId on stdout", async () => {
   const { app } = await mkHarness();
   const { io, out } = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: (url, init) => Promise.resolve(app.request(url, init)),
   });
 
@@ -66,7 +66,7 @@ test("runs lists live runs as JSON on stdout", async () => {
   const { app, client } = await mkHarness();
   const { runId } = await client.start("loop");
   const { io, out } = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: (url, init) => Promise.resolve(app.request(url, init)),
   });
 
@@ -83,7 +83,7 @@ test("status resolves an abbreviated run id", async () => {
   const { app, host } = await mkHarness();
   const { runId } = await host.start("loop");
   const { io, out } = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: (url, init) => Promise.resolve(app.request(url, init)),
   });
 
@@ -96,7 +96,7 @@ test("a full run id is used as-is — no resolution round trip", async () => {
   const { runId } = await host.start("loop");
   const seen: string[] = [];
   const { io } = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: (url, init) => {
       seen.push(String(url));
       return Promise.resolve(app.request(url, init));
@@ -115,7 +115,7 @@ test("an ambiguous prefix fails and lists the candidates", async () => {
   await store.save("beef1111-0000-0000-0000-000000000000", {});
   await store.save("beef2222-0000-0000-0000-000000000000", {});
   const { io, out, err } = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: (url, init) => Promise.resolve(app.request(url, init)),
   });
 
@@ -131,7 +131,7 @@ test("an instance predating /runs/resolve is reported as skew, not as a run name
   // `/runs/:runId`, which captures the literal "resolve" and 404s naming it. The CLI must not
   // repeat that back — the user asked about "beef1234", not about a run called "resolve".
   const { io, out, err } = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: (url) => {
       if (String(url).includes("/healthz")) {
         return Promise.resolve(Response.json({ ok: true, version: "0.0.9", hash: "c0ffee123456" }));
@@ -145,14 +145,14 @@ test("an instance predating /runs/resolve is reported as skew, not as a run name
   assert.match(err(), /does not support abbreviated run ids/);
   assert.match(err(), /beef1234/, "the id the user actually typed");
   assert.match(err(), /0\.0\.9 \(c0ffee123456\)/, "what the deployed instance says it is");
-  assert.match(err(), /full run id|j2 up/, "a way out, before a rollout they may not want now");
+  assert.match(err(), /full run id|jr2 up/, "a way out, before a rollout they may not want now");
   assert.equal(out(), "", "an unresolved id prints no result");
 });
 
 test("a prefix under the floor is a usage error; an unmatched one is a runtime error", async () => {
   const { app } = await mkHarness();
   const mk = () =>
-    mkIo({ env: { J2_URL: "http://test" }, fetch: (url, init) => Promise.resolve(app.request(url, init)) });
+    mkIo({ env: { JR2_URL: "http://test" }, fetch: (url, init) => Promise.resolve(app.request(url, init)) });
 
   const short = mk();
   assert.equal(await main(["status", "ab"], short.io), 2, "a malformed argument is usage");
@@ -167,7 +167,7 @@ test("send resolves before it writes — an unresolvable id never reaches CANCEL
   const { app, host } = await mkHarness();
   const { runId } = await host.start("loop");
   const mk = () =>
-    mkIo({ env: { J2_URL: "http://test" }, fetch: (url, init) => Promise.resolve(app.request(url, init)) });
+    mkIo({ env: { JR2_URL: "http://test" }, fetch: (url, init) => Promise.resolve(app.request(url, init)) });
 
   // `host.stop()` returns silently for an unknown run, so before resolution this reported success.
   const bogus = mk();
@@ -180,7 +180,7 @@ test("send resolves before it writes — an unresolvable id never reaches CANCEL
   assert.match(real.err(), new RegExp(`sent CANCEL to ${runId}`), "the message names the run it actually hit");
 });
 
-test("`j2 status` with no run reports the data plane and every Repo, failing nodes with git's own error", async () => {
+test("`jr2 status` with no run reports the data plane and every Repo, failing nodes with git's own error", async () => {
   // ADR-0048's third claim on ADR-0051's shape: the cache agent degrades a Repo on one node instead
   // of the daemon, so the way to learn a clone never landed is to ask the instance — not to tail
   // pod logs. Per NODE, because that is where a cache lives.
@@ -207,7 +207,7 @@ test("`j2 status` with no run reports the data plane and every Repo, failing nod
   ];
   const asked: string[] = [];
   const { io, out, err } = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: (url) => {
       asked.push(String(url));
       return Promise.resolve(Response.json({ dataPlane: true, repos }));
@@ -243,7 +243,7 @@ test("`j2 status` with no run reports the data plane and every Repo, failing nod
   // Freshness degrades, absence does not (ADR-0004/0051): a fetch that fails on a WARM cache is
   // stale, and an attach proceeds on what the cache holds — the hint must not claim Workspaces wait.
   const warm = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: () => Promise.resolve(Response.json({ dataPlane: true, repos: staleOnly })),
   });
   assert.equal(await main(["status"], warm.io), 0);
@@ -254,7 +254,7 @@ test("`j2 status` with no run reports the data plane and every Repo, failing nod
 
   // No data plane is an answer, not an empty list (ADR-0051).
   const none = mkIo({
-    env: { J2_URL: "http://test" },
+    env: { JR2_URL: "http://test" },
     fetch: () => Promise.resolve(Response.json({ dataPlane: false, repos: [] })),
   });
   assert.equal(await main(["status"], none.io), 0);

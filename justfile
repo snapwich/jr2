@@ -1,7 +1,7 @@
-# j2 dev loop. Run `just --list` to see recipes.
+# jr2 dev loop. Run `just --list` to see recipes.
 set shell := ["bash", "-uc"]
 
-cluster := "j2"
+cluster := "jr2"
 
 # install JS deps
 install:
@@ -39,11 +39,11 @@ kind-down:
 
 # --- kit images (docker) — SHORTCUTS for building one image by hand (ADR-0038) ---
 #
-# None of these is a prerequisite of anything. `j2 up` run from this checkout builds every image it
+# None of these is a prerequisite of anything. `jr2 up` run from this checkout builds every image it
 # deploys, at content-addressed tags, and delivers them itself; the `:local` tags below exist only
 # for poking at an image by hand, and nothing resolves them.
 
-adapter_image := "j2-adapter:local"
+adapter_image := "jr2-adapter:local"
 
 # build the Adapter image: the Agent's MCP surface, hosted in the Sandbox (ADR-0013)
 adapter-image:
@@ -52,27 +52,27 @@ adapter-image:
 # ADR-0018: definitions are injected at pod start, so no per-instance Harness image exists.
 # build the STOCK Harness image (what a real instance runs) and load it into kind
 harness-image:
-    docker build -f deploy/harness/Dockerfile -t j2-harness:local .
-    kind load docker-image j2-harness:local --name {{ cluster }}
+    docker build -f deploy/harness/Dockerfile -t jr2-harness:local .
+    kind load docker-image jr2-harness:local --name {{ cluster }}
 
 # --- kind e2e tier (ADR-0010; requires docker + kind) ---
 
-# A VANILLA cluster, and nothing else (ADR-0038): `j2 up` from this checkout builds and `kind load`s
+# A VANILLA cluster, and nothing else (ADR-0038): `jr2 up` from this checkout builds and `kind load`s
 # every image it deploys — Harness, Adapter, operator, instance, and the instance's Sandbox Images.
 # Pre-loading a `:local` tag here would be exactly the invisible-stale-image bug that deletes.
-# Nothing is instance-bound to the cluster (ADR-0019): each @kind scenario `j2 up`s into a fresh
+# Nothing is instance-bound to the cluster (ADR-0019): each @kind scenario `jr2 up`s into a fresh
 # namespace, operator included.
 e2e-kind-up:
     kind get clusters | grep -qxF {{ cluster }} || kind create cluster --config deploy/kind.yaml
     @echo "now: \`just e2e-kind\`"
 
 # run the kind e2e tier (needs `just e2e-kind-up`). The tier addresses the kind cluster by its own
-# exported kubeconfig, never the shell's current context: `j2 up` converges whatever `kubectl`
+# exported kubeconfig, never the shell's current context: `jr2 up` converges whatever `kubectl`
 # points at (ADR-0019), and a shell pointed at a real cluster would otherwise fail every scenario
 # at "is serving" — or worse, converge into it.
 e2e-kind:
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @j2/e2e test:e2e:kind
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:kind
 
 # render the operator install manifest shipped inside the npm package (ADR-0019; check in the result)
 operator-manifest:
@@ -80,19 +80,19 @@ operator-manifest:
 
 # build the operator controller image by hand and load it into kind (a shortcut, not a prerequisite)
 operator-image:
-    docker build -t j2-operator:local operator
-    kind load docker-image j2-operator:local --name {{ cluster }}
+    docker build -t jr2-operator:local operator
+    kind load docker-image jr2-operator:local --name {{ cluster }}
 
 # --- the Kit images at their PUBLISHED names (ADR-0044; requires docker + buildx) ---
 #
-# The checkout arm of ADR-0044, and NOT a `j2 up` shortcut like the recipes above: these are the
-# real published tags (`<registry>/j2-<x>:<kitversion>`), the ones an INSTALLED kit deploys and
+# The checkout arm of ADR-0044, and NOT a `jr2 up` shortcut like the recipes above: these are the
+# real published tags (`<registry>/jr2-<x>:<kitversion>`), the ones an INSTALLED kit deploys and
 # never builds. This is how the canonical home gets its images at release —
 #
 #     just kit-push ghcr.io/snapwich
 #
 # — and how a self-host or a dev-loop registry gets images the home does not have yet. Multi-arch by
-# default because a mirror (`j2 kit push`) copies whatever it finds, deficiencies included; a caller
+# default because a mirror (`jr2 kit push`) copies whatever it finds, deficiencies included; a caller
 # who knows its target's architecture passes one platform and skips qemu.
 
 # build the three Kit images multi-arch and push them at their published names
@@ -124,7 +124,7 @@ sandbox-sample:
 # the whole dependency tree resolves through npmjs.
 #
 # The kit as a USER gets it: packages resolved from a registry, Kit images PULLED from a registry,
-# the `j2` binary installed globally, an instance folder that lives nowhere near this checkout. Only
+# the `jr2` binary installed globally, an instance folder that lives nowhere near this checkout. Only
 # the two registries are local — the same rule ADR-0038 applies to the model provider — so installed
 # mode, the branch every other tier skips, is the branch that runs. `dist-up` leaves both registries
 # and the throwaway global install standing so a developer can play; `dist-down` puts both ports
@@ -133,7 +133,7 @@ sandbox-sample:
 # Outside the checkout, and that is load-bearing: the installed CLI decides checkout vs installed
 # mode by walking up from its own real path, so a global prefix under the kit root would run the
 # very mode this loop exists to skip (ADR-0043; scripts/dist-publish.sh refuses it outright).
-dist_dir := env_var_or_default("TMPDIR", "/tmp") / "j2-dist"
+dist_dir := env_var_or_default("TMPDIR", "/tmp") / "jr2-dist"
 dist_registry := "http://localhost:4873"
 
 # publish the kit locally, push its images at the published tags, install the CLI globally
@@ -151,36 +151,36 @@ dist-up:
 
     cat <<MSG
 
-    @j2/cli v$ver is installed. Put it on PATH:
+    @jr2/cli v$ver is installed. Put it on PATH:
 
       export PATH="{{ dist_dir }}/npm-global/bin:\$PATH"
 
     Then live like a user — outside this checkout, outside any git repo:
 
-      j2 init /tmp/demo && cd /tmp/demo
+      jr2 init /tmp/demo && cd /tmp/demo
       npm install --registry {{ dist_registry }}
       # an installed kit BUILDS no Kit image — it pulls the published tags, so point the cluster at
       # the loop's stand-in home instead of ghcr.io/snapwich (ADR-0044):
-      #   kitRegistry: process.env.J2_KIT_REGISTRY  →  j2.config.ts
-      #   J2_KIT_REGISTRY=$kit_registry             →  .env
-      j2 up
+      #   kitRegistry: process.env.JR2_KIT_REGISTRY  →  jr2.config.ts
+      #   JR2_KIT_REGISTRY=$kit_registry             →  .env
+      jr2 up
 
     \`just dist-down\` stops both registries.
     MSG
 
 # The loop's third face, and the only one that reaches a real (non-kind) cluster today: installed
 # mode deploys kit refs that carry no registry prefix (ADR-0038, deferred), so a real cluster cannot
-# pull them — but a checkout `j2` builds every image it deploys and prefixes it. What that binary
-# cannot do is conjure `@j2/*` for an instance outside this workspace, whose bundle is a frozen
+# pull them — but a checkout `jr2` builds every image it deploys and prefixes it. What that binary
+# cannot do is conjure `@jr2/*` for an instance outside this workspace, whose bundle is a frozen
 # install from its own lockfile (ADR-0043). So: publish, and let the checkout do the rest. No Kit
 # images and no global install — those are the installed kit's half, and this face has no installed
 # kit in it.
 #
 # The registry STAYS UP for the whole loop, not just the install: the lockfile `npm install` writes
-# resolves every package — not only `@j2/*` — to this registry, and the bundle's `npm ci` reads
-# those URLs back on every `j2 up`.
+# resolves every package — not only `@jr2/*` — to this registry, and the bundle's `npm ci` reads
+# those URLs back on every `jr2 up`.
 
-# publish the kit locally and stop — for a CHECKOUT `j2` driving a STANDALONE instance
+# publish the kit locally and stop — for a CHECKOUT `jr2` driving a STANDALONE instance
 dist-packages:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -191,16 +191,16 @@ dist-packages:
 
     Live like a user, outside this checkout, with the CHECKOUT binary:
 
-      node {{ justfile_directory() }}/packages/cli/bin/j2.js init /tmp/demo && cd /tmp/demo
+      node {{ justfile_directory() }}/packages/cli/bin/jr2.js init /tmp/demo && cd /tmp/demo
       npm install --registry {{ dist_registry }}
       # a non-kind cluster needs a registry it can pull from — the scaffold names none:
-      #   registry: "registry.example.com"  →  j2.config.ts
-      node {{ justfile_directory() }}/packages/cli/bin/j2.js up --context <ctx>
+      #   registry: "registry.example.com"  →  jr2.config.ts
+      node {{ justfile_directory() }}/packages/cli/bin/jr2.js up --context <ctx>
 
     Re-running this recipe WIPES the registry and republishes, so an instance installed against
     the previous run must \`npm install\` again — its lockfile records the old tarballs' integrity.
 
-    \`just dist-down\` stops the registry — after the last \`j2 up\`, not after the install.
+    \`just dist-down\` stops the registry — after the last \`jr2 up\`, not after the install.
     MSG
 
 # stop the loop's registries (the throwaway global install stays; it is inert without them)
@@ -218,7 +218,7 @@ dist-down:
 #
 # The only setup a human owes it is a cluster: the tier's own suite fixture stands up both
 # registries, publishes the kit, pushes the Kit images at their published tags, and installs the
-# `j2` binary into a throwaway prefix — once per suite run, in a temp dir of its own, so it borrows
+# `jr2` binary into a throwaway prefix — once per suite run, in a temp dir of its own, so it borrows
 # no state from `dist-up` and leaves none behind. The PORTS are the exception, because the packages'
 # publishConfig fixes one of them: the tier refuses to start while a manual loop holds it
 # (`just dist-down`).
@@ -236,4 +236,4 @@ e2e-dist-up:
 # run the @dist e2e tier (needs `just e2e-dist-up`, and network on every run — the storage is wiped)
 e2e-dist:
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @j2/e2e test:e2e:dist
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:dist

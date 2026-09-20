@@ -1,8 +1,8 @@
 # Runtime state the orchestrator writes under the instance root (ADR-0009): the sqlite snapshot store
 # and the dev server's live address. Never checked in.
-.j2/
+.jr2/
 node_modules/
 
-# Deployment-varying values + creds this instance's j2.config.ts reads from the environment; the
-# `j2` CLI loads this file automatically (ADR-0019). Never checked in.
+# Deployment-varying values + creds this instance's jr2.config.ts reads from the environment; the
+# `jr2` CLI loads this file automatically (ADR-0019). Never checked in.
 .env

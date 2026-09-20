@@ -24,7 +24,7 @@ import { type OrchestratorClient, serverForTurn } from "./adapter.ts";
 
 export type AdapterOptions = {
   orchestrator: OrchestratorClient;
-  /** Listen port. Default 8081 (`J2_ADAPTER_URL` points the Harness at it over `localhost`). */
+  /** Listen port. Default 8081 (`JR2_ADAPTER_URL` points the Harness at it over `localhost`). */
   port?: number;
   /** Listen hostname. Default `127.0.0.1`: the Agent is IN this pod, and nothing else may connect. */
   hostname?: string;
@@ -73,7 +73,7 @@ export async function startAdapter(opts: AdapterOptions): Promise<RunningAdapter
     }
 
     // The ask (ADR-0053). Not part of the Agent's Menu and not addressed by an instance id: the
-    // caller is `j2-upload-pack`, run by git for whoever typed `git fetch` in this pod — the Agent
+    // caller is `jr2-upload-pack`, run by git for whoever typed `git fetch` in this pod — the Agent
     // in the Harness container, or a human in any seat of it. What comes back is the Orchestrator's
     // own answer, status and bytes unread, because the program reads it and this process has no
     // better opinion about freshness than the wait that produced it.

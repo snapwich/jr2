@@ -11,7 +11,7 @@ const exec = promisify(execFile);
 
 // The fixed in-namespace object names live with the orchestrator (its entrypoint consumes them
 // too); re-exported here for the CLI's own modules.
-export { INSTANCE_SECRET, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "@j2/orchestrator";
+export { INSTANCE_SECRET, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "@jr2/orchestrator";
 
 export type KubePort = {
   /** The current kubectl context, or undefined when there is none configured. */
@@ -36,7 +36,7 @@ export type KubeObject = {
   metadata: {
     name: string;
     /** Only ever populated by a cluster-wide read. It is how the sweep's roots (ADR-0039) narrow a
-     * `--all-namespaces` listing back to the namespaces that belong to a j2 instance — the objects
+     * `--all-namespaces` listing back to the namespaces that belong to a jr2 instance — the objects
      * are found cluster-wide precisely because no instance's images are only its own business. */
     namespace?: string;
     labels?: Record<string, string>;
@@ -44,7 +44,7 @@ export type KubeObject = {
   };
 } & Record<string, unknown>;
 
-/** What `j2 up`/`j2 down` converge through — admin-shaped, next to the transport-shaped KubePort.
+/** What `jr2 up`/`jr2 down` converge through — admin-shaped, next to the transport-shaped KubePort.
  * Injected via `io.kubeAdmin` in tests; `kubectlAdmin` is the real one. */
 export type KubeAdmin = {
   /** The current kubectl context, or undefined when there is none configured. */
@@ -64,7 +64,7 @@ export type KubeAdmin = {
     /** `-l`. A bare key (no `=`) is an EXISTENCE selector, which is how the sweep asks for "every
      * namespace some instance owns" without knowing any of their names. */
     selector?: string;
-    /** `--field-selector`. The one root addressed by NAME rather than by label — the `j2-images`
+    /** `--field-selector`. The one root addressed by NAME rather than by label — the `jr2-images`
      * ConfigMap (ADR-0039) — is read this way instead of with `getJson`, because `getJson` reads
      * every failure as "absent", and a root that reads as absent when the API could not be reached
      * is a keep set that deletes another instance's images. */
@@ -97,7 +97,7 @@ export type KubeAdmin = {
   /** `kubectl delete --ignore-not-found -f -` of a manifest string (the operator uninstall). */
   deleteManifest(opts: { manifest: string; context?: string }): Promise<void>;
   /** `kubectl rollout status <kind>/<name>` — converge isn't done until the pods are. A Deployment
-   * by default; the cache agent's DaemonSet (ADR-0051) is the one other rollout `j2 up` waits on. */
+   * by default; the cache agent's DaemonSet (ADR-0051) is the one other rollout `jr2 up` waits on. */
   waitRollout(opts: RolloutRequest): Promise<void>;
   /** The tail of one container's output (`kubectl logs --tail`) — evidence, not a claim: a read
    * that fails (no such pod, a container that never started, no RBAC) answers `""`, because this
@@ -129,7 +129,7 @@ export type KubeAdmin = {
 
 const nsArgs = (namespace?: string): string[] => (namespace ? ["--namespace", namespace] : []);
 
-/** The two workload kinds `j2 up` rolls out and waits on. */
+/** The two workload kinds `jr2 up` rolls out and waits on. */
 export type RolloutKind = "deployment" | "daemonset";
 
 /** One rollout to wait for: the object, by kind and name, in its namespace. */
@@ -163,7 +163,7 @@ export function rolloutStatusArgs({
 
 /**
  * Did this read fail because the cluster has no such RESOURCE TYPE (`kubectl get sandboxes… ` on a
- * cluster with no j2 CRD)? kubectl exits 1 with `the server doesn't have a resource type "…"`, and
+ * cluster with no jr2 CRD)? kubectl exits 1 with `the server doesn't have a resource type "…"`, and
  * that single failure means something no other one does: the kind cannot exist, so neither can any
  * object of it. Narrow on purpose — Forbidden and "connection refused" DID hide objects, and a
  * caller that degraded on those would build a keep set that deletes another instance's images.
@@ -268,7 +268,7 @@ export const kubectlAdmin: KubeAdmin = {
     // and `--env` don't mix); `"$1"` keeps the script out of shell parsing entirely (execFile
     // passes argv verbatim, no host shell either).
     const command = caPem
-      ? ["sh", "-ec", 'echo "$J2_CA_B64" | base64 -d > /tmp/j2-ca.crt && exec node -e "$1"', "sh", script]
+      ? ["sh", "-ec", 'echo "$JR2_CA_B64" | base64 -d > /tmp/jr2-ca.crt && exec node -e "$1"', "sh", script]
       : ["node", "-e", script];
     try {
       const { stdout } = await exec(
@@ -284,7 +284,7 @@ export const kubectlAdmin: KubeAdmin = {
           "--quiet",
           "--image=node:24-slim",
           ...(caPem
-            ? [`--env=J2_CA_B64=${Buffer.from(caPem).toString("base64")}`, "--env=NODE_EXTRA_CA_CERTS=/tmp/j2-ca.crt"]
+            ? [`--env=JR2_CA_B64=${Buffer.from(caPem).toString("base64")}`, "--env=NODE_EXTRA_CA_CERTS=/tmp/jr2-ca.crt"]
             : []),
           "--command",
           "--",
@@ -400,7 +400,7 @@ type EventObject = {
  * nothing else — `error: timed out waiting for the condition` — so the fact that says WHY (an
  * `exec format error`, a pull the kubelet gave up on, a Secret that is not there) lives in the
  * pods, which the caller then goes and reads by hand. This is `oneShotFailure()` one layer up: the
- * evidence leads, kubectl's verdict follows, and `j2 up`'s three rollout waits share the one pair
+ * evidence leads, kubectl's verdict follows, and `jr2 up`'s three rollout waits share the one pair
  * of eyes.
  *
  * Every read here is best-effort by construction. It runs only after a failure has already
@@ -604,7 +604,7 @@ function diagnoseRollout(evidence: RolloutEvidence, target: RolloutTarget): stri
     const ref = pod.containers.find((c) => c.ready !== true)?.image ?? pod.containers[0]?.image;
 
     // 1. The failure that produced ADR-0045, still named here: belt-and-braces, and the only trace
-    // left for a pre-0045 image or a registry-ref Sandbox Image j2 never built.
+    // left for a pre-0045 image or a registry-ref Sandbox Image jr2 never built.
     const wrongPlatform = /exec format error/i.test(said);
     if (wrongPlatform) {
       const built = taggedPlatforms(ref);
@@ -612,21 +612,21 @@ function diagnoseRollout(evidence: RolloutEvidence, target: RolloutTarget): stri
         `diagnosis: ${pod.name} carries an image built for another platform — the node cannot run its binaries.`,
         `  image ${ref ?? "(unknown)"}${built ? ` — its tag names ${built}` : " — its tag names no platform"}`,
         `  node  ${pod.node ?? "(unknown)"}${pod.nodeArch ? ` runs ${pod.nodeArch}` : ""}`,
-        `  \`j2 up\` builds for the platforms the cluster's nodes report (ADR-0045); re-run it with --force to` +
-          ` rebuild this image, or name the set with \`platforms\` in j2.config.ts.`,
+        `  \`jr2 up\` builds for the platforms the cluster's nodes report (ADR-0045); re-run it with --force to` +
+          ` rebuild this image, or name the set with \`platforms\` in jr2.config.ts.`,
       );
     }
 
     // 2. A ref the kubelet could not fetch. The trap is the bare ref: no registry host means Docker
-    // Hub, which is never where a j2-built image is.
+    // Hub, which is never where a jr2-built image is.
     if (/ImagePullBackOff|ErrImagePull/i.test(said)) {
       lines.push(
         `diagnosis: the kubelet could not pull ${ref ?? "the image"}.`,
         `  it resolves to ${resolveRef(ref)}`,
         ...(isBareRef(ref)
           ? [
-              `  a ref with no registry host resolves to Docker Hub, so an image j2 built locally must have been` +
-                ` delivered to this cluster (kind load, or a push to the configured \`registry\`) — \`j2 up --force\`` +
+              `  a ref with no registry host resolves to Docker Hub, so an image jr2 built locally must have been` +
+                ` delivered to this cluster (kind load, or a push to the configured \`registry\`) — \`jr2 up --force\`` +
                 ` rebuilds and re-delivers it.`,
             ]
           : [`  check the push landed there and that this cluster may pull from it (credentials, network, mirror).`]),
@@ -653,7 +653,7 @@ function diagnoseRollout(evidence: RolloutEvidence, target: RolloutTarget): stri
       lines.push(
         missing
           ? `diagnosis: the pod's env references ${missing[1]!.toLowerCase()} "${missing[2]}", which this namespace` +
-              ` does not hold — create it, then re-run \`j2 up\`.`
+              ` does not hold — create it, then re-run \`jr2 up\`.`
           : `diagnosis: the container's configuration cannot be built from what the namespace holds — the object it` +
               ` names is in the message above.`,
       );
@@ -663,7 +663,7 @@ function diagnoseRollout(evidence: RolloutEvidence, target: RolloutTarget): stri
 }
 
 /** The platforms a content-addressed tag names (ADR-0045: `<hash>-<arch>[-<arch>]`), or undefined
- * for a tag that names none — a pre-0045 image, or a ref j2 never built. */
+ * for a tag that names none — a pre-0045 image, or a ref jr2 never built. */
 function taggedPlatforms(ref?: string): string | undefined {
   if (!ref) return undefined;
   const tag = ref.slice(ref.lastIndexOf(":") + 1);
@@ -673,7 +673,7 @@ function taggedPlatforms(ref?: string): string | undefined {
 
 /** Does this ref name a registry at all? Docker's own rule: only a FIRST PATH SEGMENT — there must
  * be a `/` — that carries a dot, a port, or is `localhost` is a registry host. Everything else is a
- * Docker Hub path, and `j2-instance-demo:4a77b1-amd64` is the trap this exists to name: the colon
+ * Docker Hub path, and `jr2-instance-demo:4a77b1-amd64` is the trap this exists to name: the colon
  * belongs to the tag, so the ref has no host and the kubelet asks Docker Hub for it. */
 function isBareRef(ref?: string): boolean {
   if (!ref) return false;

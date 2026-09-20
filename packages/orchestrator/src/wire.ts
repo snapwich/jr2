@@ -1,16 +1,16 @@
 // The Harness wire as the CLIENT reads it (ADR-0027): the shapes `harness-client.ts` parses off
 // the durable stream, and the run-narrative echo body `run-host.ts` pushes (ADR-0023).
 //
-// `@j2/harness` SERVES the wire and owns the serving constants; this module is the Orchestrator's
-// own view of it, and it lives here for one reason: `@j2/orchestrator` is published to npm and
-// `@j2/harness` is not (ADR-0009/0043 — the Harness reaches users as a Kit image). The instance's
-// program includes this package's `.ts` sources (zero-build), so an import of `@j2/harness/wire`
+// `@jr2/harness` SERVES the wire and owns the serving constants; this module is the Orchestrator's
+// own view of it, and it lives here for one reason: `@jr2/orchestrator` is published to npm and
+// `@jr2/harness` is not (ADR-0009/0043 — the Harness reaches users as a Kit image). The instance's
+// program includes this package's `.ts` sources (zero-build), so an import of `@jr2/harness/wire`
 // from here is a `Cannot find module` in every INSTALLED instance — and since ADR-0050 that is a
-// `j2 up` refusal, not a warning. The literals below are restated for the same reason a type
+// `jr2 up` refusal, not a warning. The literals below are restated for the same reason a type
 // cannot be: nothing published may reach into a package that was never published.
 //
 // The two views are held in agreement by the compiler, not by care: `test/wire-types.test.ts`
-// asserts each shape here is mutually assignable with `@j2/harness/wire`'s, and `@j2/harness`
+// asserts each shape here is mutually assignable with `@jr2/harness/wire`'s, and `@jr2/harness`
 // stays a devDependency so that file — and only that file — can see the server's copy.
 
 /** How a Submission ends (ADR-0024/0027): `completed` (the prompt resolved), `failed` (the turn

@@ -1,5 +1,5 @@
-// Instance addressing (ADR-0009/0019): the folder walk to `j2.config.ts`, and how `resolveTarget`
-// finds the deployed orchestrator — `--url` / `J2_URL` short-circuits everything; otherwise the
+// Instance addressing (ADR-0009/0019): the folder walk to `jr2.config.ts`, and how `resolveTarget`
+// finds the deployed orchestrator — `--url` / `JR2_URL` short-circuits everything; otherwise the
 // current kube context + the instance's namespace, over an injectable kube port (port-forward +
 // Secret read), with the target printed on stderr so ambient-context drift stays visible.
 
@@ -40,12 +40,12 @@ const untouchableKube: KubePort = {
 };
 
 async function mkInstance(config = "export default {};\n"): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "j2-cli-inst-"));
-  await writeFile(join(root, "j2.config.ts"), config);
+  const root = await mkdtemp(join(tmpdir(), "jr2-cli-inst-"));
+  await writeFile(join(root, "jr2.config.ts"), config);
   return root;
 }
 
-test("resolveRoot walks up to the dir holding j2.config.ts", async () => {
+test("resolveRoot walks up to the dir holding jr2.config.ts", async () => {
   const root = await mkInstance();
   try {
     const deep = join(root, "a", "b", "c");
@@ -58,16 +58,16 @@ test("resolveRoot walks up to the dir holding j2.config.ts", async () => {
 });
 
 test("resolveRoot throws when not inside an instance", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "j2-cli-noinst-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-cli-noinst-"));
   try {
-    assert.throws(() => resolveRoot(dir), /no j2\.config\.ts/);
+    assert.throws(() => resolveRoot(dir), /no jr2\.config\.ts/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("--url / J2_URL short-circuit: no folder walk, no kube, J2_TOKEN as credential", async () => {
-  const io = mkIo({ cwd: "/", env: { J2_URL: "http://env", J2_TOKEN: "t" }, kube: untouchableKube });
+test("--url / JR2_URL short-circuit: no folder walk, no kube, JR2_TOKEN as credential", async () => {
+  const io = mkIo({ cwd: "/", env: { JR2_URL: "http://env", JR2_TOKEN: "t" }, kube: untouchableKube });
   const viaEnv = await resolveTarget(io, {});
   assert.equal(viaEnv.url, "http://env");
   assert.equal(viaEnv.token, "t");
@@ -87,8 +87,10 @@ test("kube path: port-forwards the Service in the instance's namespace, token fr
     assert.equal(target.token, "tok-in-secret");
 
     // namespace defaults to config.name (ADR-0019: namespace is identity).
-    assert.deepEqual(asked[0], { readSecret: { namespace: "myinst", name: "j2-instance", key: "J2_INSTANCE_TOKEN" } });
-    assert.deepEqual(asked[1], { portForward: { namespace: "myinst", service: "j2-orchestrator", port: 4000 } });
+    assert.deepEqual(asked[0], {
+      readSecret: { namespace: "myinst", name: "jr2-instance", key: "JR2_INSTANCE_TOKEN" },
+    });
+    assert.deepEqual(asked[1], { portForward: { namespace: "myinst", service: "jr2-orchestrator", port: 4000 } });
 
     // The run-verb preamble: the target context is visible on stderr (ADR-0019).
     assert.match(preamble.join(""), /kind-test/);
@@ -112,7 +114,7 @@ test("namespace precedence: -n flag > config.name > folder name; --context is pa
     asked.length = 0;
     await resolveTarget(io, { namespace: "flagns", context: "other-ctx" });
     assert.deepEqual(asked[0], {
-      readSecret: { namespace: "flagns", name: "j2-instance", key: "J2_INSTANCE_TOKEN", context: "other-ctx" },
+      readSecret: { namespace: "flagns", name: "jr2-instance", key: "JR2_INSTANCE_TOKEN", context: "other-ctx" },
     });
   } finally {
     await rm(root, { recursive: true, force: true });

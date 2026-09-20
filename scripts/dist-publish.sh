@@ -4,28 +4,28 @@
 #
 #   1. the four instance-facing packages → the local npm registry
 #   2. the three Kit images at their PUBLISHED tags → the local image registry the nodes pull from
-#   3. the `j2` binary → a throwaway global npm prefix
+#   3. the `jr2` binary → a throwaway global npm prefix
 #
 # Both registries must already be up (scripts/dist-registry.sh up, scripts/dist-image-registry.sh
 # up). This is a script rather than lines inside `just dist-up` because the @dist e2e tier runs the
 # same bring-up unattended: one loop with two faces (ADR-0043), not two loops that drift.
 #
-# Step 2 is not redundant with `j2 up`. An INSTALLED kit builds no Kit image at all — it deploys the
+# Step 2 is not redundant with `jr2 up`. An INSTALLED kit builds no Kit image at all — it deploys the
 # published `<kitRegistry>/<repo>:<kitversion>` refs (ADR-0038/0044) — so something has to play the
 # release that would have pushed them, and the push is the whole point: the node PULLS.
 #
 # `--packages-only` stops after step 1, because steps 2 and 3 are the INSTALLED kit's half and only
 # its half: they exist so a binary that builds no image and resolves no source can still find both.
 # A CHECKOUT CLI needs neither — it builds every image it deploys (ADR-0038) and runs from the
-# checkout — but it cannot conjure `@j2/*` for a STANDALONE instance, whose bundle is a frozen
+# checkout — but it cannot conjure `@jr2/*` for a STANDALONE instance, whose bundle is a frozen
 # install from its own lockfile (ADR-0043). That instance is a real shape a developer drives (the
 # `/tmp` folder ADR-0043 names), and it is driven by a binary that supplies every image it deploys
 # itself — so step 1 alone is the whole of what the kit owes it. The guard below still runs:
 # publishing locally is exactly what must stay guarded.
 #
-# Env: J2_DIST_DIR (runtime state, default <tmp>/j2-dist — outside the checkout, see the guard
-# below), J2_DIST_PORT (default 4873 — the port the packages' publishConfig names),
-# J2_DIST_IMAGE_PORT (default 5001 — read through scripts/dist-image-registry.sh, never here).
+# Env: JR2_DIST_DIR (runtime state, default <tmp>/jr2-dist — outside the checkout, see the guard
+# below), JR2_DIST_PORT (default 4873 — the port the packages' publishConfig names),
+# JR2_DIST_IMAGE_PORT (default 5001 — read through scripts/dist-image-registry.sh, never here).
 set -euo pipefail
 
 packages_only=""
@@ -39,18 +39,18 @@ case "${1:-}" in
 esac
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-dir="${J2_DIST_DIR:-${TMPDIR:-/tmp}/j2-dist}"
-port="${J2_DIST_PORT:-4873}"
+dir="${JR2_DIST_DIR:-${TMPDIR:-/tmp}/jr2-dist}"
+port="${JR2_DIST_PORT:-4873}"
 registry="http://localhost:$port"
 
 # The global prefix must live OUTSIDE the checkout, and this is the same failure `npm link` was
 # rejected for (ADR-0043): the CLI resolves its mode by walking up from its own real path, so a
-# prefix under the kit root finds that root and `j2 up` takes CHECKOUT mode — building Kit images
+# prefix under the kit root finds that root and `jr2 up` takes CHECKOUT mode — building Kit images
 # from source instead of deploying the published tags, which is the one branch this loop exists to
 # run. It fails silently otherwise: the converge succeeds and tests the wrong mode.
 case "$dir/" in
   "$root/"*)
-    echo "J2_DIST_DIR ($dir) is inside the kit checkout — the installed CLI would find it and run checkout mode" >&2
+    echo "JR2_DIST_DIR ($dir) is inside the kit checkout — the installed CLI would find it and run checkout mode" >&2
     exit 1
     ;;
 esac
@@ -78,7 +78,7 @@ done
 # `--force` is what makes the WIPE hold. Without it `pnpm publish -r` asks whether each version is
 # already published and answers from pnpm's own metadata cache (~/.cache/pnpm/metadata-v1.3/
 # localhost+4873), which outlives the registry it describes: one previous run of this loop teaches
-# that cache that @j2/cli@0.0.0 exists, and every run after it publishes NOTHING — reporting "there
+# that cache that @jr2/cli@0.0.0 exists, and every run after it publishes NOTHING — reporting "there
 # are no new packages that should be published" and exiting 0, so the failure lands minutes later
 # as an E404 on an install, pointing at everything except the publish that did not happen. The
 # ephemeral registry is precisely the mechanism that deletes version bookkeeping (ADR-0043), so a
@@ -108,4 +108,4 @@ kit_registry="$("$root/scripts/dist-image-registry.sh" address)"
 
 # A prefix of its own, never the real global one: a loop that installs into the developer's npm owes
 # them an uninstall, and this one should owe nothing.
-npm i -g @j2/cli --registry "$registry" --prefix "$dir/npm-global"
+npm i -g @jr2/cli --registry "$registry" --prefix "$dir/npm-global"

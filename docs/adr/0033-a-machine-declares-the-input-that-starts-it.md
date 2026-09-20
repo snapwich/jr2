@@ -4,14 +4,14 @@
 undescribed: the module contract is `export const machine` alone (ADR-0011/0015), so nothing at runtime says what a run
 of a given workflow should be started _with_. The Console's start form
 ([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)) forced the question, but the gap predates it —
-`j2 run` has the same blindness, and a typo'd input surfaces as a confusing mid-run failure instead of a refusal at the
+`jr2 run` has the same blindness, and a typo'd input surfaces as a confusing mid-run failure instead of a refusal at the
 door. Meanwhile every event a machine _accepts_ already carries a zod schema, attached to the machine itself
 ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)'s vocabulary-on-the-machine). The input that starts a
 machine is the one piece of its vocabulary that pattern missed.
 
 ## Decision
 
-- **The schema rides the machine, like the rest of the vocabulary.** `j2Setup.createMachine` accepts an `input` (a zod
+- **The schema rides the machine, like the rest of the vocabulary.** `jr2Setup.createMachine` accepts an `input` (a zod
   object) and attaches it the same way event defs ride today (WeakMap-keyed on `machine.config`, so a `.provide()` clone
   keeps it — ADR-0011). `input` is deliberately xstate's own word for what a machine receives at creation — the
   authoring surface teaches nothing new.
@@ -45,7 +45,7 @@ machine is the one piece of its vocabulary that pattern missed.
   check owns: a body that mistypes `instanceId`, and a body whose input is a union, which subtraction compares on its
   members' shared keys alone. The typed wrapper also checks the seam above it — a parent invoking a nested `workspace()`
   has its input mapper checked against that wrapper's door, and gets the body's output typed back. With no schema
-  declared the door is permissive, so there is nothing to infer and the mapper's argument is `unknown` — an honest "j2
+  declared the door is permissive, so there is nothing to infer and the mapper's argument is `unknown` — an honest "jr2
   does not know", not `any`; a wrapper fed by something other than a caller (a pool worker) states what it is fed by
   annotating the parameter, as `PoolSpec.cap`/`itemInput` do.
 - **The schema is structure, so it is open.** Workflow-detail JSON (`GET /workflows/:name`, the address ADR-0032's
@@ -77,7 +77,7 @@ machine is the one piece of its vocabulary that pattern missed.
 
 ## Consequences
 
-- **Both entry points sharpen for free**: the Console generates its form from the same JSON Schema `j2 run` can later
+- **Both entry points sharpen for free**: the Console generates its form from the same JSON Schema `jr2 run` can later
   use to refuse bad input client-side before the POST.
 - **The open band grows a schema and nothing else** — the same class of thing as the Machine doc it sits beside;
   ADR-0014's projection is untouched.

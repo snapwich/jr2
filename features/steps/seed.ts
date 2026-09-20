@@ -1,7 +1,7 @@
 // The seed Repo the @kind tier's workflows bind (ADR-0051): a bare git repository served over
 // HTTP from INSIDE the cluster, so the cache agent on every node can clone it the way it clones
 // anything — by url, with no file baked into an image and no path pinned to a node. The tier's
-// instance names it by that url (`http://seed.j2-e2e-seed.svc/app.git`), which is its identity;
+// instance names it by that url (`http://seed.jr2-e2e-seed.svc/app.git`), which is its identity;
 // nothing else about it is configured anywhere.
 //
 // One namespace, one Deployment, one Service, shared by every scenario and every worker: an init
@@ -26,13 +26,13 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 
 /** The seed Repo's url — the identity every kind workflow binds and the fence admits. */
-export const SEED_URL = "http://seed.j2-e2e-seed.svc/app.git";
+export const SEED_URL = "http://seed.jr2-e2e-seed.svc/app.git";
 // Two more urls on the same host appear in kind.feature, spelled there rather than here because
 // the scenarios read them the way a user types them: `other.git` below, an identity no workflow
-// binds (the per-run Repo `j2 gc` may evict, ADR-0051); and `missing.git`, which nothing serves
+// binds (the per-run Repo `jr2 gc` may evict, ADR-0051); and `missing.git`, which nothing serves
 // — the fence admits it and every clone fails with git's own words (ADR-0048).
 
-const NAMESPACE = "j2-e2e-seed";
+const NAMESPACE = "jr2-e2e-seed";
 
 /** Pinned tags, both multi-arch: `docker manifest inspect` resolves each. */
 const GIT_IMAGE = "alpine/git:v2.47.2";
@@ -42,11 +42,11 @@ const MAKE_REPO = [
   "git init -q -b main /tmp/w",
   "echo '# app' > /tmp/w/README.md",
   "git -C /tmp/w add -A",
-  "git -C /tmp/w -c user.email=e2e@j2 -c user.name=e2e commit -qm init",
+  "git -C /tmp/w -c user.email=e2e@jr2 -c user.name=e2e commit -qm init",
   "git clone -q --bare /tmp/w /srv/app.git",
   "git -C /srv/app.git update-server-info",
   // A SECOND repository, same content, its own identity (ADR-0051): every kind workflow binds
-  // `app.git`, so in every scenario's namespace that Repo is bound and `j2 gc` never evicts it.
+  // `app.git`, so in every scenario's namespace that Repo is bound and `jr2 gc` never evicts it.
   // The eviction scenario needs a Repo nothing binds, and a per-run url spelling `app.git`
   // differently would normalize to the same identity — so it names this one instead.
   "git clone -q --bare /tmp/w /srv/other.git",
@@ -172,7 +172,7 @@ export async function pushToSeed(branch: string): Promise<string> {
     `git -C "$w" checkout -q -b ${branch}`,
     `printf '%s\\n' ${branch} > "$w/fetch-probe.txt"`,
     `git -C "$w" add -A`,
-    `git -C "$w" -c user.email=e2e@j2 -c user.name=e2e commit -qm 'a commit the pod must be able to reach'`,
+    `git -C "$w" -c user.email=e2e@jr2 -c user.name=e2e commit -qm 'a commit the pod must be able to reach'`,
     `git -C "$w" push -q origin ${branch}`,
     `rm -rf "$w"`,
     `git -C /srv/app.git update-server-info`,

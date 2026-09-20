@@ -4,7 +4,7 @@
 // else names it.
 //
 // They are REQUIRED, not decoration: the pod runs the stock Harness (ADR-0038), which needs a
-// definition for the name it is admitted under, and `j2 up`'s provider preflight probes exactly
+// definition for the name it is admitted under, and `jr2 up`'s provider preflight probes exactly
 // the models the definitions name — so this is also what makes the converge exercise the fake
 // endpoint.
 //
@@ -14,7 +14,7 @@
 // decided by the scripted MODEL (`features/steps/fake-provider.ts`), which parks until a scenario
 // releases it — a real Agent that is still thinking, from the Machine's side.
 
-import type { AgentDefinition } from "@j2/orchestrator";
+import type { AgentDefinition } from "@jr2/orchestrator";
 
 export const coder = {
   model: "fake/model-x",
@@ -28,13 +28,13 @@ worktree and a branch to work in.
 
 - Work only inside the named worktree; your Working tools run in that container.
 - You MUST end your turn by calling exactly one of the tools your Menu offers (surfaced as
-  mcp__j2__<name>). Do not end your turn without calling one — an uncalled tool parks the
+  mcp__jr2__<name>). Do not end your turn without calling one — an uncalled tool parks the
   whole workflow.`,
 } satisfies AgentDefinition;
 
 /**
  * The tier's MENU-ONLY Agent (ADR-0028/0031): `workspace: "none"` withholds the whole Working
- * toolset and places every Turn of it on the Instance Harness — the Deployment `j2 up` converges
+ * toolset and places every Turn of it on the Instance Harness — the Deployment `jr2 up` converges
  * for this instance because this definition exists, and where the Turn lands even when the
  * Machine invoking it sits inside a `workspace()`. No `cwd`: nothing of its consumes one.
  */
@@ -46,6 +46,6 @@ export const advisor = {
 Menu.
 
 - You MUST end your turn by calling exactly one of the tools your Menu offers (surfaced as
-  mcp__j2__<name>). Do not end your turn without calling one — an uncalled tool parks the
+  mcp__jr2__<name>). Do not end your turn without calling one — an uncalled tool parks the
   whole workflow.`,
 } satisfies AgentDefinition;

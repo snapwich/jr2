@@ -1,7 +1,7 @@
 // The model registry (ADR-0018/0027): pi-ai's built-in catalog plus the instance's custom
 // provider (`harness.provider` — the vLLM/Ollama path). `modelsFor` assembles the registry once
 // at boot; `resolveModel` is the per-Submission read of a `<provider>/<modelId>` specifier;
-// `mapThinkingLevel` is the loud gate between j2's effort scale and pi's.
+// `mapThinkingLevel` is the loud gate between jr2's effort scale and pi's.
 //
 // ONE validation seat hangs off `resolveModel`: `admissionFault`, at admission, on the RESOLVED
 // definition. Since ADR-0049 there is only one moment a model reaches this process — the Turn
@@ -29,7 +29,7 @@ const CUSTOM_APIS: Record<string, () => ProviderStreams> = {
   "openai-completions": openAICompletionsApi,
 };
 
-/** A custom endpoint serves model ids j2 cannot enumerate (Agent definitions name them, and
+/** A custom endpoint serves model ids jr2 cannot enumerate (Agent definitions name them, and
  * `provider.models` lists only the ids with limits) — so `resolveModel` synthesizes unlisted ids
  * on demand, off the spec remembered here per registry. */
 const customSpecs = new WeakMap<Models, ProviderSpec>();
@@ -100,14 +100,14 @@ export function admissionFault(models: Models, resolved: ResolvedDefinition): st
 }
 
 /**
- * j2's effort scale onto pi's. A strict subset today (pi adds `max`), so every value passes
+ * jr2's effort scale onto pi's. A strict subset today (pi adds `max`), so every value passes
  * through unmapped — the throw guards the runtime JSON, where a definition can carry anything.
  */
 export function mapThinkingLevel(level: ThinkingLevel): PiThinkingLevel {
   const mapped = PI_LEVELS[level];
   if (!mapped) {
     throw new Error(
-      `thinkingLevel "${level}" has no pi equivalent — j2's scale is ${Object.keys(PI_LEVELS).join("|")}`,
+      `thinkingLevel "${level}" has no pi equivalent — jr2's scale is ${Object.keys(PI_LEVELS).join("|")}`,
     );
   }
   return mapped;
@@ -123,13 +123,13 @@ const PI_LEVELS: Record<ThinkingLevel, PiThinkingLevel> = {
 };
 
 /** pi refuses a keyless HTTP provider outright (`Provider is not configured`), so resolution
- * always answers: the Secret-fed key when `j2 up` materialized one, else a placeholder the
- * keyless endpoints (vLLM/Ollama) ignore — j2's `apiKey` stays genuinely optional (ADR-0018). */
+ * always answers: the Secret-fed key when `jr2 up` materialized one, else a placeholder the
+ * keyless endpoints (vLLM/Ollama) ignore — jr2's `apiKey` stays genuinely optional (ADR-0018). */
 function keylessAuth(env: Record<string, string | undefined>): ProviderAuth {
   return {
     apiKey: {
-      name: "J2_PROVIDER_API_KEY",
-      resolve: async () => ({ auth: { apiKey: env.J2_PROVIDER_API_KEY || "unused" } }),
+      name: "JR2_PROVIDER_API_KEY",
+      resolve: async () => ({ auth: { apiKey: env.JR2_PROVIDER_API_KEY || "unused" } }),
     },
   };
 }

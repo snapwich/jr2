@@ -1,23 +1,23 @@
 # The git ssh key source is the user's choice
 
 [ADR-0019](0019-one-converging-command-against-the-current-context.md) drew a flat line — "personal keys never enter a
-cluster" — and gave ssh repos exactly one path: `j2 up` generates an in-cluster deploy keypair and prints the public key
-to register. The line had a cost the flow could not pay: GitHub allows one deploy key on exactly one repo, so a
+cluster" — and gave ssh repos exactly one path: `jr2 up` generates an in-cluster deploy keypair and prints the public
+key to register. The line had a cost the flow could not pay: GitHub allows one deploy key on exactly one repo, so a
 multi-repo instance means N registrations, and re-using the printed key across repos is rejected — the flow pushed users
 toward machine accounts or hand-rolled Secrets anyway. A key already registered with the git host makes that friction
-zero. The invariant is demoted to a default: j2 never lifts a personal key silently, but the user may hand one over,
+zero. The invariant is demoted to a default: jr2 never lifts a personal key silently, but the user may hand one over,
 warned and on purpose.
 
 ## Decision
 
 - **Three sources, one prompt**, when `up`'s walk of the registered Machines finds an ssh url on a bound Repo Slot
   (ADR-0051) whose matching `git.credentials` entry names an `sshKey` Secret that does not exist (the scaffold's
-  wildcard entry names `j2-git-ssh`): **generate a fresh in-cluster deploy keypair** (recommended, listed first, today's
-  behavior); **use a local key** (discovered `~/.ssh` candidates plus "other path"); or **paste one on stdin, hidden**.
-  Declining all three bails, as before — the cache agent would only fail on an unauthenticated clone later. A per-run
-  slot's url is not on the walk and is never prompted for: an ssh url first seen at attach fails that attach with the
-  key hint, as any unregistered key does. The scripting escape stays kubectl: create the Secret yourself,
-  `kubectl create secret generic j2-git-ssh --from-file=identity=…` — the Secret carries Flux's key names
+  wildcard entry names `jr2-git-ssh`): **generate a fresh in-cluster deploy keypair** (recommended, listed first,
+  today's behavior); **use a local key** (discovered `~/.ssh` candidates plus "other path"); or **paste one on stdin,
+  hidden**. Declining all three bails, as before — the cache agent would only fail on an unauthenticated clone later. A
+  per-run slot's url is not on the walk and is never prompted for: an ssh url first seen at attach fails that attach
+  with the key hint, as any unregistered key does. The scripting escape stays kubectl: create the Secret yourself,
+  `kubectl create secret generic jr2-git-ssh --from-file=identity=…` — the Secret carries Flux's key names
   ([ADR-0051](0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md)), and the cache agent reads no other.
 - **`--yes` means generate.** Non-interactive mode never selects a personal key — the dangerous option is never a
   default. There is no `--git-ssh-key` flag: a scripted supplied-key path is the kubectl escape.

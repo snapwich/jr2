@@ -1,13 +1,13 @@
-# j2 internals — feasibility of the API-redesign decisions
+# jr2 internals — feasibility of the API-redesign decisions
 
-Repo: `/home/richs/repos/j2/default` @ main (72b043d). Verdict up front: **every decision 2–7 is implementable without
+Repo: `/home/richs/repos/jr2/default` @ main (72b043d). Verdict up front: **every decision 2–7 is implementable without
 touching the security model or the durability invariant; most of them delete code. The wrapper-machine answer to
 decision 1 survives re-validation, with one refinement.**
 
 ## 1. Current implementation map
 
-Four packages: `@j2/orchestrator`, `@j2/agent-protocol`, `@j2/adapter`, `@j2/cli`; plus `operator/` (Go, Sandbox CR),
-`examples/coding/`, `features/`.
+Four packages: `@jr2/orchestrator`, `@jr2/agent-protocol`, `@jr2/adapter`, `@jr2/cli`; plus `operator/` (Go, Sandbox
+CR), `examples/coding/`, `features/`.
 
 | Piece              | File                                        | Role                                                                                                                                                                                                                         |
 | ------------------ | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -75,11 +75,11 @@ consumer `scope` covers reviewer-fresh-per-task vs coder-resume (jr semantics). 
 persisted input, so `reattachAgentRuns` keys unchanged. `turn()`/`iid()` die. Body-facing `WorkspaceHandles` shrinks to
 `{workdir, repos, branch}` (prompts still interpolate `workdir` — workflow-legit).
 
-### Decision 4 — tools from transitions: feasible; derive in j2.setup, demarcate on defineEvent
+### Decision 4 — tools from transitions: feasible; derive in jr2.setup, demarcate on defineEvent
 
 Three candidate introspection sites:
 
-1. **j2.setup at machine build (recommended)** — receives full config; walks states statically (machine-doc.ts proves
+1. **jr2.setup at machine build (recommended)** — receives full config; walks states statically (machine-doc.ts proves
    the info is statically recoverable via `node.transitions` incl. ancestors); wraps each agentRun-invoke's `input` fn
    to append `tools: [...]`. Names still ride serializable input → persisted-input restore and `resolveAccepts`
    invoke-time validation are completely unchanged. Same for `gate.accepts`.
@@ -91,8 +91,8 @@ Ambiguity: `NAME_RE` already excludes dots, so `xstate.*`/`agent.*`/`workspace.l
 workflow events. Remaining ambiguity is _audience_ (bubbled human events leaking into agent menus; bubbled
 `report_blocked` is desired). **Demarcation on defineEvent is cleaner**: (a) audience is a property of the event's
 contract, matching the table's existing agent/gate authorization dialects; (b) xstate v5 transitions have no metadata
-slot (only `description`) — transition-level demarcation means a j2-only DSL inside the transition table, which decision
-7 forbids; (c) one `audience: "agent" | "external"` tag resolves coding.ts fully (verified: agent states derive
+slot (only `description`) — transition-level demarcation means a jr2-only DSL inside the transition table, which
+decision 7 forbids; (c) one `audience: "agent" | "external"` tag resolves coding.ts fully (verified: agent states derive
 {request_review, review_verdict, report_blocked}; gate states derive {approve, request_changes, resume, work_ready};
 zero overlap). Registration table needs no changes. Escape hatch: an explicit `tools:` in invoke input stays
 expressible. `eventMap`'s loud failure on `deferred`/`poll` must be preserved.
@@ -102,16 +102,17 @@ expressible. `eventMap`'s loud failure on `deferred`/`poll` must be preserved.
 Absorb into `agentRunActorWith`'s admit loop: catch faults, backoff-retry under a defaulted budget (a knob, not
 context), re-attach from the **host offset ledger** (the actor asks its binding — decision-2 synergy). Registration
 stays live across retries (same iid, no table churn). The no-signal nudge (jr handle_no_signal / ADR-0006's
-forced-final-pick re-prompt) fits the same loop, j2-owned. Only budget exhaustion emits the ONE terminal `agent.fault`.
+forced-final-pick re-prompt) fits the same loop, jr2-owned. Only budget exhaustion emits the ONE terminal `agent.fault`.
 Deletes `retriesLeft`/`spendRetry`/`hasRetryBudget`/`retryOrEscalate`/`reenter`.
 
 Observability: add a telemetry channel via the binding → `run.listeners` (new `RunFeedEvent` kind). **ADR-0014 caveat**:
 the open observation feed excludes `instanceId` and emit payloads; retry telemetry names iids. Project it to
-`{kind:"retry", child:"F-1", attempt:2}` (state-key-class data) so `j2 visualize` can show it without widening the line.
+`{kind:"retry", child:"F-1", attempt:2}` (state-key-class data) so `jr2 visualize` can show it without widening the
+line.
 
 ### Decision 6 — pool primitive: feasible; dissolves the visualize footgun
 
-j2 can own coding.ts's whole top loop (~90 lines): discover→saturated→settling→idle, cap accounting, `spawnChild` with
+jr2 can own coding.ts's whole top loop (~90 lines): discover→saturated→settling→idle, cap accounting, `spawnChild` with
 stable ids, `xstate.done.actor.*` + `stopChild` bookkeeping, re-query timer, wake gate. `pool(source, worker, {cap})` —
 a machine-returning factory like `workspace()`, generalized over a source port (`next(exclude) → item|null`, optional
 wake-event). tk's `claimNextFeature` becomes one adapter; CONTEXT.md's Work Source/Ready-set survive as that adapter's
@@ -119,13 +120,13 @@ semantics.
 
 Visualize: machine-doc sees only top-level `spawnChild` with string srcs resolved against the machine's own setup
 registry; `enqueueActions` is opaque. If the pool factory emits the spawnChild itself (named worker actor in its
-internal setup, top-level action), the static trace is **guaranteed by construction, once, in j2 code** — the
+internal setup, top-level action), the static trace is **guaranteed by construction, once, in jr2 code** — the
 comment-enforced placement footgun (coding.ts:519–523) deletes; no machine-doc changes. The pool also internalizes the
 `xstate.done.actor.*` event-union casts (`claimedFeature`).
 
-### Decision 7 — j2.setup, manifest dies: feasible; pick an attribution mechanism
+### Decision 7 — jr2.setup, manifest dies: feasible; pick an attribution mechanism
 
-Vocabulary is NOT readable off xstate structure alone (transition descriptors give names, not zod defs). j2.setup must
+Vocabulary is NOT readable off xstate structure alone (transition descriptors give names, not zod defs). jr2.setup must
 be told the defs (it needs them anyway for decision 4 and the events type union) and attach them for discovery:
 **WeakMap export** (`vocabularyOf(machine)`) keeps the returned object a bit-identical plain StateMachine
 (Stately-inspectable, `.provide()`-testable); caveat: `.provide()` returns a new machine object — discovery registers
@@ -133,7 +134,7 @@ the pre-provide machine so this is fine, else fall back to a non-enumerable prop
 argument is satisfied: attribution flows through the machine object, per-workflow by construction; a shared defs module
 can feed two machines. Per-workflow scoping (`resolveAccepts`, `workflowEvents`) untouched — only the source of the map
 changes. Module contract shrinks to `export const machine`. Dev reload works naturally (fresh machine object per `?v=`
-generation). Pre-registering j2 actors and injecting mechanism event types (`agent.fault`, `workspace.lost` — dotted,
+generation). Pre-registering jr2 actors and injecting mechanism event types (`agent.fault`, `workspace.lost` — dotted,
 collision-free) is straightforward.
 
 ## 3. Child machines vs provide() vs alternatives

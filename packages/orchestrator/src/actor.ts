@@ -75,7 +75,7 @@ export type AgentAdmission = {
  * What a WORKFLOW writes on an Agent slot's invoke (ADR-0015/0016/0049): this turn's prompt —
  * everything else is derived. The AGENT is not written here at all: the slot key is its name
  * (`actors: { coder: agent(def) }`, `src: "coder"`), so a name the Machine does not carry is a
- * compile error on `src` instead of a runtime miss. `j2Setup.createMachine` wraps the invoke
+ * compile error on `src` instead of a runtime miss. `jr2Setup.createMachine` wraps the invoke
  * input to finalize it into {@link AgentRunInput}: the slot key lands as `agentName`, the tool
  * menu derives from the invoking state's transitions, the instance id is minted (fresh session by
  * default; `session: "continue"` or a `conversation` pin derives a deterministic id so
@@ -126,7 +126,7 @@ export type AgentTurnInput = {
   tools?: readonly string[];
 };
 
-/** What the actor is invoked with AFTER j2Setup finalization: the durable handle, this turn's
+/** What the actor is invoked with AFTER jr2Setup finalization: the durable handle, this turn's
  * surface, and — only outside a workspace — an explicit Harness. */
 export type AgentRunInput = {
   /** The Agent's name — its SLOT KEY, injected by the menu walk (ADR-0049), never authored. It
@@ -163,7 +163,7 @@ export type AgentRunInput = {
    * This invocation is closed to the ADR-0035 reroll — set by the input mapper for
    * `session: "continue"` and a `conversation` pin (both name an EXISTING conversation, and
    * the runaway's one recovery is a fresh one — exactly what they opted out of), and for a
-   * caller-passed `instanceId` (fresh on its first invocation, but j2 did not mint the id and
+   * caller-passed `instanceId` (fresh on its first invocation, but jr2 did not mint the id and
    * must not derive reroll identity from one it does not own — ADR-0016's minting doctrine).
    * A gated runaway goes straight to the terminal fault.
    *
@@ -217,7 +217,7 @@ export interface AgentRunPort {
   settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void>;
   /**
    * End the instance's in-flight (and queued) work — the turn is over (ADR-0024). Resolving means
-   * the intent is RECORDED, not that the submission has settled; j2 never observes that outcome,
+   * the intent is RECORDED, not that the submission has settled; jr2 never observes that outcome,
    * because the actor is already stopped by the time this is called. The actor passes no `signal`
    * for exactly that reason — its own controller is already aborted — but the option is here for
    * parity with the other two.
@@ -240,7 +240,7 @@ export type AgentRunOptions = {
    * How many times a turn that settles COMPLETED without having called any menu tool is
    * re-prompted ("you must call one of: …") before the terminal `agent.fault`. jr's dominant
    * failure mode: the Harness settles a silent turn `completed` like any other (ADR-0006), so
-   * this loop is j2-owned. Default 2.
+   * this loop is jr2-owned. Default 2.
    */
   nudgeBudget?: number;
   /**
@@ -279,7 +279,7 @@ function nudgePrompt(tools: readonly string[]): string {
 
 /** One Agent slot's logic: the run-lifecycle actor closed over ONE definition and BRANDED with it
  * (ADR-0049). The brand is the whole resolution mechanism — the actor reads its definition off its
- * own closure, `j2Setup` recognizes the slot by `isAgent`, and a `.provide()` that swaps the slot
+ * own closure, `jr2Setup` recognizes the slot by `isAgent`, and a `.provide()` that swaps the slot
  * swaps the definition with it, because the two are one object.
  *
  * The brand is a RUNTIME property, read back through `isAgent`, and deliberately NOT part of this
@@ -310,7 +310,7 @@ export function agentActorWith(
 ): AgentLogic {
   const nudgeBudget = options.nudgeBudget ?? 2;
   const runawayBudget = options.runawayBudget ?? 1;
-  // Typed as the union so BOTH shapes typecheck on an invoke: j2Setup machines write
+  // Typed as the union so BOTH shapes typecheck on an invoke: jr2Setup machines write
   // AgentTurnInput (and the config wrapper finalizes it before the actor ever runs); plain
   // setup() machines must pass the finalized shape themselves — checked loudly below.
   const logic = fromCallback<AgentRunReceiveEvent, AgentTurnInput | AgentRunInput>((args) => {
@@ -319,13 +319,13 @@ export function agentActorWith(
     const { instanceId } = input;
     if (!instanceId || !input.agentName) {
       throw new Error(
-        `an Agent slot was invoked with unfinalized input — declare it on a j2Setup(...) machine ` +
+        `an Agent slot was invoked with unfinalized input — declare it on a jr2Setup(...) machine ` +
           `(\`actors: { <name>: agent(def) }\`, which names the Agent, mints the instance id and ` +
           `derives the menu), or pass \`agentName\`/\`instanceId\`/\`tools\` explicitly`,
       );
     }
 
-    // The second fence (ADR-0054): a Turn is never admitted under an Open model. `j2 up`'s walk is
+    // The second fence (ADR-0054): a Turn is never admitted under an Open model. `jr2 up`'s walk is
     // the first and catches every registered Machine; this one catches what it never walked, and
     // refuses HERE rather than sending a Symbol the wire would drop silently.
     const definition = requireBoundAgent(input.agentName, declaration);
@@ -465,9 +465,9 @@ export function agentActorWith(
     // Three absorbed fault classes (ADR-0016), deliberately distinct:
     //   - INFRA faults: provider retries run inside the turn, Harness-side, and the wire
     //     client reconnects transparently — so a `settle` rejection means the Submission settled
-    //     failed/aborted, or the conversation is lost (ADR-0027). Terminal, no j2 re-run.
+    //     failed/aborted, or the conversation is lost (ADR-0027). Terminal, no jr2 re-run.
     //   - NO-SIGNAL: the Submission settles COMPLETED but no menu tool was called. The Harness
-    //     calls that a normal turn, so j2 owns a budgeted re-prompt on the SAME iid (the conversation
+    //     calls that a normal turn, so jr2 owns a budgeted re-prompt on the SAME iid (the conversation
     //     continues; each nudge is a fresh admission, ledgered like any other).
     //   - RUNAWAY: the Harness ended a turn that would not conclude and settled it failed with
     //     the typed "runaway" error (ADR-0035). The degenerate context is poisoned, so the
@@ -555,7 +555,7 @@ export function agentActorWith(
     return abandon;
   });
   // The brand (ADR-0049): a readable property, so `isAgent` is a plain shape test and a reader —
-  // `j2 up`'s model preflight, a Machine doc — can name what this slot runs without invoking it.
+  // `jr2 up`'s model preflight, a Machine doc — can name what this slot runs without invoking it.
   // The DECLARATION, not the narrowed definition: an Open model is exactly what those readers
   // must be able to see and refuse (ADR-0054).
   return Object.assign(logic, { definition: declaration });

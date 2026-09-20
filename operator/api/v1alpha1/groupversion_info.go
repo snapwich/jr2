@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package v1alpha1 contains API Schema definitions for the core v1alpha1 API group.
 // +kubebuilder:object:generate=true
-// +groupName=core.j2.dev
+// +groupName=core.jr2.dev
 package v1alpha1
 
 import (
@@ -28,7 +28,7 @@ import (
 var (
 	// SchemeGroupVersion is group version used to register these objects.
 	// This name is used by applyconfiguration generators (e.g. controller-gen).
-	SchemeGroupVersion = schema.GroupVersion{Group: "core.j2.dev", Version: "v1alpha1"}
+	SchemeGroupVersion = schema.GroupVersion{Group: "core.jr2.dev", Version: "v1alpha1"}
 
 	// GroupVersion is an alias for SchemeGroupVersion, for backward compatibility.
 	GroupVersion = SchemeGroupVersion

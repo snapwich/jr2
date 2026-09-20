@@ -1,6 +1,6 @@
 // Steps for the ADR-0011 mechanics tier: drive the two delivery surfaces the Orchestrator serves —
 // `/agents/<iid>/*` (the AGENT's, as its Adapter speaks it) and `/runs/:id/gates/*` (the HUMAN's).
-// The run itself is observed black-box via `j2 status`.
+// The run itself is observed black-box via `jr2 status`.
 //
 // These steps used to open an MCP client to `/mcp/<iid>`. That surface is gone from the Orchestrator
 // (ADR-0013): MCP now lives in the Adapter, inside the Sandbox. So what these steps play is the
@@ -20,15 +20,15 @@ type Status = { runId: string; instanceId: string; status: string; value: unknow
 type Gate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
 type Surface = { accepts: Array<{ name: string }> };
 
-/** `j2 status <runId>` → the machine-readable RunStatus (black-box observation path). */
+/** `jr2 status <runId>` → the machine-readable RunStatus (black-box observation path). */
 async function status(world: E2EWorld): Promise<Status> {
   assert.ok(world.runId, "a runId was carried from a prior step");
   const r = await world.runCli(["status", world.runId]);
-  assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   return world.resultJson<Status>();
 }
 
-/** Poll `j2 status` until the run's state value matches (transitions are asynchronous). */
+/** Poll `jr2 status` until the run's state value matches (transitions are asynchronous). */
 async function waitForValue(world: E2EWorld, value: string): Promise<Status> {
   let last: Status | undefined;
   for (let i = 0; i < 100; i++) {
@@ -116,7 +116,7 @@ When(
 );
 
 // The redeploy, played honestly: the orchestrator goes away, the workflow's CODE changes under the
-// same name, and a new process comes up on the same store — exactly `j2 up` after an edit, minus
+// same name, and a new process comes up on the same store — exactly `jr2 up` after an edit, minus
 // the cluster (ADR-0030). Sequential on purpose; the store brooks one writer.
 When(
   "the {string} workflow is replaced with the {string} fixture and the orchestrator restarts",
@@ -135,7 +135,7 @@ Then("the boot reports the run as drifted", function (this: E2EWorld): void {
 
 When("I cancel the run", async function (this: E2EWorld): Promise<void> {
   const r = await this.runCli(["send", this.runId!, "--event", "CANCEL"]);
-  assert.equal(r.code, 0, `j2 send CANCEL failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 send CANCEL failed: ${r.stderr}`);
 });
 
 When("I deliver {string} to gate {string}", async function (this: E2EWorld, type: string, gate: string) {
@@ -181,7 +181,7 @@ Then(
   "the run reads as drifted, still parked at {string}, and says why",
   async function (this: E2EWorld, value: string): Promise<void> {
     const r = await this.runCli(["status", this.runId!]);
-    assert.equal(r.code, 0, `j2 status on a drifted run must still succeed: ${r.stderr}`);
+    assert.equal(r.code, 0, `jr2 status on a drifted run must still succeed: ${r.stderr}`);
     const s = this.resultJson<{ status: string; value: unknown; reason?: string }>();
     assert.equal(s.status, "drifted");
     assert.equal(s.value, value, "kept exactly where it was — nothing was interpreted");

@@ -14,7 +14,7 @@
 // The instance id is the RUN's instanceId (as in `sandboxed.ts`), so the same steps drive it.
 
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, workspace } from "@j2/orchestrator";
+import { agent, defineEvent, jr2Setup, workspace } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
@@ -23,7 +23,7 @@ const ship = defineEvent({ name: "ship", input: z.object({ summary: z.string() }
 type Ws = { repos: Record<"app", string>; branch: string };
 type BodyInput = { instanceId: string; workspace: Ws };
 
-const body = j2Setup({
+const body = jr2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [finish, ship],
   // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.
@@ -67,6 +67,6 @@ const body = j2Setup({
 // The one Repo Slot, `app`, BOUND to the seed repository the suite serves in-cluster (ADR-0051):
 // the url is the identity, so this literal is what the walk warms and what the cache clones.
 export const machine = workspace(body, {
-  repos: { app: { url: "http://seed.j2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
   spec: () => ({ branch: "feat-e2e" }),
 });

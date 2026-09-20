@@ -1,7 +1,7 @@
 # A build the host already holds is not spent again
 
-[ADR-0038](0038-j2-up-builds-every-image-it-deploys.md) keyed the build skip on the cluster's record — the
-`j2.dev/images` annotation the previous converge stamped — deliberately: _"a claim about the CLUSTER'S RECORD, not the
+[ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md) keyed the build skip on the cluster's record — the
+`jr2.dev/images` annotation the previous converge stamped — deliberately: _"a claim about the CLUSTER'S RECORD, not the
 node's disk"_, because when tags were mutable, an image being present said nothing about it being current. A fresh
 namespace has no record, so it re-runs every `docker build` even when the host daemon holds every ref byte-for-byte —
 pure waste on a real cluster whenever a namespace is recreated, and ~7.4s per scenario across the `@kind` tier. The
@@ -34,7 +34,7 @@ reading the fact the record only ever approximated.
   dead daemon fails at the build that follows, with docker's own error naming it.
 - **An unlabeled image never answers.** The listing is label-filtered, so a hand-built image that happens to wear the
   right name is invisible and the build proceeds — the safe direction, and the same rule the sweep lives by
-  ([ADR-0039](0039-image-garbage-collects-by-reachability.md)): what j2 did not stamp, j2 does not trust or touch.
+  ([ADR-0039](0039-image-garbage-collects-by-reachability.md)): what jr2 did not stamp, jr2 does not trust or touch.
 
 ## Considered options
 

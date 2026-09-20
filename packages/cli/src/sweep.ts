@@ -5,11 +5,11 @@
 //
 // The three roots, all read CLUSTER-WIDE (not "my namespace" — a ref another instance's map names
 // is not this instance's garbage):
-//   1. the `j2-images` ConfigMap of every j2 instance (namespaces labeled `j2.dev/instance`) — what
+//   1. the `jr2-images` ConfigMap of every jr2 instance (namespaces labeled `jr2.dev/instance`) — what
 //      FUTURE Sandboxes will be provisioned with;
 //   2. every Sandbox CR's `spec.image` in those namespaces — a parked Workspace must survive a pod
 //      restart, and `imagePullPolicy: IfNotPresent` cannot re-pull a local tag;
-//   3. every pod's container images in those namespaces plus `j2-system` — what is actually running
+//   3. every pod's container images in those namespaces plus `jr2-system` — what is actually running
 //      (orchestrator, Instance Harness, Adapter, Sandboxes, operator), mid-roll pods INCLUDED,
 //      without naming Deployments one by one.
 // The keep set is their union. "Kit images are never pruned" is not a rule here: a kit ref is kept
@@ -18,7 +18,7 @@
 //
 // The roots read FAILS CLOSED. A partial root set is not a smaller keep set, it is a WRONG one —
 // every ref it failed to see reads as garbage — so any error throws and the caller sweeps nothing.
-// This is also why the `j2-images` read goes through `listJson`, which throws, rather than
+// This is also why the `jr2-images` read goes through `listJson`, which throws, rather than
 // `getJson`, which turns every failure into "absent". The single exception is not a degradation at
 // all: a cluster with no Sandbox CRD holds no Sandbox CRs, so that read's "none" is complete (see
 // `listSandboxes`).
@@ -28,14 +28,14 @@
 // have its host kit generation swept. The rebuild is BuildKit-cached seconds. Re-introducing a name
 // filter would resurrect the exact primitive this ADR deletes.
 
-import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@j2/orchestrator";
+import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@jr2/orchestrator";
 import { formatBytes, mergeSweeps, sweepHost, sweepNodes, type BuildPort, type SweepResult } from "./build.ts";
 import { LABEL_INSTANCE, OPERATOR_NAMESPACE } from "./deploy.ts";
 import { isMissingResourceType, type KubeAdmin } from "./kube.ts";
 import { activity, type Io } from "./output.ts";
 
 /** The Sandbox CR, fully qualified so the read cannot collide with another `sandboxes` resource. */
-const SANDBOX_KIND = "sandboxes.core.j2.dev";
+const SANDBOX_KIND = "sandboxes.core.jr2.dev";
 
 /** A kube context addresses a kind cluster by convention: `kind-<cluster>`. The node half of the
  * sweep is kind-only — elsewhere the nodes pull from a registry, whose retention is the registry's
@@ -107,7 +107,7 @@ export async function readRoots(kube: KubeAdmin, ctx: { context?: string } = {})
     }
   }
 
-  // 3. what is running right now — plus the operator, which lives in the shared `j2-system`.
+  // 3. what is running right now — plus the operator, which lives in the shared `jr2-system`.
   const pods = await kube.listJson<PodObject>({ kind: "pod", allNamespaces: true, ...ctx });
   for (const pod of pods) {
     const ns = pod.metadata.namespace ?? "";
@@ -123,12 +123,12 @@ export async function readRoots(kube: KubeAdmin, ctx: { context?: string } = {})
 
 /**
  * Root #2's read, with the ONE degradation the fail-closed rule allows: a cluster that has no
- * `sandboxes.core.j2.dev` resource type can hold no Sandbox CRs, so "no Sandboxes" is the complete
+ * `sandboxes.core.jr2.dev` resource type can hold no Sandbox CRs, so "no Sandboxes" is the complete
  * answer rather than a partial one, and the keep set it feeds is right.
  *
- * The case is the sweep's own doing, not a hypothetical: `j2 down --all` deletes the operator
+ * The case is the sweep's own doing, not a hypothetical: `jr2 down --all` deletes the operator
  * manifest — the CRD with it — and only then sweeps, which is the very case ADR-0039 cites for
- * collecting kit images. `j2 gc` meets it too, on any cluster the operator never reached (recreate
+ * collecting kit images. `jr2 gc` meets it too, on any cluster the operator never reached (recreate
  * the kind cluster, then "disk is full now"). Every OTHER failure still throws: Forbidden and an
  * unreachable API did hide Sandboxes that exist.
  */
@@ -155,7 +155,7 @@ function imageMapRefs(cm: ConfigMapObject): string[] {
     throw new Error(
       `the ${IMAGES_CONFIGMAP} ConfigMap in namespace "${cm.metadata.namespace}" is not JSON ` +
         `(${err instanceof Error ? err.message : err}) — the sweep cannot tell what that instance still ` +
-        `needs, so it takes nothing. \`j2 up\` in that instance rewrites the map.`,
+        `needs, so it takes nothing. \`jr2 up\` in that instance rewrites the map.`,
     );
   }
   if (typeof parsed !== "object" || parsed === null) return [];

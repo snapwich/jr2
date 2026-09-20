@@ -18,7 +18,7 @@ limitations under the License.
 // Sandbox (ADR-0053). The attach sets that url to git's built-in `ext::`
 // transport —
 //
-//	ext::/opt/j2/bin/j2-upload-pack %S github.com/acme/app
+//	ext::/opt/jr2/bin/jr2-upload-pack %S github.com/acme/app
 //
 // — so every read of the remote inside the pod runs this program: `git fetch`,
 // `git pull`, `git ls-remote origin`, `git fetch --dry-run`, and
@@ -36,7 +36,7 @@ limitations under the License.
 // Freshness degrades, absence does not, and the caller is told.
 //
 // It is a static binary, the `work-acl` rule (ADR-0037): it executes on a libc
-// j2 does not control, in the Harness container, in the User Container, and in
+// jr2 does not control, in the Harness container, in the User Container, and in
 // whatever a Sandbox Image brings.
 package uploadpack
 
@@ -85,7 +85,7 @@ const (
 	// lands in a human's terminal.
 	maxBodyBytes = 64 << 10
 	// gitBinary is looked up on PATH — the caller is git itself, so git is there,
-	// and the Harness seat's PATH carries /opt/j2/bin besides.
+	// and the Harness seat's PATH carries /opt/jr2/bin besides.
 	gitBinary = "git"
 )
 
@@ -142,7 +142,7 @@ type Options struct {
 	// Env is the environment to hand the git server subcommand. Defaults to
 	// the process's own.
 	Env []string
-	// Getenv reads the fallback adapter url (`J2_ADAPTER_URL`). Defaults to
+	// Getenv reads the fallback adapter url (`JR2_ADAPTER_URL`). Defaults to
 	// os.Getenv.
 	Getenv func(string) string
 	// Stderr carries the one warning line git passes through. Defaults to
@@ -160,13 +160,13 @@ func Run(o Options) int {
 	fill(&o)
 
 	if len(o.Args) < 2 {
-		say(o, "usage: j2-upload-pack <service> <identity> [adapter-url]\n")
+		say(o, "usage: jr2-upload-pack <service> <identity> [adapter-url]\n")
 		return 1
 	}
 	service, identity := o.Args[0], o.Args[1]
 	subcommand, served := services[service]
 	if !served {
-		say(o, "j2: %q is not a service this program serves — only %s and %s (a push goes to the remote's own url, ADR-0005)\n",
+		say(o, "jr2: %q is not a service this program serves — only %s and %s (a push goes to the remote's own url, ADR-0005)\n",
 			service, ServiceUploadPack, ServiceUploadArchive)
 		return 1
 	}
@@ -177,22 +177,22 @@ func Run(o Options) int {
 	// hand; the alternates cannot, without breaking the checkout itself.
 	cache, err := CacheDir(o.Dir)
 	if err != nil {
-		say(o, "j2: %v\n", err)
+		say(o, "jr2: %v\n", err)
 		return 1
 	}
 
 	// The ask, and then the same exec either way (ADR-0053).
 	if reason, asOf := ask(o, identity); reason != "" {
-		say(o, "warning: j2: remote fetch failed (%s); serving the cache as of %s\n", oneLine(reason), asOf)
+		say(o, "warning: jr2: remote fetch failed (%s); serving the cache as of %s\n", oneLine(reason), asOf)
 	}
 
 	git, err := exec.LookPath(gitBinary)
 	if err != nil {
-		say(o, "j2: git is not on PATH, so the cache at %s cannot be served: %v\n", cache, err)
+		say(o, "jr2: git is not on PATH, so the cache at %s cannot be served: %v\n", cache, err)
 		return 1
 	}
 	if err := o.Exec(git, []string{gitBinary, subcommand, cache}, servingEnv(o.Env)); err != nil {
-		say(o, "j2: could not exec %s %s %s: %v\n", git, subcommand, cache, err)
+		say(o, "jr2: could not exec %s %s %s: %v\n", git, subcommand, cache, err)
 		return 1
 	}
 	return 0
@@ -240,7 +240,7 @@ func ask(o Options, identity string) (reason, asOf string) {
 	}
 	var a answer
 	if err := json.Unmarshal(read, &a); err != nil {
-		return fmt.Sprintf("the adapter's answer is not the shape j2 speaks: %v", err), unknownTime
+		return fmt.Sprintf("the adapter's answer is not the shape jr2 speaks: %v", err), unknownTime
 	}
 	switch {
 	case a.Fetched != "":
@@ -268,14 +268,14 @@ func timeOrUnknown(ts *string) string {
 	return *ts
 }
 
-// adapterURL: the third argument if git was given one, else `J2_ADAPTER_URL`,
+// adapterURL: the third argument if git was given one, else `JR2_ADAPTER_URL`,
 // else the loopback default. The attach passes the argument only when the
 // composition moved the Adapter's port, so the ordinary url stays short.
 func adapterURL(o Options) string {
 	if len(o.Args) > 2 && strings.TrimSpace(o.Args[2]) != "" {
 		return strings.TrimSpace(o.Args[2])
 	}
-	if v := strings.TrimSpace(o.Getenv("J2_ADAPTER_URL")); v != "" {
+	if v := strings.TrimSpace(o.Getenv("JR2_ADAPTER_URL")); v != "" {
 		return v
 	}
 	return DefaultAdapterURL

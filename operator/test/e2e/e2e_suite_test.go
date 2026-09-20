@@ -28,7 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/snapwich/j2/operator/test/utils"
+	"github.com/snapwich/jr2/operator/test/utils"
 )
 
 var (

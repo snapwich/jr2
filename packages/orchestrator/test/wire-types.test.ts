@@ -1,12 +1,12 @@
 // The two views of the Harness wire, held in agreement by the COMPILER (ADR-0027).
 //
-// `@j2/harness` serves the wire; `src/wire.ts` is the Orchestrator's own view of it, restated
-// because `@j2/orchestrator` is published to npm and `@j2/harness` is not (ADR-0009/0043). That
+// `@jr2/harness` serves the wire; `src/wire.ts` is the Orchestrator's own view of it, restated
+// because `@jr2/orchestrator` is published to npm and `@jr2/harness` is not (ADR-0009/0043). That
 // restatement is only safe if drift is caught, and `pnpm typecheck` is what catches it: every
 // assignment below fails the build the moment either side's shape moves without the other.
 //
 // This file is the ONE place the two meet. It lives under `test/`, which is outside the package's
-// `files:` list, so `@j2/harness` stays a devDependency the published package never reaches for —
+// `files:` list, so `@jr2/harness` stays a devDependency the published package never reaches for —
 // which is the whole point of the restatement.
 //
 // The checks are MUTUAL (each side assignable to the other), because one direction alone passes a
@@ -14,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as harness from "@j2/harness/wire";
+import * as harness from "@jr2/harness/wire";
 import * as client from "../src/wire.ts";
 
 /** Both directions, in one expression per pair: the compiler is the assertion. */

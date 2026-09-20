@@ -15,7 +15,7 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   program on the runtime volume with the Repo's identity as its argument:
 
   ```
-  ext::/opt/j2/bin/j2-upload-pack %S github.com/acme/app
+  ext::/opt/jr2/bin/jr2-upload-pack %S github.com/acme/app
   ```
 
   Git runs the program and bridges stdio, so the program owes no remote-helper protocol: it asks for a fetch, waits for
@@ -49,13 +49,13 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 - **Freshness degrades, absence does not, and the caller is told.** A remote fetch that fails or outruns the on-demand
   budget lets the program fall through to the objects the cache holds — ADR-0051's stance for attach — and writes one
   line to stderr, which git passes through verbatim:
-  `warning: j2: remote fetch failed (<git's error>); serving the cache as of <lastFetched>`. The budget is the cache
+  `warning: jr2: remote fetch failed (<git's error>); serving the cache as of <lastFetched>`. The budget is the cache
   agent's one on-demand number; the program's wait is that plus watch slack, and nothing else owns a timeout.
 - **Every seat that holds the checkouts holds the program.** The fetch url lives in the shared `default/.git/config`, so
   a seat without the program has checkouts whose `git fetch` dies. That is ADR-0005's own argument for `/repos` — half
-  of one exception, not a second — applied once more: the pod's `/opt/j2` volume is mounted read-only into the User
-  Container beside `/repos`. `ext::` names the program by absolute path, so the seat needs no PATH and j2 injects no
-  env; the program is a static binary, the `work-acl` rule (ADR-0037), because it executes on a libc j2 does not
+  of one exception, not a second — applied once more: the pod's `/opt/jr2` volume is mounted read-only into the User
+  Container beside `/repos`. `ext::` names the program by absolute path, so the seat needs no PATH and jr2 injects no
+  env; the program is a static binary, the `work-acl` rule (ADR-0037), because it executes on a libc jr2 does not
   control. A human in the User Container gets the same `git fetch` as the Agent, with no credential of their own; the
   human `exec`'d into the Harness container already had it.
 - **Names.** `fetch` is what an Agent, a human, and a cache do; `refresh` is what the interval does and stays on
@@ -63,8 +63,8 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   identity, never the cache key — a key is a derived directory name, never chosen by a human (ADR-0004), and not the
   name a human should read in `git remote -v`.
 - **What stays.** An attach still fetches before it runs, because a creation is an ask. The interval still runs, so a
-  cold attach and `j2 status` stay honest without anyone asking. There is no CLI verb: the human who wants the fetch is
-  in the pod, where `git fetch` is the verb, and the mark makes a `j2` verb additive if a caller outside the pod ever
+  cold attach and `jr2 status` stay honest without anyone asking. There is no CLI verb: the human who wants the fetch is
+  in the pod, where `git fetch` is the verb, and the mark makes a `jr2` verb additive if a caller outside the pod ever
   needs one.
 
 ## Considered options
@@ -75,13 +75,13 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 - **A Menu pick** (`need_fresh`, declared with `defineEvent`, a `fetching` state the pick transitions to). Rejected: a
   Turn boundary per fetch, an author opt-in per state, and a transition for something that moves the Machine nowhere. A
   fetch is not part of a Machine's Vocabulary.
-- **A named tool served by the Adapter** (`mcp__j2__fetch` beside the Menu). Rejected: the model must learn a tool and
+- **A named tool served by the Adapter** (`mcp__jr2__fetch` beside the Menu). Rejected: the model must learn a tool and
   remember to call it before the verb it already knows, and a human at a shell gets nothing from it.
 - **Shorten the interval.** Rejected: polling per node per Repo, and the latency is still the interval.
 - **The ask on the Repo CR.** Rejected: every node holding the cache fetches, and the wait must then name a node.
 - **The cache agent reads Sandbox CRs.** Rejected: two sources of demand where one exists, and a new RBAC grant for the
   DaemonSet, to save one copy the operator makes for every other field.
-- **A `j2::` remote helper found on PATH.** Rejected: PATH is env, the User Container gets none (ADR-0005), and an owed
+- **A `jr2::` remote helper found on PATH.** Rejected: PATH is env, the User Container gets none (ADR-0005), and an owed
   image line where `ext::` costs nothing but a longer line in `git remote -v`.
 - **The human's credentialed fetch pushed into the cache.** Rejected: the cache is read-only in the pod by design, the
   structural half of the gc invariant (ADR-0004). And moot: with this decision the human's own credential is not needed
@@ -93,10 +93,10 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 
 - ADR-0051 is rewritten in place: "stale stays stale from inside the pod" is retired; a stale attach is stale until the
   next fetch anyone inside the pod runs. ADR-0005 is rewritten in place: "`git fetch origin` reads the node cache" is
-  now "asks the node cache", the User Container mounts `/opt/j2` read-only beside `/repos`, and "nothing injected"
+  now "asks the node cache", the User Container mounts `/opt/jr2` read-only beside `/repos`, and "nothing injected"
   narrows to the seat's process — no env, no command, no probe. ADR-0004's refresh section gains the in-pod ask.
-- The runtime volume carries a second static binary, and so a j2 program is present in every seat of every Workspace
-  pod, User Container included. It is the natural home for in-pod j2 functionality that does not yet exist.
+- The runtime volume carries a second static binary, and so a jr2 program is present in every seat of every Workspace
+  pod, User Container included. It is the natural home for in-pod jr2 functionality that does not yet exist.
 - A fetch inside a pod is a remote round trip through the node agent, seconds rather than milliseconds. Every git
   command that fetches pays it; none that does not.
 - The Sandbox status grows a standing per-key Repo entry; the Adapter gains a loopback route; the Orchestrator gains a

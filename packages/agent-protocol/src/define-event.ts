@@ -1,7 +1,7 @@
 // `defineEvent` — the event mechanism, and zero events (ADR-0011). A workflow defines its own
-// control vocabulary as pure-data defs; j2 owns only definition, transport, validation, and
+// control vocabulary as pure-data defs; jr2 owns only definition, transport, validation, and
 // delivery. This is a PURE factory: no import-time side effects, no global registry. Scoping is
-// per-MACHINE — a Machine hands its defs to `j2Setup({ events: [...] })` (ADR-0015), which
+// per-MACHINE — a Machine hands its defs to `jr2Setup({ events: [...] })` (ADR-0015), which
 // attaches the vocabulary to that machine, and actors resolve event *names* (which is all a
 // serializable input can carry — ADR-0007) against the Machine that INVOKED them (ADR-0049).
 // Two Machines' `approve` may legitimately differ, nested one inside the other, in one run.
@@ -54,7 +54,7 @@ export type EventFrom<D extends EventDef> =
 
 // The wire constrains names, not taste: a name is an MCP tool name and an xstate event type at
 // once. The MCP-safe charset below also (deliberately) excludes `.`, which keeps workflow events
-// mechanically out of the dotted namespaces j2 itself delivers on (`xstate.*`, `agent.*`,
+// mechanically out of the dotted namespaces jr2 itself delivers on (`xstate.*`, `agent.*`,
 // `workspace.*`).
 const NAME_RE = /^[a-zA-Z0-9_-]+$/;
 
@@ -96,10 +96,10 @@ export function isEventDef(value: unknown): value is EventDef {
 }
 
 /**
- * Resolve a defs list into a name→def map, rejecting duplicates and non-defs. `j2Setup` calls
+ * Resolve a defs list into a name→def map, rejecting duplicates and non-defs. `jr2Setup` calls
  * this once per Machine (ADR-0015); the error names the Machine so an unlisted or double-listed
  * name fails loudly at machine-build time, not at delivery. The scope is the MACHINE, not the
- * Workflow: a nested Machine is reached by `import` and never carries the name `j2 run` addresses
+ * Workflow: a nested Machine is reached by `import` and never carries the name `jr2 run` addresses
  * (ADR-0049), so naming it a workflow here would misreport where the bad def lives.
  *
  * `deferred` and `poll` are RESERVED, not implemented (ADR-0013): the wire leaves room for them —

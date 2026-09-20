@@ -7,8 +7,8 @@
 // admission brings its own Agent definition, so this process boots knowing no Agents at all.
 //
 // It is the container's command in BOTH placements: the stock image's own `CMD` (the Instance
-// Harness, ADR-0031), and the command the operator overrides a Sandbox Image with, where j2's
-// runtime is mounted at `/opt/j2` and nothing about this process came from the image (ADR-0037).
+// Harness, ADR-0031), and the command the operator overrides a Sandbox Image with, where jr2's
+// runtime is mounted at `/opt/jr2` and nothing about this process came from the image (ADR-0037).
 
 import { createHash } from "node:crypto";
 import { serve } from "@hono/node-server";
@@ -19,7 +19,7 @@ import { prepareProcess } from "./startup.ts";
 import { runSubmissionFor } from "./turn.ts";
 
 // FIRST, before anything reads the environment or writes a file: umask 002, PATH appended with
-// /opt/j2/bin, HOME defaulted. In a Sandbox the image is the user's and carries none of these, and
+// /opt/jr2/bin, HOME defaulted. In a Sandbox the image is the user's and carries none of these, and
 // every Working tool child inherits them from here (startup.ts, ADR-0037/ADR-0005).
 // "First" is first STATEMENT, not first code: the imports above are ESM, so their module bodies run
 // ahead of this line. That holds only because none of them touches PATH, HOME, the umask, or spawns
@@ -35,7 +35,7 @@ function required(name: string, why: string): string {
 
 const harness = loadHarnessSpec(process.env);
 const adapterUrl = required(
-  "J2_ADAPTER_URL",
+  "JR2_ADAPTER_URL",
   "the Agent has no Adapter to reach, so it cannot drive its Machine (ADR-0013)",
 );
 const models = modelsFor(harness, process.env);
@@ -45,7 +45,7 @@ const models = modelsFor(harness, process.env);
 // its sha-256 and a bearer verifies by hashing. Digests compare with `===` on purpose: what a
 // timing leak could reveal is a hash prefix, which inverts to nothing. Absent → no gate → the
 // echo endpoint refuses, and the Orchestrator's fire-and-forget push shrugs.
-const echoTokenSha256 = process.env.J2_ECHO_TOKEN_SHA256;
+const echoTokenSha256 = process.env.JR2_ECHO_TOKEN_SHA256;
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("base64url");
 
 const app = harnessApp({
@@ -54,7 +54,7 @@ const app = harnessApp({
   // Set on the Instance Harness Deployment alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code
   // execution in this pod" a property, not a comment.
-  ...(process.env.J2_MENU_ONLY ? { menuOnly: true } : {}),
+  ...(process.env.JR2_MENU_ONLY ? { menuOnly: true } : {}),
   ...(echoTokenSha256
     ? { checkEchoBearer: (bearer: string | undefined) => bearer !== undefined && sha256(bearer) === echoTokenSha256 }
     : {}),
@@ -63,7 +63,7 @@ const app = harnessApp({
 const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0" }, (info) => {
   // No agent count: this process holds no roster to count (ADR-0049) — every admission brings
   // the definition it runs.
-  console.log(`j2 harness serving on :${info.port}`);
+  console.log(`jr2 harness serving on :${info.port}`);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

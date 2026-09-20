@@ -20,12 +20,12 @@
 //
 // WHICH IMAGE a Sandbox runs is not an option here (ADR-0037/0038/0049). The request carries what
 // the `workspace()` wrapper statically declared — a `file:` docker context or a registry ref — and
-// the resolved key→ref map arrives as a mounted ConfigMap read on EVERY provision, so a `j2 up`
+// the resolved key→ref map arrives as a mounted ConfigMap read on EVERY provision, so a `jr2 up`
 // that rebuilds an image reaches future Sandboxes without rolling this process.
 //
 // The pod's primary container is the Sandbox Image BYTE-FOR-BYTE (ADR-0037): no appended layers,
-// no rewritten Dockerfile, no j2 knowledge inside it. j2's runtime arrives at POD time instead —
-// an emptyDir at `/opt/j2`, populated by an init container running the kit's Harness image — and
+// no rewritten Dockerfile, no jr2 knowledge inside it. jr2's runtime arrives at POD time instead —
+// an emptyDir at `/opt/jr2`, populated by an init container running the kit's Harness image — and
 // the container's COMMAND is overridden to start the Harness from that volume. The image's own
 // `USER` and `HOME` are respected (the human who execs in lands in the environment its author
 // built); only its `ENTRYPOINT`/`CMD` do not run, because a container has one command and the
@@ -36,21 +36,21 @@
 //
 // So this module composes the whole pod — two init steps and up to three containers:
 //
-//   initContainer runtime     the kit's Harness image → copies /opt/j2 into the volume
+//   initContainer runtime     the kit's Harness image → copies /opt/jr2 into the volume
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
-//   container     harness     the Sandbox Image, command overridden, /work + /opt/j2 mounted
-//   container     adapter     j2-owned, the pod's only credential holder (below)
+//   container     harness     the Sandbox Image, command overridden, /work + /opt/jr2 mounted
+//   container     adapter     jr2-owned, the pod's only credential holder (below)
 //   container     user        optional, the image's own entrypoint, the checkouts (/work, plus
-//                             /repos and /opt/j2 read-only) and NOTHING else
+//                             /repos and /opt/jr2 read-only) and NOTHING else
 //
 // This is also where the ADAPTER is injected (ADR-0013). The operator needs no change to carry it:
 // ADR-0001 made `Sidecars` generic container fragments it schedules WITHOUT understanding, so the
 // Adapter is exactly that — a container with an image, an env, and a Secret. What this module
 // builds is the pod's asymmetry:
 //
-//   harness container   J2_ADAPTER_URL=http://127.0.0.1:8081     (an address, no credential)
-//   adapter container   J2_ORCHESTRATOR_URL + J2_SANDBOX_TOKEN   (the credential, via envFrom)
+//   harness container   JR2_ADAPTER_URL=http://127.0.0.1:8081     (an address, no credential)
+//   adapter container   JR2_ORCHESTRATOR_URL + JR2_SANDBOX_TOKEN   (the credential, via envFrom)
 //
 // The Agent has code execution in the first and none in the second. The token is minted here — a
 // signed Sandbox name (see tokens.ts), so re-provisioning after a restart yields the SAME token and
@@ -76,17 +76,17 @@ import type { ProvisionedRepo, SandboxPort, WorkspaceSpec } from "./workspace.ts
 export type KubectlExec = (args: string[], opts?: { input?: string }) => Promise<{ stdout: string; stderr: string }>;
 
 /** Where the Harness container sees the instance's CA bundle (ADR-0020). */
-const CA_MOUNT = "/etc/j2/ca";
+const CA_MOUNT = "/etc/jr2/ca";
 
-/** Where j2's runtime lands in every container that gets it (ADR-0037). `/opt/j2` and not `/app`
+/** Where jr2's runtime lands in every container that gets it (ADR-0037). `/opt/jr2` and not `/app`
  * because a stranger's base may already use `/app`, and one layout must serve both the stock
  * Harness image and an arbitrary Sandbox Image. It is a PUBLISHED surface: `bin/` beside `lib/`
  * (node's rpath is `$ORIGIN/../lib`), `src/main.ts`, `node_modules/`. */
-export const RUNTIME_MOUNT = "/opt/j2";
+export const RUNTIME_MOUNT = "/opt/jr2";
 
-/** Where the populate init container writes the runtime. NOT `/opt/j2`: mounting the volume there
+/** Where the populate init container writes the runtime. NOT `/opt/jr2`: mounting the volume there
  * would shadow the very directory being copied out of the Harness image. */
-const RUNTIME_STAGE = "/mnt/j2";
+const RUNTIME_STAGE = "/mnt/jr2";
 
 /** The primary container's command (ADR-0037). Absolute, so it never depends on the image's
  * `WORKDIR`, and identical to the stock Harness image's own `CMD` — one runtime, two placements. */
@@ -95,7 +95,7 @@ const HARNESS_COMMAND = [`${RUNTIME_MOUNT}/bin/node`, `${RUNTIME_MOUNT}/src/main
 /** The program `origin`'s fetch url runs (ADR-0053), on the runtime volume beside `work-acl`. It
  * asks the node cache for a fetch and then serves the cache, so every seat that holds the
  * checkouts must hold this volume — which is why the User Container mounts it (ADR-0005). */
-const UPLOAD_PACK = `${RUNTIME_MOUNT}/bin/j2-upload-pack`;
+const UPLOAD_PACK = `${RUNTIME_MOUNT}/bin/jr2-upload-pack`;
 
 /** The Adapter's port on the pod's loopback. The program defaults to this address too, so the
  * fetch url names it only when the composition moved it (attachScript). */
@@ -107,10 +107,10 @@ const DEFAULT_ADAPTER_PORT = 8081;
 const DEFAULT_WORK_GROUP = 2000;
 
 /**
- * The isolation baseline for a j2-owned seat, spelled out HERE for the init containers because the
+ * The isolation baseline for a jr2-owned seat, spelled out HERE for the init containers because the
  * operator's hardened default covers the primary container and the sidecars only (ADR-0001/0005) —
  * init steps pass through verbatim, which is what keeps the operator agent-agnostic. Deliberately
- * not applied to the `user` container: that seat's identity is "what j2 does not own".
+ * not applied to the `user` container: that seat's identity is "what jr2 does not own".
  */
 const HARDENED = {
   runAsNonRoot: true,
@@ -121,18 +121,18 @@ const HARDENED = {
 
 /**
  * ADR-0037's fallback seat, for a BUILT image that declares no `USER` (the converge's `docker
- * inspect` is what saw that; images.ts holds the record). j2 sets `runAsUser` nowhere else — an
+ * inspect` is what saw that; images.ts holds the record). jr2 sets `runAsUser` nowhere else — an
  * image's own `USER` decides its seat's uid (ADR-0005) — so this applies only where the image
  * chose nothing and the alternative is root, which the hardened context refuses.
  *
  * The home is a POD volume, not a directory in the image: uid 1000 on a stranger's base has no
  * home at all, and the floor needs a writable one (`git config --global` writes `$HOME/.gitconfig`
  * on every attach; a real toolchain wants `~/.npm`, `~/.cargo`, `~/.cache`). An emptyDir lands
- * group-writable under the pod's fsGroup, so uid 1000 owns it in practice without j2 chown-ing
- * anything. `/home/j2` and not `/home/node`: the number is j2's choice here, so the path is too.
+ * group-writable under the pod's fsGroup, so uid 1000 owns it in practice without jr2 chown-ing
+ * anything. `/home/jr2` and not `/home/node`: the number is jr2's choice here, so the path is too.
  */
 const FALLBACK_UID = 1000;
-const FALLBACK_HOME = "/home/j2";
+const FALLBACK_HOME = "/home/jr2";
 
 /**
  * The kubelet's verdict on a container whose image resolves to root under `runAsNonRoot: true`.
@@ -187,7 +187,7 @@ export function rootImageFault(pod: unknown): string | undefined {
 
 /**
  * The fix, not the symptom. The kubelet's message says what it refused; it cannot say that the
- * image is a Sandbox Image, that j2 declined to patch a uid onto it, or where the one-line edit
+ * image is a Sandbox Image, that jr2 declined to patch a uid onto it, or where the one-line edit
  * goes — and without those three the reader has a Kubernetes error and no next step.
  *
  * It names the BROUGHT case specifically because that is the only one that reaches here: a built
@@ -197,24 +197,24 @@ export function rootImageFault(pod: unknown): string | undefined {
  */
 function rootImageError(name: string, fault: string): string {
   return (
-    `Sandbox "${name}" cannot start: its image runs as ROOT, and every j2-owned seat is hardened ` +
+    `Sandbox "${name}" cannot start: its image runs as ROOT, and every jr2-owned seat is hardened ` +
     `with runAsNonRoot (ADR-0005). The kubelet refused it — ${fault}\n` +
     `  - the fix is one line in the image: a NUMERIC non-root \`USER <uid>\` (e.g. \`USER 1000\`)\n` +
     `  - numeric because the kubelet does not read the image's /etc/passwd, so \`USER app\` is ` +
     `refused too — it cannot prove that name is non-root\n` +
-    `  - j2 does not supply a uid for a brought registry ref: it is never inspected and never ` +
-    `modified, which is what "bring your own image" means (ADR-0037). Only an image j2 BUILDS, ` +
+    `  - jr2 does not supply a uid for a brought registry ref: it is never inspected and never ` +
+    `modified, which is what "bring your own image" means (ADR-0037). Only an image jr2 BUILDS, ` +
     `and only one that declares no USER at all, gets the uid-${FALLBACK_UID} fallback.`
   );
 }
 
 /**
- * ADR-0037's preflight, VERBATIM: git present · `$HOME` writable · glibc new enough for j2's node
- * (with the relocated `libstdc++`) · the vendored ripgrep, reached through the mounted `/opt/j2`.
+ * ADR-0037's preflight, VERBATIM: git present · `$HOME` writable · glibc new enough for jr2's node
+ * (with the relocated `libstdc++`) · the vendored ripgrep, reached through the mounted `/opt/jr2`.
  *
  * The three commands are the floor, one each: `git config --global` proves git is on the system
  * PATH AND that `$HOME` is writable for the image's user; `node -e ""` proves the glibc is no
- * older than the one j2's node was built against (this is where musl dies); `rg` UNQUALIFIED
+ * older than the one jr2's node was built against (this is where musl dies); `rg` UNQUALIFIED
  * proves the vendored static binary resolves THROUGH PATH, which is what the Harness's own append
  * buys at runtime.
  *
@@ -222,13 +222,13 @@ function rootImageError(name: string, fault: string): string {
  * floor is a HARNESS-SEAT obligation, a built context may equally be destined for the User
  * Container seat — which owes no floor at all (ADR-0005) — and which seat a directory serves is
  * workflow-internal and statically unrecoverable (ADR-0031). Here the seat is known, and here is
- * also the only moment a registry ref exists at all, since j2 never builds or inspects one.
+ * also the only moment a registry ref exists at all, since jr2 never builds or inspects one.
  */
 const SANDBOX_PREFLIGHT = `git config --global safe.directory "*" && ${RUNTIME_MOUNT}/bin/node -e "" && rg --version`;
 
 /**
  * The probe as a shell line. The PATH append is mechanism, not part of the claim, and it is not
- * optional: nothing bakes `/opt/j2/bin` into the user's image any more, so a probe that skipped it
+ * optional: nothing bakes `/opt/jr2/bin` into the user's image any more, so a probe that skipped it
  * would report `rg: not found` for every image on earth. APPENDED, never prepended — a toolchain
  * the image pinned wins, which is as much the property being proved as `rg`'s presence (ADR-0037).
  * The seat gets no login shell at either end, so `$PATH` is whatever the image itself set.
@@ -238,7 +238,7 @@ function preflightShell(): string {
 }
 
 /**
- * The preflight as an init step IN THE USER'S IMAGE with `/opt/j2` mounted. It fails the pod
+ * The preflight as an init step IN THE USER'S IMAGE with `/opt/jr2` mounted. It fails the pod
  * before the Harness starts, instead of surfacing as a tool failure mid-turn on a pod nobody is
  * watching.
  *
@@ -250,15 +250,15 @@ function preflightShell(): string {
  */
 const PREFLIGHT_SCRIPT = [
   `${preflightShell()} && exit 0`,
-  `echo "j2: this Sandbox Image does not meet the floor (ADR-0037): a glibc base no older than ` +
-    `j2's node (musl is out entirely), git on the system PATH, a writable HOME for the image's ` +
-    `USER, and /opt/j2 + /work + :8080 unclaimed. j2 vendors the rest." >&2`,
+  `echo "jr2: this Sandbox Image does not meet the floor (ADR-0037): a glibc base no older than ` +
+    `jr2's node (musl is out entirely), git on the system PATH, a writable HOME for the image's ` +
+    `USER, and /opt/jr2 + /work + :8080 unclaimed. jr2 vendors the rest." >&2`,
   `exit 1`,
 ].join("\n");
 
 export type KubectlSandboxOptions = {
-  /** The mounted image map (ADR-0037/0038) — every ref this port can name, written by `j2 up`.
-   * Default: the `j2-images` ConfigMap's mount. No image option here: which image a Sandbox runs
+  /** The mounted image map (ADR-0037/0038) — every ref this port can name, written by `jr2 up`.
+   * Default: the `jr2-images` ConfigMap's mount. No image option here: which image a Sandbox runs
    * is the `workspace()` wrapper's static `image` option (ADR-0049) — carried on the Machine, read
    * off it at invoke time, handed to `provision()` as a string — and resolved against this map at
    * provision. The per-run spec never names one (ADR-0051). */
@@ -267,19 +267,19 @@ export type KubectlSandboxOptions = {
    * mechanism-owned vars, which win on collision. */
   env?: HarnessEnvVar[];
   /** Whole-Secret/ConfigMap env for the Harness container (`harness.envFrom`) — how a real
-   * Harness gets its model API key without the value ever touching j2 config. */
+   * Harness gets its model API key without the value ever touching jr2 config. */
   envFrom?: HarnessEnvFromSource[];
   /** Where a Sandbox may land (ADR-0052): the Instance's `sandbox.nodeSelector` and
    * `sandbox.tolerations`, written on the CR verbatim and copied onto the pod by the operator, which
    * merges nothing with them. Absent → wherever an ordinary pod lands. */
   placement?: SandboxPlacement;
-  /** The instance ships a private-CA bundle (ADR-0020): mount the `j2-ca` ConfigMap into the
+  /** The instance ships a private-CA bundle (ADR-0020): mount the `jr2-ca` ConfigMap into the
    * HARNESS container and point NODE_EXTRA_CA_CERTS at it — never the Adapter, which speaks plain
    * HTTP to the Orchestrator's Service (the same asymmetry as env/envFrom above). */
   caBundle?: boolean;
   /**
    * Where the Adapter reaches the Orchestrator FROM INSIDE THE CLUSTER — the orchestrator's own
-   * Service DNS (derived from J2_NAMESPACE by the entrypoint). The Agent is never told it.
+   * Service DNS (derived from JR2_NAMESPACE by the entrypoint). The Agent is never told it.
    * A thunk is still accepted for callers that resolve their address late.
    */
   orchestratorUrl?: string | (() => string | undefined);
@@ -296,7 +296,7 @@ export type KubectlSandboxOptions = {
   /** CR `spec.idleTimeout` — the operator's abandoned-Sandbox GC backstop (ADR-0001). Default `30m`. */
   idleTimeout?: string;
   /** How often a workspace's lease actor renews (ADR-0001/0021): the cadence at which
-   * `j2.dev/keepalive` is re-stamped AND continuity is read back. Must be ≪ idleTimeout, since
+   * `jr2.dev/keepalive` is re-stamped AND continuity is read back. Must be ≪ idleTimeout, since
    * a lapsed lease is what lets the operator reap. Default 5m. */
   leaseIntervalMs?: number;
   /** Await-Ready budget for the POD: from the CR apply until the operator reports the pod Ready.
@@ -362,9 +362,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     name: "adapter",
     image: refs.adapter,
     env: [
-      { name: "J2_ORCHESTRATOR_URL", value: orchestratorUrl() },
-      { name: "J2_SANDBOX", value: name },
-      { name: "J2_ADAPTER_PORT", value: String(adapterPort) },
+      { name: "JR2_ORCHESTRATOR_URL", value: orchestratorUrl() },
+      { name: "JR2_SANDBOX", value: name },
+      { name: "JR2_ADAPTER_PORT", value: String(adapterPort) },
     ],
     // The credential, and the reason this is a separate container: `local()` tools give the Agent
     // code execution in the HARNESS container, so anything mounted there is the Agent's. Here, it
@@ -374,10 +374,10 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
 
   /**
    * The User Container (ADR-0005): the opt-in third seat, composed only when the wrapper's static
-   * `user` option names an image (ADR-0049). The ZERO-CONTRACT seat — j2 injects nothing, probes
+   * `user` option names an image (ADR-0049). The ZERO-CONTRACT seat — jr2 injects nothing, probes
    * nothing, overrides nothing. So: no `command` (its own entrypoint runs, untouched), no `env`,
-   * no `envFrom`, no CA bundle, no ports, no resources. Every key j2 forwarded would be a crack in
-   * "j2 puts nothing in it", and widening the one authoring string to an object stays compatible
+   * no `envFrom`, no CA bundle, no ports, no resources. Every key jr2 forwarded would be a crack in
+   * "jr2 puts nothing in it", and widening the one authoring string to an object stays compatible
    * if a concrete need ever argues its own way in. (Git's dubious-ownership guard is the line's
    * cost, accepted with
    * eyes open — ADR-0005: safe.directory is honored only from files this seat's image owns, so an
@@ -389,7 +389,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * `fsGroup`, the attach's default ACL) exists at all. The caches ride along because they are
    * half of the same files: the worktrees are `--shared` clones whose alternates resolve objects
    * from `/repos/<key>` (ADR-0004/0051), so a seat with `/work` alone holds checkouts whose every
-   * borrowed object is missing ("unable to normalize alternate object path"). `/opt/j2` is the
+   * borrowed object is missing ("unable to normalize alternate object path"). `/opt/jr2` is the
    * other half (ADR-0053): `origin`'s fetch url is a program on that volume, so a seat without it
    * holds checkouts whose `git fetch` dies — and with it the human gets the same fetch as the
    * Agent, with no credential of their own. Nothing else follows it in: `ext::` names the program
@@ -398,7 +398,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * them by name. The Adapter is deliberately not given any of the three: it reads no worktree, and it is the
    * container holding the pod's only credential, so it gets the narrowest mount set that works.
    * It also carries no `securityContext`, which the operator reads as the exemption — root is
-   * ALLOWED here, because hardening a seat whose identity is "what j2 does not own" is an opinion,
+   * ALLOWED here, because hardening a seat whose identity is "what jr2 does not own" is an opinion,
    * and the standard managed-access shape (a root sshd that setuids sessions down) must run
    * unmodified.
    */
@@ -429,7 +429,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   // credential.
   const harnessEnv = (): HarnessEnvVar[] => [
     ...(opts.env ?? []),
-    { name: "J2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` },
+    { name: "JR2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` },
     ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
   ];
 
@@ -438,14 +438,14 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * schedules without understanding, exactly like sidecars — the operator stays agent-agnostic
    * (ADR-0001), so "how a Sandbox gets its runtime" is composed here, not reconciled there.
    *
-   * 1. `runtime` — the kit's Harness image, copying its `/opt/j2` into the shared emptyDir. This
+   * 1. `runtime` — the kit's Harness image, copying its `/opt/jr2` into the shared emptyDir. This
    *    is what makes the runtime's version ride the VOLUME rather than the image: a kit edit moves
    *    the harness image's own tag and re-images future pods without touching a single Sandbox
    *    Image tag, which is the only way a registry-ref image could ever follow a kit update.
    * 2. `preflight` — the USER'S image with that volume mounted, running the probe. Ordered second
    *    because it needs what the first one wrote.
    *
-   * Both carry j2's hardened context explicitly, and `preflight` runs the probe in the SAME seat
+   * Both carry jr2's hardened context explicitly, and `preflight` runs the probe in the SAME seat
    * the Harness will get — the image's own user, or ADR-0037's fallback — because a probe that
    * proved a different uid's `$HOME` proved nothing.
    */
@@ -454,7 +454,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       name: "runtime",
       image: refs.harness,
       // The copy's rules live beside the tree they copy (`deploy/harness/init-copy`), not in a
-      // string here: `/opt/j2` is a published surface whose SHAPE is load-bearing — node's rpath
+      // string here: `/opt/jr2` is a published surface whose SHAPE is load-bearing — node's rpath
       // is `$ORIGIN/../lib`, so `bin/` and `lib/` must land as siblings — and the script proves
       // its own result by running the copied node before the pod moves on.
       command: [`${RUNTIME_MOUNT}/bin/init-copy`, RUNTIME_STAGE],
@@ -497,15 +497,15 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     // edit, because the fix is one line of the caller's own Dockerfile.
     if (refusedUser !== undefined) {
       throw new Error(
-        `the Sandbox Image "${name ?? "default"}" declares \`USER ${refusedUser}\`, which cannot run a j2 seat: ` +
-          "every j2-owned container is `runAsNonRoot` with no `runAsUser`, so the kubelet needs a NUMERIC " +
+        `the Sandbox Image "${name ?? "default"}" declares \`USER ${refusedUser}\`, which cannot run a jr2 seat: ` +
+          "every jr2-owned container is `runAsNonRoot` with no `runAsUser`, so the kubelet needs a NUMERIC " +
           "non-zero uid it can check without reading the image (ADR-0005). Change the Dockerfile's last " +
-          "`USER` to that uid (e.g. `USER 1000`, or drop the line entirely and j2 supplies uid 1000 with a " +
-          "writable HOME — ADR-0037), then re-run `j2 up`.",
+          "`USER` to that uid (e.g. `USER 1000`, or drop the line entirely and jr2 supplies uid 1000 with a " +
+          "writable HOME — ADR-0037), then re-run `jr2 up`.",
       );
     }
     // The common case, and the one ADR-0037 is written around: the image chose its `USER` and its
-    // `HOME`, and j2 touches neither — the human who execs in lands in the environment the
+    // `HOME`, and jr2 touches neither — the human who execs in lands in the environment the
     // image's author built, dotfiles included.
     if (!fallbackSeat) {
       return { image, env: [], homeVolume: [], homeMount: [], securityContext: HARDENED };
@@ -532,24 +532,24 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       req.user,
     );
     return {
-      apiVersion: "core.j2.dev/v1alpha1",
+      apiVersion: "core.jr2.dev/v1alpha1",
       kind: "Sandbox",
       metadata: {
         name: req.name,
         namespace: ns,
-        // The run↔workspace link `j2 ls` groups by (ADR-0009/0012) — readable without the host.
-        labels: { "j2.dev/run": req.runId, "j2.dev/workflow": req.workflow },
+        // The run↔workspace link `jr2 ls` groups by (ADR-0009/0012) — readable without the host.
+        labels: { "jr2.dev/run": req.runId, "jr2.dev/workflow": req.workflow },
       },
       spec: {
         // The Sandbox Image, unmodified (ADR-0037) — the user's tools, its own USER and HOME, and
-        // j2's runtime arriving beside it on a volume. This container is both the Harness and the
+        // jr2's runtime arriving beside it on a volume. This container is both the Harness and the
         // human's `exec` shell.
         image: seat.image,
-        // The one thing j2 takes from the image: its command. A container has exactly one, and it
+        // The one thing jr2 takes from the image: its command. A container has exactly one, and it
         // must be the Harness's — a pod whose main process is the user's entrypoint keeps
         // "Running" through a Harness death, which makes the operator's Ready probe a lie.
         command: HARNESS_COMMAND,
-        // Hardened, and the ONLY place j2 ever names a uid: ADR-0037's fallback for an image that
+        // Hardened, and the ONLY place jr2 ever names a uid: ADR-0037's fallback for an image that
         // declared none. Stating the whole context here rather than leaving it to the operator's
         // default is what makes that possible — the operator hardens only what says nothing.
         securityContext: seat.securityContext,
@@ -567,9 +567,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // the attach stamps on each repo root (attachScript below), without which fsGroup gives
         // group-READ, which is the trap. Both are inert when the uids match.
         fsGroup: req.workGroup ?? DEFAULT_WORK_GROUP,
-        // Ordered, and before any container starts: populate `/opt/j2`, then prove the image on it.
+        // Ordered, and before any container starts: populate `/opt/jr2`, then prove the image on it.
         initContainers: initContainersFor(refs, seat),
-        // Never empty any more: J2_ADAPTER_URL is unconditional, so the "omit an empty env" branch
+        // Never empty any more: JR2_ADAPTER_URL is unconditional, so the "omit an empty env" branch
         // this used to carry was unreachable. The seat's own vars (the fallback `HOME`) come
         // FIRST, so the instance's `harness.env` can still override them the way it overrides
         // anything the image set.
@@ -587,13 +587,13 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         repos: repos.map(({ key, url }) => ({ key, url })),
         volumes: [
           // The worktree root is a POD volume, not a directory baked into the image. Two reasons,
-          // both load-bearing: every j2-owned seat runs as an unprivileged uid, which cannot mkdir
+          // both load-bearing: every jr2-owned seat runs as an unprivileged uid, which cannot mkdir
           // under `/` — so an image-owned `/work` would make every attach fail — and `/work` is
           // the one thing all three containers share (ADR-0005), so human and Agent see identical
           // files. An emptyDir lands group-writable under the pod's fsGroup, so it is writable
           // whatever uid the Sandbox Image runs as: `/work` unclaimed is the only image contract.
           { name: "work", emptyDir: {} },
-          // j2's runtime (ADR-0037). An emptyDir, so it lives and dies with the pod and carries
+          // jr2's runtime (ADR-0037). An emptyDir, so it lives and dies with the pod and carries
           // the version the pod STARTED with — a live Sandbox keeps its runtime across a kit
           // update, the same create-if-absent stance ADR-0038 takes for images.
           { name: "runtime", emptyDir: {} },
@@ -606,7 +606,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // caches are not listed: the operator mounts each `repo-<key>` into this container itself.
         volumeMounts: [
           { name: "work", mountPath: workRoot },
-          // Read-only: nothing writes under `/opt/j2` at runtime, and the Agent has code execution
+          // Read-only: nothing writes under `/opt/jr2` at runtime, and the Agent has code execution
           // in this container — leaving its own runtime writable would let a turn edit it.
           { name: "runtime", mountPath: RUNTIME_MOUNT, readOnly: true },
           ...seat.homeMount,
@@ -681,30 +681,30 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     if (!orchestratorUrl()) {
       throw new Error(
         "kubectlSandbox: the Adapter has no route to the Orchestrator (no orchestratorUrl — deployed " +
-          "instances derive Service DNS from J2_NAMESPACE). An Agent with no Adapter cannot drive its " +
+          "instances derive Service DNS from JR2_NAMESPACE). An Agent with no Adapter cannot drive its " +
           "Machine at all (ADR-0013).",
       );
     }
     const secret = {
       apiVersion: "v1",
       kind: "Secret",
-      metadata: { name: secretName(name), namespace: ns, labels: { "j2.dev/sandbox": name } },
+      metadata: { name: secretName(name), namespace: ns, labels: { "jr2.dev/sandbox": name } },
       type: "Opaque",
-      stringData: { J2_SANDBOX_TOKEN: sandboxToken(opts.signingKey, name) },
+      stringData: { JR2_SANDBOX_TOKEN: sandboxToken(opts.signingKey, name) },
     };
     await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(secret) });
   };
 
   /**
    * Make the Secret a child of the Sandbox CR, so Kubernetes reaps it whenever the CR goes — including
-   * the paths no j2 code observes (the operator's idle-timeout GC, a `kubectl delete sandbox` by hand).
+   * the paths no jr2 code observes (the operator's idle-timeout GC, a `kubectl delete sandbox` by hand).
    * Needs the CR's uid, so it can only happen after the apply; a failure here leaks a Secret, never a
    * pod, so it is not worth failing the provision over.
    */
   const ownSecret = async (name: string, uid: string | undefined): Promise<void> => {
     if (!uid) return;
     const ownerRef = [
-      { apiVersion: "core.j2.dev/v1alpha1", kind: "Sandbox", name, uid, controller: true, blockOwnerDeletion: false },
+      { apiVersion: "core.jr2.dev/v1alpha1", kind: "Sandbox", name, uid, controller: true, blockOwnerDeletion: false },
     ];
     await exec([
       "patch",
@@ -725,7 +725,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * code the instance typechecked and deployed. Two slots spelling one repository collapse to one
    * CR entry (first spelling wins) — one cache, however many slots borrow from it — and the
    * resource is BOUND when any of those slots is the Machine's: a per-run slot alone leaves it on
-   * `j2 gc`'s clock.
+   * `jr2 gc`'s clock.
    */
   const fencedRepos = (name: string, repos: ProvisionedRepo[]): FencedRepo[] => {
     const byKey = new Map<string, FencedRepo>();
@@ -736,7 +736,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         throw new Error(
           `Sandbox "${name}" refuses the per-run repo ${repo.url} for slot "${repo.slot}": no git.credentials ` +
             `entry matches "${identity}" (entries: ${entries}). A per-run url can spend the cluster's credential ` +
-            "against any host, so j2.config.ts must admit it by prefix (ADR-0051).",
+            "against any host, so jr2.config.ts must admit it by prefix (ADR-0051).",
         );
       }
       const seen = byKey.get(key);
@@ -771,7 +771,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       }
       // Read PER PROVISION, and next (ADR-0038). Not hoisted into `kubectlSandbox()`: a boot-time
       // read would freeze the map for the process lifetime, which is precisely the Deployment-env
-      // behavior the ConfigMap mount was chosen over — the point of the mount is that a `j2 up`
+      // behavior the ConfigMap mount was chosen over — the point of the mount is that a `jr2 up`
       // reaches future Sandboxes without rolling the Orchestrator. Reading before the Secret apply
       // also means an unknown image name costs nothing: no Secret, no CR, nothing to clean up.
       const refs = await readImageRefs(imagesPath);
@@ -811,7 +811,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         }
         // Terminal for THIS provision: the cache agent tried to clone onto the pod's node and git
         // refused. The operator's message carries the key, the node, and git's own words; the
-        // agent keeps retrying on its own, so `j2 status` will show the same error until it is fixed.
+        // agent keeps retrying on its own, so `jr2 status` will show the same error until it is fixed.
         const ready = conditionOf(status, "Ready");
         if (status?.phase !== "Ready" && ready?.reason === REPO_CLONE_FAILED) {
           throw new Error(repoCloneError(req.name, ready.message ?? ready.reason));
@@ -842,7 +842,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
           if (fault) throw new Error(rootImageError(req.name, fault));
           // Otherwise name where to look, because the next most likely cause is an image that
           // misses ADR-0037's floor, and that failure is an INIT container's — invisible in the
-          // phase alone. A musl or git-less base dies INSIDE the preflight, on j2's own message.
+          // phase alone. A musl or git-less base dies INSIDE the preflight, on jr2's own message.
           // The operator's own verdict rides along when it has one: a Repo still pending on the
           // node (a slow clone) reads very differently from a preflight death.
           throw new Error(
@@ -868,7 +868,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       });
       // `-c harness` is unchanged and still correct after ADR-0037: the primary container runs the
       // Sandbox Image, so `git` here is the git the user chose. Never `-c user` — that seat is
-      // zero-contract, may hold no git at all, and j2 commands nothing in it (ADR-0005).
+      // zero-contract, may hold no git at all, and jr2 commands nothing in it (ADR-0005).
       await exec(["exec", `pod/${req.name}`, ...base, "-c", "harness", "--", "sh", "-ec", script]);
       const stale = staleSlots(req.repos, staleByName.get(req.name));
       return { repos, ...(review ? { review } : {}), ...(stale ? { stale } : {}) };
@@ -886,7 +886,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
           "sandbox",
           name,
           ...base,
-          `j2.dev/keepalive=${new Date().toISOString()}`,
+          `jr2.dev/keepalive=${new Date().toISOString()}`,
           "--overwrite",
           "-o",
           "json",
@@ -933,7 +933,7 @@ const REPO_HELD: ReadonlySet<string> = new Set(["RepoMissing", "RepoPending"]);
 /**
  * The Repo budget ran out with the operator still holding the Sandbox. The pod is up, so the
  * preflight is not the question; the verdict names the Repo and the node, and the port adds
- * what the operator cannot say: the agent is still working, `j2 status` shows it per node, and
+ * what the operator cannot say: the agent is still working, `jr2 status` shows it per node, and
  * the budget is the port's, not the clone's.
  */
 function repoWaitError(name: string, budgetMs: number, ready: Condition | undefined): string {
@@ -941,21 +941,21 @@ function repoWaitError(name: string, budgetMs: number, ready: Condition | undefi
   return (
     `Sandbox "${name}" waited ${Math.round(budgetMs / 60_000)}m for its Repos and the operator still holds it — ` +
     `${verdict} (ADR-0051). The node's cache agent clones a cold node once and fetches before every attach; ` +
-    "`j2 status` reports each Repo per node. Start the run again once the cache is present, or raise " +
+    "`jr2 status` reports each Repo per node. Start the run again once the cache is present, or raise " +
     "the port's `repoTimeoutMs` for a repository whose clone outlasts it."
   );
 }
 
 /**
  * The fix beside the symptom. The operator's message carries the Repo, the node, and git's own
- * words; what it cannot say is that the cache agent keeps retrying, that `j2 status` reports the
+ * words; what it cannot say is that the cache agent keeps retrying, that `jr2 status` reports the
  * same line per node, or where a credential is configured (ADR-0047/0051).
  */
 function repoCloneError(name: string, verdict: string): string {
   return (
     `Sandbox "${name}" cannot start: ${verdict} (ADR-0051). The node's cache agent keeps retrying on its own — ` +
     "fix the url or its git.credentials entry (an ssh url needs its deploy key registered with the host, " +
-    "ADR-0047), then start the run again; `j2 status` reports the same error per node until it clears."
+    "ADR-0047), then start the run again; `jr2 status` reports the same error per node until it clears."
   );
 }
 
@@ -1001,7 +1001,7 @@ export function attachScript(
   // The cache is written by the node's cache agent and read here as the Harness's unprivileged
   // uid (ADR-0001/0004/0051), so git's dubious-ownership guard would refuse the clone source.
   // safe.directory is only honored from global/system config (never `-c`), and inside the pod
-  // every path is j2-owned — trusting them all is the honest scope.
+  // every path is jr2-owned — trusting them all is the honest scope.
   // The attach runs via exec, not as a child of the Harness process, so it does NOT inherit the
   // Harness's `umask 002` — without its own, the repo roots it mkdirs land 755 and the work group
   // could never create a file at a tree's top. INSIDE the trees the umask stops mattering: the
@@ -1021,7 +1021,7 @@ export function attachScript(
       // the stamp must exist while the tree is still empty. From here down, both seats' files land
       // group-writable with zero umask lines in any image (ADR-0005); on a filesystem without
       // POSIX ACLs the helper warns and exits 0, degrading to the umask sharing above.
-      `/opt/j2/bin/work-acl ${sq(slotDir)}`,
+      `/opt/jr2/bin/work-acl ${sq(slotDir)}`,
       `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared ${sq(cache)} ${sq(dflt)}`,
       // No ref → the Repo's own default branch: this clone's `origin/HEAD` tracks the cache's
       // HEAD, which the cache agent's clone pointed at the remote's default (ADR-0004).
@@ -1047,7 +1047,7 @@ export function attachScript(
       // `user` is the policy ADR-0053 argues for, said out loud: a fetch A PERSON OR THE AGENT
       // runs is allowed, and a recursive one git makes for itself (a submodule url, anything with
       // `GIT_PROTOCOL_FROM_USER=0`) is still refused — so a repository cannot smuggle a program
-      // into this pod through a url j2 did not write. Repo-level, on the pod-local clone: the
+      // into this pod through a url jr2 did not write. Repo-level, on the pod-local clone: the
       // linked worktrees share this config, so the branch worktree and the review worktree inherit
       // it with no env and no `--global`.
       `git -C ${sq(dflt)} config protocol.ext.allow user`,
@@ -1080,7 +1080,7 @@ export function attachScript(
  * `origin`'s fetch url for one Repo (ADR-0053): the `ext::` transport, the program's absolute path
  * on the runtime volume, the service git asks for, and the Repo's identity. The Adapter's address
  * rides as a third argument only when the composition moved the Adapter off its default port —
- * the program reads `$J2_ADAPTER_URL` and then falls back to that same address, so spelling it out
+ * the program reads `$JR2_ADAPTER_URL` and then falls back to that same address, so spelling it out
  * unconditionally would put a number in every `git remote -v` that says nothing.
  */
 function fetchUrl(identity: string, adapterUrl?: string): string {
@@ -1095,7 +1095,7 @@ function fetchUrl(identity: string, adapterUrl?: string): string {
  * (`dev.azure.com/org/My%20Project/_git/repo`) and an scp-style url may hold a literal space. Git
  * spells those two `%%` and `% `, and the program receives the identity back exactly as written —
  * which it must, because the Orchestrator derives the cache key from that same string. The
- * placeholder j2 writes itself (`%S`) is not escaped: it is git's, not an argument's.
+ * placeholder jr2 writes itself (`%S`) is not escaped: it is git's, not an argument's.
  */
 function extArg(value: string): string {
   return value.replace(/%/g, "%%").replace(/ /g, "% ");

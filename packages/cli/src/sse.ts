@@ -4,7 +4,7 @@
 // more `data:` lines form the payload. We don't need ids, retry, or comments.
 //
 // Cancelling the reader in `finally` means a consumer that `break`s out of `for await` closes the
-// underlying HTTP connection — that is how `j2 run` / `j2 logs` detach without killing the run.
+// underlying HTTP connection — that is how `jr2 run` / `jr2 logs` detach without killing the run.
 
 export type SSEFrame = { event: string; data: string };
 

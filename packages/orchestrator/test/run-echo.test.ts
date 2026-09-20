@@ -9,8 +9,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { emit } from "xstate";
 import type { EchoEvent } from "../src/wire.ts";
-import { doneEvent, requestReviewEvent } from "@j2/agent-protocol";
-import { j2Setup } from "../src/setup.ts";
+import { doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
+import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import type { AgentRunInput } from "../src/actor.ts";
 import { workspace, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
@@ -50,7 +50,7 @@ class EchoSandbox implements SandboxPort {
  * turns apart by their explicit iids.
  */
 function echoDef(client: MockFlueClient): WorkflowDef {
-  const body = j2Setup({
+  const body = jr2Setup({
     types: {} as {
       context: { instanceId: string; tag: string };
       input: { instanceId: string; tag?: string; workspace: { branch: string } };

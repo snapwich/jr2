@@ -1,12 +1,12 @@
-// The shared HTTP client every `j2` verb sits on (ADR-0009). One thin class over the orchestrator's
-// REST + SSE surface (`createApp`) — the SAME wire the deployed orchestrator serves, so `j2` against
+// The shared HTTP client every `jr2` verb sits on (ADR-0009). One thin class over the orchestrator's
+// REST + SSE surface (`createApp`) — the SAME wire the deployed orchestrator serves, so `jr2` against
 // the e2e tier's host-booted fixture and against a cluster are one code path. It carries no folder/CLI concerns (those
 // live in `instance.ts`); it is just "talk to a base URL".
 //
 // `fetchImpl` is injectable so tests drive it with a hono `app.request` (no socket) the same way the
 // orchestrator's own http tests do; in production it defaults to the global `fetch`.
 
-import type { MachineDoc, RepoStatus } from "@j2/orchestrator";
+import type { MachineDoc, RepoStatus } from "@jr2/orchestrator";
 import { parseSSE } from "./sse.ts";
 
 /** A run's current observable state — mirrors the orchestrator's `RunStatus` (run-host.ts). */
@@ -53,21 +53,21 @@ export type InstanceIdentity = { version?: string; hash?: string };
  * time, while the transport (a port-forward that the command's `finally` is about to close) is
  * still open.
  */
-export class J2HttpError extends Error {
+export class JR2HttpError extends Error {
   readonly status: number;
   readonly path: string;
   readonly instance?: InstanceIdentity;
 
   constructor(message: string, status: number, path: string, instance?: InstanceIdentity) {
     super(message);
-    this.name = "J2HttpError";
+    this.name = "JR2HttpError";
     this.status = status;
     this.path = path;
     this.instance = instance;
   }
 }
 
-export class J2Client {
+export class JR2Client {
   readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
   /** The Instance token (ADR-0013). The run and gate surfaces are authenticated; without it every
@@ -115,7 +115,7 @@ export class J2Client {
   /** `GET /repos` — whether the instance has a data plane, and every Repo resource as the cluster
    * reports it (ADR-0048/0051): per node, present or not, synced or not, with git's own error. The
    * cache agent keeps retrying on its own, so this is a snapshot of a moving thing. What
-   * `j2 status` reports when it is given no run. */
+   * `jr2 status` reports when it is given no run. */
   async repos(): Promise<{ dataPlane: boolean; repos: RepoStatus[] }> {
     const res = await this.fetchImpl(`${this.baseUrl}/repos`, { headers: this.headers() });
     return (await this.json(res, "/repos")) as { dataPlane: boolean; repos: RepoStatus[] };
@@ -171,7 +171,7 @@ export class J2Client {
       headers: this.headers({ accept: "text/event-stream" }),
     });
     if (res.status === 404) {
-      throw new J2HttpError(`no run "${runId}"`, 404, "/runs/:runId/events", await this.identify());
+      throw new JR2HttpError(`no run "${runId}"`, 404, "/runs/:runId/events", await this.identify());
     }
     if (!res.body) return;
     for await (const frame of parseSSE(res.body)) {
@@ -183,7 +183,7 @@ export class J2Client {
         yield { kind: "status", status: JSON.parse(frame.data) as RunStatus };
       }
       // Any other frame (a Turn marker — ADR-0023 — or a kind this CLI predates) is skipped, not
-      // misread as a status: `j2 logs -f` decides "settled" off `status.status`, and a marker
+      // misread as a status: `jr2 logs -f` decides "settled" off `status.status`, and a marker
       // parsed as a status would end the follow mid-run.
     }
   }
@@ -204,7 +204,7 @@ export class J2Client {
     }
   }
 
-  /** Parse a JSON response, turning a non-2xx `{ error }` body into a thrown `J2HttpError`. */
+  /** Parse a JSON response, turning a non-2xx `{ error }` body into a thrown `JR2HttpError`. */
   private async json(res: Response, path: string): Promise<unknown> {
     const text = await res.text();
     const body = text ? JSON.parse(text) : undefined;
@@ -212,7 +212,7 @@ export class J2Client {
       const message = (body as { error?: string } | undefined)?.error ?? `HTTP ${res.status}`;
       // Probe HERE, not at the catch site: by the time the error reaches `cli.ts` the command's
       // `finally` has closed the port-forward, and there is nothing left to ask.
-      throw new J2HttpError(message, res.status, path, await this.identify());
+      throw new JR2HttpError(message, res.status, path, await this.identify());
     }
     return body;
   }

@@ -33,7 +33,7 @@ import { workingToolsFor } from "./working-tools.ts";
 export type TurnDeps = {
   /** The model registry (`provider.ts` — pi's catalog + the instance's custom provider). */
   models: Models;
-  /** The Adapter on `localhost` — `$J2_ADAPTER_URL`; the Menu lives at `/mcp/<iid>` (ADR-0013). */
+  /** The Adapter on `localhost` — `$JR2_ADAPTER_URL`; the Menu lives at `/mcp/<iid>` (ADR-0013). */
   adapterUrl: string;
   agentName: string;
   instanceId: string;
@@ -43,7 +43,7 @@ export type TurnDeps = {
   maxRetries?: number;
   /** Where the conversation prints (ADR-0023). Default `process.stdout` (the pod log). */
   printerOut?: PrinterOut;
-  /** ADR-0035's runaway bounds — j2-owned defaulted knobs (ADR-0016), no author surface. These
+  /** ADR-0035's runaway bounds — jr2-owned defaulted knobs (ADR-0016), no author surface. These
    * seams exist for the conformance suite alone, which cannot afford 128 provider rounds. */
   stepBudget?: number;
   identicalCallLimit?: number;
@@ -80,7 +80,7 @@ type Assembled = {
     thinkingLevel: PiThinkingLevel;
     /** The run's abort signal. pi's loop hands `transformContext` a signal but `AgentHarness`
      * drops it before the hook sees it, so a summary would outlive the sweep that cancelled its
-     * turn (ADR-0024) unless j2 carries the signal itself. */
+     * turn (ADR-0024) unless jr2 carries the signal itself. */
     signal: AbortSignal;
   };
 };
@@ -145,7 +145,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         const entry = historyMessage(event.message);
         if (entry) deps.appendMessage(entry);
       });
-      // The `context` hook, which j2 owns twice over — ONE handler, because pi's `emitHook` hands
+      // The `context` hook, which jr2 owns twice over — ONE handler, because pi's `emitHook` hands
       // every handler the same untransformed event and keeps only the LAST non-undefined result,
       // so a second registration would silently discard the first's transform rather than chain
       // onto it.

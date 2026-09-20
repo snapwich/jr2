@@ -1,8 +1,8 @@
-// The read side of the image map (ADR-0037/0038/0049): the shape `j2 up` writes and every provision
+// The read side of the image map (ADR-0037/0038/0049): the shape `jr2 up` writes and every provision
 // consults. Three claims worth pinning here rather than at the port — the NESTING (a user image may
 // legitimately be called "harness"), the refusal to fall back onto a published tag when the map is
 // missing (ADR-0027/0038's "no eject hatch" made mechanical rather than merely stated), and the
-// CONTENT DIGEST that lets the host at `j2 up` and the baked Orchestrator name the same context
+// CONTENT DIGEST that lets the host at `jr2 up` and the baked Orchestrator name the same context
 // without a path table.
 
 import { test } from "node:test";
@@ -21,15 +21,15 @@ import {
 } from "../src/images.ts";
 
 async function mkMap(body: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "j2-imgmap-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-imgmap-"));
   const path = join(dir, "images.json");
   await writeFile(path, body);
   return path;
 }
 
 const refs = (over: Partial<ImageRefs> = {}): ImageRefs => ({
-  harness: "j2-harness:h00",
-  adapter: "j2-adapter:a00",
+  harness: "jr2-harness:h00",
+  adapter: "jr2-adapter:a00",
   sandbox: {},
   ...over,
 });
@@ -40,25 +40,25 @@ test("the map is nested, so a user image named `harness` cannot collide with the
   // kit ref, which is why user images live under `sandbox`.
   const path = await mkMap(
     JSON.stringify({
-      harness: "j2-harness:h00",
-      adapter: "j2-adapter:a00",
-      sandbox: { harness: "j2-sandbox-inst-harness:u00", default: "j2-sandbox-inst-default:d00" },
+      harness: "jr2-harness:h00",
+      adapter: "jr2-adapter:a00",
+      sandbox: { harness: "jr2-sandbox-inst-harness:u00", default: "jr2-sandbox-inst-default:d00" },
     }),
   );
   const map = await readImageRefs(path);
-  assert.equal(map.harness, "j2-harness:h00", "the kit's stock Harness is untouched");
-  assert.equal((await resolveSandboxImage(map)).ref, "j2-sandbox-inst-default:d00", "`default` is the user's leg");
+  assert.equal(map.harness, "jr2-harness:h00", "the kit's stock Harness is untouched");
+  assert.equal((await resolveSandboxImage(map)).ref, "jr2-sandbox-inst-default:d00", "`default` is the user's leg");
 });
 
-test("readImageRefs: an absent map names the path and `j2 up`, and never falls back to a tag", async () => {
+test("readImageRefs: an absent map names the path and `jr2 up`, and never falls back to a tag", async () => {
   await assert.rejects(
-    () => readImageRefs("/nope/j2/images.json"),
+    () => readImageRefs("/nope/jr2/images.json"),
     (err: Error) => {
-      assert.match(err.message, /\/nope\/j2\/images\.json/);
-      assert.match(err.message, /j2 up/);
-      // A `j2-harness:<kitversion>` fallback would name a tag a kit checkout never built — and
+      assert.match(err.message, /\/nope\/jr2\/images\.json/);
+      assert.match(err.message, /jr2 up/);
+      // A `jr2-harness:<kitversion>` fallback would name a tag a kit checkout never built — and
       // would be exactly the escape hatch ADR-0027/0038 refuse.
-      assert.doesNotMatch(err.message, /j2-harness:/);
+      assert.doesNotMatch(err.message, /jr2-harness:/);
       return true;
     },
   );
@@ -79,14 +79,14 @@ test("readImageRefs: unparseable or malformed content is loud, never a partial m
 });
 
 test("readImageRefs: a map with no Sandbox Images reads as an empty set, not an error", async () => {
-  // The scaffolded, workspace-less instance: `j2 up` builds no Sandbox Image when `repos` is empty.
+  // The scaffolded, workspace-less instance: `jr2 up` builds no Sandbox Image when `repos` is empty.
   const map = await readImageRefs(await mkMap(JSON.stringify({ harness: "h", adapter: "a" })));
   assert.deepEqual(map, { harness: "h", adapter: "a", sandbox: {}, sandboxUser: {} });
 });
 
 /** A build context on disk: a directory whose FULL content is the image's address. */
 async function mkContext(files: Record<string, string>): Promise<{ dir: string; url: string }> {
-  const dir = await mkdtemp(join(tmpdir(), "j2-ctx-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-ctx-"));
   for (const [rel, body] of Object.entries(files)) {
     await mkdir(join(dir, rel, ".."), { recursive: true });
     await writeFile(join(dir, rel), body);
@@ -105,7 +105,7 @@ test("the two origins are told apart by SHAPE alone: a `file:` URL is a context,
 });
 
 test("imageContextDigest: the whole directory, no exclusions — and the SAME digest from another path", async () => {
-  // The claim ADR-0049 rides on: the host at `j2 up` and the baked Orchestrator hash the same tree
+  // The claim ADR-0049 rides on: the host at `jr2 up` and the baked Orchestrator hash the same tree
   // at two different absolute paths and must agree, or the digest key finds nothing.
   const files = { Dockerfile: "FROM node:24-slim\n", "dist/b.txt": "b", "node_modules/x/i.js": "x" };
   const a = await mkContext(files);
@@ -188,12 +188,12 @@ test("resolveSandboxImage walks ADR-0037's chain: the wrapper's context → imag
   const full = refs({ sandbox: { default: "d", [key]: "g" } });
   assert.equal((await resolveSandboxImage(full, shipped.url)).ref, "g", "the context the Machine carries");
   assert.equal((await resolveSandboxImage(full)).ref, "d", "no image named → the Instance's images/default");
-  assert.equal((await resolveSandboxImage(refs())).ref, "j2-harness:h00", "no images/default → stock");
+  assert.equal((await resolveSandboxImage(refs())).ref, "jr2-harness:h00", "no images/default → stock");
   // The last leg reads the MAP: in a kit checkout the Harness is content-addressed (ADR-0038).
-  assert.equal((await resolveSandboxImage(refs({ harness: "j2-harness:abc123" }))).ref, "j2-harness:abc123");
+  assert.equal((await resolveSandboxImage(refs({ harness: "jr2-harness:abc123" }))).ref, "jr2-harness:abc123");
 });
 
-test("a context the last converge did not build fails at provision, naming `j2 up`", async () => {
+test("a context the last converge did not build fails at provision, naming `jr2 up`", async () => {
   // The stale-deployment case: the Orchestrator's own node_modules holds a context whose digest is
   // in no map. A converge-time check cannot exist for this (the map IS what a converge writes), so
   // provision is the first honest moment — before a Secret or a CR is applied.
@@ -203,7 +203,7 @@ test("a context the last converge did not build fails at provision, naming `j2 u
     (err: Error) => {
       assert.match(err.message, /no Sandbox Image for file:/);
       assert.match(err.message, /context digest [0-9a-f]{12}/);
-      assert.match(err.message, /j2 up/, "names the fix");
+      assert.match(err.message, /jr2 up/, "names the fix");
       return true;
     },
   );
@@ -212,10 +212,10 @@ test("a context the last converge did not build fails at provision, naming `j2 u
 test("a context the Orchestrator's bundle does not hold names the path, not a cluster fault", async () => {
   // A packaging bug, not a converge one: a `file:` image must travel WITH its module.
   await assert.rejects(
-    () => resolveSandboxImage(refs(), pathToFileURL(join(tmpdir(), "j2-no-such-context")).href),
+    () => resolveSandboxImage(refs(), pathToFileURL(join(tmpdir(), "jr2-no-such-context")).href),
     (err: Error) => {
       assert.match(err.message, /cannot be read/);
-      assert.match(err.message, /j2-no-such-context/);
+      assert.match(err.message, /jr2-no-such-context/);
       assert.match(err.message, /node_modules/, "names where it must have travelled to");
       return true;
     },
@@ -223,7 +223,7 @@ test("a context the Orchestrator's bundle does not hold names the path, not a cl
 });
 
 test("a registry ref passes through VERBATIM — deployed, never built, never in the map", async () => {
-  // ADR-0037's second origin: j2 never built it, so there is no ref to look up and nothing to say
+  // ADR-0037's second origin: jr2 never built it, so there is no ref to look up and nothing to say
   // about its tag discipline. It is also why an empty map is no obstacle to a ref.
   const map = refs({ sandbox: { default: "d" } });
   assert.equal(
@@ -237,7 +237,7 @@ test("a registry ref passes through VERBATIM — deployed, never built, never in
 test("resolveUserImage: the SAME resolution as the Sandbox Image, and no fallback chain", async () => {
   // ADR-0005 gives the User Container the same resolution deliberately — one string, two origins.
   // What it does NOT get is a default: absence means the pod has no third container, so there is
-  // nothing for a default to be, and a j2-chosen one would be an opinion in the one seat that
+  // nothing for a default to be, and a jr2-chosen one would be an opinion in the one seat that
   // promises none. (Absence is unstatable here: the option is simply not passed.)
   const sshd = await mkContext({ Dockerfile: "FROM debian:12\n" });
   const key = await imageContextDigest(sshd.dir);

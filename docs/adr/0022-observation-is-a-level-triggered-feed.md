@@ -15,7 +15,7 @@ nothing.
 
 **Nothing wrote when nothing happened.** Every feed wrote only on transitions. A run parked on a gate for hours wrote
 zero bytes, so any idle intermediary dropped the connection. This is the same gap that surfaced as `error: terminated`
-on an attached `j2 run` — undici's message for a `fetch()` body that died mid-read, which reads like a run failure and
+on an attached `jr2 run` — undici's message for a `fetch()` body that died mid-read, which reads like a run failure and
 was not one. The run was fine the whole time.
 
 The common cause is that observation had been built as a **feature of a page** rather than as a surface. A page feature
@@ -32,10 +32,10 @@ can get away with fetching once, because a person can press a button; an API can
   opening `runs` frame carries the entire live set. A reconnecting client therefore converges with **no replay buffer,
   no `Last-Event-ID`, and no per-client state on the server**; re-delivery of any frame is idempotent by construction,
   so there is no gap to detect and no cursor to resume from. Same reconciliation idiom as the Lease (ADR-0021) and
-  `j2 up` (ADR-0019): say the whole truth, repeatedly, and let the reader converge.
+  `jr2 up` (ADR-0019): say the whole truth, repeatedly, and let the reader converge.
 - **Two granularities, one vocabulary.** The per-run feed stays — tracking exactly one run is a legitimate thing to
-  want, and it is what `j2 run` and `j2 logs -f` already do. Every run-scoped frame carries `runId` even where the route
-  makes it redundant, so one parser serves both.
+  want, and it is what `jr2 run` and `jr2 logs -f` already do. Every run-scoped frame carries `runId` even where the
+  route makes it redundant, so one parser serves both.
 - **`gone` is a fact, not an inference.** A run can leave the live set _without_ a terminal status: `stop()`
   deliberately leaves the stored status `"live"` so a later `restore()` picks the run back up. A client watching for
   `status === "done"` would show a stopped run as live forever, so departure is stated outright.
@@ -49,14 +49,14 @@ can get away with fetching once, because a person can press a button; an API can
 - **A settled run is the client's own memory.** A run appears in the page's `settled` list iff _this page_ watched it
   leave. After a hard reload they are gone, and that is correct rather than a defect: serving a finished run's state to
   an unauthenticated reader is a read-through, which stays behind the Instance token on `/runs/:id` (ADR-0014).
-- **`j2 visualize` is deleted.** Its job was to find an orchestrator, forward a port, and open a browser. With the page
+- **`jr2 visualize` is deleted.** Its job was to find an orchestrator, forward a port, and open a browser. With the page
   now useful on its own, that is one `kubectl port-forward` the reader already knows how to run — and the command's
   ephemeral-fallback path was quietly forwarding to a _different_ instance than the deployed one. Its one unique piece
   of value, the opaque-states warning, moves onto the page as `MachineDoc.opaqueStates`, where the person looking at the
   diagram can read it.
 - **Shutdown ends feeds explicitly.** `RunHost.close()` delivers `closed` to every listener. `server.close()` waits for
   in-flight requests and an observation feed has no end of its own, so without this a single attached watcher wedges
-  `j2 dev` shutdown indefinitely.
+  `jr2 dev` shutdown indefinitely.
 
 The new route stays _inside_ the band ADR-0014 drew: no context, no `instanceId` and no `fault` at any depth, emit type
 only, scoped to one workflow the caller can already name, and no store read-through.
@@ -71,10 +71,10 @@ only, scoped to one workflow the caller can already name, and no store read-thro
   divergence with no way to notice. A whole observation is a few hundred bytes on transitions a human is watching. We
   are nowhere near the volume that would justify buying complexity with correctness.
 - **Fold the per-run feed into the workflow feed.** One route is simpler. Rejected: a consumer tracking one run would
-  have to receive and discard every sibling's traffic, and `j2 run` — the most common consumer — is exactly that case.
+  have to receive and discard every sibling's traffic, and `jr2 run` — the most common consumer — is exactly that case.
 - **Give the page a WebSocket.** Bidirectional, and nothing here needs a back-channel; control is on the guarded
   surface, deliberately. SSE reconnects on its own, survives proxies, and needs no client library.
-- **Keep `j2 visualize`, deprecated.** Rejected as the worse of the two: a command whose whole remaining value is
+- **Keep `jr2 visualize`, deprecated.** Rejected as the worse of the two: a command whose whole remaining value is
   opening a browser, still carrying the port-forward path that could attach to the wrong instance.
 
 ## Consequences

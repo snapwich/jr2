@@ -6,9 +6,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMachine, enqueueActions, fromPromise, setup, spawnChild, type AnyStateMachine } from "xstate";
 import { z } from "zod";
-import { defineEvent } from "@j2/agent-protocol";
+import { defineEvent } from "@jr2/agent-protocol";
 import { fingerprintOf } from "../src/fingerprint.ts";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { opaqueStates, serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
 
 /** A fixture exercising every serialization path. */
@@ -221,7 +221,7 @@ test("a top-level spawnChild is not opaque — the flag marks a blind spot, not 
 });
 
 test("an inline invoked machine nests inside it, keyed by xstate's generated src", () => {
-  // An AUTHOR may still write a machine object straight onto an `invoke.src`; none of j2's own
+  // An AUTHOR may still write a machine object straight onto an `invoke.src`; none of jr2's own
   // wrappers do since ADR-0049 (see the `workspace()` join-key test below).
   const running = findState(wrapperDoc().root, "wrapper.running");
   assert.equal(running?.children.length, 1, "the promise actor is not a child machine");
@@ -400,14 +400,14 @@ test("drift in a CHILD machine is drift — most of a workflow lives down there"
 // Machines' identically-named, differently-shaped events.
 
 test("each Machine node carries its OWN vocabulary; nothing is flattened to the root", () => {
-  const nested = j2Setup({
+  const nested = jr2Setup({
     events: [defineEvent({ name: "approve", input: z.object({ score: z.number() }) })],
   }).createMachine({
     id: "nested",
     initial: "waiting",
     states: { waiting: { on: { approve: "done" } }, done: { type: "final" } },
   });
-  const top = j2Setup({
+  const top = jr2Setup({
     events: [defineEvent({ name: "approve", audience: "external", input: z.object({ note: z.string() }) })],
     actors: { nested },
   }).createMachine({
@@ -434,7 +434,7 @@ test("each Machine node carries its OWN vocabulary; nothing is flattened to the 
   assert.deepEqual((child.events[0]?.input as { required?: string[] }).required, ["score"]);
 });
 
-test("a machine not built by j2Setup declares no events", () => {
+test("a machine not built by jr2Setup declares no events", () => {
   assert.deepEqual(parentDoc.events, []);
   assert.deepEqual(wrapperDoc().events, []);
 });

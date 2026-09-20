@@ -17,7 +17,7 @@
 
 import type { AnyStateMachine, StateNode, TransitionDefinition } from "xstate";
 import { z } from "zod";
-import type { EventAudience } from "@j2/agent-protocol";
+import type { EventAudience } from "@jr2/agent-protocol";
 import { vocabularyOf } from "./vocabulary.ts";
 
 /** One transition of the Machine, id-addressed at both ends. */
@@ -99,7 +99,7 @@ export type MachineEventDoc = {
   name: string;
   description?: string;
   audience: EventAudience;
-  /** The def's input schema as JSON Schema — what a form or a `j2 send` prompt generates from. */
+  /** The def's input schema as JSON Schema — what a form or a `jr2 send` prompt generates from. */
   input: unknown;
 };
 
@@ -110,7 +110,7 @@ export type MachineBodyDoc = {
   root: MachineStateDoc;
   transitions: MachineTransitionDoc[];
   /** The events THIS Machine declares, and only this one (ADR-0049): a nested Machine's ride its
-   * own `MachineBodyDoc`. Empty for a Machine not built by `j2Setup`. */
+   * own `MachineBodyDoc`. Empty for a Machine not built by `jr2Setup`. */
   events: MachineEventDoc[];
 };
 

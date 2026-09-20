@@ -1,4 +1,4 @@
-apiVersion: core.j2.dev/v1alpha1
+apiVersion: core.jr2.dev/v1alpha1
 kind: Sandbox
 metadata:
   labels:

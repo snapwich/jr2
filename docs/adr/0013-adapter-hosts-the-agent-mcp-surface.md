@@ -2,26 +2,26 @@
 
 An earlier cut put the Agent's tool surface on the Orchestrator (`/mcp/:instanceId`), which meant an Agent must dial
 **into** the control plane to drive its Machine. Validating the workspace slice on kind (2026-07-12) showed that leg did
-not exist and could not be safely built as specified: nothing passed a callback URL into a Sandbox, `j2 dev` bound
+not exist and could not be safely built as specified: nothing passed a callback URL into a Sandbox, `jr2 dev` bound
 loopback, and — the real problem — an Agent that can reach the delivery API can deliver to **any** registration in its
-run, including its own human-review Gate. So the MCP server lives **in the Sandbox**: a j2-owned **Adapter** sidecar
+run, including its own human-review Gate. So the MCP server lives **in the Sandbox**: a jr2-owned **Adapter** sidecar
 serves the current turn's menu to the Agent over `localhost` and forwards its picks to the Orchestrator, which speaks no
 MCP at all and keeps one HTTP surface over the registration table it already has (ADR-0011).
 
 ## The enabling fact: the Harness connects per Submission
 
-Each Submission, the Harness connects a fresh MCP client to `$J2_ADAPTER_URL/mcp/<iid>` and lists the server's tools,
-adapting them into the turn's tool set (named `mcp__j2__<tool>`, so the server key is visible to the model — shipped
+Each Submission, the Harness connects a fresh MCP client to `$JR2_ADAPTER_URL/mcp/<iid>` and lists the server's tools,
+adapting them into the turn's tool set (named `mcp__jr2__<tool>`, so the server key is visible to the model — shipped
 instructions and the printer's prefix-stripping depend on that naming;
-[ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md) states this as explicit j2 code, never
+[ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md) states this as explicit jr2 code, never
 written by users). The Harness names the iid itself, so the Adapter never has to _learn_ which turn is live — no push
 channel, no long-poll, no `sandbox → active turn` index, no second inbound port on the pod. And because the Harness
-re-connects (and so re-lists) per Submission while a j2 menu only changes at turn boundaries, no `list_changed` push is
+re-connects (and so re-lists) per Submission while a jr2 menu only changes at turn boundaries, no `list_changed` push is
 needed either (ADR-0006).
 
 ## Decision
 
-- **The Adapter is a j2-owned container in the Sandbox pod** (ADR-0005). It hosts the MCP server the Agent's Harness
+- **The Adapter is a jr2-owned container in the Sandbox pod** (ADR-0005). It hosts the MCP server the Agent's Harness
   connects to on `localhost`, and it is the **only** thing in the pod that talks to the Orchestrator. The Agent's sole
   control-plane peer is a process it can reach but whose credential it cannot read.
 - **It is a separate container from the Harness, and that is the whole point.** The working tools give the Agent code
@@ -61,15 +61,15 @@ needed either (ADR-0006).
     registrations **whose Sandbox is this one**. Never a Gate (they are not on that surface at all), never another
     Sandbox.
   - **Instance token** — the human/CLI credential for Gates and run control. Minted into an in-cluster Secret at
-    `j2 up`; the CLI reads it over the kube API (RBAC is the gate) while port-forwarding the Service (ADR-0019).
+    `jr2 up`; the CLI reads it over the kube API (RBAC is the gate) while port-forwarding the Service (ADR-0019).
   - An agent registration records its Sandbox **ambiently**: `agentRun` resolves the enclosing `workspace()` and records
     the same deterministic name the token was minted for (ADR-0016), so forgetting to pass it is unrepresentable (the
     pre-ambient version shipped exactly that footgun: `sandbox` omitted, every tool call 403'd — fail-closed but
     silent). A run-scoped token instead of a Sandbox-scoped one would be genuinely exploitable: derivable iids plus
     readable ticket ids would let one feature's coder inject a `review_verdict` into another feature's reviewer.
 - **Reachability, narrowed to one caller.** The Orchestrator is always in-cluster (ADR-0019), so the route home is
-  simply **Service DNS**; the Sandbox CR carries it to the Adapter as env (`J2_ORCHESTRATOR_URL`). The Agent still never
-  makes this call: the Adapter does.
+  simply **Service DNS**; the Sandbox CR carries it to the Adapter as env (`JR2_ORCHESTRATOR_URL`). The Agent still
+  never makes this call: the Adapter does.
 - **Deferred tool results are reserved, not built.** ADR-0006's `deferred`/`poll` semantics stay in the model and the
   wire leaves room for them: the surface listing ships each def's `semantics` (so the Adapter can tell an awaiting tool
   from a fire-and-forget one), and an agent-surface delivery returns a **receipt with a `deliveryId`** (so an outcome is
@@ -101,12 +101,12 @@ needed either (ADR-0006).
   understanding; the Adapter is exactly that. `kubectlSandbox` injects it (plus the token Secret, minted before the CR
   so the pod never waits on it, and owner-ref'd to the CR so Kubernetes reaps it with the Sandbox).
 - **The Orchestrator carries no MCP dependency**; the Adapter (its own package + published image,
-  `j2-adapter:<kitversion>` — ADR-0019) does.
+  `jr2-adapter:<kitversion>` — ADR-0019) does.
 - **The `@kind` e2e tier owns the pod → Orchestrator leg** — the dev Harness image carries a scripted agent that
   actually calls its tool through the Adapter, so a broken leg is a red test. The mechanics tier plays `/agents/:iid/*`
   from the host, which is honestly simulating the Adapter, not an Agent.
 - **NetworkPolicy (ADR-0001's next isolation layer) is still wanted, but it is not the control.** It bounds where the
   pod may talk; only the token bounds what it may _do_.
 - **Open: authn for non-kube callers.** The Instance token rides kube RBAC for anyone with cluster creds; what an
-  ingress-exposed j2 Application uses for human/webhook callers without them (`--url` mode) is out of scope here
+  ingress-exposed jr2 Application uses for human/webhook callers without them (`--url` mode) is out of scope here
   (ADR-0014 inherits the same question).

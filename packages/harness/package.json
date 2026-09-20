@@ -1,5 +1,5 @@
 {
-  "name": "@j2/harness",
+  "name": "@jr2/harness",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,7 +18,7 @@
     "hono": "^4.12.27"
   },
   "devDependencies": {
-    "@j2/adapter": "workspace:*",
+    "@jr2/adapter": "workspace:*",
     "@types/node": "^26.0.1"
   }
 }

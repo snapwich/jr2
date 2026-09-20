@@ -129,7 +129,7 @@ test("echo: a Harness with no gate configured refuses — it never prints on fai
   const { app, lines } = echoApp({ gate: false });
   const res = await app.request("/echo", post([{ kind: "emit", event: { type: "x" } }], "instance-token"));
   assert.equal(res.status, 403);
-  assert.match(((await res.json()) as { error: string }).error, /J2_ECHO_TOKEN_SHA256/);
+  assert.match(((await res.json()) as { error: string }).error, /JR2_ECHO_TOKEN_SHA256/);
   assert.deepEqual(lines, []);
 });
 

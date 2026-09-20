@@ -32,7 +32,7 @@ import (
 // to the process environment — credentials ride here, never in `args`
 // (ADR-0051). The string is git's combined output; on failure the error's
 // text is git's own words, which the agent writes verbatim into the Repo's
-// status for `j2 status` to print.
+// status for `jr2 status` to print.
 type Git interface {
 	Run(ctx context.Context, dir string, env []string, args ...string) (string, error)
 }

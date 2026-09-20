@@ -25,12 +25,12 @@
 //
 // The walk is STRUCTURAL, and it descends by the same two mechanisms composition uses:
 //
-//   - `implementations.actors` — every slot a `setup()`/`j2Setup()` machine declares, whether or
+//   - `implementations.actors` — every slot a `setup()`/`jr2Setup()` machine declares, whether or
 //     not a state invokes it. An Agent slot is recognized by its brand (`isAgent`), a child
 //     Machine by having a state tree. That covers an imported Machine invoked as a child,
 //     `workspace()`'s `body`, and `pool()`'s `worker` — all named slots since ADR-0049.
 //   - inline invoked machines — a machine object written straight onto an `invoke.src`, which
-//     xstate rewrites to a generated key and keeps only on the raw config node. Nothing j2 owns
+//     xstate rewrites to a generated key and keeps only on the raw config node. Nothing jr2 owns
 //     arrives this way any more; the walk keeps it because an AUTHOR may still write one.
 //
 // Deliberately NOT a `provide()`-aware read: the walk runs on the registered Machine, which is the
@@ -56,7 +56,7 @@ import { repoIdentity } from "./repo-identity.ts";
 // The sentinel itself lives in open.ts, a module with nothing else in it: since ADR-0054 it marks
 // an Agent's model too, and agent.ts must read it without importing this file (the walk imports
 // agent.ts, not the other way round). Re-exported here because a Repo Slot is where a composer
-// meets it first, and `import { open } from "@j2/orchestrator"` is the only spelling anyone writes.
+// meets it first, and `import { open } from "@jr2/orchestrator"` is the only spelling anyone writes.
 export { open } from "./open.ts";
 
 /** What a Repo Slot resolves to (CONTEXT.md "Binding"): the url, and the base the branch
@@ -66,7 +66,7 @@ export type Binding = { url: string; ref?: string };
 /**
  * One Repo Slot's value: BOUND (a url, or `{ url, ref? }`), OPEN (the {@link open} sentinel —
  * someone downstream binds it), or PER-RUN (a mapper over the wrapper's door, so a run input — a
- * ticket field — decides). Bound and open are what `j2 up` can see; per-run is the run's business,
+ * ticket field — decides). Bound and open are what `jr2 up` can see; per-run is the run's business,
  * fenced at attach by `git.credentials` (ADR-0051).
  */
 export type RepoSlot<TInput = unknown> =
@@ -139,7 +139,7 @@ export function assertRepoSlot(where: string, slot: string, value: unknown): ass
  * to a concrete ref on the port's side, which is what keeps the Machine cluster-agnostic. The
  * Repos are Slots, each bound, open, or per-run.
  *
- * They are options rather than `WorkspaceSpec` fields because they are STATIC: `j2 up` must find
+ * They are options rather than `WorkspaceSpec` fields because they are STATIC: `jr2 up` must find
  * them by walking the Machine, and a per-run spec is a function of run input that no walk can
  * evaluate.
  */
@@ -155,17 +155,17 @@ export type SandboxParts = {
 
 // The stamps below are written ON `machine.config` under `Symbol.for` keys, never held in a
 // module-local WeakMap, for the reason `open` and `asMachine` give: an Instance resolves its OWN
-// `@j2/orchestrator`, and the installed CLI walks with ITS copy (ADR-0043) — a WeakMap the
+// `@jr2/orchestrator`, and the installed CLI walks with ITS copy (ADR-0043) — a WeakMap the
 // Instance's `workspace()` filled is one the CLI's `partsOf` never sees, and the walk then reports
 // a Machine that composes no Sandbox: no Sandbox Image built, no cache agent converged, and a
 // provision that parks on a mount nothing serves. `machine.config` is the key either way, because
 // a `.provide()` clone shares it (ADR-0011) and a `customize()` clone re-stamps. A symbol property
 // is invisible to `JSON.stringify` and `Object.keys`, so xstate and the fingerprint read past it.
-const SANDBOX_PARTS: unique symbol = Symbol.for("j2.sandbox.parts");
-const WRAPPER_BODY: unique symbol = Symbol.for("j2.wrapper.body");
+const SANDBOX_PARTS: unique symbol = Symbol.for("jr2.sandbox.parts");
+const WRAPPER_BODY: unique symbol = Symbol.for("jr2.wrapper.body");
 type Stamped = { [SANDBOX_PARTS]?: SandboxParts; [WRAPPER_BODY]?: string };
 
-/** Attach a wrapper's static Sandbox parts. j2-internal: `workspace()` calls it. */
+/** Attach a wrapper's static Sandbox parts. jr2-internal: `workspace()` calls it. */
 export function attachSandboxParts(machine: AnyStateMachine, parts: SandboxParts): void {
   (machine.config as Stamped)[SANDBOX_PARTS] = parts;
 }
@@ -185,10 +185,10 @@ export function composesSandbox(machine: AnyStateMachine): boolean {
   return (machine.config as Stamped)[SANDBOX_PARTS] !== undefined;
 }
 
-// The slot a j2 WRAPPER is transparent to (ADR-0049): `workspace()`'s `body`, `pool()`'s
+// The slot a jr2 WRAPPER is transparent to (ADR-0049): `workspace()`'s `body`, `pool()`'s
 // `worker`. A wrapper owns Sandbox lifecycle or Source scheduling and carries no Agents of its
 // own, so a composer who writes `customize(research, { agents: { researcher } })` means the
-// Machine inside — and never has to know that j2 wrapped it, or spell `body`.
+// Machine inside — and never has to know that jr2 wrapped it, or spell `body`.
 //
 // Recorded, not inferred: a slot named `body` is a name any author may choose, and routing a
 // customize through it because of its spelling would retune a different Machine than the
@@ -196,12 +196,12 @@ export function composesSandbox(machine: AnyStateMachine): boolean {
 // carries — on `machine.config`, so a `provide()` clone and a `customize()` retune keep it, and
 // under a `Symbol.for` key, so a second module copy reads it (see `SANDBOX_PARTS`).
 
-/** Mark this Machine a j2 wrapper over `slot`. j2-internal: `workspace()`/`pool()` call it. */
+/** Mark this Machine a jr2 wrapper over `slot`. jr2-internal: `workspace()`/`pool()` call it. */
 export function attachWrapperBody(machine: AnyStateMachine, slot: string): void {
   (machine.config as Stamped)[WRAPPER_BODY] = slot;
 }
 
-/** The slot a j2 wrapper is transparent to — undefined for every Machine an author wrote, which
+/** The slot a jr2 wrapper is transparent to — undefined for every Machine an author wrote, which
  * is where a `customize()` stops descending and starts resolving. */
 export function wrapperBodyOf(machine: AnyStateMachine): string | undefined {
   return (machine.config as Stamped)[WRAPPER_BODY];
@@ -210,7 +210,7 @@ export function wrapperBodyOf(machine: AnyStateMachine): string | undefined {
 declare const wrapperBody: unique symbol;
 
 /**
- * The TYPE half of {@link attachWrapperBody}'s stamp: a j2 wrapper's machine type SAYS which
+ * The TYPE half of {@link attachWrapperBody}'s stamp: a jr2 wrapper's machine type SAYS which
  * Machine it is transparent to, so `customize()`'s types read the same record its runtime walk
  * reads (`wrapperBodyOf`) and the compiler's answer and the runtime's are one answer.
  *
@@ -224,7 +224,7 @@ declare const wrapperBody: unique symbol;
  * machine and its overloads state this, exactly as the runtime stamp lives beside the object
  * rather than on it.
  */
-export type J2Wrapper<TBody extends AnyStateMachine> = { readonly [wrapperBody]: TBody };
+export type JR2Wrapper<TBody extends AnyStateMachine> = { readonly [wrapperBody]: TBody };
 
 declare const repoSlots: unique symbol;
 
@@ -232,14 +232,14 @@ declare const repoSlots: unique symbol;
  * The TYPE half of a wrapper's Repo Slots (ADR-0051): a `workspace()`'s machine type SAYS which
  * slots it declared, so `customize()`'s `repos` offers exactly those keys and a slot the Machine
  * never declared is a compile error — read through `pool()`'s `worker` and `workspace()`'s
- * `body` the way the image seats are. Phantom, like {@link J2Wrapper}: the property exists in the
+ * `body` the way the image seats are. Phantom, like {@link JR2Wrapper}: the property exists in the
  * type alone, and the runtime reads the same record off `sandboxPartsOf`.
  */
-export type J2Repos<TSlots extends string> = { readonly [repoSlots]: TSlots };
+export type JR2Repos<TSlots extends string> = { readonly [repoSlots]: TSlots };
 
 /**
- * The actor-slot union a j2 wrapper declares, in xstate's own `ProvidedActor` shape. `workspace()`
- * and `pool()` name it in their return types beside {@link J2Wrapper}, so the body's own slots are
+ * The actor-slot union a jr2 wrapper declares, in xstate's own `ProvidedActor` shape. `workspace()`
+ * and `pool()` name it in their return types beside {@link JR2Wrapper}, so the body's own slots are
  * readable THROUGH the wrapper and `customize()` can offer the composer the Agents of the Machine
  * inside (customize.ts) — the compile-time twin of the walk above.
  *
@@ -276,7 +276,7 @@ export type CarriedRepo = { url: string; ref?: string; identity: string; key: st
 
 /**
  * A part left OPEN on a registered Machine — a Repo Slot with no url (ADR-0051), an Agent with no
- * model (ADR-0054) — and what `j2 up` refuses, before anything is built, naming the Machine, the
+ * model (ADR-0054) — and what `jr2 up` refuses, before anything is built, naming the Machine, the
  * slot, and the `customize` line that binds it. One shape for both, because a composer fixes both
  * the same way and the walk locates both the same way.
  *
@@ -284,7 +284,7 @@ export type CarriedRepo = { url: string; ref?: string; identity: string; key: st
  * keys a `customize()` of the registered root walks to reach the `workspace()` that declares the
  * slot — `[]` when the root is that wrapper, `["review"]` for a Machine composed under `actors:
  * { review }`. It is exactly the `actors:` nesting of the fix line ({@link customizeLine}), so
- * j2's transparent wrappers (`workspace()`'s `body`, `pool()`'s `worker`) are omitted from it as
+ * jr2's transparent wrappers (`workspace()`'s `body`, `pool()`'s `worker`) are omitted from it as
  * `customize()` omits them. `undefined` when the wrapper was reached through a Machine invoked
  * INLINE (a machine object written straight onto `invoke.src`): an actor with no slot key is one
  * no `customize()` can name, so no line binds that slot — declaring it under `setup({ actors })`
@@ -360,7 +360,7 @@ export type CarriedParts = {
 };
 
 /** A machine actor, told apart from a promise/callback/observable one by having a state tree.
- * Structural on purpose: an Instance resolves its OWN `@j2/orchestrator`, so the CLI's walk and a
+ * Structural on purpose: an Instance resolves its OWN `@jr2/orchestrator`, so the CLI's walk and a
  * workflow's machines may come from two module instances and no `instanceof` can hold. */
 export function asMachine(logic: unknown): AnyStateMachine | undefined {
   return (logic as AnyStateMachine | undefined)?.root ? (logic as AnyStateMachine) : undefined;
@@ -427,12 +427,12 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     agents.push({ name, definition });
     // Reported, not withheld: the Agent is still carried (a `workspace: "none"` one still
     // converges the Instance Harness), and it is the converge's job to refuse it by name —
-    // `j2 up`'s preflight simply has no model to probe for it (ADR-0054).
+    // `jr2 up`'s preflight simply has no model to probe for it (ADR-0054).
     if (isOpenAgent(definition)) openAgents.push({ slot: name, path });
   };
 
   // Only the BUILT origin is collected: a registry ref is deployed-never-built, so there is
-  // nothing for a converge to do with it (ADR-0037/0039 — what j2 did not stamp, j2 does not
+  // nothing for a converge to do with it (ADR-0037/0039 — what jr2 did not stamp, jr2 does not
   // touch). Both image seats ride the same rule, because ADR-0005 gives the User Container the
   // same two origins and the same resolution.
   const collectImage = (url: string | undefined): void => {

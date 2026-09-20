@@ -36,11 +36,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 const (
-	ns      = "j2-test"
+	ns      = "jr2-test"
 	node    = "node-a"
 	key     = "app-0a1b2c3d"
 	repoURL = "https://github.com/acme/app.git"
@@ -495,7 +495,7 @@ func TestOwnStatusWritesDoNotWakeTheAgent(t *testing.T) {
 
 func TestProbesOncePerGenerationWhenNobodyAsks(t *testing.T) {
 	// ADR-0048/0051: before any Sandbox asks, the agent probes the remote so
-	// `j2 status` has a sync signal — once per spec generation, no clone.
+	// `jr2 status` has a sync signal — once per spec generation, no clone.
 	git := &fakeGit{}
 	a := newAgent(t, git, repo(1))
 
@@ -564,7 +564,7 @@ func TestProbeFailureIsReportedAndRetried(t *testing.T) {
 }
 
 func TestAVanishedCacheIsReportedAbsent(t *testing.T) {
-	// ADR-0051: the entry is what places Sandboxes and what `j2 status`
+	// ADR-0051: the entry is what places Sandboxes and what `jr2 status`
 	// shows. One that says present for a cache this node no longer holds (the
 	// directory removed by hand, the node re-imaged under its name) must not
 	// stand until a pod happens to land and force a clone: the probe rewrites
@@ -600,9 +600,9 @@ func TestPinFailureOnAPresentCacheIsReportedBeforeTheBackoff(t *testing.T) {
 	// present cache (a checkout another uid owns, a read-only disk) returns
 	// an error for the backoff, but the entry says present, unsynced, with
 	// git's words first — so the Sandbox waiting here goes Ready stale
-	// instead of Pending until its budget expires, and `j2 status` names the
+	// instead of Pending until its budget expires, and `jr2 status` names the
 	// cause. Nothing fetches into a cache that cannot be pinned (ADR-0004).
-	git := &fakeGit{fail: map[string]string{gitConfig: "fatal: detected dubious ownership in repository at '/var/lib/j2/j2-test/repos/app-0a1b2c3d'"}}
+	git := &fakeGit{fail: map[string]string{gitConfig: "fatal: detected dubious ownership in repository at '/var/lib/jr2/jr2-test/repos/app-0a1b2c3d'"}}
 	old := fixedNow.Add(-10 * time.Minute)
 	a := newAgent(t, git,
 		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, Attempted: corev1alpha1.RepoAttemptFetch, LastAttempt: ts(old), LastFetched: ts(old), ObservedGeneration: 1}),
@@ -981,7 +981,7 @@ func TestFetchFailureKeepsLastFetchedAndDegradesToStale(t *testing.T) {
 
 func TestCloneFailureLeavesNoCacheAndReports(t *testing.T) {
 	// ADR-0051: a half clone is never present; the error is the Repo's status
-	// for the operator's RepoCloneFailed and `j2 status`.
+	// for the operator's RepoCloneFailed and `jr2 status`.
 	git := &fakeGit{fail: map[string]string{"clone": "fatal: repository 'https://github.com/acme/app.git/' not found"}}
 	a := newAgent(t, git, repo(1), podOn("sb", node, fixedNow))
 
@@ -1151,7 +1151,7 @@ func TestAMissingSecretIsReportedWithoutTouchingGit(t *testing.T) {
 	// ADR-0047/0051: the fix is the user's; no network attempt says so faster.
 	git := &fakeGit{}
 	r := repo(1)
-	r.Spec.SecretRef = &corev1.LocalObjectReference{Name: "j2-git-ssh"}
+	r.Spec.SecretRef = &corev1.LocalObjectReference{Name: "jr2-git-ssh"}
 	a := newAgent(t, git, r, podOn("sb", node, fixedNow))
 
 	if _, err := reconcile1(t, a); err == nil {
@@ -1161,7 +1161,7 @@ func TestAMissingSecretIsReportedWithoutTouchingGit(t *testing.T) {
 		t.Fatalf("no git call may run without its credential, got %v", git.calls)
 	}
 	e := entry(t, a)
-	want := `secret "j2-git-ssh" not found — create it (ADR-0047) or fix git.credentials`
+	want := `secret "jr2-git-ssh" not found — create it (ADR-0047) or fix git.credentials`
 	if e == nil || e.Present || e.Synced || e.LastError != want {
 		t.Fatalf("expected %q in lastError, got %+v", want, e)
 	}

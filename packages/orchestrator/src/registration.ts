@@ -24,7 +24,7 @@
 // never the root's problem.
 
 import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
-import type { EventDef } from "@j2/agent-protocol";
+import type { EventDef } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
@@ -297,18 +297,18 @@ export function bindRun(system: AnyActorSystem, binding: RunBinding): void {
   bindings.set(system, binding);
 }
 
-/** The bound run's id, or undefined outside a j2 host — the SOFT read `j2Setup`'s iid minting
+/** The bound run's id, or undefined outside a jr2 host — the SOFT read `jr2Setup`'s iid minting
  * uses, so a machine stays constructible and provide()-testable with no host at all. */
 export function boundRunId(system: AnyActorSystem): string | undefined {
   return bindings.get(system)?.runId;
 }
 
-/** Actor-side: resolve the run this actor tree belongs to. Throws outside a j2 host. */
+/** Actor-side: resolve the run this actor tree belongs to. Throws outside a jr2 host. */
 export function runBindingOf(system: AnyActorSystem): RunBinding {
   const binding = bindings.get(system);
   if (!binding) {
     throw new Error(
-      "no run binding for this actor system — gate and Agent slots only run under a j2 RunHost " +
+      "no run binding for this actor system — gate and Agent slots only run under a jr2 RunHost " +
         "(unit tests: bindRun(actor.system, …) before start)",
     );
   }
@@ -331,7 +331,7 @@ export function resolveAccepts(self: AnyActorRef, accepts: readonly string[]): M
     if (!def) {
       throw new Error(
         `machine "${machine?.id ?? "(no invoking machine)"}" does not declare event "${name}" ` +
-          `(declared: ${[...vocabulary.keys()].join(", ") || "none — pass its def to j2Setup({ events })"})`,
+          `(declared: ${[...vocabulary.keys()].join(", ") || "none — pass its def to jr2Setup({ events })"})`,
       );
     }
     defs.set(name, def);

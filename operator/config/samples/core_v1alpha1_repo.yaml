@@ -1,4 +1,4 @@
-apiVersion: core.j2.dev/v1alpha1
+apiVersion: core.jr2.dev/v1alpha1
 kind: Repo
 metadata:
   labels:
@@ -13,5 +13,5 @@ spec:
   # Optional: a Secret with Flux's key names (username/password for https;
   # identity, identity.pub, known_hosts for ssh). Absent means anonymous.
   # secretRef:
-  #   name: j2-git-8a1b2c3d
+  #   name: jr2-git-8a1b2c3d
   refreshInterval: 5m

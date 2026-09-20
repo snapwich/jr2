@@ -7,8 +7,8 @@
 
 import { assign, createMachine, spawnChild } from "xstate";
 import { z } from "zod";
-import { defineEvent, doneEvent, requestReviewEvent } from "@j2/agent-protocol";
-import { j2Setup } from "../src/setup.ts";
+import { defineEvent, doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
+import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { agent } from "../src/harness-client.ts";
 import type { AgentAdmission, AgentAdmitOptions, AgentRunInput, AgentRunPort } from "../src/actor.ts";
@@ -111,8 +111,8 @@ export const coderDefinition: AgentDefinition = {
 
 /**
  * A minimal real template standing in for a coding workflow, on the example event set (ADR-0011:
- * the events are the WORKFLOW's vocabulary — `request_review`, not a j2 name), authored via
- * j2Setup (ADR-0015: vocabulary rides the machine; the mechanism events are injected into the
+ * the events are the WORKFLOW's vocabulary — `request_review`, not a jr2 name), authored via
+ * jr2Setup (ADR-0015: vocabulary rides the machine; the mechanism events are injected into the
  * union). The Agent is the `coder` SLOT the machine carries (ADR-0049); tests swap it for one
  * over a MockFlueClient via `provide` — the same slot key, a different port.
  *
@@ -120,7 +120,7 @@ export const coderDefinition: AgentDefinition = {
  * surface that BELONGS to a Sandbox (what a Sandbox token is scoped against — ADR-0013) or, by
  * omitting it, one that belongs to no pod at all (a workspace-less run against the stub Harness).
  */
-export const codingTemplate = j2Setup({
+export const codingTemplate = jr2Setup({
   types: {} as { context: Ctx; input: { instanceId: string; sandbox?: string } },
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
@@ -176,7 +176,7 @@ export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
  * the second turn's admission must queue behind the first turn's abort, and the pick that ended
  * the first turn must read `turnComplete` even though the next state re-registers that address.
  */
-export const continuedTemplate = j2Setup({
+export const continuedTemplate = jr2Setup({
   types: {} as { context: Ctx; input: { instanceId: string } },
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
@@ -239,8 +239,8 @@ type GatedCtx = { notes?: string };
 
 /** Parks in `review` holding gate "F-1"; an external `approve`/`request_changes` moves it. The
  * targets are non-final so the run STAYS LIVE after the gate closes (gate gone ≠ run gone).
- * `gate` is pre-registered by j2Setup — nothing to list (ADR-0015). */
-export const gatedTemplate = j2Setup({
+ * `gate` is pre-registered by jr2Setup — nothing to list (ADR-0015). */
+export const gatedTemplate = jr2Setup({
   types: {} as { context: GatedCtx },
   events: [approveDef, requestChangesDef],
 }).createMachine({
@@ -266,7 +266,7 @@ export const gatedTemplate = j2Setup({
 /** Invokes its gate with an accepts name the workflow does NOT declare. createMachine's typo
  * check cannot see invoke-input strings, so this builds fine and fails at INVOKE time via
  * `resolveAccepts` (ADR-0011's check, unchanged by ADR-0015). */
-export const gatedOverreachTemplate = j2Setup({
+export const gatedOverreachTemplate = jr2Setup({
   types: {} as { context: GatedCtx },
   events: [approveDef], // request_changes deliberately missing
 }).createMachine({
@@ -318,7 +318,7 @@ type FeatureInput = { feature: string; secret: string };
 /** Level 2: the body. Where the work — and a secret — actually is. It parks on its own GATE, named
  * for its feature, which is how a test moves a GRANDCHILD through the real delivery seam (a gate
  * registers from wherever it is invoked, at any depth — ADR-0011). */
-const featureBody = j2Setup({
+const featureBody = jr2Setup({
   types: {} as { context: FeatureInput; input: FeatureInput },
   events: [approveDef],
 }).createMachine({
@@ -336,7 +336,7 @@ const featureBody = j2Setup({
 
 /** Level 1: the per-feature wrapper, reached by `spawnChild`. `createMachine`, not `setup`, so `src`
  * can be the body MACHINE OBJECT — the INLINE shape, whose `src` xstate rewrites to a generated key
- * the Console joins on. An AUTHOR may still write this; j2's own `workspace()` no longer does, since
+ * the Console joins on. An AUTHOR may still write this; jr2's own `workspace()` no longer does, since
  * ADR-0049 made its body the named slot `body`. Kept inline here deliberately: the generated key is
  * the harder half of the join, and nothing else in the suite covers it. */
 const featureWorkspace = createMachine({
@@ -354,7 +354,7 @@ const featureWorkspace = createMachine({
  * the whole problem the child diagrams solve. Its `value` stays "discover" while the run works.
  * It declares NO events: the gate two levels down resolves against the BODY that invokes it
  * (ADR-0049), which declares `approve` itself, so the root has no reason to name it. */
-export const pipelineTemplate = j2Setup({
+export const pipelineTemplate = jr2Setup({
   types: {} as { context: Record<string, never> },
   events: [],
   actors: { feature: featureWorkspace },
@@ -384,7 +384,7 @@ export function pipelineDef(): WorkflowDef {
 type DerivedInput = { feature: string };
 
 /** Parks on a fully-derived gate: NO input at all — id and accepts both derive. */
-const derivedBody = j2Setup({
+const derivedBody = jr2Setup({
   types: {} as { context: DerivedInput; input: DerivedInput },
   events: [approveDef],
 }).createMachine({
@@ -409,7 +409,7 @@ const derivedWrapper = createMachine({
 
 /** Root: fans out two children running the SAME body code — the case authored ids get wrong.
  * Declares no events of its own: `approve` belongs to the body that invokes the gate (ADR-0049). */
-export const derivedFanoutTemplate = j2Setup({
+export const derivedFanoutTemplate = jr2Setup({
   types: {} as { context: Record<string, never> },
   events: [],
   actors: { feature: derivedWrapper },
@@ -433,7 +433,7 @@ export function derivedFanoutDef(): WorkflowDef {
 
 /** Two live gates under ONE authored id (parallel regions, so both register at start): the
  * authored-bug case the registration table must keep failing loudly on. */
-export const collidingGatesTemplate = j2Setup({
+export const collidingGatesTemplate = jr2Setup({
   types: {} as { context: Record<string, never> },
   events: [approveDef],
 }).createMachine({
@@ -460,7 +460,7 @@ export const collidingGatesTemplate = j2Setup({
 
 /** Two UNNAMED gates in one state's invoke array — the one place the state key alone would
  * collide, so the walk suffixes the invoke ordinal. */
-export const twinGatesTemplate = j2Setup({
+export const twinGatesTemplate = jr2Setup({
   types: {} as { context: Record<string, never> },
   events: [approveDef],
 }).createMachine({
@@ -482,7 +482,7 @@ const approveNote = defineEvent({ name: "approve", input: z.object({ note: z.str
 const approveScore = defineEvent({ name: "approve", input: z.object({ score: z.number() }) });
 
 /** The nested Machine: its own `approve`, its own payload, its own gate. */
-const scoredInner = j2Setup({
+const scoredInner = jr2Setup({
   types: {} as { context: { score?: number }; output: { score?: number } },
   events: [approveScore],
 }).createMachine({
@@ -502,7 +502,7 @@ const scoredInner = j2Setup({
 });
 
 /** The root: parallel, so its own gate and the nested Machine's are open at the same moment. */
-export const sameNameTemplate = j2Setup({
+export const sameNameTemplate = jr2Setup({
   types: {} as { context: { note?: string; innerScore?: number } },
   events: [approveNote],
   actors: { inner: scoredInner },

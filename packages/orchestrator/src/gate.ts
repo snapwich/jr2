@@ -1,5 +1,5 @@
 // The `gate` actor (ADR-0011): a pending external input on a run, as an addressable resource.
-// The symmetric twin of the Agent actor for every NON-agent caller — humans (`j2 send`, a UI),
+// The symmetric twin of the Agent actor for every NON-agent caller — humans (`jr2 send`, a UI),
 // webhook translators, CI. "Human" is policy, not mechanism, so the actor is not named for one
 // caller.
 //
@@ -20,7 +20,7 @@ import { actorPath, gateAddress, resolveAccepts, runBindingOf, type DeliveredEve
 export type GateInput = {
   /**
    * The gate's caller-facing id. LEAVE IT UNSET for the derived default: the actor path below
-   * the run root (in a j2Setup machine the leaf is the state key path — `deriveMenus` names the
+   * the run root (in a jr2Setup machine the leaf is the state key path — `deriveMenus` names the
    * invoke), which is unique wherever concurrently live siblings have distinct actor ids — i.e.
    * wherever fan-out is correct at all. Author an id only to give external callers a meaningful
    * flat name (e.g. the feature id); then run-wide uniqueness is the author's problem, and two
@@ -29,7 +29,7 @@ export type GateInput = {
    */
   gate?: string;
   /**
-   * Accepted event names. In a j2Setup machine LEAVE IT UNSET: the accepted set derives from
+   * Accepted event names. In a jr2Setup machine LEAVE IT UNSET: the accepted set derives from
    * the invoking state's transitions, audience ∈ {external, any} (ADR-0015) — this field is the
    * escape hatch. An unlisted name is an invoke-time error either way.
    */

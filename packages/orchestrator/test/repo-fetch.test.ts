@@ -105,7 +105,7 @@ test("the ask marks the Sandbox CR per key, and the landing answers it", async (
   // is a whole coalescing window. `--overwrite` because a later ask replaces an earlier one.
   const annotate = calls.find((c) => c.args[0] === "annotate")!;
   assert.deepEqual(annotate.args.slice(0, 3), ["annotate", "sandbox", "sb-1"]);
-  assert.ok(annotate.args.includes(`j2.dev/asked-${APP.key}=${ASKED}`), annotate.args.join(" "));
+  assert.ok(annotate.args.includes(`jr2.dev/asked-${APP.key}=${ASKED}`), annotate.args.join(" "));
   assert.ok(annotate.args.includes("--overwrite"));
   assert.deepEqual(annotate.args.slice(3, 5), ["--namespace", "inst"]);
   // And it prints the object it patched, so the first look at the status costs no second trip.
@@ -270,7 +270,7 @@ test("an ask that raises a LATER bar waits on its own fetch", async () => {
   await Promise.all([first, second]);
   const marks = held.calls.filter((c) => c.args[0] === "annotate");
   assert.equal(marks.length, 2, "a later ask is its own ask");
-  assert.ok(marks[1]!.args.includes(`j2.dev/asked-${APP.key}=${later}`), marks[1]!.args.join(" "));
+  assert.ok(marks[1]!.args.includes(`jr2.dev/asked-${APP.key}=${later}`), marks[1]!.args.join(" "));
 });
 
 test("past the cap an ask is answered with the cache, and nothing is marked", async () => {

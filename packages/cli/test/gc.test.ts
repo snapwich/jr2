@@ -1,7 +1,7 @@
-// `j2 gc [--dry-run] [--repo-ttl <ttl>]` (ADR-0039, ADR-0051): the same image reachability sweep
+// `jr2 gc [--dry-run] [--repo-ttl <ttl>]` (ADR-0039, ADR-0051): the same image reachability sweep
 // `up` and `down` run, off-cycle, plus the Repo sweep only this verb runs. An escape hatch for
 // "disk is full now" — so it must work from anywhere (no instance folder), it never confirms (by
-// construction it takes only what j2 built and only what nothing names or binds), and a roots read
+// construction it takes only what jr2 built and only what nothing names or binds), and a roots read
 // it could not complete is a FAILED run rather than a smaller keep set.
 
 import { test } from "node:test";
@@ -31,13 +31,13 @@ type Listing = {
   fails?: boolean;
   /** A cluster the operator never reached — recreate the kind cluster, then "disk is full now". */
   noSandboxCrd?: boolean;
-  /** Same cluster, the other CRD: no `repos.core.j2.dev` resource type either. */
+  /** Same cluster, the other CRD: no `repos.core.jr2.dev` resource type either. */
   noRepoCrd?: boolean;
   /** The Repo listing alone fails, as a forbidden verb or an unreachable API does. */
   reposFail?: boolean;
 };
 
-function mkKube(listing: Listing = {}, context = "kind-j2"): KubeAdmin & { deleted: string[] } {
+function mkKube(listing: Listing = {}, context = "kind-jr2"): KubeAdmin & { deleted: string[] } {
   const kube = {
     deleted: [] as string[],
     context: async () => context,
@@ -46,7 +46,7 @@ function mkKube(listing: Listing = {}, context = "kind-j2"): KubeAdmin & { delet
     label: async () => assert.fail("gc labels nothing"),
     // The one kind of object gc deletes: a Repo resource (ADR-0051). Images are not objects.
     deleteObject: async (o: { kind: string; name: string; namespace?: string }) => {
-      assert.equal(o.kind, "repos.core.j2.dev", "gc deletes Repo resources and nothing else");
+      assert.equal(o.kind, "repos.core.jr2.dev", "gc deletes Repo resources and nothing else");
       kube.deleted.push(`${o.namespace}/${o.name}`);
     },
     deleteManifest: async () => assert.fail("gc deletes no manifests"),
@@ -61,13 +61,13 @@ function mkKube(listing: Listing = {}, context = "kind-j2"): KubeAdmin & { delet
       if (o.kind === "namespace") return (listing.namespaces ?? []).map((name) => ({ metadata: { name } })) as T[];
       if (o.kind === "configmap") {
         return Object.entries(listing.maps ?? {}).map(([namespace, map]) => ({
-          metadata: { name: "j2-images", namespace },
+          metadata: { name: "jr2-images", namespace },
           data: { "images.json": JSON.stringify(map) },
         })) as T[];
       }
       if (o.kind === "pod") return (listing.pods ?? []) as T[];
-      if (o.kind === "repos.core.j2.dev") {
-        if (listing.reposFail) throw new Error("repos.core.j2.dev is forbidden: User cannot list resource");
+      if (o.kind === "repos.core.jr2.dev") {
+        if (listing.reposFail) throw new Error("repos.core.jr2.dev is forbidden: User cannot list resource");
         if (listing.noRepoCrd) throw new Error('error: the server doesn\'t have a resource type "repos"');
         assert.ok(o.namespace, "Repos are read per instance namespace");
         return (listing.repos ?? [])
@@ -77,8 +77,8 @@ function mkKube(listing: Listing = {}, context = "kind-j2"): KubeAdmin & { delet
               name: r.key,
               namespace: r.namespace,
               creationTimestamp: r.created ?? "2026-01-01T00:00:00Z",
-              ...(r.bound ? { labels: { "j2.dev/bound": "true" } } : {}),
-              ...(r.lastAttached ? { annotations: { "j2.dev/last-attached": r.lastAttached } } : {}),
+              ...(r.bound ? { labels: { "jr2.dev/bound": "true" } } : {}),
+              ...(r.lastAttached ? { annotations: { "jr2.dev/last-attached": r.lastAttached } } : {}),
             },
             spec: { url: r.url ?? `https://e.test/${r.key}.git` },
           })) as T[];
@@ -122,7 +122,7 @@ function mkBuild(images: { host?: ObservedImage[]; node?: ObservedImage[] } = {}
 }
 
 /** cwd "/" on purpose: "disk is full now" has to work from outside any instance folder, and
- * `resolveRoot` throws without a `j2.config.ts`. A kube context is the only address gc needs. */
+ * `resolveRoot` throws without a `jr2.config.ts`. A kube context is the only address gc needs. */
 function mkIo(kube: KubeAdmin, build: BuildPort): { io: Io; err: () => string } {
   const err: string[] = [];
   return {
@@ -133,37 +133,37 @@ function mkIo(kube: KubeAdmin, build: BuildPort): { io: Io; err: () => string } 
 
 test("gc sweeps from anywhere — no instance folder, no confirmation", async () => {
   const build = mkBuild({
-    host: [image({ id: "sha256:a", tags: ["j2-instance-gone:0ld"], bytes: 4_445_841 })],
-    node: [image({ id: "sha256:b", tags: ["docker.io/library/j2-instance-gone:0ld"], bytes: 4_685_144 })],
+    host: [image({ id: "sha256:a", tags: ["jr2-instance-gone:0ld"], bytes: 4_445_841 })],
+    node: [image({ id: "sha256:b", tags: ["docker.io/library/jr2-instance-gone:0ld"], bytes: 4_685_144 })],
   });
   const { io, err } = mkIo(mkKube(), build);
-  io.confirm = async () => assert.fail("gc never asks: it takes only what j2 built and nothing names");
+  io.confirm = async () => assert.fail("gc never asks: it takes only what jr2 built and nothing names");
 
   assert.equal(await gc([], io), 0);
-  assert.deepEqual(build.removed, ["host j2-instance-gone:0ld", "node j2-control-plane sha256:b"]);
-  // ONE image, however each store spells it (`j2-instance-gone:0ld` on the host,
+  assert.deepEqual(build.removed, ["host jr2-instance-gone:0ld", "node jr2-control-plane sha256:b"]);
+  // ONE image, however each store spells it (`jr2-instance-gone:0ld` on the host,
   // `docker.io/library/…` in containerd) — and both copies' bytes, because both were on the disk.
   assert.match(err(), /swept 1 image\(s\) \(9\.1 MB\)/, "one image, two stores, two copies of the disk");
 });
 
 test("--dry-run prints the plan and removes nothing", async () => {
-  const build = mkBuild({ host: [image({ id: "sha256:a", tags: ["j2-instance-gone:0ld"], bytes: 2_100_000_000 })] });
+  const build = mkBuild({ host: [image({ id: "sha256:a", tags: ["jr2-instance-gone:0ld"], bytes: 2_100_000_000 })] });
   const { io, err } = mkIo(mkKube(), build);
 
   assert.equal(await gc(["--dry-run"], io), 0);
   assert.deepEqual(build.removed, []);
   assert.match(err(), /would sweep 1 image\(s\) \(2\.1 GB\)/);
-  assert.match(err(), /j2-instance-gone:0ld/, "the plan names what it would take");
+  assert.match(err(), /jr2-instance-gone:0ld/, "the plan names what it would take");
 });
 
 test("a kit ref lives while any instance's map names it, and collects when the last one leaves", async () => {
   // "Kit images are never pruned" was a rule by fiat; ADR-0039 dissolves it into reachability.
-  const kit = () => [image({ id: "sha256:k", tags: ["j2-harness:0f1e2d3c4b5a"], bytes: 238_000_000 })];
+  const kit = () => [image({ id: "sha256:k", tags: ["jr2-harness:0f1e2d3c4b5a"], bytes: 238_000_000 })];
 
   const named = mkBuild({ host: kit() });
   const stillHere = mkKube({
     namespaces: ["other"],
-    maps: { other: { harness: "j2-harness:0f1e2d3c4b5a", adapter: "j2-adapter:5a4b", sandbox: {} } },
+    maps: { other: { harness: "jr2-harness:0f1e2d3c4b5a", adapter: "jr2-adapter:5a4b", sandbox: {} } },
   });
   assert.equal(await gc([], mkIo(stillHere, named).io), 0);
   assert.deepEqual(named.removed, []);
@@ -171,17 +171,17 @@ test("a kit ref lives while any instance's map names it, and collects when the l
   const orphaned = mkBuild({ host: kit() });
   const empty = mkIo(mkKube(), orphaned);
   assert.equal(await gc([], empty.io), 0);
-  assert.deepEqual(orphaned.removed, ["host j2-harness:0f1e2d3c4b5a"]);
+  assert.deepEqual(orphaned.removed, ["host jr2-harness:0f1e2d3c4b5a"]);
   assert.match(empty.err(), /swept 1 image\(s\) \(238\.0 MB\)/);
 });
 
-test("an image j2 did not build is invisible, whatever it is called", async () => {
+test("an image jr2 did not build is invisible, whatever it is called", async () => {
   // Images from before ADR-0039 carry no stamp, and sweeping them means guessing by name again —
   // the exact primitive the ADR deletes. So they are not even reported as kept.
   const build = mkBuild({
     host: [
-      image({ id: "sha256:a", tags: ["j2-workspace-myinst-default:ancient"], bytes: 999, labeled: false }),
-      image({ id: "sha256:b", tags: ["j2-harness:local"], bytes: 999, labeled: false }),
+      image({ id: "sha256:a", tags: ["jr2-workspace-myinst-default:ancient"], bytes: 999, labeled: false }),
+      image({ id: "sha256:b", tags: ["jr2-harness:local"], bytes: 999, labeled: false }),
     ],
   });
   const { io, err } = mkIo(mkKube(), build);
@@ -192,28 +192,28 @@ test("an image j2 did not build is invisible, whatever it is called", async () =
 
 test("a non-kind context sweeps the host and leaves the cluster's nodes alone", async () => {
   const build = mkBuild({
-    host: [image({ id: "sha256:a", tags: ["reg.example.com/j2-instance-gone:0ld"], bytes: 10 })],
-    node: [image({ id: "sha256:b", tags: ["j2-instance-gone:0ld"], bytes: 10 })],
+    host: [image({ id: "sha256:a", tags: ["reg.example.com/jr2-instance-gone:0ld"], bytes: 10 })],
+    node: [image({ id: "sha256:b", tags: ["jr2-instance-gone:0ld"], bytes: 10 })],
   });
   const { io } = mkIo(mkKube({}, "gke-prod"), build);
   assert.equal(await gc([], io), 0);
-  assert.deepEqual(build.removed, ["host reg.example.com/j2-instance-gone:0ld"], "a registry copy is cache too");
+  assert.deepEqual(build.removed, ["host reg.example.com/jr2-instance-gone:0ld"], "a registry copy is cache too");
 });
 
 test("a cluster with no Sandbox CRD is not a failed read — it is a cluster with no Sandboxes", async () => {
   // "disk is full now" after `kind delete cluster && kind create cluster`: no operator has ever
-  // run here, so `kubectl get sandboxes.core.j2.dev` exits 1 — and treating that as an unreadable
+  // run here, so `kubectl get sandboxes.core.jr2.dev` exits 1 — and treating that as an unreadable
   // root made the escape hatch exit 1 and sweep nothing on the one cluster with nothing to protect.
-  const build = mkBuild({ host: [image({ id: "sha256:a", tags: ["j2-harness:0f1e"], bytes: 238_000_000 })] });
+  const build = mkBuild({ host: [image({ id: "sha256:a", tags: ["jr2-harness:0f1e"], bytes: 238_000_000 })] });
   const { io, err } = mkIo(mkKube({ noSandboxCrd: true }), build);
 
   assert.equal(await gc([], io), 0);
-  assert.deepEqual(build.removed, ["host j2-harness:0f1e"]);
+  assert.deepEqual(build.removed, ["host jr2-harness:0f1e"]);
   assert.match(err(), /swept 1 image\(s\)/);
 });
 
 test("a roots read that failed takes nothing and exits 1", async () => {
-  const build = mkBuild({ host: [image({ id: "sha256:a", tags: ["j2-instance-gone:0ld"], bytes: 10 })] });
+  const build = mkBuild({ host: [image({ id: "sha256:a", tags: ["jr2-instance-gone:0ld"], bytes: 10 })] });
   const { io, err } = mkIo(mkKube({ fails: true }), build);
 
   assert.equal(await gc([], io), 1);
@@ -294,16 +294,16 @@ test("a cluster with no Repo CRD has no Repos — not a failed read", async () =
 });
 
 test("a Repo listing that failed sweeps no Repos and exits 1 — the images were still swept", async () => {
-  const build = mkBuild({ host: [image({ id: "sha256:a", tags: ["j2-instance-gone:0ld"], bytes: 10 })] });
+  const build = mkBuild({ host: [image({ id: "sha256:a", tags: ["jr2-instance-gone:0ld"], bytes: 10 })] });
   const kube = mkKube({ namespaces: ["a"], reposFail: true });
   const { io, err } = mkIo(kube, build);
   assert.equal(await gc([], io), 1);
-  assert.deepEqual(build.removed, ["host j2-instance-gone:0ld"], "the image sweep ran first and stands");
+  assert.deepEqual(build.removed, ["host jr2-instance-gone:0ld"], "the image sweep ran first and stands");
   assert.deepEqual(kube.deleted, []);
   assert.match(err(), /error: the Repo resources could not be read/);
 });
 
-test("`j2 gc` is a dispatched verb", async () => {
+test("`jr2 gc` is a dispatched verb", async () => {
   const build = mkBuild();
   const { io } = mkIo(mkKube(), build);
   assert.equal(await main(["gc", "--dry-run"], io), 0);

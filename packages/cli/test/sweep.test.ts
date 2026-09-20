@@ -16,7 +16,7 @@ type Listing = {
     metadata: { name: string; namespace?: string };
     spec?: { image?: string; sidecars?: Array<{ image?: string }> };
   }>;
-  /** The cluster has no Sandbox CRD at all — what `j2 down --all` leaves behind, and what any
+  /** The cluster has no Sandbox CRD at all — what `jr2 down --all` leaves behind, and what any
    * cluster the operator never reached looks like. kubectl's own words. */
   noSandboxCrd?: boolean;
   pods?: Array<{
@@ -56,7 +56,7 @@ function mkKube(listing: Listing): KubeAdmin & { queries: string[] } {
       if (o.kind === "namespace") return (listing.namespaces ?? []).map((name) => ({ metadata: { name } })) as T[];
       if (o.kind === "configmap") {
         return Object.entries(listing.maps ?? {}).map(([namespace, map]) => ({
-          metadata: { name: "j2-images", namespace },
+          metadata: { name: "jr2-images", namespace },
           data: { "images.json": typeof map === "string" ? map : JSON.stringify(map) },
         })) as T[];
       }
@@ -73,25 +73,25 @@ test("the keep set is the union of the three roots, across every instance on the
     namespaces: ["myinst", "other"],
     maps: {
       myinst: {
-        harness: "j2-harness:0f1e",
-        adapter: "j2-adapter:5a4b",
-        operator: "j2-operator:99cc",
-        sandbox: { default: "j2-sandbox-myinst-default:aa11", extra: "j2-sandbox-myinst-extra:bb22" },
+        harness: "jr2-harness:0f1e",
+        adapter: "jr2-adapter:5a4b",
+        operator: "jr2-operator:99cc",
+        sandbox: { default: "jr2-sandbox-myinst-default:aa11", extra: "jr2-sandbox-myinst-extra:bb22" },
       },
-      other: { harness: "j2-harness:0f1e", adapter: "j2-adapter:5a4b", sandbox: {} },
+      other: { harness: "jr2-harness:0f1e", adapter: "jr2-adapter:5a4b", sandbox: {} },
     },
     // A PARKED Workspace: no pod may be running, but `IfNotPresent` cannot re-pull a local tag.
-    sandboxes: [{ metadata: { name: "ws-1", namespace: "myinst" }, spec: { image: "j2-sandbox-myinst-old:cc33" } }],
+    sandboxes: [{ metadata: { name: "ws-1", namespace: "myinst" }, spec: { image: "jr2-sandbox-myinst-old:cc33" } }],
     pods: [
       {
         metadata: { name: "orch", namespace: "myinst" },
-        spec: { containers: [{ image: "j2-instance-myinst:dd44" }] },
+        spec: { containers: [{ image: "jr2-instance-myinst:dd44" }] },
       },
-      // The operator lives in the shared `j2-system`, which is not an instance namespace and is
+      // The operator lives in the shared `jr2-system`, which is not an instance namespace and is
       // still a root — otherwise `up` would sweep the image of the controller it just rolled out.
       {
-        metadata: { name: "manager", namespace: "j2-system" },
-        spec: { containers: [{ image: "j2-operator:99cc" }] },
+        metadata: { name: "manager", namespace: "jr2-system" },
+        spec: { containers: [{ image: "jr2-operator:99cc" }] },
       },
     ],
   });
@@ -101,35 +101,35 @@ test("the keep set is the union of the three roots, across every instance on the
   assert.deepEqual(
     [...keep].sort(),
     [
-      "j2-adapter:5a4b",
-      "j2-harness:0f1e",
-      "j2-instance-myinst:dd44",
-      "j2-operator:99cc",
-      "j2-sandbox-myinst-default:aa11",
-      "j2-sandbox-myinst-extra:bb22",
-      "j2-sandbox-myinst-old:cc33",
+      "jr2-adapter:5a4b",
+      "jr2-harness:0f1e",
+      "jr2-instance-myinst:dd44",
+      "jr2-operator:99cc",
+      "jr2-sandbox-myinst-default:aa11",
+      "jr2-sandbox-myinst-extra:bb22",
+      "jr2-sandbox-myinst-old:cc33",
     ],
     "one ref, however many roots name it",
   );
   assert.deepEqual(kube.queries, [
-    "namespace -l j2.dev/instance",
+    "namespace -l jr2.dev/instance",
     "configmap -A",
-    "sandboxes.core.j2.dev -A",
+    "sandboxes.core.jr2.dev -A",
     "pod -A",
   ]);
 });
 
 test("objects outside an instance namespace are not roots — labels decide, not proximity", async () => {
-  // A namespace with no `j2.dev/instance` label is somebody else's; its `j2-images`-shaped
-  // ConfigMap and its pods say nothing about what j2 still needs.
+  // A namespace with no `jr2.dev/instance` label is somebody else's; its `jr2-images`-shaped
+  // ConfigMap and its pods say nothing about what jr2 still needs.
   const kube = mkKube({
     namespaces: ["myinst"],
-    maps: { myinst: { harness: "j2-harness:0f1e", sandbox: {} }, stranger: { harness: "j2-harness:beef" } },
-    sandboxes: [{ metadata: { name: "ws", namespace: "stranger" }, spec: { image: "j2-sandbox-x:1" } }],
-    pods: [{ metadata: { name: "p", namespace: "stranger" }, spec: { containers: [{ image: "j2-instance-x:1" }] } }],
+    maps: { myinst: { harness: "jr2-harness:0f1e", sandbox: {} }, stranger: { harness: "jr2-harness:beef" } },
+    sandboxes: [{ metadata: { name: "ws", namespace: "stranger" }, spec: { image: "jr2-sandbox-x:1" } }],
+    pods: [{ metadata: { name: "p", namespace: "stranger" }, spec: { containers: [{ image: "jr2-instance-x:1" }] } }],
   });
   const { keep } = await readRoots(kube);
-  assert.deepEqual([...keep], ["j2-harness:0f1e"]);
+  assert.deepEqual([...keep], ["jr2-harness:0f1e"]);
 });
 
 test("a pod's init and ephemeral containers hold images too, and a terminating pod still counts", async () => {
@@ -141,8 +141,8 @@ test("a pod's init and ephemeral containers hold images too, and a terminating p
       {
         metadata: { name: "sandbox-1", namespace: "myinst" },
         spec: {
-          containers: [{ image: "j2-sandbox-myinst-default:aa11" }, { image: "j2-adapter:5a4b" }],
-          initContainers: [{ image: "j2-instance-myinst:dd44" }],
+          containers: [{ image: "jr2-sandbox-myinst-default:aa11" }, { image: "jr2-adapter:5a4b" }],
+          initContainers: [{ image: "jr2-instance-myinst:dd44" }],
           ephemeralContainers: [{ image: "busybox:1" }],
         },
       },
@@ -151,9 +151,9 @@ test("a pod's init and ephemeral containers hold images too, and a terminating p
   const { keep } = await readRoots(kube);
   assert.deepEqual([...keep].sort(), [
     "busybox:1",
-    "j2-adapter:5a4b",
-    "j2-instance-myinst:dd44",
-    "j2-sandbox-myinst-default:aa11",
+    "jr2-adapter:5a4b",
+    "jr2-instance-myinst:dd44",
+    "jr2-sandbox-myinst-default:aa11",
   ]);
 });
 
@@ -176,40 +176,40 @@ test("a Sandbox's SIDECAR refs are roots too — the Adapter's is on the CR and 
   // cannot re-pull a local tag. The map (root 1) names the new one; only the CR names the old.
   const kube = mkKube({
     namespaces: ["myinst"],
-    maps: { myinst: { adapter: "j2-adapter:new0", sandbox: {} } },
+    maps: { myinst: { adapter: "jr2-adapter:new0", sandbox: {} } },
     sandboxes: [
       {
         metadata: { name: "ws-1", namespace: "myinst" },
-        spec: { image: "j2-sandbox-myinst-default:aa11", sidecars: [{ image: "j2-adapter:0ld0" }] },
+        spec: { image: "jr2-sandbox-myinst-default:aa11", sidecars: [{ image: "jr2-adapter:0ld0" }] },
       },
     ],
   });
   const { keep } = await readRoots(kube);
-  assert.deepEqual([...keep].sort(), ["j2-adapter:0ld0", "j2-adapter:new0", "j2-sandbox-myinst-default:aa11"]);
+  assert.deepEqual([...keep].sort(), ["jr2-adapter:0ld0", "jr2-adapter:new0", "jr2-sandbox-myinst-default:aa11"]);
 });
 
 test("a cluster with no Sandbox CRD has no Sandboxes — the one read that may answer 'none'", async () => {
-  // `j2 down --all` deletes the operator manifest, CRD included, and only THEN sweeps — the very
+  // `jr2 down --all` deletes the operator manifest, CRD included, and only THEN sweeps — the very
   // case ADR-0039 cites for collecting kit images. A throw there is a sweep that takes nothing on
   // the one run that has the most to take. No CRD means no Sandbox CRs can exist, so "none" is the
   // complete answer, not a partial one; every other failure still throws (the test above).
   const kube = mkKube({
     namespaces: ["myinst"],
-    maps: { myinst: { harness: "j2-harness:0f1e", sandbox: {} } },
+    maps: { myinst: { harness: "jr2-harness:0f1e", sandbox: {} } },
     noSandboxCrd: true,
   });
   const { keep } = await readRoots(kube);
-  assert.deepEqual([...keep], ["j2-harness:0f1e"]);
+  assert.deepEqual([...keep], ["jr2-harness:0f1e"]);
 });
 
 test("an unreadable image map is a failed root, not an empty one", async () => {
   // A hand-edited ConfigMap must not be read as "that instance needs nothing".
   const kube = mkKube({ namespaces: ["myinst"], maps: { myinst: "{ not json" } });
-  await assert.rejects(() => readRoots(kube), /j2-images ConfigMap in namespace "myinst" is not JSON/);
+  await assert.rejects(() => readRoots(kube), /jr2-images ConfigMap in namespace "myinst" is not JSON/);
 });
 
 test("nodes exist to sweep only on a kind context", async () => {
-  assert.equal(kindCluster("kind-j2"), "j2");
+  assert.equal(kindCluster("kind-jr2"), "jr2");
   assert.equal(kindCluster("gke-prod"), undefined);
   assert.equal(kindCluster("kind-"), "");
 });

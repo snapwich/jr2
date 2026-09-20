@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 var _ = Describe("Repo Controller", func() {
@@ -73,7 +73,7 @@ var _ = Describe("Repo Controller", func() {
 
 		It("folds the per-node reports into one Synced condition", func() {
 			// ADR-0051: each node's cache agent writes its own entry; the operator
-			// derives the one answer `j2 status` and `kubectl get repos` read. It
+			// derives the one answer `jr2 status` and `kubectl get repos` read. It
 			// never touches the node entries themselves.
 			By("reporting Unknown while no node has reported")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})

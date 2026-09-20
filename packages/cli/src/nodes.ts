@@ -1,13 +1,13 @@
 // Which nodes are an Instance's Sandbox nodes (ADR-0052), read off the cluster's nodes with the
 // scheduler's own rules: not cordoned, every label of `sandbox.nodeSelector` present, and every
-// NoSchedule/NoExecute taint tolerated by `sandbox.tolerations`. No j2 label exists — taints and
-// cordons already say "not for ordinary work" for every workload, and j2 reads them instead of
-// asking for a second, j2-only opt-in. The predicate is pure and mirrors what the Sandbox pod and
-// the cache agent's DaemonSet carry, so the set `j2 up` reports is the set the scheduler will use —
+// NoSchedule/NoExecute taint tolerated by `sandbox.tolerations`. No jr2 label exists — taints and
+// cordons already say "not for ordinary work" for every workload, and jr2 reads them instead of
+// asking for a second, jr2-only opt-in. The predicate is pure and mirrors what the Sandbox pod and
+// the cache agent's DaemonSet carry, so the set `jr2 up` reports is the set the scheduler will use —
 // at the moment of the read. The set moves (a pool autoscales, a node is cordoned), which is why an
 // empty set is reported and never refused.
 
-import type { SandboxPlacement, Toleration } from "@j2/orchestrator";
+import type { SandboxPlacement, Toleration } from "@jr2/orchestrator";
 
 /** A cluster node, read for the facts that decide placement and platform (ADR-0045/0052). */
 export type NodeObject = {

@@ -6,7 +6,7 @@
 // Two principals, and the asymmetry between them is the whole design:
 //
 //   Instance token  the human/CLI credential. Full trust: gates, run control, agent surfaces.
-//                   From the instance Secret (`J2_INSTANCE_TOKEN`); minted per boot when absent,
+//                   From the instance Secret (`JR2_INSTANCE_TOKEN`); minted per boot when absent,
 //                   announced once on stdout (fixtures capture it). An Agent never has it — it
 //                   never enters a Sandbox.
 //
@@ -52,14 +52,14 @@ export function mintInstanceToken(): string {
 }
 
 /**
- * The instance's HMAC signing key, at `<dir>/.j2/secret` (0600), created on first use.
+ * The instance's HMAC signing key, at `<dir>/.jr2/secret` (0600), created on first use.
  *
  * It MUST outlive the process: an Orchestrator restart leaves live Sandboxes running (ADR-0012 re-attach),
  * and their Adapters still hold tokens minted by the process that died. A fresh key would reject
  * every one of them — the Agent would silently lose its only route to its Machine.
  */
 export async function loadSigningKey(dir: string): Promise<Buffer> {
-  const path = join(dir, ".j2", "secret");
+  const path = join(dir, ".jr2", "secret");
   try {
     const existing = Buffer.from(await readFile(path, "utf8"), "base64");
     if (existing.length >= 32) return existing;
@@ -67,7 +67,7 @@ export async function loadSigningKey(dir: string): Promise<Buffer> {
     // absent (or unreadable) → mint below
   }
   const key = randomBytes(32);
-  await mkdir(join(dir, ".j2"), { recursive: true });
+  await mkdir(join(dir, ".jr2"), { recursive: true });
   await writeFile(path, key.toString("base64"), { mode: 0o600 });
   await chmod(path, 0o600); // an existing file keeps its old mode through writeFile
   return key;
@@ -94,7 +94,7 @@ export function createAuthenticator(opts: { instanceToken: string; signingKey: B
  * May this principal deliver to this agent registration? The Instance token may (it is the
  * operator). A Sandbox token may only when the registration records ITS name — which is why
  * an Agent registration carries `sandbox` at all (ADR-0013). The recorded name is the pod hosting the Turn:
- * a Workspace's Sandbox, or `j2-instance-harness` for a Menu-only registration (ADR-0031). An
+ * a Workspace's Sandbox, or `jr2-instance-harness` for a Menu-only registration (ADR-0031). An
  * agent registration with NO name at all is an explicit-`endpoint` run (the stub Harness on the
  * host, in no pod): no Sandbox token can claim it.
  */

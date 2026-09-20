@@ -8,16 +8,16 @@
 //
 // What it carries the tier is ADR-0053's last consequence: the fetch url lives in the SHARED
 // `default/.git/config`, so a seat that holds the checkouts and not the program has checkouts
-// whose `git fetch` dies. `/opt/j2` therefore rides in read-only beside `/repos`, and the human
+// whose `git fetch` dies. `/opt/jr2` therefore rides in read-only beside `/repos`, and the human
 // gets the same fetch as the Agent with no credential of their own.
 
-import { workspace } from "@j2/orchestrator";
+import { workspace } from "@jr2/orchestrator";
 import { body } from "./_body.ts";
 
 export const machine = workspace(body, {
-  repos: { app: { url: "http://seed.j2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
   spec: () => ({ branch: "feat-e2e" }),
-  // A `file:` URL to a docker context this module ships — `j2 up` builds it like any other
+  // A `file:` URL to a docker context this module ships — `jr2 up` builds it like any other
   // (ADR-0037/0049), and the deployed Orchestrator recomputes the same content digest to find the
   // ref, which is why `images/` must travel in the instance bundle (see package.json's `files`).
   user: import.meta.resolve("../images/user"),

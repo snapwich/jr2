@@ -5,16 +5,16 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
     control-plane: controller-manager
-  name: j2-system
+  name: jr2-system
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: repos.core.j2.dev
+  name: repos.core.jr2.dev
 spec:
-  group: core.j2.dev
+  group: core.jr2.dev
   names:
     kind: Repo
     listKind: RepoList
@@ -39,8 +39,8 @@ spec:
           Repo is the Schema for the repos API: a git repository the Instance keeps a
           per-node cache of (ADR-0051). The Orchestrator creates one per repository
           its Machines bind (at boot) or a run attaches (at first attach), labels the
-          bound ones `j2.dev/bound: "true"`, and annotates `j2.dev/identity` and
-          `j2.dev/last-attached`; `j2 gc` evicts by that label and age.
+          bound ones `jr2.dev/bound: "true"`, and annotates `jr2.dev/identity` and
+          `jr2.dev/last-attached`; `jr2 gc` evicts by that label and age.
         properties:
           apiVersion:
             description: |-
@@ -105,7 +105,7 @@ spec:
                 description: |-
                   Conditions carries `Synced`: True when every reporting node is synced,
                   False with the first node's error when any is not, Unknown while no node
-                  has reported. It is what `j2 status` and `kubectl get repos` read.
+                  has reported. It is what `jr2 status` and `kubectl get repos` read.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -244,9 +244,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: sandboxes.core.j2.dev
+  name: sandboxes.core.jr2.dev
 spec:
-  group: core.j2.dev
+  group: core.jr2.dev
   names:
     kind: Sandbox
     listKind: SandboxList
@@ -532,8 +532,8 @@ spec:
                   Scheduled verbatim — the operator adds nothing to them, not even the
                   hardened securityContext default it gives sidecars, because an init step
                   is composed by whoever built the spec and it must be able to say exactly
-                  what it needs. This is how j2's runtime reaches a Sandbox (ADR-0037): one
-                  step populates an /opt/j2 volume, a second proves the primary image on it.
+                  what it needs. This is how jr2's runtime reaches a Sandbox (ADR-0037): one
+                  step populates an /opt/jr2 volume, a second proves the primary image on it.
                 items:
                   description: A single application container that you want to run
                     within a pod.
@@ -2232,7 +2232,7 @@ spec:
                   Repos are the Repos this Sandbox attaches, named by cache key
                   (ADR-0051). For each entry the operator adds a pod volume named
                   `repo-<key>` — the node's cache for that Repo (hostPath
-                  `/var/lib/j2/<namespace>/repos/<key>`, `DirectoryOrCreate`) — mounted
+                  `/var/lib/jr2/<namespace>/repos/<key>`, `DirectoryOrCreate`) — mounted
                   read-only at `/repos/<key>` in the primary container; a sidecar that
                   needs it mounts the same volume by name. Scheduling prefers nodes whose
                   `Repo` status reports the key present; `Ready` waits for every key to be
@@ -2528,7 +2528,7 @@ spec:
 
                   One name is special, and only as an EXEMPTION: a sidecar named "user" is
                   scheduled exactly as written — no hardened securityContext default. It is
-                  the User Container (ADR-0005), the seat whose identity is "what j2 does
+                  the User Container (ADR-0005), the seat whose identity is "what jr2 does
                   not own", so hardening it would be an opinion the operator has no standing
                   to hold. Root is allowed there; the credential boundary never depended on
                   that seat being unprivileged, only on the Agent executing nothing in it.
@@ -6196,7 +6196,7 @@ spec:
                     asked:
                       description: |-
                         Asked is what this Sandbox asked the node for: the later of its own
-                        creation and the `j2.dev/asked-<key>` annotation, because a creation is
+                        creation and the `jr2.dev/asked-<key>` annotation, because a creation is
                         an ask (ADR-0051) and every ask after it is one too.
                       format: date-time
                       type: string
@@ -6263,8 +6263,8 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-controller-manager
-  namespace: j2-system
+  name: jr2-controller-manager
+  namespace: jr2-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -6272,8 +6272,8 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-leader-election-role
-  namespace: j2-system
+  name: jr2-leader-election-role
+  namespace: jr2-system
 rules:
 - apiGroups:
   - ""
@@ -6310,7 +6310,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: j2-manager-role
+  name: jr2-manager-role
 rules:
 - apiGroups:
   - ""
@@ -6326,7 +6326,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos
   verbs:
@@ -6336,7 +6336,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos/status
   - sandboxes/status
@@ -6345,7 +6345,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes
   verbs:
@@ -6357,7 +6357,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes/finalizers
   verbs:
@@ -6366,7 +6366,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: j2-metrics-auth-role
+  name: jr2-metrics-auth-role
 rules:
 - apiGroups:
   - authentication.k8s.io
@@ -6384,7 +6384,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: j2-metrics-reader
+  name: jr2-metrics-reader
 rules:
 - nonResourceURLs:
   - /metrics
@@ -6397,16 +6397,16 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-repo-admin-role
+  name: jr2-repo-admin-role
 rules:
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos
   verbs:
   - '*'
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos/status
   verbs:
@@ -6418,10 +6418,10 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-repo-editor-role
+  name: jr2-repo-editor-role
 rules:
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos
   verbs:
@@ -6433,7 +6433,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos/status
   verbs:
@@ -6445,10 +6445,10 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-repo-viewer-role
+  name: jr2-repo-viewer-role
 rules:
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos
   verbs:
@@ -6456,7 +6456,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos/status
   verbs:
@@ -6468,16 +6468,16 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-sandbox-admin-role
+  name: jr2-sandbox-admin-role
 rules:
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes
   verbs:
   - '*'
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes/status
   verbs:
@@ -6489,10 +6489,10 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-sandbox-editor-role
+  name: jr2-sandbox-editor-role
 rules:
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes
   verbs:
@@ -6504,7 +6504,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes/status
   verbs:
@@ -6516,10 +6516,10 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-sandbox-viewer-role
+  name: jr2-sandbox-viewer-role
 rules:
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes
   verbs:
@@ -6527,7 +6527,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes/status
   verbs:
@@ -6539,16 +6539,16 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-leader-election-rolebinding
-  namespace: j2-system
+  name: jr2-leader-election-rolebinding
+  namespace: jr2-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: j2-leader-election-role
+  name: jr2-leader-election-role
 subjects:
 - kind: ServiceAccount
-  name: j2-controller-manager
-  namespace: j2-system
+  name: jr2-controller-manager
+  namespace: jr2-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -6556,28 +6556,28 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
-  name: j2-manager-rolebinding
+  name: jr2-manager-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: j2-manager-role
+  name: jr2-manager-role
 subjects:
 - kind: ServiceAccount
-  name: j2-controller-manager
-  namespace: j2-system
+  name: jr2-controller-manager
+  namespace: jr2-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: j2-metrics-auth-rolebinding
+  name: jr2-metrics-auth-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: j2-metrics-auth-role
+  name: jr2-metrics-auth-role
 subjects:
 - kind: ServiceAccount
-  name: j2-controller-manager
-  namespace: j2-system
+  name: jr2-controller-manager
+  namespace: jr2-system
 ---
 apiVersion: v1
 kind: Service
@@ -6586,8 +6586,8 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
     control-plane: controller-manager
-  name: j2-controller-manager-metrics-service
-  namespace: j2-system
+  name: jr2-controller-manager-metrics-service
+  namespace: jr2-system
 spec:
   ports:
   - name: https
@@ -6605,8 +6605,8 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/name: operator
     control-plane: controller-manager
-  name: j2-controller-manager
-  namespace: j2-system
+  name: jr2-controller-manager
+  namespace: jr2-system
 spec:
   replicas: 1
   selector:
@@ -6664,6 +6664,6 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      serviceAccountName: j2-controller-manager
+      serviceAccountName: jr2-controller-manager
       terminationGracePeriodSeconds: 10
       volumes: []

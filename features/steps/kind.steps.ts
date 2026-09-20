@@ -1,14 +1,14 @@
 // Steps for the @kind tier: assertions that reach past the orchestrator into the REAL cluster.
-// Everything here is observed the way a user would — `kubectl` for the cluster, the `j2` binary
+// Everything here is observed the way a user would — `kubectl` for the cluster, the `jr2` binary
 // for the run — so the tier stays black-box (ADR-0010). Reading run status reuses the mechanics
 // -tier steps; only the cluster-facing claims live here.
 //
-// The Sandbox is found by its `j2.dev/run` LABEL, never by reconstructing its name: that label is
-// the run↔workspace link ADR-0012 promises (what `j2 ls` will group by), so looking it up this way
+// The Sandbox is found by its `jr2.dev/run` LABEL, never by reconstructing its name: that label is
+// the run↔workspace link ADR-0012 promises (what `jr2 ls` will group by), so looking it up this way
 // asserts the promise instead of trusting the naming function.
 //
 // NOTHING HERE PLAYS THE AGENT (ADR-0013), and since ADR-0038 the reason has inverted. The pod
-// runs the REAL `@j2/harness`: it holds its own MCP connection to the Adapter on localhost, is
+// runs the REAL `@jr2/harness`: it holds its own MCP connection to the Adapter on localhost, is
 // served this state's Menu, and pi decides. What this file drives is the one thing still faked —
 // the MODEL. "The Agent calls X" RELEASES the provider request this pod's Harness is parked on,
 // answering it with a tool call; everything after that (the MCP call, the delivery, the Machine
@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { IMAGES_CONFIGMAP, IMAGES_KEY, repoIdentity, repoKey, type RepoStatus } from "@j2/orchestrator";
+import { IMAGES_CONFIGMAP, IMAGES_KEY, repoIdentity, repoKey, type RepoStatus } from "@jr2/orchestrator";
 import { ensureSeed, pushToSeed, SEED_URL } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
@@ -75,22 +75,22 @@ async function withPodForward(
   }
 }
 
-/** Scale the in-cluster orchestrator (deployed by `j2 up`) — the @kind restart/stop lever. */
+/** Scale the in-cluster orchestrator (deployed by `jr2 up`) — the @kind restart/stop lever. */
 async function scaleOrchestrator(world: E2EWorld, replicas: 0 | 1): Promise<void> {
-  await kubectl(world, ["scale", "deployment/j2-orchestrator", `--replicas=${replicas}`]);
+  await kubectl(world, ["scale", "deployment/jr2-orchestrator", `--replicas=${replicas}`]);
   if (replicas === 0) {
-    await kubectl(world, ["wait", "--for=delete", "pod", "-l", "app=j2-orchestrator", "--timeout=120s"]).catch(
+    await kubectl(world, ["wait", "--for=delete", "pod", "-l", "app=jr2-orchestrator", "--timeout=120s"]).catch(
       () => {},
     );
   } else {
-    await kubectl(world, ["rollout", "status", "deployment/j2-orchestrator", "--timeout=120s"]);
+    await kubectl(world, ["rollout", "status", "deployment/jr2-orchestrator", "--timeout=120s"]);
   }
 }
 
 /** Every Sandbox CR labeled with this run. */
 async function sandboxesFor(world: E2EWorld): Promise<SandboxCR[]> {
   assert.ok(world.runId, "a runId was carried from a prior step");
-  const out = await kubectl(world, ["get", "sandbox", "-l", `j2.dev/run=${world.runId}`, "-o", "json"]);
+  const out = await kubectl(world, ["get", "sandbox", "-l", `jr2.dev/run=${world.runId}`, "-o", "json"]);
   return (JSON.parse(out) as { items: SandboxCR[] }).items;
 }
 
@@ -102,13 +102,13 @@ async function waitForReadySandbox(world: E2EWorld): Promise<SandboxCR> {
     await sleep(1000);
   }
   throw new Error(
-    `no Sandbox for run ${world.runId} reached Ready — \`j2 up\` builds and loads every image ` +
-      `itself (ADR-0038), so check the operator (kubectl -n j2-system get pods) and the pod's ` +
+    `no Sandbox for run ${world.runId} reached Ready — \`jr2 up\` builds and loads every image ` +
+      `itself (ADR-0038), so check the operator (kubectl -n jr2-system get pods) and the pod's ` +
       `own events: kubectl -n ${world.namespace} describe sandbox`,
   );
 }
 
-/** One live child machine under the run, as `j2 status` reports it (context-free by construction). */
+/** One live child machine under the run, as `jr2 status` reports it (context-free by construction). */
 type RunChild = { id: string; value: unknown; children: RunChild[] };
 
 /** The wrapper's own state + context — where the workspace endpoint and the body's output land. */
@@ -121,17 +121,17 @@ type WsStatus = {
   /** The body lives here: a wrapper's own `value` is only ever provisioning/attaching/running. */
   children: RunChild[];
   /** The run's OPEN GATES, as `GET /runs/:id` lists them (ADR-0011) — the discovery listing a
-   * human acts on, and the one `j2 send --gate` names. Settled run → []. */
+   * human acts on, and the one `jr2 send --gate` names. Settled run → []. */
   gates?: OpenGate[];
 };
 
-/** One open Gate on the run, as the status listing reports it: the id `j2 send --gate` takes, the
+/** One open Gate on the run, as the status listing reports it: the id `jr2 send --gate` takes, the
  * names it accepts, and the `meta` the invoking state published for callers to read. */
 type OpenGate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
 
 async function wsStatus(world: E2EWorld): Promise<WsStatus> {
   const r = await world.runCli(["status", world.runId!]);
-  assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   return world.resultJson<WsStatus>();
 }
 
@@ -193,10 +193,10 @@ Given("the kind instance is serving", { timeout: 600_000 }, async function (this
   // The Repo the workflows bind must be reachable from the cluster before the Orchestrator boots
   // and the cache agent clones it (ADR-0051) — served in-cluster, once per suite (seed.ts).
   await ensureSeed();
-  // The product's own path (ADR-0010/0019): converge the scenario's fresh namespace with `j2 up`.
+  // The product's own path (ADR-0010/0019): converge the scenario's fresh namespace with `jr2 up`.
   // The workflows (incl. `sandboxed`) are committed in the kind instance and baked into its image.
   const r = await this.runCli(["up", "--yes"]);
-  assert.equal(r.code, 0, `j2 up failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 up failed: ${r.stderr}`);
 });
 
 // --- when ----------------------------------------------------------------------------------------
@@ -247,7 +247,7 @@ When(
  * submission was admitted by the Machine's own Agent slot, the pod's Harness has been parked on a
  * provider request ever since (which is exactly what "still thinking" looks like from the
  * Machine's side), and this releases it. Everything downstream is real and in-cluster: pi executes
- * `mcp__j2__<tool>` over its own MCP connection to the Adapter on localhost, the Adapter delivers,
+ * `mcp__jr2__<tool>` over its own MCP connection to the Adapter on localhost, the Adapter delivers,
  * the Machine moves. Nothing on this side speaks MCP or the Harness wire.
  *
  * The request is matched by the tool it was OFFERED, never by arrival order — see fake-provider.ts:
@@ -265,7 +265,7 @@ When(
 
 /** The Agent reaches for its own toolchain (ADR-0027/0037): the model answers with the `bash`
  * WORKING tool, which the Harness executes in its own container — the Sandbox Image itself, run
- * byte-for-byte with j2's runtime mounted at /opt/j2. No Menu tool is picked, so the Machine does
+ * byte-for-byte with jr2's runtime mounted at /opt/jr2. No Menu tool is picked, so the Machine does
  * not move; what moves is the conversation. */
 When(
   "the Agent runs {string} through its bash Working tool",
@@ -295,14 +295,14 @@ When(
         "pod",
         pod,
         "-o",
-        `jsonpath={.spec.containers[?(@.name=="adapter")].env[?(@.name=="J2_ORCHESTRATOR_URL")].value}`,
+        `jsonpath={.spec.containers[?(@.name=="adapter")].env[?(@.name=="JR2_ORCHESTRATOR_URL")].value}`,
       ])
     ).trim();
     assert.ok(url, "the Adapter container carries the Orchestrator's address (the Harness does not)");
 
     // node, not curl: it is what the image has, and it is what a bash Working tool would use.
     // Resolvable in an `exec` shell because the IMAGE carries it — the Harness's PATH append is a
-    // process-level setting (startup.ts) that no exec inherits, and j2 writes nothing into the
+    // process-level setting (startup.ts) that no exec inherits, and jr2 writes nothing into the
     // image's env (ADR-0037).
     const probe =
       `fetch(${JSON.stringify(`${url}/agents/${iid}/events`)},{method:"POST",` +
@@ -349,7 +349,7 @@ When("the review worktree gets a write probe and a commit", async function (this
     `cd '${this.reviewDir}'`,
     `echo rogue > probe.txt`,
     `git add probe.txt`,
-    `git -c user.email=probe@j2 -c user.name=probe commit -m 'rogue probe'`,
+    `git -c user.email=probe@jr2 -c user.name=probe commit -m 'rogue probe'`,
   ].join("\n");
   await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script]);
 });
@@ -424,7 +424,7 @@ const WORKING_TOOLS = ["read", "write", "edit", "bash", "grep", "glob"];
  * What the Harness OFFERED the model for this turn, asserted off the provider's recorded request —
  * which is free here, and stronger than the retired persona's `listTools()` call: it is the tool
  * set pi actually put on the wire. Two halves in one claim: this state's Menu (ADR-0015/0029,
- * `mcp__j2__`-prefixed by `menu.ts`) and exactly the Working tools the definition allows
+ * `mcp__jr2__`-prefixed by `menu.ts`) and exactly the Working tools the definition allows
  * (ADR-0028). "Exactly one Menu tool" is the sharp edge — a turn must not see another state's.
  */
 Then(
@@ -435,14 +435,14 @@ Then(
     let seen: string[][] = [];
     for (let i = 0; i < 240; i++) {
       seen = provider.calls.filter((c) => c.stream).map((c) => c.tools);
-      if (seen.some((tools) => tools.includes(`mcp__j2__${tool}`))) break;
+      if (seen.some((tools) => tools.includes(`mcp__jr2__${tool}`))) break;
       await sleep(500);
     }
-    const turn = seen.find((tools) => tools.includes(`mcp__j2__${tool}`));
-    assert.ok(turn, `no turn was offered "mcp__j2__${tool}" (offered: ${JSON.stringify(seen)})`);
+    const turn = seen.find((tools) => tools.includes(`mcp__jr2__${tool}`));
+    assert.ok(turn, `no turn was offered "mcp__jr2__${tool}" (offered: ${JSON.stringify(seen)})`);
     assert.deepEqual(
-      turn.filter((t) => t.startsWith("mcp__j2__")),
-      [`mcp__j2__${tool}`],
+      turn.filter((t) => t.startsWith("mcp__jr2__")),
+      [`mcp__jr2__${tool}`],
       "the turn sees this state's Menu and no other's (ADR-0015)",
     );
     for (const working of WORKING_TOOLS) {
@@ -476,13 +476,13 @@ Then("the model was shown the tool result {string}", async function (this: E2EWo
  * the grep Working tool degrades to plain `grep` with nobody the wiser.
  *
  * Two of the contracts are process-level settings of the Harness itself, made AFTER execve, so an
- * `exec` shell inherits neither and the image carries no j2 `ENV` at all (ADR-0037). Each needs an
+ * `exec` shell inherits neither and the image carries no jr2 `ENV` at all (ADR-0037). Each needs an
  * observation that can actually see it:
  *   - umask 002 is kernel state, so `/proc/1/status` reports it live (PID 1 is the Harness — the
  *     container's command, and `shareProcessNamespace` stays off, ADR-0005). Defence in depth
- *     behind the attach's default ACL: outside a repo tree only the umask keeps j2's writes
+ *     behind the attach's default ACL: outside a repo tree only the umask keeps jr2's writes
  *     group-writable. The supplemental gid proves the ownership half (fsGroup) arrived.
- *   - PATH must be APPENDED, so the image's own toolchain wins and j2's vendored bin is the
+ *   - PATH must be APPENDED, so the image's own toolchain wins and jr2's vendored bin is the
  *     fallback — prepending would silently shadow a toolchain someone pinned in their own image.
  *     `/proc/1/environ` CANNOT see this: it is frozen at execve and never reflects an in-process
  *     setenv. What the append exists for is inheritance — Working tools spawn with no env override
@@ -498,14 +498,14 @@ Then("the Harness container satisfies the injection contracts", async function (
   const script = [
     `git --version >/dev/null`,
     `[ "$(id -u)" = 1000 ]`,
-    `[ "$HOME" = /home/j2 ]`,
-    `touch "$HOME/.j2-home-probe"`,
+    `[ "$HOME" = /home/jr2 ]`,
+    `touch "$HOME/.jr2-home-probe"`,
     // The work group reached the pod as fsGroup, so every container process holds it (ADR-0005).
     `id -G | tr ' ' '\\n' | grep -qx 2000`,
     // Absolute, both of them: the vendored pair lives ONLY on the mounted volume, and this shell's
     // PATH is the image's own — which is exactly the point.
-    `/opt/j2/bin/node -e ''`,
-    `/opt/j2/bin/rg --version >/dev/null`,
+    `/opt/jr2/bin/node -e ''`,
+    `/opt/jr2/bin/rg --version >/dev/null`,
     `printf 'umask=%s\\n' "$(sed -n 's/^Umask:[[:space:]]*//p' /proc/1/status)"`,
     `printf 'node=%s\\n' "$(command -v node)"`,
   ].join("\n");
@@ -520,7 +520,11 @@ Then("the Harness container satisfies the injection contracts", async function (
   assert.equal(read("umask"), "0002", "the Harness runs at umask 002 — ADR-0005's defence in depth outside repo trees");
 
   const nodePath = read("node");
-  assert.notEqual(nodePath, "/opt/j2/bin/node", `the image's own node is what a shell resolves; resolved: ${nodePath}`);
+  assert.notEqual(
+    nodePath,
+    "/opt/jr2/bin/node",
+    `the image's own node is what a shell resolves; resolved: ${nodePath}`,
+  );
   assert.ok(nodePath, "the image's own node is on PATH");
 
   // The PATH append, observed where it exists: in a CHILD. The marker literal never appears in
@@ -529,30 +533,30 @@ Then("the Harness container satisfies the injection contracts", async function (
   await waitForAttached(this); // the turn cannot exist before the workspace finished attaching
   assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
   const provider = this.provider;
-  await provider.release("bash", { command: `printf 'j2-path-%s\\n' "probe:$PATH"` });
+  await provider.release("bash", { command: `printf 'jr2-path-%s\\n' "probe:$PATH"` });
   let childPath = "";
   for (let i = 0; i < 240 && !childPath; i++) {
     for (const c of provider.calls) {
-      const m = c.stream ? /j2-path-probe:([^"\\]+)/.exec(c.raw) : null;
+      const m = c.stream ? /jr2-path-probe:([^"\\]+)/.exec(c.raw) : null;
       if (m) childPath = m[1]!;
     }
     if (!childPath) await sleep(500);
   }
   assert.ok(childPath, `no provider request ever carried the PATH probe (${provider.calls.length} recorded)`);
   assert.ok(
-    childPath.endsWith(":/opt/j2/bin"),
-    `the Harness APPENDS /opt/j2/bin and its tool children inherit it; the child saw "${childPath}"`,
+    childPath.endsWith(":/opt/jr2/bin"),
+    `the Harness APPENDS /opt/jr2/bin and its tool children inherit it; the child saw "${childPath}"`,
   );
   assert.ok(
-    !childPath.startsWith("/opt/j2/bin"),
+    !childPath.startsWith("/opt/jr2/bin"),
     `…and never prepends it — the image's toolchain must come first; the child saw "${childPath}"`,
   );
 });
 
 /**
  * ADR-0037/0005: `kubectl exec -c harness` hands a human the agent's tools, worktrees, and files —
- * and, because j2 overrides the container's COMMAND and nothing else, the environment the image's
- * author built. images/default's WORKDIR is /srv/j2-e2e, which the retired wrap could not have
+ * and, because jr2 overrides the container's COMMAND and nothing else, the environment the image's
+ * author built. images/default's WORKDIR is /srv/jr2-e2e, which the retired wrap could not have
  * produced (it forced /work), so where the shell lands is the assertion that the image ran
  * byte-for-byte.
  */
@@ -562,10 +566,10 @@ Then(
     const pod = (await waitForReadySandbox(this)).metadata.name;
     // No `-w`: the landing directory is the IMAGE's WORKDIR. It has no effect on the Agent — every
     // Working tool carries its own cwd — which is why the image is free to choose it.
-    const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", "pwd && j2-toolchain"]);
+    const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", "pwd && jr2-toolchain"]);
     const [landed, toolchain] = out.trim().split("\n");
-    assert.equal(landed, workdir, "exec lands in the image's own WORKDIR — j2 overrides only the command");
-    assert.equal(toolchain, "j2-toolchain-ok", "the human gets the Sandbox Image's own tools, not j2's");
+    assert.equal(landed, workdir, "exec lands in the image's own WORKDIR — jr2 overrides only the command");
+    assert.equal(toolchain, "jr2-toolchain-ok", "the human gets the Sandbox Image's own tools, not jr2's");
   },
 );
 
@@ -579,7 +583,7 @@ Then(
   "a file created under umask 077 in repo {string} branch {string} is group-writable",
   async function (this: E2EWorld, repo: string, branch: string): Promise<void> {
     const pod = (await waitForReadySandbox(this)).metadata.name;
-    const probe = `/work/${repo}/${branch}/.j2-acl-probe`;
+    const probe = `/work/${repo}/${branch}/.jr2-acl-probe`;
     const script = `umask 077; rm -f '${probe}'; touch '${probe}'; stat -c %a '${probe}'; rm -f '${probe}'`;
     const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script]);
     assert.equal(out.trim(), "664", "the default ACL governs creation modes, not the writer's umask (ADR-0005)");
@@ -629,20 +633,20 @@ Then(
 );
 
 /**
- * The Repo as the INSTANCE reports it (ADR-0048/0051): `j2 status` with no run asks the
+ * The Repo as the INSTANCE reports it (ADR-0048/0051): `jr2 status` with no run asks the
  * Orchestrator for every Repo resource and its per-node state, which is the cache agent's own
  * account. A Sandbox reached Ready only because the cache was present and fetched on its node, so
  * this is the same fact read from the other side — the side a human asks when a clone will not.
  * The string is the url; the report is keyed by the cache key derived from it.
  */
 Then(
-  "j2 status reports repo {string} present on the node",
+  "jr2 status reports repo {string} present on the node",
   async function (this: E2EWorld, url: string): Promise<void> {
     const key = repoKey(url);
     let last: RepoStatus | undefined;
     for (let i = 0; i < 60; i++) {
       const r = await this.runCli(["status"]);
-      assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+      assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
       const { dataPlane, repos } = this.resultJson<{ dataPlane: boolean; repos: RepoStatus[] }>();
       assert.equal(dataPlane, true, "an instance whose Machines compose a Sandbox has a data plane");
       last = repos.find((repo) => repo.key === key);
@@ -816,13 +820,13 @@ Given(
   "a labeled image no live root names is loaded onto every node",
   { timeout: 300_000 },
   async function (this: E2EWorld): Promise<void> {
-    const ref = `j2-e2e-garbage:${randomBytes(6).toString("hex")}`;
+    const ref = `jr2-e2e-garbage:${randomBytes(6).toString("hex")}`;
     // A one-layer image from `scratch`: kilobytes, no base to pull, and a real image config to
     // carry the stamp. The layer's content is random, so the load is a real import every time
     // rather than a re-tag of an id the node already holds. The labels go on the COMMAND LINE,
-    // never in the Dockerfile — the same rule `j2 up` follows (ADR-0037/0039) — and `j2.dev/kind`
-    // is what makes the image j2's to take at all.
-    const dir = await mkdtemp(join(tmpdir(), "j2-e2e-garbage-"));
+    // never in the Dockerfile — the same rule `jr2 up` follows (ADR-0037/0039) — and `jr2.dev/kind`
+    // is what makes the image jr2's to take at all.
+    const dir = await mkdtemp(join(tmpdir(), "jr2-e2e-garbage-"));
     try {
       await writeFile(join(dir, "marker"), `${ref} ${randomBytes(16).toString("hex")}\n`);
       await writeFile(join(dir, "Dockerfile"), "FROM scratch\nCOPY marker /marker\n");
@@ -831,9 +835,9 @@ Given(
         "-t",
         ref,
         "--label",
-        "j2.dev/kind=sandbox",
+        "jr2.dev/kind=sandbox",
         "--label",
-        `j2.dev/instance=${this.namespace}`,
+        `jr2.dev/instance=${this.namespace}`,
         dir,
       ]);
     } finally {
@@ -860,9 +864,9 @@ Given(
 );
 
 When("I sweep the cluster's images", { timeout: 300_000 }, async function (this: E2EWorld): Promise<void> {
-  // No `-n`: `j2 gc` asks the whole cluster what it still needs, so it addresses no instance.
+  // No `-n`: `jr2 gc` asks the whole cluster what it still needs, so it addresses no instance.
   const r = await this.runCli(["gc"], { namespaced: false });
-  assert.equal(r.code, 0, `j2 gc failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 gc failed: ${r.stderr}`);
 });
 
 Then("no node holds the unreachable image any more", async function (this: E2EWorld): Promise<void> {
@@ -932,12 +936,12 @@ async function fetchInSeat(world: E2EWorld, seat: "harness" | "user", remote: st
     "--",
     "sh",
     "-c",
-    `git -C '${clonePath(slot)}' fetch ${remote} 2>&1; echo "j2-fetch-exit=$?"`,
+    `git -C '${clonePath(slot)}' fetch ${remote} 2>&1; echo "jr2-fetch-exit=$?"`,
   ]);
   world.fetchMs = Date.now() - started;
   assert.match(
     world.podSays,
-    /j2-fetch-exit=0\b/,
+    /jr2-fetch-exit=0\b/,
     `\`git fetch ${remote}\` failed in the ${seat} seat — the program serves the cache even when the ` +
       `remote fetch fails (ADR-0053), so a NON-zero exit means git never reached the program at all: ` +
       `${world.podSays.trim()}`,
@@ -958,7 +962,7 @@ When(
   },
 );
 
-/** The Agent's seat. `git fetch` is the verb — there is no j2 verb for this, and nothing in the
+/** The Agent's seat. `git fetch` is the verb — there is no jr2 verb for this, and nothing in the
  * Menu: a fetch is not something the Agent SAYS, it is something it does (ADR-0053). */
 When(
   "the Harness container fetches {string} in repo {string}",
@@ -968,8 +972,8 @@ When(
   },
 );
 
-/** The human's seat (ADR-0005/0053): the same fetch, from an image with no j2 knowledge, no env of
- * j2's, and no credential of its own — reaching a remote it cannot address, through a static
+/** The human's seat (ADR-0005/0053): the same fetch, from an image with no jr2 knowledge, no env of
+ * jr2's, and no credential of its own — reaching a remote it cannot address, through a static
  * program on a read-only mount. */
 When(
   "the User Container fetches {string} in repo {string}",
@@ -1042,10 +1046,10 @@ Then(
     const key = repoKey(url);
     const name = (await waitForReadySandbox(this)).metadata.name;
     const cr = JSON.parse(await kubectl(this, ["get", "sandbox", name, "-o", "json"])) as SandboxCR;
-    const mark = cr.metadata.annotations?.[`j2.dev/asked-${key}`];
+    const mark = cr.metadata.annotations?.[`jr2.dev/asked-${key}`];
     assert.ok(
       mark,
-      `the Sandbox carries j2.dev/asked-${key} (annotations: ${JSON.stringify(cr.metadata.annotations)})`,
+      `the Sandbox carries jr2.dev/asked-${key} (annotations: ${JSON.stringify(cr.metadata.annotations)})`,
     );
     const entry = cr.status?.repos?.find((r) => r.key === key);
     assert.ok(entry, `the Sandbox reports a standing entry for ${key} (status: ${JSON.stringify(cr.status)})`);
@@ -1094,7 +1098,7 @@ Then(
     const { identity, key } = repoIdentity(url);
     assert.match(
       fetch,
-      new RegExp(`^origin\\s+ext::/opt/j2/bin/j2-upload-pack %S ${rx(identity)}\\s+\\(fetch\\)$`),
+      new RegExp(`^origin\\s+ext::/opt/jr2/bin/jr2-upload-pack %S ${rx(identity)}\\s+\\(fetch\\)$`),
       `origin fetches through the program, named by identity (got: ${JSON.stringify(lines)})`,
     );
     assert.ok(!fetch.includes(key), `the url carries the identity, never the derived cache key ${key}`);
@@ -1107,7 +1111,7 @@ Then(
 );
 
 /**
- * The seat's half of ADR-0053: `/opt/j2` is there, holding the program, and it is READ-ONLY —
+ * The seat's half of ADR-0053: `/opt/jr2` is there, holding the program, and it is READ-ONLY —
  * ADR-0005's `/repos` argument applied once more, not a second exception. Presence is asserted
  * first and for a reason: a seat with no mount at all would also refuse the write, and would then
  * pass a test that only watched the write fail.
@@ -1124,7 +1128,7 @@ Then(
       "--",
       "sh",
       "-c",
-      `[ -x /opt/j2/bin/j2-upload-pack ] && echo program=present; touch '${mount}/.j2-ro-probe' 2>/dev/null && echo wrote=yes || echo wrote=no`,
+      `[ -x /opt/jr2/bin/jr2-upload-pack ] && echo program=present; touch '${mount}/.jr2-ro-probe' 2>/dev/null && echo wrote=yes || echo wrote=no`,
     ]);
     assert.match(out, /program=present/, `the runtime volume reached the User Container (said: ${out.trim()})`);
     assert.match(out, /wrote=no/, `${mount} is mounted read-only in the User Container (said: ${out.trim()})`);
@@ -1133,7 +1137,7 @@ Then(
 
 // --- the Instance Harness (ADR-0031) ---------------------------------------------------------------
 //
-// A `workspace: "none"` Agent's Turn is admitted at the Instance Harness — the Deployment `j2 up`
+// A `workspace: "none"` Agent's Turn is admitted at the Instance Harness — the Deployment `jr2 up`
 // converged because a registered Machine carries such a definition — and nowhere else, even when
 // the Machine invoking it sits inside a `workspace()`. Where a conversation lives is a fact only
 // the Harnesses themselves can answer (ADR-0024/0027: a settlement is invisible to the
@@ -1143,9 +1147,9 @@ Then(
 /** The Instance Harness's Deployment/Service/pod-label name — spelled the way `kubectl get pods`
  * shows it (ADR-0010: a black-box step names what a user sees, and imports nothing from the kit
  * it tests at arm's length). */
-const INSTANCE_HARNESS = "j2-instance-harness";
+const INSTANCE_HARNESS = "jr2-instance-harness";
 
-/** The Instance Harness's Running pod in this scenario's namespace — converged by `j2 up`
+/** The Instance Harness's Running pod in this scenario's namespace — converged by `jr2 up`
  * whenever a carried definition declares `workspace: "none"`, which the kind instance's `advisor`
  * does, so it is there in every scenario whether or not one uses it. */
 async function instanceHarnessPod(world: E2EWorld): Promise<string> {
@@ -1163,7 +1167,7 @@ async function instanceHarnessPod(world: E2EWorld): Promise<string> {
     await sleep(1000);
   }
   throw new Error(
-    `no Running ${INSTANCE_HARNESS} pod in ${world.namespace} — \`j2 up\` converges it whenever a carried ` +
+    `no Running ${INSTANCE_HARNESS} pod in ${world.namespace} — \`jr2 up\` converges it whenever a carried ` +
       `Agent definition declares workspace: "none" (ADR-0031); the kind instance's advisor does`,
   );
 }
@@ -1183,7 +1187,7 @@ async function conversationStatus(world: E2EWorld, pod: string, agent: string, i
 /** The run's instance id — the iid every Agent of the kind fixtures is admitted under. */
 async function runInstanceId(world: E2EWorld): Promise<string> {
   const r = await world.runCli(["status", world.runId!]);
-  assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   const { instanceId } = world.resultJson<{ instanceId: string }>();
   assert.ok(instanceId, "the run reports its instance id");
   return instanceId;
@@ -1205,7 +1209,7 @@ When(
 /**
  * ADR-0028's `"none"`, seen on the wire: the turn's request carries this state's one Menu tool and
  * NOT ONE of the Working tools — not read-only, not bash, nothing. The stock Harness under
- * `J2_MENU_ONLY` is what withholds them, so this is the Instance Harness's own contract, asserted
+ * `JR2_MENU_ONLY` is what withholds them, so this is the Instance Harness's own contract, asserted
  * off the request it actually sent.
  */
 Then(
@@ -1216,14 +1220,14 @@ Then(
     let seen: string[][] = [];
     for (let i = 0; i < 240; i++) {
       seen = provider.calls.filter((c) => c.stream).map((c) => c.tools);
-      if (seen.some((tools) => tools.includes(`mcp__j2__${tool}`))) break;
+      if (seen.some((tools) => tools.includes(`mcp__jr2__${tool}`))) break;
       await sleep(500);
     }
-    const turn = seen.find((tools) => tools.includes(`mcp__j2__${tool}`));
-    assert.ok(turn, `no turn was offered "mcp__j2__${tool}" (offered: ${JSON.stringify(seen)})`);
+    const turn = seen.find((tools) => tools.includes(`mcp__jr2__${tool}`));
+    assert.ok(turn, `no turn was offered "mcp__jr2__${tool}" (offered: ${JSON.stringify(seen)})`);
     assert.deepEqual(
-      turn.filter((t) => t.startsWith("mcp__j2__")),
-      [`mcp__j2__${tool}`],
+      turn.filter((t) => t.startsWith("mcp__jr2__")),
+      [`mcp__jr2__${tool}`],
       "the turn sees this state's Menu and no other's (ADR-0015)",
     );
     const working = turn.filter((t) => WORKING_TOOLS.includes(t));
@@ -1271,20 +1275,20 @@ Then("no Sandbox was provisioned for the run", async function (this: E2EWorld): 
 // --- a Repo that cannot sync (ADR-0048) ------------------------------------------------------------
 
 /**
- * The instance's own report of a Repo whose every attempt fails: `j2 status` with no run lists
+ * The instance's own report of a Repo whose every attempt fails: `jr2 status` with no run lists
  * the resource with the cache agent's per-node entry — absent (no clone), not synced, and git's
  * words as `lastError` — and spells the same on stderr, the line a human acts on. Polled, because
  * the boot states the resource and the agent's probe lands a moment later.
  */
 Then(
-  "j2 status reports repo {string} absent with git's error",
+  "jr2 status reports repo {string} absent with git's error",
   { timeout: 180_000 },
   async function (this: E2EWorld, url: string): Promise<void> {
     const key = repoKey(url);
     let last: RepoStatus | undefined;
     for (let i = 0; i < 90; i++) {
       const r = await this.runCli(["status"]);
-      assert.equal(r.code, 0, `j2 status must still answer with a degraded Repo (ADR-0048): ${r.stderr}`);
+      assert.equal(r.code, 0, `jr2 status must still answer with a degraded Repo (ADR-0048): ${r.stderr}`);
       const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
       last = repos.find((repo) => repo.key === key);
       const failed = last?.nodes.find((n) => !n.present && !n.synced && n.lastError);
@@ -1307,7 +1311,7 @@ Then(
  * The moment the degradation bites is the moment it is reported, to the run that owns the
  * consequence (ADR-0048): the operator holds the Sandbox on its Repo, the cache agent's clone onto
  * the pod's node fails, and the provision fails BY NAME — the Repo, the node, git's words — rather
- * than burning the Repo budget. The fault is the run's, readable through `j2 status <runId>`.
+ * than burning the Repo budget. The fault is the run's, readable through `jr2 status <runId>`.
  */
 Then(
   "the run faults naming repo {string} and git's error",
@@ -1332,7 +1336,7 @@ Then(
 
 // --- the Repo sweep (ADR-0051) ---------------------------------------------------------------------
 //
-// `j2 gc --repo-ttl` deletes the RESOURCE; the bytes on each node are the cache agent's to
+// `jr2 gc --repo-ttl` deletes the RESOURCE; the bytes on each node are the cache agent's to
 // reclaim, once nothing there mounts them. Both halves are asserted, and the second on the node
 // itself: a sweep whose narration says "swept 1" but whose bare clone stays on disk is the
 // defect this scenario exists to see. The TTL is one minute rather than `0`, and the sweep is
@@ -1340,8 +1344,8 @@ Then(
 // so a zero TTL would take another scenario's per-run Repo out from under its live Sandbox.
 
 /** One Repo's bare clone on a node (ADR-0051): `<hostPath>/<namespace>/repos/<key>`, read on the
- * kind node itself — the layout `j2 status`'s runbook names for a human with node access. */
-const cacheDirOn = (namespace: string, key: string): string => `/var/lib/j2/${namespace}/repos/${key}`;
+ * kind node itself — the layout `jr2 status`'s runbook names for a human with node access. */
+const cacheDirOn = (namespace: string, key: string): string => `/var/lib/jr2/${namespace}/repos/${key}`;
 
 /** Every node of the cluster that still holds this Repo's cache directory. */
 async function nodesHoldingCache(world: E2EWorld, key: string): Promise<string[]> {
@@ -1370,10 +1374,10 @@ When(
   async function (this: E2EWorld, ttl: string, url: string): Promise<void> {
     const key = repoKey(url);
     for (let i = 0; i < 24; i++) {
-      // No `-n`: `j2 gc` reads every instance namespace on the cluster (ADR-0039/0051).
+      // No `-n`: `jr2 gc` reads every instance namespace on the cluster (ADR-0039/0051).
       const r = await this.runCli(["gc", "--repo-ttl", ttl], { namespaced: false });
-      assert.equal(r.code, 0, `j2 gc failed: ${r.stderr}`);
-      const left = await kubectl(this, ["get", "repos.core.j2.dev", key, "--ignore-not-found", "-o", "name"]);
+      assert.equal(r.code, 0, `jr2 gc failed: ${r.stderr}`);
+      const left = await kubectl(this, ["get", "repos.core.jr2.dev", key, "--ignore-not-found", "-o", "name"]);
       if (!left.trim()) {
         assert.match(r.stderr, /repos: swept \d+ Repo resource\(s\)/, "the sweep narrates what it took");
         return;
@@ -1384,18 +1388,18 @@ When(
   },
 );
 
-Then("j2 status no longer lists repo {string}", async function (this: E2EWorld, url: string): Promise<void> {
+Then("jr2 status no longer lists repo {string}", async function (this: E2EWorld, url: string): Promise<void> {
   const key = repoKey(url);
   const r = await this.runCli(["status"]);
-  assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
   assert.ok(!repos.some((repo) => repo.key === key), `Repo ${key} is still listed after the sweep`);
 });
 
-Then("j2 status still lists repo {string} as bound", async function (this: E2EWorld, url: string): Promise<void> {
+Then("jr2 status still lists repo {string} as bound", async function (this: E2EWorld, url: string): Promise<void> {
   const key = repoKey(url);
   const r = await this.runCli(["status"]);
-  assert.equal(r.code, 0, `j2 status failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
   const bound = repos.find((repo) => repo.key === key);
   assert.equal(
@@ -1425,7 +1429,7 @@ Then(
 
 // --- a shipped Machine, registered the way a consumer registers it (ADR-0054) ----------------------
 //
-// `@j2/machines` ships Machines for END USERS, and the only proof one works in j2 is the stock
+// `@jr2/machines` ships Machines for END USERS, and the only proof one works in jr2 is the stock
 // Harness driving it in a real Sandbox — so every Machine the kit ships owns a scenario here, over
 // `workflows/task.ts`, which is one `customize` line and nothing else. What these steps read is the
 // Machine's own surface: the Gate it parks at, the `meta` it publishes there, the branch it chose,
@@ -1433,11 +1437,11 @@ Then(
 //
 // Only two steps know they are about `task`: its conversation address and its default branch. The
 // rest is how a human works any parked run — find the Gate by asking the run, deliver with
-// `j2 send`, read the branch off the Gate's own meta.
+// `jr2 send`, read the branch off the Gate's own meta.
 
 /**
  * Where `task`'s coder conversation lives on the pod (ADR-0016/0054). The Machine PINS it —
- * `conversation: "coder"`, `scope: "g<generation>"` — so j2 derives `<runId>/<pin>/<agent>/<scope>`
+ * `conversation: "coder"`, `scope: "g<generation>"` — so jr2 derives `<runId>/<pin>/<agent>/<scope>`
  * and every Turn of the run addresses that one conversation. Spelled out rather than discovered
  * because it IS the claim: a `request_changes` that briefed a fresh coder would derive a different
  * iid, and this address would answer 404 with the first prompt nowhere on the pod. It is also how a
@@ -1470,9 +1474,9 @@ async function conversationOf(world: E2EWorld, agent: string, iid: string): Prom
 }
 
 /**
- * The run's ONE open Gate, read off `j2 status` — the discovery listing (ADR-0011), which is where
- * a human learns the id `j2 send --gate` wants. Polled, because parking is a transition like any
- * other; "exactly one" is asserted because a second live Gate would make `j2 send` ambiguous for
+ * The run's ONE open Gate, read off `jr2 status` — the discovery listing (ADR-0011), which is where
+ * a human learns the id `jr2 send --gate` wants. Polled, because parking is a transition like any
+ * other; "exactly one" is asserted because a second live Gate would make `jr2 send` ambiguous for
  * the human too.
  */
 async function openGate(world: E2EWorld): Promise<OpenGate> {
@@ -1539,8 +1543,8 @@ Then(
 );
 
 /**
- * The default branch (ADR-0054): `j2/task-<run id>`, where the id is the run's seed Instance ID —
- * the one `j2 status` reports, and the only per-run id a door mapper can see. Two concurrent runs
+ * The default branch (ADR-0054): `jr2/task-<run id>`, where the id is the run's seed Instance ID —
+ * the one `jr2 status` reports, and the only per-run id a door mapper can see. Two concurrent runs
  * of the same Workflow therefore cut two branches and neither owns the other's.
  *
  * The `worktree` beside it — the first slot's, `task`'s own convention — is what makes the Gate an INSPECTION window rather than a notification:
@@ -1552,11 +1556,11 @@ Then(
 Then(
   // The `/` is escaped because a bare one opens an alternation in a Cucumber expression; the step
   // reads unescaped in the .feature, which is where it has to be readable.
-  "the Gate names the branch j2\\/task-<run id> and the worktree it was cut in",
+  "the Gate names the branch jr2\\/task-<run id> and the worktree it was cut in",
   async function (this: E2EWorld): Promise<void> {
     const gate = await openGate(this);
     const instanceId = await runInstanceId(this);
-    assert.equal(gate.meta?.branch, `j2/task-${instanceId}`, "the branch is named for the run (ADR-0054)");
+    assert.equal(gate.meta?.branch, `jr2/task-${instanceId}`, "the branch is named for the run (ADR-0054)");
     const workdir = String(gate.meta?.worktree ?? "");
     assert.ok(workdir, `the Gate carries the worktree a human execs into (got: ${JSON.stringify(gate.meta)})`);
     const pod = (await waitForReadySandbox(this)).metadata.name;
@@ -1593,7 +1597,7 @@ Then("the turn behind it is over at the Harness", { timeout: 180_000 }, async fu
   throw new Error(`no turn of /agents/coder/${iid} ever settled — the state exit owes the submission an end`);
 });
 
-/** The human's half of the loop, through the surface a human has (ADR-0011/0013): `j2 send` into
+/** The human's half of the loop, through the surface a human has (ADR-0011/0013): `jr2 send` into
  * the Gate the run listed. An Agent cannot reach this route at all — a Sandbox token is refused
  * here unconditionally, which is the line between reporting an outcome and approving one's own
  * work. */
@@ -1609,13 +1613,13 @@ When("I send {string} to the Gate with notes {string}", async function (this: E2
     "--input",
     JSON.stringify({ notes }),
   ]);
-  assert.equal(r.code, 0, `j2 send ${event} failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 send ${event} failed: ${r.stderr}`);
 });
 
 When("I send {string} to the Gate", async function (this: E2EWorld, event: string): Promise<void> {
   const gate = await openGate(this);
   const r = await this.runCli(["send", this.runId!, "--gate", gate.gate, "--event", event]);
-  assert.equal(r.code, 0, `j2 send ${event} failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 send ${event} failed: ${r.stderr}`);
 });
 
 /**
@@ -1723,10 +1727,10 @@ async function allPodLogs(world: E2EWorld): Promise<string> {
 // of the window it is spending. That converts 90s from a number read off two GitHub issues into a
 // measurement of THIS cluster, with a regression test around it.
 
-/** The marker the product emits. A contract: `@j2/orchestrator`'s wire client and `@j2/adapter`
+/** The marker the product emits. A contract: `@jr2/orchestrator`'s wire client and `@jr2/adapter`
  * both format it, and neither import can enforce the agreement — the tests on each side quote this
  * exact shape, and a rename made in only one place checks nothing while still passing. */
-const ROUTABILITY_MARKER = "j2.routability";
+const ROUTABILITY_MARKER = "jr2.routability";
 
 /**
  * TWO budgets, because a Service refuses in two ways that cost differently — and the first live
@@ -1793,7 +1797,7 @@ function parseRoutability(text: string, scenario: string): RoutabilityRetry[] {
 async function collectRoutability(world: E2EWorld, scenario: string): Promise<void> {
   // ONE source, not two: `allPodLogs` already enumerates every pod in the namespace — the
   // Orchestrator's, which owns the admission seat, and the Sandbox's, whose Adapter container owns
-  // the surface seat. Adding `deployment/j2-orchestrator` beside it would count admissions twice.
+  // the surface seat. Adding `deployment/jr2-orchestrator` beside it would count admissions twice.
   routabilityObserved.push(...parseRoutability(await probe(() => allPodLogs(world)), scenario));
 }
 
@@ -1804,7 +1808,7 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
   await mkdir(dir, { recursive: true });
 
   const status = await probe(async () => (await world.runCli(["status", world.runId ?? ""])).stdout);
-  // The iid the Harness is admitted under — read off `j2 status`, which is also the dump's copy.
+  // The iid the Harness is admitted under — read off `jr2 status`, which is also the dump's copy.
   const iid = (() => {
     try {
       return (JSON.parse(status.trim().split("\n").pop() ?? "{}") as { instanceId?: string }).instanceId;
@@ -1824,8 +1828,8 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
         calls.map((c) => `#${c.seq} stream=${c.stream} model=${c.model ?? "?"} tools=${c.tools.join(",")}`).join("\n") +
         "\n",
     ],
-    ["j2-status.json", status],
-    ["harness-history.json", iid ? probe(() => harnessHistory(world, iid)) : "<no instanceId in j2 status>\n"],
+    ["jr2-status.json", status],
+    ["harness-history.json", iid ? probe(() => harnessHistory(world, iid)) : "<no instanceId in jr2 status>\n"],
     ["pods.txt", probe(() => kubectl(world, ["get", "pods", "-o", "wide"]))],
     ["sandboxes.yaml", probe(() => kubectl(world, ["get", "sandbox", "-o", "yaml"]))],
     // The other side of an ask (ADR-0051/0053): the cache agent writes its per-node verdict here —
@@ -1843,7 +1847,7 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
     ["logs.txt", probe(() => allPodLogs(world))],
     [
       "logs-orchestrator.txt",
-      probe(() => kubectl(world, ["logs", "--prefix", "--timestamps", "--tail=-1", "deployment/j2-orchestrator"])),
+      probe(() => kubectl(world, ["logs", "--prefix", "--timestamps", "--tail=-1", "deployment/jr2-orchestrator"])),
     ],
   ];
   for (const [name, content] of files) {
@@ -1867,7 +1871,7 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
     });
   }
   // A scenario that failed before (or during) the sweep leaves its planted image behind; the next
-  // `j2 gc` collects it either way — a labeled image no root names is exactly what the sweep is
+  // `jr2 gc` collects it either way — a labeled image no root names is exactly what the sweep is
   // for — but the tier must not depend on that to stay clean. Every ref the load added goes, since
   // taking the tag alone is what leaves the bytes behind. `ctr images rm` is delete-if-present.
   if (this.plantedImage) await exec("docker", ["rmi", this.plantedImage]).catch(() => {});
@@ -1876,7 +1880,7 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
     await exec("docker", ["exec", node, "ctr", "-n", "k8s.io", "images", "rm", ...refs]).catch(() => {});
   }
   if (!this.runId) return;
-  await kubectl(this, ["delete", "sandbox", "-l", `j2.dev/run=${this.runId}`, "--ignore-not-found"]).catch(() => {});
+  await kubectl(this, ["delete", "sandbox", "-l", `jr2.dev/run=${this.runId}`, "--ignore-not-found"]).catch(() => {});
 });
 
 /**

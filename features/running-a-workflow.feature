@@ -3,8 +3,8 @@ Feature: Running a workflow
   criterion and runs against its own isolated instance + orchestrator.
 
   Rule: a run streams activity and prints its terminal result
-    `j2 run` blocks and attaches by default — human-readable status on stderr, the one machine-readable
-    terminal RunStatus on stdout — so `j2 run ping` informs a person while `j2 run ping | jq` yields data.
+    `jr2 run` blocks and attaches by default — human-readable status on stderr, the one machine-readable
+    terminal RunStatus on stdout — so `jr2 run ping` informs a person while `jr2 run ping | jq` yields data.
 
     Background:
       Given a fresh instance
@@ -22,8 +22,8 @@ Feature: Running a workflow
       And the command exits 0
 
   Rule: live and settled runs are observable
-    A still-running workflow shows up in `j2 runs`; a settled one is read through to the store by
-    `j2 status`. (The instant `ping` scaffold can't stay live, so this Rule also serves a `loop`.)
+    A still-running workflow shows up in `jr2 runs`; a settled one is read through to the store by
+    `jr2 status`. (The instant `ping` scaffold can't stay live, so this Rule also serves a `loop`.)
 
     Background:
       Given a fresh instance
@@ -42,7 +42,7 @@ Feature: Running a workflow
       And the reply is "pong: hi"
 
   Rule: logs replays a run's status, and follows a live one until it settles
-    ADR-0009. `j2 logs <runId>` re-attaches to the run's feed: the orchestrator replays the current
+    ADR-0009. `jr2 logs <runId>` re-attaches to the run's feed: the orchestrator replays the current
     status on attach, so even a settled run answers with where it ended. `-f` keeps streaming
     deltas and returns on its own once the run is no longer active — the verb for watching a run
     someone else started, or one `run --detach` let go of.

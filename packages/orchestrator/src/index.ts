@@ -1,13 +1,13 @@
-// @j2/orchestrator — the deployed app that runs Machines: workflow config, the agent + gate
+// @jr2/orchestrator — the deployed app that runs Machines: workflow config, the agent + gate
 // delivery surfaces, the duplex Actor over the Harness wire, and durable snapshot persistence
-// (ADR-0002/0006/0007). Builds on the `@j2/agent-protocol` wire contract.
+// (ADR-0002/0006/0007). Builds on the `@jr2/agent-protocol` wire contract.
 //
 // It does NOT speak MCP (ADR-0013): the Agent's MCP surface is hosted by the Adapter, in the
 // Sandbox. What lives here is the registration table and two thin HTTP adapters over it.
 
 // The wire contract, re-exported: a workflow authors against ONE package (`defineEvent`,
-// `j2Setup`, `workspace`, … all import from "@j2/orchestrator" — ADR-0015).
-export * from "@j2/agent-protocol";
+// `jr2Setup`, `workspace`, … all import from "@jr2/orchestrator" — ADR-0015).
+export * from "@jr2/agent-protocol";
 export * from "./agent.ts";
 export * from "./parts.ts";
 export * from "./customize.ts";

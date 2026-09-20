@@ -115,7 +115,7 @@ Feature: Agents and gates drive a run from outside
       And the run is absent from the runs list
 
   Rule: CANCEL ends a run, and ending it ends its Agents' turns
-    ADR-0025. `j2 send --event CANCEL` is the human saying "abandon this". It is not a park: the
+    ADR-0025. `jr2 send --event CANCEL` is the human saying "abandon this". It is not a park: the
     run settles `cancelled` rather than staying restorable, and the Agent it was waiting on stops
     being asked — and stops answering.
 

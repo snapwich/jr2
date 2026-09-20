@@ -4,7 +4,7 @@
 // run asks; a node clones on first demand), and
 // at first attach for a per-run url — and the operator's cache agent does the cloning and fetching
 // on every node that needs the repository. What comes back is that agent's per-node status, which
-// is what `j2 status` reports and what a provision waits on through the Sandbox's `Ready`.
+// is what `jr2 status` reports and what a provision waits on through the Sandbox's `Ready`.
 //
 // The port's kubectl implementation (`kubectlRepos`) drives the CRD the same way the Sandbox port
 // does (sandbox-kubectl.ts): shelling to `kubectl`, honoring the current kube context, with the
@@ -25,11 +25,11 @@
 // `ensure` of an existing unbound resource re-resolves the `secretRef` against the url that
 // stands — the first attach's spelling, which the run's own spelling never replaces — so a
 // `git.credentials` entry fixed after a failed clone reaches the cache at the next run, the path
-// the clone error and `j2 status` name (ADR-0048).
+// the clone error and `jr2 status` name (ADR-0048).
 //
 // The eviction clock is the RUN's: only an `ensure` stamps `last-attached`. The boot's `bind`
 // touches the label and the spec, never the clock, so a Repo the boot created and no run attached
-// carries no stamp and `j2 gc` dates it from its `creationTimestamp` — a boot is not an attach.
+// carries no stamp and `jr2 gc` dates it from its `creationTimestamp` — a boot is not an attach.
 
 import { credentialSecretFor, matchCredential, type GitCredential } from "./config.ts";
 import { ANNOTATION_REPO_IDENTITY, ANNOTATION_REPO_LAST_ATTACHED, LABEL_REPO_BOUND } from "./names.ts";
@@ -42,7 +42,7 @@ export type RepoNodeState = {
   present: boolean;
   /** The last attempt — a probe, a clone, or a fetch — succeeded. */
   synced: boolean;
-  /** Which of the three the last attempt was. A failed Probe is `j2 status`'s signal for a Repo
+  /** Which of the three the last attempt was. A failed Probe is `jr2 status`'s signal for a Repo
    * no pod on the node mounts yet; only a failed Clone fails a Sandbox waiting on that node. */
   attempted?: "Probe" | "Clone" | "Fetch";
   lastAttempt?: string;
@@ -59,7 +59,7 @@ export type RepoStatus = {
   /** The Binding's own spelling — what the cache clones. */
   url: string;
   identity?: string;
-  /** A registered Machine binds it — never evicted by `j2 gc`. */
+  /** A registered Machine binds it — never evicted by `jr2 gc`. */
   bound: boolean;
   /** When a run last attached it — the eviction clock for a Repo nothing binds. Absent while only
    * the boot has stated it: a bound Repo no run has attached yet. */
@@ -71,7 +71,7 @@ export type RepoStatus = {
 export interface RepoResources {
   /**
    * The boot's statement of a Machine's resolution (ADR-0051): create the resource if absent,
-   * otherwise restate its url, `secretRef`, and the bound label `j2 gc` honors — so a redeploy
+   * otherwise restate its url, `secretRef`, and the bound label `jr2 gc` honors — so a redeploy
    * that moved the url or the credential reaches the cache. The only caller that writes a BOUND
    * resource's spec, and never the eviction clock: a boot is not an attach. Resolves the
    * `git.credentials` entry for the identity into the `secretRef` the cache agent reads: an https
@@ -81,7 +81,7 @@ export interface RepoResources {
   bind(repo: { url: string; identity: string; key: string }): Promise<void>;
   /**
    * A provision's: create the resource if absent — labeled bound when a Machine's slot names
-   * it, so one born before the boot recorded it is not on `j2 gc`'s clock — and annotate it
+   * it, so one born before the boot recorded it is not on `jr2 gc`'s clock — and annotate it
    * attached now. An existing resource gets the clock; its url stands (the boot's statement, or
    * the first attach's), and a run of a Machine spelling the identity differently must not
    * rewrite it. One a Machine binds gets nothing else — the boot restates its credential. One
@@ -90,13 +90,13 @@ export interface RepoResources {
    */
   ensure(repo: { url: string; identity: string; key: string; bound: boolean }): Promise<void>;
   /** Drop the bound label from every resource whose key is not in `keys` — a slot unbound since
-   * the last deploy is a Repo `j2 gc` may now evict. */
+   * the last deploy is a Repo `jr2 gc` may now evict. */
   reconcileBound(keys: Iterable<string>): Promise<void>;
   list(): Promise<RepoStatus[]>;
 }
 
 /** The CRD's fully qualified plural — unambiguous to kubectl whatever else calls itself a repo. */
-const REPO_RESOURCE = "repos.core.j2.dev";
+const REPO_RESOURCE = "repos.core.jr2.dev";
 
 export type KubectlReposOptions = {
   /** The instance's namespace — the Repo resources live beside the Sandboxes that name them. */
@@ -106,7 +106,7 @@ export type KubectlReposOptions = {
   /** The instance's `git.credentials`, matched by prefix on the identity (config.ts). */
   credentials: readonly GitCredential[];
   /** Where a token entry's env var is read from (deployed: `process.env`, which the Instance
-   * Secret's `envFrom` populated at `j2 up`). Unset → the resource carries no `secretRef` and the
+   * Secret's `envFrom` populated at `jr2 up`). Unset → the resource carries no `secretRef` and the
    * clone is anonymous. */
   env: Record<string, string | undefined>;
   /** CR `spec.refreshInterval` — how often the cache agent fetches a warm cache. Default `5m`. */
@@ -126,13 +126,13 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
    * The Secret the cache agent spends for an https url, in Flux's shape (`username`/`password`),
    * so a Flux or Argo user reuses the Secret they have. Its name is derived from the entry's
    * `match`, so a redeploy finds its own and two entries never share one. Applied (create-or-
-   * update) on every ensure: a token rotated by `j2 up` reaches the Secret at the next boot.
+   * update) on every ensure: a token rotated by `jr2 up` reaches the Secret at the next boot.
    */
   const applyTokenSecret = async (name: string, password: string): Promise<void> => {
     const secret = {
       apiVersion: "v1",
       kind: "Secret",
-      metadata: { name, namespace: opts.namespace, labels: { "app.kubernetes.io/managed-by": "j2" } },
+      metadata: { name, namespace: opts.namespace, labels: { "app.kubernetes.io/managed-by": "jr2" } },
       type: "Opaque",
       stringData: { username: "x-access-token", password },
     };
@@ -142,7 +142,7 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
   /**
    * The `secretRef` for one url: the entry the identity matches, then the url's scheme picks
    * which of its fields applies (config.ts). A token entry whose env var is unset writes no ref —
-   * the clone is anonymous, and `j2 status` will show git's refusal if the host wanted one.
+   * the clone is anonymous, and `jr2 status` will show git's refusal if the host wanted one.
    */
   const secretRefFor = async (url: string, identity: string): Promise<{ name: string } | undefined> => {
     const cred = credentialSecretFor(url, matchCredential(identity, opts.credentials));
@@ -164,7 +164,7 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
     return {
       secretRef,
       cr: {
-        apiVersion: "core.j2.dev/v1alpha1",
+        apiVersion: "core.jr2.dev/v1alpha1",
         kind: "Repo",
         metadata: {
           name: repo.key,
@@ -210,7 +210,7 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
       const { secretRef, cr } = await resourceFor({ ...repo, bound: true });
       if (await create(cr)) return;
       // Already there from an earlier deploy: ONE merge patch says what the Machine resolves now —
-      // url, credential, and the label `j2 gc` honors. `secretRef: null` clears a credential the
+      // url, credential, and the label `jr2 gc` honors. `secretRef: null` clears a credential the
       // config no longer names, so a dropped entry does not linger. The clock is not touched: it
       // records attaches, and a boot is not one.
       await patch(repo.key, {
@@ -250,7 +250,7 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
       try {
         ({ stdout } = await exec(["get", REPO_RESOURCE, ...base, "-l", `${LABEL_REPO_BOUND}=true`, "-o", "json"]));
       } catch (err) {
-        // A cluster with no `repos.core.j2.dev` resource type holds no Repos, so "nothing to
+        // A cluster with no `repos.core.jr2.dev` resource type holds no Repos, so "nothing to
         // unlabel" is the complete answer — the one read that may answer none. An instance that
         // binds nothing runs this reconcile on every boot (server.ts), and `operator.manage: false`
         // without the operator is exactly the cluster where the type is absent: an error line there

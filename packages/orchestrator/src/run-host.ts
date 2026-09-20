@@ -22,7 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
-import type { EventSemantics } from "@j2/agent-protocol";
+import type { EventSemantics } from "@jr2/agent-protocol";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild } from "./wire.ts";
 import {
@@ -156,7 +156,7 @@ export function observe(status: RunStatus): RunObservation {
 }
 
 /** One open gate as external callers discover it (`GET /runs/:id` — ADR-0011): the accepted
- * events with their input schemas as JSON Schema (what drives a form or a `j2 send` prompt),
+ * events with their input schemas as JSON Schema (what drives a form or a `jr2 send` prompt),
  * plus the workflow-supplied `meta` (what a UI renders and a webhook translator matches on). */
 export type GateView = {
   gate: string;
@@ -780,7 +780,7 @@ export class RunHost {
    *
    * A feed has no natural end: a run parked on a gate transitions for hours, and its watchers hold
    * an in-flight HTTP request the whole time. `server.close()` (instance.ts) waits for in-flight
-   * requests, so without this a single attached `j2 run` wedges shutdown indefinitely. `closed` is
+   * requests, so without this a single attached `jr2 run` wedges shutdown indefinitely. `closed` is
    * the frame that lets those handlers exit. Runs themselves are untouched: this ends the
    * OBSERVATION, not the work — the snapshots are already durable, and `restore()` picks them up.
    */
@@ -821,7 +821,7 @@ export class RunHost {
   }
 
   /**
-   * CANCEL: the human's "abandon this run" (`j2 send <run> --event CANCEL` — ADR-0025). It ends
+   * CANCEL: the human's "abandon this run" (`jr2 send <run> --event CANCEL` — ADR-0025). It ends
    * the work rather than parking it: stopping the actor with no `hostStopping` flag ends every
    * live Agent invocation, and each one ends its Agent's turn remotely (ADR-0024). The run
    * is then persisted TERMINAL, so `restore()` leaves it alone and `read()` reports how it ended.
@@ -977,7 +977,7 @@ export class RunHost {
       inspect: (ev) => {
         // Bind the run's actor SYSTEM on the ROOT's creation event — the first inspection event,
         // fired inside createActor BEFORE any child of the initial state is constructed. That
-        // ordering matters: j2Setup's wrapped invoke inputs (iid minting — ADR-0016) run at child
+        // ordering matters: jr2Setup's wrapped invoke inputs (iid minting — ADR-0016) run at child
         // construction and must already see the run identity. The system is shared by every actor
         // in the tree, which is what run-scopes gate ids with zero workflow plumbing (ADR-0011).
         if (!bound && ev.type === "@xstate.actor") {

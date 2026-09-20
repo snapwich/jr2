@@ -1,19 +1,19 @@
 // The kind tier's MENU-ONLY workflow (ADR-0031): no `workspace()` at all — one state, one Agent
 // whose definition declares `workspace: "none"`. What it proves is the convention: because a
-// registered Machine carries such a definition, `j2 up` converged an Instance Harness, and the
+// registered Machine carries such a definition, `jr2 up` converged an Instance Harness, and the
 // Turn is admitted THERE, with no Sandbox provisioned for the run. The pod runs the stock Harness
-// under `J2_MENU_ONLY`, so the placement is enforced by the pod itself, not merely chosen.
+// under `JR2_MENU_ONLY`, so the placement is enforced by the pod itself, not merely chosen.
 //
-// The instance id is the RUN's (the host's injection, ADR-0016) — what `j2 status` reports and
+// The instance id is the RUN's (the host's injection, ADR-0016) — what `jr2 status` reports and
 // what the kind steps read the Instance Harness's history under.
 
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, type HostInjectedInput } from "@j2/orchestrator";
+import { agent, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
 import { advisor } from "./_agents.ts";
 
 const advise = defineEvent({ name: "advise", input: z.object({ summary: z.string() }) });
 
-export const machine = j2Setup({
+export const machine = jr2Setup({
   types: {} as { context: HostInjectedInput; input: HostInjectedInput },
   events: [advise],
   // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.

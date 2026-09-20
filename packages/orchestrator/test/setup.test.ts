@@ -1,4 +1,4 @@
-// j2Setup tests (ADR-0015): the authoring surface returns a plain xstate machine with the
+// jr2Setup tests (ADR-0015): the authoring surface returns a plain xstate machine with the
 // mechanism pre-wired — vocabulary attached to the machine object, mechanism events in the
 // union, `gate` pre-registered and every Agent SLOT finalized by brand (ADR-0049) — and closes
 // xstate's nested-`on` typo hole at build time.
@@ -7,12 +7,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createActor, fromCallback, type AnyActorRef } from "xstate";
 import { z } from "zod";
-import { defineEvent, type EventDef } from "@j2/agent-protocol";
+import { defineEvent, type EventDef } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
 import type { AgentDefinition } from "../src/agent.ts";
 import { agent } from "../src/harness-client.ts";
 import { bindRun, mayMove, RegistrationTable, wouldMove, type RunBinding } from "../src/registration.ts";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { vocabularyOf } from "../src/vocabulary.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
@@ -27,7 +27,7 @@ const approve = defineEvent({ name: "approve", input: z.object({}) });
 const requestChanges = defineEvent({ name: "request_changes", input: z.object({ notes: z.string() }) });
 
 test("createMachine attaches the vocabulary to the machine object (the manifest is dead)", () => {
-  const machine = j2Setup({
+  const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
     events: [approve, requestChanges],
   }).createMachine({
@@ -56,7 +56,7 @@ test("an event key with no def fails at createMachine — even in a NESTED state
   // the expect-error — the throw below is what protects the configs tsc can't see through.
   assert.throws(
     () =>
-      j2Setup({ events: [approve] }).createMachine({
+      jr2Setup({ events: [approve] }).createMachine({
         id: "wf",
         initial: "outer",
         states: {
@@ -72,7 +72,7 @@ test("an event key with no def fails at createMachine — even in a NESTED state
 });
 
 test("mechanism events (dotted) and the wildcard are never mistaken for vocabulary", () => {
-  const machine = j2Setup({ events: [approve] }).createMachine({
+  const machine = jr2Setup({ events: [approve] }).createMachine({
     id: "wf",
     initial: "a",
     states: {
@@ -94,7 +94,7 @@ test("mechanism events (dotted) and the wildcard are never mistaken for vocabula
 test("duplicate and reserved-semantics defs fail at createMachine, naming the machine", () => {
   const dupe = defineEvent({ name: "approve", input: z.object({ notes: z.string() }) });
   assert.throws(
-    () => j2Setup({ events: [approve, dupe] }).createMachine({ id: "wf", initial: "a", states: { a: {} } }),
+    () => jr2Setup({ events: [approve, dupe] }).createMachine({ id: "wf", initial: "a", states: { a: {} } }),
     /machine "wf": duplicate event "approve"/,
   );
 
@@ -107,14 +107,14 @@ test("duplicate and reserved-semantics defs fail at createMachine, naming the ma
     output: z.object({ decision: z.string() }),
   });
   assert.throws(
-    () => j2Setup({ events: [held] }).createMachine({ id: "wf", initial: "a", states: { a: {} } }),
+    () => jr2Setup({ events: [held] }).createMachine({ id: "wf", initial: "a", states: { a: {} } }),
     /"request_approval" is `deferred`.*NOT IMPLEMENTED/s,
   );
 });
 
 test("an Agent slot is the Machine's own logic; provide() swaps it — the unit-test seam (ADR-0049)", () => {
   let ranFake = false;
-  const machine = j2Setup({
+  const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
     events: [approve],
     actors: { coder: agent(testDefinition), probe: fromCallback(() => {}) },
@@ -152,7 +152,7 @@ test("an Agent slot is the Machine's own logic; provide() swaps it — the unit-
 });
 
 test("the returned machine is a plain StateMachine: provide() still works as the test seam", () => {
-  const machine = j2Setup({
+  const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
     events: [approve],
   }).createMachine({ id: "wf", context: {}, initial: "a", states: { a: { on: { approve: "b" } }, b: {} } });
@@ -167,7 +167,7 @@ test("the returned machine is a plain StateMachine: provide() still works as the
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-/** Run a j2Setup machine under a bare binding (no RunHost): table + run identity only. Binds on
+/** Run a jr2Setup machine under a bare binding (no RunHost): table + run identity only. Binds on
  * the root's creation inspection event — before initial children construct — exactly as RunHost
  * does, so iid minting sees the run identity. The binding carries NO vocabulary: names resolve
  * against the invoking Machine, which already carries its own defs (ADR-0011, ADR-0049). */
@@ -194,7 +194,7 @@ test("agent menus and gate accepts derive from transitions, routed by audience",
   const defs = [requestReview, reportBlocked, humanApprove, requestChanges];
 
   const mock = new MockFlueClient();
-  const machine = j2Setup({
+  const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
     events: defs,
     actors: { coder: slot(mock) },
@@ -250,7 +250,7 @@ test("two Machines may each carry a `coder`, and each Turn places by ITS OWN def
   const named = (mock: MockFlueClient, definition: AgentDefinition) =>
     agentActorWith((endpoint: string) => (endpoints.push(endpoint), mock), definition);
 
-  const child = j2Setup({
+  const child = jr2Setup({
     types: {} as { context: Record<string, never> },
     events: [],
     actors: { coder: named(innerPort, testDefinition) },
@@ -261,7 +261,7 @@ test("two Machines may each carry a `coder`, and each Turn places by ITS OWN def
     states: { coding: { invoke: { src: "coder", input: { prompt: "code it", endpoint: "http://sandbox.test" } } } },
   });
 
-  const machine = j2Setup({
+  const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
     events: [go],
     actors: { coder: named(outerPort, { ...testDefinition, workspace: "none" }), child },
@@ -275,18 +275,18 @@ test("two Machines may each carry a `coder`, and each Turn places by ITS OWN def
     },
   });
 
-  const { actor, table } = hostless(machine, { instanceHarness: "http://j2-instance-harness.ns.svc:8080" });
+  const { actor, table } = hostless(machine, { instanceHarness: "http://jr2-instance-harness.ns.svc:8080" });
   await tick();
   // The parent's Turn: no endpoint authored, and its own definition says "none".
   assert.equal(outerPort.admitted?.agentName, "coder");
-  assert.deepEqual(endpoints, ["http://j2-instance-harness.ns.svc:8080"]);
+  assert.deepEqual(endpoints, ["http://jr2-instance-harness.ns.svc:8080"]);
 
   table.deliver(`agent/${outerPort.admitted!.instanceId}`, "go", {});
   await tick();
 
   // The child's Turn: the same NAME, a different Agent — its own port, its own placement.
   assert.equal(innerPort.admitted?.agentName, "coder");
-  assert.deepEqual(endpoints, ["http://j2-instance-harness.ns.svc:8080", "http://sandbox.test"]);
+  assert.deepEqual(endpoints, ["http://jr2-instance-harness.ns.svc:8080", "http://sandbox.test"]);
   assert.notEqual(outerPort.admitted?.instanceId, innerPort.admitted?.instanceId, "two conversations");
   actor.stop();
 });
@@ -295,7 +295,7 @@ test("session continue derives ONE deterministic iid; the fresh default mints a 
   const go = defineEvent({ name: "go", input: z.object({}) });
   const iidsFor = async (session?: "continue") => {
     const mock = new MockFlueClient();
-    const machine = j2Setup({
+    const machine = jr2Setup({
       types: {} as { context: Record<string, never> },
       events: [go],
       actors: { coder: slot(mock) },
@@ -348,7 +348,7 @@ test("a `conversation` pin derives ONE run-scoped iid across MACHINES; `continue
       conversation
         ? { prompt, conversation, endpoint: "http://x" }
         : { prompt, session: "continue" as const, endpoint: "http://x" };
-    const child = j2Setup({
+    const child = jr2Setup({
       types: {} as { context: Record<string, never> },
       // The nested Machine carries its OWN `triager` slot (ADR-0049): same name, same definition
       // here, but a separate declaration — nothing crosses the invoke boundary.
@@ -360,7 +360,7 @@ test("a `conversation` pin derives ONE run-scoped iid across MACHINES; `continue
       initial: "deciding",
       states: { deciding: { invoke: { src: "triager", input: turn("again") } } },
     });
-    const machine = j2Setup({
+    const machine = jr2Setup({
       types: {} as { context: Record<string, never> },
       events: [go],
       actors: { triager: slot(mock), child },
@@ -395,7 +395,7 @@ test("explicit tools remain the escape hatch over the derived menu", async () =>
   const ping = defineEvent({ name: "ping", input: z.object({}) });
   const pong = defineEvent({ name: "pong", input: z.object({}) });
   const mock = new MockFlueClient();
-  const machine = j2Setup({
+  const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
     events: [ping, pong],
     actors: { coder: slot(mock) },
@@ -425,7 +425,7 @@ test("the dials pass through to the admission; omitted, nothing is invented (ADR
   // here would only re-state xstate's types in a test that is about the dials.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const build = (mock: MockFlueClient, input: any) =>
-    j2Setup({
+    jr2Setup({
       types: {} as { context: Record<string, never> },
       events: [ping],
       actors: { coder: slot(mock) },
@@ -461,7 +461,7 @@ test("the dials pass through to the admission; omitted, nothing is invented (ADR
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function turnWith(on: any, context: Record<string, unknown>, defs: EventDef[]) {
   const mock = new MockFlueClient();
-  const machine = j2Setup({
+  const machine = jr2Setup({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     types: {} as { context: any },
     events: defs,

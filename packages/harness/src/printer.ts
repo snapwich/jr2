@@ -17,7 +17,7 @@ export type PrinterSource = {
 /** Where the lines go — `process.stdout` (the pod log) unless a test collects them. */
 export type PrinterOut = { write(chunk: string): void };
 
-/** Menu tools surface to the model as `mcp__j2__<name>` (ADR-0013); the log shows the bare name. */
+/** Menu tools surface to the model as `mcp__jr2__<name>` (ADR-0013); the log shows the bare name. */
 function bareToolName(toolName: string): string {
   return toolName.replace(/^mcp__[^_]*__/, "");
 }

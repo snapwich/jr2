@@ -1,7 +1,7 @@
-// An EXAMPLE event set — not the protocol (ADR-0011). j2 ships the mechanism (`defineEvent`)
+// An EXAMPLE event set — not the protocol (ADR-0011). jr2 ships the mechanism (`defineEvent`)
 // and zero events; these defs exist for tests, fixtures, and as a starting point to copy into
-// a workflow's own `j2Setup({ events })` list (ADR-0015). ADR-0006's "standard library" framing
-// is retired: nothing in j2 consumes these by name.
+// a workflow's own `jr2Setup({ events })` list (ADR-0015). ADR-0006's "standard library" framing
+// is retired: nothing in jr2 consumes these by name.
 //
 // All `ack` — outcomes an Agent reports and moves on from. The other two semantics (`deferred`,
 // `poll`) are reserved and NOT implemented (ADR-0013), so machine-build refuses one; an example
@@ -28,5 +28,5 @@ export const reportBlockedEvent = defineEvent({
   input: z.object({ reason: z.string() }),
 });
 
-/** The example set (drop into `j2Setup({ events: [...exampleEvents] })` — ADR-0015). */
+/** The example set (drop into `jr2Setup({ events: [...exampleEvents] })` — ADR-0015). */
 export const exampleEvents = [doneEvent, requestReviewEvent, reportBlockedEvent] as const;

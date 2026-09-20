@@ -3,7 +3,7 @@
 // plus its durability claims (re-attach on restore; `workspace.lost` when the Sandbox was reaped
 // while the orchestrator was down), and the body's only job is to make each outcome readable.
 //
-// The agent's instance id is the RUN's instanceId — the same iid `j2 status` reports — so the
+// The agent's instance id is the RUN's instanceId — the same iid `jr2 status` reports — so the
 // mechanics-tier steps (which play the agent over `/mcp/<iid>`) drive every wrapper of it unchanged.
 //
 // The final states carry DISTINCT outputs, and the wrapper's root `output` forwards whichever
@@ -14,7 +14,7 @@
 
 import { z } from "zod";
 import { assign } from "xstate";
-import { agent, defineEvent, j2Setup, type HostInjectedInput, type Workspaced } from "@j2/orchestrator";
+import { agent, defineEvent, jr2Setup, type HostInjectedInput, type Workspaced } from "@jr2/orchestrator";
 import { coder } from "./_agents.ts";
 
 const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string() }) });
@@ -25,7 +25,7 @@ type BodyInput = Workspaced<HostInjectedInput, "app">;
 /** Plus the one thing the body records without acting on it — see the `agent.fault` handler. */
 type BodyContext = BodyInput & { fault?: string };
 
-export const body = j2Setup({
+export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput },
   events: [finish],
   // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire.
@@ -58,7 +58,7 @@ export const body = j2Setup({
         // ADR-0016's ONE terminal telemetry, ROUTED — because an ignored event is an invisible one.
         // A body with no `agent.fault` policy does not keep waiting for its Agent; it stops waiting
         // silently, `active` in `coding` forever, with the reason nowhere any observer can read
-        // (`j2 status` reports a child's state value, never its context). That is what made a lost
+        // (`jr2 status` reports a child's state value, never its context). That is what made a lost
         // first turn look like a mysteriously slow one, and it cost this tier its parallel default.
         // Settling instead names the failure in the one place every scenario already reads.
         "agent.fault": {

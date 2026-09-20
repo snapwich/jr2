@@ -4,11 +4,11 @@
 //
 // The rule these claims serve: what code names is typed where it is named (ADR-0050), and
 // `git.credentials` is the fence a per-run url must pass (ADR-0051). A key the config does not
-// declare must stop at `tsc` — at authoring time and in `j2 up`'s typecheck gate — never ride
+// declare must stop at `tsc` — at authoring time and in `jr2 up`'s typecheck gate — never ride
 // through to an entry that admits its prefix anonymously because its `token` was spelled `tokn`.
-// That is what a generic `defineConfig<T extends J2Config>(c: T)` cannot do: TypeScript infers `T`
+// That is what a generic `defineConfig<T extends JR2Config>(c: T)` cannot do: TypeScript infers `T`
 // as the literal's own type and never runs excess-property checking on it, at any depth. The
-// parameter is `J2Config` itself, so the checks below hold.
+// parameter is `JR2Config` itself, so the checks below hold.
 //
 // The claims:
 //   1. a misspelled field on a `git.credentials` entry is refused — the fence's own fields;
@@ -20,13 +20,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { defineConfig, type J2Config } from "../src/config.ts";
+import { defineConfig, type JR2Config } from "../src/config.ts";
 
 // 1. The fence's fields, misspelled.
 // @ts-expect-error `tokn` is not a credentials field — the entry would admit `*` anonymously
-defineConfig({ git: { credentials: [{ match: "*", tokn: "J2_GIT_TOKEN" }] } });
+defineConfig({ git: { credentials: [{ match: "*", tokn: "JR2_GIT_TOKEN" }] } });
 // @ts-expect-error `sshkey` is not a credentials field (`sshKey` is)
-defineConfig({ git: { credentials: [{ match: "*", sshkey: "j2-git-ssh" }] } });
+defineConfig({ git: { credentials: [{ match: "*", sshkey: "jr2-git-ssh" }] } });
 // @ts-expect-error `credential` is not the list's key (`credentials` is)
 defineConfig({ git: { credential: [{ match: "*" }] } });
 
@@ -41,14 +41,17 @@ defineConfig({ harness: { provider: { id: "v", api: "a", baseUrl: "u", models: {
 defineConfig({ operator: { manages: false } });
 
 // 3. Seats that no longer exist.
-// @ts-expect-error `images` is gone — `j2 up` resolves every image ref itself (ADR-0038)
-defineConfig({ images: { harness: "j2-harness:local" } });
+// @ts-expect-error `images` is gone — `jr2 up` resolves every image ref itself (ADR-0038)
+defineConfig({ images: { harness: "jr2-harness:local" } });
 // @ts-expect-error `repos` is gone — a Machine names its Repos by url on its Repo Slots (ADR-0051)
 defineConfig({ repos: { app: "https://example.test/app.git" } });
 
 // 4. Everything declared, as written.
-const credentials = [{ match: "github.com/ourorg/", token: "GH_TOKEN", sshKey: "j2-git-ssh" }, { match: "*" }] as const;
-const full: J2Config = defineConfig({
+const credentials = [
+  { match: "github.com/ourorg/", token: "GH_TOKEN", sshKey: "jr2-git-ssh" },
+  { match: "*" },
+] as const;
+const full: JR2Config = defineConfig({
   name: "inst",
   git: { credentials },
   harness: {
@@ -68,7 +71,7 @@ const full: J2Config = defineConfig({
     envFrom: [{ secretRef: { name: "anthropic" } }, { configMapRef: { name: "cm" } }],
     caBundle: "ca.pem",
   },
-  registry: "reg.example.com/j2",
+  registry: "reg.example.com/jr2",
   kitRegistry: "reg.example.com/kit",
   platforms: ["linux/arm64"] as const,
   operator: { manage: false },

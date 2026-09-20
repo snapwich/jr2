@@ -75,7 +75,7 @@ test("resolveDefinition: this Submission's dials win over the definition (ADR-00
 
 test("loadHarnessSpec: the provider round-trips", () => {
   const spec = loadHarnessSpec({
-    J2_HARNESS_JSON: JSON.stringify({ provider: { id: "vllm", api: "openai-completions", baseUrl: "https://v/v1" } }),
+    JR2_HARNESS_JSON: JSON.stringify({ provider: { id: "vllm", api: "openai-completions", baseUrl: "https://v/v1" } }),
   });
   assert.equal(spec.provider?.id, "vllm");
 });
@@ -83,10 +83,10 @@ test("loadHarnessSpec: the provider round-trips", () => {
 test("loadHarnessSpec: absent is valid — an instance may name only built-in models", () => {
   assert.deepEqual(loadHarnessSpec({}), {});
   // And it carries no Agents to be absent (ADR-0049): the roster this env var replaced is gone.
-  assert.equal("agents" in loadHarnessSpec({ J2_HARNESS_JSON: "{}" }), false);
+  assert.equal("agents" in loadHarnessSpec({ JR2_HARNESS_JSON: "{}" }), false);
 });
 
 test("loadHarnessSpec: malformed fails loudly, naming the env var", () => {
-  assert.throws(() => loadHarnessSpec({ J2_HARNESS_JSON: "{nope" }), /J2_HARNESS_JSON is not JSON/);
-  assert.throws(() => loadHarnessSpec({ J2_HARNESS_JSON: JSON.stringify({ provider: { id: "vllm" } }) }), /baseUrl/);
+  assert.throws(() => loadHarnessSpec({ JR2_HARNESS_JSON: "{nope" }), /JR2_HARNESS_JSON is not JSON/);
+  assert.throws(() => loadHarnessSpec({ JR2_HARNESS_JSON: JSON.stringify({ provider: { id: "vllm" } }) }), /baseUrl/);
 });

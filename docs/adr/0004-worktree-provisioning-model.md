@@ -41,7 +41,7 @@ Enforcement, by side:
 - **Eviction is deletion of the whole checkout**, never of objects inside one, and only once no pod on the node mounts
   it (ADR-0051). A live clone never loses what it borrows.
 
-The fallback where borrowing can't be made safe (a source j2 doesn't control) is a **full copy** — fully independent,
+The fallback where borrowing can't be made safe (a source jr2 doesn't control) is a **full copy** — fully independent,
 gc-proof, at full disk and the slowest setup. An immutable generation-swap scheme (refresh = a new snapshot, old
 generations released as their Sandboxes drain) was considered again as OCI image volumes in ADR-0051 and rejected there:
 it buys nothing gc pinning does not, and a repack costs a full re-upload.
@@ -64,7 +64,7 @@ refreshed, and is evicted like any other once nothing mounts it.
 
 A repository is identified by its url — host plus path, with scheme, user, a trailing `/` and `.git` dropped — so every
 spelling a Machine writes for one repository lands on ONE cache per node, and the expensive clone happens once per
-repository per node. The directory name is derived from that identity, printed beside the url by `j2 status`, and never
+repository per node. The directory name is derived from that identity, printed beside the url by `jr2 status`, and never
 chosen by a human; there is no name to derive twice or to orphan.
 
 ## Storage shape: a cache per node

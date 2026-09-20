@@ -1,4 +1,4 @@
-// `pool(worker, spec)` (ADR-0017): the j2-owned top-of-the-run Machine — one worker per Source
+// `pool(worker, spec)` (ADR-0017): the jr2-owned top-of-the-run Machine — one worker per Source
 // item, at most `cap` at once. It absorbs what every jr-shaped workflow used to hand-roll:
 // spawn-under-cap, stable child identity, `xstate.done.actor.*` completion collection,
 // `stopChild` bookkeeping, the wake gate, and the re-query timer. The one top-level `spawnChild`
@@ -8,7 +8,7 @@
 // (xstate cannot persist inline-src children).
 //
 // The Source port is generalized — `next(active) → item | null`, plus an optional `wake` event
-// def (a webhook / `j2 send` push seam, served as a standing gate named "source") and
+// def (a webhook / `jr2 send` push seam, served as a standing gate named "source") and
 // `pollEvery` (the set mutates underneath us — re-query). A queue, a generator, or a re-queried
 // set; tk's claim actor is one adapter (CONTEXT.md: Work Source is the ticket-flavored Source).
 //
@@ -32,9 +32,9 @@ import {
   type StateMachine,
 } from "xstate";
 import type { z } from "zod";
-import type { EventDef } from "@j2/agent-protocol";
+import type { EventDef } from "@jr2/agent-protocol";
 import { gate } from "./gate.ts";
-import { attachWrapperBody, type J2Wrapper, type WrapperActors } from "./parts.ts";
+import { attachWrapperBody, type JR2Wrapper, type WrapperActors } from "./parts.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
 /**
@@ -54,7 +54,7 @@ export type SourceSpec<T> = {
     | PromiseActorLogic<{ item: T | null; open: number }, { active: string[] }>
     | PromiseActorLogic<T | null, { active: string[] }>
     | PromiseActorLogic<null, { active: string[] }>;
-  /** An external event def that wakes discovery early (webhook / `j2 send` push seam). The pool
+  /** An external event def that wakes discovery early (webhook / `jr2 send` push seam). The pool
    * serves it as a standing gate named "source"; the def IS the pool machine's vocabulary. */
   wake?: EventDef;
   /** Re-query cadence while parked, in ms — for sets that mutate underneath us. */
@@ -72,7 +72,7 @@ export type PoolOutput = { status: "drained" | "deadlocked"; items: Record<strin
 /**
  * How a pool is configured (ADR-0017, ADR-0033). `TInput` is what came through the pool's door:
  * the PARSED schema when `input` declares one, and `unknown` when it does not — absence is
- * permissive, so j2 knows nothing and says so, exactly as `workspace()`'s door-less path does.
+ * permissive, so jr2 knows nothing and says so, exactly as `workspace()`'s door-less path does.
  * A pool that is fed by something other than a caller may state what it is fed by annotating the
  * mapper's parameter; for anything a caller starts, the honest fix is to declare `input`.
  */
@@ -100,8 +100,8 @@ export type PoolSpec<T, TInput = unknown> = {
  * What `pool()` returns: the door a run of it starts with, the pool's own output, and the
  * wrapper's actor slots — `worker` holding the worker's own type, because the pool is
  * TRANSPARENT to its worker (ADR-0049), so `customize(machine, { agents })` on a pool-rooted
- * workflow offers the WORKER's Agents and the composer never spells `worker`. {@link J2Wrapper} is
- * what marks it a j2 wrapper: the transparency follows the marker, not the slot's spelling.
+ * workflow offers the WORKER's Agents and the composer never spells `worker`. {@link JR2Wrapper} is
+ * what marks it a jr2 wrapper: the transparency follows the marker, not the slot's spelling.
  */
 export type PoolMachine<TWorker extends AnyStateMachine, TInput> = StateMachine<
   any,
@@ -119,7 +119,7 @@ export type PoolMachine<TWorker extends AnyStateMachine, TInput> = StateMachine<
   any,
   any
 > &
-  J2Wrapper<TWorker>;
+  JR2Wrapper<TWorker>;
 
 type PoolCtx = {
   runInput: Record<string, unknown>;
@@ -185,7 +185,7 @@ export function pool(worker: AnyStateMachine, spec: PoolSpec<any, any>): AnyStat
     initial: "discovering",
     on: {
       // A worker settled, at any moment: collect its output, free its slot, stop the ref, and
-      // go look for more work. Internal to j2 once — the consumer casts this used to force
+      // go look for more work. Internal to jr2 once — the consumer casts this used to force
       // (`DoneActorEvent` unions, `assertEvent`) ship as documented patterns instead.
       "xstate.done.actor.*": {
         target: ".discovering",

@@ -28,7 +28,7 @@ import "time"
 // It is a mark, not a queue: however many fetches are in flight before one
 // lands, the remote is fetched once, and a fetch that started before the ask
 // does not satisfy it.
-const AskedAnnotationPrefix = "j2.dev/asked-"
+const AskedAnnotationPrefix = "jr2.dev/asked-"
 
 // AskedAnnotation is the ask annotation for one Repo cache key.
 func AskedAnnotation(key string) string { return AskedAnnotationPrefix + key }

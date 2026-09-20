@@ -152,7 +152,7 @@ test("a workflow's feed carries only its own runs", async () => {
 
 test("observing an unregistered workflow attaches to an empty set rather than failing", async () => {
   const host = new RunHost({ store: await mkStore() });
-  // A page may be open on a workflow whose file has not been written yet (`j2 dev` reload). The
+  // A page may be open on a workflow whose file has not been written yet (`jr2 dev` reload). The
   // feed is a subscription to a NAME, not to a registration.
   const { runs } = host.observeWorkflow("not-yet", () => {});
   assert.deepEqual(runs, []);

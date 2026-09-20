@@ -34,7 +34,7 @@ test("GET /healthz reports up AND what this instance is — the CLI's only skew 
   const body = (await health.json()) as { ok: boolean; version?: string; hash?: string };
   assert.equal(body.ok, true);
   assert.equal(body.version, KIT_VERSION);
-  // No image to be addressed by (this is the `j2 dev` shape), so no hash — and that is not an error.
+  // No image to be addressed by (this is the `jr2 dev` shape), so no hash — and that is not an error.
   assert.equal(body.hash, undefined);
 
   const ready = await app.request("/readyz");

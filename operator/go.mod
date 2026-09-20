@@ -1,4 +1,4 @@
-module github.com/snapwich/j2/operator
+module github.com/snapwich/jr2/operator
 
 go 1.26.0
 

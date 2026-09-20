@@ -59,15 +59,15 @@ test("renderToolInput: bash cuts at 2000 chars, exactly, and says that it cut", 
 
 test("renderToolInput: any other tool renders the JSON input under the same bound", () => {
   const input = { question: "a".repeat(3000) };
-  const rendered = renderToolInput("mcp__j2__ask", input);
+  const rendered = renderToolInput("mcp__jr2__ask", input);
   assert.equal(rendered, `${JSON.stringify(input).slice(0, 2000)}…`);
-  assert.equal(renderToolInput("mcp__j2__ask", { question: "short" }), '{"question":"short"}');
+  assert.equal(renderToolInput("mcp__jr2__ask", { question: "short" }), '{"question":"short"}');
   assert.equal(renderToolInput("grep", undefined), "null");
 });
 
-test("renderToolInput: the mcp__j2__ prefix is stripped before the name match", () => {
-  assert.equal(renderToolInput("mcp__j2__read", { path: "/work/d.ts" }), "/work/d.ts");
-  assert.equal(renderToolInput("mcp__j2__bash", { command: "c".repeat(2500) }), `${"c".repeat(2000)}…`);
+test("renderToolInput: the mcp__jr2__ prefix is stripped before the name match", () => {
+  assert.equal(renderToolInput("mcp__jr2__read", { path: "/work/d.ts" }), "/work/d.ts");
+  assert.equal(renderToolInput("mcp__jr2__bash", { command: "c".repeat(2500) }), `${"c".repeat(2000)}…`);
 });
 
 test("renderMessage: a user message is [prompt]; image parts do not print", () => {
@@ -87,7 +87,7 @@ test("renderMessage: assistant blocks render in order — text, thinking, tool c
   const message = assistant([
     { type: "thinking", thinking: "hm" },
     { type: "text", text: "done" },
-    toolCall("mcp__j2__approve", { verdict: "ship" }),
+    toolCall("mcp__jr2__approve", { verdict: "ship" }),
   ]);
   assert.deepEqual(renderMessage(message), ["[thinking] hm", "[text] done", '[approve] {"verdict":"ship"}']);
 });

@@ -1,11 +1,11 @@
 // The Adapter container's entrypoint (ADR-0013). Everything it needs arrives as env, and the
 // first two halves of that env are the security boundary:
 //
-//   J2_ORCHESTRATOR_URL   where the control plane is, from inside the pod
-//   J2_SANDBOX_TOKEN      the credential — from a Secret the CR mounts into THIS container ALONE
-//   J2_SANDBOX            this pod's Sandbox, which the ask route is addressed by (ADR-0053)
+//   JR2_ORCHESTRATOR_URL   where the control plane is, from inside the pod
+//   JR2_SANDBOX_TOKEN      the credential — from a Secret the CR mounts into THIS container ALONE
+//   JR2_SANDBOX            this pod's Sandbox, which the ask route is addressed by (ADR-0053)
 //
-// The Harness container next door gets none of them. It gets `J2_ADAPTER_URL`, which points at this
+// The Harness container next door gets none of them. It gets `JR2_ADAPTER_URL`, which points at this
 // process on `localhost`. That asymmetry is the entire enforcement: the Agent has code execution
 // where the credential is not.
 
@@ -19,22 +19,22 @@ function required(name: string): string {
 }
 
 const orchestrator = new OrchestratorClient({
-  url: required("J2_ORCHESTRATOR_URL"),
-  token: required("J2_SANDBOX_TOKEN"),
+  url: required("JR2_ORCHESTRATOR_URL"),
+  token: required("JR2_SANDBOX_TOKEN"),
   // Not `required`: the Instance Harness pairs an Adapter with no Sandbox and no worktree
   // (ADR-0031), so it has no Repo to fetch and answers an ask by saying so.
-  sandbox: process.env.J2_SANDBOX,
+  sandbox: process.env.JR2_SANDBOX,
 });
 
 const adapter = await startAdapter({
   orchestrator,
-  port: Number(process.env.J2_ADAPTER_PORT ?? 8081),
+  port: Number(process.env.JR2_ADAPTER_PORT ?? 8081),
   // The Agent is in this pod (shared network namespace), so loopback is all that is ever needed —
   // and all that should ever be reachable.
   hostname: "127.0.0.1",
 });
 
-console.log(`j2 adapter serving ${adapter.url}/mcp/<instanceId> for sandbox ${process.env.J2_SANDBOX ?? "?"}`);
+console.log(`jr2 adapter serving ${adapter.url}/mcp/<instanceId> for sandbox ${process.env.JR2_SANDBOX ?? "?"}`);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {

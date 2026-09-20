@@ -53,7 +53,7 @@ export type HarnessAppDeps = {
    * cadence); short in tests. */
   longPollMs?: number;
   /**
-   * Deployed as the Instance Harness (`J2_MENU_ONLY` — deploy.ts), this process admits Menu-only
+   * Deployed as the Instance Harness (`JR2_MENU_ONLY` — deploy.ts), this process admits Menu-only
    * Agents ALONE. The wire is unauthenticated in-cluster and the admission carries its own
    * definition (ADR-0049), so without this gate any in-cluster caller could POST a
    * `workspace: "write"` definition here and be handed Working tools — code execution in the one
@@ -65,7 +65,7 @@ export type HarnessAppDeps = {
    * Verify an echo bearer (ADR-0023): the endpoint is INSTANCE-token-gated, but the raw token
    * must never enter this process — the Agent has code execution in the Harness container
    * (tokens.ts: "it never enters a Sandbox") — so the check is injected: `main.ts` compares
-   * sha256(bearer) against `J2_ECHO_TOKEN_SHA256` from the env. Omitted, the endpoint refuses
+   * sha256(bearer) against `JR2_ECHO_TOKEN_SHA256` from the env. Omitted, the endpoint refuses
    * everything (403): a Harness nobody equipped prints no narrative, and the pushing side is
    * fire-and-forget about it.
    */
@@ -169,7 +169,10 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   // nothing, because the log is a courtesy view and the feed remains the record.
   app.post("/echo", async (c) => {
     if (!deps.checkEchoBearer) {
-      return c.json({ error: "echo is not enabled on this harness (no J2_ECHO_TOKEN_SHA256 in its environment)" }, 403);
+      return c.json(
+        { error: "echo is not enabled on this harness (no JR2_ECHO_TOKEN_SHA256 in its environment)" },
+        403,
+      );
     }
     if (!deps.checkEchoBearer(bearerOf(c))) return c.json({ error: "unauthorized" }, 401);
     const body = (await c.req.json().catch(() => undefined)) as { events?: unknown } | undefined;

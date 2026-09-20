@@ -1,5 +1,5 @@
 // `workspace(body, { input, image, user, repos, spec })` (ADR-0012, ADR-0049, ADR-0051): the
-// j2-owned wrapper Machine that owns ONLY Sandbox lifecycle — provision the Sandbox (out of the
+// jr2-owned wrapper Machine that owns ONLY Sandbox lifecycle — provision the Sandbox (out of the
 // STATIC `image`/`user`/`repos` options it carries) + attach one worktree per Repo Slot, run the
 // author's body Machine inside it as the named slot `body`, with `{ workspace: { repos, branch } }`
 // appended to its input (the mechanism-facing endpoint/sandbox are published ambiently
@@ -46,8 +46,8 @@ import {
   repoSlotState,
   sandboxPartsOf,
   type Binding,
-  type J2Repos,
-  type J2Wrapper,
+  type JR2Repos,
+  type JR2Wrapper,
   type RepoSlot,
   type SandboxParts,
   type WrapperActors,
@@ -63,7 +63,7 @@ const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
 /** What to attach, in workspace vocabulary only (ADR-0012 boundary): the one branch the body
  * works on, the pod's work group, and the review sha. Derived PER RUN from the wrapper's input,
  * which is what keeps it out here rather than in the options — and which is exactly why the two
- * IMAGES and the REPOS are NOT here (ADR-0049, ADR-0051): `j2 up` must find them by walking the
+ * IMAGES and the REPOS are NOT here (ADR-0049, ADR-0051): `jr2 up` must find them by walking the
  * Machine, and no walk can evaluate a function of run input. They are static `workspace()`
  * options instead; a Repo that IS a function of run input is a per-run slot, a mapper the walk
  * can see the shape of even though it cannot see the url. */
@@ -153,7 +153,7 @@ export type ProvisionedRepo = { slot: string; url: string; ref?: string; perRun:
  * states re-run on snapshot restore (create-if-absent, attach-if-absent, delete-if-present).
  */
 export interface SandboxPort {
-  /** Ensure the Sandbox CR exists (labeled with its run for `j2 ls`) and await `phase: Ready`;
+  /** Ensure the Sandbox CR exists (labeled with its run for `jr2 ls`) and await `phase: Ready`;
    * resolve with the Harness endpoint the orchestrator can reach, and the identity the lease
    * will hold this workspace to. `image`/`user` are the wrapper's static image options
    * (ADR-0037/0005/0049) — a `file:` context or a registry ref, the port resolves both, and a
@@ -207,7 +207,7 @@ export function sandboxOf(system: AnyActorSystem): SandboxPort {
   if (!port) {
     throw new Error(
       "this orchestrator has no Sandbox backend — a Workspace is always a real Sandbox (ADR-0012); " +
-        "this process is not deployed in a cluster (J2_NAMESPACE unset). `j2 up` the instance and run there.",
+        "this process is not deployed in a cluster (JR2_NAMESPACE unset). `jr2 up` the instance and run there.",
     );
   }
   return port;
@@ -267,14 +267,14 @@ type WsContext = {
  *
  * The slots are stated because the wrapper is TRANSPARENT to its body (ADR-0049): `body` holding
  * the body's own type is what lets `customize(machine, { agents })` offer the BODY's Agents
- * through the wrapper, without the composer ever spelling `body`. {@link J2Wrapper} is what SAYS
+ * through the wrapper, without the composer ever spelling `body`. {@link JR2Wrapper} is what SAYS
  * it is a wrapper — the type twin of the `attachWrapperBody` stamp `workspace()` writes below — so
  * `customize()` reaches the body because this Machine IS one, never because a slot is spelled
  * `body`: that name is an author's to choose too (parts.ts).
  *
  * No parameter defaults (ADR-0050, as {@link Workspaced}): an annotation names the body and the
  * Repo Slots it carries, because a default would widen exactly where the phantom exists to refuse
- * — `J2Repos<string>` offers `customize()` every key, and `AnyStateMachine` as the body offers no
+ * — `JR2Repos<string>` offers `customize()` every key, and `AnyStateMachine` as the body offers no
  * Agent at all. `PoolMachine` names its worker the same way.
  */
 export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSlots extends string> = StateMachine<
@@ -293,8 +293,8 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSl
   any,
   any
 > &
-  J2Wrapper<TBody> &
-  J2Repos<TSlots>;
+  JR2Wrapper<TBody> &
+  JR2Repos<TSlots>;
 
 /**
  * The door CONSTRAINS the body (ADR-0033), in one direction only: the body may not demand more
@@ -371,7 +371,7 @@ type BodyAcceptsSlots<TBody extends AnyStateMachine, TSlots extends string> =
 /**
  * What the Sandbox is MADE OF (ADR-0037, ADR-0005) and which Repos it attaches (ADR-0051), as
  * STATIC options on the wrapper rather than fields of the per-run spec (ADR-0049). Static is the
- * whole point: `j2 up` walks the registered Machines to find every `file:` context and build it,
+ * whole point: `jr2 up` walks the registered Machines to find every `file:` context and build it,
  * every bound Repo and warm it, every open slot and refuse it (parts.ts) — and a spec is a function
  * of run input that no walk can evaluate. They are also never persisted — the provisioning state
  * re-reads them off the Machine it was invoked as, so a restore, a `provide()` and a `customize()`
@@ -390,7 +390,7 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
   /** The Sandbox Image. Absent → the Instance's `images/default`, then the stock Harness. */
   image?: string;
   /** The User Container's image (ADR-0005). Absent → the pod has no third container: there is no
-   * default, because the seat's whole identity is "what j2 does not own" and j2 has nothing to put
+   * default, because the seat's whole identity is "what jr2 does not own" and jr2 has nothing to put
    * there. One string is the entire authoring surface — env, ports, and resources are deliberately
    * not forwarded. */
   user?: string;
@@ -403,7 +403,7 @@ export type SandboxOptions<TSlots extends string, TInput = unknown> = {
    *
    * Or the whole map Open (`repos: open`): the Machine names no slot, the composer names every
    * one with `customize`, in an order the Machine may give a meaning to. The shape a packaged
-   * Machine takes when its body enumerates its checkouts rather than naming them (`@j2/machines`'s
+   * Machine takes when its body enumerates its checkouts rather than naming them (`@jr2/machines`'s
    * `task`, whose first slot is the one the coder edits). Under it `TSlots` is `string`, and the body's handles must say so.
    */
   repos: Record<TSlots, RepoSlot<TInput>> | typeof open;
@@ -430,8 +430,8 @@ export type WorkspaceOptions<TSchema extends z.ZodObject, TSlots extends string>
 };
 
 /**
- * How a Workspace with NO declared door is configured: absence is permissive (ADR-0033), so j2
- * has nothing to infer from and says `unknown` rather than `any` — an honest "j2 does not know",
+ * How a Workspace with NO declared door is configured: absence is permissive (ADR-0033), so jr2
+ * has nothing to infer from and says `unknown` rather than `any` — an honest "jr2 does not know",
  * which the mapper must narrow before it reads a field. A wrapper that is fed by something other
  * than a caller — a pool worker, a nested invoke — may state what it is fed by annotating the
  * parameter (`spec: ({ input }: { input: Item }) => …`), which types the wrapper's input too. For
@@ -505,12 +505,12 @@ export function workspace(
   const wrapper = buildWorkspaceMachine(body, options.spec);
   // The wrapper is TRANSPARENT to its body (ADR-0049): `customize(machine, { agents })` on a
   // Workspace means the Machine inside, so the composer never spells `body` and never has to know
-  // that j2 wrapped anything.
+  // that jr2 wrapped anything.
   attachWrapperBody(wrapper, "body");
   // What the pod is MADE of and which Repos it attaches ride the Machine (ADR-0049, ADR-0051),
   // keyed on `machine.config` like the vocabulary — so a `provide()` clone keeps them, and the
   // provisioning state reads them back off the Machine it was invoked as instead of closing over
-  // these values. That is also what lets `j2 up` find every `file:` context, every bound Repo and
+  // these values. That is also what lets `jr2 up` find every `file:` context, every bound Repo and
   // every open slot by walking the registered Machines (parts.ts).
   attachSandboxParts(wrapper, {
     ...(options.image !== undefined ? { image: options.image } : {}),
@@ -532,7 +532,7 @@ export function workspace(
 
 /**
  * Fail a malformed spec BEFORE any pod exists. The spec derives from run input via the workflow's
- * mapping fn, so a `j2 run --input` missing a field the mapping reads arrives here as `undefined` —
+ * mapping fn, so a `jr2 run --input` missing a field the mapping reads arrives here as `undefined` —
  * unchecked, it survives until the attach script's string ops and dies as "Cannot read properties
  * of undefined", with a Sandbox already provisioned and nothing pointing back at the input.
  */
@@ -557,7 +557,7 @@ function assertSpec(spec: WorkspaceSpec): void {
   if (bad.length) {
     throw new Error(
       `workspace spec invalid: ${bad.join("; ")} — the spec derives from run input; does ` +
-        "`j2 run --input` carry every field this workflow's workspace() mapping reads?",
+        "`jr2 run --input` carry every field this workflow's workspace() mapping reads?",
     );
   }
 }
@@ -565,9 +565,9 @@ function assertSpec(spec: WorkspaceSpec): void {
 /**
  * Resolve every Repo Slot to a Binding, in declaration order (ADR-0051). A bound slot is its
  * Binding; a per-run slot is its mapper called over the run input, validated like the static forms
- * because it derives from `j2 run --input` exactly as the spec does; an open slot nobody bound is
+ * because it derives from `jr2 run --input` exactly as the spec does; an open slot nobody bound is
  * a fault BEFORE the port, naming the `customize` line that fixes it — the run-time twin of the
- * refusal `j2 up`'s walk makes for a registered Machine, reached here only by a Machine that was
+ * refusal `jr2 up`'s walk makes for a registered Machine, reached here only by a Machine that was
  * never registered as itself (a test seam, a nested invoke of an unbound import). The Machine is
  * named as the walk names it: the Workflow it runs under, and the slot chain (`path`) from that
  * root to this wrapper — which is the `actors` nesting of the line, so it pastes.
@@ -606,7 +606,7 @@ function resolveBindings(
     if (bad.length) {
       throw new Error(
         `workspace spec invalid: repos.${slot} mapper returned ${bad.join("; ")} — the mapper derives from run ` +
-          "input; does `j2 run --input` carry every field this workflow's workspace() slot reads?",
+          "input; does `jr2 run --input` carry every field this workflow's workspace() slot reads?",
       );
     }
     bindings[slot] = { ...binding!, perRun: true };
@@ -750,7 +750,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
 
   // Every actor this wrapper runs is a NAMED SLOT (ADR-0049), the body first among them: a Machine
   // composes by invoking a declared `src`, and `body` is what `provide()`, `customize()`, Stately,
-  // the Console's join key and the `j2 up` parts walk all reach it by. The mechanism's own four —
+  // the Console's join key and the `jr2 up` parts walk all reach it by. The mechanism's own four —
   // provision, attach, registrar, lease, destroy — are named for the same price, and the Console
   // now shows what each state is doing instead of "inline".
   return setup({

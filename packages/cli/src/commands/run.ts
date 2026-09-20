@@ -1,15 +1,15 @@
-// `j2 run <workflow> [--input <json>] [--detach]` (ADR-0009). BLOCKING + attach-by-default, mirroring
+// `jr2 run <workflow> [--input <json>] [--detach]` (ADR-0009). BLOCKING + attach-by-default, mirroring
 // `flue run`: start the run, then attach to its SSE feed — status deltas + author emits go to stderr
-// as they happen; the terminal RunStatus is printed as JSON on stdout and we exit. So `j2 run ping`
-// shows progress to a human while `j2 run ping | jq` yields just the result.
+// as they happen; the terminal RunStatus is printed as JSON on stdout and we exit. So `jr2 run ping`
+// shows progress to a human while `jr2 run ping | jq` yields just the result.
 //
 // Diverges from flue: this ATTACHES to the deployed orchestrator (port-forwarded via the current
-// kube context — ADR-0019) rather than a per-invocation runtime, because j2 runs are durable and may
+// kube context — ADR-0019) rather than a per-invocation runtime, because jr2 runs are durable and may
 // park indefinitely on an approval gate. `--detach` prints the runId and returns, leaving the run
 // going server-side.
 
 import { parseArgs } from "node:util";
-import { J2Client } from "../client.ts";
+import { JR2Client } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 
@@ -27,13 +27,13 @@ export async function run(args: string[], io: Io): Promise<number> {
 
   const workflow = positionals[0];
   if (!workflow) {
-    activity(io, "usage: j2 run <workflow> [--input <json>] [--detach]");
+    activity(io, "usage: jr2 run <workflow> [--input <json>] [--detach]");
     return 2;
   }
   const input = values.input ? (JSON.parse(String(values.input)) as Record<string, unknown>) : {};
   const target = await resolveTarget(io, targetOptions(values));
   try {
-    const client = new J2Client(target.url, io.fetch, target.token);
+    const client = new JR2Client(target.url, io.fetch, target.token);
 
     const { runId } = await client.start(workflow, input);
     if (values.detach) {

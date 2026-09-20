@@ -28,7 +28,7 @@ func TestExecGitKillsAHungCallAtItsBudgetWithItsChildren(t *testing.T) {
 	// A git that never returns — here an alias that sleeps, standing in for
 	// an ssh with no answer — is killed at the context's deadline together
 	// with the child holding its output pipe, and the error names the budget
-	// in words `j2 status` can print.
+	// in words `jr2 status` can print.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is not on PATH")
 	}

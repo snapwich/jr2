@@ -1,5 +1,5 @@
 {
-  "name": "@j2/e2e",
+  "name": "@jr2/e2e",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -15,9 +15,9 @@
   },
   "devDependencies": {
     "@cucumber/cucumber": "^13.0.0",
-    "@j2/agent-protocol": "workspace:*",
-    "@j2/cli": "workspace:*",
-    "@j2/orchestrator": "workspace:*",
+    "@jr2/agent-protocol": "workspace:*",
+    "@jr2/cli": "workspace:*",
+    "@jr2/orchestrator": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^26.0.1",
     "playwright": "^1.62.1",

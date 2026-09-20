@@ -3,28 +3,28 @@
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
 cliVersion: 4.15.0
-domain: j2.dev
+domain: jr2.dev
 layout:
 - go.kubebuilder.io/v4
 projectName: operator
-repo: github.com/snapwich/j2/operator
+repo: github.com/snapwich/jr2/operator
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: j2.dev
+  domain: jr2.dev
   group: core
   kind: Sandbox
-  path: github.com/snapwich/j2/operator/api/v1alpha1
+  path: github.com/snapwich/jr2/operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: j2.dev
+  domain: jr2.dev
   group: core
   kind: Repo
-  path: github.com/snapwich/j2/operator/api/v1alpha1
+  path: github.com/snapwich/jr2/operator/api/v1alpha1
   version: v1alpha1
 version: "3"

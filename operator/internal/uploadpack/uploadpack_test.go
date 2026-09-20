@@ -58,7 +58,7 @@ func layout(t *testing.T) pod {
 	root := t.TempDir()
 	remote := filepath.Join(root, "remote")
 	git(t, "", "init", "-q", "-b", "main", remote)
-	if err := os.WriteFile(filepath.Join(remote, "README"), []byte("j2\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(remote, "README"), []byte("jr2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	git(t, remote, "add", "README")
@@ -92,8 +92,8 @@ func git(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_AUTHOR_NAME=j2", "GIT_AUTHOR_EMAIL=j2@example.invalid",
-		"GIT_COMMITTER_NAME=j2", "GIT_COMMITTER_EMAIL=j2@example.invalid",
+		"GIT_AUTHOR_NAME=jr2", "GIT_AUTHOR_EMAIL=jr2@example.invalid",
+		"GIT_COMMITTER_NAME=jr2", "GIT_COMMITTER_EMAIL=jr2@example.invalid",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -220,7 +220,7 @@ func TestAStaleAnswerWarnsOnceAndServesTheCacheAnyway(t *testing.T) {
 	if code != 0 || !e.ran {
 		t.Fatalf("exit %d, exec'd %v — a failed ask must still serve the cache", code, e.ran)
 	}
-	want := "warning: j2: remote fetch failed (fatal: could not read Username for 'https://github.com'); " +
+	want := "warning: jr2: remote fetch failed (fatal: could not read Username for 'https://github.com'); " +
 		"serving the cache as of " + earlier + "\n"
 	if stderr != want {
 		t.Fatalf("stderr =\n%q\nwant\n%q", stderr, want)
@@ -233,7 +233,7 @@ func TestAStaleAnswerWithNoTimeSaysTheCacheIsOfAnUnknownTime(t *testing.T) {
 
 	_, stderr, e := run(t, p, []string{ServiceUploadPack, identity, server.URL}, nil, server.Client())
 
-	want := "warning: j2: remote fetch failed (the cache has never been fetched); serving the cache as of an unknown time\n"
+	want := "warning: jr2: remote fetch failed (the cache has never been fetched); serving the cache as of an unknown time\n"
 	if stderr != want || !e.ran {
 		t.Fatalf("stderr = %q (exec'd %v), want %q", stderr, e.ran, want)
 	}
@@ -247,7 +247,7 @@ func TestEveryOtherAnswerIsAlsoOneWarningAndTheSameExec(t *testing.T) {
 		reason string
 	}{
 		"a status that is not 200": {http.StatusForbidden, "not this Sandbox's Repo", "the adapter answered 403 Forbidden: not this Sandbox's Repo"},
-		"a body that is not json":  {http.StatusOK, "<html>nope</html>", "the adapter's answer is not the shape j2 speaks:"},
+		"a body that is not json":  {http.StatusOK, "<html>nope</html>", "the adapter's answer is not the shape jr2 speaks:"},
 		"a body that names neither": {http.StatusOK, map[string]any{},
 			"the adapter's answer named neither a fetch nor a staleness"},
 	}
@@ -258,7 +258,7 @@ func TestEveryOtherAnswerIsAlsoOneWarningAndTheSameExec(t *testing.T) {
 			if code != 0 || !e.ran {
 				t.Fatalf("exit %d, exec'd %v — freshness degrades, absence does not", code, e.ran)
 			}
-			if !strings.HasPrefix(stderr, "warning: j2: remote fetch failed ("+c.reason) ||
+			if !strings.HasPrefix(stderr, "warning: jr2: remote fetch failed ("+c.reason) ||
 				!strings.HasSuffix(stderr, "serving the cache as of an unknown time\n") {
 				t.Fatalf("stderr = %q, want a warning naming %q", stderr, c.reason)
 			}
@@ -280,7 +280,7 @@ func TestAnAdapterThatCannotBeReachedIsOneWarningAndTheSameExec(t *testing.T) {
 	if code != 0 || !e.ran {
 		t.Fatalf("exit %d, exec'd %v — a dead Adapter must not fail a fetch", code, e.ran)
 	}
-	if !strings.HasPrefix(stderr, "warning: j2: remote fetch failed (") ||
+	if !strings.HasPrefix(stderr, "warning: jr2: remote fetch failed (") ||
 		!strings.HasSuffix(stderr, "serving the cache as of an unknown time\n") ||
 		strings.Count(stderr, "\n") != 1 {
 		t.Fatalf("stderr = %q, want one warning line", stderr)
@@ -328,7 +328,7 @@ func TestTooFewArgumentsPrintsTheUsage(t *testing.T) {
 	if code != 1 || e.ran {
 		t.Fatalf("exit %d, exec'd %v, want 1 and nothing exec'd", code, e.ran)
 	}
-	if stderr != "usage: j2-upload-pack <service> <identity> [adapter-url]\n" {
+	if stderr != "usage: jr2-upload-pack <service> <identity> [adapter-url]\n" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }

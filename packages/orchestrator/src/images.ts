@@ -1,5 +1,5 @@
-// The resolved key→ref image map, from the READ side (ADR-0037/0038/0049). `j2 up` builds every
-// image it deploys and writes this map into the `j2-images` ConfigMap; the Sandbox port consults it
+// The resolved key→ref image map, from the READ side (ADR-0037/0038/0049). `jr2 up` builds every
+// image it deploys and writes this map into the `jr2-images` ConfigMap; the Sandbox port consults it
 // when it creates a pod. This module is the shape both sides agree on — deliberately its own file,
 // not folded into sandbox-kubectl.ts, because the CLI needs the type without dragging in the
 // kubectl port.
@@ -10,7 +10,7 @@
 //
 // A user image's key is its build context's CONTENT DIGEST (ADR-0049). That is what lets the two
 // sides agree without a path table: a Machine names its context as a `file:` URL, whose absolute
-// path differs between the host at `j2 up` and the baked Orchestrator, while the FOLDER is the same
+// path differs between the host at `jr2 up` and the baked Orchestrator, while the FOLDER is the same
 // folder — the instance's `node_modules` holds the very tree the converge hashed. Digest in, digest
 // out, no dirname registry in between.
 //
@@ -28,12 +28,12 @@ import { fileURLToPath } from "node:url";
 /**
  * Every image ref one converge resolved. `harness`/`adapter` are the kit's own (built from a kit
  * checkout, or the published `<kitversion>` tags); `sandbox` is the instance's own docker-context
- * builds — one `docker build` straight to a content tag, carrying no j2 layers at all, because the
- * Harness arrives at POD time on the `/opt/j2` volume (ADR-0037).
+ * builds — one `docker build` straight to a content tag, carrying no jr2 layers at all, because the
+ * Harness arrives at POD time on the `/opt/jr2` volume (ADR-0037).
  *
  * A registry REF is deliberately absent from this map and always will be: it is never built,
- * never labeled, never swept, and never inspected at converge (ADR-0037/0039 — what j2 did not
- * stamp, j2 does not touch). It needs no entry because it already IS its own ref.
+ * never labeled, never swept, and never inspected at converge (ADR-0037/0039 — what jr2 did not
+ * stamp, jr2 does not touch). It needs no entry because it already IS its own ref.
  */
 export type ImageRefs = {
   /** The stock Harness image — also the last leg of the Sandbox Image fallback chain. */
@@ -48,11 +48,11 @@ export type ImageRefs = {
   /**
    * What each BUILT Sandbox Image's `USER` is, keyed by the same key — the answer to a
    * question a provision cannot ask. ADR-0037 gives an image that declares no user a fallback
-   * (uid 1000, `HOME=/home/j2` on an emptyDir), and only the host that built the image can see
+   * (uid 1000, `HOME=/home/jr2` on an emptyDir), and only the host that built the image can see
    * which case it is: `docker inspect` at converge is free, the cluster has no such reach.
    *
    * `""` is DATA, not a missing value: it is docker's own answer for "declares none", and it is
-   * exactly what the fallback turns on. An ABSENT key means j2 did not build the image — a
+   * exactly what the fallback turns on. An ABSENT key means jr2 did not build the image — a
    * registry ref by construction, never built, never inspected — so it runs as whatever its own
    * `USER` says, and one that would run as root fails the Harness container's `runAsNonRoot`.
    * Optional so an older converge's map still reads: absent reads as "nothing known", which
@@ -63,8 +63,8 @@ export type ImageRefs = {
 
 /**
  * Read the map the CLI wrote, per call. Absent or unparseable is a POINTED error naming the path
- * and `j2 up` — never a fallback onto a published tag: in a kit checkout the Harness is built to a
- * content-addressed tag, so a literal `j2-harness:<kitversion>` fallback would name a tag that was
+ * and `jr2 up` — never a fallback onto a published tag: in a kit checkout the Harness is built to a
+ * content-addressed tag, so a literal `jr2-harness:<kitversion>` fallback would name a tag that was
  * never built, and more importantly it would be the eject hatch ADR-0027/0038 refuse (nobody gets
  * to run a hand-picked Harness against a real cluster).
  */
@@ -75,8 +75,8 @@ export async function readImageRefs(path: string): Promise<ImageRefs> {
   } catch (err) {
     throw new Error(
       `no image map at ${path} (${(err as NodeJS.ErrnoException).code ?? "read failed"}) — every Sandbox ` +
-        "image is resolved from the `j2-images` ConfigMap, which `j2 up` writes when it builds the " +
-        "instance's images (ADR-0038). Converge this instance with `j2 up`.",
+        "image is resolved from the `jr2-images` ConfigMap, which `jr2 up` writes when it builds the " +
+        "instance's images (ADR-0038). Converge this instance with `jr2 up`.",
     );
   }
   let parsed: unknown;
@@ -85,11 +85,11 @@ export async function readImageRefs(path: string): Promise<ImageRefs> {
   } catch (err) {
     throw new Error(
       `the image map at ${path} is not JSON (${err instanceof Error ? err.message : err}) — it is written by ` +
-        "`j2 up`; re-run it to rewrite the `j2-images` ConfigMap (ADR-0038).",
+        "`jr2 up`; re-run it to rewrite the `jr2-images` ConfigMap (ADR-0038).",
     );
   }
   const bad = (why: string): never => {
-    throw new Error(`the image map at ${path} is malformed: ${why} — re-run \`j2 up\` (ADR-0038).`);
+    throw new Error(`the image map at ${path} is malformed: ${why} — re-run \`jr2 up\` (ADR-0038).`);
   };
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) bad("expected a JSON object");
   const map = parsed as Record<string, unknown>;
@@ -141,7 +141,7 @@ export function isImageContext(image: string): boolean {
  * The content address of a build context: everything in that directory, with NO exclusions — and
  * nothing else (ADR-0037/0038).
  *
- * It lives HERE, not in the CLI's build module, because BOTH sides compute it: `j2 up` keys the
+ * It lives HERE, not in the CLI's build module, because BOTH sides compute it: `jr2 up` keys the
  * map it publishes by this digest, and the baked Orchestrator computes it again at provision to
  * look the ref up. One implementation is what makes "the host and the pod agree without a path
  * table" true rather than hopeful (ADR-0049).
@@ -164,7 +164,7 @@ export async function imageContextDigest(dir: string): Promise<string> {
     for (const e of entries) {
       const p = join(d, e.name);
       if (e.isDirectory()) await walk(root, p);
-      // Symlinks are skipped, as they are for every other content address j2 takes: a link's
+      // Symlinks are skipped, as they are for every other content address jr2 takes: a link's
       // content is its target's path, which is host geography, not image content.
       else if (e.isFile()) {
         h.update(`0:${relative(root, p)}\n`);
@@ -208,7 +208,7 @@ export type ResolvedImage = {
   ref: string;
   /**
    * The image declares no `USER`, so ADR-0037's fallback seat applies: uid 1000 with
-   * `HOME=/home/j2` on an emptyDir.
+   * `HOME=/home/jr2` on an emptyDir.
    *
    * Only a recorded `""` — docker's own answer for "declares none" — sets this. Everything else is
    * false, and each for its own reason: a registry ref was never inspected (its own `USER` stands,
@@ -220,7 +220,7 @@ export type ResolvedImage = {
   /**
    * The recorded `USER` the kubelet will REFUSE, when it will.
    *
-   * Every j2-owned seat carries `runAsNonRoot: true` and names no `runAsUser` (the image's own
+   * Every jr2-owned seat carries `runAsNonRoot: true` and names no `runAsUser` (the image's own
    * `USER` decides — ADR-0005), and the kubelet resolves that pairing before it ever starts the
    * container. Two recorded values lose there: a non-numeric name (`USER dev`), which the kubelet
    * cannot prove is non-root because it does not read the image's `/etc/passwd`, and uid 0
@@ -255,14 +255,14 @@ function judgeUser(recorded: string | undefined): Pick<ResolvedImage, "fallbackS
  * An unknown key throws: a converge-time check is impossible for a ref and unnecessary for a
  * context (the walk built every one it found), so this fires when the Orchestrator's own
  * `node_modules` holds a context the LAST converge did not build — a stale deployment. The error
- * says exactly that, because "re-run `j2 up`" is the whole fix.
+ * says exactly that, because "re-run `jr2 up`" is the whole fix.
  */
 function builtRef(refs: ImageRefs, key: string, image: string, what: string): string {
   const ref = refs.sandbox[key];
   if (ref === undefined) {
     throw new Error(
       `no ${what} for ${image} (context digest ${key}) — this instance's last converge built ` +
-        `${Object.keys(refs.sandbox).length} image(s), none of them this one. Re-run \`j2 up\`: it walks the ` +
+        `${Object.keys(refs.sandbox).length} image(s), none of them this one. Re-run \`jr2 up\`: it walks the ` +
         "registered Machines and builds every `file:` context they carry (ADR-0037/0049).",
     );
   }
@@ -272,10 +272,10 @@ function builtRef(refs: ImageRefs, key: string, image: string, what: string): st
 /**
  * ADR-0037's resolution chain: the wrapper's `image` (a context or a ref) → the Instance's
  * `images/default` → the stock Harness. The last leg comes out of the MAP rather than a
- * `j2-harness:${KIT_VERSION}` literal, because in a kit checkout the Harness is built to a
+ * `jr2-harness:${KIT_VERSION}` literal, because in a kit checkout the Harness is built to a
  * content-addressed tag (ADR-0038) and a literal would name a tag nothing ever built.
  *
- * A REF passes through VERBATIM. It is deployed-never-built: j2 never built it, so j2 has no ref to
+ * A REF passes through VERBATIM. It is deployed-never-built: jr2 never built it, so jr2 has no ref to
  * look up and nothing to say about its tag discipline — the cluster pulls it, and nothing was
  * inspected, so no seat fact is known.
  */
@@ -293,7 +293,7 @@ export async function resolveSandboxImage(refs: ImageRefs, image?: string): Prom
 /**
  * The User Container's image (ADR-0005). Same two origins, same resolution — and NO fallback
  * chain: absence means the pod has no third container, so there is nothing for a default to be.
- * The seat's identity is "what j2 does not own", and a j2-chosen default would be an opinion in
+ * The seat's identity is "what jr2 does not own", and a jr2-chosen default would be an opinion in
  * the one place ADR-0005 promises none. Its `USER` is not judged either: the seat carries no
  * `securityContext` at all, so root is allowed there.
  */

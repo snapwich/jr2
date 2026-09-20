@@ -1,4 +1,4 @@
-// `j2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
+// `jr2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
 // typecheck → the Machine walk → ownership → image resolution → operator → kit images → instance
 // image → Sandbox Images → Secret (+ preflight of referenced Secrets) → apply + rollout → the cache
@@ -19,7 +19,7 @@
 // export has no type to hang that on. Nothing is built, and nothing on the cluster is touched,
 // before the compiler has agreed the folder is coherent and every slot is bound.
 //
-// Images (ADR-0038, as amended by ADR-0045): `j2 up` builds every image it deploys, and every tag is
+// Images (ADR-0038, as amended by ADR-0045): `jr2 up` builds every image it deploys, and every tag is
 // a content address of (its own inputs × the platform set it was built for) — `<hash>-<arch>`, with
 // `--platform` passed explicitly on every build. The cluster's schedulable nodes choose that set
 // (`platforms` in the config overrides absolutely), so the daemon default and
@@ -36,7 +36,7 @@
 //
 // Content addressing also MAKES garbage — iterating on a Dockerfile while up leaves one full image
 // per iteration — so a converge that fully succeeded ends by sweeping every labeled image no live
-// root names (ADR-0039). It runs here, and not only at `j2 down`, because here is where the garbage
+// root names (ADR-0039). It runs here, and not only at `jr2 down`, because here is where the garbage
 // is made: the moment this converge's map replaces the last one is the moment the old generation
 // stops being reachable.
 //
@@ -64,8 +64,8 @@ import {
   type CarriedImage,
   type CarriedRepo,
   type ImageRefs,
-  type J2Config,
-} from "@j2/orchestrator";
+  type JR2Config,
+} from "@jr2/orchestrator";
 import {
   assertEmulation,
   buildSandboxImage,
@@ -136,11 +136,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   const kube = io.kubeAdmin ?? kubectlAdmin;
   const context = (values.context as string | undefined) ?? (await kube.context());
   if (!context) {
-    throw new Error("no kube context — `kind create cluster` (or point kubectl at one), then re-run `j2 up`");
+    throw new Error("no kube context — `kind create cluster` (or point kubectl at one), then re-run `jr2 up`");
   }
   const ctx = values.context ? { context: values.context as string } : {};
 
-  activity(io, `j2 up — instance "${name}" → context ${context} / namespace ${namespace}`);
+  activity(io, `jr2 up — instance "${name}" → context ${context} / namespace ${namespace}`);
 
   // --- typecheck (ADR-0050): the compiler agrees the folder is coherent, before anything is spent -
   // A REFUSAL, not a warning, and it comes before the namespace apply as well as before the builds:
@@ -278,9 +278,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // The Sandbox nodes (ADR-0052), when a Machine will need one and the nodes were read: the set
   // the scheduler will use, at this moment. Empty WARNS and the converge goes on — a pool that
   // autoscales from zero, a node cordoned mid-converge, a GPU box joining tomorrow are all the
-  // ordinary case, and a refusal would make `j2 up` a point-in-time check of a moving set. The
+  // ordinary case, and a refusal would make `jr2 up` a point-in-time check of a moving set. The
   // truth while a run waits is the operator's: a Pending Sandbox carries the scheduler's own
-  // words in its Ready condition, and `j2 status` shows them.
+  // words in its Ready condition, and `jr2 status` shows them.
   if (carried.composesSandbox && config.platforms === undefined) {
     const { nodes: candidates, excluded } = sandboxNodes(nodes, config.sandbox);
     if (candidates.length > 0) {
@@ -291,7 +291,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       activity(
         io,
         "  a Sandbox lands where an ordinary pod lands; to admit a tainted or labeled node, set " +
-          "`sandbox: { nodeSelector, tolerations }` in j2.config.ts (raw pod-spec shapes, ADR-0052).",
+          "`sandbox: { nodeSelector, tolerations }` in jr2.config.ts (raw pod-spec shapes, ADR-0052).",
       );
     }
   }
@@ -302,7 +302,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   if (platforms.length > 1 && !registry) {
     throw new Error(
       `this cluster needs a ${platforms.join(" + ")} build, which docker buildx delivers by PUSHING a ` +
-        `manifest list (kind load cannot carry one) — set \`registry\` in j2.config.ts, or name a single ` +
+        `manifest list (kind load cannot carry one) — set \`registry\` in jr2.config.ts, or name a single ` +
         `platform with \`platforms\``,
     );
   }
@@ -365,7 +365,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // content address of the same inputs, so on the host that built it, present implies current
   // (ADR-0038's seal is what made that true). Read lazily and at most once per converge, so a
   // steady-state converge still spends no docker at all; label-filtered, so a hand-built image
-  // wearing the right name is invisible and the build proceeds — what j2 did not stamp, j2 does
+  // wearing the right name is invisible and the build proceeds — what jr2 did not stamp, jr2 does
   // not trust. The disk never answers the DELIVERY question: a disk-skip still delivers (`kind
   // load` skips a node already holding the id; a push is idempotent), and a record hit still
   // skips both.
@@ -474,7 +474,7 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- the kit's own runtime images (ADR-0038) ---------------------------------------------------
   // Built here rather than lazily beside their consumers. The Harness is the injection source
-  // (ADR-0037): the pod's `runtime` init step copies `/opt/j2` out of this exact ref onto the
+  // (ADR-0037): the pod's `runtime` init step copies `/opt/jr2` out of this exact ref onto the
   // volume the Sandbox Image mounts. The Adapter is deployed into every Sandbox this instance
   // provisions. Neither is a hash input for a Sandbox Image — the runtime rides the pod's volume,
   // so a kit edit re-images future pods and re-tags nothing of the user's.
@@ -490,7 +490,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // the tag one fact: a converge whose platform set moved must not read the recorded hash as fresh,
   // skip the build, and then apply a tag nothing ever delivered.
   const hash = `${staged.hash}${platformSuffix(platforms)}`;
-  const tag = registry ? `${registry}/j2-instance-${name}:${hash}` : `j2-instance-${name}:${hash}`;
+  const tag = registry ? `${registry}/jr2-instance-${name}:${hash}` : `jr2-instance-${name}:${hash}`;
   try {
     if (orch?.metadata.labels?.[LABEL_HASH] === hash && values.force !== true) {
       // Safe to skip only because the rolled-out pod is verified against `tag` below: this decides
@@ -601,22 +601,22 @@ export async function up(args: string[], io: Io): Promise<number> {
   // key signed — ADR-0013), minted only on first converge.
   const secret = await kube.getJson<KubeObject & { data?: Record<string, string> }>({
     kind: "secret",
-    name: "j2-instance",
+    name: "jr2-instance",
     namespace,
     ...ctx,
   });
   const keep = (key: string, mint: () => string): string =>
     secret?.data?.[key] ? Buffer.from(secret.data[key], "base64").toString("utf8") : mint();
-  const instanceToken = keep("J2_INSTANCE_TOKEN", () => randomBytes(24).toString("hex"));
-  const signingKey = keep("J2_SIGNING_KEY", () => randomBytes(32).toString("base64"));
+  const instanceToken = keep("JR2_INSTANCE_TOKEN", () => randomBytes(24).toString("hex"));
+  const signingKey = keep("JR2_SIGNING_KEY", () => randomBytes(32).toString("base64"));
   const secretData: Record<string, string> = {
-    J2_INSTANCE_TOKEN: instanceToken,
-    J2_SIGNING_KEY: signingKey,
+    JR2_INSTANCE_TOKEN: instanceToken,
+    JR2_SIGNING_KEY: signingKey,
     // The Instance Harness Adapter's credential (ADR-0013/0031): a sandbox-style token signed
     // for the placement's name — it may deliver only to Turns hosted THERE (tokens.ts), so the
     // Instance token never enters that pod. Derived from the kept key, so re-runs converge to
     // the same value; live Adapters keep verifying.
-    J2_INSTANCE_HARNESS_TOKEN: sandboxToken(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
+    JR2_INSTANCE_HARNESS_TOKEN: sandboxToken(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
   };
   // Git tokens (ADR-0019/0051): every env var a `git.credentials` entry names, materialized from
   // `.env` when set. They ride the ORCHESTRATOR's Secret — never the harness one — because the
@@ -632,7 +632,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   // key — the ConfigMap'd harness config carries the provider MINUS this (ADR-0018).
   const harnessEnvData: Record<string, string> = {};
   for (const v of config.harness?.env ?? []) if (v.value !== undefined) harnessEnvData[v.name] = v.value;
-  if (config.harness?.provider?.apiKey) harnessEnvData.J2_PROVIDER_API_KEY = config.harness.provider.apiKey;
+  if (config.harness?.provider?.apiKey) harnessEnvData.JR2_PROVIDER_API_KEY = config.harness.provider.apiKey;
 
   // Preflight referenced-but-unmanaged Secrets: turn the CreateContainerConfigError hang into an
   // immediate, named error (ADR-0019). Sealed/External Secrets ride this seam untouched.
@@ -719,9 +719,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   } else {
     // The Repo resources are NOT deleted here: eviction is reachability plus age (ADR-0051), and
     // the orchestrator this converge just rolled out binds nothing, so its boot unlabels every one
-    // of them (server.ts) and `j2 gc` takes them at the TTL. The bare clones under
-    // `/var/lib/j2/<ns>/repos` outlive the agent that would evict them — inert, like the ones
-    // `j2 down` leaves (down.ts), and swept by the agent's own walk if a `workspace()` ever
+    // of them (server.ts) and `jr2 gc` takes them at the TTL. The bare clones under
+    // `/var/lib/jr2/<ns>/repos` outlive the agent that would evict them — inert, like the ones
+    // `jr2 down` leaves (down.ts), and swept by the agent's own walk if a `workspace()` ever
     // returns here.
     for (const kind of ["daemonset", "rolebinding", "role", "serviceaccount"]) {
       await kube.deleteObject({ kind, name: REPO_CACHE, namespace, ...ctx });
@@ -778,7 +778,7 @@ export async function up(args: string[], io: Io): Promise<number> {
   await reportOlderWorkspaces(io, kube, namespace, ctx, converged);
   await sweepAfterConverge(io, { build, kube, context, ctx, converged, instanceImage: tag, previous });
   noteDeferred(io, carried.repos);
-  activity(io, `converged — \`j2 run <workflow>\` when ready`);
+  activity(io, `converged — \`jr2 run <workflow>\` when ready`);
   // LAST, after the success line (ADR-0047): the converge succeeded and the Repos still cannot be
   // fetched, so the one thing left to do belongs at the bottom of the scroll, not in the middle.
   for (const notice of gitSsh) reportGeneratedKey(io, notice);
@@ -787,16 +787,16 @@ export async function up(args: string[], io: Io): Promise<number> {
 
 /**
  * Every image ref one converge resolved. The Orchestrator reads `harness`/`adapter`/`sandbox` from
- * the mounted map (`ImageRefs`); `operator` rides the same JSON because the record `j2 up` diffs
+ * the mounted map (`ImageRefs`); `operator` rides the same JSON because the record `jr2 up` diffs
  * must cover every image it builds, and one map is what keeps the record it diffs and the map pods
  * read from ever disagreeing (ADR-0038).
  *
  * `sandboxUser` is the same map's answer to a question a provision cannot ask: an image that
- * declares no `USER` runs as uid 1000 with `HOME=/home/j2` on an emptyDir (ADR-0037), and only the
+ * declares no `USER` runs as uid 1000 with `HOME=/home/jr2` on an emptyDir (ADR-0037), and only the
  * host that BUILT the image can see which case it is (`docker inspect` at converge is free; the
  * cluster has no such reach). So the fact travels with the ref, in the same JSON, under the same key:
  * `""` means "declares none — apply the fallback", a non-empty value is the declared user, and an
- * ABSENT key means unknown, which is the only honest reading for an image j2 did not build. A
+ * ABSENT key means unknown, which is the only honest reading for an image jr2 did not build. A
  * registry ref is exactly that absent case by construction — it is never built,
  * never inspected, never in this map — so it runs as whatever its own `USER` says, and one that
  * would run as root fails the Harness container's `runAsNonRoot` at provision.
@@ -833,13 +833,13 @@ function mapRefs(map: Partial<ConvergedImages>): string[] {
  * The keep set gets two additions on top of the cluster's own roots. `extraKeep` is what THIS
  * converge resolved — recorded in the map and running in the pods this function's callers just
  * verified, but named explicitly so a read that raced the apply cannot make a fresh image look
- * unreachable. `grace` is the map this converge REPLACED, and it is node-only: the `j2-images`
+ * unreachable. `grace` is the map this converge REPLACED, and it is node-only: the `jr2-images`
  * ConfigMap reaches a Sandbox through a kubelet propagation window, so for one more round a
  * provision can still ask a node for a ref the new map no longer names. The host has no such
  * window — nothing is ever provisioned from it — so it is swept aggressively.
  *
  * A failure here is a WARNING. The instance is converged, which is what `up` promised; disk is not
- * that promise, and the next `j2 up` or `j2 gc` collects whatever this run could not.
+ * that promise, and the next `jr2 up` or `jr2 gc` collects whatever this run could not.
  */
 async function sweepAfterConverge(
   io: Io,
@@ -875,7 +875,7 @@ async function sweepAfterConverge(
 function undeliverable(context: string): Error {
   return new Error(
     `context ${context} is not a kind cluster and no \`registry\` is configured — ` +
-      `set \`registry\` in j2.config.ts (from env) so the image can be pushed (ADR-0019)`,
+      `set \`registry\` in jr2.config.ts (from env) so the image can be pushed (ADR-0019)`,
   );
 }
 
@@ -897,7 +897,7 @@ async function reportOlderWorkspaces(
   const current = new Set([converged.harness, ...Object.values(converged.sandbox)]);
   try {
     const sandboxes = await kube.listJson<{ metadata: { name: string }; spec?: { image?: string } }>({
-      kind: "sandboxes.core.j2.dev",
+      kind: "sandboxes.core.jr2.dev",
       namespace,
       ...ctx,
     });
@@ -963,7 +963,7 @@ async function verifyRunningImage(
     throw new Error(
       `${layer}: rollout reported success, but the running pod carries ${carried} — expected ${image}. ` +
         `The cluster is serving code this converge did not deploy; ` +
-        `\`kubectl -n ${opts.namespace} rollout restart deploy\` and re-run \`j2 up\` to resolve it.`,
+        `\`kubectl -n ${opts.namespace} rollout restart deploy\` and re-run \`jr2 up\` to resolve it.`,
     );
   }
   if (live.length === 0) {
@@ -989,7 +989,7 @@ type GitSshSource = { kind: "generate" } | { kind: "file"; path: string } | { ki
 /**
  * A BOUND ssh url needs a deploy key the CLUSTER holds, and the USER chooses which one
  * (ADR-0047, ADR-0051). The key lives in the Secret the url's `git.credentials` entry names as its
- * `sshKey` — the scaffold's wildcard names `j2-git-ssh`; an entry may name any — and this asks
+ * `sshKey` — the scaffold's wildcard names `jr2-git-ssh`; an entry may name any — and this asks
  * once per such Secret that does not exist yet, listing the urls it will serve. The sources are
  * ADR-0047's three: a fresh in-cluster deploy keypair (recommended, listed first, and the only
  * thing `--yes` will ever take), a local key — the `~/.ssh` candidates plus a path typed in — or
@@ -1000,7 +1000,7 @@ type GitSshSource = { kind: "generate" } | { kind: "file"; path: string } | { ki
  *
  * ADR-0019's flat "personal keys never enter a cluster" is demoted to a DEFAULT, not deleted: a git
  * host allows one deploy key on exactly one repo, so the invariant charged a multi-repo instance N
- * registrations and pushed users into hand-rolled Secrets anyway. j2 still never lifts a personal
+ * registrations and pushed users into hand-rolled Secrets anyway. jr2 still never lifts a personal
  * key silently — only by this explicit, warned pick, and never from a flag (`--yes` generates; the
  * scripted supplied-key path is `kubectl create secret generic <name> --from-file=identity=…`).
  *
@@ -1011,7 +1011,7 @@ type GitSshSource = { kind: "generate" } | { kind: "file"; path: string } | { ki
 async function ensureGitSsh(
   io: Io,
   kube: KubeAdmin,
-  config: J2Config,
+  config: JR2Config,
   repos: CarriedRepo[],
   namespace: string,
   ctx: { context?: string },
@@ -1075,7 +1075,7 @@ async function ensureGitSsh(
         ? await readSuppliedKey(source.path)
         : await readSecretInput(io, `paste the private key (input hidden), ending with its -----END … ----- line:`);
     if (privateKey.trim() === "") {
-      throw new Error(`no key was read from ${where} — nothing was applied; re-run \`j2 up\` to pick a key source`);
+      throw new Error(`no key was read from ${where} — nothing was applied; re-run \`jr2 up\` to pick a key source`);
     }
     let publicKey: string;
     try {
@@ -1160,7 +1160,7 @@ async function discoverSshKeys(io: Io): Promise<string[]> {
   return found;
 }
 
-/** `~/…` as the shell would have expanded it, since this path is typed at j2's prompt, not the
+/** `~/…` as the shell would have expanded it, since this path is typed at jr2's prompt, not the
  * shell's — the one expansion a user reasonably expects to still work here. */
 function expandHome(io: Io, path: string): string {
   return path.startsWith("~/") ? join(io.env.HOME ?? homedir(), path.slice(2)) : path;
@@ -1215,7 +1215,7 @@ function sshFingerprint(publicKey: string): string {
 
 /** The last word of a converge that generated a keypair (ADR-0047): the key, what stays broken
  * until it is registered, and who fixes it — the cache agent, on its own (ADR-0048/0051), so nobody
- * re-runs `j2 up` looking for a button. */
+ * re-runs `jr2 up` looking for a button. */
 function reportGeneratedKey(io: Io, notice: GitSshNotice): void {
   activity(
     io,
@@ -1223,7 +1223,7 @@ function reportGeneratedKey(io: Io, notice: GitSshNotice): void {
   );
   activity(io, `  ${notice.publicKey}`);
   activity(io, `  until it is registered, ${notice.urls.join(", ")} will not sync (the Orchestrator serves anyway)`);
-  activity(io, `  the cache agent retries on its own — \`j2 status\` reports each Repo's last error per node`);
+  activity(io, `  the cache agent retries on its own — \`jr2 status\` reports each Repo's last error per node`);
 }
 
 /** Generate an ed25519 keypair with ssh-keygen (no passphrase — it lives only in the Secret). */
@@ -1233,9 +1233,9 @@ async function sshKeygen(): Promise<{ privateKey: string; publicKey: string }> {
   const { mkdtemp, readFile, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const dir = await mkdtemp(join(tmpdir(), "j2-ssh-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-ssh-"));
   try {
-    await promisify(execFile)("ssh-keygen", ["-t", "ed25519", "-N", "", "-C", "j2-git-ssh", "-f", join(dir, "key")]);
+    await promisify(execFile)("ssh-keygen", ["-t", "ed25519", "-N", "", "-C", "jr2-git-ssh", "-f", join(dir, "key")]);
     return {
       privateKey: await readFile(join(dir, "key"), "utf8"),
       publicKey: await readFile(join(dir, "key.pub"), "utf8"),
@@ -1246,7 +1246,7 @@ async function sshKeygen(): Promise<{ privateKey: string; publicKey: string }> {
 }
 
 /**
- * Derive `key.pub` from a supplied private key — and, in the same call, decide whether j2 will
+ * Derive `key.pub` from a supplied private key — and, in the same call, decide whether jr2 will
  * take it at all (ADR-0047). `-P ""` supplies an EMPTY passphrase, so an encrypted key fails here,
  * by name, before any Secret is applied; prompting for the passphrase and storing the decrypted
  * key would silently strip protection the user chose to have.
@@ -1261,7 +1261,7 @@ async function sshPublicKey(privateKey: string): Promise<string> {
   const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
-  const dir = await mkdtemp(join(tmpdir(), "j2-ssh-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-ssh-"));
   const file = join(dir, "key");
   try {
     await writeFile(file, newlineTerminated(privateKey), { mode: 0o600 });
@@ -1273,7 +1273,7 @@ async function sshPublicKey(privateKey: string): Promise<string> {
       if (/passphrase/i.test(detail)) {
         throw new Error(
           `it is passphrase-protected. The in-cluster clone runs unattended and cannot answer a passphrase, ` +
-            `and j2 will not store a decrypted copy — use an unencrypted key, or let j2 generate a deploy key`,
+            `and jr2 will not store a decrypted copy — use an unencrypted key, or let jr2 generate a deploy key`,
         );
       }
       throw new Error(`ssh-keygen could not read it as a private key (${detail || "no output"})`);
@@ -1288,7 +1288,7 @@ async function sshPublicKey(privateKey: string): Promise<string> {
  * alone. Loud on a missing file — a silently absent CA turns up later as a TLS failure inside a
  * pod, the exact hang-shaped outcome preflights exist to prevent.
  */
-async function readCaBundle(root: string, config: J2Config): Promise<string | undefined> {
+async function readCaBundle(root: string, config: JR2Config): Promise<string | undefined> {
   if (!config.harness?.caBundle) return undefined;
   const path = join(root, config.harness.caBundle);
   try {
@@ -1310,7 +1310,7 @@ async function readCaBundle(root: string, config: J2Config): Promise<string | un
 async function preflightProvider(
   io: Io,
   kube: KubeAdmin,
-  config: J2Config,
+  config: JR2Config,
   agents: CarriedAgent[],
   namespace: string,
   ctx: { context?: string },
@@ -1347,7 +1347,13 @@ async function preflightProvider(
     try {
       // caPem: the probe trusts the instance's CA bundle exactly like the Harness will (ADR-0020) —
       // a preflight that fails where the Harness would succeed is a broken promise, and vice versa.
-      await kube.runOneShot({ namespace, name: `j2-provider-preflight-${Date.now() % 100000}`, script, caPem, ...ctx });
+      await kube.runOneShot({
+        namespace,
+        name: `jr2-provider-preflight-${Date.now() % 100000}`,
+        script,
+        caPem,
+        ...ctx,
+      });
       activity(io, `provider: ${model} reachable, and it completed a tool call`);
     } catch (err) {
       throw new Error(
@@ -1390,7 +1396,7 @@ function noteDeferred(io: Io, repos: CarriedRepo[]): void {
     activity(
       io,
       `repos: ${repos.length} bound Repo(s) — the Orchestrator creates their Repo resources at boot; the cache ` +
-        "agent clones on first need (`j2 status` reports sync state)",
+        "agent clones on first need (`jr2 status` reports sync state)",
     );
   }
 }

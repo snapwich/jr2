@@ -46,7 +46,7 @@ function scriptedFetch(script: Array<(call: Call) => Response | Promise<Response
 const client = (fetchImpl: typeof fetch) =>
   createHarnessClient({ baseUrl: "http://h.test", fetch: fetchImpl, backoffInitialMs: 1, backoffMaxMs: 4 });
 
-/** A `submission-settled` chunk as `@j2/harness` emits it (wire.ts — flat, enveloped). */
+/** A `submission-settled` chunk as `@jr2/harness` emits it (wire.ts — flat, enveloped). */
 function settledChunk(submissionId: string, outcome: string, error?: { type: string; message?: string }) {
   return {
     type: "submission-settled",
@@ -143,7 +143,7 @@ test("a retry that SUCCEEDED still says what it cost — an absorbed fault must 
   // routability budget — a rename here that is not made there fails nothing and checks nothing.
   assert.match(
     lines[0]!,
-    /^j2\.routability seat=admission attempts=2 ms=\d+ last=ECONNREFUSED url=http:\/\/h\.test\/agents\/coder\/inst-1$/,
+    /^jr2\.routability seat=admission attempts=2 ms=\d+ last=ECONNREFUSED url=http:\/\/h\.test\/agents\/coder\/inst-1$/,
   );
 });
 

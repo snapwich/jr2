@@ -20,8 +20,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
-	"github.com/snapwich/j2/operator/internal/repocache"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
+	"github.com/snapwich/jr2/operator/internal/repocache"
 )
 
 const (
@@ -33,8 +33,8 @@ const (
 // sandboxLabels are the pod labels the Sandbox's Service selects on.
 func sandboxLabels(sandbox *corev1alpha1.Sandbox) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/managed-by": "j2-operator",
-		"sandbox.j2.dev/name":          sandbox.Name,
+		"app.kubernetes.io/managed-by": "jr2-operator",
+		"sandbox.jr2.dev/name":          sandbox.Name,
 	}
 }
 

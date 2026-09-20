@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: repos.core.j2.dev
+  name: repos.core.jr2.dev
 spec:
-  group: core.j2.dev
+  group: core.jr2.dev
   names:
     kind: Repo
     listKind: RepoList
@@ -31,8 +31,8 @@ spec:
           Repo is the Schema for the repos API: a git repository the Instance keeps a
           per-node cache of (ADR-0051). The Orchestrator creates one per repository
           its Machines bind (at boot) or a run attaches (at first attach), labels the
-          bound ones `j2.dev/bound: "true"`, and annotates `j2.dev/identity` and
-          `j2.dev/last-attached`; `j2 gc` evicts by that label and age.
+          bound ones `jr2.dev/bound: "true"`, and annotates `jr2.dev/identity` and
+          `jr2.dev/last-attached`; `jr2 gc` evicts by that label and age.
         properties:
           apiVersion:
             description: |-
@@ -97,7 +97,7 @@ spec:
                 description: |-
                   Conditions carries `Synced`: True when every reporting node is synced,
                   False with the first node's error when any is not, Unknown while no node
-                  has reported. It is what `j2 status` and `kubectl get repos` read.
+                  has reported. It is what `jr2 status` and `kubectl get repos` read.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

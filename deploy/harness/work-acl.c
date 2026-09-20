@@ -8,7 +8,7 @@
  *
  * It writes the `system.posix_acl_default` xattr itself rather than linking libacl, so
  * `gcc -static` yields a truly static binary — it executes inside the USER'S image at attach
- * time, on a libc j2 does not control, exactly why rg is vendored static (ADR-0037). The kernel
+ * time, on a libc jr2 does not control, exactly why rg is vendored static (ADR-0037). The kernel
  * validates the blob on setxattr, and the Dockerfile's build reads it back with getfacl.
  *
  * A filesystem without POSIX ACL support gets a warning and exit 0, never a failure: the attach

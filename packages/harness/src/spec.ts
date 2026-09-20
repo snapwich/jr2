@@ -3,19 +3,19 @@
 //   - The Agent DEFINITION rides every admission. A Machine carries its Agents as actor slots, so
 //     the definition travels with the Turn that runs it (ADR-0049) and the Harness runs what it
 //     was handed — re-read per Submission as before, now literally: the queued admission IS the
-//     definition. There is no roster here, no `agents/` folder and no `J2_AGENTS_JSON`: a flat
+//     definition. There is no roster here, no `agents/` folder and no `JR2_AGENTS_JSON`: a flat
 //     roster could not hold two Machines' `coder`s, and the pod would need a restart to learn a
 //     definition the Orchestrator already knows.
-//   - The harness CONFIG (`J2_HARNESS_JSON`) is what this instance can REACH — the custom model
+//   - The harness CONFIG (`JR2_HARNESS_JSON`) is what this instance can REACH — the custom model
 //     provider, and nothing else (ADR-0018). Deployment fact, not a Machine's, so it stays
 //     mounted config (ADR-0050) and is read once at boot.
 //
 // Validation of a definition is per ADMISSION and LOUD: a definition that cannot run is a 400
-// naming the slot, never a silently thinner turn. Shapes mirror `@j2/orchestrator`'s
+// naming the slot, never a silently thinner turn. Shapes mirror `@jr2/orchestrator`'s
 // `AgentDefinition` and `HarnessConfig` deliberately without importing them — the stock image
 // carries no Orchestrator.
 
-/** j2's reasoning-effort scale (mirrors `@j2/orchestrator`'s `ThinkingLevel`). A strict subset of
+/** jr2's reasoning-effort scale (mirrors `@jr2/orchestrator`'s `ThinkingLevel`). A strict subset of
  * pi's — every value passes through to the runtime unmapped. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -48,8 +48,8 @@ export type AgentDefinition = {
 /** Token limits for one model — properties of the MODEL, not the endpoint. */
 export type ProviderModelLimits = { contextWindow?: number; maxTokens?: number };
 
-/** A custom model provider (ADR-0018), as `j2 up` publishes it — `apiKey` is deliberately absent
- * (it rides the instance Secret as `J2_PROVIDER_API_KEY` env, never the ConfigMap). */
+/** A custom model provider (ADR-0018), as `jr2 up` publishes it — `apiKey` is deliberately absent
+ * (it rides the instance Secret as `JR2_PROVIDER_API_KEY` env, never the ConfigMap). */
 export type ProviderSpec = {
   /** The provider id model specifiers use (`<id>/<model>`), e.g. `vllm`. */
   id: string;
@@ -144,26 +144,26 @@ export function resolveDefinition(definition: AgentDefinition, dials?: TurnDials
 }
 
 /**
- * Read + validate the mounted harness config from the environment (`J2_HARNESS_JSON` — the
- * `j2-harness` ConfigMap, written by `j2 up`). ABSENT is valid and means "pi's own catalog
- * alone": an instance whose Agents name only built-in models declares no provider, and `j2 up`
+ * Read + validate the mounted harness config from the environment (`JR2_HARNESS_JSON` — the
+ * `jr2-harness` ConfigMap, written by `jr2 up`). ABSENT is valid and means "pi's own catalog
+ * alone": an instance whose Agents name only built-in models declares no provider, and `jr2 up`
  * writes the key with no `provider` in it. Malformed is not — it throws into the pod log, because
  * a Harness that silently dropped its one reachable endpoint would fail every admission instead.
  */
 export function loadHarnessSpec(env: Record<string, string | undefined>): HarnessSpec {
-  const raw = env.J2_HARNESS_JSON;
+  const raw = env.JR2_HARNESS_JSON;
   if (!raw) return {};
   let spec: HarnessSpec;
   try {
     spec = JSON.parse(raw) as HarnessSpec;
   } catch (err) {
-    throw new Error(`J2_HARNESS_JSON is not JSON: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`JR2_HARNESS_JSON is not JSON: ${err instanceof Error ? err.message : String(err)}`);
   }
-  if (typeof spec !== "object" || spec === null) throw new Error("J2_HARNESS_JSON is not an object");
+  if (typeof spec !== "object" || spec === null) throw new Error("JR2_HARNESS_JSON is not an object");
   const provider = spec.provider;
   if (provider && (!provider.id || !provider.api || !provider.baseUrl)) {
     throw new Error(
-      `J2_HARNESS_JSON's provider needs { id, api, baseUrl } — got ${JSON.stringify(provider)} (ADR-0018)`,
+      `JR2_HARNESS_JSON's provider needs { id, api, baseUrl } — got ${JSON.stringify(provider)} (ADR-0018)`,
     );
   }
   return spec;

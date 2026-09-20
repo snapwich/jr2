@@ -6,9 +6,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
 import { z } from "zod";
-import { defineEvent } from "@j2/agent-protocol";
+import { defineEvent } from "@jr2/agent-protocol";
 import { pool, source } from "../src/pool.ts";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { vocabularyOf } from "../src/vocabulary.ts";
 import { RunHost } from "../src/run-host.ts";
 import { mkStore, waitFor } from "./_fixtures.ts";
@@ -19,7 +19,7 @@ const finish = defineEvent({ name: "finish", input: z.object({}) });
 const workReady = defineEvent({ name: "work_ready", audience: "external", input: z.object({}) });
 
 /** A worker that parks on a per-item gate until an external `finish` settles it. */
-const gatedWorker = j2Setup({
+const gatedWorker = jr2Setup({
   types: {} as {
     context: { item: Item };
     input: { item: Item };

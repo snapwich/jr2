@@ -5,8 +5,8 @@ and keeps one bare cache per node of every `Repo` a Sandbox names. A standalone 
 controller-runtime). See [ADR-0001](../docs/adr/0001-operator-owned-generic-sandbox.md) and
 [ADR-0051](../docs/adr/0051-a-repo-is-a-slot-on-the-workspace-and-a-cache-on-the-node.md).
 
-- **Group/Version:** `core.j2.dev/v1alpha1`; **Kinds:** `Sandbox`, `Repo`
-- **Module:** `github.com/snapwich/j2/operator`
+- **Group/Version:** `core.jr2.dev/v1alpha1`; **Kinds:** `Sandbox`, `Repo`
+- **Module:** `github.com/snapwich/jr2/operator`
 
 ## Two CRDs (ADR-0051)
 
@@ -21,18 +21,18 @@ reader of the Sandbox — the key into each Repo's `status.nodes[]`; the cache a
 `Ready` until every key is present on that node and fetched since the Sandbox was created — a cache whose refresh
 failed is `Ready` with `ReposFresh=False`, a cold node whose `Clone` failed is held with `RepoCloneFailed` (a failed
 `Probe` is not that: the pod's arrival makes the agent clone). That gate is asked until it passes for the pod, and its
-verdict then stands for that pod's life: the `Repo` resource's later state, or its absence once `j2 gc` evicted it
+verdict then stands for that pod's life: the `Repo` resource's later state, or its absence once `jr2 gc` evicted it
 under a pod still mounting the cache, never moves a serving Sandbox off `Ready`; a replacement pod is asked afresh.
 That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the Orchestrator's
 post-Ready step (ADR-0004).
 
 ## The cache agent (`/manager repo-cache`)
 
-The same binary is the per-node cache agent (`internal/repocache/`): `j2 up` runs it as a DaemonSet in every Instance
-namespace with a data plane, root-seated over the hostPath `/var/lib/j2/<namespace>/repos`. Keyed by Repo and woken by
+The same binary is the per-node cache agent (`internal/repocache/`): `jr2 up` runs it as a DaemonSet in every Instance
+namespace with a data plane, root-seated over the hostPath `/var/lib/jr2/<namespace>/repos`. Keyed by Repo and woken by
 the pods on its node that mount a cache (a Repo's own status writes never wake it — a failed clone or probe would
 otherwise re-run ahead of its backoff), it clones a cache the first time a pod there mounts it, probes a Repo nobody asks
-for once per spec generation (the sync signal `j2 status` shows before any run), fetches on demand before an attach and
+for once per spec generation (the sync signal `jr2 status` shows before any run), fetches on demand before an attach and
 on `spec.refreshInterval`, pins gc on every cache it clones or adopts (ADR-0004), and evicts a cache once its Repo is
 gone and no pod on the node mounts it — a pod, not a Sandbox resource, because the resource is gone before its pod
 finishes terminating. Credentials come from `spec.secretRef` alone: an https token rides a credential
@@ -41,10 +41,10 @@ entry in `status.nodes` — under an optimistic lock. To run one by hand against
 
 ```sh
 # from operator/
-go run ./cmd repo-cache --cache-dir /tmp/j2-cache --namespace <ns> --node <name>
+go run ./cmd repo-cache --cache-dir /tmp/jr2-cache --namespace <ns> --node <name>
 ```
 
-`--namespace` and `--node` default to `J2_NAMESPACE` and `NODE_NAME` (the DaemonSet's downward API); `--min-backoff`
+`--namespace` and `--node` default to `JR2_NAMESPACE` and `NODE_NAME` (the DaemonSet's downward API); `--min-backoff`
 and `--max-backoff` bound the retry after a failed clone or probe; `--clone-timeout`, `--fetch-timeout`, and
 `--on-demand-fetch-timeout` bound one git call, so a hung remote fails the one Repo instead of holding the node's
 worker. The on-demand budget is the short one: a Sandbox is held on that fetch, and past the bound it goes Ready stale

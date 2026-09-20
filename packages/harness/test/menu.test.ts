@@ -1,6 +1,6 @@
 // Menu tests (ADR-0013/0027): `connectMenu` driven against a REAL MCP server over a real socket —
 // the Adapter's own serving shape (stateless Streamable HTTP per request, `/mcp/:iid`). Asserted:
-// the `mcp__j2__<name>` naming (sanitized like flue did), the encoded-iid URL, the call round-trip
+// the `mcp__jr2__<name>` naming (sanitized like flue did), the encoded-iid URL, the call round-trip
 // (arguments arrive under the ORIGINAL tool name; content flattens to text), that an `isError`
 // result and a thrown server error both surface as thrown Errors (pi's tool-failure contract),
 // that an empty menu is zero tools and no error (ADR-0026), and that `close` is idempotent.
@@ -25,7 +25,7 @@ type Fixture = {
   hold?: boolean;
 };
 
-/** A fake Adapter: the same stateless serving shape as `@j2/adapter`'s `startAdapter` — a fresh
+/** A fake Adapter: the same stateless serving shape as `@jr2/adapter`'s `startAdapter` — a fresh
  * MCP server + transport per request, torn down when the socket closes. Records request paths so
  * tests can assert the leash URL shape. */
 async function serveAdapter(fixture: Fixture): Promise<{ url: string; paths: string[]; close(): Promise<void> }> {
@@ -82,7 +82,7 @@ const VERDICT: ToolDef = {
   inputSchema: { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] },
 };
 
-test("connectMenu: tools surface as mcp__j2__<name>, sanitized; the iid travels encoded", async () => {
+test("connectMenu: tools surface as mcp__jr2__<name>, sanitized; the iid travels encoded", async () => {
   const adapter = await serveAdapter({
     pages: [[VERDICT, { name: "weird.name!", inputSchema: { type: "object", properties: {} } }]],
   });
@@ -90,7 +90,7 @@ test("connectMenu: tools surface as mcp__j2__<name>, sanitized; the iid travels 
   try {
     assert.deepEqual(
       menu.tools.map((t) => t.name),
-      ["mcp__j2__review_verdict", "mcp__j2__weird_name_"],
+      ["mcp__jr2__review_verdict", "mcp__jr2__weird_name_"],
       "the model-facing name is prefixed and sanitized — unsupported characters become _",
     );
     const verdict = menu.tools[0];
@@ -119,7 +119,7 @@ test("connectMenu: tools/list pagination is followed — every page's tools are 
   try {
     assert.deepEqual(
       menu.tools.map((t) => t.name),
-      ["mcp__j2__review_verdict", "mcp__j2__done"],
+      ["mcp__jr2__review_verdict", "mcp__jr2__done"],
     );
   } finally {
     await menu.close();

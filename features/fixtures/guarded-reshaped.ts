@@ -4,7 +4,7 @@
 // play the one sequence that actually happens: edit a workflow, redeploy, meet the parked runs.
 
 import { z } from "zod";
-import { agent, defineEvent, j2Setup } from "@j2/orchestrator";
+import { agent, defineEvent, jr2Setup } from "@jr2/orchestrator";
 
 const requestReview = defineEvent({
   name: "request_review",
@@ -28,7 +28,7 @@ const coder = agent({
   instructions: "You are the coder. Do the work, then end your turn by calling one of your tools.",
 });
 
-export const machine = j2Setup({
+export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [requestReview, escalate],
   actors: { coder },

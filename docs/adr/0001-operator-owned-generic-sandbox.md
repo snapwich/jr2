@@ -9,7 +9,7 @@ nothing about clones, worktrees, or Agents; those are layered on by the Orchestr
 We chose the operator over the Orchestrator calling the Kubernetes API directly because the custom resource _is_ the
 durable desired state: Sandboxes survive an Orchestrator restart, and garbage collection / readiness / retries live in
 one reconciler instead of being threaded through the Machine. We kept the CRD generic (rather than coding/worktree-aware
-with an init-container clone) so the operator stays workflow-agnostic — matching j2's thesis that the framework is a
+with an init-container clone) so the operator stays workflow-agnostic — matching jr2's thesis that the framework is a
 grab-bag of composable pieces, with git/worktree being just one piece a coding Machine bolts on. The operator is
 git-aware to exactly the extent of the `Repo` CRD and the cache agent that keeps a bare checkout per node (ADR-0051): a
 fetch is infrastructure, shared by every Sandbox on the node; a worktree is a Machine's. The cost is an extra runtime
@@ -17,7 +17,7 @@ step (worktree setup as its own state that can fail independently) and an operat
 
 ## The Harness is the primary container; sidecars are opaque fragments
 
-The CR's `spec.image` is the **Harness** — j2's own server hosting the instance's Agents (ADR-0005/0018/0027).
+The CR's `spec.image` is the **Harness** — jr2's own server hosting the instance's Agents (ADR-0005/0018/0027).
 Everything else in the pod rides `spec.sidecars`: plain Kubernetes `Container` fragments (image, ports, env,
 volumeMounts) the operator schedules **without understanding them** — exactly as a Deployment's pod template carries
 arbitrary containers without the controller knowing their roles. That is how the Adapter (ADR-0013) and the User
@@ -35,7 +35,7 @@ is set at provision time, not per request.
 
 The operator reaps **abandoned** Sandboxes — ones whose Orchestrator is gone — as the backstop behind the Orchestrator's
 own teardown (ADR-0012). "Abandoned" is defined by a lease: each live workspace renews a keepalive annotation
-(`j2.dev/keepalive: <timestamp>`) on its CR, and the operator deletes a Sandbox only once `spec.idleTimeout` (default
+(`jr2.dev/keepalive: <timestamp>`) on its CR, and the operator deletes a Sandbox only once `spec.idleTimeout` (default
 `30m`) has elapsed since **max(creation, last keepalive)**. A run parked on a Gate for hours keeps its Sandbox — its
 lease is still renewing — while a `kill -9`'d Orchestrator's Sandboxes reap one idle-timeout later. An Orchestrator that
 restarts within the timeout re-attaches and resumes renewing; one that stays down longer finds the CR gone and delivers

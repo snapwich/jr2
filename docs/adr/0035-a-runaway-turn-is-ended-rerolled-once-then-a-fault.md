@@ -6,7 +6,7 @@ fault) and **no-signal** (the turn ended without a menu pick — budgeted nudge 
 the turn ends. Production found the third case: a turn that never does. Two live `task-with-review` runs degenerated — a
 reviewer handed an empty diff collapsed into ~100 byte-identical `grep` calls; a coder rewrote the same README
 indefinitely after committing real work. Nothing bounded either: `agentRun` awaits settlement, `nudgeBudget` covers only
-turns that end, and neither j2's Harness nor the retired flue runtime ever capped steps.
+turns that end, and neither jr2's Harness nor the retired flue runtime ever capped steps.
 
 The investigation ruled the refactor out as the cause. Replays of both failure shapes against the live endpoint —
 including the exact empty-diff reviewer state — terminated 13/13 with max 2 consecutive identical calls, in both the
@@ -14,15 +14,15 @@ current bare-instructions prompt and the flue-shaped one. The degeneration is st
 concentrated where a task gives the model nothing real to do. That shapes the design: the guard is liveness insurance
 against a tail event, not a correctness mechanism, and the recovery that works is a fresh roll of the dice.
 
-**Runaway** names what j2 observed — the turn ran past the point where j2 stops believing it will conclude — on the same
-principle as "no-signal": fault classes are named for the observation, not the model's inner pathology. "Degeneration"
-is the behavior the guard usually catches; the budget trigger also ends honest dithering that never collapses into
-repetition.
+**Runaway** names what jr2 observed — the turn ran past the point where jr2 stops believing it will conclude — on the
+same principle as "no-signal": fault classes are named for the observation, not the model's inner pathology.
+"Degeneration" is the behavior the guard usually catches; the budget trigger also ends honest dithering that never
+collapses into repetition.
 
 ## Decision
 
 - **Detection lives in the Harness turn loop** (`turn.ts`) — the one seat that watches steps as they happen; the
-  Orchestrator only sees the settlement, and a runaway never settles. Two triggers, both j2-owned defaults with **no
+  Orchestrator only sees the settlement, and a runaway never settles. Two triggers, both jr2-owned defaults with **no
   author surface** (ADR-0016: budgets are defaulted knobs): a **step budget** (initial 256; healthy turns peaked at 53
   on a trivial task, and an honest live bug-hunt burned 161 steps before exhausting its context) as the unconditional
   backstop, and **K consecutive byte-identical tool calls** (initial K=4; healthy max observed 2, the production loop
@@ -38,8 +38,8 @@ repetition.
   the reroll, not different instructions. Budget 1 (a defaulted knob): a runaway retry costs an entire turn, and two
   independent rolls both running away is evidence the task itself is pathological — that belongs with the workflow's
   fault routing, not a third attempt.
-- **A `session: "continue"` invocation gets no retry — straight to the fault.** The one recovery j2 knows is a fresh
-  conversation, and that is exactly what the author opted out of; j2 does not invent a new conversation the workflow
+- **A `session: "continue"` invocation gets no retry — straight to the fault.** The one recovery jr2 knows is a fresh
+  conversation, and that is exactly what the author opted out of; jr2 does not invent a new conversation the workflow
   asked to continue. The fault routing decides what the history is worth.
 - **Exhaustion emits the same single terminal `agent.fault { reason }`.** The workflow surface does not change; routing
   (park at a Gate, re-invoke at a higher Dial) stays workflow policy, and `task-with-review`'s existing `agent.fault`

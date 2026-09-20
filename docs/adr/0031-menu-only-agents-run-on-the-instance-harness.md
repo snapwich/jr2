@@ -2,20 +2,20 @@
 
 A workflow should be able to run an Agent whose whole job is a decision — read some inputs, pick the next event — with
 no Workspace, no worktree, and no per-run pod: the statelyai/agent shape, at conversational latency, on any configured
-model. j2's Menu already _is_ that decision surface (the invoking state derives what the Agent may say —
+model. jr2's Menu already _is_ that decision surface (the invoking state derives what the Agent may say —
 [ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)/[ADR-0029](0029-a-menu-offers-what-the-machine-will-accept-and-a-pick-that-moves-nothing-says-so.md)),
 and the mechanism was already Sandbox-agnostic: `agentRun` needs only an endpoint URL, a registration may carry no
 Sandbox (`tokens.ts`), and the stub Harness proved a Harness is "only a different URL". What was missing was the
 hosting: the only real Harness anywhere was the one inside a Sandbox pod, so a Turn without a `workspace()` had nowhere
 to run. Adopting statelyai/agent instead was rejected outright — it would be a second, weaker agent mechanism (no
-Submission/Admission ledger, no re-attach, no Settlement, a menu that is not guard-narrowed) beside the one j2 already
+Submission/Admission ledger, no re-attach, no Settlement, a menu that is not guard-narrowed) beside the one jr2 already
 built.
 
 ## Decision
 
-- **One Instance Harness per instance, deployed by convention.** `j2 up` converges a Harness Deployment + Service —
-  stock `j2-harness:<kitversion>` image, same wire — whenever any Agent slot carried by a registered Machine (ADR-0049's
-  walk) declares `workspace: "none"`
+- **One Instance Harness per instance, deployed by convention.** `jr2 up` converges a Harness Deployment + Service —
+  stock `jr2-harness:<kitversion>` image, same wire — whenever any Agent slot carried by a registered Machine
+  (ADR-0049's walk) declares `workspace: "none"`
   ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)). The scan is static and
   definition-level, deliberately not workflow-level (workflow internals are not statically recoverable — the same line
   ADR-0018 drew for model preflight); a declared-but-never-invoked `"none"` Agent over-deploys, erring toward "the
@@ -40,10 +40,10 @@ built.
   this ADR keeps deliberately uniform. Defense-in-depth is the bonus, not the reason.
 - **No image config at all.** The Harness image was once configured as `sandbox.image` because the Sandbox pod was the
   only place a Harness ran — a misnomer once the Instance Harness exists, and config is the wrong seat regardless:
-  `j2 up` builds and resolves every image it deploys ([ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)), and the
-  per-Workspace images (Sandbox Image, User Container) are static `workspace()` options carried by the Machine itself
-  ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md),
-  [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md),
+  `jr2 up` builds and resolves every image it deploys ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)), and
+  the per-Workspace images (Sandbox Image, User Container) are static `workspace()` options carried by the Machine
+  itself ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md),
+  [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md),
   [ADR-0005](0005-sandbox-pod-composition.md)). `sandbox.image`, `sandbox.adapterImage`, and `operator.image` dissolve;
   the `sandbox` config section disappears until something genuinely pod-shaped and user-tunable exists.
 
@@ -65,10 +65,10 @@ built.
 - **Hosting the Turn in the Orchestrator process.** Rejected: no pod logs, and it crosses the line the architecture
   draws hardest — the Orchestrator holds handles; models act remotely.
 - **A host-local dev Harness.** Considered as a dev story and dropped when the premise died:
-  [ADR-0019](0019-one-converging-command-against-the-current-context.md) removed `j2 dev` — there is no host dev mode to
-  serve. Local development of a decisioning workflow is `j2 up` against kind, where the Instance Harness converges like
-  everything else; an instructions tweak rides the next admission, no image build. The stub Harness keeps its one job: a
-  test fixture reached by explicit `endpoint`.
+  [ADR-0019](0019-one-converging-command-against-the-current-context.md) removed `jr2 dev` — there is no host dev mode
+  to serve. Local development of a decisioning workflow is `jr2 up` against kind, where the Instance Harness converges
+  like everything else; an instructions tweak rides the next admission, no image build. The stub Harness keeps its one
+  job: a test fixture reached by explicit `endpoint`.
 
 ## Consequences
 

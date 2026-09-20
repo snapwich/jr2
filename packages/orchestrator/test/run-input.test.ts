@@ -13,7 +13,7 @@ import { fromPromise } from "xstate";
 import { z } from "zod";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { pool, source } from "../src/pool.ts";
 import { workspace, type SandboxPort, type Workspaced } from "../src/workspace.ts";
 import { inputSchemaOf, vocabularyOf } from "../src/vocabulary.ts";
@@ -25,7 +25,7 @@ const startInput = z.object({ title: z.string(), priority: z.number().default(1)
 
 /** Declares its door: a run starts with `{ title, priority? }`; the default proves the PARSED
  * shape (not the raw body) is what reaches the machine — gate-delivery parity. */
-const titledTemplate = j2Setup({
+const titledTemplate = jr2Setup({
   types: {} as { context: { title: string; priority: number }; input: { title: string; priority?: number } },
   events: [],
 }).createMachine({
@@ -43,7 +43,7 @@ function titledDef(): WorkflowDef {
 /** A workspace BODY: no schema of its own (the door belongs to the wrapper), and its input is the
  * door plus the handles the wrapper injects — `Workspaced<…>`, the composition the wrapper's
  * declared door is checked against. */
-const wsBody = j2Setup({
+const wsBody = jr2Setup({
   types: {} as { context: { repo: string }; input: Workspaced<{ repo: string; branch: string }, "app"> },
   events: [approveDef],
 }).createMachine({
@@ -181,7 +181,7 @@ test("workspace(): wrapping a body that declares its own input fails loudly, nam
 });
 
 test("pool(): the worker's schema is NOT the door — the pool declares its own via `spec.input`", async () => {
-  const worker = j2Setup({ events: [approveDef] }).createMachine({
+  const worker = jr2Setup({ events: [approveDef] }).createMachine({
     id: "worker",
     input: startInput,
     initial: "one",

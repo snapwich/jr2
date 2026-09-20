@@ -38,7 +38,7 @@ test("a non-default port is part of the identity; a default one is not", () => {
   assert.equal(repoIdentity("http://host:8080/x.git").identity, "host:8080/x");
   assert.equal(repoIdentity("http://host:80/x.git").identity, "host/x");
   assert.equal(repoIdentity("ssh://git@github.com:2222/a/b").identity, "github.com:2222/a/b");
-  assert.equal(repoIdentity("http://seed.j2-e2e-seed.svc/app.git").identity, "seed.j2-e2e-seed.svc/app");
+  assert.equal(repoIdentity("http://seed.jr2-e2e-seed.svc/app.git").identity, "seed.jr2-e2e-seed.svc/app");
 });
 
 test("path case is kept — hosts are case-insensitive, paths are not", () => {

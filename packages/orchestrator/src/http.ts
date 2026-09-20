@@ -76,10 +76,10 @@ function errMessage(err: unknown): string {
 }
 
 /** The app's context: `authenticated` resolves the bearer to a `principal` the routes read back. */
-type J2Env = { Variables: { principal: Principal } };
+type JR2Env = { Variables: { principal: Principal } };
 
 /** The bearer token on a request, if it carries one. */
-function bearerOf(c: Context<J2Env>): string | undefined {
+function bearerOf(c: Context<JR2Env>): string | undefined {
   const header = c.req.header("authorization") ?? "";
   const match = /^Bearer\s+(.+)$/i.exec(header);
   return match?.[1]?.trim() || undefined;
@@ -226,7 +226,7 @@ const PING_MS = 15_000;
  *
  * A run parked on a gate transitions for hours, so its feed writes zero bytes and any idle
  * intermediary drops the connection — the client sees a dead socket that still looks healthy (this
- * is the `error: terminated` an attached `j2 run` hit). The frame is an SSE COMMENT (`:\n\n`):
+ * is the `error: terminated` an attached `jr2 run` hit). The frame is an SSE COMMENT (`:\n\n`):
  * every client ignores it, so it needs no place in the wire vocabulary.
  *
  * It is deliberately a **ping**, not a heartbeat or keepalive — CONTEXT.md puts both on the Lease's
@@ -256,7 +256,7 @@ export type CreateAppOptions = {
   /**
    * Whether this instance has a data plane at all (ADR-0051): a registered Machine composes a
    * Sandbox AND the process is deployed in a cluster. `false` is an answer — "this instance runs
-   * no Workspace" — and `j2 status` says so rather than listing nothing.
+   * no Workspace" — and `jr2 status` says so rather than listing nothing.
    */
   dataPlane?: boolean;
   /**
@@ -282,13 +282,13 @@ export type CreateAppOptions = {
  * only ever right for an in-process test that reaches `app.request` directly — `startInstance`
  * (every real boot, deployed or fixture) always supplies one.
  */
-export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOptions = {}): Hono<J2Env> {
+export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOptions = {}): Hono<JR2Env> {
   const pingMs = opts.pingMs ?? PING_MS;
-  const app = new Hono<J2Env>();
+  const app = new Hono<JR2Env>();
 
   /** Authenticate, or refuse. There is no anonymous principal (ADR-0013) — an open surface would
    * hand every Agent in the cluster a delivery API, which is the hole this ADR exists to close. */
-  const authenticated: MiddlewareHandler<J2Env> = async (c, next) => {
+  const authenticated: MiddlewareHandler<JR2Env> = async (c, next) => {
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
     const principal = auth(bearerOf(c));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
@@ -296,7 +296,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return next();
   };
   /** The principal `authenticated` resolved. An unconfigured `auth` means full trust. */
-  const principalOf = (c: Context<J2Env>): Principal => c.get("principal") ?? { kind: "instance" };
+  const principalOf = (c: Context<JR2Env>): Principal => c.get("principal") ?? { kind: "instance" };
 
   /**
    * Authenticate, AND require the INSTANCE token (ADR-0014). A Sandbox token is a token we minted,
@@ -306,7 +306,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
    * registrations recorded against its OWN Sandbox (ADR-0013), and the gate route already says so in
    * the other direction.
    */
-  const instanceOnly: MiddlewareHandler<J2Env> = async (c, next) => {
+  const instanceOnly: MiddlewareHandler<JR2Env> = async (c, next) => {
     if (!auth) return next(); // no authenticator configured: tests only (see the doc comment)
     const principal = auth(bearerOf(c));
     if (!principal) return c.json({ error: "unauthorized" }, 401);
@@ -323,7 +323,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // could otherwise only report as a bare status code (version skew reads as a nonsense 404).
   // `hash` is the image's content address (ADR-0019), absent for a host-booted fixture process,
   // which has no image to be addressed.
-  app.get("/healthz", (c) => c.json({ ok: true, version: KIT_VERSION, hash: process.env.J2_CONTENT_HASH }));
+  app.get("/healthz", (c) => c.json({ ok: true, version: KIT_VERSION, hash: process.env.JR2_CONTENT_HASH }));
   app.get("/readyz", (c) => c.json({ ready: true }));
 
   // Structure, not state: the workflow listing, a template's Machine, and the Console shell are
@@ -521,7 +521,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
 
   app.get("/runs", instanceOnly, (c) => c.json(host.list()));
 
-  // The Repos as the cluster currently reports them (ADR-0048/0051) — what `j2 status` renders,
+  // The Repos as the cluster currently reports them (ADR-0048/0051) — what `jr2 status` renders,
   // and the place ADR-0047's "register the key, the cache agent retries" points at. Instance band,
   // like every other state route: a row names a Repo and carries git's own error text, which is
   // exactly the class of thing the open observation projections strip (ADR-0014). An instance
@@ -558,7 +558,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // Read-through (ADR-0009): a completed run's final status lives in the store after the registry
   // drops it, so this serves terminal runs too — only a genuinely unknown run is a 404. The status
   // carries the run's OPEN GATES (ADR-0011) — the discovery listing external callers act on
-  // (`j2 send` menus, UI inbox cards, webhook translators matching on meta). Settled run → [].
+  // (`jr2 send` menus, UI inbox cards, webhook translators matching on meta). Settled run → [].
   app.get("/runs/:runId", instanceOnly, async (c) => {
     const runId = c.req.param("runId");
     const status = await host.read(runId);
@@ -589,7 +589,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
 
   // SSE: a live run streams its status deltas + author `emit`s (current status replayed on attach,
   // then live until the terminal transition or client abort). A run that has already settled streams
-  // its final status once and closes (so `j2 logs -f` works on a finished run). Unknown run → 404.
+  // its final status once and closes (so `jr2 logs -f` works on a finished run). Unknown run → 404.
   app.get("/runs/:runId/events", instanceOnly, async (c) => {
     const runId = c.req.param("runId");
     if (host.status(runId) === undefined) {
@@ -623,7 +623,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
             }
             // Exiting lets the handler return, which CLOSES the stream — so on the terminal frame we
             // must wait for the write to flush first, or a fire-and-forget write races the close and the
-            // final status is dropped (the very frame `j2 run` blocks on). Chain the exit off the write.
+            // final status is dropped (the very frame `jr2 run` blocks on). Chain the exit off the write.
             const terminal = ev.status.status !== "active";
             void stream.writeSSE({ event: "status", data: JSON.stringify(ev.status) }).then(() => {
               if (terminal) exit.done();
@@ -677,7 +677,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // and delivery are implemented once, in `registration.ts`.
 
   /** Guard: the surface must exist, and this principal must be allowed to speak for it. */
-  const agentRegistration = (c: Context<J2Env, "/agents/:instanceId/surface" | "/agents/:instanceId/events">) => {
+  const agentRegistration = (c: Context<JR2Env, "/agents/:instanceId/surface" | "/agents/:instanceId/events">) => {
     const instanceId = c.req.param("instanceId");
     const surface = host.agentSurface(instanceId);
     // The one catch point (ADR-0011): no live registration (settled run, exited state, unknown

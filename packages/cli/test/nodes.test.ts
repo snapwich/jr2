@@ -17,7 +17,7 @@ const worker = node("worker");
 const cordoned = node("old", { spec: { unschedulable: true } });
 const soft = node("soft", { spec: { taints: [{ key: "spot", effect: "PreferNoSchedule" }] } });
 
-test("a Sandbox node is where an ordinary pod lands: not cordoned, no untolerated taint — no j2 label (ADR-0052)", () => {
+test("a Sandbox node is where an ordinary pod lands: not cordoned, no untolerated taint — no jr2 label (ADR-0052)", () => {
   const { nodes, excluded } = sandboxNodes([cp, gpu, worker, cordoned, soft], undefined);
   assert.deepEqual(
     nodes.map((n) => n.metadata.name),

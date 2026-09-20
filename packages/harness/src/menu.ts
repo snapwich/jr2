@@ -1,9 +1,9 @@
 // The Menu, fetched (ADR-0013/0027): one Submission's MCP connection to the Adapter, and the
 // current turn's Menu wrapped as pi `AgentTool`s. Each Submission connects FRESH to
-// `$J2_ADAPTER_URL/mcp/<iid>` and lists — the iid in the URL is how the Adapter knows which turn
+// `$JR2_ADAPTER_URL/mcp/<iid>` and lists — the iid in the URL is how the Adapter knows which turn
 // is live, so the menu is exactly what the invoking Machine state derived, with no push channel
 // and no turn index (ADR-0013's enabling fact, now explicit code). Tools surface to the model as
-// `mcp__j2__<name>` — shipped instructions and the printer's prefix-stripping depend on it.
+// `mcp__jr2__<name>` — shipped instructions and the printer's prefix-stripping depend on it.
 // An empty menu is valid (ADR-0026: a turn that is over has an empty menu): zero tools, no error.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -46,7 +46,7 @@ function flattenContent(content: McpContentItem[]): string {
  * errors in content") turns the thrown message into the isError tool result the model reads.
  */
 export async function connectMenu(adapterUrl: string, instanceId: string, signal?: AbortSignal): Promise<Menu> {
-  const client = new Client({ name: "j2-harness", version: "0.0.0" });
+  const client = new Client({ name: "jr2-harness", version: "0.0.0" });
   const options = signal ? { signal } : undefined;
 
   try {
@@ -63,7 +63,7 @@ export async function connectMenu(adapterUrl: string, instanceId: string, signal
       const page = await client.listTools(cursor === undefined ? undefined : { cursor }, options);
       for (const tool of page.tools) {
         tools.push({
-          name: `mcp__j2__${sanitizeToolNamePart(tool.name)}`,
+          name: `mcp__jr2__${sanitizeToolNamePart(tool.name)}`,
           label: tool.name,
           description: tool.description ?? "",
           // The MCP input schema IS JSON Schema, which is what a TSchema is at runtime — pass it

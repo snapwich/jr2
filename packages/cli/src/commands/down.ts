@@ -1,5 +1,5 @@
-// `j2 down [--all] [-n <ns>] [--context <ctx>]` (ADR-0019): remove the instance from the cluster —
-// its namespace and everything `j2 up` converged into it. ALWAYS confirms (deleting a namespace
+// `jr2 down [--all] [-n <ns>] [--context <ctx>]` (ADR-0019): remove the instance from the cluster —
+// its namespace and everything `jr2 up` converged into it. ALWAYS confirms (deleting a namespace
 // takes the runs, the store PVC, and every live Sandbox with it). `--all` also uninstalls the
 // per-cluster operator — only sane when this was the cluster's last instance, which is the
 // caller's judgment, not derivable here.
@@ -15,14 +15,14 @@
 // refs included. Nothing here parses a tag.
 //
 // What the namespace delete does NOT reclaim: the node cache directories under
-// `/var/lib/j2/<namespace>/repos` (ADR-0051). The cache agent evicts a Repo's copy on its resource's
+// `/var/lib/jr2/<namespace>/repos` (ADR-0051). The cache agent evicts a Repo's copy on its resource's
 // deletion, but the DaemonSet dies with the namespace before it can act on the Repos going with it,
 // so the bare clones stay on each node. They are inert — nothing mounts or refreshes them — and
 // bounded by the node's disk; on kind they live inside the node container and go with the cluster.
 
 import { basename } from "node:path";
 import { parseArgs } from "node:util";
-import { loadConfig } from "@j2/orchestrator";
+import { loadConfig } from "@jr2/orchestrator";
 import { pnpmDockerBuild } from "../build.ts";
 import { KIT_VERSION, LABEL_INSTANCE, operatorManifest } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
@@ -55,7 +55,7 @@ export async function down(args: string[], io: Io): Promise<number> {
   const ns = await kube.getJson({ kind: "namespace", name: namespace, ...ctx });
   const owner = ns?.metadata.labels?.[LABEL_INSTANCE];
   if (!ns || !owner) {
-    activity(io, `not deployed here — namespace "${namespace}" on ${context} holds no j2 instance`);
+    activity(io, `not deployed here — namespace "${namespace}" on ${context} holds no jr2 instance`);
     return 1;
   }
   if (owner !== name) {
@@ -81,16 +81,16 @@ export async function down(args: string[], io: Io): Promise<number> {
   // BEFORE the sweep, not after: while the operator Deployment stands, its pod is a live root and
   // the operator image would survive its own uninstall.
   if (values.all) {
-    activity(io, "uninstalling the operator (j2-system)");
+    activity(io, "uninstalling the operator (jr2-system)");
     // The image ref doesn't matter for a delete-by-manifest; the object names do.
-    await kube.deleteManifest({ manifest: await operatorManifest(`j2-operator:${KIT_VERSION}`), ...ctx });
+    await kube.deleteManifest({ manifest: await operatorManifest(`jr2-operator:${KIT_VERSION}`), ...ctx });
   }
 
   // AFTER both deletes, which is the whole mechanism (see the module doc): `deleteObject` waits, so
   // this instance's roots are gone before the roots read runs. No grace — a namespace that no
   // longer exists has no propagation window to lose a provision in. `kubectl delete -f` waits on
   // the operator Deployment but not on its pods, so a terminating operator pod can still hold its
-  // image one more round; the next `j2 gc` collects it, and excluding terminating pods instead
+  // image one more round; the next `jr2 gc` collects it, and excluding terminating pods instead
   // would let a sweep take an image out from under a mid-roll one.
   try {
     await sweepImages({ io, build: io.build ?? pnpmDockerBuild, kube, context, ctx });

@@ -1,10 +1,10 @@
 # Workspace continuity is a lease that answers back
 
-Two Sandboxes were deleted by hand under a live Orchestrator (2026-07-19); `j2 runs` and the visualizer both kept
+Two Sandboxes were deleted by hand under a live Orchestrator (2026-07-19); `jr2 runs` and the visualizer both kept
 reporting the runs as active, parked on their gates, indefinitely. The gap was structural rather than a bug: the
 Orchestrator's two conversations with the cluster ran in opposite directions and on opposite triggers. The keepalive
 lease (ADR-0001) was **level-triggered and write-only** — a `setInterval` per owned Sandbox, in a process-global map,
-stamping `j2.dev/keepalive` forever. The restore-reconcile probe (ADR-0012) was **edge-triggered and read-only** — one
+stamping `jr2.dev/keepalive` forever. The restore-reconcile probe (ADR-0012) was **edge-triggered and read-only** — one
 `exists()` per entry into `running`. So the Orchestrator asserted liveness continuously and learned the truth almost
 never, and the state most likely to outlive its Sandbox — a body parked on a Gate for hours — is precisely the one that
 never re-enters `running` to ask again.
@@ -66,5 +66,5 @@ idle timeout on its own. The behavior `release()` was written to produce is emer
   continuity — the pre-0021 behavior, minus the edge-triggering.
 - The lease is per-workspace, not per-run: a workflow with concurrent workspaces gets one actor each, and each is lost
   independently. This falls out of invoking it beside the body rather than owning it at the host.
-- `SandboxPort` drops from five operations to four, and the optional-method wart is gone. The `j2.dev/run` label
-  survives for `j2 ls`, no longer load-bearing for lease bookkeeping.
+- `SandboxPort` drops from five operations to four, and the optional-method wart is gone. The `jr2.dev/run` label
+  survives for `jr2 ls`, no longer load-bearing for lease bookkeeping.

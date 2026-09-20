@@ -28,11 +28,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 // conditionSynced is the Repo's one aggregate condition: what every node's
-// cache agent reports, folded into one answer for `j2 status` and
+// cache agent reports, folded into one answer for `jr2 status` and
 // `kubectl get repos`.
 const conditionSynced = "Synced"
 
@@ -46,8 +46,8 @@ type RepoReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=core.j2.dev,resources=repos,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=core.j2.dev,resources=repos/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.jr2.dev,resources=repos,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=core.jr2.dev,resources=repos/status,verbs=get;update;patch
 
 // Reconcile derives status.conditions[Synced] from status.nodes: Unknown while
 // no node has reported, False with the first failing node's error when any is

@@ -52,7 +52,7 @@ When("I start {string} with input {string}", async function (this: E2EWorld, wf:
   await this.runCli(["run", wf, "--detach", "--input", input]);
 });
 
-/** `j2 logs <runId>` with no `-f`: the feed replays the run's current status on attach, and the
+/** `jr2 logs <runId>` with no `-f`: the feed replays the run's current status on attach, and the
  * verb prints that and stops — on a settled run, its terminal status, once. */
 When("I read the logs of that run", async function (this: E2EWorld): Promise<void> {
   assert.ok(this.runId, "a runId was carried from a prior step");
@@ -60,7 +60,7 @@ When("I read the logs of that run", async function (this: E2EWorld): Promise<voi
 });
 
 /**
- * `j2 logs -f` on a LIVE run, ended from outside: the follow is started and left running, the run
+ * `jr2 logs -f` on a LIVE run, ended from outside: the follow is started and left running, the run
  * is cancelled by a second invocation, and the follow must then print the settled status and
  * exit on its own. The two invocations overlap on purpose — that is what "follows until it
  * settles" means — and `last` is the follow's, assigned after both are done.
@@ -72,11 +72,11 @@ When("I follow the logs of that run while it is cancelled", async function (this
   // either way the assertion holds, since a settled run streams its final status once.
   await sleep(500);
   const cancel = await this.runCli(["send", this.runId, "--event", "CANCEL"]);
-  assert.equal(cancel.code, 0, `j2 send CANCEL failed: ${cancel.stderr}`);
+  assert.equal(cancel.code, 0, `jr2 send CANCEL failed: ${cancel.stderr}`);
   this.last = await following;
 });
 
-/** `j2 status` with NO run names the instance (ADR-0048/0051): its data-plane switch and the
+/** `jr2 status` with NO run names the instance (ADR-0048/0051): its data-plane switch and the
  * per-node state of every Repo resource — the report a human asks for when a Repo will not clone. */
 When("I ask for the instance's status", async function (this: E2EWorld): Promise<void> {
   await this.runCli(["status"]);
@@ -111,7 +111,7 @@ Then("the run appears in the runs list", function (this: E2EWorld): void {
 /** The data plane is read off the registered Machines (ADR-0051), not off config: an instance
  * none of whose Machines compose a Sandbox has none, and says so rather than listing zero Repos. */
 Then("it reports no data plane", function (this: E2EWorld): void {
-  assert.equal(this.last?.code, 0, `j2 status failed: ${this.last?.stderr}`);
+  assert.equal(this.last?.code, 0, `jr2 status failed: ${this.last?.stderr}`);
   const report = this.resultJson<{ dataPlane: boolean; repos: unknown[] }>();
   assert.equal(report.dataPlane, false, "no registered Machine composes a Sandbox");
   assert.deepEqual(report.repos, [], "and there are no Repo resources to report");
@@ -122,12 +122,12 @@ Then("the status is {string}", function (this: E2EWorld, status: string): void {
   assert.equal(this.resultJson<RunStatus>().status, status);
 });
 
-/** A drifted run is kept and readable by id (ADR-0030), but it is not LIVE: `j2 runs` lists the
+/** A drifted run is kept and readable by id (ADR-0030), but it is not LIVE: `jr2 runs` lists the
  * runs the host resumed, and a refused one was never registered. */
 Then("the run is absent from the runs list", async function (this: E2EWorld): Promise<void> {
   assert.ok(this.runId, "a runId was carried from a prior step");
   const r = await this.runCli(["runs"]);
-  assert.equal(r.code, 0, `j2 runs failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 runs failed: ${r.stderr}`);
   const list = this.resultJson<Array<{ runId: string }>>();
   assert.ok(!list.some((run) => run.runId === this.runId), "a run the boot refused is not a live run");
 });

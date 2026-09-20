@@ -1,4 +1,4 @@
-// `j2 down [--all]` (ADR-0019): remove the instance from the cluster. Always confirms; `--all`
+// `jr2 down [--all]` (ADR-0019): remove the instance from the cluster. Always confirms; `--all`
 // takes the per-cluster operator too. Foreign namespaces are refused, exactly like `up`. It also
 // sweeps images off the host daemon and, on kind, off every node (ADR-0039) — content addressing
 // means abandoned images pile up invisibly, so the sweep is default. Its scoping is what these
@@ -20,7 +20,7 @@ import type { Io } from "../src/output.ts";
  * looking at AFTER the namespace delete, so a scenario writes the OTHER instances, not its own. */
 type Roots = {
   namespaces?: string[];
-  /** namespace → the `images.json` its `j2-images` ConfigMap holds. */
+  /** namespace → the `images.json` its `jr2-images` ConfigMap holds. */
   maps?: Record<string, unknown>;
   sandboxes?: Array<{ metadata: { name: string; namespace?: string }; spec?: { image?: string } }>;
   pods?: Array<{ metadata: { name: string; namespace?: string }; spec?: { containers?: Array<{ image?: string }> } }>;
@@ -44,7 +44,7 @@ function mkKube(
       void fake.deleted.push(`${o.namespace ?? ""}/${o.kind}/${o.name}`),
     deleteManifest: async () => {
       fake.deleted.push("(operator manifest)");
-      // The manifest CARRIES the `sandboxes.core.j2.dev` CRD, so `--all` takes the resource type
+      // The manifest CARRIES the `sandboxes.core.jr2.dev` CRD, so `--all` takes the resource type
       // with it — and the sweep runs after (see the `--all` test).
       crdGone = true;
     },
@@ -52,13 +52,13 @@ function mkKube(
     listJson: async <T>(o: { kind: string }): Promise<T[]> => {
       if (o.kind.startsWith("sandboxes") && crdGone) {
         throw new Error(
-          'Command failed: kubectl get sandboxes.core.j2.dev\nerror: the server doesn\'t have a resource type "sandboxes"',
+          'Command failed: kubectl get sandboxes.core.jr2.dev\nerror: the server doesn\'t have a resource type "sandboxes"',
         );
       }
       if (o.kind === "namespace") return (roots.namespaces ?? []).map((name) => ({ metadata: { name } })) as T[];
       if (o.kind === "configmap") {
         return Object.entries(roots.maps ?? {}).map(([namespace, map]) => ({
-          metadata: { name: "j2-images", namespace },
+          metadata: { name: "jr2-images", namespace },
           data: { "images.json": JSON.stringify(map) },
         })) as T[];
       }
@@ -72,7 +72,7 @@ function mkKube(
   return fake;
 }
 
-/** One image as a store reports it: j2-built and worth reclaiming unless the test says otherwise. */
+/** One image as a store reports it: jr2-built and worth reclaiming unless the test says otherwise. */
 function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
   return { tags: [], bytes: 0, labeled: true, ...over };
 }
@@ -124,8 +124,8 @@ function mkSweep(
 }
 
 async function mkWorld(kube: KubeAdmin, confirm: boolean, build?: BuildPort) {
-  const root = await mkdtemp(join(tmpdir(), "j2-down-"));
-  await writeFile(join(root, "j2.config.ts"), `export default { name: "myinst" };\n`);
+  const root = await mkdtemp(join(tmpdir(), "jr2-down-"));
+  await writeFile(join(root, "jr2.config.ts"), `export default { name: "myinst" };\n`);
   // An authored Sandbox Image — no longer load-bearing for the sweep (nothing derives a name any
   // more, ADR-0039), kept because a real instance folder has one and `down` must ignore it.
   await mkdir(join(root, "images", "default"), { recursive: true });
@@ -147,7 +147,7 @@ async function mkWorld(kube: KubeAdmin, confirm: boolean, build?: BuildPort) {
   return { io, err, confirms };
 }
 
-const ownNs = { "/namespace/myinst": { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } } };
+const ownNs = { "/namespace/myinst": { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } } };
 
 test("down always confirms; declining leaves the cluster untouched", async () => {
   const kube = mkKube(ownNs);
@@ -175,17 +175,17 @@ test("down deletes the instance's namespace; --all takes the operator too, BEFOR
 
 test("--all takes the Sandbox CRD with the operator, and the sweep still collects", async () => {
   // The case ADR-0039 cites for collecting kit images at all — the last instance leaves, so the
-  // whole kit generation is unreachable — is also the one that deletes the `sandboxes.core.j2.dev`
+  // whole kit generation is unreachable — is also the one that deletes the `sandboxes.core.jr2.dev`
   // CRD moments before the roots read. `kubectl get sandboxes…` then exits 1, and reading that as
-  // a failed root made `j2 down --all` sweep NOTHING while narrating a warning and exiting 0.
+  // a failed root made `jr2 down --all` sweep NOTHING while narrating a warning and exiting 0.
   const sweep = mkSweep({
-    host: [image({ id: "sha256:h", tags: ["j2-harness:0f1e2d3c4b5a"], bytes: 238_000_000 })],
-    node: [image({ id: "sha256:n", tags: ["docker.io/library/j2-operator:99cc"], bytes: 77_000_000 })],
+    host: [image({ id: "sha256:h", tags: ["jr2-harness:0f1e2d3c4b5a"], bytes: 238_000_000 })],
+    node: [image({ id: "sha256:n", tags: ["docker.io/library/jr2-operator:99cc"], bytes: 77_000_000 })],
   });
   const w = await mkWorld(mkKube(ownNs), true, sweep);
 
   assert.equal(await down(["--all"], w.io), 0);
-  assert.deepEqual(sweep.removed, ["host j2-harness:0f1e2d3c4b5a", "node test-control-plane sha256:n"]);
+  assert.deepEqual(sweep.removed, ["host jr2-harness:0f1e2d3c4b5a", "node test-control-plane sha256:n"]);
   assert.match(w.err.join("\n"), /swept 2 image\(s\) \(315\.0 MB\)/);
   assert.ok(!/sweep failed/.test(w.err.join("\n")), "no CRD means no Sandbox CRs, not an unreadable root");
 });
@@ -196,35 +196,35 @@ test("down sweeps what this instance's deleted roots stopped naming — and noth
   // own. The node's wear containerd's `docker.io/library/` namespace, because that is what `kind
   // load` normalizes an unqualified tag into.
   const node = [
-    image({ id: "sha256:0", tags: ["docker.io/library/j2-instance-myinst:aa11bb22cc33"], bytes: 400_000_000 }),
-    image({ id: "sha256:1", tags: ["docker.io/library/j2-instance-myinst:dd44ee55ff66"], bytes: 400_000_000 }),
-    image({ id: "sha256:2", tags: ["docker.io/library/j2-sandbox-myinst-default:99aa88bb77cc"], bytes: 200_000_000 }),
-    image({ id: "sha256:3", tags: ["docker.io/library/j2-instance-other:112233445566"], bytes: 1 }),
-    image({ id: "sha256:4", tags: ["docker.io/library/j2-sandbox-other-default:665544332211"], bytes: 1 }),
-    image({ id: "sha256:5", tags: ["docker.io/library/j2-harness:0f1e2d3c4b5a"], bytes: 1 }),
-    image({ id: "sha256:6", tags: ["docker.io/library/j2-adapter:5a4b3c2d1e0f"], bytes: 1 }),
+    image({ id: "sha256:0", tags: ["docker.io/library/jr2-instance-myinst:aa11bb22cc33"], bytes: 400_000_000 }),
+    image({ id: "sha256:1", tags: ["docker.io/library/jr2-instance-myinst:dd44ee55ff66"], bytes: 400_000_000 }),
+    image({ id: "sha256:2", tags: ["docker.io/library/jr2-sandbox-myinst-default:99aa88bb77cc"], bytes: 200_000_000 }),
+    image({ id: "sha256:3", tags: ["docker.io/library/jr2-instance-other:112233445566"], bytes: 1 }),
+    image({ id: "sha256:4", tags: ["docker.io/library/jr2-sandbox-other-default:665544332211"], bytes: 1 }),
+    image({ id: "sha256:5", tags: ["docker.io/library/jr2-harness:0f1e2d3c4b5a"], bytes: 1 }),
+    image({ id: "sha256:6", tags: ["docker.io/library/jr2-adapter:5a4b3c2d1e0f"], bytes: 1 }),
     // A registry copy is CACHE and sweeps like everything else (ADR-0039) — the registry's own
     // retention stays the registry's business, but this node's copy is nobody's root.
-    image({ id: "sha256:7", tags: ["reg.example.com/j2-instance-myinst:aa11bb22cc33"], bytes: 1 }),
-    // Not j2's to take: no `j2.dev/kind` stamp, so it is invisible on both sides.
-    image({ id: "sha256:8", tags: ["docker.io/library/j2-workspace-ancient:0000"], bytes: 1, labeled: false }),
+    image({ id: "sha256:7", tags: ["reg.example.com/jr2-instance-myinst:aa11bb22cc33"], bytes: 1 }),
+    // Not jr2's to take: no `jr2.dev/kind` stamp, so it is invisible on both sides.
+    image({ id: "sha256:8", tags: ["docker.io/library/jr2-workspace-ancient:0000"], bytes: 1, labeled: false }),
   ];
-  const sweep = mkSweep({ node, host: [image({ id: "sha256:h", tags: ["j2-instance-myinst:aa11bb22cc33"] })] });
+  const sweep = mkSweep({ node, host: [image({ id: "sha256:h", tags: ["jr2-instance-myinst:aa11bb22cc33"] })] });
   // The surviving instance: its map names its own images AND the kit refs both instances share.
   const kube = mkKube(ownNs, {
     roots: {
       namespaces: ["other"],
       maps: {
         other: {
-          harness: "j2-harness:0f1e2d3c4b5a",
-          adapter: "j2-adapter:5a4b3c2d1e0f",
-          sandbox: { default: "j2-sandbox-other-default:665544332211" },
+          harness: "jr2-harness:0f1e2d3c4b5a",
+          adapter: "jr2-adapter:5a4b3c2d1e0f",
+          sandbox: { default: "jr2-sandbox-other-default:665544332211" },
         },
       },
       pods: [
         {
           metadata: { name: "orch", namespace: "other" },
-          spec: { containers: [{ image: "j2-instance-other:112233445566" }] },
+          spec: { containers: [{ image: "jr2-instance-other:112233445566" }] },
         },
       ],
     },
@@ -233,22 +233,22 @@ test("down sweeps what this instance's deleted roots stopped naming — and noth
   assert.equal(await down([], w.io), 0);
 
   assert.deepEqual(sweep.removed, [
-    "host j2-instance-myinst:aa11bb22cc33",
+    "host jr2-instance-myinst:aa11bb22cc33",
     "node test-control-plane sha256:0",
     "node test-control-plane sha256:1",
     "node test-control-plane sha256:2",
     "node test-control-plane sha256:7",
   ]);
   const line = w.err.join("\n");
-  // FOUR images, not five removals: the host's `j2-instance-myinst:aa11bb22cc33` and the node's
+  // FOUR images, not five removals: the host's `jr2-instance-myinst:aa11bb22cc33` and the node's
   // `docker.io/library/…` copy of it are one image the user is told about once. The bytes stay
   // summed — two stores, two copies, two lots of the same disk.
   assert.match(line, /swept 4 image\(s\) \(1\.0 GB\)/, "bytes, because disk is the quantity the user feels");
   // Kit refs live because the surviving instance's map names them — not because kit images are
   // exempt (ADR-0039 dissolves that rule); another instance's own are protected the same way.
-  assert.ok(!/j2-harness|j2-adapter/.test(line));
+  assert.ok(!/jr2-harness|jr2-adapter/.test(line));
   assert.ok(!/other/.test(line));
-  assert.ok(!/j2-workspace-ancient/.test(line), "an unlabeled image is invisible — not swept, not reported");
+  assert.ok(!/jr2-workspace-ancient/.test(line), "an unlabeled image is invisible — not swept, not reported");
 
   // After the namespace delete (which waits), which is what made this instance's images garbage.
   assert.deepEqual(kube.deleted, ["/Namespace/myinst"]);
@@ -262,8 +262,8 @@ test("down reports what a mixed image id kept in place, and still exits 0", asyn
       image({
         id: "sha256:dd",
         tags: [
-          "docker.io/library/j2-sandbox-myinst-default:c0ccbf36fb77",
-          "docker.io/library/j2-sandbox-twin-default:c0ccbf36fb77",
+          "docker.io/library/jr2-sandbox-myinst-default:c0ccbf36fb77",
+          "docker.io/library/jr2-sandbox-twin-default:c0ccbf36fb77",
         ],
       }),
     ],
@@ -271,25 +271,25 @@ test("down reports what a mixed image id kept in place, and still exits 0", asyn
   const kube = mkKube(ownNs, {
     roots: {
       namespaces: ["twin"],
-      maps: { twin: { sandbox: { default: "j2-sandbox-twin-default:c0ccbf36fb77" } } },
+      maps: { twin: { sandbox: { default: "jr2-sandbox-twin-default:c0ccbf36fb77" } } },
     },
   });
   const w = await mkWorld(kube, true, sweep);
   assert.equal(await down([], w.io), 0);
   assert.deepEqual(sweep.removed, []);
   const line = w.err.join("\n");
-  assert.match(line, /kept 1 tag\(s\).*j2-sandbox-myinst-default:c0ccbf36fb77/);
+  assert.match(line, /kept 1 tag\(s\).*jr2-sandbox-myinst-default:c0ccbf36fb77/);
   assert.ok(!/swept 1/.test(line));
 });
 
 test("a non-kind context still sweeps the host, and a failed sweep still exits 0", async () => {
   // Only the NODE half is kind-conditional: elsewhere the nodes pull from a registry, whose
   // retention is the registry's business — but the host daemon that BUILT the images is right here.
-  const remote = mkSweep({ host: [image({ id: "sha256:h", tags: ["j2-instance-myinst:aa11"], bytes: 10 })] });
+  const remote = mkSweep({ host: [image({ id: "sha256:h", tags: ["jr2-instance-myinst:aa11"], bytes: 10 })] });
   const w = await mkWorld(mkKube(ownNs, { context: "gke-prod" }), true, remote);
   assert.equal(await down([], w.io), 0);
-  assert.deepEqual(remote.listed, ["host"], "images on a real cluster's nodes are not `j2 down`'s to remove");
-  assert.deepEqual(remote.removed, ["host j2-instance-myinst:aa11"]);
+  assert.deepEqual(remote.listed, ["host"], "images on a real cluster's nodes are not `jr2 down`'s to remove");
+  assert.deepEqual(remote.removed, ["host jr2-instance-myinst:aa11"]);
 
   // The instance IS removed, which is what `down` promised — a sweep failure may not undo that.
   const broken = mkSweep({}, true);
@@ -300,7 +300,7 @@ test("a non-kind context still sweeps the host, and a failed sweep still exits 0
 
 test("down refuses a foreign namespace and errors when the instance isn't deployed here", async () => {
   const kube = mkKube({
-    "/namespace/myinst": { metadata: { name: "myinst", labels: { "j2.dev/instance": "other" } } },
+    "/namespace/myinst": { metadata: { name: "myinst", labels: { "jr2.dev/instance": "other" } } },
   });
   const w = await mkWorld(kube, true);
   assert.equal(await down([], w.io), 1);
@@ -316,7 +316,7 @@ test("down refuses a foreign namespace and errors when the instance isn't deploy
 test("a Sandbox CR another instance parked keeps its image alive across this instance's removal", async () => {
   // A parked Workspace must survive a pod restart: `IfNotPresent` cannot re-pull a local tag, so
   // the CR's `spec.image` is a root in its own right, separate from any running pod (ADR-0039).
-  const parked = "docker.io/library/j2-sandbox-other-default:c0ffee123456";
+  const parked = "docker.io/library/jr2-sandbox-other-default:c0ffee123456";
   const sweep = mkSweep({ node: [image({ id: "sha256:p", tags: [parked], bytes: 5 })] });
   const kube = mkKube(ownNs, {
     roots: {
@@ -324,7 +324,7 @@ test("a Sandbox CR another instance parked keeps its image alive across this ins
       sandboxes: [
         {
           metadata: { name: "ws-1", namespace: "other" },
-          spec: { image: "j2-sandbox-other-default:c0ffee123456" },
+          spec: { image: "jr2-sandbox-other-default:c0ffee123456" },
         },
       ],
     },

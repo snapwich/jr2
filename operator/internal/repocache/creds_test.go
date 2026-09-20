@@ -27,7 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 func secret(name string, data map[string]string) *corev1.Secret {
@@ -66,18 +66,18 @@ func TestNoSecretRefIsAnAnonymousClone(t *testing.T) {
 
 func TestHttpsTokenRidesTheEnvironmentThroughACredentialHelper(t *testing.T) {
 	// ADR-0051: Flux's key names; the value is never in argv or on disk.
-	a := newAgent(t, &fakeGit{}, secret("j2-git-abcd1234", map[string]string{"username": "x-access-token", "password": "ghp_secret"}))
-	env, err := a.credentials(context.Background(), withSecret("j2-git-abcd1234"))
+	a := newAgent(t, &fakeGit{}, secret("jr2-git-abcd1234", map[string]string{"username": "x-access-token", "password": "ghp_secret"}))
+	env, err := a.credentials(context.Background(), withSecret("jr2-git-abcd1234"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
 		"GIT_TERMINAL_PROMPT": "0",
-		"J2_GIT_USERNAME":     "x-access-token",
-		"J2_GIT_PASSWORD":     "ghp_secret",
+		"JR2_GIT_USERNAME":     "x-access-token",
+		"JR2_GIT_PASSWORD":     "ghp_secret",
 		"GIT_CONFIG_COUNT":    "1",
 		"GIT_CONFIG_KEY_0":    "credential.helper",
-		"GIT_CONFIG_VALUE_0":  `!f() { echo "username=$J2_GIT_USERNAME"; echo "password=$J2_GIT_PASSWORD"; }; f`,
+		"GIT_CONFIG_VALUE_0":  `!f() { echo "username=$JR2_GIT_USERNAME"; echo "password=$JR2_GIT_PASSWORD"; }; f`,
 	} {
 		if got, ok := envValue(env, name); !ok || got != want {
 			t.Errorf("%s: want %q, got %q (present %v)", name, want, got, ok)
@@ -92,8 +92,8 @@ func TestHttpsTokenRidesTheEnvironmentThroughACredentialHelper(t *testing.T) {
 }
 
 func TestSshKeyIsWrittenPrivateAndAcceptsNewHostsWithoutKnownHosts(t *testing.T) {
-	a := newAgent(t, &fakeGit{}, secret("j2-git-ssh", map[string]string{secretKeyIdentity: "-----BEGIN KEY-----\nabc\n-----END KEY-----", "identity.pub": "ssh-ed25519 AAAA"}))
-	env, err := a.credentials(context.Background(), withSecret("j2-git-ssh"))
+	a := newAgent(t, &fakeGit{}, secret("jr2-git-ssh", map[string]string{secretKeyIdentity: "-----BEGIN KEY-----\nabc\n-----END KEY-----", "identity.pub": "ssh-ed25519 AAAA"}))
+	env, err := a.credentials(context.Background(), withSecret("jr2-git-ssh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,14 +117,14 @@ func TestSshKeyIsWrittenPrivateAndAcceptsNewHostsWithoutKnownHosts(t *testing.T)
 	if cmd != want {
 		t.Fatalf("want %q\n got %q", want, cmd)
 	}
-	if _, ok := envValue(env, "J2_GIT_PASSWORD"); ok {
+	if _, ok := envValue(env, "JR2_GIT_PASSWORD"); ok {
 		t.Fatal("an ssh credential sets no token")
 	}
 }
 
 func TestSshKnownHostsPinsTheHostStrictly(t *testing.T) {
-	a := newAgent(t, &fakeGit{}, secret("j2-git-ssh", map[string]string{secretKeyIdentity: "k\n", secretKeyKnownHosts: "github.com ssh-ed25519 AAAA\n"}))
-	env, err := a.credentials(context.Background(), withSecret("j2-git-ssh"))
+	a := newAgent(t, &fakeGit{}, secret("jr2-git-ssh", map[string]string{secretKeyIdentity: "k\n", secretKeyKnownHosts: "github.com ssh-ed25519 AAAA\n"}))
+	env, err := a.credentials(context.Background(), withSecret("jr2-git-ssh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestSshKnownHostsPinsTheHostStrictly(t *testing.T) {
 }
 
 func TestSshKeyIsRewrittenPrivateWhenTheFileExists(t *testing.T) {
-	a := newAgent(t, &fakeGit{}, secret("j2-git-ssh", map[string]string{secretKeyIdentity: "k\n"}))
+	a := newAgent(t, &fakeGit{}, secret("jr2-git-ssh", map[string]string{secretKeyIdentity: "k\n"}))
 	sshDir := filepath.Join(a.Home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -148,7 +148,7 @@ func TestSshKeyIsRewrittenPrivateWhenTheFileExists(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sshDir, key), []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.credentials(context.Background(), withSecret("j2-git-ssh")); err != nil {
+	if _, err := a.credentials(context.Background(), withSecret("jr2-git-ssh")); err != nil {
 		t.Fatal(err)
 	}
 	info, _ := os.Stat(filepath.Join(sshDir, key))
@@ -159,8 +159,8 @@ func TestSshKeyIsRewrittenPrivateWhenTheFileExists(t *testing.T) {
 
 func TestAMissingSecretIsTheUsersToFix(t *testing.T) {
 	a := newAgent(t, &fakeGit{})
-	_, err := a.credentials(context.Background(), withSecret("j2-git-ssh"))
-	if err == nil || err.Error() != `secret "j2-git-ssh" not found — create it (ADR-0047) or fix git.credentials` {
+	_, err := a.credentials(context.Background(), withSecret("jr2-git-ssh"))
+	if err == nil || err.Error() != `secret "jr2-git-ssh" not found — create it (ADR-0047) or fix git.credentials` {
 		t.Fatalf("expected the ADR-0047 hint, got %v", err)
 	}
 }

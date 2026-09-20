@@ -1,7 +1,7 @@
 # A menu offers what the Machine will accept, and a pick that moves nothing says so
 
 [ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md) derives an Agent's menu from the invoking state's
-transitions: the consumer names no tools, and `j2Setup.createMachine` walks the config appending the derived names to
+transitions: the consumer names no tools, and `jr2Setup.createMachine` walks the config appending the derived names to
 each `agentRun` invoke's input. That derivation reads transition **keys** — `Object.keys(node.on)` — and nothing else. A
 guard is invisible to it.
 

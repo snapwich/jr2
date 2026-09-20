@@ -3,7 +3,7 @@
 // a command error becomes an `error: …` line on stderr + code 1. Codes: 0 ok, 1 runtime error, 2 usage.
 
 import { activity, defaultIo, type Io } from "./output.ts";
-import { J2HttpError } from "./client.ts";
+import { JR2HttpError } from "./client.ts";
 import { loadDotenv } from "./env.ts";
 import { init } from "./commands/init.ts";
 import { run } from "./commands/run.ts";
@@ -16,14 +16,14 @@ import { down } from "./commands/down.ts";
 import { gc } from "./commands/gc.ts";
 import { kit } from "./commands/kit.ts";
 
-const USAGE = `j2 — orchestrate agentic workflows (ADR-0009)
+const USAGE = `jr2 — orchestrate agentic workflows (ADR-0009)
 
-usage: j2 <command> [args]
+usage: jr2 <command> [args]
 
   init [dir] [--name <n>]            scaffold a new instance folder
   up [--yes] [--force]              converge the current kube context to this instance (ADR-0019)
   down [--all]                      remove the instance from the cluster (--all: operator too)
-  gc [--dry-run] [--repo-ttl 7d]    remove j2's images that no live instance names (ADR-0039), and
+  gc [--dry-run] [--repo-ttl 7d]    remove jr2's images that no live instance names (ADR-0039), and
                                     Repo resources no Machine binds and no run attached lately (ADR-0051)
   kit push <registry>               mirror the published kit images into a registry (ADR-0044)
   run <workflow> [--input <json>]   start a run; stream activity, print terminal result
@@ -40,7 +40,7 @@ run ids: any <runId> above may be abbreviated to a unique prefix (4+ chars, git-
          an ambiguous prefix lists the candidates and fails rather than guessing
 
 global (run verbs): -n/--namespace <ns>, --context <ctx> address the deployment (ADR-0019);
-                    --url <u> / J2_URL attaches to a specific orchestrator (skips kube entirely)`;
+                    --url <u> / JR2_URL attaches to a specific orchestrator (skips kube entirely)`;
 
 /**
  * The catch-all half of skew reporting: a route-shaped failure gets ONE extra line naming what the
@@ -53,19 +53,19 @@ global (run verbs): -n/--namespace <ns>, --context <ctx> address the deployment 
  * (the e2e tier's) legitimately has neither version nor hash to report.
  */
 function skewNote(err: unknown): string | undefined {
-  if (!(err instanceof J2HttpError)) return undefined;
+  if (!(err instanceof JR2HttpError)) return undefined;
   if (err.status !== 404 && err.status !== 405) return undefined;
   const { version, hash } = err.instance ?? {};
   if (!version) return undefined;
   const id = hash ? `${version} (${hash})` : version;
-  return `  instance: ${id} — if it predates this CLI, \`j2 up\` converges the cluster to this kit`;
+  return `  instance: ${id} — if it predates this CLI, \`jr2 up\` converges the cluster to this kit`;
 }
 
 export async function main(argv: string[], io: Io = defaultIo): Promise<number> {
   const [cmd, ...rest] = argv;
   try {
     // Before any verb, so the instance's `.env` is in `process.env` by the time a command imports
-    // `j2.config.ts` (whose deployment-varying values are read from there — ADR-0019).
+    // `jr2.config.ts` (whose deployment-varying values are read from there — ADR-0019).
     loadDotenv(io);
     switch (cmd) {
       case "init":

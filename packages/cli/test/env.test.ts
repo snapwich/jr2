@@ -1,4 +1,4 @@
-// `.env` loading (ADR-0019): the parse grammar, the walk up to `j2.config.ts`, and the precedence
+// `.env` loading (ADR-0019): the parse grammar, the walk up to `jr2.config.ts`, and the precedence
 // rule that makes the file a DEFAULT layer — a var already in the environment always wins.
 
 import { test } from "node:test";
@@ -11,8 +11,8 @@ import type { Io } from "../src/output.ts";
 
 /** An instance folder with a `.env`, plus a nested subdir to run the CLI from. */
 async function mkInstance(dotenv: string): Promise<{ root: string; nested: string }> {
-  const root = await mkdtemp(join(tmpdir(), "j2-env-"));
-  await writeFile(join(root, "j2.config.ts"), "export default {};\n");
+  const root = await mkdtemp(join(tmpdir(), "jr2-env-"));
+  await writeFile(join(root, "jr2.config.ts"), "export default {};\n");
   await writeFile(join(root, ".env"), dotenv);
   const nested = join(root, "workflows", "deep");
   await mkdir(nested, { recursive: true });
@@ -31,7 +31,7 @@ test("parses bare, quoted, exported, and commented assignments", () => {
       "# a comment",
       "",
       "VLLM_BASE_URL=http://10.0.0.5:8000/v1   # reachable from pods",
-      "export J2_PROVIDER_API_KEY=sk-abc123",
+      "export JR2_PROVIDER_API_KEY=sk-abc123",
       `SINGLE='raw $notinterpolated #nothash'`,
       `DOUBLE="line\\none"`,
       "  SPACED  =  padded  ",
@@ -42,7 +42,7 @@ test("parses bare, quoted, exported, and commented assignments", () => {
 
   assert.deepEqual(parsed, {
     VLLM_BASE_URL: "http://10.0.0.5:8000/v1",
-    J2_PROVIDER_API_KEY: "sk-abc123",
+    JR2_PROVIDER_API_KEY: "sk-abc123",
     SINGLE: "raw $notinterpolated #nothash",
     DOUBLE: "line\none",
     SPACED: "padded",
@@ -67,22 +67,22 @@ test("loads from the instance root when run in a subdirectory", async () => {
 });
 
 test("the real environment wins over the file", async () => {
-  const { root } = await mkInstance("J2_PROVIDER_API_KEY=from-file\nOTHER=from-file\n");
-  const { io } = mkIo({ cwd: root, env: { J2_PROVIDER_API_KEY: "from-shell" } });
+  const { root } = await mkInstance("JR2_PROVIDER_API_KEY=from-file\nOTHER=from-file\n");
+  const { io } = mkIo({ cwd: root, env: { JR2_PROVIDER_API_KEY: "from-shell" } });
 
   loadDotenv(io);
 
-  assert.equal(io.env.J2_PROVIDER_API_KEY, "from-shell");
+  assert.equal(io.env.JR2_PROVIDER_API_KEY, "from-shell");
   assert.equal(io.env.OTHER, "from-file");
 });
 
 test("outside an instance, or with no .env, it is a no-op", async () => {
-  const bare = await mkdtemp(join(tmpdir(), "j2-noenv-"));
+  const bare = await mkdtemp(join(tmpdir(), "jr2-noenv-"));
   const { io, err } = mkIo({ cwd: bare, env: {} });
   loadDotenv(io);
   assert.deepEqual(io.env, {});
 
-  await writeFile(join(bare, "j2.config.ts"), "export default {};\n"); // instance, but no .env
+  await writeFile(join(bare, "jr2.config.ts"), "export default {};\n"); // instance, but no .env
   loadDotenv(io);
   assert.deepEqual(io.env, {});
   assert.equal(err(), "", "silence when there is nothing to apply");

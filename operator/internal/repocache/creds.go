@@ -26,7 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 // The Secret a Repo's secretRef names uses Flux's key names (ADR-0051), so a
@@ -42,8 +42,8 @@ const (
 
 	// envUsername and envPassword carry an https credential to the helper
 	// below, so the token is never in argv or on disk.
-	envUsername = "J2_GIT_USERNAME"
-	envPassword = "J2_GIT_PASSWORD"
+	envUsername = "JR2_GIT_USERNAME"
+	envPassword = "JR2_GIT_PASSWORD"
 	// credentialHelper is the inline helper git runs to read those two.
 	credentialHelper = `!f() { echo "username=$` + envUsername + `"; echo "password=$` + envPassword + `"; }; f`
 )

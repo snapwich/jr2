@@ -1,11 +1,11 @@
-// `j2Setup` — the authoring surface (ADR-0015): an xstate `setup()` analog, not a DSL. It returns
+// `jr2Setup` — the authoring surface (ADR-0015): an xstate `setup()` analog, not a DSL. It returns
 // xstate's public `SetupReturn`, so `.createMachine()` yields a plain `StateMachine` — Stately-
-// inspectable, `.provide()`-testable, constructible with no j2 runtime. What the wrapper adds:
+// inspectable, `.provide()`-testable, constructible with no jr2 runtime. What the wrapper adds:
 //
 //   - the MECHANISM events (`agent.fault`, `workspace.lost`, …) are injected into the event
 //     union, and the WORKFLOW event types derive from the zod defs — hand-written `EventFrom`
 //     unions retire;
-//   - the j2 `gate` actor is pre-registered with typed input (a consumer actor under the same
+//   - the jr2 `gate` actor is pre-registered with typed input (a consumer actor under the same
 //     name wins — the unit-test seam), and every Agent SLOT the machine declares
 //     (`actors: { coder: agent(def) }` — ADR-0049) gets the same input finalization by brand;
 //   - because it takes the defs AS VALUES, `createMachine` validates that every event key
@@ -22,7 +22,7 @@
 //     bodies against it and serves it as JSON Schema; absent, the door stays permissive.
 //
 // The typing follows the proven declared-signature pattern (report-xstate §1): the public
-// signature is precise, the implementation is loosely typed with ONE j2-internal cast at the
+// signature is precise, the implementation is loosely typed with ONE jr2-internal cast at the
 // return. The consumer surface has none.
 
 import { randomUUID } from "node:crypto";
@@ -42,7 +42,7 @@ import {
   type UnknownActorLogic,
 } from "xstate";
 import type { z } from "zod";
-import { eventMap, type EventDef, type EventFrom } from "@j2/agent-protocol";
+import { eventMap, type EventDef, type EventFrom } from "@jr2/agent-protocol";
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { gate } from "./gate.ts";
@@ -50,23 +50,23 @@ import { actorPath, boundRunId } from "./registration.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
 /**
- * The events j2's own mechanism delivers into any workflow machine, injected into every j2Setup
+ * The events jr2's own mechanism delivers into any workflow machine, injected into every jr2Setup
  * union. Dotted names by construction (`NAME_RE` forbids dots in workflow event names), so they
  * can never collide with a def.
  */
 export type MechanismEvent = FaultTelemetry | { type: "workspace.lost" };
 
-/** The full event union a j2Setup machine sees: the defs' derived types plus the mechanism's. */
+/** The full event union a jr2Setup machine sees: the defs' derived types plus the mechanism's. */
 export type WorkflowEvent<TDefs extends readonly EventDef[]> = EventFrom<TDefs[number]> | MechanismEvent;
 
-/** The j2 actor every workflow can invoke by name without listing it (ADR-0015). `gate` is the
+/** The jr2 actor every workflow can invoke by name without listing it (ADR-0015). `gate` is the
  * whole set: an Agent is not pre-registered, because it is not one logic — it is the slot the
  * Machine declares, `actors: { coder: agent(def) }` (ADR-0049). */
-const j2Actors = { gate };
-type J2Actors = typeof j2Actors;
+const jr2Actors = { gate };
+type JR2Actors = typeof jr2Actors;
 
 /** Consumer actors merge OVER the pre-registered set: same name → the consumer's logic wins. */
-type MergedActors<TActors extends Record<string, UnknownActorLogic>> = Omit<J2Actors, keyof TActors> & TActors;
+type MergedActors<TActors extends Record<string, UnknownActorLogic>> = Omit<JR2Actors, keyof TActors> & TActors;
 
 // Local equivalents of xstate's non-exported setup() mapped helpers (setup.d.ts) — same shapes,
 // so the declared signature below composes with the public `ActionFunction`/`GuardPredicate`.
@@ -81,7 +81,7 @@ type ToProvidedActor<TActors extends Record<string, UnknownActorLogic>> = {
  * Author a workflow machine (ADR-0015). Like `setup()`, but `types.events` is gone: the event
  * union derives from `events` (defineEvent defs, taken as values) plus the mechanism events.
  */
-export function j2Setup<
+export function jr2Setup<
   TContext extends MachineContext = MachineContext,
   const TDefs extends readonly EventDef[] = readonly EventDef[],
   TActors extends Record<string, UnknownActorLogic> = {},
@@ -146,7 +146,7 @@ export function j2Setup<
 > {
   const inner = setup({
     types: def.types,
-    actors: { ...j2Actors, ...(def.actors ?? {}) },
+    actors: { ...jr2Actors, ...(def.actors ?? {}) },
     actions: def.actions,
     guards: def.guards,
     delays: def.delays,
@@ -175,14 +175,14 @@ export function j2Setup<
     // silently become vocabulary — so every non-dotted key the machine handles anywhere must map
     // to a def. Walk every node's `transitions` map, not `machine.events` (which filters out
     // targetless/actionless transitions — exactly where a typo'd key would hide). Dotted names
-    // (`agent.*`, `workspace.*`, `xstate.*`, delayed transitions) are mechanically j2's/xstate's;
+    // (`agent.*`, `workspace.*`, `xstate.*`, delayed transitions) are mechanically jr2's/xstate's;
     // `*` is the wildcard descriptor.
     const walk = (node: AnyStateMachine["root"]): void => {
       for (const descriptor of node.transitions.keys()) {
         if (descriptor === "*" || descriptor.includes(".")) continue;
         if (!defs.has(descriptor)) {
           throw new Error(
-            `machine "${machine.id}" handles event "${descriptor}", which no def in j2Setup({ events }) ` +
+            `machine "${machine.id}" handles event "${descriptor}", which no def in jr2Setup({ events }) ` +
               `declares (declared: ${[...defs.keys()].join(", ") || "none"}) — a typo, or a missing defineEvent`,
           );
         }
@@ -196,7 +196,7 @@ export function j2Setup<
     return machine;
   };
 
-  // The one j2-internal cast (report-xstate §1): re-assert the merged SetupReturn over the
+  // The one jr2-internal cast (report-xstate §1): re-assert the merged SetupReturn over the
   // loosely-built implementation. The consumer-facing types are the declared signature's.
   return { ...inner, createMachine } as unknown as SetupReturn<
     TContext,
@@ -311,7 +311,7 @@ function wrapAgentInput(orig: unknown, derived: string[], agentName: string) {
       thinkingLevel: consumer.thinkingLevel,
       // ADR-0035's reroll gate: closed to `session: "continue"` and a `conversation` pin (the
       // runaway recovery is a FRESH conversation — exactly what they opted out of), and to a
-      // caller-passed iid — fresh on first use, but not j2-minted, so no reroll identity may
+      // caller-passed iid — fresh on first use, but not jr2-minted, so no reroll identity may
       // derive from it (ADR-0016's minting doctrine).
       ...(consumer.session === "continue" || consumer.conversation || consumer.instanceId
         ? { continuation: true }

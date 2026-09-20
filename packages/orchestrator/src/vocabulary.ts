@@ -1,5 +1,5 @@
 // Vocabulary-on-the-machine (ADR-0011, ADR-0015): a Machine's event defs ride the machine, not a
-// module export — and they are scoped to THAT Machine alone. `j2Setup.createMachine` attaches
+// module export — and they are scoped to THAT Machine alone. `jr2Setup.createMachine` attaches
 // them here; `gate` and the Agent slots read them back off the Machine that invoked them, and nothing ever
 // merges two Machines' sets. That is what makes a Machine composable by plain `invoke`
 // (ADR-0049): the importing Machine neither re-declares nor sees the nested one's events, so
@@ -13,7 +13,7 @@
 // config is the one the defs were attached to.
 //
 // A WeakMap (rather than a field) keeps the returned machine bit-identical — Stately-inspectable,
-// constructible with no j2 runtime — and preserves ADR-0011's anti-global-registry argument:
+// constructible with no jr2 runtime — and preserves ADR-0011's anti-global-registry argument:
 // attribution flows through the machine object, per-Machine by construction (a shared defs module
 // can feed two machines; a dev reload's fresh machine gets a fresh entry).
 //
@@ -23,14 +23,14 @@
 
 import type { AnyActorRef, AnyStateMachine } from "xstate";
 import type { z } from "zod";
-import type { EventDef } from "@j2/agent-protocol";
+import type { EventDef } from "@jr2/agent-protocol";
 
 /** The key both attachments use: the machine's raw config, which survives `.provide()`. */
 type MachineKey = AnyStateMachine["config"];
 
 const vocabularies = new WeakMap<MachineKey, Map<string, EventDef>>();
 
-/** Attach a Machine's resolved vocabulary. j2-internal: `j2Setup` calls it, and `pool()` calls it
+/** Attach a Machine's resolved vocabulary. jr2-internal: `jr2Setup` calls it, and `pool()` calls it
  * for the one def it owns (its wake event). The machine factories do NOT propagate their body's
  * or worker's defs onto the wrapper (ADR-0011): those belong to the nested Machine, which is
  * where the actors that use them resolve. */
@@ -38,7 +38,7 @@ export function attachVocabulary(machine: AnyStateMachine, defs: Map<string, Eve
   vocabularies.set(machine.config, defs);
 }
 
-/** The vocabulary a Machine was built with — undefined for a Machine not built by `j2Setup`
+/** The vocabulary a Machine was built with — undefined for a Machine not built by `jr2Setup`
  * (a plain `setup()` machine declares no workflow events and resolves to an empty scope). */
 export function vocabularyOf(machine: AnyStateMachine): Map<string, EventDef> | undefined {
   return vocabularies.get(machine.config);
@@ -64,7 +64,7 @@ export function invokingMachine(self: AnyActorRef): AnyStateMachine | undefined 
 
 const inputSchemas = new WeakMap<MachineKey, z.ZodObject>();
 
-/** Attach a machine's declared run-input schema. j2-internal: `j2Setup.createMachine({ input })`
+/** Attach a machine's declared run-input schema. jr2-internal: `jr2Setup.createMachine({ input })`
  * attaches it, and the machine factories (`workspace`, `pool`) attach their OWN — the `input` in
  * their options. Like the vocabulary, the door does NOT propagate up from a body or a worker
  * (ADR-0033): a wrapper feeds its child something other than the run input (the injected
@@ -82,7 +82,7 @@ export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined
 /**
  * What the HOST adds to the input of the machine a run STARTS with, beside the door
  * (`RunHost.start`). One field today: the run's seed Instance ID, minted with the run and
- * reported by `j2 status`, so an external caller can address the run's first conversation.
+ * reported by `jr2 status`, so an external caller can address the run's first conversation.
  *
  * It is deliberately NOT door material (ADR-0033): no caller sends it — `start` overwrites
  * whatever arrived, after the parse — and it is never served as JSON Schema, so putting it in a

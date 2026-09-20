@@ -1,29 +1,29 @@
 // The Agent definition (ADR-0018/0027): the part of an Agent a user genuinely owns — model +
 // instructions + workspace access — as SERIALIZABLE DATA. Everything mechanical (the Adapter
-// leash, the Working-tool assembly, the wire) lives in the stock Harness image (`@j2/harness`),
+// leash, the Working-tool assembly, the wire) lives in the stock Harness image (`@jr2/harness`),
 // which runs the definition it is handed and re-reads it per Submission.
 //
 // A definition is NOT an Instance roster entry: a Machine CARRIES it as an actor slot —
-// `j2Setup({ actors: { coder: agent(def) } })`, invoked as `src: "coder"` (ADR-0049) — so the
+// `jr2Setup({ actors: { coder: agent(def) } })`, invoked as `src: "coder"` (ADR-0049) — so the
 // Agent's name is the slot key and its scope is that one Machine. Two Machines in one run may
 // both carry a `coder`; neither can see the other's.
 //
 // This module is the plain-data contract plus the slot BRAND (`isAgent` — the readable
 // `definition` property `agent()` stamps on the logic). The brand lives HERE, apart from the
-// logic that carries it, so `j2Setup`'s menu derivation can recognize an Agent slot without
+// logic that carries it, so `jr2Setup`'s menu derivation can recognize an Agent slot without
 // pulling the wire client onto its load path.
 //
 // Since ADR-0054 the contract has two halves, and the split is the whole point: `AgentDefinition`
 // is the WIRE type — `model: string`, because a Symbol does not ride a Turn — while
 // `AgentDeclaration` is what an AUTHOR writes, whose `model` may be Open (open.ts) for a composer
-// to bind. `j2 up` refuses an Open Agent before anything is built; the Agent actor refuses to
+// to bind. `jr2 up` refuses an Open Agent before anything is built; the Agent actor refuses to
 // admit a Turn under one, as the second fence. Everything downstream of admission sees a
 // definition.
 
 import { open } from "./open.ts";
 
-/** j2's reasoning-effort scale (ADR-0027) — a strict subset of the runtime's, so every value
- * passes through unmapped; mirrored by `@j2/harness`'s spec contract. */
+/** jr2's reasoning-effort scale (ADR-0027) — a strict subset of the runtime's, so every value
+ * passes through unmapped; mirrored by `@jr2/harness`'s spec contract. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /** What an Agent may DO to the Workspace (ADR-0028) — and, through `"none"`, where its Turn runs
@@ -36,9 +36,9 @@ export type WorkspaceAccess = "write" | "read" | "none";
  * extension one: custom tool implementations stay out of the contract. */
 export type AgentDefinition = {
   /** Model specifier, `<provider>/<modelId>`, e.g. `anthropic/claude-sonnet-4-6`. REQUIRED —
-   * there is no instance-wide default (ADR-0018): `j2.config.ts`'s `harness` section
+   * there is no instance-wide default (ADR-0018): `jr2.config.ts`'s `harness` section
    * declares which providers are REACHABLE, and the definition makes the choice. This is also the
-   * only model `j2 up` can preflight, since a workflow's is not statically recoverable. An
+   * only model `jr2 up` can preflight, since a workflow's is not statically recoverable. An
    * invocation may override it for one Turn (`AgentTurnInput.model`). */
   model: string;
   /** The Agent's system prompt. */
@@ -79,7 +79,7 @@ export type AgentDeclaration = Omit<AgentDefinition, "model"> & { model: string 
 export type AgentSlot = { definition: AgentDeclaration };
 
 /**
- * Is this actor logic an Agent slot? What `j2Setup` asks of every `actors` entry an invoke names,
+ * Is this actor logic an Agent slot? What `jr2Setup` asks of every `actors` entry an invoke names,
  * to decide whether the invoke gets a derived Menu, a minted instance id, and its slot key as the
  * Agent name (ADR-0049) — replacing the retired `src === "agentRun"` test.
  *
@@ -107,7 +107,7 @@ export function isOpenAgent(declaration: AgentDeclaration): boolean {
 
 /**
  * The declaration as the wire takes it, or a refusal naming the slot — the SECOND fence
- * (ADR-0054). The first is `j2 up`'s walk, which refuses an Open Agent on a registered Machine
+ * (ADR-0054). The first is `jr2 up`'s walk, which refuses an Open Agent on a registered Machine
  * before anything is built; this one catches every path that walk never saw (a Machine invoked as
  * itself in a test, an unregistered import composed mid-run) and it catches it before a Turn is
  * admitted rather than as a Harness 400 with nothing but a slot key in it.

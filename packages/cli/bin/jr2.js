@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The `j2` binary (ADR-0009). The kit is zero-build `.ts` — but Node's own type stripping REFUSES
+// The `jr2` binary (ADR-0009). The kit is zero-build `.ts` — but Node's own type stripping REFUSES
 // to run on files under `node_modules`, and an installed kit is nothing but files under
 // `node_modules` (ADR-0043). So this entry is the one `.js` file in the package: it teaches the
 // loader to erase types the same way Node would, then hands over to the `.ts` sources.
@@ -21,7 +21,7 @@ import tsBlankSpace from "ts-blank-space";
 // stack trace still point at the source (ADR-0034 makes the same trade for the Console). What
 // `ts-blank-space` cannot erase — an enum, a namespace, a constructor parameter property — is
 // exactly what Node's own stripping rejects too, so this hook widens where the kit runs, never
-// what the kit may be written in. `module` is the only format the kit ships: every j2 package is
+// what the kit may be written in. `module` is the only format the kit ships: every jr2 package is
 // `type: "module"`, and the hook sees kit sources only (the CLI imports no instance code).
 registerHooks({
   load(url, context, nextLoad) {

@@ -13,7 +13,7 @@
 //   4. the spec mapper's `input` is the PARSED door, with no annotation at the call site;
 //   5. the wrapper's output is the body's, so a parent's `onDone` is typed;
 //   6. a parent invoking the wrapper has its input mapper checked against the door;
-//   7. with no door declared the mapper's `input` is `unknown` — an honest "j2 does not know",
+//   7. with no door declared the mapper's `input` is `unknown` — an honest "jr2 does not know",
 //      not `any`;
 //   8. what the HOST injects beside the door is outside the check — and only that;
 //   9. a per-run Repo Slot's mapper reads the same PARSED door as `spec` (ADR-0051), on the
@@ -120,7 +120,7 @@ void workspace(wantsDocs, { repos, spec: () => ({ branch: "feat" }) });
 void workspace(wantsDocs, { repos, spec: ({ input }: { input: { ticket: Door } }) => specOf(input.ticket) });
 
 // No type on the seam defaults its slots to `string` either — `WorkspaceMachine` is what a package
-// author annotates an export with, and under `J2Repos<string>` `customize()` would offer every
+// author annotates an export with, and under `JR2Repos<string>` `customize()` would offer every
 // key exactly where the phantom exists to refuse them; an options value annotated with a `string`
 // slot set types `repos` as `Record<string, RepoSlot>` and passes a body demanding any slot.
 // The `workspace()` overloads infer the slots; an annotation names them.

@@ -1,4 +1,4 @@
-// `j2 up`'s Instance typecheck (ADR-0050): the gate that turns a wrong name into a compile error
+// `jr2 up`'s Instance typecheck (ADR-0050): the gate that turns a wrong name into a compile error
 // instead of an invoke-time failure mid-run. These tests drive the REAL compiler — the gate's whole
 // claim is about which compiler runs and what it reads, and a fake would assert neither.
 //
@@ -7,7 +7,7 @@
 // (the scaffold pins it, ADR-0043), never one the CLI happens to carry.
 //
 // The last tests are the ones that gate the PROGRAM rather than the port: an instance staged as
-// npm leaves one — `@j2/orchestrator` as its `files:` list with no `node_modules` of its own, its
+// npm leaves one — `@jr2/orchestrator` as its `files:` list with no `node_modules` of its own, its
 // runtime dependencies flat beside it, and the real `tsconfig.instance.json` extends chain. The
 // checkout hides the class of failure it catches, because pnpm links the kit's packages to each
 // other and an instance here resolves the orchestrator's own devDependencies through that link.
@@ -24,11 +24,11 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const REPO_TYPESCRIPT = join(REPO, "node_modules", "typescript");
 const ORCHESTRATOR = join(REPO, "packages", "orchestrator");
 
-/** An instance folder as `j2 init` leaves one: the root marker, a tsconfig, and an installed
+/** An instance folder as `jr2 init` leaves one: the root marker, a tsconfig, and an installed
  * compiler. `compiler: false` is the folder whose dependencies were never installed. */
 async function mkInstance(files: Record<string, string>, opts: { compiler?: boolean } = {}): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "j2-tsc-"));
-  await writeFile(join(root, "j2.config.ts"), `export default { name: "t" };\n`);
+  const root = await mkdtemp(join(tmpdir(), "jr2-tsc-"));
+  await writeFile(join(root, "jr2.config.ts"), `export default { name: "t" };\n`);
   for (const [rel, content] of Object.entries(files)) {
     await mkdir(join(root, dirname(rel)), { recursive: true });
     await writeFile(join(root, rel), content);
@@ -40,7 +40,7 @@ async function mkInstance(files: Record<string, string>, opts: { compiler?: bool
   return root;
 }
 
-/** The compiler options an instance inherits from `@j2/orchestrator/tsconfig.instance.json`, inline:
+/** The compiler options an instance inherits from `@jr2/orchestrator/tsconfig.instance.json`, inline:
  * these fixtures have no kit in `node_modules`, and the claim they test is the port's — which
  * compiler runs, and what it does with the two answers. The extends chain and the kit's own sources
  * are the last test's subject. */
@@ -99,9 +99,9 @@ test("no tsconfig.json: the refusal names the file the scaffold writes", async (
 
 /** An instance as npm leaves one, staged from this checkout (ADR-0043's installed shape).
  *
- * Faithful in the one way that matters: `node_modules/@j2/orchestrator` is a COPY of the package's
+ * Faithful in the one way that matters: `node_modules/@jr2/orchestrator` is a COPY of the package's
  * `files:` list with no `node_modules` of its own, and only its declared `dependencies` sit beside
- * it. So a kit source reaching for a devDependency — `@j2/harness`, which is private and never
+ * it. So a kit source reaching for a devDependency — `@jr2/harness`, which is private and never
  * published (ADR-0009/0043) — is `Cannot find module` here and nowhere else in the default gate.
  */
 async function mkInstalledInstance(): Promise<string> {
@@ -109,10 +109,10 @@ async function mkInstalledInstance(): Promise<string> {
     files: string[];
     dependencies: Record<string, string>;
   };
-  const root = await mkdtemp(join(tmpdir(), "j2-installed-"));
+  const root = await mkdtemp(join(tmpdir(), "jr2-installed-"));
   const modules = join(root, "node_modules");
 
-  const orchestrator = join(modules, "@j2", "orchestrator");
+  const orchestrator = join(modules, "@jr2", "orchestrator");
   await mkdir(orchestrator, { recursive: true });
   for (const entry of pkg.files) await cp(join(ORCHESTRATOR, entry), join(orchestrator, entry), { recursive: true });
   await writeFile(join(orchestrator, "package.json"), JSON.stringify({ ...pkg, devDependencies: undefined }));
@@ -125,25 +125,25 @@ async function mkInstalledInstance(): Promise<string> {
   }
   await symlink(REPO_TYPESCRIPT, join(modules, "typescript"), "dir");
 
-  // What `j2 init` scaffolds, verbatim in shape: an ESM package, the real extends chain, and one
-  // workflow that imports the kit — which is what pulls @j2/orchestrator's sources into the program.
+  // What `jr2 init` scaffolds, verbatim in shape: an ESM package, the real extends chain, and one
+  // workflow that imports the kit — which is what pulls @jr2/orchestrator's sources into the program.
   await writeFile(join(root, "package.json"), JSON.stringify({ name: "staged", private: true, type: "module" }));
   await writeFile(
     join(root, "tsconfig.json"),
-    `{ "extends": "@j2/orchestrator/tsconfig.instance.json", "include": ["**/*.ts"] }`,
+    `{ "extends": "@jr2/orchestrator/tsconfig.instance.json", "include": ["**/*.ts"] }`,
   );
   // The config imports the kit by BARE specifier, so this is also where "does the package resolve
   // the way npm laid it out?" is answered; in the checkout it resolves through a pnpm link instead.
   await writeFile(
-    join(root, "j2.config.ts"),
-    `import { defineConfig } from "@j2/orchestrator";\n` +
-      `export default defineConfig({ git: { credentials: [{ match: "*", token: "J2_GIT_TOKEN" }] } });\n`,
+    join(root, "jr2.config.ts"),
+    `import { defineConfig } from "@jr2/orchestrator";\n` +
+      `export default defineConfig({ git: { credentials: [{ match: "*", token: "JR2_GIT_TOKEN" }] } });\n`,
   );
   await mkdir(join(root, "workflows"), { recursive: true });
   await writeFile(
     join(root, "workflows", "ping.ts"),
-    `import { j2Setup } from "@j2/orchestrator";\n` +
-      `export const machine = j2Setup({ events: [] }).createMachine({\n` +
+    `import { jr2Setup } from "@jr2/orchestrator";\n` +
+      `export const machine = jr2Setup({ events: [] }).createMachine({\n` +
       `  id: "ping",\n  initial: "done",\n  states: { done: { type: "final" } },\n});\n`,
   );
   return root;
@@ -151,18 +151,18 @@ async function mkInstalledInstance(): Promise<string> {
 
 /** A packaged `workspace()` that leaves its one Repo Slot OPEN (`_pkg.ts` — imported, never
  * registered), and a registered Workflow that binds it with `customize()` under `slot` — the
- * consumer's move (ADR-0051), and the seat the wrapper's `J2Repos` phantom types. */
+ * consumer's move (ADR-0051), and the seat the wrapper's `JR2Repos` phantom types. */
 async function writeCustomizeBinding(root: string, slot: string): Promise<void> {
   await writeFile(
     join(root, "workflows", "_pkg.ts"),
-    `import { j2Setup, open, workspace } from "@j2/orchestrator";\n` +
-      `const body = j2Setup({ events: [] }).createMachine({\n` +
+    `import { jr2Setup, open, workspace } from "@jr2/orchestrator";\n` +
+      `const body = jr2Setup({ events: [] }).createMachine({\n` +
       `  id: "body",\n  initial: "done",\n  states: { done: { type: "final" } },\n});\n` +
       `export const codeReview = workspace(body, { repos: { target: open }, spec: () => ({ branch: "b" }) });\n`,
   );
   await writeFile(
     join(root, "workflows", "work.ts"),
-    `import { customize } from "@j2/orchestrator";\n` +
+    `import { customize } from "@jr2/orchestrator";\n` +
       `import { codeReview } from "./_pkg.ts";\n` +
       `export const machine = customize(codeReview, { repos: { ${slot}: "https://example.test/app.git" } });\n`,
   );
@@ -170,8 +170,8 @@ async function writeCustomizeBinding(root: string, slot: string): Promise<void> 
 
 test("an instance staged as npm installs it typechecks — the kit's own sources included", async () => {
   // The gate is a converge REFUSAL (ADR-0050), so a published source that cannot compile in an
-  // installed folder is `j2 up` returning 1 for every user, on `j2 init` → `npm i` → `j2 up`. The
-  // checkout cannot see it: pnpm links @j2/orchestrator to `packages/orchestrator`, whose own
+  // installed folder is `jr2 up` returning 1 for every user, on `jr2 init` → `npm i` → `jr2 up`. The
+  // checkout cannot see it: pnpm links @jr2/orchestrator to `packages/orchestrator`, whose own
   // `node_modules` holds the devDependencies the published tarball leaves behind.
   const root = await mkInstalledInstance();
 

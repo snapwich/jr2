@@ -37,7 +37,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 const (
@@ -69,7 +69,7 @@ const (
 	// keepaliveAnnotation carries the owning Orchestrator's heartbeat lease
 	// (ADR-0001): an RFC3339 timestamp it PATCHes periodically. Idle GC fires
 	// only once spec.idleTimeout has elapsed since max(creation, last keepalive).
-	keepaliveAnnotation = "j2.dev/keepalive"
+	keepaliveAnnotation = "jr2.dev/keepalive"
 )
 
 // SandboxReconciler reconciles a Sandbox object
@@ -78,12 +78,12 @@ type SandboxReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=core.j2.dev,resources=sandboxes,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.j2.dev,resources=sandboxes/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=core.j2.dev,resources=sandboxes/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core.jr2.dev,resources=sandboxes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core.jr2.dev,resources=sandboxes/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core.jr2.dev,resources=sandboxes/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core.j2.dev,resources=repos,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core.jr2.dev,resources=repos,verbs=get;list;watch
 
 // Reconcile drives a Sandbox toward its desired state: a Pod (primary container
 // plus any sidecars) and a Service, with status.phase / status.endpoint
@@ -430,7 +430,7 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			NodeSelector: sandbox.Spec.NodeSelector,
 			Tolerations:  sandbox.Spec.Tolerations,
 			// Isolation north star: an untrusted Agent must not reach the
-			// Kubernetes API. Don't mount the SA token, and run every j2-owned
+			// Kubernetes API. Don't mount the SA token, and run every jr2-owned
 			// container non-root under the default seccomp profile. (Egress
 			// NetworkPolicy is the next isolation layer — see ADR-0001.)
 			AutomountServiceAccountToken: ptr.To(false),
@@ -532,10 +532,10 @@ func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 // for everything in the pod, plus the fsGroup when the spec names one.
 //
 // runAsNonRoot is deliberately NOT here. A pod-level runAsNonRoot binds every
-// container including the ones j2 does not own, and the User Container
+// container including the ones jr2 does not own, and the User Container
 // (ADR-0005) must be able to run root — a root sshd that binds :22 and setuids
 // sessions down to its login user is the standard managed-access shape. Non-root
-// is asserted per container instead, on the seats j2 owns, which says the same
+// is asserted per container instead, on the seats jr2 owns, which says the same
 // thing about them without saying anything about the seat it does not.
 func podSecurityContextFor(sandbox *corev1alpha1.Sandbox) *corev1.PodSecurityContext {
 	return &corev1.PodSecurityContext{
@@ -551,7 +551,7 @@ func podSecurityContextFor(sandbox *corev1alpha1.Sandbox) *corev1.PodSecurityCon
 // userContainerName is the one sidecar name the operator treats specially, and
 // only by leaving it alone: the User Container (ADR-0005). It gets no hardened
 // default — root and the default capability set are allowed — because the seat
-// exists precisely as the place j2 injects, probes, and overrides nothing. A
+// exists precisely as the place jr2 injects, probes, and overrides nothing. A
 // platform that wants it hardened hardens its own image or the namespace's Pod
 // Security profile.
 const userContainerName = "user"
@@ -618,7 +618,7 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// A Pod the scheduler could not place (ADR-0052): the Sandbox node set is
 	// empty right now, or the CR's selector and tolerations admit no node. The
 	// scheduler's own words name the taint or label, and they are what
-	// `j2 status` and the provisioning run show while the run waits — the set
+	// `jr2 status` and the provisioning run show while the run waits — the set
 	// moves, so this is a state the Sandbox waits in, never a verdict.
 	if !ready {
 		if unscheduled := podUnscheduled(pod); unscheduled != nil {
@@ -673,7 +673,7 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 // not asked again for that Pod. Its mounts were fixed when the Pod was
 // created, and the cache agent keeps a cache while a pod on its node mounts
 // it (ADR-0051) — so the Repo resource's later state, or its absence once
-// `j2 gc` evicted it, says nothing about this Pod, and re-deriving the verdict
+// `jr2 gc` evicted it, says nothing about this Pod, and re-deriving the verdict
 // from it would flip a serving Sandbox to Pending on the next lease renewal.
 // A replacement Pod (new UID) mounts whatever its node holds now, and is asked
 // afresh. A Sandbox naming no Repo writes no verdict and has no gate to pass.
@@ -692,7 +692,7 @@ func reposAdmitted(sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) bool {
 //   - not present and a clone since creation failed → RepoCloneFailed with
 //     git's words — a cold node that cannot clone fails this provision. Only
 //     a Clone counts: the agent probes a Repo before any pod on the node
-//     mounts it, and a probe's failure is `j2 status`'s signal, not this
+//     mounts it, and a probe's failure is `jr2 status`'s signal, not this
 //     Sandbox's verdict — the pod's arrival makes the agent clone, and that
 //     clone may succeed;
 //   - present and fetched since creation → ready and fresh;

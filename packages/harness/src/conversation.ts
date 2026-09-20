@@ -1,7 +1,7 @@
 // The Conversation (ADR-0027): one `(Agent name, Instance ID)` exchange. Owns the re-owned
 // semantics the ADR states — accept-and-queue (a Submission runs when it is the first unsettled
 // Submission of its conversation, admission order), the abort sweep, the append-only stream log
-// with j2-minted opaque offsets, the settlements the history view asserts, and the long-poll
+// with jr2-minted opaque offsets, the settlements the history view asserts, and the long-poll
 // parking that settlement events wake. Turn execution is injected (`runSubmission`), so this
 // module owns ordering and observation and never touches pi or HTTP.
 

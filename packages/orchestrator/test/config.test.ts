@@ -3,7 +3,7 @@
 // instance is zero-build and nothing typechecks its config before Node imports it. Repos are not
 // here to resolve: a Machine names its own, by url, on its Repo Slots (ADR-0051).
 //
-// What is NOT here any more is the `images` contract. `j2 up` builds every image it deploys and
+// What is NOT here any more is the `images` contract. `jr2 up` builds every image it deploys and
 // resolves every ref itself (ADR-0038), so there is no config seat for one — the published
 // `<kitversion>` refs moved to the CLI's resolution layer and are pinned there
 // (`packages/cli/test/build.test.ts`), where the not-a-kit-checkout branch actually reads them.
@@ -36,21 +36,21 @@ test("KIT_VERSION is the package's own version — npm version == image tag, one
 test("defineConfig is an identity passthrough — the whole config rides through untouched", () => {
   const config = defineConfig({
     git: { credentials: [{ match: "github.com/acme/", token: "GH_TOKEN" }] },
-    registry: "reg.example.com/j2",
+    registry: "reg.example.com/jr2",
     harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } },
   });
   assert.deepEqual(config, {
     git: { credentials: [{ match: "github.com/acme/", token: "GH_TOKEN" }] },
-    registry: "reg.example.com/j2",
+    registry: "reg.example.com/jr2",
     harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1" } },
   });
 });
 
 test("loadConfig hands the config back as written — nothing is resolved, and no file is no config", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "j2-config-"));
-  await writeFile(join(dir, "j2.config.ts"), `export default { name: "myinst", registry: "reg" };\n`);
+  const dir = await mkdtemp(join(tmpdir(), "jr2-config-"));
+  await writeFile(join(dir, "jr2.config.ts"), `export default { name: "myinst", registry: "reg" };\n`);
   assert.deepEqual(await loadConfig(dir), { name: "myinst", registry: "reg" });
-  assert.equal(await loadConfig(await mkdtemp(join(tmpdir(), "j2-config-"))), undefined);
+  assert.equal(await loadConfig(await mkdtemp(join(tmpdir(), "jr2-config-"))), undefined);
 });
 
 // `git.credentials` (ADR-0051): matched by prefix on the Repo identity, the url's scheme picks the
@@ -77,19 +77,19 @@ test("matchCredential: a tie goes to the first entry in the list", () => {
 });
 
 test("credentialSecretFor: the url's scheme picks the field — https spends the token Secret, ssh the deploy key", () => {
-  const entry = { match: "github.com/", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" };
+  const entry = { match: "github.com/", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" };
   assert.deepEqual(credentialSecretFor("https://github.com/a/b.git", entry), {
     kind: "token",
-    env: "J2_GIT_TOKEN",
+    env: "JR2_GIT_TOKEN",
     secret: gitTokenSecretName("github.com/"),
   });
   assert.deepEqual(credentialSecretFor("http://github.com/a/b.git", entry), {
     kind: "token",
-    env: "J2_GIT_TOKEN",
+    env: "JR2_GIT_TOKEN",
     secret: gitTokenSecretName("github.com/"),
   });
-  assert.deepEqual(credentialSecretFor("git@github.com:a/b.git", entry), { kind: "ssh", secret: "j2-git-ssh" });
-  assert.deepEqual(credentialSecretFor("ssh://git@github.com/a/b", entry), { kind: "ssh", secret: "j2-git-ssh" });
+  assert.deepEqual(credentialSecretFor("git@github.com:a/b.git", entry), { kind: "ssh", secret: "jr2-git-ssh" });
+  assert.deepEqual(credentialSecretFor("ssh://git@github.com/a/b", entry), { kind: "ssh", secret: "jr2-git-ssh" });
 });
 
 test("credentialSecretFor: no entry, no applicable field, git:// or a local path → no Secret, an anonymous clone", () => {
@@ -104,7 +104,7 @@ test("credentialSecretFor: no entry, no applicable field, git:// or a local path
 test("gitTokenSecretName is deterministic in `match` — a redeploy finds its own Secret, two entries never share one", () => {
   assert.equal(gitTokenSecretName("github.com/"), gitTokenSecretName("github.com/"));
   assert.notEqual(gitTokenSecretName("github.com/"), gitTokenSecretName("*"));
-  assert.match(gitTokenSecretName("*"), /^j2-git-[0-9a-f]{8}$/);
+  assert.match(gitTokenSecretName("*"), /^jr2-git-[0-9a-f]{8}$/);
 });
 
 test("isSshUrl: scp-style, ssh://, git+ssh:// — and nothing else", () => {
@@ -117,18 +117,18 @@ test("isSshUrl: scp-style, ssh://, git+ssh:// — and nothing else", () => {
 });
 
 test("loadConfig passes git.credentials through and refuses a mis-shaped entry by index and field", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "j2-config-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-config-"));
   await writeFile(
-    join(dir, "j2.config.ts"),
-    `export default { git: { credentials: [{ match: "*", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" }, { match: "github.com/" }] } };\n`,
+    join(dir, "jr2.config.ts"),
+    `export default { git: { credentials: [{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }, { match: "github.com/" }] } };\n`,
   );
   assert.deepEqual(await loadConfig(dir), {
-    git: { credentials: [{ match: "*", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" }, { match: "github.com/" }] },
+    git: { credentials: [{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }, { match: "github.com/" }] },
   });
 
   const bad = async (git: string) => {
-    const d = await mkdtemp(join(tmpdir(), "j2-config-"));
-    await writeFile(join(d, "j2.config.ts"), `export default { git: ${git} };\n`);
+    const d = await mkdtemp(join(tmpdir(), "jr2-config-"));
+    await writeFile(join(d, "jr2.config.ts"), `export default { git: ${git} };\n`);
     return loadConfig(d);
   };
   await assert.rejects(bad(`{ credentials: [{ match: "*" }, { token: "T" }] }`), /at git\.credentials\[1\]\.match/);

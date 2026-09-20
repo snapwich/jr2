@@ -5,7 +5,7 @@
 // say "same workflow, my model, my repository" is a function over it.
 //
 // It is a plain function in the family of `workspace()` and `pool()`, returning a plain
-// `StateMachine`: no j2-owned machine type over xstate's, nothing to survive a later
+// `StateMachine`: no jr2-owned machine type over xstate's, nothing to survive a later
 // `.provide()`, nothing to learn (ADR-0015's rule, restated by ADR-0049 — a `.with()` method and
 // a callable-machine hybrid were both rejected there).
 //
@@ -23,13 +23,13 @@
 //     — so those fields clone the wrapper's config and rebuild it with the same implementations,
 //     re-attaching what the original carried.
 //
-// j2's wrappers are TRANSPARENT: `agents`/`actors` route through `workspace()`'s `body` and
+// jr2's wrappers are TRANSPARENT: `agents`/`actors` route through `workspace()`'s `body` and
 // `pool()`'s `worker`, so a consumer customizing a Workspace-rooted workflow never writes `body`
-// and never has to know that j2 wrapped anything. `image`/`user`/`repos` travel the same chain in
+// and never has to know that jr2 wrapped anything. `image`/`user`/`repos` travel the same chain in
 // the other direction — down to the `workspace()` that owns the seats and the slots.
 //
 // Both halves route on the wrapper's own RECORD of being one, never on a slot's spelling: the
-// runtime reads `wrapperBodyOf` and the types read `J2Wrapper` (parts.ts), which the wrappers
+// runtime reads `wrapperBodyOf` and the types read `JR2Wrapper` (parts.ts), which the wrappers
 // stamp and state together. That is what keeps the compiler's answer and the runtime's the same
 // answer for a Machine whose author happened to name a slot `body`.
 //
@@ -51,8 +51,8 @@ import {
   open,
   sandboxPartsOf,
   wrapperBodyOf,
-  type J2Repos,
-  type J2Wrapper,
+  type JR2Repos,
+  type JR2Wrapper,
   type RepoSlot,
   type SandboxParts,
 } from "./parts.ts";
@@ -62,7 +62,7 @@ import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from
 // Everything below reads xstate's own `TActor` parameter — the `{ src, logic, id }` union
 // `setup({ actors })` derives and `provide()` is checked against. Nothing is registered, declared
 // twice, or inferred from a name: the slots a Machine carries ARE its type, so a `customize()` of
-// an Agent the Machine does not carry is a compile error (ADR-0050) and `j2 up`'s typecheck gate
+// an Agent the Machine does not carry is a compile error (ADR-0050) and `jr2 up`'s typecheck gate
 // is where it stops.
 
 /** The actor slots a Machine declares. */
@@ -100,33 +100,33 @@ type ChildSlots<M extends AnyStateMachine> = Extract<SlotsOf<M>, { logic: AnySta
 type ChildAt<M extends AnyStateMachine, K extends string> = Extract<LogicAt<M, K>, AnyStateMachine>;
 
 /**
- * The Machine a `customize()` actually reaches: j2's wrappers are transparent to their body, so
+ * The Machine a `customize()` actually reaches: jr2's wrappers are transparent to their body, so
  * this is the first Machine an AUTHOR wrote. It mirrors `bodyOf`'s runtime walk, and reads the
- * SAME record — `J2Wrapper` is the type half of the stamp `attachWrapperBody` writes — so both
+ * SAME record — `JR2Wrapper` is the type half of the stamp `attachWrapperBody` writes — so both
  * stop at the same Machine and what the compiler offers is what the call retunes. Recursive in
  * tail position, as the runtime walk is unbounded: however many wrappers a composer stacks, the
  * compiler and the call answer alike.
  */
-// Each step is taken on the wrapper's MARKER (`J2Wrapper`, parts.ts), never on a slot's spelling —
+// Each step is taken on the wrapper's MARKER (`JR2Wrapper`, parts.ts), never on a slot's spelling —
 // an author is free to name a slot `body` or `worker`, and routing through it because of the name
 // would offer the Agents of a Machine the composer never named.
-type Reached<M extends AnyStateMachine> = M extends J2Wrapper<infer TBody> ? Reached<TBody> : M;
+type Reached<M extends AnyStateMachine> = M extends JR2Wrapper<infer TBody> ? Reached<TBody> : M;
 
 /**
  * The `workspace()` a `customize()` reaches for its SEATS and SLOTS — the other direction from
  * {@link Reached}: down through the wrappers to the first Machine that composes a Sandbox, which
- * is the one whose `J2Repos` marker says which slots exist (ADR-0051). `never` when no wrapper on
+ * is the one whose `JR2Repos` marker says which slots exist (ADR-0051). `never` when no wrapper on
  * the chain composes one, which is what makes `repos` unavailable there rather than `{}`.
  */
 type WorkspaceOf<M extends AnyStateMachine> =
-  M extends J2Repos<any> ? M : M extends J2Wrapper<infer TBody> ? WorkspaceOf<TBody> : never;
+  M extends JR2Repos<any> ? M : M extends JR2Wrapper<infer TBody> ? WorkspaceOf<TBody> : never;
 
 /** The Repo Slot keys the reached `workspace()` declared. The `never` case is tested by itself,
- * because `never extends J2Repos<infer TSlots>` is true with nothing to infer from — and an
+ * because `never extends JR2Repos<infer TSlots>` is true with nothing to infer from — and an
  * uninferred `TSlots` widens to `string`, which would offer every key exactly where there are none. */
 type RepoSlotsOf<M extends AnyStateMachine> = [WorkspaceOf<M>] extends [never]
   ? never
-  : WorkspaceOf<M> extends J2Repos<infer TSlots>
+  : WorkspaceOf<M> extends JR2Repos<infer TSlots>
     ? TSlots
     : never;
 

@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 var _ = Describe("Sandbox Controller", func() {
@@ -147,7 +147,7 @@ var _ = Describe("Sandbox Controller", func() {
 		It("reports the scheduler's own words while no node admits the Pod (ADR-0052)", func() {
 			// The Sandbox node set is empty right now — a pool scaled to zero, every node
 			// tainted — or the CR's selector admits none. Not a verdict: the set moves,
-			// so the Sandbox waits, and what `j2 status` shows meanwhile is the taint or
+			// so the Sandbox waits, and what `jr2 status` shows meanwhile is the taint or
 			// label the scheduler named.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -373,7 +373,7 @@ var _ = Describe("Sandbox Controller", func() {
 
 			By("staying Pending when the node's probe failed since creation — no clone was tried")
 			// The Orchestrator creates the Repo just before the Sandbox, so the node's
-			// probe lands after creation; its failure is `j2 status`'s signal, and the
+			// probe lands after creation; its failure is `jr2 status`'s signal, and the
 			// pod's arrival makes the agent clone. Only that clone's failure is terminal.
 			now := metav1.Now()
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: repoKey, Namespace: resourceNamespace}, repo)).To(Succeed())
@@ -438,7 +438,7 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(fresh).NotTo(BeNil())
 			Expect(fresh.Status).To(Equal(metav1.ConditionFalse))
 
-			By("staying Ready on the lease renewal after `j2 gc` evicted the Repo resource under the live pod")
+			By("staying Ready on the lease renewal after `jr2 gc` evicted the Repo resource under the live pod")
 			// Eviction is reachability plus age (ADR-0051): a Workspace parked past
 			// the TTL loses its resource while its pod still mounts the cache — which
 			// the agent keeps for exactly that reason. The lease's next renewal is a

@@ -9,7 +9,7 @@ holds no credential it can read), that frame is _enforced_, not advertised. Menu
 the Harness connects a fresh MCP client and re-lists tools per Submission (ADR-0013/0027), so no `list_changed` push
 channel is needed.
 
-There is no j2-blessed event vocabulary: every menu entry is a workflow-defined event (ADR-0011).
+There is no jr2-blessed event vocabulary: every menu entry is a workflow-defined event (ADR-0011).
 
 ## Encode flat
 
@@ -18,7 +18,7 @@ A named event schema must compile to a flat tagged object (an `enum` discriminat
 - a validation `check`), **never a top-level `oneOf`/`anyOf`**. Measured (PoC #5b): a strict variant (→ `oneOf`/`const`
   tool schema) is unsatisfiable for Qwen3-Coder — it serializes the tool args as a JSON string and validation fails on
   every retry. A flat object is satisfied first try. A conditional contract ("`notes` required iff `request_changes`")
-  is enforced by j2 after the pick, not by the tool schema.
+  is enforced by jr2 after the pick, not by the tool schema.
 
 ## One path: every conversation lives on the agent wire
 
@@ -27,7 +27,7 @@ There is no separate "workflow run" surface, and nothing on the wire forces a st
 is the only structured channel. Consequences:
 
 - **All continuing, multi-turn work lives on the agent path**, driven by `agentRun` (ADR-0016).
-- **A turn that settles without a valid pick is re-prompted by j2** — the budgeted no-signal nudge _inside_ `agentRun`
+- **A turn that settles without a valid pick is re-prompted by jr2** — the budgeted no-signal nudge _inside_ `agentRun`
   (ADR-0016). The workflow sees one terminal `agent.fault` on exhaustion.
 - **Self-contained, single-shot decisions** (an LLM-judge / classifier / "given this diff + this rubric, return a
   verdict") are one-turn conversations whose menu is the verdict — the same path, not a second mechanism.

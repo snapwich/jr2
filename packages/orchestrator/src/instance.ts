@@ -2,10 +2,10 @@
 // This is the core of the deployed app's entrypoint (`serverMain`) — the seam that assembles the
 // slice-1/2/3 pieces into one process:
 //
-//   1. open the durable snapshot store (sqlite at `<dir>/.j2/state.db` by default — ADR-0009);
+//   1. open the durable snapshot store (sqlite at `<dir>/.jr2/state.db` by default — ADR-0009);
 //   2. filename-discover `workflows/*.ts` (workflow name = filename, mirroring flue's
 //      `agents/<name>.ts`; module contract, ADR-0011 revised by ADR-0015: `export const machine`
-//      — the vocabulary rides the machine object via j2Setup); register on the RunHost;
+//      — the vocabulary rides the machine object via jr2Setup); register on the RunHost;
 //   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007);
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
@@ -33,13 +33,13 @@ import { createAuthenticator, loadSigningKey, mintInstanceToken } from "./tokens
 import type { SandboxPort } from "./workspace.ts";
 
 export type InstanceOptions = {
-  /** The instance folder (holds `workflows/`, and `.j2/state.db` unless `store` is supplied). */
+  /** The instance folder (holds `workflows/`, and `.jr2/state.db` unless `store` is supplied). */
   dir: string;
   /** Listen port. Default 0 → an ephemeral port (read back from the running instance's `url`). */
   port?: number;
   /** Listen hostname. Default `127.0.0.1`. */
   hostname?: string;
-  /** Override the durable store. Default: sqlite at `<dir>/.j2/state.db`. */
+  /** Override the durable store. Default: sqlite at `<dir>/.jr2/state.db`. */
   store?: SnapshotStore;
   /** Probe the live world before re-attaching on restore (ADR-0007). Default: always present. */
   reconcile?: (run: RunRecord) => boolean | Promise<boolean>;
@@ -48,7 +48,7 @@ export type InstanceOptions = {
    * an instance without a data plane, whose `workspace()` runs fault pointedly. */
   sandbox?: SandboxPort;
   /** Whether the instance has a data plane (ADR-0051) — what `GET /repos` reports beside the
-   * Repos, so `j2 status` can say "no Workspace runs here" instead of listing nothing. */
+   * Repos, so `jr2 status` can say "no Workspace runs here" instead of listing nothing. */
   dataPlane?: boolean;
   /** The Repo resources as the cluster reports them (ADR-0051), read per request off the port the
    * caller built. Absent = no data plane, which reports no Repos. */
@@ -60,11 +60,11 @@ export type InstanceOptions = {
    * The entrypoint derives it from the pod's namespace (deterministic Service DNS); absent,
    * such a Turn without an explicit `endpoint` faults pointedly. */
   instanceHarness?: string;
-  /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.j2/secret`, minted on
+  /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.jr2/secret`, minted on
    * first boot. Supply it when the instance folder must stay untouched (tests), or when the same
    * key must reach a `kubectlSandbox` built before this call (it mints the tokens). */
   signingKey?: Buffer;
-  /** The Instance token to authenticate with (ADR-0013/0019). Deployed, `j2 up` materializes it in
+  /** The Instance token to authenticate with (ADR-0013/0019). Deployed, `jr2 up` materializes it in
    * the instance's Secret and the entrypoint passes it here, so a pod restart keeps the credential
    * the CLI reads from that Secret. Default: minted per boot. */
   instanceToken?: string;
@@ -108,8 +108,8 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // 1. Durable store. Default sqlite needs its parent dir to exist before `DatabaseSync` opens it.
   let store = opts.store;
   if (!store) {
-    await mkdir(join(opts.dir, ".j2"), { recursive: true });
-    store = new SqliteSnapshotStore(join(opts.dir, ".j2", "state.db"));
+    await mkdir(join(opts.dir, ".jr2"), { recursive: true });
+    store = new SqliteSnapshotStore(join(opts.dir, ".jr2", "state.db"));
   }
   await store.init();
 
@@ -219,7 +219,7 @@ async function importMachine(name: string, file: string, gen = 0): Promise<AnySt
  * Discover + load every Workflow an instance folder registers — the same discovery and the same
  * module contract `startInstance` boots with, without booting.
  *
- * `j2 up` is the caller (ADR-0049/0050): a Machine carries its Agents and its Sandbox Image, so
+ * `jr2 up` is the caller (ADR-0049/0050): a Machine carries its Agents and its Sandbox Image, so
  * the only way to know what a deployment must preflight and converge is to load the Machines and
  * WALK them (`partsOf`, parts.ts). It lives here, beside the discovery it shares, so the
  * convention has one implementation rather than a second copy in the CLI that can drift.
@@ -270,7 +270,7 @@ export async function discoverModules(moduleDir: string): Promise<Array<{ name: 
  * `images/default/` has no other reason to exist, so silence there would be a Sandbox Image the
  * author believes in and no converge ever builds.
  *
- * The Orchestrator process never calls this — refs reach it resolved, through the `j2-images`
+ * The Orchestrator process never calls this — refs reach it resolved, through the `jr2-images`
  * ConfigMap (images.ts). It lives here because it is an Instance-layout fact, beside the one
  * discovery convention that survives.
  */

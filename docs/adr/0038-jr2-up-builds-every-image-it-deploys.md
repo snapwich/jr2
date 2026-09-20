@@ -1,23 +1,23 @@
-# `j2 up` builds every image it deploys
+# `jr2 up` builds every image it deploys
 
-[ADR-0019](0019-one-converging-command-against-the-current-context.md) promised one converging command, but `j2 up`
+[ADR-0019](0019-one-converging-command-against-the-current-context.md) promised one converging command, but `jr2 up`
 builds exactly one image — the instance's. The Harness, Adapter, and operator images come from `just` recipes at
-**mutable tags** (`j2-harness:local`), pointed at by `images` overrides in `j2.config.ts`. Nothing can detect that a
-mutable tag moved, so editing `packages/harness/src` and running `j2 up` reports convergence onto pods running last
+**mutable tags** (`jr2-harness:local`), pointed at by `images` overrides in `jr2.config.ts`. Nothing can detect that a
+mutable tag moved, so editing `packages/harness/src` and running `jr2 up` reports convergence onto pods running last
 week's code — the failure the instance image already fixed for itself by hashing the materialized bundle rather than the
-source folder. [ADR-0037](0037-an-instance-builds-its-sandbox-images-j2-injects-the-harness.md) would add a second class
-of build-it-yourself-first image on top of that.
+source folder. [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md) would add a second
+class of build-it-yourself-first image on top of that.
 
 ## Decision
 
-- **Every image `j2 up` deploys, `j2 up` builds — when its source is visible.** The CLI detects a kit checkout by
+- **Every image `jr2 up` deploys, `jr2 up` builds — when its source is visible.** The CLI detects a kit checkout by
   resolving from its own module URL and requiring _both_ `deploy/harness/Dockerfile` and `packages/harness/package.json`
-  naming `@j2/harness`. In a checkout it builds the Harness, Adapter, and operator images; installed from npm those
+  naming `@jr2/harness`. In a checkout it builds the Harness, Adapter, and operator images; installed from npm those
   paths do not resolve, so a real instance takes the published-`<kitversion>` path and never needs docker for kit
   images. **The checkout is the signal** — no flag, no config key, no env. The `just` recipes survive as shortcuts for
   building one image without a converge, never as prerequisites. A registry-ref Sandbox Image (ADR-0037) is the one
-  deployed image whose source is nobody's here: never built, labeled, or delivered by j2 — the cluster pulls it, and its
-  tag discipline is its owner's.
+  deployed image whose source is nobody's here: never built, labeled, or delivered by jr2 — the cluster pulls it, and
+  its tag discipline is its owner's.
 - **Every tag is a content address.** Instance, Sandbox, Harness, Adapter, operator — each addressed by its own inputs
   and its platform set, the platform as a visible tag suffix
   ([ADR-0045](0045-the-platform-joins-the-image-address-and-the-cluster-chooses-it.md)). Three things follow:
@@ -27,7 +27,7 @@ of build-it-yourself-first image on top of that.
 - **Over-hash deliberately.** A kit image is hashed over its whole source directory, tests included, not over the exact
   file list its Dockerfile copies. Deriving the list by hand means a new `COPY` silently desynchronizes it, which is the
   invisible-stale-image bug being deleted; a needless rebuild in kit dev costs cached-layer seconds. **A Sandbox Image's
-  hash covers its build-context directory alone** — the Harness rides the pod's `/opt/j2` volume (ADR-0037), so a kit
+  hash covers its build-context directory alone** — the Harness rides the pod's `/opt/jr2` volume (ADR-0037), so a kit
   edit moves the harness image's own tag and touches no Sandbox Image tag. That hash is also the map KEY the deployed
   Orchestrator looks the ref up by, which is what lets a Machine name its context by `file:` URL and be understood on
   both sides without a path table ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)).
@@ -47,7 +47,7 @@ of build-it-yourself-first image on top of that.
   was the one hiding it; with an empty set the failure inverts — a bundle that ever varies again re-tags on every
   converge, in the open, where a rebuild-and-reload every single time is impossible to miss.
 - **One transport branch for all of them**, the one the instance image already uses: `registry` configured → push; kind
-  context → `kind load`; neither → fail loudly naming `registry`. `j2 up` records the converged name→ref map as an
+  context → `kind load`; neither → fail loudly naming `registry`. `jr2 up` records the converged name→ref map as an
   annotation on the Orchestrator Deployment and diffs it, so a steady-state converge spends a directory walk and no
   docker at all. **Amended by [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)**: when the record
   is silent (a fresh namespace), the host daemon's own labeled listing answers the _build_ question — the seal below is
@@ -56,26 +56,26 @@ of build-it-yourself-first image on top of that.
   Env is a pod-template change, so every Dockerfile edit would roll the Orchestrator and put every live run through
   snapshot restore ([ADR-0007](0007-durable-machine-state.md)) for a change that affects only _future_ Sandboxes. The
   map is data consulted when creating a pod, not configuration defining the process. The cost is a stale-read window of
-  one kubelet propagation after `j2 up`, and that two workspaces provisioned seconds apart can straddle a change — which
-  was already true across a roll.
+  one kubelet propagation after `jr2 up`, and that two workspaces provisioned seconds apart can straddle a change —
+  which was already true across a roll.
 - **The `images` config block is deleted outright — no key, no env escape hatch.** Its `harness`/`adapter`/`operator`
   entries were kit-dev overrides that auto-build now covers; the User Container's image is a static `workspace()` option
   the Machine carries, not config (ADR-0005, [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), so
   no `user` entry belongs here either. Nobody should be able to run a patched Harness against a real cluster: that is
   ADR-0027's "no eject hatch" enforced rather than merely stated.
-- **`j2 up` reports live workspaces on an older image; it never re-images one.** Provision is create-if-absent, so a
+- **`jr2 up` reports live workspaces on an older image; it never re-images one.** Provision is create-if-absent, so a
   running Sandbox keeps the image its CR was created with — the only safe behavior, since replacing the pod takes the
   worktrees and unpushed commits with it, which is precisely the Continuity break
   [ADR-0021](0021-workspace-continuity-is-a-lease-that-answers-back.md) exists to report. So the converge lists them
   (`kubectl get sandboxes`, no new state) and stops: _"2 running workspaces keep `…:9c1e02`; new workspaces use
   `:4a77b1`; delete these runs to re-image."_
-- **`j2 down` prunes this instance's images from kind nodes by default** — **superseded by
+- **`jr2 down` prunes this instance's images from kind nodes by default** — **superseded by
   [ADR-0039](0039-image-garbage-collects-by-reachability.md)**, which replaces name-scoped, down-only pruning with a
   label-scoped reachability sweep at both `up` and `down`, host daemon included. Kept as written for the record: scoped
-  to EXACT repo names: `j2-instance-<name>:*` plus, per discovered `images/<x>/`, `j2-sandbox-<name>-<x>:*` and its
+  to EXACT repo names: `jr2-instance-<name>:*` plus, per discovered `images/<x>/`, `jr2-sandbox-<name>-<x>:*` and its
   `-base` intermediate (matched after stripping containerd's `docker.io/library/` namespace, which `kind load`
   normalizes local tags into — and nothing else, so a registry-pushed tag keeps its host and stays unmatched). Exact
-  names, never one open-ended `j2-sandbox-<name>-` prefix, which also matches instance `<name>-extra`'s images on a
+  names, never one open-ended `jr2-sandbox-<name>-` prefix, which also matches instance `<name>-extra`'s images on a
   shared node. Removal is planned **per image id**: `crictl rmi` cannot untag — it resolves any tag to the id and takes
   the whole image, every tag with it — so an id is removed only when every tag on it is this instance's, and an id
   sharing tags with anyone else (two instances whose image inputs are byte-identical produce one id) is kept whole and
@@ -89,9 +89,9 @@ of build-it-yourself-first image on top of that.
 
 ## Considered options
 
-- **An env escape hatch for kit image refs** (`J2_HARNESS_IMAGE`, …), kept for the `@kind` tier, which pins
-  `j2-harness-dev:local`. Rejected once the stub was read properly: `deploy/harness-dev/` is a whole alternate Harness —
-  the stub plus a hand-rolled MCP client — written when "flue's real Harness image is not part of this repo," which
+- **An env escape hatch for kit image refs** (`JR2_HARNESS_IMAGE`, …), kept for the `@kind` tier, which pins
+  `jr2-harness-dev:local`. Rejected once the stub was read properly: `deploy/harness-dev/` is a whole alternate Harness
+  — the stub plus a hand-rolled MCP client — written when "flue's real Harness image is not part of this repo," which
   ADR-0027 made false. The substitution belongs at the **provider**, not the image: `harness.provider` already accepts
   any OpenAI-compatible `baseUrl`, so pointing `@kind` at a scripted model endpoint runs the **stock** Harness and
   removes the last consumer of image substitution.
@@ -107,9 +107,9 @@ of build-it-yourself-first image on top of that.
   errs toward rebuilding.
 - **pnpm's hoisted node linker** (`deploy --node-linker=hoisted`), which emits no absolute path at all and so needs no
   seal. Verified to work and to leave the artifact all but identical (60 MB vs 62 MB, 3998 vs 4029 files). Rejected on
-  exposure, not on merit: `pnpm deploy` calls itself experimental and j2 already pins `--legacy`, so a third deviation —
-  one that changes the `node_modules` layout of every deployed image on every cluster — buys nothing the seal does not.
-  The seal changes no pnpm behavior; it corrects strings pnpm wrote for a directory the image never sees.
+  exposure, not on merit: `pnpm deploy` calls itself experimental and jr2 already pins `--legacy`, so a third deviation
+  — one that changes the `node_modules` layout of every deployed image on every cluster — buys nothing the seal does
+  not. The seal changes no pnpm behavior; it corrects strings pnpm wrote for a directory the image never sees.
 - **A `.dockerignore` derived from the exclude set.** Rejected: it deletes the shims, and pnpm's shims `exec` through a
   relative `$basedir` — they WORK in the container. An Instance whose dependency ships a CLI would lose it. The four
   varying files are content the image should keep, holding a path that is simply wrong.
@@ -120,7 +120,7 @@ of build-it-yourself-first image on top of that.
 - **`pnpm deploy` inside the Dockerfile**, so the bundle is materialized at `/instance` and no host path can leak.
   Rejected for now: it needs the whole monorepo plus the pnpm store in the build context (or network during the build
   for an installed Instance), and it moves the hash off the materialized bundle — the ground ADR-0019 chose
-  deliberately, because hashing guessed inputs instead is how `j2 up` came to skip builds it needed.
+  deliberately, because hashing guessed inputs instead is how `jr2 up` came to skip builds it needed.
 - **Opt-in `--prune-images`.** Rejected: `down` is already the destructive, always-confirms command, and abandoned
   images are discovered at 100% disk rather than at the moment one would think to pass a flag.
 
@@ -132,7 +132,7 @@ of build-it-yourself-first image on top of that.
   canary** beside the conformance suite (ADR-0027), so a pi bump can now break it too.
 - `stub-harness.ts` keeps its job — the socket-free tier reaches it by explicit `endpoint` (ADR-0031). Only the
   containerized stub is retired.
-- **`j2 up` in a kit checkout now needs docker for kit images**, including a Go build for the operator. Hash-skip means
+- **`jr2 up` in a kit checkout now needs docker for kit images**, including a Go build for the operator. Hash-skip means
   that is a first-converge cost, not a per-converge one.
 - **An air-gapped or mirror-only cluster still cannot pull published kit images.** The answer is a registry _prefix_ for
   kit refs, not per-image overrides — a different mechanism, deliberately deferred while nothing is published.
@@ -143,12 +143,12 @@ of build-it-yourself-first image on top of that.
   That was garbage produced by the builder on every run, not by iteration, and the collector was doing work that should
   never have existed. It also made the delivery real: `kind load` skips a node already holding the id, so the kit images
   cost under a second each while the instance image was re-transferred every time.
-- **`j2 up` leans on `pnpm deploy`, which pnpm still labels experimental**, at `--legacy`. The seal does not deepen that
-  exposure — no flag changes — but the assumption that staging is otherwise deterministic is now held by a test that
-  stages one Instance into two directories and compares hashes, rather than by trust. A pnpm upgrade that bakes a path
-  somewhere new fails that test instead of silently shipping two images under one tag. (**Amended by
+- **`jr2 up` leans on `pnpm deploy`, which pnpm still labels experimental**, at `--legacy`. The seal does not deepen
+  that exposure — no flag changes — but the assumption that staging is otherwise deterministic is now held by a test
+  that stages one Instance into two directories and compares hashes, rather than by trust. A pnpm upgrade that bakes a
+  path somewhere new fails that test instead of silently shipping two images under one tag. (**Amended by
   [ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)**: only a workspace-member
   instance leans on it. A standalone instance invokes whichever package manager wrote its lockfile, and `pnpm deploy` is
   never reached.)
-- **`just` recipes stop being load-bearing**, and the `images:` line in `features/kind-instance/j2.config.ts` is deleted
-  with the block.
+- **`just` recipes stop being load-bearing**, and the `images:` line in `features/kind-instance/jr2.config.ts` is
+  deleted with the block.

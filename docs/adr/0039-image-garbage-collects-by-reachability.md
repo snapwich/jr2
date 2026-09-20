@@ -1,45 +1,45 @@
 # Image garbage collects by reachability
 
-[ADR-0038](0038-j2-up-builds-every-image-it-deploys.md) made every tag a content address, which made garbage a
+[ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md) made every tag a content address, which made garbage a
 by-product of normal work: ten Dockerfile iterations leave ten full images, and the prune it added collects only some of
-them — kind nodes only (the host daemon that built every image is never touched), at `j2 down` only (the accumulation
+them — kind nodes only (the host daemon that built every image is never touched), at `jr2 down` only (the accumulation
 comes from iterating _while up_, which end-of-life pruning never sees), and scoped by tag **grammar**, which is
-ambiguous: `j2-sandbox-<instance>-<name>` has no reserved delimiter, so instance `my` + image `extra-default` and
+ambiguous: `jr2-sandbox-<instance>-<name>` has no reserved delimiter, so instance `my` + image `extra-default` and
 instance `my-extra` + image `default` collide on one repo, and deleting `images/<x>/` orphans that image's tags because
 nothing derives their names any more. Each of those is a patch on the same wrong primitive: deciding ownership by
 parsing names.
 
 ## Decision
 
-- **Ownership is a label, not a naming convention.** Every image `j2 up` builds is stamped at build time — `j2.dev/kind`
-  (`instance` | `sandbox` | `kit`) plus `j2.dev/instance=<name>` on instance-owned ones — via `docker build --label`,
-  never in a Dockerfile (the user's file keeps zero j2 knowledge, ADR-0037; the committed kit Dockerfiles stay plain).
-  Labels ride the image config through `kind load` into containerd, so both sides of the transport can read provenance
-  back. **The sweep touches labeled images and nothing else.** Name grammar stops being load-bearing: the
-  `my`/`my-extra` collision class and the orphaned-tags consequence in ADR-0038 both dissolve, because deletion no
-  longer needs to reconstruct a name — the image says who built it.
+- **Ownership is a label, not a naming convention.** Every image `jr2 up` builds is stamped at build time —
+  `jr2.dev/kind` (`instance` | `sandbox` | `kit`) plus `jr2.dev/instance=<name>` on instance-owned ones — via
+  `docker build --label`, never in a Dockerfile (the user's file keeps zero jr2 knowledge, ADR-0037; the committed kit
+  Dockerfiles stay plain). Labels ride the image config through `kind load` into containerd, so both sides of the
+  transport can read provenance back. **The sweep touches labeled images and nothing else.** Name grammar stops being
+  load-bearing: the `my`/`my-extra` collision class and the orphaned-tags consequence in ADR-0038 both dissolve, because
+  deletion no longer needs to reconstruct a name — the image says who built it.
 - **Garbage is defined by reachability, not age or naming.** An image is needed iff a live root names it:
-  1. the `j2-images` ConfigMap of **every** j2 instance on the cluster (namespaces labeled `j2.dev/instance`) — what
+  1. the `jr2-images` ConfigMap of **every** jr2 instance on the cluster (namespaces labeled `jr2.dev/instance`) — what
      future Sandboxes will run;
   2. every Sandbox CR's `spec.image` in those namespaces — a parked Workspace must survive a pod restart (`IfNotPresent`
      cannot re-pull a local tag);
-  3. every pod's container images in those namespaces plus `j2-system` — the orchestrator, Instance Harness, Adapter,
+  3. every pod's container images in those namespaces plus `jr2-system` — the orchestrator, Instance Harness, Adapter,
      and operator actually running, mid-roll pods included, without naming Deployments one by one. The keep set is the
      union, matched by whole ref after the one containerd normalization ADR-0038 already fixed (strip
-     `docker.io/library/`). A labeled image none of it names is garbage — user Sandbox Images and `j2-*` kit images by
+     `docker.io/library/`). A labeled image none of it names is garbage — user Sandbox Images and `jr2-*` kit images by
      the same rule. **"Kit images are never pruned" dissolves into reachability**: a kit ref is kept because some
      instance's map names it, and when the last instance leaves the cluster, kit images collect like everything else
      instead of being permanent by fiat.
-- **`j2 up` sweeps after a successful converge** — the moment the root set moves, which is where the iteration garbage
+- **`jr2 up` sweeps after a successful converge** — the moment the root set moves, which is where the iteration garbage
   comes from. Nodes get a **one-generation grace**: refs named by the map this converge replaced stay one more round, so
   the ConfigMap's kubelet propagation window cannot provision a just-swept ref. The **host daemon is swept
   aggressively** (labeled ∧ not in the keep set ∪ this converge's refs): nothing runs from the host, its images are
   scratch awaiting delivery, and BuildKit's cache — a separate store `docker rmi` does not touch — makes regenerating a
   swept tag cost seconds. A failed converge sweeps nothing.
-- **`j2 down` sweeps host and nodes after the namespace delete.** This instance's roots are gone, so its images are
+- **`jr2 down` sweeps host and nodes after the namespace delete.** This instance's roots are gone, so its images are
   unreachable by construction; another instance's roots still protect everything it shares, kit refs included. The
   operator's image stays a root through its running pod unless `--all` takes the operator too. The exact-prefix matching
-  this replaces (`prunePlan`, the derived `j2-sandbox-<name>-<x>:` list) is deleted, not kept as a fallback.
+  this replaces (`prunePlan`, the derived `jr2-sandbox-<name>-<x>:` list) is deleted, not kept as a fallback.
 - **Node policy is unchanged from ADR-0038's fix**: `crictl` cannot untag, so a node image id is removed (once) only
   when **every** tag on it is unreachable; a mixed id is kept whole and reported. `docker rmi` on the host does untag,
   so the host sweeps per tag with no id grouping. Both sides are delete-if-present, and a failed removal is reported and
@@ -48,9 +48,9 @@ parsing names.
   removal reaches through to `ctr -n k8s.io images rm` for those names, and the report is confirmed by a re-list of the
   node rather than by an exit code.
 - **The sweep narrates bytes, not counts** — `swept 4 image(s) (2.1 GB)` — because disk is the quantity the user feels,
-  and a silent GC plus one visible number is the entire intended interface. **`j2 gc [--dry-run]`** is the same sweep
+  and a silent GC plus one visible number is the entire intended interface. **`jr2 gc [--dry-run]`** is the same sweep
   run off-cycle: an escape hatch for "disk is full now", not a step in any workflow; `--dry-run` prints the plan and
-  removes nothing. It never needs confirmation, because by construction it removes only what j2 built and nothing
+  removes nothing. It never needs confirmation, because by construction it removes only what jr2 built and nothing
   running or provisionable names.
 - **Registry-delivered copies are cache and sweep like everything else.** A pulled tag on a node (or the host's
   just-pushed copy) is re-pullable from the registry, so unreachable copies go; the registry's own retention stays the
@@ -75,17 +75,17 @@ parsing names.
 ## Consequences
 
 - **Images built before this ADR carry no labels and are invisible to the sweep** — deliberately, since sweeping
-  unlabeled images means guessing by name again. The pre-existing strays (`j2-workspace-*`, `:local` kit tags, old e2e
-  iterations) are cleaned once by hand or with the cluster; `j2 up --force` re-tags current images with labels.
-- **The sweep reads cluster-wide** (namespaces labeled `j2.dev/instance`, their ConfigMaps, Sandboxes, and pods), so the
-  CLI needs list access beyond its own namespace — true of the admin kubeconfig `j2 up` already requires.
+  unlabeled images means guessing by name again. The pre-existing strays (`jr2-workspace-*`, `:local` kit tags, old e2e
+  iterations) are cleaned once by hand or with the cluster; `jr2 up --force` re-tags current images with labels.
+- **The sweep reads cluster-wide** (namespaces labeled `jr2.dev/instance`, their ConfigMaps, Sandboxes, and pods), so
+  the CLI needs list access beyond its own namespace — true of the admin kubeconfig `jr2 up` already requires.
 - **A second checkout converging to a different cluster can lose its host kit generation** to this one's sweep (the host
   keep set only sees the current context's roots). Accepted: the rebuild is BuildKit-cached seconds.
 - **CRI's image list can outlive containerd's refs**, because a removal that goes through `ctr` does not resync the CRI
   image store: `crictl images` keeps answering for ids whose refs and content are gone. So the node read is filtered
   against `ctr -n k8s.io images ls` — containerd's refs decide what is present, CRI's list only mirrors them — and
   without that filter every id the sweep took would come back on the next plan, forever. The residual rows are cosmetic
-  (nothing can run from them, nothing is reclaimed by taking them again) and clear on a containerd restart; j2 ignores
+  (nothing can run from them, nothing is reclaimed by taking them again) and clear on a containerd restart; jr2 ignores
   them by construction rather than reporting them.
 - **A converge in flight is not a root.** An image is needed iff a LIVE root names it — and a converge that has resolved
   its refs but not yet applied them names them nowhere the cluster can see, so a sweep finishing in another namespace
@@ -95,10 +95,10 @@ parsing names.
   window further — a warm converge builds nothing). It bites two instances on one cluster, or one instance converged
   twice across a source edit. Recorded as a known limit; the fix — a claim the converge publishes BEFORE it builds,
   making an in-flight ref a root like any other — is not taken here.
-- ADR-0038's `j2 down` prune clause is **superseded by this ADR**; its `imagePullPolicy`/content-address reasoning
+- ADR-0038's `jr2 down` prune clause is **superseded by this ADR**; its `imagePullPolicy`/content-address reasoning
   stands untouched, and ADR-0038's seal is what finally makes it true of the instance image.
-- **Docker label inheritance makes derived images sweepable.** An image built `FROM` a j2-labeled base inherits the
-  `j2.dev/*` labels through the image config, so the sweep treats it as j2's own — observed live with a brought ref
-  layered on a built Sandbox Image, collected by the next `j2 gc`. A truly foreign brought image carries no such labels
-  and is untouchable as designed; one derived from a j2 build should clear them (`LABEL j2.dev/kind=`) or accept being
+- **Docker label inheritance makes derived images sweepable.** An image built `FROM` a jr2-labeled base inherits the
+  `jr2.dev/*` labels through the image config, so the sweep treats it as jr2's own — observed live with a brought ref
+  layered on a built Sandbox Image, collected by the next `jr2 gc`. A truly foreign brought image carries no such labels
+  and is untouchable as designed; one derived from a jr2 build should clear them (`LABEL jr2.dev/kind=`) or accept being
   swept when no live root names it.

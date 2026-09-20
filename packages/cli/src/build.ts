@@ -1,4 +1,4 @@
-// The image build seam (ADR-0019/0038): `j2 up` builds EVERY image it deploys. There are three
+// The image build seam (ADR-0019/0038): `jr2 up` builds EVERY image it deploys. There are three
 // kinds — the instance's own (engine + this instance's workflows baked, ADR-0008), the instance's
 // Sandbox Images (the `file:` docker contexts its Machines carry, ADR-0037/0049), and — only when the
 // CLI is running out of
@@ -14,14 +14,14 @@
 // A Sandbox Image is ONE `docker build` of the user's own Dockerfile straight to its content tag
 // (ADR-0037): no kit-owned second stage, no intermediate tag, and the resolved harness ref is NOT
 // one of its hash inputs. The Harness arrives at POD time instead — an init container populates an
-// `/opt/j2` volume from the kit's harness image — so the runtime's version rides the volume, a kit
+// `/opt/jr2` volume from the kit's harness image — so the runtime's version rides the volume, a kit
 // edit re-images future pods without moving one Sandbox Image tag, and an image the user merely
 // BROUGHT (a registry ref) is possible at all. Refs are deployed-never-built: nothing in this file
 // ever sees one.
 //
 // Content addressing also MAKES garbage — ten Dockerfile iterations leave ten full images — so the
-// same seam owns the collector (ADR-0039). Two facts shape it: every image j2 builds is STAMPED
-// (`j2.dev/kind`, plus `j2.dev/instance` on the instance-owned kinds) at build time, so ownership is
+// same seam owns the collector (ADR-0039). Two facts shape it: every image jr2 builds is STAMPED
+// (`jr2.dev/kind`, plus `jr2.dev/instance` on the instance-owned kinds) at build time, so ownership is
 // read off the image instead of parsed out of its name; and an image is garbage iff no live root
 // names its ref. The reachability part — assembling the keep set from the cluster — belongs to the
 // commands layer; what lives here is the part that touches images: the two stores' physics, the pure
@@ -37,7 +37,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { KIT_VERSION } from "@j2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator";
 import { LABEL_INSTANCE } from "./deploy.ts";
 
 const exec = promisify(execFile);
@@ -57,13 +57,13 @@ export type BuildRequest = {
   /** `-f <path>`: a Dockerfile COMMITTED in the repo, whose context is somewhere else (the kit
    * images build from the kit root; a Sandbox Image's own Dockerfile is its context's default). */
   dockerfile?: string;
-  /** `-f -`: a Dockerfile j2 GENERATES (the instance image — the only one left, now that a Sandbox
+  /** `-f -`: a Dockerfile jr2 GENERATES (the instance image — the only one left, now that a Sandbox
    * Image is the user's file alone). Fed on stdin rather than written into the context, so a
    * generated file can never be mistaken for a user's own and can never perturb the content hash
    * of the directory it is built from. */
   dockerfileContent?: string;
   /** `--label k=v`: who built this image (ADR-0039). Stamped at BUILD time, never written into a
-   * Dockerfile — the user's file keeps zero j2 knowledge (ADR-0037) and the committed kit
+   * Dockerfile — the user's file keeps zero jr2 knowledge (ADR-0037) and the committed kit
    * Dockerfiles stay plain. The labels ride the image config through `kind load` into containerd,
    * so both stores can read provenance back, and the sweep touches labeled images and nothing
    * else. Use {@link kitImageLabels}/{@link instanceImageLabels}/{@link sandboxImageLabels}: an
@@ -100,7 +100,7 @@ export type BuildPort = {
   kindLoad(tag: string, cluster: string): Promise<void>;
 
   /** Every LABELED image the host daemon holds (ADR-0039) — the daemon filters by label key, so
-   * an image j2 did not build never reaches the policy at all. Reports exact bytes and ALL tags
+   * an image jr2 did not build never reaches the policy at all. Reports exact bytes and ALL tags
    * per image id, including the id that has none left (a rebuilt tag leaves its predecessor
    * `<none>:<none>`, still labeled, reachable by no ref — the bulk of an iteration session's
    * garbage). */
@@ -209,19 +209,19 @@ WORKDIR /instance
 COPY . .
 ENV NODE_ENV=production
 EXPOSE 4000
-CMD ["tsx", "node_modules/@j2/orchestrator/bin/server.ts"]
+CMD ["tsx", "node_modules/@jr2/orchestrator/bin/server.ts"]
 `;
 
 // --- ownership: who built this image (ADR-0039) ------------------------------------------------
 
 /**
  * Ownership is a LABEL, not a naming convention (ADR-0039). Name grammar was load-bearing and
- * ambiguous — `j2-sandbox-<instance>-<name>` has no reserved delimiter, so instance `my` + image
+ * ambiguous — `jr2-sandbox-<instance>-<name>` has no reserved delimiter, so instance `my` + image
  * `extra-default` and instance `my-extra` + image `default` collide on one repo — and it could not
  * survive its own source: deleting `images/<x>/` orphaned that image's tags, because nothing
  * derived their names any more. A stamp answers both: the image says who built it.
  */
-export const LABEL_IMAGE_KIND = "j2.dev/kind";
+export const LABEL_IMAGE_KIND = "jr2.dev/kind";
 
 /** The three kinds ADR-0038 builds, and the whole value domain of {@link LABEL_IMAGE_KIND}. */
 export type ImageKind = "instance" | "sandbox" | "kit";
@@ -234,7 +234,7 @@ export function kitImageLabels(): Record<string, string> {
   return { [LABEL_IMAGE_KIND]: "kit" };
 }
 
-/** The instance's own image (engine + workflows baked). `j2.dev/instance` is the SAME key the
+/** The instance's own image (engine + workflows baked). `jr2.dev/instance` is the SAME key the
  * Namespace and the rest of the converged objects wear (deploy.ts) — deliberately one word for one
  * owner, whether it labels a Kubernetes object or an image config. */
 export function instanceImageLabels(instance: string): Record<string, string> {
@@ -243,8 +243,8 @@ export function instanceImageLabels(instance: string): Record<string, string> {
 
 /** A Sandbox Image — the user's Dockerfile, built once, straight to its content tag (ADR-0037).
  * The stamp is applied on the command line, never written into the Dockerfile: the file stays the
- * user's, with zero j2 knowledge in it (ADR-0039). A ref the user merely BROUGHT is never stamped,
- * because j2 never builds it — and what j2 did not stamp, j2 does not sweep. */
+ * user's, with zero jr2 knowledge in it (ADR-0039). A ref the user merely BROUGHT is never stamped,
+ * because jr2 never builds it — and what jr2 did not stamp, jr2 does not sweep. */
 export function sandboxImageLabels(instance: string): Record<string, string> {
   return { [LABEL_IMAGE_KIND]: "sandbox", [LABEL_INSTANCE]: instance };
 }
@@ -252,7 +252,7 @@ export function sandboxImageLabels(instance: string): Record<string, string> {
 // --- the platform set (ADR-0045) ---------------------------------------------------------------
 
 /**
- * The platforms the kit RELEASES for — the supported set, and the only architectures j2 will build
+ * The platforms the kit RELEASES for — the supported set, and the only architectures jr2 will build
  * an image for. One constant, because `scripts/kit-push.sh` builds the published Kit images from the
  * same list: two hand-kept copies desynchronize silently, so `test/kit-push.test.ts` reads the
  * script's default and fails the gate when they drift.
@@ -334,7 +334,7 @@ function noSupportedPlatform(found: string[], source: "config" | "nodes"): Error
   return new Error(
     `${what} — the kit releases images for ${SUPPORTED_PLATFORMS.join(", ")} and nothing else, so an ` +
       `image built for anything else could not be joined by a Kit image in the same pod. ` +
-      `Set \`platforms\` in j2.config.ts (docker platform strings, e.g. "linux/arm64") to name the ` +
+      `Set \`platforms\` in jr2.config.ts (docker platform strings, e.g. "linux/arm64") to name the ` +
       `set to build for.`,
   );
 }
@@ -388,20 +388,20 @@ type KitImage = {
 
 export const KIT_IMAGES: Record<KitImageName, KitImage> = {
   harness: {
-    repo: "j2-harness",
+    repo: "jr2-harness",
     dockerfile: "deploy/harness/Dockerfile",
     context: ".",
     // The whole `deploy/harness/` directory, not just its Dockerfile: since ADR-0037 the image also
-    // ships `init-copy`, the script the init container runs to publish /opt/j2 onto a Sandbox's
+    // ships `init-copy`, the script the init container runs to publish /opt/jr2 onto a Sandbox's
     // volume. Naming the two files by hand is the desynchronization this over-hash rule exists to
-    // delete — an init-copy edit would move no tag, and `j2 up` would report convergence onto pods
+    // delete — an init-copy edit would move no tag, and `jr2 up` would report convergence onto pods
     // injecting the previous script. The directory covers whatever the next `COPY` adds.
     //
-    // And the ONE thing this image builds from outside those two trees: `j2-upload-pack`, the
+    // And the ONE thing this image builds from outside those two trees: `jr2-upload-pack`, the
     // program behind `origin`'s fetch url in every Sandbox (ADR-0053). Its source lives in the
     // operator's Go module, because the ask and the cache agent that answers it are one decision —
     // so the harness image's address has to cover it, or an edit to the program would move no tag
-    // and `j2 up` would report convergence onto pods running the previous one. Its packages and
+    // and `jr2 up` would report convergence onto pods running the previous one. Its packages and
     // not the whole module: the rest of `operator/` addresses the operator image, and the program
     // imports the standard library alone — which the Dockerfile's builder stage enforces by
     // copying no more than this and downloading nothing.
@@ -410,20 +410,20 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
       "deploy/harness",
       "operator/go.mod",
       "operator/go.sum",
-      "operator/cmd/j2-upload-pack",
+      "operator/cmd/jr2-upload-pack",
       "operator/internal/uploadpack",
     ],
     exclude: KIT_PACKAGE_EXCLUDE,
   },
   adapter: {
-    repo: "j2-adapter",
+    repo: "jr2-adapter",
     dockerfile: "deploy/adapter/Dockerfile",
     context: ".",
     sources: ["packages/adapter", "deploy/adapter/Dockerfile"],
     exclude: KIT_PACKAGE_EXCLUDE,
   },
   operator: {
-    repo: "j2-operator",
+    repo: "jr2-operator",
     dockerfile: "operator/Dockerfile",
     context: "operator",
     sources: ["operator"],
@@ -432,9 +432,9 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
 };
 
 /**
- * Where the published Kit images live (ADR-0044). A bare `j2-harness:<kitversion>` resolves against
+ * Where the published Kit images live (ADR-0044). A bare `jr2-harness:<kitversion>` resolves against
  * `docker.io/library/` on a node, where nothing is — so the canonical home is BAKED, not configured:
- * only a home every user's nodes can pull from makes `npm i -g @j2/cli && j2 init && j2 up` work
+ * only a home every user's nodes can pull from makes `npm i -g @jr2/cli && jr2 init && jr2 up` work
  * with zero image plumbing. Public GHCR egress is GitHub's cost, so the project can afford one.
  */
 export const KIT_IMAGE_HOME = "ghcr.io/snapwich";
@@ -442,14 +442,14 @@ export const KIT_IMAGE_HOME = "ghcr.io/snapwich";
 /**
  * What an INSTALLED kit deploys: the published `<kitversion>` tags at the canonical home
  * ({@link KIT_IMAGE_HOME}), one release train with the npm version (ADR-0019/0044). These constants
- * used to live in `j2.config.ts`'s `images` block as its defaults; they belong here instead, because
+ * used to live in `jr2.config.ts`'s `images` block as its defaults; they belong here instead, because
  * a config key would be an override seat — and "nobody runs a patched Harness against a real
  * cluster" is ADR-0027's no-eject-hatch enforced rather than merely stated.
  *
- * `kitRegistry` re-homes them — `<kitRegistry>/j2-harness:<kitversion>` — for a self-hosted,
+ * `kitRegistry` re-homes them — `<kitRegistry>/jr2-harness:<kitversion>` — for a self-hosted,
  * air-gapped, or mirror-only cluster, which is ADR-0038's deferred edge, now closed. It replaces the
  * home rather than nesting under it: a mirror holds the same tags under its own name, seeded
- * deliberately (`j2 kit push`) and never by a converge. It is NOT `config.registry`: that key says
+ * deliberately (`jr2 kit push`) and never by a converge. It is NOT `config.registry`: that key says
  * where images this converge BUILDS go, and prefixing both with one key would make every
  * private-registry user mirror three images they could have pulled from the home. The version is
  * still the CLI's own — re-homing says where the tags live, never which ones.
@@ -457,17 +457,17 @@ export const KIT_IMAGE_HOME = "ghcr.io/snapwich";
 export function publishedKitRefs(kitRegistry?: string): KitImageRefs {
   const home = kitRegistry ?? KIT_IMAGE_HOME;
   return {
-    harness: `${home}/j2-harness:${KIT_VERSION}`,
-    adapter: `${home}/j2-adapter:${KIT_VERSION}`,
-    operator: `${home}/j2-operator:${KIT_VERSION}`,
+    harness: `${home}/jr2-harness:${KIT_VERSION}`,
+    adapter: `${home}/jr2-adapter:${KIT_VERSION}`,
+    operator: `${home}/jr2-operator:${KIT_VERSION}`,
   };
 }
 
 /**
  * Is the CLI running out of a kit checkout (ADR-0038)? Resolve upward from this module's own URL,
  * requiring BOTH `deploy/harness/Dockerfile` and a `packages/harness/package.json` that names
- * `@j2/harness`. Either marker alone matches an unrelated tree — someone else's `deploy/harness`,
- * or a vendored copy of one package — and a false positive means `j2 up` tries to docker-build a
+ * `@jr2/harness`. Either marker alone matches an unrelated tree — someone else's `deploy/harness`,
+ * or a vendored copy of one package — and a false positive means `jr2 up` tries to docker-build a
  * kit that is not there. Installed from npm neither resolves and the answer is `undefined`.
  */
 export async function detectKitCheckout(
@@ -488,16 +488,16 @@ async function isKitRoot(dir: string): Promise<boolean> {
     const pkg = JSON.parse(await readFile(join(dir, "packages", "harness", "package.json"), "utf8")) as {
       name?: string;
     };
-    return pkg.name === "@j2/harness";
+    return pkg.name === "@jr2/harness";
   } catch {
     return false;
   }
 }
 
 /** Address each kit image by its own sources and the platform set it is built for:
- * `[<registry>/]j2-<x>:<hash>-<arch>` (ADR-0038/0045). A `packages/harness` edit moves the harness
+ * `[<registry>/]jr2-<x>:<hash>-<arch>` (ADR-0038/0045). A `packages/harness` edit moves the harness
  * ref with no bookkeeping — and NO Sandbox Image ref with it: the runtime arrives on the pod's
- * `/opt/j2` volume, so future pods take the new one and every user image keeps its tag, its layers,
+ * `/opt/jr2` volume, so future pods take the new one and every user image keeps its tag, its layers,
  * and its delivery (ADR-0037). The registry prefix rides here because a built kit image is delivered
  * down the same transport branch as everything else. */
 export async function kitImageRefs(
@@ -519,7 +519,7 @@ export async function kitImageRefs(
 }
 
 /** The `docker build` for one kit image: its committed Dockerfile against its own context, for an
- * explicit platform set (ADR-0045), stamped `j2.dev/kind=kit` on the command line — the committed
+ * explicit platform set (ADR-0045), stamped `jr2.dev/kind=kit` on the command line — the committed
  * Dockerfiles stay plain (ADR-0039). */
 export function kitImageBuild(
   kitRoot: string,
@@ -539,15 +539,15 @@ export function kitImageBuild(
 
 // --- Sandbox Images (ADR-0037) ---------------------------------------------------------------
 
-/** `[<registry>/]j2-sandbox-<instance>-<name>:<hash>-<arch>` — the image a Sandbox's primary
+/** `[<registry>/]jr2-sandbox-<instance>-<name>:<hash>-<arch>` — the image a Sandbox's primary
  * container runs, addressed by its build context's content digest (`imageContextDigest`, which the
  * ORCHESTRATOR owns because both sides compute it — ADR-0049) and the platform set it was built for
  * (ADR-0045). `name` is the context directory's basename and is decoration: it makes
  * `docker images` readable, while the hash is the identity.
  * Names are for humans and for content addressing only: nothing reads ownership out of this string
- * any more (ADR-0039). `j2-sandbox-`, never `j2-workspace-`: a Workspace is a Machine, and the image
+ * any more (ADR-0039). `jr2-sandbox-`, never `jr2-workspace-`: a Workspace is a Machine, and the image
  * is the POD's (CONTEXT.md, Sandbox Image's first `Avoid:`). A ref the user merely BROUGHT takes no
- * suffix and never passes here — j2 never builds it, so its platforms are the registry's business. */
+ * suffix and never passes here — jr2 never builds it, so its platforms are the registry's business. */
 export function sandboxImageTag(
   instance: string,
   name: string,
@@ -555,14 +555,14 @@ export function sandboxImageTag(
   opts: { platforms: readonly string[]; registry?: string },
 ): string {
   const suffix = platformSuffix(opts.platforms);
-  return `${opts.registry ? `${opts.registry}/` : ""}j2-sandbox-${instance}-${name}:${hash}${suffix}`;
+  return `${opts.registry ? `${opts.registry}/` : ""}jr2-sandbox-${instance}-${name}:${hash}${suffix}`;
 }
 
 /**
  * ONE build (ADR-0037): the user's Dockerfile, its own directory as the context, straight to its
  * content tag. No second stage, no intermediate tag — the mutable shared name that used to
  * serialize concurrent converges of one checkout existed only because the wrap did, and there is
- * no wrap. j2 never reads the file, which is exactly why `instance` is a parameter: the ownership
+ * no wrap. jr2 never reads the file, which is exactly why `instance` is a parameter: the ownership
  * stamp is applied on the command line, so the Dockerfile stays the user's (ADR-0039).
  */
 export async function buildSandboxImage(
@@ -597,7 +597,7 @@ export type ObservedImage = {
   /** The store's own byte count. Never compare one store's to the other's: containerd counts its
    * snapshots and the daemon counts its layers, and the same image differs by several percent. */
   bytes: number;
-  /** Does the image config carry {@link LABEL_IMAGE_KIND}? An unlabeled image is not j2's to take
+  /** Does the image config carry {@link LABEL_IMAGE_KIND}? An unlabeled image is not jr2's to take
    * (ADR-0039), so it is invisible: never removed, never even reported as kept. */
   labeled: boolean;
 };
@@ -607,8 +607,8 @@ export type NodeImages = { node: string; images: ObservedImage[] };
 
 /**
  * The namespace containerd gives a local, unqualified tag. `kind load` imports into containerd,
- * which NORMALIZES `j2-instance-x:h` to `docker.io/library/j2-instance-x:h`, while every root that
- * names an image — the `j2-images` ConfigMap, a Sandbox's `spec.image`, a pod's container image —
+ * which NORMALIZES `jr2-instance-x:h` to `docker.io/library/jr2-instance-x:h`, while every root that
+ * names an image — the `jr2-images` ConfigMap, a Sandbox's `spec.image`, a pod's container image —
  * spells it the short way.
  */
 const CONTAINERD_LOCAL_NS = "docker.io/library/";
@@ -616,7 +616,7 @@ const CONTAINERD_LOCAL_NS = "docker.io/library/";
 /**
  * The one normalization, applied to both sides before comparison: strip `docker.io/library/` and
  * nothing else. Stripping only that namespace is what keeps a registry ref comparable to itself —
- * `reg.example.com/j2-instance-x:h` and `j2-instance-x:h` are two different refs of two different
+ * `reg.example.com/jr2-instance-x:h` and `jr2-instance-x:h` are two different refs of two different
  * copies, and a keep set that names one must not protect the other (ADR-0039: a registry-delivered
  * copy is cache and sweeps like everything else).
  */
@@ -737,7 +737,7 @@ const emptySweep = (): SweepResult => ({ removed: [], kept: [], failed: [], byte
  * One report out of several — the host's and every node's, or several converges' (`mergeSweeps` is
  * associative, so a caller can fold as it goes). Refs are de-duplicated AFTER {@link normalizeRef},
  * because that is the only way the promise holds: the two stores spell one image differently
- * (`j2-adapter:33a4` on the host, `docker.io/library/j2-adapter:33a4` on a node), so a raw-string
+ * (`jr2-adapter:33a4` on the host, `docker.io/library/jr2-adapter:33a4` on a node), so a raw-string
  * set reports one image twice. The merged refs are the normalized spelling — the one the roots, and
  * the user, name an image by.
  *
@@ -889,7 +889,7 @@ export function formatBytes(bytes: number): string {
  * workflow-internal and statically unrecoverable (ADR-0031, the same line that puts an unknown image
  * name at provision). So a converge cannot know what to hold an image to. The probe lives at the one
  * place the seat IS known: the `preflight` init step at provision, in the user's own image, on the
- * mounted `/opt/j2` (sandbox-kubectl.ts owns it). That is also the only thing that can ever prove a
+ * mounted `/opt/jr2` (sandbox-kubectl.ts owns it). That is also the only thing that can ever prove a
  * registry ref, which no converge sees at all — so one prover, not two that can disagree.
  */
 
@@ -903,7 +903,7 @@ export type InstallCommand = { command: string; args: string[] };
  * "dependency matrix" collapses to nothing (ADR-0043): a lockfile is a proprietary format, so
  * supporting a package manager means invoking the binary that speaks its lockfile — and that
  * binary's presence is guaranteed by the very thing that selects it, since the user wrote the
- * lockfile with it. j2 itself depends on no package manager.
+ * lockfile with it. jr2 itself depends on no package manager.
  *
  * pnpm gets `node-linker=hoisted` so the bundle is flat REAL files whichever PM wrote it: one
  * image shape to seal, hash, and resolve from, instead of one per manager.
@@ -962,7 +962,7 @@ export async function lockfileInstall(instanceDir: string): Promise<InstallComma
     throw new Error(`${instanceDir} has a ${YARN_LOCKFILE}, and yarn is not supported — use npm, pnpm, or bun`);
   }
   throw new Error(
-    `${instanceDir} has no lockfile — j2 installs the instance's dependencies from ` +
+    `${instanceDir} has no lockfile — jr2 installs the instance's dependencies from ` +
       `${LOCKFILE_INSTALLS.map((row) => `${row.manager} (${row.lockfiles.join(" or ")})`).join(", ")}; ` +
       `run your package manager's install and commit the lockfile it writes`,
   );
@@ -970,9 +970,9 @@ export async function lockfileInstall(instanceDir: string): Promise<InstallComma
 
 /**
  * What a staged copy of the Instance leaves behind. `node_modules/` because the lockfile is the
- * input (above); `.j2/` because it is CLI-local state; `.git/` because history is not image
+ * input (above); `.jr2/` because it is CLI-local state; `.git/` because history is not image
  * content; `.env`/`.env.*` and `.npmrc` because those are the two files a user keeps credentials
- * in — `j2 init` writes `.env` into the scaffold's `.gitignore` saying exactly that, and `j2 up`
+ * in — `jr2 init` writes `.env` into the scaffold's `.gitignore` saying exactly that, and `jr2 up`
  * reads it HOST-side into the Orchestrator's Secret (ADR-0019). Copied, they would bake a
  * credential into an image layer AND into the content address that names it, so rotating a key
  * would re-tag and roll the Orchestrator. The workspace branch already drops both: `pnpm deploy`
@@ -982,7 +982,7 @@ export async function lockfileInstall(instanceDir: string): Promise<InstallComma
  *
  * Matched by name at any depth: a nested one of these is the same kind of thing.
  */
-const BUNDLE_STAGE_EXCLUDE = new Set(["node_modules", ".j2", ".git", ".env", ".npmrc"]);
+const BUNDLE_STAGE_EXCLUDE = new Set(["node_modules", ".jr2", ".git", ".env", ".npmrc"]);
 
 function excludedFromStage(name: string): boolean {
   return BUNDLE_STAGE_EXCLUDE.has(name) || name.startsWith(".env.");
@@ -1234,10 +1234,10 @@ export const pnpmDockerBuild: BuildPort = {
  * and it is `scripts/kit-push.sh`'s builder by name, so a converge and a release push share one
  * cache. `network=host` is what makes `localhost:<port>` mean the HOST's registry: buildkit runs in
  * a container of its own, where `localhost` would otherwise be that container. */
-const MULTI_ARCH_BUILDER = "j2-kit";
+const MULTI_ARCH_BUILDER = "jr2-kit";
 
 /** Create-if-absent, because a converge that needed the builder and did not have one would fail
- * with buildx's own driver error — the class of manual step j2 deletes. */
+ * with buildx's own driver error — the class of manual step jr2 deletes. */
 async function ensureMultiArchBuilder(): Promise<string> {
   try {
     await exec("docker", ["buildx", "inspect", MULTI_ARCH_BUILDER], BIG);
@@ -1500,7 +1500,7 @@ export type StagedBundle = {
  * from what `up` can see). The bundle, not the instance folder, is the thing hashed: `pnpm deploy`
  * resolves the kit into it, so a kit edit in a workspace checkout and a kit upgrade from the
  * registry both move the hash, by the same rule and with no knowledge of which world it is in.
- * Hashing the instance folder instead missed kit sources entirely, which is how `j2 up` came to
+ * Hashing the instance folder instead missed kit sources entirely, which is how `jr2 up` came to
  * skip builds it needed and report convergence on code it had not deployed.
  *
  * The bundle is SEALED before it is hashed, and NOTHING is excluded from that hash (ADR-0038): a
@@ -1510,7 +1510,7 @@ export type StagedBundle = {
  *
  * `images/` rides along with the rest, and MUST (ADR-0049). A Machine names a Sandbox Image context
  * by `file:` URL — `import.meta.resolve("../images/default")` — and the DEPLOYED Orchestrator reads
- * that folder back: it recomputes the context digest at provision to look up the ref `j2 up`
+ * that folder back: it recomputes the context digest at provision to look up the ref `jr2 up`
  * published under it, which is what lets the two sides agree with no path table between them.
  * Dropping the folder here (it used to be dropped, as host-side-only) converged green and then
  * failed every provision of such a Machine on an ENOENT the converge could never see. So the
@@ -1523,7 +1523,7 @@ export type StagedBundle = {
  * that never lands in the context (it rides `docker build -f -`).
  */
 export async function stageInstanceBundle(port: BuildPort, instanceDir: string): Promise<StagedBundle> {
-  const scratch = await mkdtemp(join(tmpdir(), "j2-image-"));
+  const scratch = await mkdtemp(join(tmpdir(), "jr2-image-"));
   const dir = join(scratch, "bundle");
   try {
     await port.bundle(instanceDir, dir);

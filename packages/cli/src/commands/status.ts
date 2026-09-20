@@ -1,4 +1,4 @@
-// `j2 status [runId|abbrev]` (ADR-0009): print a run's status as JSON on stdout, reading through to the
+// `jr2 status [runId|abbrev]` (ADR-0009): print a run's status as JSON on stdout, reading through to the
 // store so a completed run still reports its terminal status + final context. A genuinely unknown run → 1.
 //
 // With NO run named, the verb answers about the INSTANCE instead (ADR-0048/0051): whether it has a
@@ -8,7 +8,7 @@
 // the Repo is degraded, and the cache agent retries it on its own.
 
 import { parseArgs } from "node:util";
-import { J2Client } from "../client.ts";
+import { JR2Client } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
@@ -20,13 +20,13 @@ export async function status(args: string[], io: Io): Promise<number> {
     strict: false,
     options: { ...TARGET_ARGS },
   });
-  // NO run named, not an EMPTY one: `j2 status "$RUNID"` with the variable unset asked about a run
+  // NO run named, not an EMPTY one: `jr2 status "$RUNID"` with the variable unset asked about a run
   // and got an empty string, and answering that with the instance's repos would report exit 0 on a
   // question nobody asked. An empty positional falls through to the resolver, which says so.
   const given = positionals.length === 0 ? undefined : positionals[0]!;
   const target = await resolveTarget(io, targetOptions(values));
   try {
-    const client = new J2Client(target.url, io.fetch, target.token);
+    const client = new JR2Client(target.url, io.fetch, target.token);
     if (given === undefined) return await instanceStatus(client, io);
     const ref = await resolveRunId(client, given);
     if (!ref.ok) {
@@ -60,7 +60,7 @@ export async function status(args: string[], io: Io): Promise<number> {
  * Exit 0 even with Repos failing: this is a report, and a degraded Repo is a state the instance
  * is serving in, not a failure of the asking.
  */
-async function instanceStatus(client: J2Client, io: Io): Promise<number> {
+async function instanceStatus(client: JR2Client, io: Io): Promise<number> {
   const { dataPlane, repos } = await client.repos();
   if (!dataPlane) activity(io, "this instance has no data plane (no registered Machine composes a Sandbox)");
   let absent = 0;

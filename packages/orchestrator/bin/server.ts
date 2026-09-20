@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The instance image's entrypoint (ADR-0019): boot the orchestrator described by env + cwd and
-// serve until SIGINT/SIGTERM. A zero-build `.ts` shebang like the `j2` bin; the e2e tier spawns
+// serve until SIGINT/SIGTERM. A zero-build `.ts` shebang like the `jr2` bin; the e2e tier spawns
 // this exact process as its per-scenario fixture (ADR-0010). Logic lives in `serverMain` — this
 // file owns only what a process owns: env, cwd, stdout, signals, exit.
 

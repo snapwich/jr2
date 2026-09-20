@@ -9,14 +9,14 @@
 # point: a fresh registry every run is what lets 0.0.0 republish, so no version is ever stamped
 # and no manifest is ever edited before publish.
 #
-# Env: J2_DIST_DIR (runtime state, default <tmp>/j2-dist — OUTSIDE the checkout, see
-# scripts/dist-publish.sh's guard), J2_DIST_PORT (default 4873 — the port the packages'
+# Env: JR2_DIST_DIR (runtime state, default <tmp>/jr2-dist — OUTSIDE the checkout, see
+# scripts/dist-publish.sh's guard), JR2_DIST_PORT (default 4873 — the port the packages'
 # publishConfig names, so moving it moves the guard too).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-dir="${J2_DIST_DIR:-${TMPDIR:-/tmp}/j2-dist}"
-port="${J2_DIST_PORT:-4873}"
+dir="${JR2_DIST_DIR:-${TMPDIR:-/tmp}/jr2-dist}"
+port="${JR2_DIST_PORT:-4873}"
 pid_file="$dir/verdaccio.pid"
 log_file="$dir/verdaccio.log"
 
@@ -91,7 +91,7 @@ case "${1:-}" in
     # npm demands a token to publish even where the registry wants none, so the loop keeps its own
     # npmrc with a fake one. Callers point NPM_CONFIG_USERCONFIG here: the user's real ~/.npmrc —
     # and any real credential in it — stays out of the loop entirely.
-    printf '//localhost:%s/:_authToken="j2-dist"\n' "$port" > "$dir/npmrc"
+    printf '//localhost:%s/:_authToken="jr2-dist"\n' "$port" > "$dir/npmrc"
     # Job control, so the background job leads its own process group (see `stop`).
     set -m
     VERDACCIO_STORAGE_PATH="$dir/registry" nohup npx --yes verdaccio \

@@ -5,7 +5,7 @@ as `error: timed out waiting for the condition` — kubectl's verdict and nothin
 a CrashLoopBackOff pod) was found only by hand-running `kubectl get pods` and `kubectl logs`. The repo already holds the
 precedent for what should have happened: `oneShotFailure()` (kube.ts) rethrows a one-shot probe's failure with the pod's
 own output in front of kubectl's verdict, because the line that says WHY is exactly what the verdict drops. The rollout
-wait is the same failure one layer up, and `j2 up` runs three of them (operator, Orchestrator, Instance Harness), all
+wait is the same failure one layer up, and `jr2 up` runs three of them (operator, Orchestrator, Instance Harness), all
 equally blind.
 
 ## Decision
@@ -15,7 +15,7 @@ equally blind.
   `rolloutFailure()` beside `oneShotFailure()`, used by all three rollout waits, so every layer gets the same eyes.
 - **Named diagnoses annotate the evidence, never replace it.** A small pattern table layered on top names the cause and
   the way back when it matches: `exec format error` → "image platform X, node platform Y" plus `platforms`/`--force`
-  (belt-and-braces under ADR-0045, and the only trace left for pre-0045 images and registry-ref Sandbox Images j2 never
+  (belt-and-braces under ADR-0045, and the only trace left for pre-0045 images and registry-ref Sandbox Images jr2 never
   built); `ImagePullBackOff`/`ErrImagePull` → the ref and the registry it resolved to (the `docker.io/library/`
   normalization trap); `CrashLoopBackOff` → lead with the log tail, which IS the diagnosis; `CreateContainerConfigError`
   → name the missing object (already preflighted for `envFrom` Secrets — this catches what slips past). The hard rule
@@ -30,5 +30,5 @@ equally blind.
 - **Evidence-only** (no pattern table). Rejected: the user still translates `exec format error` into "platform mismatch"
   themselves, which is the folklore step this ADR exists to delete. The table is small, bounded, and each entry is a
   failure someone actually hit.
-- **Diagnosis as a separate command** (`j2 doctor`-style, run after the failure). Rejected: the moment of failure is
-  when the evidence is fresh and the user is looking; a second command is the by-hand loop with a j2 badge on it.
+- **Diagnosis as a separate command** (`jr2 doctor`-style, run after the failure). Rejected: the moment of failure is
+  when the evidence is fresh and the user is looking; a second command is the by-hand loop with a jr2 badge on it.

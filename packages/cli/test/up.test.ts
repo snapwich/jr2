@@ -1,4 +1,4 @@
-// `j2 up` (ADR-0019): the one converging command. These tests drive the LAYER DECISIONS — ownership
+// `jr2 up` (ADR-0019): the one converging command. These tests drive the LAYER DECISIONS — ownership
 // guardrails, operator never-downgrade, image staleness/delivery, Secret idempotence, preflights —
 // through injected kube/build/confirm fakes; the real subprocess ports stay thin and are exercised
 // by the @kind tier. Manifest shapes are asserted incidentally via what the fake kube captures.
@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { sandboxToken } from "@j2/orchestrator";
+import { sandboxToken } from "@jr2/orchestrator";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
@@ -74,12 +74,12 @@ class FakeCluster implements KubeAdmin {
   /** Drift injection, per selector: the image that layer's pod carries when it must differ from
    * the applied one. Unset → an HONEST cluster, reporting a pod running whatever was last applied. */
   podImages: Record<string, string> = {};
-  /** Live Sandbox CRs, as `j2 up`'s closing report reads them (ADR-0038: report, never re-image). */
+  /** Live Sandbox CRs, as `jr2 up`'s closing report reads them (ADR-0038: report, never re-image). */
   sandboxes: Array<{ metadata: { name: string; namespace?: string }; spec?: { image?: string } }> = [];
   /** `true` → listing Sandboxes throws, as it does when the CRD is absent or RBAC forbids it. */
   sandboxListFails = false;
   /** The sweep's roots (ADR-0039), read cluster-wide: the namespaces some instance owns, their
-   * `j2-images` maps, and every pod in them. Empty by default — a cluster holding nothing but this
+   * `jr2-images` maps, and every pod in them. Empty by default — a cluster holding nothing but this
    * converge, which is what every test that is not about the sweep wants. */
   instanceNamespaces: Array<{ metadata: { name: string } }> = [];
   /** The cluster's nodes, as ADR-0045's platform derivation reads them: one schedulable amd64 node,
@@ -218,7 +218,7 @@ function fakeBuild(
   };
 }
 
-/** One image as a store reports it — j2-built and worth reclaiming unless the test says otherwise. */
+/** One image as a store reports it — jr2-built and worth reclaiming unless the test says otherwise. */
 function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
   return { tags: [], bytes: 0, labeled: true, ...over };
 }
@@ -227,8 +227,8 @@ function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 
 /** The kit's own package by ABSOLUTE path. A fixture instance lives in the OS temp dir, where a
- * bare `@j2/orchestrator` resolves to nothing — and these workflows must be the real thing, since
- * `j2 up` now LOADS them and walks the Machines for the Agents they carry (ADR-0049). Node caches
+ * bare `@jr2/orchestrator` resolves to nothing — and these workflows must be the real thing, since
+ * `jr2 up` now LOADS them and walks the Machines for the Agents they carry (ADR-0049). Node caches
  * by resolved path, so this is the same module instance the CLI itself imported. */
 const KIT_SRC = pathToFileURL(
   join(dirname(fileURLToPath(import.meta.url)), "..", "..", "orchestrator", "src", "index.ts"),
@@ -241,8 +241,8 @@ type FixtureAgent = { model: string; workspace?: "write" | "read" | "none" };
  * converge's walk finds, and therefore what the provider preflight probes (there is no
  * instance-wide model — ADR-0018) and what the Instance Harness scan reads (ADR-0031). */
 async function mkInstance(config: string, name = "myinst", agents?: Record<string, FixtureAgent>): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), `j2-up-${name}-`));
-  await writeFile(join(root, "j2.config.ts"), config);
+  const root = await mkdtemp(join(tmpdir(), `jr2-up-${name}-`));
+  await writeFile(join(root, "jr2.config.ts"), config);
   await writeFile(join(root, "package.json"), JSON.stringify({ name: `inst-${name}`, version: "0.0.0" }));
   await mkdir(join(root, "workflows"), { recursive: true });
   if (agents) {
@@ -251,8 +251,8 @@ async function mkInstance(config: string, name = "myinst", agents?: Record<strin
       .join(", ");
     await writeFile(
       join(root, "workflows", "work.ts"),
-      `import { agent, j2Setup } from ${JSON.stringify(KIT_SRC)};\n` +
-        `export const machine = j2Setup({ events: [], actors: { ${slots} } })\n` +
+      `import { agent, jr2Setup } from ${JSON.stringify(KIT_SRC)};\n` +
+        `export const machine = jr2Setup({ events: [], actors: { ${slots} } })\n` +
         `  .createMachine({ id: "work", initial: "idle", states: { idle: {} } });\n`,
     );
   }
@@ -260,7 +260,7 @@ async function mkInstance(config: string, name = "myinst", agents?: Record<strin
 }
 
 /** Scaffold the Instance's `images/default` — ADR-0037's fallback leg, and since ADR-0049/0050 the
- * ONE path `j2 up` still checks by convention rather than by walking a Machine. */
+ * ONE path `jr2 up` still checks by convention rather than by walking a Machine. */
 async function withImage(root: string, name: string, dockerfile = "FROM node:24-slim\n"): Promise<string> {
   await mkdir(join(root, "images", name), { recursive: true });
   await writeFile(join(root, "images", name, "Dockerfile"), dockerfile);
@@ -275,8 +275,8 @@ async function withCarriedImage(root: string, dir: string, dockerfile: string): 
   await writeFile(join(root, "workflows", dir, "Dockerfile"), dockerfile);
   await writeFile(
     join(root, "workflows", "shipped.ts"),
-    `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const body = j2Setup({ events: [] })\n` +
+    `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       `export const machine = workspace(body, {\n` +
       `  image: import.meta.resolve("./${dir}"),\n` +
@@ -288,13 +288,13 @@ async function withCarriedImage(root: string, dir: string, dockerfile: string): 
 }
 
 /** A registered Workflow that COMPOSES a Sandbox — a `workspace()` with one bound Repo Slot
- * (ADR-0051). This is the data-plane switch as `j2 up` reads it: nothing in `j2.config.ts` says
+ * (ADR-0051). This is the data-plane switch as `jr2 up` reads it: nothing in `jr2.config.ts` says
  * "this instance has Workspaces" any more; the walk does. The url is what the ssh layer sees. */
 async function withWorkspace(root: string, url = "https://e.test/a.git"): Promise<string> {
   await writeFile(
     join(root, "workflows", "ws.ts"),
-    `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const body = j2Setup({ events: [] })\n` +
+    `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       `export const machine = workspace(body, { repos: { app: ${JSON.stringify(url)} }, spec: () => ({ branch: "b" }) });\n`,
   );
@@ -307,14 +307,14 @@ async function withWorkspace(root: string, url = "https://e.test/a.git"): Promis
 async function withOpenAgent(root: string): Promise<string> {
   await writeFile(
     join(root, "workflows", "packaged.ts"),
-    `import { agent, j2Setup, open } from ${JSON.stringify(KIT_SRC)};\n` +
-      `export const machine = j2Setup({ events: [], actors: { coder: agent({ model: open, instructions: "i" }) } })\n` +
+    `import { agent, jr2Setup, open } from ${JSON.stringify(KIT_SRC)};\n` +
+      `export const machine = jr2Setup({ events: [], actors: { coder: agent({ model: open, instructions: "i" }) } })\n` +
       `  .createMachine({ id: "task", initial: "working", states: { working: { invoke: { src: "coder", input: { prompt: "go" } } } } });\n`,
   );
   return root;
 }
 
-/** A packaged `workspace()` whose one Repo Slot is left OPEN, registered as-is — what `j2 up`
+/** A packaged `workspace()` whose one Repo Slot is left OPEN, registered as-is — what `jr2 up`
  * refuses, naming the `customize` line that binds it (ADR-0051). `under` composes it one level
  * down instead: invoked from an author Machine's `review` slot, the shape a packaged Machine
  * actually arrives in. */
@@ -325,11 +325,11 @@ async function withOpenSlot(root: string, under?: "child" | "map"): Promise<stri
   const packaged = `workspace(body, { repos: ${repos}, spec: () => ({ branch: "b" }) })`;
   await writeFile(
     join(root, "workflows", "packaged.ts"),
-    `import { j2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const body = j2Setup({ events: [] })\n` +
+    `import { jr2Setup, open, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       (under === "child"
-        ? `export const machine = j2Setup({ events: [], actors: { review: ${packaged} } })\n` +
+        ? `export const machine = jr2Setup({ events: [], actors: { review: ${packaged} } })\n` +
           `  .createMachine({ id: "host", initial: "reviewing", states: { reviewing: { invoke: { src: "review" } } } });\n`
         : `export const machine = ${packaged};\n`),
   );
@@ -338,18 +338,18 @@ async function withOpenSlot(root: string, under?: "child" | "map"): Promise<stri
 
 /** A kit checkout as ADR-0038's detection sees one: BOTH markers, plus each image's hash sources. */
 async function mkKit(): Promise<string> {
-  const kit = await mkdtemp(join(tmpdir(), "j2-kit-"));
+  const kit = await mkdtemp(join(tmpdir(), "jr2-kit-"));
   const files: Record<string, string> = {
     "deploy/harness/Dockerfile": "FROM node:24-slim\n",
     "deploy/adapter/Dockerfile": "FROM node:24-alpine\n",
     "operator/Dockerfile": "FROM golang:1.23\n",
-    // The Harness image builds `j2-upload-pack` out of the operator module too (ADR-0053).
-    "operator/go.mod": "module github.com/snapwich/j2/operator\n",
+    // The Harness image builds `jr2-upload-pack` out of the operator module too (ADR-0053).
+    "operator/go.mod": "module github.com/snapwich/jr2/operator\n",
     "operator/go.sum": "",
-    "operator/cmd/j2-upload-pack/main.go": "package main\n",
+    "operator/cmd/jr2-upload-pack/main.go": "package main\n",
     "operator/internal/uploadpack/uploadpack.go": "package uploadpack\n",
-    "packages/harness/package.json": `{"name":"@j2/harness"}`,
-    "packages/adapter/package.json": `{"name":"@j2/adapter"}`,
+    "packages/harness/package.json": `{"name":"@jr2/harness"}`,
+    "packages/adapter/package.json": `{"name":"@jr2/adapter"}`,
   };
   for (const [rel, content] of Object.entries(files)) {
     await mkdir(join(kit, dirname(rel)), { recursive: true });
@@ -421,12 +421,12 @@ function mkWorld(
   return { io, kube, built, err, confirms, choices };
 }
 
-/** The `j2-images` map this converge applied — the ConfigMap the Orchestrator reads per provision
+/** The `jr2-images` map this converge applied — the ConfigMap the Orchestrator reads per provision
  * and, byte-identical, the annotation the next converge diffs (ADR-0038). */
 function imagesOf(w: World): Record<string, any> {
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-images")!;
+  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-images")!;
   return JSON.parse(cm.data["images.json"]);
 }
 
@@ -435,7 +435,7 @@ test("the typecheck gate: a folder that does not compile converges nothing (ADR-
   // its composed Machines are typed, so a wrong name is a compile error here instead of an
   // invoke-time failure mid-run — but only if nothing is spent before the compiler answers. Repo
   // Slots are typed here too (ADR-0051), so a `customize()` of one the Machine never declared stops
-  // here; what the gate itself claims is only that `j2 up` runs the compiler and refuses on its answer.
+  // here; what the gate itself claims is only that `jr2 up` runs the compiler and refuses on its answer.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const errors = "workflows/task.ts(9,5): error TS2353: Object literal may only specify known properties";
   const bad = mkWorld(root, { typecheck: async () => ({ ok: false, output: errors }) });
@@ -455,7 +455,7 @@ test("the typecheck gate: a folder that does not compile converges nothing (ADR-
 test("up refuses a namespace labeled for another instance", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
-  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "other" } } });
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "other" } } });
 
   assert.equal(await up([], w.io), 1);
   assert.match(w.err.join("\n"), /another instance.*other/s);
@@ -481,8 +481,8 @@ test("first contact asks; declining bails before anything is applied; --yes skip
 test("operator: never downgraded — a newer deployed operator is left, with a warning", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
-  w.kube.set("j2-system", "deployment", "j2-controller-manager", {
-    metadata: { name: "j2-controller-manager", labels: { "j2.dev/version": "99.0.0" } },
+  w.kube.set("jr2-system", "deployment", "jr2-controller-manager", {
+    metadata: { name: "jr2-controller-manager", labels: { "jr2.dev/version": "99.0.0" } },
   });
 
   assert.equal(await up(["--yes"], w.io), 0);
@@ -500,18 +500,18 @@ test("operator: the applied version is waited for and verified, like every other
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
   assert.ok(
-    w.kube.rollouts.includes("j2-system/j2-controller-manager"),
+    w.kube.rollouts.includes("jr2-system/jr2-controller-manager"),
     `the operator rollout is waited for (got: ${w.kube.rollouts.join(", ")})`,
   );
   const operatorApply = w.kube.applied.find((m) => m.includes("controller-manager"))!;
-  assert.match(operatorApply, new RegExp(`image: ghcr.io/snapwich/j2-operator:`));
+  assert.match(operatorApply, new RegExp(`image: ghcr.io/snapwich/jr2-operator:`));
   assert.ok(!operatorApply.includes("controller:latest"), "the placeholder image ref was substituted");
 
   const drifted = mkWorld(root);
-  drifted.kube.podImages = { "control-plane=controller-manager": "j2-operator:ancient" };
+  drifted.kube.podImages = { "control-plane=controller-manager": "jr2-operator:ancient" };
   await assert.rejects(
     () => up(["--yes"], drifted.io),
-    /operator.*j2-operator:ancient.*expected ghcr\.io\/snapwich\/j2-operator:/s,
+    /operator.*jr2-operator:ancient.*expected ghcr\.io\/snapwich\/jr2-operator:/s,
   );
 });
 
@@ -521,12 +521,12 @@ test("a rollout that times out carries the pods' evidence, not just kubectl's ve
   // rollout wait now does that reading itself (ADR-0046).
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
-  w.kube.rolloutFails.add("myinst/j2-orchestrator");
+  w.kube.rolloutFails.add("myinst/jr2-orchestrator");
   w.kube.set("", "node", "kind-worker", { status: { nodeInfo: { architecture: "arm64" } } });
-  w.kube.failedPods["app=j2-orchestrator"] = [
+  w.kube.failedPods["app=jr2-orchestrator"] = [
     {
-      metadata: { name: "j2-orchestrator-77d-abc" },
-      spec: { nodeName: "kind-worker", containers: [{ name: "orchestrator", image: "j2-instance-myinst:abc-amd64" }] },
+      metadata: { name: "jr2-orchestrator-77d-abc" },
+      spec: { nodeName: "kind-worker", containers: [{ name: "orchestrator", image: "jr2-instance-myinst:abc-amd64" }] },
       status: {
         phase: "Pending",
         containerStatuses: [
@@ -544,7 +544,7 @@ test("a rollout that times out carries the pods' evidence, not just kubectl's ve
   await assert.rejects(
     () => up(["--yes"], w.io),
     (err: Error) => {
-      assert.match(err.message, /j2-orchestrator: rollout did not complete in namespace myinst/);
+      assert.match(err.message, /jr2-orchestrator: rollout did not complete in namespace myinst/);
       assert.match(err.message, /exec format error/, "the pod's own words are carried");
       assert.match(err.message, /diagnosis: .* built for another platform/);
       assert.match(err.message, /kind-worker runs arm64/);
@@ -561,7 +561,7 @@ test("operator: manage:false skips the layer — and the image build with it", a
   assert.equal(await up(["--yes"], w1.io), 0);
   assert.ok(!w1.kube.applied.some((m) => m.includes("controller-manager")));
   assert.ok(
-    !w1.built.some((b) => b.startsWith("build j2-operator:")),
+    !w1.built.some((b) => b.startsWith("build jr2-operator:")),
     `an image this converge does not deploy is not built (got: ${w1.built.join(", ")})`,
   );
   // …and it is not recorded either: a ref in the record with nothing built would make the NEXT
@@ -578,7 +578,7 @@ test("a kit checkout builds the Harness, Adapter, and operator; installed from n
   const checkout = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], checkout.io), 0);
   assert.match(checkout.err.join("\n"), /kit checkout/, "the mode is narrated once, not inferred");
-  for (const repo of ["j2-harness", "j2-adapter", "j2-operator"]) {
+  for (const repo of ["jr2-harness", "jr2-adapter", "jr2-operator"]) {
     const built = checkout.built.find((b) => b.startsWith(`build ${repo}:`))!;
     assert.ok(built, `${repo} is built (got: ${checkout.built.join(", ")})`);
     const ref = built.slice("build ".length);
@@ -599,27 +599,27 @@ test("a kit checkout builds the Harness, Adapter, and operator; installed from n
   assert.equal(await up(["--yes"], installed.io), 0);
   assert.match(installed.err.join("\n"), /installed kit/);
   assert.ok(
-    !installed.built.some((b) => /^build j2-(harness|adapter|operator):/.test(b)),
+    !installed.built.some((b) => /^build jr2-(harness|adapter|operator):/.test(b)),
     `installed from npm, kit images are pulled, never built (got: ${installed.built.join(", ")})`,
   );
   // The published <kitversion> refs are what the map names, and what the Instance Harness runs —
   // at the canonical home, because a bare tag is `docker.io/library/` and nothing is there
   // (ADR-0044).
-  assert.equal(imagesOf(installed).harness, "ghcr.io/snapwich/j2-harness:0.0.0");
-  assert.equal(imagesOf(installed).adapter, "ghcr.io/snapwich/j2-adapter:0.0.0");
+  assert.equal(imagesOf(installed).harness, "ghcr.io/snapwich/jr2-harness:0.0.0");
+  assert.equal(imagesOf(installed).adapter, "ghcr.io/snapwich/jr2-adapter:0.0.0");
 });
 
 test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come from the home (ADR-0044)", async () => {
-  // The self-hosted / air-gapped cluster: the mirror was seeded deliberately (`j2 kit push`), and
+  // The self-hosted / air-gapped cluster: the mirror was seeded deliberately (`jr2 kit push`), and
   // the converge's only job is to NAME it — nothing is pushed or built here, since installed mode
   // has no Kit sources at all.
   const mirrored = await mkInstance(`export default { name: "m", kitRegistry: "zot.example.test" };\n`, "m");
   const w = mkWorld(mirrored);
   assert.equal(await up(["--yes"], w.io), 0);
   const images = imagesOf(w);
-  assert.equal(images.harness, "zot.example.test/j2-harness:0.0.0");
-  assert.equal(images.adapter, "zot.example.test/j2-adapter:0.0.0");
-  assert.equal(images.operator, "zot.example.test/j2-operator:0.0.0");
+  assert.equal(images.harness, "zot.example.test/jr2-harness:0.0.0");
+  assert.equal(images.adapter, "zot.example.test/jr2-adapter:0.0.0");
+  assert.equal(images.operator, "zot.example.test/jr2-operator:0.0.0");
   assert.match(w.err.join("\n"), /zot\.example\.test/, "the mirror is narrated, never silently used");
   assert.ok(
     !w.built.some((b) => /^(build|push) (zot|ghcr)/.test(b)),
@@ -628,30 +628,30 @@ test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come 
   // `registry` answers a different question — where THIS converge's builds go (ADR-0044) — so it
   // must not re-home the published three, and `kitRegistry` must not re-home the instance image.
   const both = await mkInstance(
-    `export default { name: "b", registry: "reg.example.com/j2", kitRegistry: "zot.example.test" };\n`,
+    `export default { name: "b", registry: "reg.example.com/jr2", kitRegistry: "zot.example.test" };\n`,
     "b",
   );
   const w2 = mkWorld(both);
   assert.equal(await up(["--yes"], w2.io), 0);
-  assert.equal(imagesOf(w2).harness, "zot.example.test/j2-harness:0.0.0");
+  assert.equal(imagesOf(w2).harness, "zot.example.test/jr2-harness:0.0.0");
   assert.ok(
-    w2.built.some((b) => b.startsWith("push reg.example.com/j2/j2-instance-b:")),
+    w2.built.some((b) => b.startsWith("push reg.example.com/jr2/jr2-instance-b:")),
     `the instance image still goes to registry (got: ${w2.built.join(", ")})`,
   );
 
   const home = mkWorld(await mkInstance(`export default { name: "h" };\n`, "h"));
   assert.equal(await up(["--yes"], home.io), 0);
-  assert.equal(imagesOf(home).harness, "ghcr.io/snapwich/j2-harness:0.0.0");
+  assert.equal(imagesOf(home).harness, "ghcr.io/snapwich/jr2-harness:0.0.0");
 });
 
 test("a registry pushes every layer; a non-kind context without one fails BEFORE any build", async () => {
   const kit = await mkKit();
-  const pushRoot = await mkInstance(`export default { name: "r", registry: "reg.example.com/j2" };\n`, "r");
+  const pushRoot = await mkInstance(`export default { name: "r", registry: "reg.example.com/jr2" };\n`, "r");
   const w = mkWorld(pushRoot, { kitDir: kit });
   assert.equal(await up(["--yes"], w.io), 0);
-  for (const repo of ["j2-harness", "j2-adapter", "j2-operator", "j2-instance-r"]) {
+  for (const repo of ["jr2-harness", "jr2-adapter", "jr2-operator", "jr2-instance-r"]) {
     assert.ok(
-      w.built.some((b) => b.startsWith(`push reg.example.com/j2/${repo}:`)),
+      w.built.some((b) => b.startsWith(`push reg.example.com/jr2/${repo}:`)),
       `${repo} is pushed (got: ${w.built.join(", ")})`,
     );
   }
@@ -679,9 +679,9 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   // a ref never rolls the Orchestrator and never restores a live run's snapshot (ADR-0038/0007).
   const list = first.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const deployment = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
-    (i) => i.kind === "Deployment" && i.metadata.name === "j2-orchestrator",
+    (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
   )!;
-  assert.equal(deployment.metadata.annotations["j2.dev/images"], JSON.stringify(images, null, 2));
+  assert.equal(deployment.metadata.annotations["jr2.dev/images"], JSON.stringify(images, null, 2));
   assert.equal(
     deployment.spec.template.metadata.annotations,
     undefined,
@@ -689,16 +689,16 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   );
   assert.ok(
     !JSON.stringify(deployment.spec.template.spec.containers[0].env).includes("IMAGE"),
-    "and never as env: no J2_*_IMAGE anywhere",
+    "and never as env: no JR2_*_IMAGE anywhere",
   );
 
   const again = mkWorld(root, { kitDir: kit });
-  again.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
-  again.kube.set("myinst", "deployment", "j2-orchestrator", {
+  again.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
+  again.kube.set("myinst", "deployment", "jr2-orchestrator", {
     metadata: {
-      name: "j2-orchestrator",
-      labels: { "j2.dev/content-hash": deployment.metadata.labels["j2.dev/content-hash"] },
-      annotations: { "j2.dev/images": JSON.stringify(images, null, 2) },
+      name: "jr2-orchestrator",
+      labels: { "jr2.dev/content-hash": deployment.metadata.labels["jr2.dev/content-hash"] },
+      annotations: { "jr2.dev/images": JSON.stringify(images, null, 2) },
     },
   });
   assert.equal(await up([], again.io), 0);
@@ -706,12 +706,14 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   assert.deepEqual(imagesOf(again), images, "…and the map re-converges to the same refs");
 
   const forced = mkWorld(root, { kitDir: kit });
-  forced.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
-  forced.kube.set("myinst", "deployment", "j2-orchestrator", {
+  forced.kube.set("", "namespace", "myinst", {
+    metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } },
+  });
+  forced.kube.set("myinst", "deployment", "jr2-orchestrator", {
     metadata: {
-      name: "j2-orchestrator",
-      labels: { "j2.dev/content-hash": deployment.metadata.labels["j2.dev/content-hash"] },
-      annotations: { "j2.dev/images": JSON.stringify(images, null, 2) },
+      name: "jr2-orchestrator",
+      labels: { "jr2.dev/content-hash": deployment.metadata.labels["jr2.dev/content-hash"] },
+      annotations: { "jr2.dev/images": JSON.stringify(images, null, 2) },
     },
   });
   assert.equal(await up(["--force"], forced.io), 0);
@@ -725,12 +727,12 @@ test("the Deployment's image annotation makes a second converge spend zero docke
   // Harness container's runAsNonRoot. So the image is re-proved and the fact re-read.
   const { sandboxUser: _dropped, ...partial } = images;
   const stale = mkWorld(root, { kitDir: kit });
-  stale.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
-  stale.kube.set("myinst", "deployment", "j2-orchestrator", {
+  stale.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
+  stale.kube.set("myinst", "deployment", "jr2-orchestrator", {
     metadata: {
-      name: "j2-orchestrator",
-      labels: { "j2.dev/content-hash": deployment.metadata.labels["j2.dev/content-hash"] },
-      annotations: { "j2.dev/images": JSON.stringify(partial, null, 2) },
+      name: "jr2-orchestrator",
+      labels: { "jr2.dev/content-hash": deployment.metadata.labels["jr2.dev/content-hash"] },
+      annotations: { "jr2.dev/images": JSON.stringify(partial, null, 2) },
     },
   });
   assert.equal(await up([], stale.io), 0);
@@ -747,7 +749,7 @@ test("a silent record consults the host daemon: host-built refs skip their build
   const first = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], first.io), 0);
   const images = imagesOf(first);
-  const instanceTag = first.built.find((b) => b.startsWith("build j2-instance-myinst:"))!.slice("build ".length);
+  const instanceTag = first.built.find((b) => b.startsWith("build jr2-instance-myinst:"))!.slice("build ".length);
   const refs = [images.harness, images.adapter, images.operator, images.sandbox.default, instanceTag] as string[];
 
   // A fresh namespace: no Deployment, no annotation — the record is silent. But the host daemon
@@ -891,7 +893,7 @@ test("a `file:` context the Machine carries is built and keyed by its content DI
   assert.match(digest, /^[0-9a-f]{12}$/, "keyed by content digest, never by a dirname");
   // The tag's readable half is the context directory's basename — decoration; the identity is the
   // digest, which appears in the tag too.
-  assert.match(sandbox[digest]!, new RegExp(`^j2-sandbox-myinst-toolchain:${digest}-`));
+  assert.match(sandbox[digest]!, new RegExp(`^jr2-sandbox-myinst-toolchain:${digest}-`));
   assert.ok(w.built.includes(`build ${sandbox[digest]}`), `the carried context was built (${w.built.join(", ")})`);
   assert.ok(w.built.includes(`inspect-user ${sandbox[digest]}`), "…and its seat recorded, like any built image");
 
@@ -908,8 +910,8 @@ test("a Machine that names a registry ref costs no build — deployed, never bui
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   await writeFile(
     join(root, "workflows", "brought.ts"),
-    `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const body = j2Setup({ events: [] })\n` +
+    `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       `export const machine = workspace(body, {\n` +
       `  image: "ghcr.io/acme/toolchain:2024-11",\n` +
@@ -921,7 +923,7 @@ test("a Machine that names a registry ref costs no build — deployed, never bui
   assert.equal(await up(["--yes"], w.io), 0);
 
   assert.deepEqual(imagesOf(w).sandbox, {}, "a ref needs no entry: it already IS its own ref");
-  assert.ok(!w.built.some((b) => b.includes("j2-sandbox-")), `nothing was built for it (got: ${w.built.join(", ")})`);
+  assert.ok(!w.built.some((b) => b.includes("jr2-sandbox-")), `nothing was built for it (got: ${w.built.join(", ")})`);
   assert.match(w.err.join("\n"), /sandbox images: none carried/);
 });
 
@@ -930,7 +932,7 @@ test("a mixed-arch node set is built once by buildx, which delivers by pushing",
   // `docker buildx build --push` IS the delivery — a manifest list cannot live in the daemon and
   // `kind load` cannot carry one — so nothing may push it a second time.
   const root = await withImage(
-    await withWorkspace(await mkInstance(`export default { name: "m", registry: "reg.example.com/j2" };\n`, "m")),
+    await withWorkspace(await mkInstance(`export default { name: "m", registry: "reg.example.com/jr2" };\n`, "m")),
     "default",
   );
   const w = mkWorld(root);
@@ -941,7 +943,7 @@ test("a mixed-arch node set is built once by buildx, which delivers by pushing",
   assert.equal(await up(["--yes"], w.io), 0);
 
   const sandboxRef = imagesOf(w).sandbox.default as string;
-  assert.match(sandboxRef, /^reg\.example\.com\/j2\/j2-sandbox-m-default:[0-9a-f]{12}-amd64-arm64$/);
+  assert.match(sandboxRef, /^reg\.example\.com\/jr2\/jr2-sandbox-m-default:[0-9a-f]{12}-amd64-arm64$/);
   assert.ok(w.built.includes(`platform ${sandboxRef} linux/amd64,linux/arm64`), "one build, both platforms");
   assert.ok(!w.built.some((b) => b.startsWith("push ")), `buildx already pushed (got: ${w.built.join(", ")})`);
   assert.ok(!w.built.some((b) => b.startsWith("kind-load")), "…and a manifest list is never kind-loaded");
@@ -992,16 +994,16 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
   assert.equal(await up(["--yes"], w.io), 0);
 
   const ref = imagesOf(w).sandbox.default as string;
-  assert.match(ref, /^j2-sandbox-myinst-default:[0-9a-f]{12}-amd64$/);
+  assert.match(ref, /^jr2-sandbox-myinst-default:[0-9a-f]{12}-amd64$/);
   // ONE build, of the user's own directory (ADR-0037). No `-base` intermediate exists any more:
   // that mutable shared name was the wrap's, and it serialized concurrent converges of one checkout.
   assert.deepEqual(
-    w.built.filter((b) => b.startsWith("build j2-sandbox-")),
+    w.built.filter((b) => b.startsWith("build jr2-sandbox-")),
     [`build ${ref}`],
   );
   assert.ok(!w.built.some((b) => b.includes("-base:")), `no intermediate tag anywhere (got: ${w.built.join(", ")})`);
   assert.ok(w.built.includes(`build-with context-default ${ref}`), "the user's Dockerfile, its directory the context");
-  const stamp = JSON.stringify({ "j2.dev/kind": "sandbox", "j2.dev/instance": "myinst" });
+  const stamp = JSON.stringify({ "jr2.dev/kind": "sandbox", "jr2.dev/instance": "myinst" });
   assert.ok(w.built.includes(`stamp ${ref} ${stamp}`), "stamped on the command line (ADR-0039)");
 
   // The converge INSPECTS the image and proves nothing about it. The ADR-0037 floor is a
@@ -1014,7 +1016,7 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
   assert.ok(!w.built.some((b) => b.startsWith("run ")), `no probe container at converge (got: ${w.built.join(", ")})`);
   assert.ok(!w.built.some((b) => b.startsWith("extract ")), "…and no runtime is staged to mount into one");
   // The map carries what a provision cannot ask for (ADR-0037): "" = declares no USER, so the pod
-  // applies uid 1000 + HOME=/home/j2 on an emptyDir.
+  // applies uid 1000 + HOME=/home/jr2 on an emptyDir.
   assert.deepEqual(imagesOf(w).sandboxUser, { default: "" });
 
   // A Sandbox Image's hash covers its directory ALONE (ADR-0037/0038): a kit edit moves the harness
@@ -1036,7 +1038,7 @@ test("a Sandbox Image is ONE build of the user's Dockerfile, inspected, and only
   const nosandbox = await withImage(await mkInstance(`export default { name: "n" };\n`, "n"), "default");
   const w2 = mkWorld(nosandbox, { kitDir: kit });
   assert.equal(await up(["--yes"], w2.io), 0);
-  assert.ok(!w2.built.some((b) => b.includes("j2-sandbox-")));
+  assert.ok(!w2.built.some((b) => b.includes("jr2-sandbox-")));
   assert.ok(!w2.built.some((b) => b.startsWith("extract ")));
   assert.match(w2.err.join("\n"), /sandbox images: skipped \(no registered Machine composes a Sandbox\)/);
   assert.deepEqual(imagesOf(w2).sandbox, {});
@@ -1126,27 +1128,27 @@ test("an OPEN Agent is refused the same way, with the `agents` line that binds t
 });
 
 test("a bound Repo is narrated as the boot's to create; the token env vars git.credentials names ride the Secret", async () => {
-  // `j2 up` clones nothing (ADR-0051): the Orchestrator creates a Repo resource per bound identity
+  // `jr2 up` clones nothing (ADR-0051): the Orchestrator creates a Repo resource per bound identity
   // at boot and the cache agent clones on first need, on the node that needs it. What the
   // converge does hold is the credential: every env var an entry names, when set, lands in the
   // Orchestrator's Secret — and nothing an entry does not name.
   const root = await withWorkspace(
     await mkInstance(
       `export default { name: "myinst", git: { credentials: [` +
-        `{ match: "github.com/acme/", token: "GH_TOKEN" }, { match: "*", token: "J2_GIT_TOKEN" }, { match: "gitlab.com/", token: "GL_TOKEN" }` +
+        `{ match: "github.com/acme/", token: "GH_TOKEN" }, { match: "*", token: "JR2_GIT_TOKEN" }, { match: "gitlab.com/", token: "GL_TOKEN" }` +
         `] } };\n`,
     ),
   );
-  const w = mkWorld(root, { env: { GH_TOKEN: "gh-secret", J2_GIT_TOKEN: "wild-secret", STRAY: "no" } });
+  const w = mkWorld(root, { env: { GH_TOKEN: "gh-secret", JR2_GIT_TOKEN: "wild-secret", STRAY: "no" } });
   assert.equal(await up(["--yes"], w.io), 0);
   assert.match(w.err.join("\n"), /repos: 1 bound Repo\(s\) — the Orchestrator creates their Repo resources at boot/);
   assert.match(w.err.join("\n"), /cache agent clones on first need/);
 
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-instance")!;
+  const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
   assert.equal(instance.stringData.GH_TOKEN, "gh-secret");
-  assert.equal(instance.stringData.J2_GIT_TOKEN, "wild-secret");
+  assert.equal(instance.stringData.JR2_GIT_TOKEN, "wild-secret");
   assert.ok(!("GL_TOKEN" in instance.stringData), "an unset var materializes nothing");
   assert.ok(!("STRAY" in instance.stringData), "and an env var no entry names never enters the Secret");
   // The Orchestrator neither clones nor holds a key: its one claim is its state, its mounts are
@@ -1154,9 +1156,9 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
   // rides the Secret above and is read only by the cache agent.
   assert.deepEqual(
     items.filter((i) => i.kind === "PersistentVolumeClaim").map((i) => i.metadata.name),
-    ["j2-state"],
+    ["jr2-state"],
   );
-  const orch = items.find((i) => i.kind === "Deployment" && i.metadata.name === "j2-orchestrator")!;
+  const orch = items.find((i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator")!;
   const podSpec = orch.spec.template.spec;
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
@@ -1164,7 +1166,7 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
   );
   assert.deepEqual(
     podSpec.containers[0].env.map((e: { name: string }) => e.name),
-    ["J2_NAMESPACE", "J2_CONTENT_HASH"],
+    ["JR2_NAMESPACE", "JR2_CONTENT_HASH"],
   );
 });
 
@@ -1177,7 +1179,7 @@ function findRepoCache(w: World): Record<string, Record<string, any>> {
     if (!manifest.trimStart().startsWith("{")) continue;
     const doc = JSON.parse(manifest) as { kind?: string; items?: Array<Record<string, any>> };
     for (const i of doc.kind === "List" ? (doc.items ?? []) : []) {
-      if (i.metadata?.name === "j2-repo-cache") out[i.kind] = i;
+      if (i.metadata?.name === "jr2-repo-cache") out[i.kind] = i;
     }
   }
   return out;
@@ -1185,7 +1187,7 @@ function findRepoCache(w: World): Record<string, Record<string, any>> {
 
 test("a Machine composing a Sandbox converges the cache agent: one root-seated pod per node over the node's cache directory", async () => {
   // The data plane's node half (ADR-0051, ADR-0004): a DaemonSet running the operator image as
-  // `/manager repo-cache`, the one writer of `/var/lib/j2/<namespace>/repos` on its node — the
+  // `/manager repo-cache`, the one writer of `/var/lib/jr2/<namespace>/repos` on its node — the
   // hostPath the operator mounts a leaf of, read-only, into every Sandbox there. The switch is
   // the walk's, exactly as for the Sandbox Images: a Machine composes a Sandbox, so the cluster
   // needs somewhere to clone from.
@@ -1197,20 +1199,20 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
   assert.deepEqual(Object.keys(objects).sort(), ["DaemonSet", "Role", "RoleBinding", "ServiceAccount"]);
   const ds = objects.DaemonSet!;
   const podSpec = ds.spec.template.spec;
-  assert.equal(ds.spec.selector.matchLabels.app, "j2-repo-cache");
-  assert.equal(ds.metadata.labels["j2.dev/instance"], "myinst", "owned like every other object");
+  assert.equal(ds.spec.selector.matchLabels.app, "jr2-repo-cache");
+  assert.equal(ds.metadata.labels["jr2.dev/instance"], "myinst", "owned like every other object");
 
   // The same binary as the operator, at the ref THIS converge resolved (installed here, so the
   // published one at the kit version), dispatched into its second entrypoint.
   const agent = podSpec.containers[0];
   assert.equal(agent.name, "agent");
   assert.equal(agent.image, imagesOf(w).operator, "the record and the pod name one operator ref");
-  assert.match(agent.image, /^ghcr\.io\/snapwich\/j2-operator:/);
+  assert.match(agent.image, /^ghcr\.io\/snapwich\/jr2-operator:/);
   assert.deepEqual(agent.command, ["/manager", "repo-cache"]);
 
   // The node directory, created by the kubelet, mounted where `--cache-dir` defaults.
   const cache = podSpec.volumes.find((v: { name: string }) => v.name === "cache");
-  assert.deepEqual(cache.hostPath, { path: "/var/lib/j2/myinst/repos", type: "DirectoryOrCreate" });
+  assert.deepEqual(cache.hostPath, { path: "/var/lib/jr2/myinst/repos", type: "DirectoryOrCreate" });
   assert.equal(agent.volumeMounts.find((m: { name: string }) => m.name === "cache").mountPath, "/cache");
   // The seat is root — the kubelet creates that directory root-owned — and nothing else is loose:
   // no capabilities, no escalation, a read-only root with $HOME and /tmp on emptyDirs.
@@ -1218,13 +1220,13 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
   assert.equal(agent.securityContext.allowPrivilegeEscalation, false);
   assert.deepEqual(agent.securityContext.capabilities, { drop: ["ALL"] });
   assert.equal(agent.securityContext.readOnlyRootFilesystem, true);
-  assert.ok(agent.env.some((e: { name: string; value?: string }) => e.name === "HOME" && e.value === "/home/j2"));
+  assert.ok(agent.env.some((e: { name: string; value?: string }) => e.name === "HOME" && e.value === "/home/jr2"));
   assert.ok(podSpec.volumes.some((v: { name: string; emptyDir?: unknown }) => v.name === "home" && v.emptyDir));
   assert.ok(podSpec.volumes.some((v: { name: string; emptyDir?: unknown }) => v.name === "tmp" && v.emptyDir));
   // Which node it writes for, and whose Repos it watches, come off the downward API.
   const env = Object.fromEntries(agent.env.map((e: { name: string }) => [e.name, e]));
   assert.deepEqual(env.NODE_NAME.valueFrom, { fieldRef: { fieldPath: "spec.nodeName" } });
-  assert.deepEqual(env.J2_NAMESPACE.valueFrom, { fieldRef: { fieldPath: "metadata.namespace" } });
+  assert.deepEqual(env.JR2_NAMESPACE.valueFrom, { fieldRef: { fieldPath: "metadata.namespace" } });
   // Exactly the Sandbox nodes (ADR-0052): no placement configured, so no tolerations and no
   // selector — the agent lands where an ordinary pod lands, which is where a Sandbox lands.
   assert.equal(podSpec.tolerations, undefined);
@@ -1233,11 +1235,11 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
   // It is an API client (its own status entry, the Repos, the pods on its node that mount a
   // cache, the credential Secret a Repo names) — read-mostly, and never a creator or deleter of
   // anything.
-  assert.equal(podSpec.serviceAccountName, "j2-repo-cache");
+  assert.equal(podSpec.serviceAccountName, "jr2-repo-cache");
   assert.equal(podSpec.automountServiceAccountToken, true);
   assert.deepEqual(objects.Role!.rules, [
-    { apiGroups: ["core.j2.dev"], resources: ["repos"], verbs: ["get", "list", "watch"] },
-    { apiGroups: ["core.j2.dev"], resources: ["repos/status"], verbs: ["get", "patch", "update"] },
+    { apiGroups: ["core.jr2.dev"], resources: ["repos"], verbs: ["get", "list", "watch"] },
+    { apiGroups: ["core.jr2.dev"], resources: ["repos/status"], verbs: ["get", "patch", "update"] },
     { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
     { apiGroups: [""], resources: ["secrets"], verbs: ["get"] },
   ]);
@@ -1250,9 +1252,9 @@ test("a Machine composing a Sandbox converges the cache agent: one root-seated p
 
   // Waited on and verified like every other layer: a DaemonSet that never scheduled is a data
   // plane every provision would park on.
-  assert.ok(w.kube.rollouts.includes("myinst/daemonset/j2-repo-cache"), `got: ${w.kube.rollouts.join(", ")}`);
-  assert.match(w.err.join("\n"), /repo cache: verified — 1 pod\(s\) running ghcr\.io\/snapwich\/j2-operator:/);
-  assert.ok(!w.kube.deleted.some((d) => d.includes("j2-repo-cache")), "nothing of its own is deleted");
+  assert.ok(w.kube.rollouts.includes("myinst/daemonset/jr2-repo-cache"), `got: ${w.kube.rollouts.join(", ")}`);
+  assert.match(w.err.join("\n"), /repo cache: verified — 1 pod\(s\) running ghcr\.io\/snapwich\/jr2-operator:/);
+  assert.ok(!w.kube.deleted.some((d) => d.includes("jr2-repo-cache")), "nothing of its own is deleted");
 });
 
 test("`sandbox.nodeSelector`/`tolerations` ride the cache agent verbatim, and the Sandbox nodes are reported (ADR-0052)", async () => {
@@ -1358,7 +1360,7 @@ test("the Sandbox-node warning names each exclusion and the config line (ADR-005
   assert.match(err, /warning: no Sandbox node right now — a Sandbox stays Pending until one appears:/);
   assert.match(err, /^  plain: lacks the label pool that sandbox.nodeSelector requires$/m);
   assert.match(err, /^  gpu-1: lacks the label pool that sandbox.nodeSelector requires$/m);
-  assert.match(err, /set `sandbox: \{ nodeSelector, tolerations \}` in j2.config.ts/);
+  assert.match(err, /set `sandbox: \{ nodeSelector, tolerations \}` in jr2.config.ts/);
   assert.ok(findRepoCache(s).DaemonSet, "the data plane converges regardless");
   assert.deepEqual(findRepoCache(s).DaemonSet!.spec.template.spec.nodeSelector, { pool: "agents" });
 });
@@ -1369,8 +1371,8 @@ test("the Orchestrator's Role reaches the Repo resources it creates", async () =
   assert.equal(await up(["--yes"], w.io), 0);
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const role = items.find((i) => i.kind === "Role" && i.metadata.name === "j2-orchestrator")!;
-  const crds = role.rules.find((r: { apiGroups: string[] }) => r.apiGroups.includes("core.j2.dev"));
+  const role = items.find((i) => i.kind === "Role" && i.metadata.name === "jr2-orchestrator")!;
+  const crds = role.rules.find((r: { apiGroups: string[] }) => r.apiGroups.includes("core.jr2.dev"));
   assert.ok(
     crds.resources.includes("repos"),
     `the Orchestrator creates, labels, and lists Repos (got: ${crds.resources})`,
@@ -1386,7 +1388,7 @@ test("no Machine composing a Sandbox → no cache agent, and a stale one is dele
   assert.deepEqual(findRepoCache(w), {});
   assert.ok(!w.kube.rollouts.some((r) => r.includes("daemonset/")), "nothing to wait on");
   for (const kind of ["daemonset", "serviceaccount", "role", "rolebinding"]) {
-    assert.ok(w.kube.deleted.includes(`myinst/${kind}/j2-repo-cache`), `stale ${kind} deleted`);
+    assert.ok(w.kube.deleted.includes(`myinst/${kind}/jr2-repo-cache`), `stale ${kind} deleted`);
   }
   assert.equal(imagesOf(w).operator !== undefined, true, "the operator layer still resolved its image");
 });
@@ -1404,7 +1406,7 @@ test("operator.manage: false with a data plane still resolves the operator image
 
   assert.ok(!w.kube.applied.some((m) => m.includes("controller-manager")), "the operator layer is skipped");
   assert.match(w.err.join("\n"), /operator: skipped \(operator\.manage: false/);
-  const built = w.built.find((b) => b.startsWith("build j2-operator:"));
+  const built = w.built.find((b) => b.startsWith("build jr2-operator:"));
   assert.ok(built, `the operator image is built for the cache agent (got: ${w.built.join(", ")})`);
   const ref = built.slice("build ".length);
   assert.equal(imagesOf(w).operator, ref, "…and recorded, so the next converge can skip the build");
@@ -1415,11 +1417,11 @@ test("live workspaces on an older image are reported, and nothing re-images them
   const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
   const w = mkWorld(root);
   w.kube.sandboxes = [
-    { metadata: { name: "ws-1" }, spec: { image: "j2-sandbox-myinst-default:0ldc0ntent" } },
-    { metadata: { name: "ws-2" }, spec: { image: "j2-sandbox-myinst-default:0ldc0ntent" } },
+    { metadata: { name: "ws-1" }, spec: { image: "jr2-sandbox-myinst-default:0ldc0ntent" } },
+    { metadata: { name: "ws-2" }, spec: { image: "jr2-sandbox-myinst-default:0ldc0ntent" } },
   ];
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.match(w.err.join("\n"), /2 running workspace\(s\) keep `j2-sandbox-myinst-default:0ldc0ntent`/);
+  assert.match(w.err.join("\n"), /2 running workspace\(s\) keep `jr2-sandbox-myinst-default:0ldc0ntent`/);
   assert.match(w.err.join("\n"), /delete those runs to re-image/);
   assert.ok(!w.kube.deleted.some((d) => d.includes("ws-")), "a running Workspace is never touched (ADR-0021)");
 
@@ -1434,7 +1436,7 @@ test("image: fresh hash skips the build; stale hash builds and kind-loads (no re
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const stale = mkWorld(root);
   assert.equal(await up(["--yes"], stale.io), 0);
-  assert.ok(stale.built.some((b) => b.startsWith("build j2-instance-myinst:")));
+  assert.ok(stale.built.some((b) => b.startsWith("build jr2-instance-myinst:")));
   assert.ok(
     stale.built.some((b) => b.includes("kind-load") && b.includes("→ test")),
     `delivered by kind load onto the context's cluster (got: ${stale.built.join(", ")})`,
@@ -1444,10 +1446,10 @@ test("image: fresh hash skips the build; stale hash builds and kind-loads (no re
   const tag = stale.built.find((b) => b.startsWith("build "))!.slice("build ".length);
   const hash = tag.split(":")[1]!;
   const fresh = mkWorld(root);
-  fresh.kube.set("myinst", "deployment", "j2-orchestrator", {
-    metadata: { name: "j2-orchestrator", labels: { "j2.dev/content-hash": hash } },
+  fresh.kube.set("myinst", "deployment", "jr2-orchestrator", {
+    metadata: { name: "jr2-orchestrator", labels: { "jr2.dev/content-hash": hash } },
   });
-  fresh.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  fresh.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
   assert.equal(await up([], fresh.io), 0);
   // The bundle is still staged — it is how the hash is computed at all — but the expensive half
   // (docker build + delivery) is what the staleness check buys.
@@ -1455,10 +1457,12 @@ test("image: fresh hash skips the build; stale hash builds and kind-loads (no re
 
   // --force spends the build anyway, against the very same hash.
   const forced = mkWorld(root);
-  forced.kube.set("myinst", "deployment", "j2-orchestrator", {
-    metadata: { name: "j2-orchestrator", labels: { "j2.dev/content-hash": hash } },
+  forced.kube.set("myinst", "deployment", "jr2-orchestrator", {
+    metadata: { name: "jr2-orchestrator", labels: { "jr2.dev/content-hash": hash } },
   });
-  forced.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  forced.kube.set("", "namespace", "myinst", {
+    metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } },
+  });
   assert.equal(await up(["--force"], forced.io), 0);
   assert.ok(forced.built.includes(`build ${tag}`), `--force rebuilds (got: ${forced.built.join(", ")})`);
 });
@@ -1470,7 +1474,7 @@ test("the image tag addresses the BUNDLE — a kit change the instance folder ne
   // Hashing the bundle makes the tag a content address of what actually goes into the image,
   // identically in a workspace checkout and against a published kit.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const kitFile = "node_modules/.pnpm/@j2+orchestrator/node_modules/@j2/orchestrator/src/lease.ts";
+  const kitFile = "node_modules/.pnpm/@jr2+orchestrator/node_modules/@jr2/orchestrator/src/lease.ts";
 
   const tagWith = async (kit: string): Promise<string> => {
     const w = mkWorld(root, { bundleFiles: { "package.json": "{}", [kitFile]: kit } });
@@ -1485,10 +1489,10 @@ test("the image tag addresses the BUNDLE — a kit change the instance folder ne
 });
 
 test("image: a registry pushes instead of kind-loading; a non-kind context without one fails loudly", async () => {
-  const pushRoot = await mkInstance(`export default { name: "p", registry: "reg.example.com/j2" };\n`, "p");
+  const pushRoot = await mkInstance(`export default { name: "p", registry: "reg.example.com/jr2" };\n`, "p");
   const w = mkWorld(pushRoot);
   assert.equal(await up(["--yes"], w.io), 0);
-  assert.ok(w.built.some((b) => b.startsWith("push reg.example.com/j2/j2-instance-p:")));
+  assert.ok(w.built.some((b) => b.startsWith("push reg.example.com/jr2/jr2-instance-p:")));
   assert.ok(!w.built.some((b) => b.includes("kind-load")));
 
   const bareRoot = await mkInstance(`export default { name: "q" };\n`, "q");
@@ -1502,34 +1506,34 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
     `export default { name: "myinst", harness: { env: [{ name: "API_KEY", value: "k123" }] } };\n`,
   );
   const w = mkWorld(root);
-  w.kube.set("myinst", "secret", "j2-instance", {
-    metadata: { name: "j2-instance" },
-    data: { J2_INSTANCE_TOKEN: Buffer.from("tok-old").toString("base64") },
+  w.kube.set("myinst", "secret", "jr2-instance", {
+    metadata: { name: "jr2-instance" },
+    data: { JR2_INSTANCE_TOKEN: Buffer.from("tok-old").toString("base64") },
   });
 
   assert.equal(await up(["--yes"], w.io), 0);
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-instance")!;
-  assert.equal(instance.stringData.J2_INSTANCE_TOKEN, "tok-old", "an existing token is kept (Sandboxes hold it)");
-  assert.ok(instance.stringData.J2_SIGNING_KEY, "a missing signing key is minted");
+  const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
+  assert.equal(instance.stringData.JR2_INSTANCE_TOKEN, "tok-old", "an existing token is kept (Sandboxes hold it)");
+  assert.ok(instance.stringData.JR2_SIGNING_KEY, "a missing signing key is minted");
   // The Instance Harness Adapter's credential (ADR-0031): a sandbox-style token signed for the
   // placement's name — derived from the kept key, so re-runs converge to the same value.
   assert.equal(
-    instance.stringData.J2_INSTANCE_HARNESS_TOKEN,
-    sandboxToken(Buffer.from(instance.stringData.J2_SIGNING_KEY, "base64"), "j2-instance-harness"),
+    instance.stringData.JR2_INSTANCE_HARNESS_TOKEN,
+    sandboxToken(Buffer.from(instance.stringData.JR2_SIGNING_KEY, "base64"), "jr2-instance-harness"),
   );
 
   // The ADR-0013 boundary: harness env lands in its OWN Secret — the Harness container envFroms
-  // j2-harness-env, and the Instance token/signing key must be unreachable from Agent code.
-  const harnessEnv = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-harness-env")!;
-  assert.ok(harnessEnv, "a separate j2-harness-env Secret is applied");
+  // jr2-harness-env, and the Instance token/signing key must be unreachable from Agent code.
+  const harnessEnv = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-harness-env")!;
+  assert.ok(harnessEnv, "a separate jr2-harness-env Secret is applied");
   assert.equal(harnessEnv.stringData.API_KEY, "k123", "config env values materialize there");
   assert.equal(instance.stringData.API_KEY, undefined, "…and not beside the Instance token");
-  assert.equal(harnessEnv.stringData.J2_INSTANCE_TOKEN, undefined, "the token never rides the harness Secret");
+  assert.equal(harnessEnv.stringData.JR2_INSTANCE_TOKEN, undefined, "the token never rides the harness Secret");
 });
 
-test("provider apiKey rides the Secret (J2_PROVIDER_API_KEY), never the harness ConfigMap", async () => {
+test("provider apiKey rides the Secret (JR2_PROVIDER_API_KEY), never the harness ConfigMap", async () => {
   const root = await mkInstance(
     `export default { name: "myinst", harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1", apiKey: "sk-secret", contextWindow: 131072, maxTokens: 32768, models: { "qwen-x": { contextWindow: 40960 } } } } };\n`,
   );
@@ -1538,10 +1542,10 @@ test("provider apiKey rides the Secret (J2_PROVIDER_API_KEY), never the harness 
 
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const secret = items.find((i) => i.kind === "Secret" && i.metadata.name === "j2-harness-env")!;
-  assert.equal(secret.stringData.J2_PROVIDER_API_KEY, "sk-secret");
+  const secret = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-harness-env")!;
+  assert.equal(secret.stringData.JR2_PROVIDER_API_KEY, "sk-secret");
 
-  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-harness")!;
+  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-harness")!;
   assert.ok(!cm.data["harness.json"].includes("sk-secret"), "the key never lands in a ConfigMap");
   assert.match(cm.data["harness.json"], /baseUrl/, "the rest of the provider config does ride the ConfigMap");
   // Token limits are model properties, not credentials — they DO ride the ConfigMap.
@@ -1554,7 +1558,7 @@ test("provider apiKey rides the Secret (J2_PROVIDER_API_KEY), never the harness 
   assert.equal(spec.agents, undefined, "no Agent roster rides the deployment");
 });
 
-test("caBundle: the PEM rides a j2-ca ConfigMap and the provider preflight; a missing file fails loudly", async () => {
+test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a missing file fails loudly", async () => {
   const config =
     `export default { name: "myinst", harness: { caBundle: "ca.crt", ` +
     `provider: { id: "vllm", api: "openai-completions", baseUrl: "https://vllm.internal/v1" } } };\n`;
@@ -1568,7 +1572,7 @@ test("caBundle: the PEM rides a j2-ca ConfigMap and the provider preflight; a mi
   // A ConfigMap, not a Secret — CA certs are public data (ADR-0020).
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-ca")!;
+  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-ca")!;
   assert.equal(cm.data["ca.crt"], pem);
   // The preflight pod trusts the same bundle the Harness will — else it fails where pods succeed.
   assert.deepEqual(w.kube.probeCaPems, [pem]);
@@ -1577,13 +1581,13 @@ test("caBundle: the PEM rides a j2-ca ConfigMap and the provider preflight; a mi
   await assert.rejects(() => up(["--yes"], missing.io), /caBundle.*relative to the instance folder/s);
 });
 
-test("no caBundle → no j2-ca ConfigMap", async () => {
+test("no caBundle → no jr2-ca ConfigMap", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  assert.ok(!items.some((i) => i.kind === "ConfigMap" && i.metadata.name === "j2-ca"));
+  assert.ok(!items.some((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-ca"));
 });
 
 test("a referenced-but-missing Secret fails the converge naming it, with the creation hint", async () => {
@@ -1604,7 +1608,7 @@ test("converge applies the instance objects and waits for the rollout", async ()
   for (const k of ["PersistentVolumeClaim", "ServiceAccount", "ConfigMap", "Secret", "Deployment", "Service"]) {
     assert.ok(kinds.includes(k), `applies a ${k}`);
   }
-  assert.deepEqual(w.kube.rollouts, ["j2-system/j2-controller-manager", "myinst/j2-orchestrator"]);
+  assert.deepEqual(w.kube.rollouts, ["jr2-system/jr2-controller-manager", "myinst/jr2-orchestrator"]);
 });
 
 test("converged is claimed only of a pod observed carrying the intended image", async () => {
@@ -1613,11 +1617,11 @@ test("converged is claimed only of a pod observed carrying the intended image", 
   // Convergence is now asserted against the running pod — observed state, not the CLI's own claim.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const drifted = mkWorld(root);
-  drifted.kube.podImages = { "app=j2-orchestrator": "j2-instance-myinst:0ldc0ntent" };
+  drifted.kube.podImages = { "app=jr2-orchestrator": "jr2-instance-myinst:0ldc0ntent" };
 
   await assert.rejects(
     () => up(["--yes"], drifted.io),
-    /running pod carries j2-instance-myinst:0ldc0ntent.*expected j2-instance-myinst:/s,
+    /running pod carries jr2-instance-myinst:0ldc0ntent.*expected jr2-instance-myinst:/s,
     "the drift is named in both directions, so the fix is obvious",
   );
 
@@ -1669,8 +1673,8 @@ test("provider preflight: configured but no carried Agent names its models → s
 
 // --- git over ssh: the key source is the user's choice (ADR-0047) --------------------------------
 
-/** The scaffold's wildcard, minus the token: every ssh url's key is the `j2-git-ssh` Secret. */
-const SSH_CONFIG = `export default { name: "myinst", git: { credentials: [{ match: "*", sshKey: "j2-git-ssh" }] } };\n`;
+/** The scaffold's wildcard, minus the token: every ssh url's key is the `jr2-git-ssh` Secret. */
+const SSH_CONFIG = `export default { name: "myinst", git: { credentials: [{ match: "*", sshKey: "jr2-git-ssh" }] } };\n`;
 /** The bound ssh url the walk finds — what the ssh layer asks about, by url (ADR-0051). */
 const SSH_URL = "git@github.com:o/app";
 /** An instance whose one registered Machine binds `SSH_URL`. */
@@ -1683,7 +1687,7 @@ const PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockMockMockMockMockMoc
 /** A HOME whose `~/.ssh` holds one real-looking private key beside the files that are NOT keys —
  * the discovery has to tell them apart by content, since `known_hosts` is a file like any other. */
 async function mkSshHome(): Promise<{ home: string; keyPath: string }> {
-  const home = await mkdtemp(join(tmpdir(), "j2-home-"));
+  const home = await mkdtemp(join(tmpdir(), "jr2-home-"));
   await mkdir(join(home, ".ssh"), { recursive: true });
   await writeFile(join(home, ".ssh", "id_ed25519"), PRIVATE_KEY);
   await writeFile(join(home, ".ssh", "id_ed25519.pub"), `${PUBLIC_KEY}\n`);
@@ -1694,7 +1698,7 @@ async function mkSshHome(): Promise<{ home: string; keyPath: string }> {
 
 /** The Secret the git-ssh layer applied, parsed — or undefined when it applied none. */
 function gitSshSecret(w: World): { stringData: Record<string, string> } | undefined {
-  const manifest = w.kube.applied.find((m) => m.includes(`"name":"j2-git-ssh"`));
+  const manifest = w.kube.applied.find((m) => m.includes(`"name":"jr2-git-ssh"`));
   return manifest ? JSON.parse(manifest) : undefined;
 }
 
@@ -1724,7 +1728,7 @@ test("git ssh source: generate — the menu leads with it, the key prints, and u
   const tail = w.err.join("");
   const notice = tail.slice(tail.indexOf("converged —"));
   assert.match(notice, /ssh-ed25519 AAAAC3/, "the public key is repeated last");
-  assert.match(notice, /generated into "j2-git-ssh"/, "…and the Secret it landed in");
+  assert.match(notice, /generated into "jr2-git-ssh"/, "…and the Secret it landed in");
   assert.match(notice, /git@github\.com:o\/app will not sync/, "the url, never a name");
   assert.match(notice, /cache agent retries on its own/);
 });
@@ -1742,8 +1746,8 @@ test("git ssh: the Secret is the matched entry's `sshKey`; an ssh url no entry k
   const root = await withWorkspace(await mkInstance(config), SSH_URL);
   await writeFile(
     join(root, "workflows", "other.ts"),
-    `import { j2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
-      `const body = j2Setup({ events: [] })\n` +
+    `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [] })\n` +
       `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
       `export const machine = workspace(body, { repos: { keyless: "git@github.com:x/y.git", stranger: "ssh://git@gitlab.com/z/z.git" }, spec: () => ({ branch: "b" }) });\n`,
   );
@@ -1852,7 +1856,7 @@ test("git ssh: a passphrase-protected key is refused BY NAME, before anything is
     throw new Error("it is passphrase-protected. The in-cluster clone runs unattended…");
   };
   await assert.rejects(() => up([], w.io), /passphrase-protected/);
-  assert.equal(gitSshSecret(w), undefined, "no Secret may be applied on a key j2 refuses");
+  assert.equal(gitSshSecret(w), undefined, "no Secret may be applied on a key jr2 refuses");
 });
 
 test("git ssh: declining every source bails; an existing Secret is never offered against", async () => {
@@ -1861,11 +1865,11 @@ test("git ssh: declining every source bails; an existing Secret is never offered
   decline.io.sshKeygen = async () => assert.fail("declined — no key may be generated");
   // The bail spells the scripted escape, and it must name the key the cache agent reads — `identity`
   // (Flux's names, ADR-0051). A Secret under any other key is refused by every clone.
-  await assert.rejects(() => up([], decline.io), /j2-git-ssh.*--from-file=identity=<path>/s);
+  await assert.rejects(() => up([], decline.io), /jr2-git-ssh.*--from-file=identity=<path>/s);
   assert.equal(gitSshSecret(decline), undefined);
 
   const has = mkWorld(await sshInstance("has"));
-  has.kube.set("myinst", "secret", "j2-git-ssh", { metadata: { name: "j2-git-ssh" } });
+  has.kube.set("myinst", "secret", "jr2-git-ssh", { metadata: { name: "jr2-git-ssh" } });
   has.io.sshKeygen = async () => assert.fail("Secret exists — no key may be generated");
   assert.equal(await up(["--yes"], has.io), 0);
   assert.equal(has.choices.length, 0);
@@ -1908,8 +1912,8 @@ function findInstanceHarness(w: World): { deployment?: Record<string, any>; serv
     if (!manifest.trimStart().startsWith("{")) continue;
     const doc = JSON.parse(manifest) as { kind?: string; items?: Array<Record<string, any>> };
     const items = doc.kind === "List" ? (doc.items ?? []) : [];
-    const deployment = items.find((i) => i.kind === "Deployment" && i.metadata.name === "j2-instance-harness");
-    const service = items.find((i) => i.kind === "Service" && i.metadata.name === "j2-instance-harness");
+    const deployment = items.find((i) => i.kind === "Deployment" && i.metadata.name === "jr2-instance-harness");
+    const service = items.find((i) => i.kind === "Service" && i.metadata.name === "jr2-instance-harness");
     if (deployment || service) return { deployment, service };
   }
   return {};
@@ -1927,7 +1931,7 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   const { deployment, service } = findInstanceHarness(w);
   assert.ok(deployment, "the Deployment is applied");
   assert.ok(service, "…with its Service");
-  assert.ok(w.kube.rollouts.includes("myinst/j2-instance-harness"), "and the rollout is waited for");
+  assert.ok(w.kube.rollouts.includes("myinst/jr2-instance-harness"), "and the rollout is waited for");
 
   // The one Harness shape, minus the Workspace (ADR-0031): two containers, no /work, no user.
   const podSpec = deployment.spec.template.spec;
@@ -1942,20 +1946,20 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   // This world is NOT a kit checkout (mkWorld's default kitDir is the instance folder), so the
   // resolved ref is the published one — the branch a real instance takes (ADR-0038), at the
   // canonical home (ADR-0044).
-  assert.equal(harness.image, "ghcr.io/snapwich/j2-harness:0.0.0", "the stock image at the kit version");
+  assert.equal(harness.image, "ghcr.io/snapwich/jr2-harness:0.0.0", "the stock image at the kit version");
   assert.deepEqual(harness.env[0], {
-    name: "J2_HARNESS_JSON",
-    valueFrom: { configMapKeyRef: { name: "j2-harness", key: "harness.json" } },
+    name: "JR2_HARNESS_JSON",
+    valueFrom: { configMapKeyRef: { name: "jr2-harness", key: "harness.json" } },
   });
   assert.ok(
-    harness.envFrom.some((e: { secretRef?: { name: string } }) => e.secretRef?.name === "j2-harness-env"),
+    harness.envFrom.some((e: { secretRef?: { name: string } }) => e.secretRef?.name === "jr2-harness-env"),
     "the Harness envFroms its own Secret",
   );
   // The placement gate (ADR-0031): every admission carries its own definition (ADR-0049), so the
   // Harness itself must refuse any non-Menu-only one — no code execution in this pod is a claim
   // this env makes checkable.
   assert.ok(
-    harness.env.some((e: { name: string; value?: string }) => e.name === "J2_MENU_ONLY" && e.value === "1"),
+    harness.env.some((e: { name: string; value?: string }) => e.name === "JR2_MENU_ONLY" && e.value === "1"),
     "the Harness is told it is the Instance Harness",
   );
 
@@ -1963,10 +1967,10 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   // deliver only for registrations recording the Instance Harness (tokens.ts, ADR-0013/0031).
   const adapter = podSpec.containers[1];
   assert.ok(
-    adapter.env.some((e: { name: string; value?: string }) => /j2-orchestrator\.myinst\.svc/.test(e.value ?? "")),
+    adapter.env.some((e: { name: string; value?: string }) => /jr2-orchestrator\.myinst\.svc/.test(e.value ?? "")),
   );
-  const bearer = adapter.env.find((e: { name: string }) => e.name === "J2_SANDBOX_TOKEN");
-  assert.deepEqual(bearer.valueFrom, { secretKeyRef: { name: "j2-instance", key: "J2_INSTANCE_HARNESS_TOKEN" } });
+  const bearer = adapter.env.find((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN");
+  assert.deepEqual(bearer.valueFrom, { secretKeyRef: { name: "jr2-instance", key: "JR2_INSTANCE_HARNESS_TOKEN" } });
 });
 
 test("both readiness probes set a period — a ~1s boot must not be billed as a 10s rollout wait", async () => {
@@ -1974,9 +1978,9 @@ test("both readiness probes set a period — a ~1s boot must not be billed as a 
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const list = w.kube.applied.find((m) => m.includes(`"j2-orchestrator"`) && m.includes(`"kind":"List"`))!;
+  const list = w.kube.applied.find((m) => m.includes(`"jr2-orchestrator"`) && m.includes(`"kind":"List"`))!;
   const orchestrator = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
-    (i) => i.kind === "Deployment" && i.metadata.name === "j2-orchestrator",
+    (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
   )!;
   const { deployment: harness } = findInstanceHarness(w);
 
@@ -2008,22 +2012,22 @@ test('no "none" definitions → nothing new deploys, and a stale Instance Harnes
   assert.equal(deployment, undefined);
   assert.equal(service, undefined);
   // Idempotent converge: a definition that dropped its "none" must not leave a stale Deployment.
-  assert.ok(w.kube.deleted.includes("myinst/deployment/j2-instance-harness"));
-  assert.ok(w.kube.deleted.includes("myinst/service/j2-instance-harness"));
+  assert.ok(w.kube.deleted.includes("myinst/deployment/jr2-instance-harness"));
+  assert.ok(w.kube.deleted.includes("myinst/service/jr2-instance-harness"));
 });
 
 test("the Instance Harness runs the refs THIS converge resolved — the same ones the map names", async () => {
   // There is no `images` block to override them with (ADR-0038): in a kit checkout the Instance
   // Harness runs the content-addressed images just built here, and nothing else can be pointed at.
   // The accepted asymmetry: this Deployment names its images in the pod template (it is SUPPOSED
-  // to roll when they move), while a Sandbox's refs travel through the j2-images ConfigMap.
+  // to roll when they move), while a Sandbox's refs travel through the jr2-images ConfigMap.
   const kit = await mkKit();
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
   const w = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], w.io), 0);
 
   const images = imagesOf(w);
-  assert.match(images.harness, /^j2-harness:[0-9a-f]{12}-amd64$/);
+  assert.match(images.harness, /^jr2-harness:[0-9a-f]{12}-amd64$/);
   const { deployment } = findInstanceHarness(w);
   assert.equal(deployment!.spec.template.spec.containers[0].image, images.harness);
   assert.equal(deployment!.spec.template.spec.containers[1].image, images.adapter);
@@ -2031,7 +2035,7 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
 
 // --- the post-converge sweep (ADR-0039) ----------------------------------------------------------
 
-test("every layer j2 builds is stamped with who owns it", async () => {
+test("every layer jr2 builds is stamped with who owns it", async () => {
   // Ownership is a label, never a name (ADR-0039) — so an unstamped build is not a cosmetic miss,
   // it is an image no sweep can ever collect. The kit's three, the instance's own, and the two
   // Sandbox Image builds all pass through here.
@@ -2053,14 +2057,14 @@ test("every layer j2 builds is stamped with who owns it", async () => {
       }),
   );
   const kind = (ref: string): unknown => JSON.parse(stamps.get(ref) ?? "null");
-  for (const repo of ["j2-harness", "j2-adapter", "j2-operator"]) {
+  for (const repo of ["jr2-harness", "jr2-adapter", "jr2-operator"]) {
     const ref = [...stamps.keys()].find((r) => r.startsWith(`${repo}:`))!;
-    assert.deepEqual(kind(ref), { "j2.dev/kind": "kit" }, `${repo} is stamped as the kit's`);
+    assert.deepEqual(kind(ref), { "jr2.dev/kind": "kit" }, `${repo} is stamped as the kit's`);
   }
-  const instanceRef = [...stamps.keys()].find((r) => r.startsWith("j2-instance-myinst:"))!;
-  assert.deepEqual(kind(instanceRef), { "j2.dev/kind": "instance", "j2.dev/instance": "myinst" });
-  const sandboxRef = [...stamps.keys()].find((r) => r.startsWith("j2-sandbox-myinst-default:"))!;
-  assert.deepEqual(kind(sandboxRef), { "j2.dev/kind": "sandbox", "j2.dev/instance": "myinst" });
+  const instanceRef = [...stamps.keys()].find((r) => r.startsWith("jr2-instance-myinst:"))!;
+  assert.deepEqual(kind(instanceRef), { "jr2.dev/kind": "instance", "jr2.dev/instance": "myinst" });
+  const sandboxRef = [...stamps.keys()].find((r) => r.startsWith("jr2-sandbox-myinst-default:"))!;
+  assert.deepEqual(kind(sandboxRef), { "jr2.dev/kind": "sandbox", "jr2.dev/instance": "myinst" });
 });
 
 test("a converge that succeeded sweeps the generation it replaced, and keeps what it just resolved", async () => {
@@ -2068,35 +2072,35 @@ test("a converge that succeeded sweeps the generation it replaced, and keeps wha
   // and the moment this converge's map replaces the last one is the moment the old one stops being
   // reachable (ADR-0039).
   const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const stale = image({ id: "sha256:old", tags: ["j2-instance-myinst:0ldc0ntent"], bytes: 2_100_000_000 });
+  const stale = image({ id: "sha256:old", tags: ["jr2-instance-myinst:0ldc0ntent"], bytes: 2_100_000_000 });
   const foreign = image({ id: "sha256:pg", tags: ["postgres:16"], bytes: 500, labeled: false });
   const w = mkWorld(root, { hostImages: [stale, foreign] });
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const fresh = w.built.find((b) => b.startsWith("build j2-instance-myinst:"))!.slice("build ".length);
+  const fresh = w.built.find((b) => b.startsWith("build jr2-instance-myinst:"))!.slice("build ".length);
   assert.deepEqual(
     w.built.filter((b) => b.startsWith("rmi-host ")),
-    ["rmi-host j2-instance-myinst:0ldc0ntent"],
-    `only the replaced generation goes — never ${fresh}, and never an image j2 did not build`,
+    ["rmi-host jr2-instance-myinst:0ldc0ntent"],
+    `only the replaced generation goes — never ${fresh}, and never an image jr2 did not build`,
   );
   assert.match(w.err.join("\n"), /swept 1 image\(s\) \(2\.1 GB\)/, "bytes, because disk is what the user feels");
 });
 
 test("the node sweep grants the map it replaced one generation of grace; the host gets none", async () => {
-  // The `j2-images` ConfigMap reaches a Sandbox through a kubelet propagation window, so for one
+  // The `jr2-images` ConfigMap reaches a Sandbox through a kubelet propagation window, so for one
   // more round a provision can still ask a NODE for a ref the new map no longer names. Nothing is
   // ever provisioned from the host daemon, so its copy goes immediately (ADR-0039).
   const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const previous = { harness: "j2-harness:0ldharnes", adapter: "j2-adapter:0.0.0", sandbox: {} };
-  const replaced = (id: string) => image({ id, tags: ["j2-harness:0ldharnes"], bytes: 10 });
+  const previous = { harness: "jr2-harness:0ldharnes", adapter: "jr2-adapter:0.0.0", sandbox: {} };
+  const replaced = (id: string) => image({ id, tags: ["jr2-harness:0ldharnes"], bytes: 10 });
   const w = mkWorld(root, { hostImages: [replaced("sha256:host")], nodeImages: [replaced("sha256:node")] });
-  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
-  w.kube.set("myinst", "deployment", "j2-orchestrator", {
-    metadata: { name: "j2-orchestrator", annotations: { "j2.dev/images": JSON.stringify(previous) } },
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
+  w.kube.set("myinst", "deployment", "jr2-orchestrator", {
+    metadata: { name: "jr2-orchestrator", annotations: { "jr2.dev/images": JSON.stringify(previous) } },
   });
 
   assert.equal(await up([], w.io), 0);
-  assert.ok(w.built.includes("rmi-host j2-harness:0ldharnes"), `the host copy goes (got: ${w.built.join(", ")})`);
+  assert.ok(w.built.includes("rmi-host jr2-harness:0ldharnes"), `the host copy goes (got: ${w.built.join(", ")})`);
   assert.ok(
     !w.built.some((b) => b.startsWith("rmi-node ")),
     "…while the node keeps it one more round, so the propagation window cannot lose a provision",
@@ -2107,8 +2111,8 @@ test("a converge that failed sweeps nothing", async () => {
   // The sweep is the last act of a run that fully succeeded — annotation applied, rollouts
   // verified. A converge that threw has not moved the root set, so nothing it built is garbage.
   const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const w = mkWorld(root, { hostImages: [image({ id: "sha256:old", tags: ["j2-instance-myinst:0ld"], bytes: 1 })] });
-  w.kube.podImages = { "app=j2-orchestrator": "j2-instance-myinst:0ldc0ntent" };
+  const w = mkWorld(root, { hostImages: [image({ id: "sha256:old", tags: ["jr2-instance-myinst:0ld"], bytes: 1 })] });
+  w.kube.podImages = { "app=jr2-orchestrator": "jr2-instance-myinst:0ldc0ntent" };
 
   await assert.rejects(() => up(["--yes"], w.io), /running pod carries/);
   assert.ok(!w.built.some((b) => b.startsWith("rmi-host ")), "a failed converge collects nothing");
@@ -2128,32 +2132,32 @@ test("another instance's roots protect its images, kit refs included", async () 
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root, {
     hostImages: [
-      image({ id: "sha256:other", tags: ["j2-instance-other:c0ffee"], bytes: 10 }),
-      image({ id: "sha256:kit", tags: ["j2-harness:0f1e2d3c4b5a"], bytes: 20 }),
-      image({ id: "sha256:gone", tags: ["j2-harness:deadbeef1234"], bytes: 30 }),
+      image({ id: "sha256:other", tags: ["jr2-instance-other:c0ffee"], bytes: 10 }),
+      image({ id: "sha256:kit", tags: ["jr2-harness:0f1e2d3c4b5a"], bytes: 20 }),
+      image({ id: "sha256:gone", tags: ["jr2-harness:deadbeef1234"], bytes: 30 }),
     ],
   });
   w.kube.instanceNamespaces = [{ metadata: { name: "other" } }];
   w.kube.imageMaps = [
     {
-      metadata: { name: "j2-images", namespace: "other" },
+      metadata: { name: "jr2-images", namespace: "other" },
       data: {
         "images.json": JSON.stringify({
-          harness: "j2-harness:0f1e2d3c4b5a",
-          adapter: "j2-adapter:5a4b3c2d1e0f",
-          sandbox: { default: "j2-sandbox-other-default:99aa88bb77cc" },
+          harness: "jr2-harness:0f1e2d3c4b5a",
+          adapter: "jr2-adapter:5a4b3c2d1e0f",
+          sandbox: { default: "jr2-sandbox-other-default:99aa88bb77cc" },
         }),
       },
     },
   ];
   w.kube.clusterPods = [
-    { metadata: { name: "orch", namespace: "other" }, spec: { containers: [{ image: "j2-instance-other:c0ffee" }] } },
+    { metadata: { name: "orch", namespace: "other" }, spec: { containers: [{ image: "jr2-instance-other:c0ffee" }] } },
   ];
 
   assert.equal(await up(["--yes"], w.io), 0);
   assert.deepEqual(
     w.built.filter((b) => b.startsWith("rmi-host ")),
-    ["rmi-host j2-harness:deadbeef1234"],
+    ["rmi-host jr2-harness:deadbeef1234"],
     "the kit generation nothing names goes; the one another instance's map names stays",
   );
 });
@@ -2161,7 +2165,7 @@ test("another instance's roots protect its images, kit refs included", async () 
 test("re-running against the instance's own namespace converges silently (no prompt)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root, { confirm: false }); // any prompt would fail the run
-  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "j2.dev/instance": "myinst" } } });
+  w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
 
   assert.equal(await up([], w.io), 0);
   assert.equal(w.confirms.length, 0, "it's home — no prompt");

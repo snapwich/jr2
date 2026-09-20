@@ -1,6 +1,6 @@
 // The Agent as a slot (ADR-0049): `agent(definition)` brands its logic with the definition, and
 // `isAgent` is how everything else — the menu walk above all — recognizes one. There is nothing
-// else in this module: the instance roster it also held (`agents/` discovery, read by `j2 up` into
+// else in this module: the instance roster it also held (`agents/` discovery, read by `jr2 up` into
 // a ConfigMap) retired when the definition began riding the Turn.
 
 import { test } from "node:test";
@@ -36,7 +36,7 @@ test("an Open model is still an Agent slot — the walk has to SEE it to refuse 
   assert.ok(isAgent(logic), "a packaged Machine's unbound Agent is an Agent");
   assert.equal(isOpenAgent(declaration), true);
   assert.equal(isOpenAgent({ model: "m", instructions: "i" }), false);
-  // Any other symbol is not the sentinel: `Symbol.for("j2.open")` is the agreement between an
+  // Any other symbol is not the sentinel: `Symbol.for("jr2.open")` is the agreement between an
   // Instance's copy of the module and the CLI's, and nothing else passes for it.
   assert.equal(isAgent({ definition: { model: Symbol("open"), instructions: "i" } }), false);
 });

@@ -1,4 +1,4 @@
-// The Adapter (ADR-0013): the j2-owned sidecar that serves the current turn's tool menu to the
+// The Adapter (ADR-0013): the jr2-owned sidecar that serves the current turn's tool menu to the
 // Agent over MCP on `localhost`, and forwards the Agent's picks to the Orchestrator.
 //
 // It is a separate container from the Harness, and THAT IS THE WHOLE POINT. `local()` tools give
@@ -14,18 +14,18 @@
 //   tools/call <name>     → POST {orchestrator}/agents/:iid/events      → validate + deliver
 //   POST /fetch           → POST {orchestrator}/sandboxes/:name/fetch   → ask the node cache
 //
-// The third one is not the Agent's to say (ADR-0053): `j2-upload-pack`, the program git runs for
+// The third one is not the Agent's to say (ADR-0053): `jr2-upload-pack`, the program git runs for
 // `origin`'s fetch url, asks on behalf of whoever ran `git fetch` — the Agent, or a human at a
 // shell in any seat of the pod. It is the pod's only route out, and the Adapter forwards this one
 // verb and no other, because the credential that makes it possible is here and nowhere else.
 //
 // The iid comes from the URL the Agent connects to (`/mcp/:iid`), and flue's Harness names it: a
 // `defineAgent` initializer re-runs on every submission with `{ id, env }`, where `id` IS the agent
-// instance id, so the persona connects to `${env.J2_ADAPTER_URL}/mcp/${id}` per turn. The Adapter
+// instance id, so the persona connects to `${env.JR2_ADAPTER_URL}/mcp/${id}` per turn. The Adapter
 // therefore never has to LEARN which turn is live — no push channel, no long-poll, no
 // sandbox→turn index, no second inbound port on the pod. It asks, per connection, and the answer
 // is the turn. (This is also why `list_changed` is unnecessary: flue re-lists on every submission,
-// and a j2 menu only ever changes at a turn boundary.)
+// and a jr2 menu only ever changes at a turn boundary.)
 //
 // Every request it makes carries the Sandbox token — from the Secret the CR mounts into THIS
 // container's env, and nowhere else in the pod.
@@ -84,11 +84,11 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * The marker the `@kind` tier greps for, and therefore a CONTRACT — duplicated verbatim in
- * `@j2/orchestrator`'s wire client (the two packages share no runtime dependency) and matched in
+ * `@jr2/orchestrator`'s wire client (the two packages share no runtime dependency) and matched in
  * `features/steps/kind.steps.ts`. Renaming it on one side breaks no build; it silently turns the
  * tier's routability budget into a check that passes because it matches nothing.
  */
-const ROUTABILITY_MARKER = "j2.routability";
+const ROUTABILITY_MARKER = "jr2.routability";
 
 /**
  * What a retry at a lifecycle edge COST, emitted once, only when there was a cost.
@@ -168,9 +168,9 @@ export type OrchestratorOptions = {
   /** Base URL of the Orchestrator, reachable FROM THE POD (Service DNS when deployed —
    * ADR-0019). The Agent never makes this call and is never told this address. */
   url: string;
-  /** The Sandbox token (`J2_SANDBOX_TOKEN`), from the Secret mounted into this container alone. */
+  /** The Sandbox token (`JR2_SANDBOX_TOKEN`), from the Secret mounted into this container alone. */
   token: string;
-  /** This pod's Sandbox (`J2_SANDBOX`) — the name the ask route is addressed by, and the scope the
+  /** This pod's Sandbox (`JR2_SANDBOX`) — the name the ask route is addressed by, and the scope the
    * token is checked against (ADR-0053). Absent on the Instance Harness, which mounts no Repo and
    * therefore has nothing to fetch. */
   sandbox?: string;
@@ -354,7 +354,7 @@ export class OrchestratorClient {
 export async function serverForTurn(client: OrchestratorClient, instanceId: string): Promise<McpServer> {
   // `tools` is declared up front because the empty turn below has to answer `tools/list` without
   // ever registering a tool, and the SDK gates that handler on the capability.
-  const server = new McpServer({ name: "j2-adapter", version: "0.0.0" }, { capabilities: { tools: {} } });
+  const server = new McpServer({ name: "jr2-adapter", version: "0.0.0" }, { capabilities: { tools: {} } });
   const surface = await liveSurface(client, instanceId);
   if (!surface) {
     // The SDK installs `tools/list` as a side effect of the first `registerTool`, and this turn

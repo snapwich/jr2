@@ -46,7 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 const (
@@ -118,7 +118,7 @@ type Agent struct {
 	Now func() time.Time
 }
 
-// The agent's RBAC is `j2 up`'s to grant (the DaemonSet's Role, not the
+// The agent's RBAC is `jr2 up`'s to grant (the DaemonSet's Role, not the
 // operator's): repos get/list/watch, repos/status get/update/patch, pods
 // get/list/watch, secrets get — all namespaced.
 
@@ -128,7 +128,7 @@ type Agent struct {
 //   - the Repo is gone → remove the cache once no pod on this node mounts it;
 //   - no cache and a pod here mounts it → clone (a cold node pays once);
 //   - no cache and nobody asks → probe the remote once per spec generation, so
-//     `j2 status` sees a private repo's error before any run does (ADR-0048);
+//     `jr2 status` sees a private repo's error before any run does (ADR-0048);
 //   - a cache → pin gc, then fetch when a pod on this node asks — by having
 //     been created, or by carrying an ask marked since the last attempt
 //     (ADR-0053) — when the refresh interval elapsed, or when the spec changed.
@@ -136,7 +136,7 @@ type Agent struct {
 // A clone, probe, or pin that fails returns an error so the queue retries with
 // backoff; a fetch that fails degrades the cache to stale and waits for the
 // interval — freshness degrades, absence does not. Every failure is written
-// to this node's entry before the error returns: the entry is what `j2
+// to this node's entry before the error returns: the entry is what `jr2
 // status` and a waiting Sandbox's Ready read (ADR-0048, ADR-0051), and a
 // backoff with nothing in the entry would hold that Sandbox Pending with the
 // cause visible nowhere.
@@ -207,7 +207,7 @@ func (a *Agent) demand(ctx context.Context, key string) (wanted bool, asked time
 }
 
 // askOf is when a pod last asked this node for one key: its creation, because
-// a creation is an ask (ADR-0051), or the `j2.dev/asked-<key>` annotation the
+// a creation is an ask (ADR-0051), or the `jr2.dev/asked-<key>` annotation the
 // operator copied from the Sandbox when that is later (ADR-0053). A garbage
 // value is treated as absent, loudly.
 //
@@ -336,7 +336,7 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 }
 
 // probe checks a Repo nobody on this node has asked for yet, once per spec
-// generation: the sync signal `j2 status` shows before any Sandbox exists,
+// generation: the sync signal `jr2 status` shows before any Sandbox exists,
 // without paying for a clone (ADR-0048). The entry says it was a Probe, so a
 // Sandbox that lands here after a failed one is held Pending for the clone,
 // not failed for an error no clone produced.
@@ -345,7 +345,7 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 // this generation. An entry that says present describes a cache this node no
 // longer holds — the directory was removed, or the node was re-imaged under
 // its name — and it must not stand: the operator places Sandboxes by it, and
-// `j2 status` reports it. The probe is the write that corrects it.
+// `jr2 status` reports it. The probe is the write that corrects it.
 func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result, error) {
 	if entry := a.own(repo); entry != nil && !entry.Present && entry.Synced && entry.ObservedGeneration == repo.Generation {
 		return ctrl.Result{}, nil
@@ -406,7 +406,7 @@ func (a *Agent) probe(ctx context.Context, repo *corev1alpha1.Repo) (ctrl.Result
 // A pin that fails — a `git config` write refused by a checkout another uid
 // owns, a read-only or full disk — is a failed attempt on a present cache:
 // the entry says present, unsynced, with git's words, so a Sandbox waiting on
-// this node goes Ready stale and `j2 status` names the cause; the error
+// this node goes Ready stale and `jr2 status` names the cause; the error
 // returns for the backoff, since nothing fetches into a cache that cannot be
 // pinned (ADR-0004).
 func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string, asked time.Time) (ctrl.Result, error) {
@@ -644,9 +644,9 @@ func (a *Agent) unmark(key string) error {
 func (a *Agent) dir(key string) string    { return filepath.Join(a.CacheDir, key) }
 func (a *Agent) marker(key string) string { return filepath.Join(a.CacheDir, key+cloningSuffix) }
 
-// hostRoot is the node directory the cache agent's DaemonSet owns; `j2 up`
+// hostRoot is the node directory the cache agent's DaemonSet owns; `jr2 up`
 // mounts `HostDir(namespace)` into the agent as its `--cache-dir`.
-const hostRoot = "/var/lib/j2"
+const hostRoot = "/var/lib/jr2"
 
 // HostDir is the node directory holding one Instance's caches: what the
 // DaemonSet mounts, and the prefix a Sandbox pod's cache volumes share.

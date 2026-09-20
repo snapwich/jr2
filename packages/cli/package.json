@@ -1,5 +1,5 @@
 {
-  "name": "@j2/cli",
+  "name": "@jr2/cli",
   "version": "0.0.0",
   "private": false,
   "publishConfig": {
@@ -7,7 +7,7 @@
   },
   "type": "module",
   "bin": {
-    "j2": "bin/j2.js"
+    "jr2": "bin/jr2.js"
   },
   "exports": {
     ".": "./src/index.ts"
@@ -21,7 +21,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@j2/orchestrator": "workspace:*",
+    "@jr2/orchestrator": "workspace:*",
     "ts-blank-space": "^0.9.0"
   },
   "devDependencies": {

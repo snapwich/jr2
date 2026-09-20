@@ -1,14 +1,14 @@
-// `j2 kit push <registry>` (ADR-0044): the installed self-hoster's mirror of the Kit images.
+// `jr2 kit push <registry>` (ADR-0044): the installed self-hoster's mirror of the Kit images.
 //
 // Kit images live at a canonical public home (`ghcr.io/snapwich`, baked into `publishedKitRefs()`).
 // A cluster that cannot reach it — air-gapped, mirror-only, or simply policy-bound to one registry —
 // needs the three refs at its own address, which is what `kitRegistry` names in the config. This
 // command is how the bytes get there.
 //
-// It is deliberately INSTANCE-LESS: no `j2.config.ts`, no kube context, no namespace. Kit images are
+// It is deliberately INSTANCE-LESS: no `jr2.config.ts`, no kube context, no namespace. Kit images are
 // shared by every instance on a cluster (and possibly by every instance in an org), so moving them
 // is its own deliberate act rather than a side effect of converging one instance — which is exactly
-// why ADR-0044 keeps this out of `j2 up`.
+// why ADR-0044 keeps this out of `jr2 up`.
 //
 // It is a MIRROR and nothing else. There is no build arm here: the npm packages carry no Harness or
 // Adapter source, and an installed CLI that could build Kit images would be the patched-Harness
@@ -23,13 +23,13 @@
 
 import { execFile } from "node:child_process";
 import { parseArgs, promisify } from "node:util";
-import { KIT_VERSION } from "@j2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator";
 import { KIT_IMAGES, publishedKitRefs, type KitImageName } from "../build.ts";
 import { activity, result, type Io } from "../output.ts";
 
 const exec = promisify(execFile);
 
-const USAGE = `usage: j2 kit push <registry>
+const USAGE = `usage: jr2 kit push <registry>
 
   mirror the v${KIT_VERSION} kit images (harness, adapter, operator) from their canonical
   home into <registry>, for a cluster whose \`kitRegistry\` names it (ADR-0044)`;
@@ -52,12 +52,12 @@ export async function kit(args: string[], io: Io, docker: RunDocker = dockerCli)
   const [sub, registry] = positionals;
 
   if (sub !== "push") {
-    activity(io, sub === undefined ? "j2 kit: no subcommand" : `unknown kit subcommand: ${sub}`);
+    activity(io, sub === undefined ? "jr2 kit: no subcommand" : `unknown kit subcommand: ${sub}`);
     activity(io, USAGE);
     return 2;
   }
   if (!registry) {
-    activity(io, "j2 kit push: no target registry");
+    activity(io, "jr2 kit push: no target registry");
     activity(io, USAGE);
     return 2;
   }
@@ -72,7 +72,7 @@ export async function kit(args: string[], io: Io, docker: RunDocker = dockerCli)
   const sources = publishedKitRefs();
   const targets = publishedKitRefs(target);
 
-  activity(io, `j2 kit push — mirroring the v${KIT_VERSION} kit images to ${target}`);
+  activity(io, `jr2 kit push — mirroring the v${KIT_VERSION} kit images to ${target}`);
   const rows: Mirrored[] = [];
   for (const image of Object.keys(KIT_IMAGES) as KitImageName[]) {
     rows.push(await mirror(io, docker, image, sources[image], targets[image]));

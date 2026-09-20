@@ -1,6 +1,6 @@
 # CANCEL ends a run; stopping one parks it
 
-`j2 send <run> --event CANCEL` advertises "abandon a live run" (`cli.ts:29`), and
+`jr2 send <run> --event CANCEL` advertises "abandon a live run" (`cli.ts:29`), and
 [ADR-0009](0009-cli-and-instance-interface.md) calls it the run-level infra interrupt. It was neither. The route called
 `RunHost.stop()`, which stops the actor and **deliberately leaves the stored status `"live"`** — the tracked-run guard
 drops the scheduled save — so the next `restore()` picks the run back up where it left off. A human abandoned a run and
@@ -27,7 +27,7 @@ carved out for "the Orchestrator ending a run for its own reasons" was being spe
   made its exception the whole method rather than a per-call flag.
 - **The terminal status is `cancelled`** — a run-lifecycle word. xstate reports a stopped actor as `"stopped"`, which is
   mechanism, not an outcome. So the **store row is the authority on the run's lifecycle and the snapshot on the
-  Machine's**: `read()` prefers the row unless it still says `"live"`. A cancelled run stays readable — `j2 status`
+  Machine's**: `read()` prefers the row unless it still says `"live"`. A cancelled run stays readable — `jr2 status`
   reports `cancelled` plus the state it was in when it was cancelled — and `restore()` skips it, because it skips
   everything that is not `"live"`.
 - **`stop()` stays public with no production caller, and is deliberately not on the wire.** It is correct, it is what
@@ -51,7 +51,7 @@ carved out for "the Orchestrator ending a run for its own reasons" was being spe
 
 ## Consequences
 
-- **`j2 send --event CANCEL` now does what it says**, including on the Agents: their turns end with the run.
+- **`jr2 send --event CANCEL` now does what it says**, including on the Agents: their turns end with the run.
 - **A cancelled run is readable but not resumable.** Nothing in the kit resumes one today anyway — `stop()` was the only
   path back, and nothing called it.
 - **The mechanics tier owns this contract** (ADR-0010): a real CLI CANCEL against a real Orchestrator, asserting the run

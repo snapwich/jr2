@@ -11,12 +11,12 @@ import { setup, emit } from "xstate";
 import { z } from "zod";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { codingDef, gatedDef, mkStore, pipelineDef, waitFor } from "./_fixtures.ts";
 import type { MachineDoc } from "../src/machine-doc.ts";
 
 /** A workflow that declares its start input (ADR-0033) — what the detail JSON must serve. */
-const titledTemplate = j2Setup({
+const titledTemplate = jr2Setup({
   types: {} as { context: { title: string }; input: { title: string } },
   events: [],
 }).createMachine({
@@ -342,7 +342,7 @@ test("an unknown workflow attaches to an empty set rather than 404-ing", async (
   const res = await app.request("/workflows/not-yet/events");
   assert.equal(res.status, 200);
 
-  // Matching `/workflows/:name/runs`. The page is opened by path, and a `j2 dev` reload may register
+  // Matching `/workflows/:name/runs`. The page is opened by path, and a `jr2 dev` reload may register
   // the name a moment later — the already-open feed then just starts working.
   const buf = await readFrames(res, (b) => b.includes("event: runs"));
   assert.deepEqual(framesOf(buf, "runs"), [[]]);

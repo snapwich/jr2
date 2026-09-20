@@ -26,13 +26,13 @@ importers:
       '@cucumber/cucumber':
         specifier: ^13.0.0
         version: 13.0.0
-      '@j2/agent-protocol':
+      '@jr2/agent-protocol':
         specifier: workspace:*
         version: link:../packages/agent-protocol
-      '@j2/cli':
+      '@jr2/cli':
         specifier: workspace:*
         version: link:../packages/cli
-      '@j2/orchestrator':
+      '@jr2/orchestrator':
         specifier: workspace:*
         version: link:../packages/orchestrator
       '@modelcontextprotocol/sdk':
@@ -53,10 +53,10 @@ importers:
 
   features/kind-instance:
     dependencies:
-      '@j2/machines':
+      '@jr2/machines':
         specifier: workspace:*
         version: link:../../packages/machines
-      '@j2/orchestrator':
+      '@jr2/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator
       xstate:
@@ -98,7 +98,7 @@ importers:
 
   packages/cli:
     dependencies:
-      '@j2/orchestrator':
+      '@jr2/orchestrator':
         specifier: workspace:*
         version: link:../orchestrator
       ts-blank-space:
@@ -133,7 +133,7 @@ importers:
         specifier: ^4.12.27
         version: 4.12.27
     devDependencies:
-      '@j2/adapter':
+      '@jr2/adapter':
         specifier: workspace:*
         version: link:../adapter
       '@types/node':
@@ -142,7 +142,7 @@ importers:
 
   packages/machines:
     devDependencies:
-      '@j2/orchestrator':
+      '@jr2/orchestrator':
         specifier: workspace:*
         version: link:../orchestrator
       '@types/node':
@@ -163,7 +163,7 @@ importers:
       '@hono/node-server':
         specifier: ^2.0.6
         version: 2.0.6(hono@4.12.27)
-      '@j2/agent-protocol':
+      '@jr2/agent-protocol':
         specifier: workspace:*
         version: link:../agent-protocol
       '@modelcontextprotocol/sdk':
@@ -188,7 +188,7 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
-      '@j2/harness':
+      '@jr2/harness':
         specifier: workspace:*
         version: link:../harness
       '@types/node':
@@ -197,14 +197,14 @@ importers:
 
   templates/default:
     dependencies:
-      '@j2/orchestrator':
+      '@jr2/orchestrator':
         specifier: 0.0.0
         version: link:../../packages/orchestrator
       xstate:
         specifier: ^5.18.0
         version: 5.32.2
     devDependencies:
-      '@j2/cli':
+      '@jr2/cli':
         specifier: 0.0.0
         version: link:../../packages/cli
       '@types/node':

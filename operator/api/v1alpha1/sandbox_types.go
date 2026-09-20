@@ -73,7 +73,7 @@ type SandboxSpec struct {
 	//
 	// One name is special, and only as an EXEMPTION: a sidecar named "user" is
 	// scheduled exactly as written — no hardened securityContext default. It is
-	// the User Container (ADR-0005), the seat whose identity is "what j2 does
+	// the User Container (ADR-0005), the seat whose identity is "what jr2 does
 	// not own", so hardening it would be an opinion the operator has no standing
 	// to hold. Root is allowed there; the credential boundary never depended on
 	// that seat being unprivileged, only on the Agent executing nothing in it.
@@ -85,8 +85,8 @@ type SandboxSpec struct {
 	// Scheduled verbatim — the operator adds nothing to them, not even the
 	// hardened securityContext default it gives sidecars, because an init step
 	// is composed by whoever built the spec and it must be able to say exactly
-	// what it needs. This is how j2's runtime reaches a Sandbox (ADR-0037): one
-	// step populates an /opt/j2 volume, a second proves the primary image on it.
+	// what it needs. This is how jr2's runtime reaches a Sandbox (ADR-0037): one
+	// step populates an /opt/jr2 volume, a second proves the primary image on it.
 	// +optional
 	InitContainers []corev1.Container `json:"initContainers,omitempty"`
 
@@ -144,7 +144,7 @@ type SandboxSpec struct {
 	// Repos are the Repos this Sandbox attaches, named by cache key
 	// (ADR-0051). For each entry the operator adds a pod volume named
 	// `repo-<key>` — the node's cache for that Repo (hostPath
-	// `/var/lib/j2/<namespace>/repos/<key>`, `DirectoryOrCreate`) — mounted
+	// `/var/lib/jr2/<namespace>/repos/<key>`, `DirectoryOrCreate`) — mounted
 	// read-only at `/repos/<key>` in the primary container; a sidecar that
 	// needs it mounts the same volume by name. Scheduling prefers nodes whose
 	// `Repo` status reports the key present; `Ready` waits for every key to be
@@ -258,7 +258,7 @@ type SandboxRepoStatus struct {
 	Key string `json:"key"`
 
 	// Asked is what this Sandbox asked the node for: the later of its own
-	// creation and the `j2.dev/asked-<key>` annotation, because a creation is
+	// creation and the `jr2.dev/asked-<key>` annotation, because a creation is
 	// an ask (ADR-0051) and every ask after it is one too.
 	// +required
 	Asked metav1.Time `json:"asked"`

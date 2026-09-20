@@ -1,6 +1,6 @@
 // IO seam + output discipline (ADR-0009). The CLI keeps two streams strictly separated:
 //   - STDOUT carries the one machine-readable RESULT (terminal RunStatus, a run list, a runId) as JSON,
-//     so `j2 run ping | jq` and friends get clean data;
+//     so `jr2 run ping | jq` and friends get clean data;
 //   - STDERR carries human ACTIVITY (status deltas, author emits, notices, errors).
 // Every command takes an `Io` rather than touching `process` directly, so dispatch + commands are
 // unit-testable: tests pass buffers for out/err, a fixed cwd/env, and (optionally) a `fetch` bound to a
@@ -20,11 +20,11 @@ export type Io = {
   fetch?: FetchLike;
   /** Override the kube transport (tests inject a fake); default → `kubectl` subprocesses. */
   kube?: KubePort;
-  /** Override the kube admin surface `j2 up`/`down` converge through; default → `kubectl`. */
+  /** Override the kube admin surface `jr2 up`/`down` converge through; default → `kubectl`. */
   kubeAdmin?: KubeAdmin;
   /** Override the image build port; default → pnpm + docker + kind subprocesses. */
   build?: BuildPort;
-  /** Override `j2 up`'s Instance typecheck (ADR-0050); default → the Instance's own `tsc`. */
+  /** Override `jr2 up`'s Instance typecheck (ADR-0050); default → the Instance's own `tsc`. */
   typecheck?: TypecheckPort;
   /** Where kit-checkout detection starts walking up from (ADR-0038); default → the CLI's own
    * module directory, which is the whole signal: a checkout resolves the kit sources, an npm
@@ -33,7 +33,7 @@ export type Io = {
   kitDir?: string;
   /** Answer a yes/no confirmation; default → interactive TTY prompt (non-TTY answers no). */
   confirm?: (question: string) => Promise<boolean>;
-  /** Pick one of several offered options (`j2 up`'s git-ssh key source, ADR-0047); default →
+  /** Pick one of several offered options (`jr2 up`'s git-ssh key source, ADR-0047); default →
    * an interactive TTY menu. Returns the chosen index; `undefined` is "none of these", which
    * every caller must treat as a decline — a non-TTY always answers that. */
   choose?: (question: string, options: string[]) => Promise<number | undefined>;
@@ -42,14 +42,14 @@ export type Io = {
   prompt?: (question: string) => Promise<string>;
   /** Read key material with echo OFF; default → TTY readline with its own echo suppressed. */
   readSecret?: (question: string) => Promise<string>;
-  /** Override deploy-keypair generation (`j2 up`'s ssh offer); default → `ssh-keygen`. */
+  /** Override deploy-keypair generation (`jr2 up`'s ssh offer); default → `ssh-keygen`. */
   sshKeygen?: () => Promise<{ privateKey: string; publicKey: string }>;
   /** Derive `key.pub` from a private key the USER supplied, refusing a passphrase-protected one
    * by name (ADR-0047); default → `ssh-keygen -y -P ""`. */
   sshPublicKey?: (privateKey: string) => Promise<string>;
 };
 
-/** The real-process IO the `j2` bin runs with. */
+/** The real-process IO the `jr2` bin runs with. */
 export const defaultIo: Io = {
   stdout: (s) => void process.stdout.write(s),
   stderr: (s) => void process.stderr.write(s),

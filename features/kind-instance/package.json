@@ -1,18 +1,18 @@
 {
-  "name": "j2-e2e-kind-instance",
+  "name": "jr2-e2e-kind-instance",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "The @kind tier's instance (ADR-0010): a real workspace package so `j2 up`'s image build can `pnpm deploy` it. Scenarios share this content and isolate by namespace (-n per scenario).",
+  "description": "The @kind tier's instance (ADR-0010): a real workspace package so `jr2 up`'s image build can `pnpm deploy` it. Scenarios share this content and isolate by namespace (-n per scenario).",
   "files": [
     "package.json",
-    "j2.config.ts",
+    "jr2.config.ts",
     "workflows",
     "images"
   ],
   "dependencies": {
-    "@j2/machines": "workspace:*",
-    "@j2/orchestrator": "workspace:*",
+    "@jr2/machines": "workspace:*",
+    "@jr2/orchestrator": "workspace:*",
     "xstate": "^5.18.0",
     "zod": "^4.4.3"
   },

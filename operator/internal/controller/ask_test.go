@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 const (
@@ -69,7 +69,7 @@ func askRepo(entries ...corev1alpha1.RepoNodeStatus) map[string]*corev1alpha1.Re
 // TestRepoStatuses pins the standing per-key entry ADR-0053 adds to the Sandbox
 // status — the thing a fetch inside the pod waits on. Unlike Ready, it is
 // recomputed every reconcile and it is measured against the ASK, not against
-// the Sandbox's creation alone: a creation is an ask, and every `j2.dev/asked-`
+// the Sandbox's creation alone: a creation is an ask, and every `jr2.dev/asked-`
 // annotation the Orchestrator marks afterwards is another one.
 //
 // `fetched` and `attempted` are the node's own stamps, reported whatever they
@@ -262,7 +262,7 @@ func showRepoStatus(s corev1alpha1.SandboxRepoStatus) string {
 
 // TestAsksReachThePod pins the copy: the Orchestrator marks the ask on the CR,
 // and the cache agent reads demand off pods alone (ADR-0051), so the operator
-// carries every `j2.dev/asked-` annotation across — and nothing else. An ask
+// carries every `jr2.dev/asked-` annotation across — and nothing else. An ask
 // already on the pod costs no write, because the CR is PATCHed on every lease
 // renewal and a PATCH per renewal would wake every cache agent on the node.
 func TestAsksReachThePod(t *testing.T) {

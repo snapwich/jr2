@@ -1,15 +1,15 @@
-// The Cucumber World for the j2 e2e suite: one per scenario (so scenarios are fully isolated and the
-// suite is `--parallel`-safe). It owns a fresh temp INSTANCE folder, drives the REAL `j2` binary as a
+// The Cucumber World for the jr2 e2e suite: one per scenario (so scenarios are fully isolated and the
+// suite is `--parallel`-safe). It owns a fresh temp INSTANCE folder, drives the REAL `jr2` binary as a
 // child process against it, and — when serving — the REAL server entrypoint the instance image runs
 // (ADR-0010/0019: no host dev mode; the fixture boots exactly the deployed process, on the host).
 //
 // Black-box by design (ADR-0010): steps assert only on what a user's shell sees — captured stdout
-// (the one machine-readable result), stderr (human activity), and the process exit code. The `j2`
-// binary is pointed at the fixture's server the supported way: `J2_URL` + `J2_TOKEN` env. The
+// (the one machine-readable result), stderr (human activity), and the process exit code. The `jr2`
+// binary is pointed at the fixture's server the supported way: `JR2_URL` + `JR2_TOKEN` env. The
 // wire-compatible stub Harness (ADR-0011) is a fixture owned by this tier, started in-process.
 // @kind owns a second in-process fixture: the scripted MODEL its pods talk to (ADR-0038) — there
 // the Harness is the REAL one, in a real pod, and only the LLM is faked. @dist fakes one thing and
-// one thing only, a tier lower still: the REGISTRY (ADR-0043). Its `j2` is not this checkout's at
+// one thing only, a tier lower still: the REGISTRY (ADR-0043). Its `jr2` is not this checkout's at
 // all but a globally installed npm package, so the mode users run is the mode that executes.
 
 import assert from "node:assert/strict";
@@ -20,29 +20,29 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { setWorldConstructor } from "@cucumber/cucumber";
-import { startStubHarness, type Admission, type RunningStubHarness } from "@j2/orchestrator";
+import { startStubHarness, type Admission, type RunningStubHarness } from "@jr2/orchestrator";
 import type { Browser, Page } from "playwright";
 import { startFakeProvider, type FakeProvider } from "./fake-provider.ts";
 import type { InstalledKit } from "./dist-kit.ts";
 
-/** The `j2` bin (the `.js` shim that type-erases the kit's `.ts` sources), resolved from this
+/** The `jr2` bin (the `.js` shim that type-erases the kit's `.ts` sources), resolved from this
  * file's location. */
-const BIN = fileURLToPath(new URL("../../packages/cli/bin/j2.js", import.meta.url));
+const BIN = fileURLToPath(new URL("../../packages/cli/bin/jr2.js", import.meta.url));
 /** The instance image's server entrypoint (ADR-0019) — the per-scenario orchestrator fixture. */
 const SERVER_BIN = fileURLToPath(new URL("../../packages/orchestrator/bin/server.ts", import.meta.url));
 /** Base for per-scenario temp instances; gitignored. */
 const TMP_BASE = fileURLToPath(new URL("../.tmp/", import.meta.url));
 /**
- * The kind tier's instance (@kind, ADR-0010): ONE shared workspace package (`j2 up`'s image build
+ * The kind tier's instance (@kind, ADR-0010): ONE shared workspace package (`jr2 up`'s image build
  * `pnpm deploy`s it, which needs workspace membership). Scenarios isolate by NAMESPACE: each `up`s
  * into a fresh one (`-n`), and namespace deletion is the teardown.
  */
 const KIND_DIR = fileURLToPath(new URL("../kind-instance/", import.meta.url));
 
-/** The captured outcome of one `j2 …` invocation. */
+/** The captured outcome of one `jr2 …` invocation. */
 export type CliResult = { stdout: string; stderr: string; code: number };
 
-/** The serving fixture's address + credential — what `J2_URL`/`J2_TOKEN` carry to the `j2` binary. */
+/** The serving fixture's address + credential — what `JR2_URL`/`JR2_TOKEN` carry to the `jr2` binary. */
 export type ServerInfo = { url: string; token: string };
 
 /** The entrypoint's one-line boot report. `lost`/`drifted`/`failed` appear only when non-empty —
@@ -56,7 +56,7 @@ export type Announcement = {
 };
 
 export class E2EWorld {
-  /** The temp instance folder (holds `j2.config.ts`, `workflows/`, and the runtime `.j2/`). */
+  /** The temp instance folder (holds `jr2.config.ts`, `workflows/`, and the runtime `.jr2/`). */
   dir = "";
   /** The running server-entrypoint child, while serving. */
   private serverProc?: ChildProcess;
@@ -66,7 +66,7 @@ export class E2EWorld {
   server?: ServerInfo;
   /** The in-process stub Harness (ADR-0011), started on demand; its url is run input. */
   private stub?: RunningStubHarness;
-  /** The most recent `j2 …` invocation's captured output + exit code. */
+  /** The most recent `jr2 …` invocation's captured output + exit code. */
   last?: CliResult;
   /** A runId carried between steps (the last run started or settled). */
   runId?: string;
@@ -107,20 +107,20 @@ export class E2EWorld {
   page?: Page;
 
   /** The scenario's own namespace on the real cluster — set = cluster mode (runCli appends `-n`
-   * and passes no J2_URL, so the verbs resolve the REAL way). @kind and @dist both own one; it is
+   * and passes no JR2_URL, so the verbs resolve the REAL way). @kind and @dist both own one; it is
    * what makes the scenario, not the cluster, the isolation unit. */
   namespace?: string;
   /** @dist: the globally installed kit this scenario drives (ADR-0043). Its presence is what makes
-   * `runCli` spawn the `j2` on PATH instead of this checkout's `bin/j2.js` — that swap IS the tier,
+   * `runCli` spawn the `jr2` on PATH instead of this checkout's `bin/jr2.js` — that swap IS the tier,
    * since a checkout binary would take checkout mode and never execute the branch under test. */
   dist?: InstalledKit;
   /** @kind: the scripted MODEL this scenario's pods talk to (ADR-0038). The pod runs the stock
    * Harness, so this is the only fake left in the tier — see `fake-provider.ts`. */
   provider?: FakeProvider;
-  /** Extra env for the `j2` binary — @kind publishes the fake provider's address here, because a
+  /** Extra env for the `jr2` binary — @kind publishes the fake provider's address here, because a
    * deployment-varying endpoint rides env and never a committed literal (ADR-0019). */
   private extraEnv: Record<string, string> = {};
-  /** The Instance token this scenario's server boots with (the fixture plays `j2 up`'s Secret). */
+  /** The Instance token this scenario's server boots with (the fixture plays `jr2 up`'s Secret). */
   private readonly token = randomBytes(16).toString("hex");
 
   /** Allocate a fresh, isolated instance folder. Called from the `Before` hook. */
@@ -134,21 +134,21 @@ export class E2EWorld {
    * workflows bind is not on disk at all: it is served in-cluster by url (`steps/seed.ts`), and
    * the cache agent clones it onto whichever node a Sandbox lands on (ADR-0051).
    *
-   * Also starts this scenario's scripted MODEL (ADR-0038) and publishes its address to the `j2`
+   * Also starts this scenario's scripted MODEL (ADR-0038) and publishes its address to the `jr2`
    * binary. HOST-SIDE, on an ephemeral port, so `--parallel` stays safe and the tier needs neither
    * an image nor a manifest for it. The instance image's content hash is unaffected: the config
    * file is byte-identical run to run, and the varying URL materializes into the agents ConfigMap.
    */
   async setupKind(): Promise<void> {
-    this.namespace = `j2e2e-${randomBytes(3).toString("hex")}`;
+    this.namespace = `jr2e2e-${randomBytes(3).toString("hex")}`;
     this.dir = KIND_DIR;
     this.provider = await startFakeProvider();
-    this.extraEnv.J2_FAKE_PROVIDER_URL = `http://${await kindHostAddress()}:${this.provider.port}/v1`;
+    this.extraEnv.JR2_FAKE_PROVIDER_URL = `http://${await kindHostAddress()}:${this.provider.port}/v1`;
   }
 
   /**
    * @dist (ADR-0043): drive the kit as a USER has it. Two facts make the tier, and both live here —
-   * the `j2` is the globally installed one (see `runCli`), and the instance is a folder in the OS
+   * the `jr2` is the globally installed one (see `runCli`), and the instance is a folder in the OS
    * temp dir, outside this checkout and outside any git repo. An instance inside the workspace
    * would bundle with `pnpm deploy`; the lockfile install this proves would never run.
    *
@@ -157,14 +157,14 @@ export class E2EWorld {
    * instance image's tag — and a docker repository may not be mixed case.
    */
   async setupDist(kit: InstalledKit): Promise<void> {
-    const name = `j2dist-${randomBytes(4).toString("hex")}`;
+    const name = `jr2dist-${randomBytes(4).toString("hex")}`;
     this.dir = join(tmpdir(), name);
     await mkdir(this.dir);
     this.namespace = name;
     this.dist = kit;
     // The bundle's frozen install runs inside a staged COPY of the instance, and the stage drops
     // `.npmrc` along with the other credential files (ADR-0043) — so the registry reaches that
-    // install the way a deployment-varying value should, on the environment `j2 up` inherits and
+    // install the way a deployment-varying value should, on the environment `jr2 up` inherits and
     // passes down. A real user's private registry travels the same road.
     this.extraEnv.npm_config_registry = kit.registry;
   }
@@ -211,27 +211,27 @@ export class E2EWorld {
     return this.stub?.admissions ?? [];
   }
 
-  /** Run `j2 <args>` against this instance, capturing stdout/stderr/exit code into `last`.
-   * While serving on the host, the target rides `J2_URL`/`J2_TOKEN` — the supported "attach to a
+  /** Run `jr2 <args>` against this instance, capturing stdout/stderr/exit code into `last`.
+   * While serving on the host, the target rides `JR2_URL`/`JR2_TOKEN` — the supported "attach to a
    * deployed orchestrator" path (ADR-0009). @kind and @dist set neither: the verbs resolve the
    * REAL way (current kube context + `-n <scenario namespace>` → Secret + port-forward, ADR-0019).
    *
    * WHICH binary is the @dist tier's whole point (ADR-0043): there the command is the bare name
-   * `j2`, found on a PATH that starts with the throwaway global prefix, so the thing under test is
+   * `jr2`, found on a PATH that starts with the throwaway global prefix, so the thing under test is
    * an npm install of the published package — shim, `files:` list, prod dependency chain and all.
-   * Everywhere else it is this checkout's `bin/j2.js`, run by this node.
+   * Everywhere else it is this checkout's `bin/jr2.js`, run by this node.
    *
-   * `namespaced: false` is for the verbs that address no instance at all: `j2 gc` decides what is
+   * `namespaced: false` is for the verbs that address no instance at all: `jr2 gc` decides what is
    * garbage by asking the WHOLE cluster (ADR-0039), so a namespace flag would narrow nothing — and
    * a step must invoke it the way a user does. */
   async runCli(args: string[], opts: { namespaced?: boolean } = {}): Promise<CliResult> {
     const env: NodeJS.ProcessEnv = this.server
-      ? { ...process.env, ...this.extraEnv, J2_URL: this.server.url, J2_TOKEN: this.server.token }
+      ? { ...process.env, ...this.extraEnv, JR2_URL: this.server.url, JR2_TOKEN: this.server.token }
       : { ...process.env, ...this.extraEnv };
     const full = this.namespace && opts.namespaced !== false ? [...args, "-n", this.namespace] : args;
     if (this.dist) env.PATH = `${this.dist.binDir}:${process.env.PATH ?? ""}`;
     const child = this.dist
-      ? spawn("j2", full, { cwd: this.dir, env })
+      ? spawn("jr2", full, { cwd: this.dir, env })
       : spawn(process.execPath, [BIN, ...full], { cwd: this.dir, env });
     let stdout = "";
     let stderr = "";
@@ -244,10 +244,10 @@ export class E2EWorld {
     return this.last;
   }
 
-  /** Scaffold the instance with the real `j2 init` (gives it `ping` + config). */
+  /** Scaffold the instance with the real `jr2 init` (gives it `ping` + config). */
   async init(): Promise<void> {
     const r = await this.runCli(["init"]);
-    if (r.code !== 0) throw new Error(`j2 init failed (${r.code}): ${r.stderr}`);
+    if (r.code !== 0) throw new Error(`jr2 init failed (${r.code}): ${r.stderr}`);
   }
 
   /** Copy the `loop` fixture into `workflows/` BEFORE serving, so boot discovery finds it. */
@@ -261,7 +261,7 @@ export class E2EWorld {
   }
 
   /** Install a fixture under a DIFFERENT workflow name — how a scenario replaces a workflow's code
-   * while keeping its identity, which is what `j2 up` does after an edit (ADR-0030). */
+   * while keeping its identity, which is what `jr2 up` does after an edit (ADR-0030). */
   async installFixtureWorkflow(fixture: string, name: string): Promise<void> {
     await mkdir(join(this.dir, "workflows"), { recursive: true });
     await copyFile(
@@ -271,7 +271,7 @@ export class E2EWorld {
   }
 
   /** Boot the server entrypoint (the deployed process, ADR-0019) and wait for its announce line.
-   * Host-only — @kind never calls this; its orchestrator runs in-cluster, deployed by `j2 up`. */
+   * Host-only — @kind never calls this; its orchestrator runs in-cluster, deployed by `jr2 up`. */
   async startServer(): Promise<void> {
     const proc = spawn(process.execPath, [SERVER_BIN], {
       cwd: this.dir,
@@ -279,7 +279,7 @@ export class E2EWorld {
         ...process.env,
         PORT: "0",
         HOST: "127.0.0.1",
-        J2_INSTANCE_TOKEN: this.token,
+        JR2_INSTANCE_TOKEN: this.token,
       },
     });
     this.serverProc = proc;

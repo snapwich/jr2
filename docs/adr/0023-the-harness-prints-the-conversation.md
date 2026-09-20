@@ -10,22 +10,22 @@ jr solved this with `just watch` — an fzf list of live sessions over a preview
 jq filter rendering four things: the prompt, assistant text, `[thinking]`, and one-line tool calls. Two panes: which
 agents exist, and what this one is saying. This ADR is that, made Kubernetes-native.
 
-**The conversation was never missing — j2 declined it.** The Orchestrator awaits settlement as an opaque promise, "the
+**The conversation was never missing — jr2 declined it.** The Orchestrator awaits settlement as an opaque promise, "the
 stream carries lifecycle only" — but the Harness's event stream already carries `message_start`/`message_end` bounding
 both user and assistant messages, plus text, thinking, and tool-call content
-([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)) — every line of that jq filter,
+([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)) — every line of that jq filter,
 replayable from any offset. The gap was a read decision, not a missing capability, and the fix is not new plumbing.
 
 ## Decision
 
 - **The Harness prints, and `kubectl logs` reads.** The Harness writes its own conversation to container stdout —
   in-process; the loopback subscription this originally required retired with the foreign runtime (ADR-0027).
-  `kubectl logs`, `stern`, `k9s`, and any log shipper work on it the day it lands, with no j2 surface to build, learn,
+  `kubectl logs`, `stern`, `k9s`, and any log shipper work on it the day it lands, with no jr2 surface to build, learn,
   or version.
 - **The Harness is the right seat because it already holds both halves of the label.** It knows its Agent's name and the
   iid arrives per Submission. So a line is `[<agent>] [<iid>] …` with no lookup, no correlation table, and no
   orchestrator round trip. Nothing else in the pod knows both: the Adapter sees only the Machine's event menu, and
-  working-tool execution happens inside the Harness, invisible to every other j2 process there.
+  working-tool execution happens inside the Harness, invisible to every other jr2 process there.
 - **Reasoning prints; results do not.** Prompts, assistant text, thinking, and tool calls with truncated inputs. File
   contents, command output, and API responses never print. This is one cut serving two purposes, which is why it is a
   boundary and not an unfinished implementation: tool results are where the secrets are, and they are also most of the
@@ -46,10 +46,10 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   forget** — a failed echo never fails anything, the feed remains the record and the log is a courtesy view; **Emit is
   the only author API** — a workflow that wants prose in the log Emits it (ADR-0011's vocabulary discipline holds; no
   `log()` primitive exists or will).
-- **Live-only, and j2 promises nothing beyond the pod.** A conversation lives exactly as long as its Harness process
+- **Live-only, and jr2 promises nothing beyond the pod.** A conversation lives exactly as long as its Harness process
   (ADR-0027), so a Sandbox teardown (ADR-0012) or a lost Workspace (ADR-0021) takes it with it — the same contract
   ADR-0012 already set for the pod-local clone. A cluster that ships logs will outlive the pod anyway; that is the log
-  plane's property, not a j2 guarantee, and no j2 behavior may come to depend on it.
+  plane's property, not a jr2 guarantee, and no jr2 behavior may come to depend on it.
 
 ## Considered options
 
@@ -69,7 +69,7 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   reader `kubectl` already serves. Not foreclosed: it reads the same stream, so it remains the answer if the exception
   below stops being acceptable.
 - **Persist transcripts beside the run snapshot.** Rejected: the Harness already serves the stream replayable from any
-  offset for the life of the pod (ADR-0027), and j2 holds the coordinates in the admission ledger (`run-host.ts:651`);
+  offset for the life of the pod (ADR-0027), and jr2 holds the coordinates in the admission ledger (`run-host.ts:651`);
   copying the contents buys retention in exchange for owning growth, retention policy, and a redaction surface, in a
   store defaulting to sqlite.
 - **Print tool results, truncated.** Rejected: the first 200 bytes of a leaked config is where the good stuff is, and
@@ -97,7 +97,7 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
 - **Live tails may miss partial output.** Text and thinking deltas are best-effort live progress, with `message_end`
   authoritative, so a reader that attaches mid-generation can miss earlier fragments until they arrive. Correct for a
   watcher; anything wanting exactness reads the completed message.
-- **`j2 logs` remains a status feed** and is now more confusingly named than before. Not renamed here — this ADR adds no
-  command — but the collision is real and belongs to whoever next touches that surface.
+- **`jr2 logs` remains a status feed** and is now more confusingly named than before. Not renamed here — this ADR adds
+  no command — but the collision is real and belongs to whoever next touches that surface.
 - **The visualizer's eventual extension has a source.** When it grows past the graph, it reads the same stream; a page
   is a third reader of one feed, not a third way of collecting the data.

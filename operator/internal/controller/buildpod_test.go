@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 const (
@@ -40,12 +40,12 @@ func sandboxFor(spec corev1alpha1.SandboxSpec) *corev1alpha1.Sandbox {
 }
 
 // TestBuildPodHardensIsolation verifies the isolation baseline (ADR-0001's north
-// star): no API token, the default seccomp profile pod-wide, and every j2-owned
+// star): no API token, the default seccomp profile pod-wide, and every jr2-owned
 // container non-root with no privilege escalation and all capabilities dropped.
 //
 // runAsNonRoot is asserted PER CONTAINER and never at the pod level (ADR-0005):
 // a pod-level assertion binds every container in the pod, including the one seat
-// j2 does not own.
+// jr2 does not own.
 func TestBuildPodHardensIsolation(t *testing.T) {
 	r := &SandboxReconciler{}
 	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
@@ -119,7 +119,7 @@ func TestBuildPodExemptsTheUserContainer(t *testing.T) {
 		t.Fatalf(`the "user" container must carry NO operator-supplied securityContext, got %+v`, sc)
 	}
 	if sc := byName["adapter"].SecurityContext; sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
-		t.Fatalf("a j2-owned sidecar still gets the hardened default, got %+v", sc)
+		t.Fatalf("a jr2-owned sidecar still gets the hardened default, got %+v", sc)
 	}
 	// The exemption is about hardening only — the seat is still a plain
 	// container fragment the operator schedules verbatim.
@@ -130,14 +130,14 @@ func TestBuildPodExemptsTheUserContainer(t *testing.T) {
 
 // TestBuildPodCarriesFSGroupAndInitContainers pins the two passthroughs ADR-0037
 // and ADR-0005 need from the CR: the pod's work group, and the ordered init steps
-// that publish j2's runtime and prove the primary image on it. Both are plain
+// that publish jr2's runtime and prove the primary image on it. Both are plain
 // pod-spec fields the operator forwards without understanding — the operator
 // stays agent-agnostic (ADR-0001), so it never invents an fsGroup of its own and
 // never edits an init container, not even to harden it.
 func TestBuildPodCarriesFSGroupAndInitContainers(t *testing.T) {
 	r := &SandboxReconciler{}
 	init := []corev1.Container{
-		{Name: "runtime", Image: "j2-harness:h00", Command: []string{"/opt/j2/bin/init-copy", "/mnt/j2"}},
+		{Name: "runtime", Image: "jr2-harness:h00", Command: []string{"/opt/jr2/bin/init-copy", "/mnt/jr2"}},
 		{Name: "preflight", Image: "user-image:c01"},
 	}
 	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
@@ -270,7 +270,7 @@ func TestBuildPodMountsRepoCaches(t *testing.T) {
 			{Key: "docs-4e5f6a7b", URL: "git@github.com:acme/docs.git"},
 		},
 	})
-	sandbox.Namespace = "j2-acme"
+	sandbox.Namespace = "jr2-acme"
 	pod := r.buildPod(sandbox, nil)
 
 	volumes := map[string]corev1.Volume{}
@@ -285,7 +285,7 @@ func TestBuildPodMountsRepoCaches(t *testing.T) {
 		if !ok {
 			t.Fatalf("want a volume repo-%s, got %+v", key, pod.Spec.Volumes)
 		}
-		if v.HostPath == nil || v.HostPath.Path != "/var/lib/j2/j2-acme/repos/"+key {
+		if v.HostPath == nil || v.HostPath.Path != "/var/lib/jr2/jr2-acme/repos/"+key {
 			t.Fatalf("repo-%s should be the node cache hostPath under the namespace, got %+v", key, v.VolumeSource)
 		}
 		if v.HostPath.Type == nil || *v.HostPath.Type != corev1.HostPathDirectoryOrCreate {

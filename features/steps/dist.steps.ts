@@ -1,10 +1,10 @@
 // Steps for the @dist tier (ADR-0043/0044): the kit as a user installs it. Three of them are the
-// user's whole path — `j2 init`, their own package manager, `j2 up` — and that shape is the claim.
+// user's whole path — `jr2 init`, their own package manager, `jr2 up` — and that shape is the claim.
 // The fourth reaches into the cluster with `kubectl`, for the one thing the path cannot show from
 // outside: that the Kit images came off a registry by PULL (ADR-0044). Nothing here reaches past
 // what a user's own shell could see (ADR-0010).
 //
-// Everything after `j2 up` is already covered by the run-control steps (`I run … with message …`,
+// Everything after `jr2 up` is already covered by the run-control steps (`I run … with message …`,
 // `stdout is the terminal status with reply …`), and they work here unchanged because the World
 // decides WHICH binary `runCli` spawns. That reuse is the point: the assertions are the same
 // claims the other tiers make, and only the delivery of the kit differs.
@@ -15,7 +15,7 @@ import { execFile } from "node:child_process";
 import { stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@j2/orchestrator";
+import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@jr2/orchestrator";
 import { E2EWorld } from "./world.ts";
 
 const exec = promisify(execFile);
@@ -29,18 +29,18 @@ const BIG = 64 * 1024 * 1024;
 // --- given ---------------------------------------------------------------------------------------
 
 /**
- * `j2 init` in a temp folder, run by the INSTALLED binary. The assertions before it are the
+ * `jr2 init` in a temp folder, run by the INSTALLED binary. The assertions before it are the
  * scenario's real preconditions, not paranoia: an instance inside a pnpm workspace bundles with
  * `pnpm deploy` and an instance inside a git repo is a different scaffold story, so a stray
  * `TMPDIR` under a checkout would silently test the mode every other tier already tests.
  */
-Given("a standalone instance scaffolded by the installed j2", async function (this: E2EWorld): Promise<void> {
+Given("a standalone instance scaffolded by the installed jr2", async function (this: E2EWorld): Promise<void> {
   for (const marker of ["pnpm-workspace.yaml", ".git", "package.json"]) {
     const found = await findAbove(this.dir, marker);
     assert.equal(found, undefined, `the @dist instance must stand alone — found ${marker} above it at ${found}`);
   }
   const r = await this.runCli(["init"], { namespaced: false });
-  assert.equal(r.code, 0, `j2 init failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 init failed: ${r.stderr}`);
 
   // The one edit a self-hosting user makes to the scaffold (ADR-0044): this cluster pulls its Kit
   // images from a mirror, not from the canonical home. It rides `.env` + `process.env` rather than
@@ -48,26 +48,26 @@ Given("a standalone instance scaffolded by the installed j2", async function (th
   // byte-identical to what any other self-hoster writes, and the fixture's address stays out of it.
   const kitRegistry = this.dist?.kitRegistry;
   assert.ok(kitRegistry, "a @dist scenario has its installed kit");
-  await writeFile(join(this.dir, ".env"), `J2_KIT_REGISTRY=${kitRegistry}\n`);
-  await writeFile(join(this.dir, "j2.config.ts"), KIT_REGISTRY_CONFIG_TS);
+  await writeFile(join(this.dir, ".env"), `JR2_KIT_REGISTRY=${kitRegistry}\n`);
+  await writeFile(join(this.dir, "jr2.config.ts"), KIT_REGISTRY_CONFIG_TS);
 });
 
 /**
- * The scaffold's own `j2.config.ts` plus the mirror key — written whole rather than patched, so the
- * step never depends on the template's exact bytes (`j2 init` owns those, and `init.test.ts` guards
+ * The scaffold's own `jr2.config.ts` plus the mirror key — written whole rather than patched, so the
+ * step never depends on the template's exact bytes (`jr2 init` owns those, and `init.test.ts` guards
  * them). No `git` block: these scenarios run `ping`, which touches no Workspace at all.
  *
  * `.env` reaches the CLI and stops there. It is one of the credential files a bundle stage drops
  * (ADR-0043), so nothing about the mirror is baked into the instance image — and nothing needs to
  * be: `kitRegistry` is answered at converge time, when the pod spec's image refs are composed.
  *
- * The import names `@j2/orchestrator` by BARE specifier, so this tier is where it meets a
- * genuinely npm-installed kit — both when Node type-strips this file and when `j2 up`'s gate
+ * The import names `@jr2/orchestrator` by BARE specifier, so this tier is where it meets a
+ * genuinely npm-installed kit — both when Node type-strips this file and when `jr2 up`'s gate
  * compiles the folder.
  */
-const KIT_REGISTRY_CONFIG_TS = `import { defineConfig } from "@j2/orchestrator";
+const KIT_REGISTRY_CONFIG_TS = `import { defineConfig } from "@jr2/orchestrator";
 
-export default defineConfig({ kitRegistry: process.env.J2_KIT_REGISTRY });
+export default defineConfig({ kitRegistry: process.env.JR2_KIT_REGISTRY });
 `;
 
 // --- when ----------------------------------------------------------------------------------------
@@ -76,7 +76,7 @@ export default defineConfig({ kitRegistry: process.env.J2_KIT_REGISTRY });
  * The user's own install, with their own package manager. The `.npmrc` is written first and is
  * REALISTIC, not a test fixture: it is what anyone resolving a scoped package from a private
  * registry already has. It reaches this install only — the staged bundle drops `.npmrc` with the
- * rest of the credential files (ADR-0043), so the frozen install `j2 up` runs inside it takes the
+ * rest of the credential files (ADR-0043), so the frozen install `jr2 up` runs inside it takes the
  * registry off the environment instead (see `setupDist`).
  *
  * The one thing the manager gets that a user's shell would not: a cache of the fixture's, because
@@ -96,7 +96,7 @@ When("I install its dependencies with {string}", async function (this: E2EWorld,
   });
   // The lockfile is part of the instance contract (ADR-0043): it, not the node_modules this just
   // wrote, is what the image bundle installs from — so a manager that wrote none has already
-  // broken the converge, three minutes before `j2 up` would say so.
+  // broken the converge, three minutes before `jr2 up` would say so.
   const lockfile = pm === "npm" ? "package-lock.json" : "pnpm-lock.yaml";
   await stat(join(this.dir, lockfile)).catch(() => {
     throw new Error(`${pm} install left no ${lockfile} — the bundle installs from the lockfile (ADR-0043)`);
@@ -111,33 +111,33 @@ When("I install its dependencies with {string}", async function (this: E2EWorld,
 const CACHE_SETTING: Record<string, string> = { npm: "npm_config_cache", pnpm: "npm_config_cache_dir" };
 
 // The converge, in installed mode: no kit sources resolve, so the Harness, Adapter, and operator
-// come from the published `<kitRegistry>/j2-<x>:<kitversion>` tags the suite fixture PUSHED, pulled
+// come from the published `<kitRegistry>/jr2-<x>:<kitversion>` tags the suite fixture PUSHED, pulled
 // by the nodes themselves (ADR-0038/0044), and the instance image is bundled from the lockfile
 // above — built here, and still delivered by `kind load`, because this converge is the one that
 // builds it.
 When("I converge it onto the cluster", { timeout: 900_000 }, async function (this: E2EWorld): Promise<void> {
   const r = await this.runCli(["up", "--yes"]);
-  assert.equal(r.code, 0, `j2 up failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 up failed: ${r.stderr}`);
   assert.match(r.stderr, /images: installed kit/, "the installed CLI took installed mode, not checkout mode");
 });
 
-/** `j2 down --yes`, from the installed binary: removes the instance's namespace and sweeps the
+/** `jr2 down --yes`, from the installed binary: removes the instance's namespace and sweeps the
  * images its roots no longer protect (ADR-0019/0039). `--yes` because the verb always confirms,
  * and there is no one at the prompt. */
 When("I take the instance down", { timeout: 300_000 }, async function (this: E2EWorld): Promise<void> {
   const r = await this.runCli(["down", "--yes"]);
-  assert.equal(r.code, 0, `j2 down failed: ${r.stderr}`);
+  assert.equal(r.code, 0, `jr2 down failed: ${r.stderr}`);
   assert.match(r.stderr, /removed/, "down reports the instance removed");
 });
 
 // --- then ----------------------------------------------------------------------------------------
 
-/** The namespace IS the instance (ADR-0019): gone means removed. `j2 down` waits on the delete, so
+/** The namespace IS the instance (ADR-0019): gone means removed. `jr2 down` waits on the delete, so
  * this asks once and expects kubectl's NotFound — spelled the way a user would check. */
 Then("the instance's namespace is gone", async function (this: E2EWorld): Promise<void> {
   assert.ok(this.namespace, "a @dist scenario has its namespace set in setupDist");
   const left = await kubectlOut(["get", "namespace", this.namespace, "--ignore-not-found", "-o", "name"]);
-  assert.equal(left.trim(), "", `namespace ${this.namespace} still exists after j2 down`);
+  assert.equal(left.trim(), "", `namespace ${this.namespace} still exists after jr2 down`);
 });
 
 /**
@@ -164,8 +164,8 @@ Then("the cluster pulled its Kit images from the local registry", async function
   const refs = JSON.parse(raw) as { harness?: string; adapter?: string };
   for (const [which, ref] of Object.entries({ harness: refs.harness, adapter: refs.adapter })) {
     assert.ok(
-      ref?.startsWith(`${kitRegistry}/j2-${which}:`),
-      `the ${which} ref is ${ref} — an installed kit pointed at a mirror deploys ${kitRegistry}/j2-${which}:<ver>`,
+      ref?.startsWith(`${kitRegistry}/jr2-${which}:`),
+      `the ${which} ref is ${ref} — an installed kit pointed at a mirror deploys ${kitRegistry}/jr2-${which}:<ver>`,
     );
   }
 
@@ -174,16 +174,16 @@ Then("the cluster pulled its Kit images from the local registry", async function
   const declared = (
     await kubectlOut([
       "--namespace",
-      "j2-system",
+      "jr2-system",
       "get",
       "deployment",
-      "j2-controller-manager",
+      "jr2-controller-manager",
       "-o",
       "jsonpath={.spec.template.spec.containers[0].image}",
     ])
   ).trim();
   assert.ok(
-    declared.startsWith(`${kitRegistry}/j2-operator:`),
+    declared.startsWith(`${kitRegistry}/jr2-operator:`),
     `the operator Deployment declares ${declared}, not a ${kitRegistry} ref`,
   );
 
@@ -193,7 +193,7 @@ Then("the cluster pulled its Kit images from the local registry", async function
   // asks whether ANY running pod carries the declared ref rather than that every one does.
   const pods = await kubectlOut([
     "--namespace",
-    "j2-system",
+    "jr2-system",
     "get",
     "pods",
     "-l",
@@ -222,7 +222,7 @@ async function kubectlOut(args: string[]): Promise<string> {
  * The environment a USER's shell has. This suite is launched by `pnpm --filter`, and pnpm exports
  * its whole configuration as `npm_config_*` — `registry` included — to everything it spawns. Env
  * config OUTRANKS a project `.npmrc` in both managers, so an inherited environment would resolve
- * `@j2/*` from npmjs and fail the tier on a leak from its own runner rather than on the kit.
+ * `@jr2/*` from npmjs and fail the tier on a leak from its own runner rather than on the kit.
  */
 function shellEnv(): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("npm_")));

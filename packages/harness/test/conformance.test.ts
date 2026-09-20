@@ -1,7 +1,7 @@
 // Conformance (ADR-0027): the claims the socket-free tiers cannot see, driven through the REAL
-// turn loop — pi at the exact pin, the real `@j2/adapter` over a real socket, a scripted
+// turn loop — pi at the exact pin, the real `@jr2/adapter` over a real socket, a scripted
 // OpenAI-compatible provider choosing each turn's shape. The flue-contract tier's role, re-owned:
-// its claims are j2 requirements now, with the pinned-defect assertion INVERTED — an abort
+// its claims are jr2 requirements now, with the pinned-defect assertion INVERTED — an abort
 // mid-stream must NOT erase the assistant message (the only witness is the message array the
 // provider receives on the next turn). This suite runs in the default `test` gate (the opt-in
 // existed only for the foreign pin) and is the canary for pi bumps.
@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
-import type { Surface } from "@j2/adapter";
+import type { Surface } from "@jr2/adapter";
 import { harnessApp } from "../src/app.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
@@ -228,10 +228,10 @@ test("the Menu is listed fresh per Submission: a surface change lands on the nex
   assert.equal((await settled(iid, second)).outcome, "completed");
 
   const menus = provider.calls.map((call) => (call.tools ?? []).map((tool) => tool.function?.name));
-  assert.ok(menus[0]?.includes("mcp__j2__review_verdict"), `turn 1 sees its Menu (got: ${menus[0]})`);
-  assert.ok(!menus[0]?.includes("mcp__j2__submit_summary"), "turn 1 cannot see the next state's Menu");
-  assert.ok(menus[1]?.includes("mcp__j2__submit_summary"), `turn 2 sees the NEW Menu (got: ${menus[1]})`);
-  assert.ok(!menus[1]?.includes("mcp__j2__review_verdict"), "turn 2 no longer sees the exited state's Menu");
+  assert.ok(menus[0]?.includes("mcp__jr2__review_verdict"), `turn 1 sees its Menu (got: ${menus[0]})`);
+  assert.ok(!menus[0]?.includes("mcp__jr2__submit_summary"), "turn 1 cannot see the next state's Menu");
+  assert.ok(menus[1]?.includes("mcp__jr2__submit_summary"), `turn 2 sees the NEW Menu (got: ${menus[1]})`);
+  assert.ok(!menus[1]?.includes("mcp__jr2__review_verdict"), "turn 2 no longer sees the exited state's Menu");
   for (const working of ["read", "write", "edit", "bash", "grep", "glob"]) {
     assert.ok(menus[0]?.includes(working), `the Working tools ride along (missing: ${working})`);
   }
@@ -260,7 +260,7 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
   provider.reset([
     {
       text: "Read the inputs; approving.",
-      toolCall: { id: "call_1", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' },
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' },
     },
     { text: "Done." },
   ]);
@@ -275,7 +275,7 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
   for (const call of provider.calls) {
     assert.deepEqual(
       (call.tools ?? []).map((tool) => tool.function?.name),
-      ["mcp__j2__review_verdict"],
+      ["mcp__jr2__review_verdict"],
       "a Menu-only turn offers the Menu alone",
     );
   }
@@ -327,7 +327,7 @@ test("a Menu pick reaches the Orchestrator and its receipt reaches the model; th
   provider.reset([
     {
       text: "Here is my verdict.",
-      toolCall: { id: "call_1", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' },
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' },
     },
     { text: "Done." },
   ]);
@@ -353,7 +353,7 @@ test("INVERTED PINNED DEFECT: an abort mid-STREAM does not erase the assistant m
   provider.reset([
     {
       text: "I have reviewed it and my verdict is approved.",
-      toolCall: { id: "call_1", name: "mcp__j2__review_verdict", partial: true },
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", partial: true },
       stall: true,
     },
     { text: "Acknowledged." },
@@ -367,7 +367,7 @@ test("INVERTED PINNED DEFECT: an abort mid-STREAM does not erase the assistant m
   // nothing observable marks that moment, and an abort that outruns the parser leaves nothing to
   // preserve (which is not this claim). Give the parser room.
   await sleep(300);
-  // The j2 moment (ADR-0024): the state exits (registration gone), then the turn is aborted.
+  // The jr2 moment (ADR-0024): the state exits (registration gone), then the turn is aborted.
   sandbox.killSurface();
   assert.deepEqual(await abort(iid), { aborted: true });
   const settlement = await settled(iid, admission);
@@ -391,7 +391,7 @@ test("an abort mid-TOOL-CALL keeps the turn in history: the loop writes its own 
   provider.reset([
     {
       text: "Here is my verdict.",
-      toolCall: { id: "call_1", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' },
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' },
     },
     { text: "Acknowledged." },
   ]);
@@ -419,7 +419,7 @@ test("ending a turn logs no error: no 404 spam, no unhandled rejection (ADR-0026
   provider.reset([
     {
       text: "Verdict incoming.",
-      toolCall: { id: "call_1", name: "mcp__j2__review_verdict", partial: true },
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", partial: true },
       stall: true,
     },
   ]);
@@ -479,7 +479,7 @@ test("the printer wrote the conversation: prompts, text, tool calls — results 
   provider.reset([
     {
       text: "Here is my verdict.",
-      toolCall: { id: "call_1", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' },
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' },
     },
     { text: "All done." },
   ]);
@@ -502,7 +502,7 @@ test("the printer wrote the conversation: prompts, text, tool calls — results 
 });
 
 test('K byte-identical tool calls are a Runaway: the Harness ends the turn, typed "runaway" (ADR-0035)', async () => {
-  // The production shape: the model collapses into the same call forever. K=4 is the j2-owned
+  // The production shape: the model collapses into the same call forever. K=4 is the jr2-owned
   // default — no knob injected here, the shipped bound is the claim. The tripping call is the
   // 4th, and it never executes, so no 5th provider round-trip exists.
   const repeated = { name: "bash", args: '{"command":"true"}' };
@@ -567,7 +567,7 @@ test("a turn compacts MID-flight: the cut lands between two steps of ONE Submiss
     { toolCall: { id: "call_2", name: "bash", args: '{"command":"echo 2"}' } },
     { toolCall: { id: "call_3", name: "bash", args: '{"command":"echo 3"}' } },
     { toolCall: { id: "call_4", name: "bash", args: '{"command":"echo 4"}' }, usage: { prompt_tokens: 190_000 } },
-    { toolCall: { id: "call_5", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' } },
+    { toolCall: { id: "call_5", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' } },
     { text: "Done." },
   ]);
   sandbox.reset(surfaceWith("review_verdict"));
@@ -598,7 +598,7 @@ test("a turn compacts MID-flight: the cut lands between two steps of ONE Submiss
   assert.ok(carriesSummary(provider.calls[5]), "the NEXT step rebuilt from the cut Session too");
   // The turn went on to its pick: a compacted turn still concludes (ADR-0006).
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
-  // One Submission, one settlement — the cut settles nothing, and it leaves no history entry: j2
+  // One Submission, one settlement — the cut settles nothing, and it leaves no history entry: jr2
   // records what was SAID, and Compaction changes only what the model sees (ADR-0036).
   const view = await history(iid, compactApp);
   assert.deepEqual(
@@ -684,7 +684,7 @@ test("a SECOND cut in one Submission keeps the first cut's retained tail (ADR-00
       // Responses 3 and 6 cross the reserve, so two cuts land inside ONE Submission.
       ...(i === 2 || i === 5 ? { usage: { prompt_tokens: 190_000 } } : {}),
     })),
-    { toolCall: { id: "call_7", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' } },
+    { toolCall: { id: "call_7", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' } },
     { text: "Done." },
   ]);
   sandbox.reset(surfaceWith("review_verdict"));
@@ -858,7 +858,7 @@ test("a healthy turn is untouched: varied calls, a sub-K repeat, then the pick (
     { toolCall: { id: "call_2", name: "bash", args: '{"command":"echo a"}' } },
     { toolCall: { id: "call_3", name: "bash", args: '{"command":"echo b"}' } },
     { toolCall: { id: "call_4", name: "bash", args: '{"command":"echo a"}' } },
-    { toolCall: { id: "call_5", name: "mcp__j2__review_verdict", args: '{"verdict":"approved"}' } },
+    { toolCall: { id: "call_5", name: "mcp__jr2__review_verdict", args: '{"verdict":"approved"}' } },
     { text: "Done." },
   ]);
   sandbox.reset(surfaceWith("review_verdict"));

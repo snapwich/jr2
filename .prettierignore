@@ -2,7 +2,7 @@
 node_modules/
 dist/
 tmp/
-.j2/
+.jr2/
 *.tsbuildinfo
 
 # pnpm owns this file's format.

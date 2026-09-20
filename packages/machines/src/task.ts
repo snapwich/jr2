@@ -19,7 +19,7 @@
 //     agents: { coder: { model: "anthropic/claude-sonnet-4-6" } },
 //   });
 //
-// `j2 up` walks the registered Machines and refuses either part unbound, printing exactly that
+// `jr2 up` walks the registered Machines and refuses either part unbound, printing exactly that
 // line (parts.ts, `customizeLine`); the Agent actor refuses to admit a Turn under an Open model as
 // the second fence. So the failure mode of forgetting is a converge that stops, never a run that
 // silently spends money on a model nobody chose.
@@ -35,13 +35,13 @@ import { z } from "zod";
 import {
   agent,
   defineEvent,
-  j2Setup,
+  jr2Setup,
   open,
   workspace,
   type HostInjectedInput,
   type ThinkingLevel,
   type Workspaced,
-} from "@j2/orchestrator";
+} from "@jr2/orchestrator";
 
 // ---------------------------------------------------------------------------------------------
 // The door (ADR-0033): what a caller sends to start a run, declared on the `workspace()` that is
@@ -68,9 +68,9 @@ const door = z.object({
   branch: z
     .string()
     .optional()
-    .describe("The branch to cut and commit on. Default: j2/task-<run id>, so concurrent runs never collide."),
+    .describe("The branch to cut and commit on. Default: jr2/task-<run id>, so concurrent runs never collide."),
   // The two Dials (ADR-0018) as a PER-RUN escape hatch, not a default (ADR-0054): the bound
-  // definition is what `j2 up` preflights, and a door value overrides it for this one run's Turns.
+  // definition is what `jr2 up` preflights, and a door value overrides it for this one run's Turns.
   // Identity — instructions, workspace access — is deliberately absent: an invocation that rewrote
   // those would make the Agent's name a lie.
   model: z.string().optional().describe('Override the coder\'s model for this run only, as "<provider>/<modelId>".'),
@@ -126,7 +126,7 @@ type BodyContext = BodyInput & {
   /**
    * Which conversation the coder's Turns ride. `request_changes` continues the SAME conversation —
    * one human steering one Agent wants the Agent to remember what it did (ADR-0054) — but a
-   * terminal `agent.fault` means j2 already rerolled that conversation and gave up on it
+   * terminal `agent.fault` means jr2 already rerolled that conversation and gave up on it
    * (ADR-0035), so there is nothing left to continue. Bumping the generation folds into the
    * conversation's disambiguator, and the next Turn starts a fresh conversation instead of
    * addressing a dead one.
@@ -149,7 +149,7 @@ type BodyContext = BodyInput & {
  * the Gate. The name is the slot key, because that is what the conversation is about. */
 const CONVERSATION = "coder";
 
-export const body = j2Setup({
+export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: TaskOutput },
   events: [finish, approve, requestChanges],
   // The Agent rides the Machine (ADR-0049): the slot key is its name on the Harness wire, in the
@@ -210,7 +210,7 @@ export const body = j2Setup({
             turns: ({ context }) => context.turns + 1,
           }),
         },
-        // ADR-0016's ONE terminal telemetry, ROUTED: j2 has already retried, nudged and rerolled
+        // ADR-0016's ONE terminal telemetry, ROUTED: jr2 has already retried, nudged and rerolled
         // (ADR-0027/0035), so this is the end of that conversation, not of the run. Park at the
         // same Gate — the Workspace is still alive and the work so far is still on the branch —
         // and start the next Turn on a fresh conversation.
@@ -229,7 +229,7 @@ export const body = j2Setup({
     // The one park, and the whole point of the Machine: a human reads the branch and decides. The
     // Gate id derives from the actor path (leaf = this state's key), so it stays fan-out-safe if
     // this Machine is ever composed under a Pool; its accepted set derives from this state's
-    // external transitions; `meta` is what `j2 status`, the Console's drawer, and a webhook
+    // external transitions; `meta` is what `jr2 status`, the Console's drawer, and a webhook
     // translator read (ADR-0011/0015).
     review: {
       invoke: {
@@ -248,7 +248,7 @@ export const body = j2Setup({
       on: {
         approve: { target: "done" },
         // No round cap (ADR-0054): the human is the cap. They see every Turn's result before the
-        // next one starts, so a count j2 chose would only ever interrupt them.
+        // next one starts, so a count jr2 chose would only ever interrupt them.
         request_changes: {
           target: "working",
           actions: assign({ notes: ({ event }) => event.notes, summary: undefined, reason: undefined }),
@@ -266,7 +266,7 @@ export const body = j2Setup({
   },
 
   // The body's output is whichever final state settled it — the wrapper forwards it verbatim, so
-  // `j2 status` on a finished run says which of the two things happened.
+  // `jr2 status` on a finished run says which of the two things happened.
   output: ({ event }) => (event as { output?: TaskOutput }).output as TaskOutput,
 });
 
@@ -286,10 +286,10 @@ export const task = workspace(body, {
 });
 
 /**
- * The branch this run works on: the door's, or `j2/task-<run id>` (ADR-0054).
+ * The branch this run works on: the door's, or `jr2/task-<run id>` (ADR-0054).
  *
  * The id is the run's seed Instance ID, which `RunHost.start` injects beside the door on the ROOT
- * machine's input ({@link HostInjectedInput}) and `j2 status` reports. It is not door material —
+ * machine's input ({@link HostInjectedInput}) and `jr2 status` reports. It is not door material —
  * no caller sends it and it is never served as JSON Schema (ADR-0033) — so the schema does not
  * carry it and reading it takes a cast that says why.
  *
@@ -303,12 +303,12 @@ function branchOf(input: TaskInput): string {
   const { instanceId } = input as TaskInput & Partial<HostInjectedInput>;
   if (!instanceId) {
     throw new Error(
-      "task: no `branch` on the door and no run id to derive one from — `j2/task-<run id>` needs the " +
+      "task: no `branch` on the door and no run id to derive one from — `jr2/task-<run id>` needs the " +
         "id the host injects beside the door of the ROOT machine (ADR-0033), and this run of `task` " +
         "was started by a parent Machine instead. Pass `branch` in the run input.",
     );
   }
-  return `j2/task-${instanceId}`;
+  return `jr2/task-${instanceId}`;
 }
 
 /**

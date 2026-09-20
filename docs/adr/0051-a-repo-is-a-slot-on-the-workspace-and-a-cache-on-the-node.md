@@ -1,7 +1,7 @@
 # A Repo is a slot on the `workspace()` and a cache on the node
 
 ADR-0049 moved Agents and the Sandbox Image into the Machine and left one dependency outside it: the Repo, catalogued in
-`j2.config.ts` and named by string from a `workspace()` spec, with the name typed back through a `Register` interface
+`jr2.config.ts` and named by string from a `workspace()` spec, with the name typed back through a `Register` interface
 (ADR-0050). The grill of 2026-09-13 found two faults. A packaged Machine still could not say which repository it works
 on, nor could a consumer bind one, except by the consumer's config holding the right NAME and the door threading it —
 the same encapsulation gap ADR-0049 closed for Agents. And the catalog's shape was dictated by storage: one read-only
@@ -33,22 +33,22 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   Instance that consumes the package, so a prompt can name a path and be right everywhere.
 
 - **The handles are the slot map and the branch — no slot is the `workdir`.** `workspace.repos` keeps the slots in
-  declaration order, and j2 reads nothing into that order. Which checkout an Agent works in is a fact about that Agent's
-  Turn, not about the Workspace: a body with a `backend` and a `frontend` slot frames one Agent with the first path and
-  another with the second, and either may read the other's tree. A body that names no slot may give the order a meaning
-  of its own and document it (`task`: the first slot is the one the coder edits). The order is the kit's promise — a
-  slot key starts with a letter, because JS reads an integer-like key first wherever it was written — and the meaning is
-  the Machine's. Rejected: a `workdir` handle, the first declared slot's worktree — it made a singular "primary repo" a
-  property of every Workspace, which is wrong for a body whose Agents work in different slots or in more than one, and
-  it hid a rule in key order that the body never chose.
+  declaration order, and jr2 reads nothing into that order. Which checkout an Agent works in is a fact about that
+  Agent's Turn, not about the Workspace: a body with a `backend` and a `frontend` slot frames one Agent with the first
+  path and another with the second, and either may read the other's tree. A body that names no slot may give the order a
+  meaning of its own and document it (`task`: the first slot is the one the coder edits). The order is the kit's promise
+  — a slot key starts with a letter, because JS reads an integer-like key first wherever it was written — and the
+  meaning is the Machine's. Rejected: a `workdir` handle, the first declared slot's worktree — it made a singular
+  "primary repo" a property of every Workspace, which is wrong for a body whose Agents work in different slots or in
+  more than one, and it hid a rule in key order that the body never chose.
 
 - **A Machine whose body names no slot declares the whole map Open: `repos: open`.** A body that enumerates whatever is
-  attached — `@j2/machines`'s `task` — knows nothing a slot name could say, and a `target: open` on it would claim "one
+  attached — `@jr2/machines`'s `task` — knows nothing a slot name could say, and a `target: open` on it would claim "one
   repository" where the body claims nothing. So the map is the Open part, one level up from a slot: the composer names
   every slot with `customize`, in the order the Machine documents. The body's handles are typed `Workspaced<…, string>`,
   which is its statement that it names no slot; `workspace()` refuses a body that names one under an Open map, since the
-  composer may never write that word. The walk reports an Open map as one Open part with no slot, and `j2 up` refuses it
-  by the same route, with `<slot>` left in the line for the composer to fill. Rejected: `customize` adding keys to a
+  composer may never write that word. The walk reports an Open map as one Open part with no slot, and `jr2 up` refuses
+  it by the same route, with `<slot>` left in the line for the composer to fill. Rejected: `customize` adding keys to a
   declared map — a slot a Machine never declared is a compile error on purpose (a typo cannot mint a clone), and a body
   that named `target` could say nothing about a `reference` it never knew of; the map-level Open says what the body
   actually knows. Rejected: a second Machine of the consumer's own, wrapping the exported body with more slots —
@@ -59,10 +59,10 @@ decision: **what a Machine says about a repository, and what the cluster does wi
   other part: `customize(codeReview, { repos: { target: "git@github.com:ourorg/app.git" } })`. Any of the three forms is
   accepted, so a consumer can also bind a mapper over the child's door. A slot the Machine does not declare is a compile
   error (a phantom on the wrapper type, read through `pool()`'s `worker` and `workspace()`'s `body` as the image is). A
-  registered Machine with an open slot nobody bound is refused by `j2 up`'s walk, before it builds anything, naming the
+  registered Machine with an open slot nobody bound is refused by `jr2 up`'s walk, before it builds anything, naming the
   Machine, the slot, and the `customize` line that fixes it. That is the one check that is converge-time and not
   compile-time: a `workflows/` export has no type to hang it on (ADR-0050).
-- **The url is the identity.** There is no repo name. `j2.config.ts` loses `repos`; `Register`, `RepoName`,
+- **The url is the identity.** There is no repo name. `jr2.config.ts` loses `repos`; `Register`, `RepoName`,
   `repoNames()`, and the `const` on `defineConfig` retire. ADR-0050's rule holds vacuously: the string a Machine writes
   is the thing, not a reference into someone else's file. Two spellings of one repository (`https://`, `git@…:`,
   `ssh://`, with or without `.git`) resolve to one identity — host plus path, scheme and user dropped — and therefore
@@ -79,33 +79,33 @@ decision: **what a Machine says about a repository, and what the cluster does wi
 - **The Orchestrator creates `Repo` CRs; it does not sync them.** At boot it walks its registered Machines and creates
   one CR per bound identity, so a statically known repository is KNOWN before a run can ask: the cache agent on every
   node probes it (`git ls-remote`) as soon as the CR exists, so a wrong url or a credential that does not reach shows in
-  `j2 status` right after converge, not at the first run. Known is not warm: the clone happens on a node the first time
+  `jr2 status` right after converge, not at the first run. Known is not warm: the clone happens on a node the first time
   a Sandbox there needs the repository, never on every node at boot — cloning a large repository onto every node that
   may never run a Sandbox for it is the cost the image-pull economics above exist to avoid. A per-run url creates its CR
   at first attach, and every later attach anywhere finds it. The boot restates a bound CR's url and `secretRef` at every
   deploy; an attach restates the `secretRef` of a CR nothing binds, since no boot will — so a `git.credentials` entry
   fixed after a failed clone reaches the cache at the next run either way. Only an attach moves the eviction clock: a
   boot is not an attach.
-- **Credentials are matched by prefix and carried by the CR, the Argo and Flux shape.** `j2.config.ts` holds
+- **Credentials are matched by prefix and carried by the CR, the Argo and Flux shape.** `jr2.config.ts` holds
   `git.credentials`, a list of `{ match, token?, sshKey? }`: `match` is a prefix on the identity (`github.com/ourorg/`,
-  or `*`), `token` names an env var `j2 up` materializes into the Instance Secret, `sshKey` names a Secret holding a
+  or `*`), `token` names an env var `jr2 up` materializes into the Instance Secret, `sshKey` names a Secret holding a
   deploy key; the url's scheme picks which field applies, and the longest match wins. When the Orchestrator creates a
   `Repo` CR it resolves the entry and writes a `secretRef`; the cache agent reads only that, and the operator matches
   nothing. The Secret uses Flux's key names (`username`/`password`; `identity`, `identity.pub`, `known_hosts`), so a
   Flux or Argo user reuses the Secret they have. **The list is also the fence.** A per-run url — a run input, a ticket
   field — is otherwise a way to spend the cluster's credential against any host: one that matches no entry is refused at
   attach, naming the list. A static binding is code the Instance typechecked and deployed, so it is admitted without a
-  match and cloned anonymously; a private one then fails at the cache with git's error. `j2 init` scaffolds one wildcard
-  entry — `{ match: "*", token: "J2_GIT_TOKEN", sshKey: "j2-git-ssh" }`, today's two implicit defaults made visible,
-  with a comment saying to narrow it before anything untrusted can start a run — so the open fence is in the user's file
-  and commit, never implied.
+  match and cloned anonymously; a private one then fails at the cache with git's error. `jr2 init` scaffolds one
+  wildcard entry — `{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }`, today's two implicit defaults made
+  visible, with a comment saying to narrow it before anything untrusted can start a run — so the open fence is in the
+  user's file and commit, never implied.
 - **Freshness degrades, absence does not.** A fetch that fails on a warm cache lets the attach proceed on the objects it
   has, announced as stale with git's own error. A stale attach is stale until the next fetch anyone inside the pod runs:
   the worktree's `origin` asks the cache, and the cache asks the remote (ADR-0053) — the pod still holds no credential
   (ADR-0005), and the same failure lets that fetch fall through to the cache's objects with a warning on stderr. A clone
   that fails on a cold node fails that provision pointedly, naming the repository and the error, and the CR status
-  carries it for `j2 status` (ADR-0048's pattern).
-- **Eviction is reachability plus age.** `j2 gc` deletes a `Repo` CR that no registered Machine binds and no run has
+  carries it for `jr2 status` (ADR-0048's pattern).
+- **Eviction is reachability plus age.** `jr2 gc` deletes a `Repo` CR that no registered Machine binds and no run has
   attached within its TTL; the cache agent removes the node copy on CR deletion, once no pod on that node mounts it.
 
 ## Considered options
@@ -121,7 +121,7 @@ decision: **what a Machine says about a repository, and what the cluster does wi
 - **A Flux-style `GitRepository` serving an artifact over HTTP.** Rejected: an artifact download is a clone per Sandbox
   — the cost the cache exists to avoid.
 - **Urls kept in the spec, not the slot** (the shape before this decision, with a url in place of a name). Rejected: the
-  walk cannot see inside the spec, so a bound repository would be invisible to `j2 up` and to prewarm, and `customize`
+  walk cannot see inside the spec, so a bound repository would be invisible to `jr2 up` and to prewarm, and `customize`
   would have nothing to bind.
 
 ## Consequences

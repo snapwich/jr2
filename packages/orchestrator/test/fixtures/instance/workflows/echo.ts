@@ -1,6 +1,6 @@
 // A fixture instance workflow for the bootstrap suite. A `workflows/<name>.ts` file exports its
 // assembled Machine by name (`export const machine` — ADR-0011/0015; the vocabulary rides the
-// machine via j2Setup). It is fully self-contained: the host injects nothing. Filename `echo.ts` →
+// machine via jr2Setup). It is fully self-contained: the host injects nothing. Filename `echo.ts` →
 // workflow name "echo". Minimal: invoke the agent, finish on `done`.
 //
 // The `coder` slot holds a NOOP rather than `agent(def)` (ADR-0049): this suite starts a real run
@@ -10,15 +10,15 @@
 
 import { fromCallback } from "xstate";
 import { z } from "zod";
-import { defineEvent } from "@j2/agent-protocol";
-import { j2Setup } from "../../../../src/setup.ts";
+import { defineEvent } from "@jr2/agent-protocol";
+import { jr2Setup } from "../../../../src/setup.ts";
 import type { AgentRunInput, AgentRunReceiveEvent } from "../../../../src/actor.ts";
 
 const done = defineEvent({ name: "done", input: z.object({ summary: z.string().optional() }) });
 
 type Ctx = { instanceId: string };
 
-export const machine = j2Setup({
+export const machine = jr2Setup({
   types: {} as { context: Ctx; input: { instanceId: string } },
   events: [done],
   actors: { coder: fromCallback<AgentRunReceiveEvent, AgentRunInput>(() => {}) },

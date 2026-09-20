@@ -2,7 +2,7 @@
 Feature: a workspace() run drives a real Sandbox on kind
   ADR-0012: a Workspace is ALWAYS a real Sandbox — there is no stubbed workspace mode — so this is
   the one tier where the data plane is real: the operator's Sandbox CR, a pod running the instance's
-  own Sandbox Image with j2's runtime injected into it (ADR-0037), the node's Repo cache mounted
+  own Sandbox Image with jr2's runtime injected into it (ADR-0037), the node's Repo cache mounted
   read-only (ADR-0051), a git worktree inside the pod, and the Harness endpoint the body's agent is
   admitted against.
 
@@ -17,7 +17,7 @@ Feature: a workspace() run drives a real Sandbox on kind
   This tier is opt-in (`@kind`, excluded from the default suite) because it needs infrastructure:
     just e2e-kind-up      # a VANILLA kind cluster; nothing is built or loaded here
     just e2e-kind
-  Bring-up is the product's own path (ADR-0010/0019/0038): each scenario runs `j2 up` into a fresh
+  Bring-up is the product's own path (ADR-0010/0019/0038): each scenario runs `jr2 up` into a fresh
   namespace of the shared cluster, and that converge builds and loads every image it deploys —
   Harness, Adapter, operator, the instance, and the instance's own images (`images/default`, and
   `images/user` for the one workflow that seats a human). Nothing is instance-bound to the cluster
@@ -48,14 +48,14 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run faults mentioning "git.credentials"
       And no Sandbox was re-provisioned for the run
 
-    Scenario: an admitted url is cloned onto the node the Sandbox lands on, and j2 status says so
+    Scenario: an admitted url is cloned onto the node the Sandbox lands on, and jr2 status says so
       Given the kind instance is serving
-      When I start the "perrun" workflow with repo "http://seed.j2-e2e-seed.svc/app.git" detached
+      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc/app.git" detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
       # The cache agent's own account, read the way a human reads it — the Sandbox went Ready only
       # once the Repo was present and fetched on its node (ADR-0048/0051).
-      And j2 status reports repo "http://seed.j2-e2e-seed.svc/app.git" present on the node
+      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc/app.git" present on the node
 
   Rule: a fetch inside the pod reaches the remote's now
     ADR-0053. `origin`'s fetch url is a COMMAND, not a path: git runs the program on the runtime
@@ -85,7 +85,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # The mark and the landing, read off the CR the way a human reads it: the Orchestrator wrote
       # one annotation per Repo key, and the operator's standing entry says which fetch answered it
       # — a fetch that STARTED before the ask does not (ADR-0053).
-      And the Sandbox's ask for repo "http://seed.j2-e2e-seed.svc/app.git" is answered by the fetch its status reports
+      And the Sandbox's ask for repo "http://seed.jr2-e2e-seed.svc/app.git" is answered by the fetch its status reports
 
     Scenario: origin fetches through the program and pushes to the remote itself
       Given the kind instance is serving
@@ -96,22 +96,22 @@ Feature: a workspace() run drives a real Sandbox on kind
       # IDENTITY as its argument — never the cache key, which is a derived directory name (ADR-0004)
       # — and, on the push line, the Binding's own spelling, unchanged. A push still goes to the
       # remote with the caller's own credential, never the Agent's (ADR-0005).
-      Then origin in repo "app" fetches through the program and pushes to "http://seed.j2-e2e-seed.svc/app.git"
+      Then origin in repo "app" fetches through the program and pushes to "http://seed.jr2-e2e-seed.svc/app.git"
 
     Scenario: the human's seat fetches the same way, from a read-only runtime
       Given the kind instance is serving
-      # The one kind workflow that composes the third seat: a musl image with git, no j2 knowledge,
+      # The one kind workflow that composes the third seat: a musl image with git, no jr2 knowledge,
       # and nothing injected into its process (ADR-0005).
       When I start the "seated" workflow detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
       When a commit is pushed to the seed on a branch of its own
       # The fetch url lives in the SHARED `default/.git/config`, so this seat runs the same program
-      # the Agent's does — a static binary, because the libc here is not j2's (ADR-0037) — and
+      # the Agent's does — a static binary, because the libc here is not jr2's (ADR-0037) — and
       # lands the refs in the one worktree both seats mount.
       And the User Container fetches "origin" in repo "app"
       Then the pushed commit is the head of that branch in repo "app"
-      And the User Container holds the program, on a read-only "/opt/j2"
+      And the User Container holds the program, on a read-only "/opt/jr2"
 
   Rule: a live Sandbox survives an orchestrator restart, and the run re-attaches to it
 
@@ -218,9 +218,9 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the branch ref of repo "app" branch "feat-e2e" is unmoved
       And the coder's worktree for repo "app" branch "feat-e2e" is untouched
 
-  Rule: j2 mounts its runtime into the user's image, and the floor holds inside the pod
-    ADR-0037. A Sandbox Image is the user's Dockerfile — zero j2 knowledge, any base — run
-    byte-for-byte: an init container publishes /opt/j2 onto a volume the primary container mounts,
+  Rule: jr2 mounts its runtime into the user's image, and the floor holds inside the pod
+    ADR-0037. A Sandbox Image is the user's Dockerfile — zero jr2 knowledge, any base — run
+    byte-for-byte: an init container publishes /opt/jr2 onto a volume the primary container mounts,
     and only the container's COMMAND is overridden. So the floor is a composition, not a build, and
     every line of it is a SILENT failure when wrong: it surfaces inside a turn, as a tool error the
     model has to interpret. Only a real pod can prove the pieces met.
@@ -233,9 +233,9 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: exec into the Harness container lands in the image's own environment
     ADR-0037/0005. `kubectl exec -c harness` gives a human the agent's tools, worktrees, and
-    filesystem — and, because j2 overrides the command and NOTHING else, the environment the
+    filesystem — and, because jr2 overrides the command and NOTHING else, the environment the
     image's author built: its own WORKDIR, its own tools. images/default puts WORKDIR at
-    /srv/j2-e2e precisely because the retired wrap forced /work, so landing there is proof j2 built
+    /srv/jr2-e2e precisely because the retired wrap forced /work, so landing there is proof jr2 built
     no stage on top of this image.
 
     Scenario: a human execs in, lands in the image's own WORKDIR, and has the image's own tools
@@ -243,7 +243,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
-      And a human's shell in the Sandbox lands in "/srv/j2-e2e" with the image's own toolchain
+      And a human's shell in the Sandbox lands in "/srv/jr2-e2e" with the image's own toolchain
 
   Rule: a repo tree is group-writable for the work group, whatever the writer's umask
     ADR-0005. The attach stamps a default ACL on each repo root before the clone fills it, and
@@ -266,9 +266,9 @@ Feature: a workspace() run drives a real Sandbox on kind
     `crictl rmi` exits 0 either way. So "the sweep removed it" is only checkable on a real node, by
     asking containerd itself what it still holds afterwards.
 
-    Scenario: j2 gc takes the unreachable image off every node and keeps what this instance runs
+    Scenario: jr2 gc takes the unreachable image off every node and keeps what this instance runs
       Given the kind instance is serving
-      # Labeled like an image `j2 up` built and then replaced — the iteration garbage the sweep
+      # Labeled like an image `jr2 up` built and then replaced — the iteration garbage the sweep
       # exists for — but named by no image map, Sandbox, or pod, on this instance or any other.
       And a labeled image no live root names is loaded onto every node
       When I sweep the cluster's images
@@ -277,8 +277,8 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: the Agent's Working tools reach the Sandbox Image's own toolchain
     ADR-0027/0037. Working tools execute in the Harness container, and that container runs the
-    Sandbox Image itself with j2's runtime mounted beside it — which is the entire feature: what an
-    Agent can DO stops being bounded by whatever the stock image happened to carry. `j2-toolchain`
+    Sandbox Image itself with jr2's runtime mounted beside it — which is the entire feature: what an
+    Agent can DO stops being bounded by whatever the stock image happened to carry. `jr2-toolchain`
     exists only in this instance's `images/default/Dockerfile`.
 
     Scenario: a bash Working tool runs a binary only images/default carries
@@ -286,12 +286,12 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
-      When the Agent runs "j2-toolchain" through its bash Working tool
-      Then the model was shown the tool result "j2-toolchain-ok"
+      When the Agent runs "jr2-toolchain" through its bash Working tool
+      Then the model was shown the tool result "jr2-toolchain-ok"
 
   Rule: a Menu-only Agent's Turn runs on the Instance Harness, and needs no Sandbox
     ADR-0031. An Agent whose definition declares `workspace: "none"` (ADR-0028) has no worktree to
-    run in, so `j2 up` converges an Instance Harness — a Harness + Adapter pod with no Workspace —
+    run in, so `jr2 up` converges an Instance Harness — a Harness + Adapter pod with no Workspace —
     whenever a registered Machine carries such a definition, and the Turn is admitted THERE. No
     config names or enables it: the kind instance's `advisor` definition is the whole reason the
     Deployment exists in every scenario's namespace. Placement is definition-wins: even invoked
@@ -324,17 +324,17 @@ Feature: a workspace() run drives a real Sandbox on kind
     does, retries a failure with backoff, and writes git's own words to the resource. The kind
     instance binds one url its fence admits and nothing serves (`unsynced`), so EVERY scenario's
     boot carries a Repo that fails its probe — and serves anyway: that is the claim, and the rest
-    of this file passing is its evidence. `j2 status` names the Repo with the error, and the one
+    of this file passing is its evidence. `jr2 status` names the Repo with the error, and the one
     run that needs the cache faults at provision naming both, while no other run is held on it.
 
     Scenario: the instance serves, status names git's error, and the run that needs the Repo faults by name
       Given the kind instance is serving
-      Then j2 status reports repo "http://seed.j2-e2e-seed.svc/missing.git" absent with git's error
+      Then jr2 status reports repo "http://seed.jr2-e2e-seed.svc/missing.git" absent with git's error
       When I start the "unsynced" workflow detached
-      Then the run faults naming repo "http://seed.j2-e2e-seed.svc/missing.git" and git's error
+      Then the run faults naming repo "http://seed.jr2-e2e-seed.svc/missing.git" and git's error
 
   Rule: the Repo sweep takes a Repo nothing binds and no run attached lately, resource and node copy both
-    ADR-0051. Eviction is reachability plus age: `j2 gc --repo-ttl` deletes a `Repo` resource no
+    ADR-0051. Eviction is reachability plus age: `jr2 gc --repo-ttl` deletes a `Repo` resource no
     registered Machine binds and no run has attached within the TTL, and that deletion is what
     lets each node's cache agent remove its bare clone once nothing there mounts it. A per-run
     Repo is the one on that clock — a bound one (`app.git`, in every namespace) never is. The
@@ -343,21 +343,21 @@ Feature: a workspace() run drives a real Sandbox on kind
 
     Scenario: a per-run Repo outlives its run until the sweep, and the sweep clears it off the node
       Given the kind instance is serving
-      When I start the "perrun" workflow with repo "http://seed.j2-e2e-seed.svc/other.git" detached
+      When I start the "perrun" workflow with repo "http://seed.jr2-e2e-seed.svc/other.git" detached
       Then the run's Sandbox becomes Ready
-      And j2 status reports repo "http://seed.j2-e2e-seed.svc/other.git" present on the node
+      And jr2 status reports repo "http://seed.jr2-e2e-seed.svc/other.git" present on the node
       When the Agent in the Sandbox calls "finish" with summary "done"
       Then the run's body settled as "finished"
       And the run's Sandbox is destroyed
-      And a node still holds the cache of repo "http://seed.j2-e2e-seed.svc/other.git"
-      When I sweep Repos no run attached within "1m", once repo "http://seed.j2-e2e-seed.svc/other.git" is that old
-      Then j2 status no longer lists repo "http://seed.j2-e2e-seed.svc/other.git"
-      And j2 status still lists repo "http://seed.j2-e2e-seed.svc/app.git" as bound
-      And no node holds the cache of repo "http://seed.j2-e2e-seed.svc/other.git" any more
+      And a node still holds the cache of repo "http://seed.jr2-e2e-seed.svc/other.git"
+      When I sweep Repos no run attached within "1m", once repo "http://seed.jr2-e2e-seed.svc/other.git" is that old
+      Then jr2 status no longer lists repo "http://seed.jr2-e2e-seed.svc/other.git"
+      And jr2 status still lists repo "http://seed.jr2-e2e-seed.svc/app.git" as bound
+      And no node holds the cache of repo "http://seed.jr2-e2e-seed.svc/other.git" any more
 
   Rule: a shipped Machine runs as a consumer registers it
-    ADR-0054. `@j2/machines` ships Machines for END USERS, and an example nobody can import is not
-    a shipped Machine — so the kit packages them, and the only proof one works in j2 is the stock
+    ADR-0054. `@jr2/machines` ships Machines for END USERS, and an example nobody can import is not
+    a shipped Machine — so the kit packages them, and the only proof one works in jr2 is the stock
     Harness driving it in a real Sandbox. Every Machine the kit ships owns a scenario here.
 
     `workflows/task.ts` in this instance is the whole consumer story: `customize(task, { repos,
@@ -376,7 +376,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       And the model's first turn carries the prompt "add a --json flag to the status command"
       When the Agent in the Sandbox calls "finish" with summary "added the flag"
       Then the run parks at the "review" Gate, with summary "added the flag"
-      And the Gate names the branch j2/task-<run id> and the worktree it was cut in
+      And the Gate names the branch jr2/task-<run id> and the worktree it was cut in
       And the turn behind it is over at the Harness
       When I send "request_changes" to the Gate with notes "rename the flag to --format"
       # Continuity, not merely a second request: ONE conversation holds the first prompt, the turn

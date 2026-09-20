@@ -3,7 +3,7 @@
 The Console ([ADR-0032](0032-the-console-unlocks-with-the-instance-token.md)) outgrew its framework-free form: `main.js`
 reached ~1,500 lines, much of it hand-rolled DOM reconciliation (`memo()`, `paint()`, manual list diffing) — work a view
 library exists to own. Three standing constraints shaped the replacement: the repo is zero-build (Node 24 strips types;
-nothing compiles), the Console serves only its own assets (ADR-0032), and `@j2/orchestrator` is a library that serves
+nothing compiles), the Console serves only its own assets (ADR-0032), and `@jr2/orchestrator` is a library that serves
 its files from disk wherever the process starts. A fourth arrived with this decision: Console source is TypeScript like
 everything else.
 
@@ -50,7 +50,7 @@ everything else.
 
 - The erasable-syntax constraint (no enums, no constructor parameter properties) now applies to Console code, as it
   already does to everything Node runs in this repo.
-- `ts-blank-space` and `preact` become production dependencies of `@j2/orchestrator`; the package's `typecheck` must
+- `ts-blank-space` and `preact` become production dependencies of `@jr2/orchestrator`; the package's `typecheck` must
   cover `console/` with DOM types.
 - TSX later is additive — an `esbuild.transform()` at the same serve point — not a rework.
 - The refactor is behavior-preserving: `console-store.test.ts` retargets to `store.ts`, the `@console` browser tier and

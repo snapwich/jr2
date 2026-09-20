@@ -4,7 +4,7 @@
 //   the provider  — a scripted OpenAI-compatible fake, so a turn's SHAPE is chosen by the test
 //                   (where it stalls, what it half-emits, when it fails) instead of by a model.
 //                   Records every request body, which is the only place context loss is visible.
-//   the Adapter   — the REAL `@j2/adapter`, over a real socket, against a fake Orchestrator whose
+//   the Adapter   — the REAL `@jr2/adapter`, over a real socket, against a fake Orchestrator whose
 //                   surface can be killed or swapped mid-run (what a state exit does to a
 //                   registration) and whose deliveries can be held open (an abort mid-tool-call).
 //
@@ -15,7 +15,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
-import { OrchestratorClient, startAdapter, type Surface } from "@j2/adapter";
+import { OrchestratorClient, startAdapter, type Surface } from "@jr2/adapter";
 
 // ─── the scripted provider ───────────────────────────────────────────────────
 

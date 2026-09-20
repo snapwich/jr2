@@ -32,11 +32,11 @@ const PUBLIC = ["cli", "orchestrator", "agent-protocol", "machines"];
 /** Reached as Kit images instead, never via npm install (ADR-0027, ADR-0037). */
 const PRIVATE = ["harness", "adapter"];
 
-/** The registry the guard names. Read from `@j2/cli` rather than written down twice: moving the
+/** The registry the guard names. Read from `@jr2/cli` rather than written down twice: moving the
  * guard must move every reader with it (the @dist fixture reads the same field). */
 async function guardedRegistry(): Promise<string> {
   const registry = (await manifest("cli")).publishConfig?.registry;
-  assert.ok(registry, "@j2/cli's publishConfig names the registry the kit may publish to");
+  assert.ok(registry, "@jr2/cli's publishConfig names the registry the kit may publish to");
   return registry;
 }
 
@@ -78,7 +78,7 @@ test("every published package ships an allowlist that holds its entrypoints and 
       assert.ok(covered, `packages/${pkg} publishes ${entry}, so its files: list must cover it`);
     }
 
-    // And the half nothing downstream can catch: tests are ~460 kB of source in @j2/orchestrator
+    // And the half nothing downstream can catch: tests are ~460 kB of source in @jr2/orchestrator
     // alone, unpacked into every instance's node_modules and baked into its image.
     assert.ok(!files.includes("test"), `packages/${pkg} does not ship its test tree`);
   }
@@ -86,5 +86,5 @@ test("every published package ships an allowlist that holds its entrypoints and 
   // The Console is served from the package at runtime (ADR-0034: `console/` assets, `.ts` sources
   // type-erased on the way out), so nothing in the manifest names it and the derived check above
   // cannot see it. Said explicitly, because an orchestrator that packs no `console/` serves 404s.
-  assert.ok((await manifest("orchestrator")).files?.includes("console"), "@j2/orchestrator ships the Console");
+  assert.ok((await manifest("orchestrator")).files?.includes("console"), "@jr2/orchestrator ships the Console");
 });

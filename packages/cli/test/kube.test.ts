@@ -16,7 +16,7 @@ test("the pod's own output leads, and kubectl's verdict follows", () => {
   const err = oneShotFailure(
     execFileRejection(
       "[TypeError: fetch failed] { cause: ENOTFOUND vllm.example }\n",
-      "pod ns/j2-provider-preflight-1 terminated (Error)\n",
+      "pod ns/jr2-provider-preflight-1 terminated (Error)\n",
     ),
   );
   const lines = err.message.split("\n");
@@ -118,7 +118,7 @@ function mkKube(opts: {
   return kube;
 }
 
-const target = { name: "j2-orchestrator", namespace: "demo", selector: "app=j2-orchestrator" };
+const target = { name: "jr2-orchestrator", namespace: "demo", selector: "app=jr2-orchestrator" };
 const timedOut = new Error("error: timed out waiting for the condition");
 
 /** One crashing container, with whatever the kubelet said about it. */
@@ -130,7 +130,7 @@ function crashPod(over: {
   last?: { reason?: string; exitCode?: number; message?: string };
 }): FakePod {
   return {
-    metadata: { name: "j2-orchestrator-77d-abc" },
+    metadata: { name: "jr2-orchestrator-77d-abc" },
     spec: { nodeName: over.node ?? "kind-worker", containers: [{ name: "orchestrator", image: over.image }] },
     status: {
       phase: "Pending",
@@ -153,7 +153,7 @@ test("an exec format error names both platforms, and the way back", async () => 
       crashPod({
         reason: "CrashLoopBackOff",
         message: "back-off 40s restarting failed container",
-        image: "j2-instance-demo:4a77b1-amd64",
+        image: "jr2-instance-demo:4a77b1-amd64",
         last: { reason: "StartError", exitCode: 128, message: "failed to create task: exec format error" },
       }),
     ],
@@ -163,7 +163,7 @@ test("an exec format error names both platforms, and the way back", async () => 
 
   // The evidence is printed raw — the diagnosis below only interprets what is already there.
   assert.match(err.message, /exec format error/);
-  assert.match(err.message, /image j2-instance-demo:4a77b1-amd64/);
+  assert.match(err.message, /image jr2-instance-demo:4a77b1-amd64/);
   assert.match(err.message, /diagnosis: .* built for another platform/);
   assert.match(err.message, /its tag names amd64/);
   assert.match(err.message, /kind-worker runs arm64/);
@@ -192,44 +192,44 @@ test("a pre-ADR-0045 tag says it names no platform rather than guessing one", as
 
 test("a pull failure names the ref and the registry it resolves to", async () => {
   const kube = mkKube({
-    pods: [crashPod({ reason: "ImagePullBackOff", image: "j2-instance-demo:4a77b1-amd64" })],
+    pods: [crashPod({ reason: "ImagePullBackOff", image: "jr2-instance-demo:4a77b1-amd64" })],
     events: [
       {
         metadata: { name: "e1" },
         type: "Warning",
         reason: "Failed",
-        message: 'Failed to pull image "j2-instance-demo:4a77b1-amd64": not found',
-        involvedObject: { name: "j2-orchestrator-77d-abc" },
+        message: 'Failed to pull image "jr2-instance-demo:4a77b1-amd64": not found',
+        involvedObject: { name: "jr2-orchestrator-77d-abc" },
       },
     ],
   });
   const err = await rolloutFailure(kube, timedOut, target);
   assert.match(err.message, /event Warning Failed: Failed to pull image/);
-  assert.match(err.message, /diagnosis: the kubelet could not pull j2-instance-demo:4a77b1-amd64/);
+  assert.match(err.message, /diagnosis: the kubelet could not pull jr2-instance-demo:4a77b1-amd64/);
   // The normalization trap, spelled out: a bare ref is a Docker Hub ref.
-  assert.match(err.message, /resolves to docker\.io\/library\/j2-instance-demo:4a77b1-amd64/);
+  assert.match(err.message, /resolves to docker\.io\/library\/jr2-instance-demo:4a77b1-amd64/);
   assert.match(err.message, /kind load/);
 });
 
 test("a pull failure of a registry ref does not invent a Docker Hub resolution", async () => {
-  const kube = mkKube({ pods: [crashPod({ reason: "ErrImagePull", image: "registry.local:5000/j2-harness:0.0.0" })] });
+  const kube = mkKube({ pods: [crashPod({ reason: "ErrImagePull", image: "registry.local:5000/jr2-harness:0.0.0" })] });
   const err = await rolloutFailure(kube, timedOut, target);
-  assert.match(err.message, /resolves to registry\.local:5000\/j2-harness:0\.0\.0/);
+  assert.match(err.message, /resolves to registry\.local:5000\/jr2-harness:0\.0\.0/);
   assert.doesNotMatch(err.message, /docker\.io/);
 });
 
 test("a crash loop leads with the log tail, which is the diagnosis", async () => {
   const kube = mkKube({
-    pods: [crashPod({ reason: "CrashLoopBackOff", image: "j2-instance-demo:4a77b1-amd64" })],
-    logs: { "j2-orchestrator-77d-abc:previous": "Error: J2_SIGNING_KEY is required\n    at boot\n" },
+    pods: [crashPod({ reason: "CrashLoopBackOff", image: "jr2-instance-demo:4a77b1-amd64" })],
+    logs: { "jr2-orchestrator-77d-abc:previous": "Error: JR2_SIGNING_KEY is required\n    at boot\n" },
   });
   const err = await rolloutFailure(kube, timedOut, target);
-  assert.match(err.message, /\| Error: J2_SIGNING_KEY is required/);
+  assert.match(err.message, /\| Error: JR2_SIGNING_KEY is required/);
   assert.match(err.message, /diagnosis: .* starts and exits — the log tail above/);
   // The crashed instance is gone by the time anyone asks, so the read falls back to `--previous`.
   assert.deepEqual(kube.logCalls, [
-    "j2-orchestrator-77d-abc/orchestrator",
-    "j2-orchestrator-77d-abc/orchestrator --previous",
+    "jr2-orchestrator-77d-abc/orchestrator",
+    "jr2-orchestrator-77d-abc/orchestrator --previous",
   ]);
 });
 
@@ -239,7 +239,7 @@ test("a config error names the object the namespace does not hold", async () => 
       crashPod({
         reason: "CreateContainerConfigError",
         message: 'secret "vllm-key" not found',
-        image: "j2-instance-demo:4a77b1-amd64",
+        image: "jr2-instance-demo:4a77b1-amd64",
       }),
     ],
   });
@@ -252,8 +252,8 @@ test("evidence no name matches is still carried, with no diagnosis invented", as
   const kube = mkKube({
     pods: [
       {
-        metadata: { name: "j2-orchestrator-77d-abc" },
-        spec: { containers: [{ name: "orchestrator", image: "j2-instance-demo:4a77b1-amd64" }] },
+        metadata: { name: "jr2-orchestrator-77d-abc" },
+        spec: { containers: [{ name: "orchestrator", image: "jr2-instance-demo:4a77b1-amd64" }] },
         status: { phase: "Pending" },
       },
     ],
@@ -263,57 +263,57 @@ test("evidence no name matches is still carried, with no diagnosis invented", as
         type: "Warning",
         reason: "FailedScheduling",
         message: "0/1 nodes are available: 1 Insufficient memory.",
-        involvedObject: { name: "j2-orchestrator-77d-abc" },
+        involvedObject: { name: "jr2-orchestrator-77d-abc" },
       },
     ],
   });
   const err = await rolloutFailure(kube, timedOut, target);
-  assert.match(err.message, /pod j2-orchestrator-77d-abc \(Pending\)/);
+  assert.match(err.message, /pod jr2-orchestrator-77d-abc \(Pending\)/);
   assert.match(err.message, /1 Insufficient memory/);
-  assert.match(err.message, /image j2-instance-demo:4a77b1-amd64/);
+  assert.match(err.message, /image jr2-instance-demo:4a77b1-amd64/);
   assert.doesNotMatch(err.message, /diagnosis:/);
   assert.match(err.message, /timed out waiting for the condition$/);
 });
 
 test("a rollout whose ReplicaSet made no pod says so", async () => {
   const err = await rolloutFailure(mkKube({}), timedOut, target);
-  assert.match(err.message, /no pod matches app=j2-orchestrator/);
+  assert.match(err.message, /no pod matches app=jr2-orchestrator/);
   assert.match(err.message, /the ReplicaSet made none/);
   assert.match(err.message, /timed out waiting for the condition$/);
 
   // The cache agent is a DaemonSet (ADR-0051), and its pods are made by no ReplicaSet.
   const agent = await rolloutFailure(mkKube({}), timedOut, {
     kind: "daemonset",
-    name: "j2-repo-cache",
+    name: "jr2-repo-cache",
     namespace: "demo",
-    selector: "app=j2-repo-cache",
+    selector: "app=jr2-repo-cache",
   });
-  assert.match(agent.message, /^j2-repo-cache: rollout did not complete/);
+  assert.match(agent.message, /^jr2-repo-cache: rollout did not complete/);
   assert.match(agent.message, /the DaemonSet made none/);
 });
 
 // --- the rollout wait's argv ------------------------------------------------------------------
-// `j2 up` waits on two workload kinds: every layer's Deployment, and the cache agent's DaemonSet
+// `jr2 up` waits on two workload kinds: every layer's Deployment, and the cache agent's DaemonSet
 // (ADR-0051). The kind → `rollout status <kind>/<name>` mapping is the one thing the port adds.
 
 test("a rollout wait is a Deployment's unless the kind says DaemonSet", () => {
-  assert.deepEqual(rolloutStatusArgs({ name: "j2-orchestrator", namespace: "demo" }), [
+  assert.deepEqual(rolloutStatusArgs({ name: "jr2-orchestrator", namespace: "demo" }), [
     "--namespace",
     "demo",
     "rollout",
     "status",
-    "deployment/j2-orchestrator",
+    "deployment/jr2-orchestrator",
     "--timeout=180s",
   ]);
   assert.deepEqual(
     rolloutStatusArgs({
       kind: "daemonset",
-      name: "j2-repo-cache",
+      name: "jr2-repo-cache",
       namespace: "demo",
-      context: "kind-j2",
+      context: "kind-jr2",
       timeoutSeconds: 60,
     }),
-    ["--context", "kind-j2", "--namespace", "demo", "rollout", "status", "daemonset/j2-repo-cache", "--timeout=60s"],
+    ["--context", "kind-jr2", "--namespace", "demo", "rollout", "status", "daemonset/jr2-repo-cache", "--timeout=60s"],
   );
 });
 
@@ -330,18 +330,18 @@ test("a pod that never started outranks the ones that came up", async () => {
   // that are running happily just because it has no container that said "not ready".
   const running = (name: string): FakePod => ({
     metadata: { name },
-    spec: { nodeName: "kind-worker", containers: [{ name: "orchestrator", image: "j2-instance-demo:abc-amd64" }] },
+    spec: { nodeName: "kind-worker", containers: [{ name: "orchestrator", image: "jr2-instance-demo:abc-amd64" }] },
     status: { phase: "Running", containerStatuses: [{ name: "orchestrator", ready: true }] },
   });
   const err = await rolloutFailure(
     mkKube({
       pods: [
-        running("j2-orchestrator-old-1"),
-        running("j2-orchestrator-old-2"),
-        running("j2-orchestrator-old-3"),
+        running("jr2-orchestrator-old-1"),
+        running("jr2-orchestrator-old-2"),
+        running("jr2-orchestrator-old-3"),
         {
-          metadata: { name: "j2-orchestrator-new-x" },
-          spec: { containers: [{ name: "orchestrator", image: "j2-instance-demo:def-amd64" }] },
+          metadata: { name: "jr2-orchestrator-new-x" },
+          spec: { containers: [{ name: "orchestrator", image: "jr2-instance-demo:def-amd64" }] },
           status: { phase: "Pending" },
         },
       ],
@@ -351,14 +351,14 @@ test("a pod that never started outranks the ones that came up", async () => {
           type: "Warning",
           reason: "FailedScheduling",
           message: "0/3 nodes are available: 3 Insufficient memory.",
-          involvedObject: { name: "j2-orchestrator-new-x" },
+          involvedObject: { name: "jr2-orchestrator-new-x" },
         },
       ],
     }),
     timedOut,
     target,
   );
-  assert.match(err.message, /pod j2-orchestrator-new-x \(Pending\)/, "the pod that did not come up is shown");
+  assert.match(err.message, /pod jr2-orchestrator-new-x \(Pending\)/, "the pod that did not come up is shown");
   assert.match(err.message, /Insufficient memory/, "…with the scheduler's own words about it");
   assert.match(err.message, /1 further pod\(s\) not shown/);
 });

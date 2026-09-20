@@ -22,7 +22,7 @@ test("no registry: same name twice yields two independent defs", () => {
   assert.ok(!b.input.safeParse({}).success);
 });
 
-test("rejects names outside the MCP/xstate-safe charset (dots stay j2's namespaces)", () => {
+test("rejects names outside the MCP/xstate-safe charset (dots stay jr2's namespaces)", () => {
   assert.throws(() => defineEvent({ name: "agent.fault", input: z.object({}) }), /invalid name/);
   assert.throws(() => defineEvent({ name: "not a name!", input: z.object({}) }), /invalid name/);
   assert.throws(() => defineEvent({ name: "", input: z.object({}) }), /invalid name/);

@@ -1,6 +1,6 @@
 // The model registry (ADR-0018/0027): a custom provider registers with keyless-tolerant auth and
 // limits pass-through; specifiers split at the FIRST slash; unlisted custom ids synthesize;
-// j2's thinkingLevel scale passes through to pi unmapped, and anything else throws — loudly,
+// jr2's thinkingLevel scale passes through to pi unmapped, and anything else throws — loudly,
 // never a silently downgraded model or effort.
 
 import { test } from "node:test";
@@ -76,23 +76,23 @@ test("resolveModel: an unknown provider throws — never a silent fallback", () 
   assert.throws(() => resolveModel(modelsFor(vllm, {}), "ghost/m"), /resolves to nothing/);
 });
 
-test("keyless fallback: no J2_PROVIDER_API_KEY resolves the placeholder, never unconfigured", async () => {
+test("keyless fallback: no JR2_PROVIDER_API_KEY resolves the placeholder, never unconfigured", async () => {
   const auth = await modelsFor(vllm, {}).getAuth("vllm");
   assert.equal(auth?.auth.apiKey, "unused");
 });
 
 test("keyless fallback: a Secret-fed key wins over the placeholder", async () => {
-  const auth = await modelsFor(vllm, { J2_PROVIDER_API_KEY: "sk-real" }).getAuth("vllm");
+  const auth = await modelsFor(vllm, { JR2_PROVIDER_API_KEY: "sk-real" }).getAuth("vllm");
   assert.equal(auth?.auth.apiKey, "sk-real");
 });
 
-test("mapThinkingLevel: every j2 level passes through to pi unmapped", () => {
+test("mapThinkingLevel: every jr2 level passes through to pi unmapped", () => {
   const levels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
   for (const level of levels) assert.equal(mapThinkingLevel(level), level);
 });
 
-test("mapThinkingLevel: a level outside j2's scale throws — map loudly, never silently", () => {
-  // pi's "max" and arbitrary JSON both sit outside j2's scale; the type says so, the throw
+test("mapThinkingLevel: a level outside jr2's scale throws — map loudly, never silently", () => {
+  // pi's "max" and arbitrary JSON both sit outside jr2's scale; the type says so, the throw
   // guards the runtime spec.
   assert.throws(() => mapThinkingLevel("max" as ThinkingLevel), /has no pi equivalent/);
   assert.throws(() => mapThinkingLevel("bogus" as ThinkingLevel), /has no pi equivalent/);

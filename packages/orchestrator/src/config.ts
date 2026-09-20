@@ -1,15 +1,15 @@
 // Instance configuration (ADR-0050): the deployment facts a Machine cannot carry — the instance's
 // identity and reach, what its Harness may reach, and how the cluster authenticates to Repos. What
 // a Sandbox is MADE of and which Repos it attaches are not here — they are `workspace()` options
-// (ADR-0037/0049/0051), and every image ref is resolved by `j2 up` (ADR-0038). There is no `images`
+// (ADR-0037/0049/0051), and every image ref is resolved by `jr2 up` (ADR-0038). There is no `images`
 // block and nothing that names a Repo, deliberately: neither would type anything a Machine cannot
 // carry itself, and an override seat for the Harness ref is the eject hatch ADR-0027 refuses.
 //
-// `defineConfig` is an identity passthrough — it exists solely so a `j2.config.ts` is checked
-// against `J2Config` at authoring time and in `j2 up`'s typecheck gate (ADR-0050), exactly like
+// `defineConfig` is an identity passthrough — it exists solely so a `jr2.config.ts` is checked
+// against `JR2Config` at authoring time and in `jr2 up`'s typecheck gate (ADR-0050), exactly like
 // the config helpers in vite/tsup/etc. No runtime behavior beyond returning its argument. It is
-// NOT generic: the parameter is `J2Config` itself, so the literal an author writes gets
-// excess-property checking at every depth. A generic `<T extends J2Config>` would infer `T` as
+// NOT generic: the parameter is `JR2Config` itself, so the literal an author writes gets
+// excess-property checking at every depth. A generic `<T extends JR2Config>` would infer `T` as
 // the literal's own type and check nothing an extra key could break — a `tokn` on a
 // `git.credentials` entry would compile, and that entry would admit its prefix through the fence
 // anonymously (ADR-0051). Nothing reads the literal's type back, so the generic buys nothing.
@@ -38,7 +38,7 @@ import { repoIdentity } from "./repo-identity.ts";
 export type GitCredential = {
   /** A prefix on the identity (`github.com/ourorg/`), or `*` for everything. */
   match: string;
-  /** Env var name holding an HTTPS token; `j2 up` materializes its value into the Instance Secret. */
+  /** Env var name holding an HTTPS token; `jr2 up` materializes its value into the Instance Secret. */
   token?: string;
   /** A Secret (Flux key names: `identity`, `identity.pub`, `known_hosts`) holding a deploy key. */
   sshKey?: string;
@@ -81,7 +81,7 @@ export function credentialSecretFor(
 /** The token Secret's name for one entry — deterministic in `match`, so a redeploy finds its own
  * Secret and two entries never share one. */
 export function gitTokenSecretName(match: string): string {
-  return `j2-git-${createHash("sha256").update(match).digest("hex").slice(0, 8)}`;
+  return `jr2-git-${createHash("sha256").update(match).digest("hex").slice(0, 8)}`;
 }
 
 /** Whether `url` clones over ssh — scp-style `git@host:path`, `ssh://`, or `git+ssh://`. A url
@@ -136,7 +136,7 @@ export type HarnessProvider = {
   /** The endpoint — reachable FROM PODS (`localhost` never is; a LAN address works on kind).
    * Deployment-varying → resolve from env (`.env`), never hardcode (ADR-0019). */
   baseUrl: string;
-  /** API key, when the endpoint wants one. May read `process.env` — `j2 up` materializes config
+  /** API key, when the endpoint wants one. May read `process.env` — `jr2 up` materializes config
    * env values into the instance's Secret; the literal never lands in a manifest (ADR-0019).
    * Genuinely optional: an unauthenticated endpoint needs none (the Harness sends the wire
    * library's placeholder, which vLLM/Ollama ignore). */
@@ -164,17 +164,17 @@ export type HarnessProvider = {
  * One definition value may still be carried by several Machines, so the variation that matters is
  * per-definition and per-invocation, which one global default serves not at all. */
 export type HarnessConfig = {
-  /** Custom model provider, preflighted from inside the cluster by `j2 up` (ADR-0019). */
+  /** Custom model provider, preflighted from inside the cluster by `jr2 up` (ADR-0019). */
   provider?: HarnessProvider;
   /** Env vars for the Harness container (Agent creds, e.g. ANTHROPIC_API_KEY). Values read from
-   * `process.env`/`.env` are materialized into the instance-owned Secret by `j2 up`. */
+   * `process.env`/`.env` are materialized into the instance-owned Secret by `jr2 up`. */
   env?: readonly HarnessEnvVar[];
   /** Whole-Secret/ConfigMap env for the Harness container — `envFrom` refs to Secrets YOU manage
-   * (Sealed Secrets etc.); `j2 up` preflights that each referenced Secret exists (ADR-0019). */
+   * (Sealed Secrets etc.); `jr2 up` preflights that each referenced Secret exists (ADR-0019). */
   envFrom?: readonly HarnessEnvFromSource[];
   /** Path to a PEM CA bundle, RELATIVE to the instance folder — commit the file (CA certs are
-   * public; e.g. an internal CA in front of a LAN vLLM). Only `j2 up` reads it (host-side): it
-   * materializes the `j2-ca` ConfigMap and runs the provider preflight with the same trust. The
+   * public; e.g. an internal CA in front of a LAN vLLM). Only `jr2 up` reads it (host-side): it
+   * materializes the `jr2-ca` ConfigMap and runs the provider preflight with the same trust. The
    * bundle lands on the Harness container and NOWHERE else — never the Adapter, whose Orchestrator
    * credential has no business behind the same trust store (the `harness.env` asymmetry,
    * ADR-0013/0020). */
@@ -193,9 +193,9 @@ export type Toleration = {
 
 /**
  * Where an Instance's Sandboxes may land (ADR-0052). Absent, a Sandbox node is wherever an
- * ordinary pod lands — not cordoned, no taint — and no j2 label is ever required. Both keys ride
+ * ordinary pod lands — not cordoned, no taint — and no jr2 label is ever required. Both keys ride
  * the Sandbox pod verbatim, the Repo cache agent's DaemonSet takes the same two so a cache is only
- * ever where a Sandbox can reach it, and `j2 up` reads the same predicate off the nodes to report
+ * ever where a Sandbox can reach it, and `jr2 up` reads the same predicate off the nodes to report
  * the set. A Machine says nothing about placement: a node label is a deployment fact (ADR-0050).
  * These two are the default class; a per-Machine `classes` map is the deferred extension.
  */
@@ -207,9 +207,9 @@ export type SandboxPlacement = {
   tolerations?: readonly Toleration[];
 };
 
-export type J2Config = {
+export type JR2Config = {
   /** The instance's identity (ADR-0019): its kube namespace defaults to this (`-n` overrides),
-   * and `j2 up` labels every object it owns with it. Default: the instance folder's name. */
+   * and `jr2 up` labels every object it owns with it. Default: the instance folder's name. */
   name?: string;
   /** How the cluster authenticates to Repos, and the fence a per-run url must pass (ADR-0051).
    * NOT a list of Repos: a Machine names those itself, through its `workspace()`'s Repo Slots, and
@@ -224,16 +224,16 @@ export type J2Config = {
    * `kind load`-ed; present → pushed. A non-kind cluster without one fails loudly (ADR-0019). */
   registry?: string;
   /** Where this cluster pulls the PUBLISHED Kit images from (deployment-varying — resolve from
-   * env). Absent → the canonical home, `ghcr.io/snapwich/j2-harness:<kitversion>` and friends;
-   * present → the same tags re-homed to a self-hosted mirror, `<kitRegistry>/j2-harness:<ver>`,
+   * env). Absent → the canonical home, `ghcr.io/snapwich/jr2-harness:<kitversion>` and friends;
+   * present → the same tags re-homed to a self-hosted mirror, `<kitRegistry>/jr2-harness:<ver>`,
    * for a self-hosted, air-gapped, or mirror-only cluster (ADR-0044). Seeding that mirror is a
-   * deliberate, instance-less act (`j2 kit push`), never a side effect of `j2 up`.
+   * deliberate, instance-less act (`jr2 kit push`), never a side effect of `jr2 up`.
    *
    * Separate from `registry` on purpose: `registry` addresses images THIS converge builds,
    * `kitRegistry` addresses artifacts the kit already published. One key for both would make every
    * private-registry user mirror three images they could have pulled from the home. */
   kitRegistry?: string;
-  /** What `j2 up` builds its images FOR — docker platform strings, e.g. `["linux/arm64"]`
+  /** What `jr2 up` builds its images FOR — docker platform strings, e.g. `["linux/arm64"]`
    * (deployment-varying — resolve from env). Absent → derived from the cluster's schedulable nodes
    * and intersected with the platforms the kit releases for, which is the answer for every ordinary
    * cluster (ADR-0045). Present → ABSOLUTE: derivation is skipped and this is the build set (still
@@ -245,30 +245,30 @@ export type J2Config = {
   platforms?: readonly string[];
   /** Operator-layer overrides — kit development territory (ADR-0019). */
   operator?: {
-    /** `false` = `j2 up` skips the operator layer (run the controller loop yourself). */
+    /** `false` = `jr2 up` skips the operator layer (run the controller loop yourself). */
     manage?: boolean;
   };
 };
 
-/** Identity passthrough that checks a config object against `J2Config` where it is written —
+/** Identity passthrough that checks a config object against `JR2Config` where it is written —
  * excess keys included, at every depth, which is why the parameter is the type and not a generic
  * bound by it. */
-export function defineConfig(c: J2Config): J2Config {
+export function defineConfig(c: JR2Config): JR2Config {
   return c;
 }
 
 /**
- * Load an instance's `j2.config.ts` (default export). Absent file → undefined (an instance
+ * Load an instance's `jr2.config.ts` (default export). Absent file → undefined (an instance
  * can boot configless); a file that fails to IMPORT throws — a broken config must be loud,
  * never silently treated as "no config". The one shape check lives here, on the path the host
  * CLI and the in-cluster Orchestrator share: `git.credentials` is checked at runtime, because an
  * instance is zero-build and nothing typechecks this file before Node strips its types and
  * imports it.
  */
-export async function loadConfig(dir: string): Promise<J2Config | undefined> {
-  const file = join(dir, "j2.config.ts");
+export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
+  const file = join(dir, "jr2.config.ts");
   if (!existsSync(file)) return undefined;
-  const mod = (await import(pathToFileURL(file).href)) as { default?: J2Config };
+  const mod = (await import(pathToFileURL(file).href)) as { default?: JR2Config };
   if (!mod.default) throw new Error(`${file} has no default export (use \`export default defineConfig({…})\`)`);
   if (mod.default.git !== undefined) checkGit(mod.default.git, file);
   return mod.default;

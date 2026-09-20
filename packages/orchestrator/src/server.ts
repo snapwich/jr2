@@ -6,11 +6,11 @@
 //
 //   PORT               listen port (default 4000 — what the Service targets)
 //   HOST               listen hostname (default 0.0.0.0: pods must be reachable off-loopback)
-//   J2_INSTANCE_TOKEN  the Instance credential (ADR-0013), from the instance's Secret; minted
+//   JR2_INSTANCE_TOKEN  the Instance credential (ADR-0013), from the instance's Secret; minted
 //                      per boot when absent (then only the announce line knows it — fixtures set it)
-//   J2_SIGNING_KEY     base64 key Sandbox tokens are signed with; from the Secret so live Sandboxes
-//                      survive a pod restart. Absent → minted into `<dir>/.j2/secret` (dev-grade).
-//   J2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
+//   JR2_SIGNING_KEY     base64 key Sandbox tokens are signed with; from the Secret so live Sandboxes
+//                      survive a pod restart. Absent → minted into `<dir>/.jr2/secret` (dev-grade).
+//   JR2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
 //                      Sandboxes are driven in it, and the Adapters' route home is Service DNS.
 //   <git.credentials[].token>
 //                      each token env var the config names rides the instance Secret (ADR-0051):
@@ -22,7 +22,7 @@
 // each as `{ repo, url, bound: true }` — or `{ repo, error }` — one line apiece, after serving:
 // a Repo the cluster refuses is a degraded Repo (ADR-0048), never a boot that did not happen.
 // Deployed WITHOUT one, the same pass still runs and binds nothing, which unlabels every Repo a
-// previous deploy bound — an Instance that drops its last `workspace()` leaves `j2 gc` able to
+// previous deploy bound — an Instance that drops its last `workspace()` leaves `jr2 gc` able to
 // collect what it stopped using.
 
 import { createHash } from "node:crypto";
@@ -64,20 +64,20 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   const config = await loadConfig(opts.dir);
   const port = env.PORT !== undefined ? Number(env.PORT) : 4000;
   const signingKey =
-    env.J2_SIGNING_KEY !== undefined ? Buffer.from(env.J2_SIGNING_KEY, "base64") : await loadSigningKey(opts.dir);
+    env.JR2_SIGNING_KEY !== undefined ? Buffer.from(env.JR2_SIGNING_KEY, "base64") : await loadSigningKey(opts.dir);
 
-  // Deployed (J2_NAMESPACE set): Adapters dial the orchestrator at its own Service DNS — stable
+  // Deployed (JR2_NAMESPACE set): Adapters dial the orchestrator at its own Service DNS — stable
   // by nature, which is what lets live Sandboxes outlive orchestrator restarts (ADR-0013).
-  const namespace = env.J2_NAMESPACE;
+  const namespace = env.JR2_NAMESPACE;
 
   // Resolved HERE, not left for startInstance to mint: every Sandbox Harness gets the token's
   // sha-256 as its echo gate (ADR-0023, below), so the token must exist before the first
   // provision. From the instance Secret when deployed; per-boot for a host-booted fixture,
   // exactly as before.
-  const instanceToken = env.J2_INSTANCE_TOKEN ?? mintInstanceToken();
+  const instanceToken = env.JR2_INSTANCE_TOKEN ?? mintInstanceToken();
 
   // The data-plane switch (ADR-0012/0031/0051): a registered Machine COMPOSES a Sandbox — read off
-  // the same walk `j2 up` makes — and this process is deployed in a cluster → wire the kubectl
+  // the same walk `jr2 up` makes — and this process is deployed in a cluster → wire the kubectl
   // Sandbox backend. Otherwise an instance without a data plane (workspace() invocations fault
   // pointedly). The walk loads the same modules `startInstance` registers below; Node's module
   // cache makes them one import.
@@ -87,17 +87,17 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   let repos: RepoResources | undefined;
   let fetches: RepoFetches | undefined;
   // The Repo port hangs off DEPLOYED, not off the data plane: this boot's reconcile is the only
-  // writer that ever REMOVES `j2.dev/bound` (repos.ts), and an Instance that drops its last
+  // writer that ever REMOVES `jr2.dev/bound` (repos.ts), and an Instance that drops its last
   // `workspace()` still owns the Repos its earlier deploys bound. So the port is built whenever
   // there is a cluster to drive, and the walk — now naming nothing — unlabels every one of them,
-  // which is what puts them on `j2 gc`'s clock. Gate it on the data plane instead and they stay
+  // which is what puts them on `jr2 gc`'s clock. Gate it on the data plane instead and they stay
   // bound forever: uncollectable resources, with their node caches behind them.
   if (namespace !== undefined) {
     const credentials = config?.git?.credentials ?? [];
     // The Repo resources (ADR-0051): created by this process, cloned by the operator's cache agent
     // on every node that needs them. The port resolves `git.credentials` into each resource's
     // `secretRef`, reading a token entry's env var off this process — the Instance Secret is
-    // `envFrom` on the Deployment, so `j2 up` is what put it there.
+    // `envFrom` on the Deployment, so `jr2 up` is what put it there.
     repos = kubectlRepos({ namespace, credentials, env, ...(opts.exec ? { exec: opts.exec } : {}) });
     if (dataPlane) {
       // The ask a pod makes when something inside it fetches (ADR-0053): it marks the Sandbox CR
@@ -110,31 +110,31 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
         credentials,
         // Where a provision records the Repos it names, before the CR names them.
         repos,
-        // Named here the same way HARNESS_CONFIGMAP is: a j2-owned mount path, deliberately NOT an
+        // Named here the same way HARNESS_CONFIGMAP is: a jr2-owned mount path, deliberately NOT an
         // env knob — there is no image escape hatch left to configure (ADR-0038). Note what this
-        // buys: the map is read per provision, so an instance whose `j2-images` ConfigMap is not yet
-        // mounted still BOOTS and serves — only a provision fails, pointing at `j2 up`. That is the
+        // buys: the map is read per provision, so an instance whose `jr2-images` ConfigMap is not yet
+        // mounted still BOOTS and serves — only a provision fails, pointing at `jr2 up`. That is the
         // correct blast pattern, and the stale-read window is one kubelet propagation.
         imagesPath: join(IMAGES_MOUNT, IMAGES_KEY),
         // The Harness containers' env (ADR-0018): what this instance can REACH (the custom provider
         // — no Agents, they ride each Turn since ADR-0049), then the instance's own valueFrom
-        // entries (literal values already live in the j2-harness-env Secret below).
+        // entries (literal values already live in the jr2-harness-env Secret below).
         env: [
           {
-            name: "J2_HARNESS_JSON",
+            name: "JR2_HARNESS_JSON",
             valueFrom: { configMapKeyRef: { name: HARNESS_CONFIGMAP, key: HARNESS_CONFIG_KEY } },
           },
           // The echo gate (ADR-0023): the Harness verifies echo bearers against this sha-256. The
           // digest, never the token — the Agent executes code in the Harness container, and a
           // digest inverts to nothing (the Instance token itself never enters a Sandbox, ADR-0013).
           {
-            name: "J2_ECHO_TOKEN_SHA256",
+            name: "JR2_ECHO_TOKEN_SHA256",
             value: createHash("sha256").update(instanceToken).digest("base64url"),
           },
           ...(config?.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
         ],
         envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(config?.harness?.envFrom ?? [])],
-        // Presence only — the PEM itself was materialized into the j2-ca ConfigMap by `j2 up`
+        // Presence only — the PEM itself was materialized into the jr2-ca ConfigMap by `jr2 up`
         // (ADR-0020); the in-cluster config eval never reads the file.
         caBundle: config?.harness?.caBundle !== undefined,
         // Which nodes are Sandbox nodes (ADR-0052) — the CR carries it, the operator reads no config.
@@ -157,12 +157,12 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     dataPlane,
     // Read per request, never snapshotted: the Repos as the cluster reports them right now. An
     // instance without a data plane reports none — `GET /repos` answers `{ dataPlane: false,
-    // repos: [] }` (http.ts), and what its dropped Machines left behind is `j2 gc`'s to name.
+    // repos: [] }` (http.ts), and what its dropped Machines left behind is `jr2 gc`'s to name.
     ...(dataPlane && repos ? { repos: () => repos.list() } : {}),
     // The pod's route out (ADR-0053), same shape: read per request, off the port.
     ...(fetches ? { fetchRepo: (name: string, identity: string) => fetches.fetch(name, identity) } : {}),
     // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
-    // `j2 up` converges the Deployment behind it whenever any definition declares
+    // `jr2 up` converges the Deployment behind it whenever any definition declares
     // `workspace: "none"`, so deployed, the address exists exactly when it is needed.
     instanceHarness: namespace
       ? `http://${INSTANCE_HARNESS_SERVICE}.${namespace}.svc:${INSTANCE_HARNESS_PORT}`
@@ -194,7 +194,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
  * The boot's half of ADR-0051's "the Orchestrator creates Repo resources": one per identity the
  * registered Machines bind, so statically known repositories are KNOWN before a run asks (the
  * cache agent probes each; a node clones on first demand) — then
- * the bound label reconciled, so a slot unbound since the last deploy is a Repo `j2 gc` may
+ * the bound label reconciled, so a slot unbound since the last deploy is a Repo `jr2 gc` may
  * evict. The boot is the ONE writer of a bound resource's spec: a redeploy that moved a url or a
  * credential restates it here, and no provision does. Sequential, and each failure its own
  * line: a wrong url on one Machine must not hide the others.

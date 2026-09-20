@@ -1,4 +1,4 @@
-// The Repo half of `j2 gc` (ADR-0051): eviction is reachability plus age. A `Repo` resource is kept
+// The Repo half of `jr2 gc` (ADR-0051): eviction is reachability plus age. A `Repo` resource is kept
 // while a registered Machine binds it — the Orchestrator labels those at every boot and unlabels
 // what its walk no longer names — and, unbound, while a run has attached it within the TTL; the
 // Orchestrator moves that clock on every attach. What is left is a Repo nothing binds that no run
@@ -11,15 +11,15 @@
 // no Repos — the one read that may answer "none" — while any other failure throws and the caller
 // sweeps nothing.
 
-import { ANNOTATION_REPO_LAST_ATTACHED, LABEL_REPO_BOUND } from "@j2/orchestrator";
+import { ANNOTATION_REPO_LAST_ATTACHED, LABEL_REPO_BOUND } from "@jr2/orchestrator";
 import { LABEL_INSTANCE } from "./deploy.ts";
 import { isMissingResourceType, type KubeAdmin } from "./kube.ts";
 import { activity, type Io } from "./output.ts";
 
 /** The CRD, fully qualified so the read cannot collide with another `repos` resource. */
-export const REPO_KIND = "repos.core.j2.dev";
+export const REPO_KIND = "repos.core.jr2.dev";
 
-/** The eviction TTL `j2 gc` applies when none is given. */
+/** The eviction TTL `jr2 gc` applies when none is given. */
 export const DEFAULT_REPO_TTL = "7d";
 
 const UNIT_MS: Record<string, number> = { d: 86_400_000, h: 3_600_000, m: 60_000 };
@@ -101,7 +101,7 @@ export async function sweepRepos(opts: {
 }
 
 /** The Repos of one namespace, with the one degradation the fail-closed rule allows: a cluster with
- * no `repos.core.j2.dev` resource type (the operator never reached it, or `j2 down --all` took the
+ * no `repos.core.jr2.dev` resource type (the operator never reached it, or `jr2 down --all` took the
  * CRD) holds no Repos, so "none" is the complete answer. */
 async function listRepos(kube: KubeAdmin, namespace: string, ctx: { context?: string }): Promise<RepoObject[]> {
   try {

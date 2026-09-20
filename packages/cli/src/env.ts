@@ -1,14 +1,14 @@
 // `.env` at the instance root (ADR-0019). Deployment-varying values — a vLLM `baseUrl`, a model
-// specifier, provider keys — must NOT be hardcoded in `j2.config.ts`; the config reads them from
+// specifier, provider keys — must NOT be hardcoded in `jr2.config.ts`; the config reads them from
 // `process.env`, and the uncommitted `.env` beside it is where they live. This is the loader that
 // makes that literal, rather than a `set -a; . ./.env; set +a` ritual the user has to remember (and
 // whose omission fails SILENTLY: an unset var just makes `harness.provider` undefined).
 //
-// Discovery mirrors `resolveRoot` — walk up from cwd to the folder holding `j2.config.ts`, read the
-// `.env` beside it — so `j2` works from any subdirectory of an instance. Outside an instance
-// (`j2 init`) or with no file: nothing happens, never an error.
+// Discovery mirrors `resolveRoot` — walk up from cwd to the folder holding `jr2.config.ts`, read the
+// `.env` beside it — so `jr2` works from any subdirectory of an instance. Outside an instance
+// (`jr2 init`) or with no file: nothing happens, never an error.
 //
-// Precedence: the REAL environment always wins. `VLLM_BASE_URL=… j2 up` and an exported shell var
+// Precedence: the REAL environment always wins. `VLLM_BASE_URL=… jr2 up` and an exported shell var
 // both override the file, so `.env` is the default layer, not an override one.
 //
 // Applied keys (never values) are announced on stderr, for the same reason `resolveTarget` prints
@@ -24,7 +24,7 @@ import { activity, type Io } from "./output.ts";
  *
  * Mutates `io.env` in place ON PURPOSE: in the real bin that object IS `process.env`, and instance
  * config modules read `process.env` directly, so a copy would never reach them. Must therefore run
- * before anything imports `j2.config.ts` — `main` calls it first thing.
+ * before anything imports `jr2.config.ts` — `main` calls it first thing.
  */
 export function loadDotenv(io: Io): void {
   const root = findRoot(io.cwd);

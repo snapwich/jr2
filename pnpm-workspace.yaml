@@ -1,20 +1,20 @@
 # operator/ is a Go module, not a pnpm package — intentionally excluded.
 
-# The scaffold pins @j2/* at the exact KIT_VERSION (ADR-0043), so the checkout's own instances must
+# The scaffold pins @jr2/* at the exact KIT_VERSION (ADR-0043), so the checkout's own instances must
 # resolve that literal to the local packages rather than to npm.
 linkWorkspacePackages: true
 
 packages:
   - packages/*
-  # The folder `j2 init` renders (ADR-0054): each member is a model Instance (ADR-0009) — an npm
-  # package whose @j2/* deps are the exact version the scaffold writes (ADR-0043) and resolve to
+  # The folder `jr2 init` renders (ADR-0054): each member is a model Instance (ADR-0009) — an npm
+  # package whose @jr2/* deps are the exact version the scaffold writes (ADR-0043) and resolve to
   # this checkout's packages through `linkWorkspacePackages` above. Not kit packages — they ship no
-  # build of their own. `default` is the one template today; `j2 init --template <name>` is the
+  # build of their own. `default` is the one template today; `jr2 init --template <name>` is the
   # obvious next step, hence the plural.
   - templates/*
-  # System e2e acceptance suite (ADR-0010): black-box Cucumber.js specs that drive the real `j2`
+  # System e2e acceptance suite (ADR-0010): black-box Cucumber.js specs that drive the real `jr2`
   # binary. A package so it owns its own `xstate`/cucumber deps (scaffolded instances resolve them).
   - features
-  # The @kind tier's shared instance (ADR-0010): a workspace member so `j2 up`'s image build can
+  # The @kind tier's shared instance (ADR-0010): a workspace member so `jr2 up`'s image build can
   # `pnpm deploy` it; scenarios isolate by namespace, not by folder.
   - features/kind-instance

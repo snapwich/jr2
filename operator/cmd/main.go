@@ -35,9 +35,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
-	"github.com/snapwich/j2/operator/internal/controller"
-	"github.com/snapwich/j2/operator/internal/repocache"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
+	"github.com/snapwich/jr2/operator/internal/controller"
+	"github.com/snapwich/jr2/operator/internal/repocache"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -167,7 +167,7 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "2f738fb7.j2.dev",
+		LeaderElectionID:       "2f738fb7.jr2.dev",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly

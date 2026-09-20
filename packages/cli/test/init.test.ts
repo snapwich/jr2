@@ -1,4 +1,4 @@
-// `j2 init` scaffolds a working instance — and keeps mirroring `templates/default/`, which is the
+// `jr2 init` scaffolds a working instance — and keeps mirroring `templates/default/`, which is the
 // model instance the docs point at and the only one anyone actually runs (ADR-0054). The templates
 // are inline string consts (the CLI ships without `templates/`), so nothing structural stops the two
 // from drifting; they already had, before this test existed. So the assertion is byte-equality
@@ -9,7 +9,7 @@
 // only coverage of the scaffold's FILE LIST too — that `tsconfig.json` is written at all, and that a
 // fresh instance is typecheckable by construction.
 //
-// Since the manifest pins @j2/* at KIT_VERSION (ADR-0043), the package.json comparison is also the
+// Since the manifest pins @jr2/* at KIT_VERSION (ADR-0043), the package.json comparison is also the
 // version-bump tripwire: bumping the kit renders a new literal and fails here until the default
 // template is re-rendered to match.
 
@@ -19,7 +19,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { KIT_VERSION } from "@j2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator";
 import { init } from "../src/commands/init.ts";
 import type { Io } from "../src/output.ts";
 
@@ -28,7 +28,7 @@ const TEMPLATE = fileURLToPath(new URL("../../../templates/default", import.meta
 /** Every path `init` is expected to write. `package.json` is compared separately (it varies). */
 const MIRRORED = [
   "tsconfig.json",
-  "j2.config.ts",
+  "jr2.config.ts",
   ".gitignore",
   "workflows/ping.ts",
   // The scaffolded Sandbox Image (ADR-0037): `images/default` is what makes the resolution chain's
@@ -37,7 +37,7 @@ const MIRRORED = [
 ];
 
 async function scaffold(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "j2-init-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-init-"));
   const io: Io = { stdout: () => {}, stderr: () => {}, env: {}, cwd: dir };
   assert.equal(await init([], io), 0);
   return dir;
@@ -72,36 +72,36 @@ test("init's package.json matches the default template's but for name and descri
     scaffolded,
     model,
     `the scaffolded package.json has drifted from templates/default/package.json — if this kit's ` +
-      `version just changed, re-render the template: its @j2/* deps must read "${KIT_VERSION}" (ADR-0043)`,
+      `version just changed, re-render the template: its @jr2/* deps must read "${KIT_VERSION}" (ADR-0043)`,
   );
 });
 
-test("the scaffold pins @j2/* at the exact kit version — exact, not caret (0.x minors break)", async (t) => {
+test("the scaffold pins @jr2/* at the exact kit version — exact, not caret (0.x minors break)", async (t) => {
   const dir = await scaffold();
   t.after(() => rm(dir, { recursive: true, force: true }));
 
   const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
-  assert.equal(pkg.dependencies["@j2/orchestrator"], KIT_VERSION);
-  assert.equal(pkg.devDependencies["@j2/cli"], KIT_VERSION);
+  assert.equal(pkg.dependencies["@jr2/orchestrator"], KIT_VERSION);
+  assert.equal(pkg.devDependencies["@jr2/cli"], KIT_VERSION);
   // One template for both modes (ADR-0043): no `workspace:*` only the kit's own workspace resolves,
   // and no `packageManager` field — the scaffold names no package manager.
   assert.equal(pkg.packageManager, undefined);
 });
 
-test("a scaffolded instance can typecheck: tsconfig extends the base shipped by @j2/orchestrator", async (t) => {
+test("a scaffolded instance can typecheck: tsconfig extends the base shipped by @jr2/orchestrator", async (t) => {
   const dir = await scaffold();
   t.after(() => rm(dir, { recursive: true, force: true }));
 
   const tsconfig = JSON.parse(await readFile(join(dir, "tsconfig.json"), "utf8"));
-  assert.equal(tsconfig.extends, "@j2/orchestrator/tsconfig.instance.json");
+  assert.equal(tsconfig.extends, "@jr2/orchestrator/tsconfig.instance.json");
 
   const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8"));
   assert.equal(pkg.scripts.typecheck, "tsc --noEmit");
   // `node:` imports in a workflow (and in the orchestrator source the program pulls in) need these.
   assert.ok(pkg.devDependencies["@types/node"]);
-  // And the compiler itself — `j2 up` RUNS it as a converge gate (ADR-0050), so a folder that
+  // And the compiler itself — `jr2 up` RUNS it as a converge gate (ADR-0050), so a folder that
   // declares none cannot converge at all. Unpinned, the script names a tool the folder does not
-  // declare: in an INSTALLED instance `tsc` then resolves to `@j2/cli`'s transitive
+  // declare: in an INSTALLED instance `tsc` then resolves to `@jr2/cli`'s transitive
   // `ts-blank-space` → `typescript`, which floats across majors — the instance checks the kit's
   // own `.ts` sources (zero-build: `exports` point at source) with a compiler the kit never ran.
   // Read back from the kit's OWN range rather than restated, so a kit that moves compilers and

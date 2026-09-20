@@ -1,6 +1,6 @@
 // The checkout arm of ADR-0044 is a shell script (`just kit-push` → scripts/kit-push.sh), because
 // the build needs the whole repo and the binary's arm is a mirror that builds nothing. That leaves
-// the same three images described in two places: `KIT_IMAGES` here, for what `j2 up` builds from a
+// the same three images described in two places: `KIT_IMAGES` here, for what `jr2 up` builds from a
 // checkout at content-addressed tags, and the script's own table, for what a release pushes at the
 // published ones.
 //
@@ -31,7 +31,7 @@ async function scriptImages(): Promise<string[][]> {
     .map((line) => line.split("|"));
 }
 
-test("kit-push.sh pushes exactly the images j2 up builds, from the same files", async () => {
+test("kit-push.sh pushes exactly the images jr2 up builds, from the same files", async () => {
   const expected = (Object.keys(KIT_IMAGES) as KitImageName[]).map((name) => [
     KIT_IMAGES[name].repo,
     KIT_IMAGES[name].dockerfile,
@@ -42,7 +42,7 @@ test("kit-push.sh pushes exactly the images j2 up builds, from the same files", 
 
 test("kit-push.sh publishes exactly the platforms the kit supports (ADR-0045)", async () => {
   // The same two-lists-one-truth rule as the images above, applied to `SUPPORTED_PLATFORMS` — the
-  // set a checkout `j2 up` intersects its cluster's node architectures with. A release that pushed
+  // set a checkout `jr2 up` intersects its cluster's node architectures with. A release that pushed
   // a narrower set than the CLI is willing to derive gives some cluster a Kit image it cannot run,
   // and the failure would land on a user's pod, not on this gate.
   const script = await readFile(join(REPO, "scripts", "kit-push.sh"), "utf8");

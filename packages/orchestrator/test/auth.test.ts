@@ -189,9 +189,9 @@ test("the Instance Harness's token speaks for the Turns placed there, and for no
   // signed-name doctrine that keeps one feature's coder out of another's reviewer, extended to
   // the second placement. It is NOT the Instance token: an in-cluster caller that suborned a
   // Menu-only Turn must not reach a Workspace run's live surface.
-  const menuOnly = await host.start("coding", { sandbox: "j2-instance-harness" });
+  const menuOnly = await host.start("coding", { sandbox: "jr2-instance-harness" });
   const workspace = await host.start("coding", { sandbox: "ws-1" });
-  const token = sandboxToken(KEY, "j2-instance-harness");
+  const token = sandboxToken(KEY, "jr2-instance-harness");
 
   assert.equal((await app.request(`/agents/${menuOnly.instanceId}/surface`, get(token))).status, 200);
   assert.equal((await app.request(`/agents/${workspace.instanceId}/surface`, get(token))).status, 403);

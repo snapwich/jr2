@@ -30,15 +30,15 @@ const exec = promisify(execFile);
 
 const REPO = fileURLToPath(new URL("../../", import.meta.url));
 
-/** What a @dist scenario needs from the fixture: where the installed `j2` lives, the registry its
- * package manager resolves `@j2/*` from, and the one its CLUSTER pulls Kit images from — two
+/** What a @dist scenario needs from the fixture: where the installed `jr2` lives, the registry its
+ * package manager resolves `@jr2/*` from, and the one its CLUSTER pulls Kit images from — two
  * different registries answering two different questions (ADR-0044), never one address doing both.
  *
  * `cacheDir` is where that package manager may REMEMBER `registry`: a folder of this fixture's, so
  * the memory is exactly as old as the registry it describes. The registry is wiped per run — that
  * is what deletes version bookkeeping (ADR-0043) — and a manager's cache is bookkeeping of the
  * client's own: pnpm answers an EXACT version out of cached metadata without asking the registry
- * at all, so `@j2/orchestrator@0.0.0` from a previous run's publish, at that run's integrity, would
+ * at all, so `@jr2/orchestrator@0.0.0` from a previous run's publish, at that run's integrity, would
  * install out of the store and typecheck the instance against a kit this checkout no longer is.
  * The publish side closes the same leak with `--force` (scripts/dist-publish.sh). */
 export type InstalledKit = { binDir: string; registry: string; kitRegistry: string; cacheDir: string };
@@ -76,7 +76,7 @@ async function bringUp(): Promise<InstalledKit> {
     publishConfig?: { registry?: string };
   };
   const registry = manifest.publishConfig?.registry;
-  assert.ok(registry, "@j2/cli's publishConfig names the registry the loop publishes to (ADR-0043)");
+  assert.ok(registry, "@jr2/cli's publishConfig names the registry the loop publishes to (ADR-0043)");
 
   // The guard fixes the port, so the loop's two faces cannot both hold it: anything already
   // answering there is a `just dist-up` left standing, whose storage this fixture will not wipe.
@@ -88,7 +88,7 @@ async function bringUp(): Promise<InstalledKit> {
   assert.ok(!taken, `something already serves ${registry} — \`just dist-down\` before the @dist tier`);
 
   // Asked before minutes of docker are spent, and asked of the CLUSTER rather than of a name
-  // written down here: `j2 up` will address whatever the current context names (ADR-0019), and an
+  // written down here: `jr2 up` will address whatever the current context names (ADR-0019), and an
   // installed kit builds no Kit image — it deploys published refs, which must already be in a
   // registry these nodes can pull from (below).
   const { stdout: context } = await exec("kubectl", ["config", "current-context"]).catch(() => ({ stdout: "" }));
@@ -100,8 +100,8 @@ async function bringUp(): Promise<InstalledKit> {
 
   // The scripts take their whole configuration from these two variables, so the fixture's registry
   // storage, npmrc, and global prefix never touch a `just dist-up` a developer left standing.
-  const dir = await mkdtemp(join(tmpdir(), "j2-dist-"));
-  const env: NodeJS.ProcessEnv = { ...process.env, J2_DIST_DIR: dir, J2_DIST_PORT: new URL(registry).port };
+  const dir = await mkdtemp(join(tmpdir(), "jr2-dist-"));
+  const env: NodeJS.ProcessEnv = { ...process.env, JR2_DIST_DIR: dir, JR2_DIST_PORT: new URL(registry).port };
   state = { dir, env };
   await exec(script("dist-registry.sh"), ["up"], { env, maxBuffer: BIG });
   // The second stand-in (ADR-0044): the Kit image home. Up before the publish, which pushes the
@@ -109,7 +109,7 @@ async function bringUp(): Promise<InstalledKit> {
   // that cannot resolve this address fails the tier here, by name, instead of as an
   // ImagePullBackOff three minutes into a converge.
   await exec(script("dist-image-registry.sh"), ["up"], { env, maxBuffer: BIG });
-  // Asked, never composed: the port has one owner (the script's own default/J2_DIST_IMAGE_PORT), so
+  // Asked, never composed: the port has one owner (the script's own default/JR2_DIST_IMAGE_PORT), so
   // a fixture that spelled `localhost:5001` a second time could point scenarios at a registry
   // nothing serves.
   const { stdout: kitRegistry } = await exec(script("dist-image-registry.sh"), ["address"], { env });
@@ -117,13 +117,13 @@ async function bringUp(): Promise<InstalledKit> {
 
   const binDir = join(dir, "npm-global", "bin");
   // The one property `npm link` could not give this tier (ADR-0043): the binary is a real install,
-  // not a symlink into the checkout. Node resolves modules by REAL path, so a linked `j2` would
+  // not a symlink into the checkout. Node resolves modules by REAL path, so a linked `jr2` would
   // find the kit checkout above it and run checkout mode — the branch this tier exists to skip.
   // Both sides resolved, because a temp dir is a symlink on some platforms and this must compare
   // real paths against real paths, not a truth against a spelling.
-  const real = await realpath(join(binDir, "j2"));
+  const real = await realpath(join(binDir, "jr2"));
   const prefix = await realpath(dir);
-  assert.ok(real.startsWith(prefix), `the installed j2 resolves inside the throwaway prefix, not to ${real}`);
+  assert.ok(real.startsWith(prefix), `the installed jr2 resolves inside the throwaway prefix, not to ${real}`);
   return { binDir, registry, kitRegistry: kitRegistry.trim(), cacheDir: join(dir, "pm-cache") };
 }
 

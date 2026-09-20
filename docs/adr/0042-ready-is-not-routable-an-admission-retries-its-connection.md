@@ -1,21 +1,21 @@
 # Ready is not routable: the two calls a turn starts with re-ask a Service that has not answered
 
-[ADR-0016](0016-agent-turn-mechanics-are-internal.md) sorted an Agent run's failures into classes and said which ones j2
-absorbs. Its **infra** class is stated as already-covered: _"provider-stream retry lives inside the turn in the Harness,
-and `wait` reconnects indefinitely from the offset ledger; a dead Harness surfaces as a fault"_. That sentence walks the
-turn from its stream backwards and never reaches the two steps in front of it. **Both legs that run BEFORE a model is
-ever asked were single, unretried `fetch`es** — the Orchestrator's admission POST to the Workspace Harness, and the
-Adapter's `GET /agents/:iid/surface` that builds the turn's Menu — and either one rejecting settles the turn, which
+[ADR-0016](0016-agent-turn-mechanics-are-internal.md) sorted an Agent run's failures into classes and said which ones
+jr2 absorbs. Its **infra** class is stated as already-covered: _"provider-stream retry lives inside the turn in the
+Harness, and `wait` reconnects indefinitely from the offset ledger; a dead Harness surfaces as a fault"_. That sentence
+walks the turn from its stream backwards and never reaches the two steps in front of it. **Both legs that run BEFORE a
+model is ever asked were single, unretried `fetch`es** — the Orchestrator's admission POST to the Workspace Harness, and
+the Adapter's `GET /agents/:iid/surface` that builds the turn's Menu — and either one rejecting settles the turn, which
 `actor.ts` reports as the terminal `agent.fault`. One dropped packet, one lost turn.
 
 The gap is not theoretical and not rare, because both of those calls dial a **Service that has only just started
-mattering**. The admission is the FIRST HTTP request j2 ever sends over a Workspace's Service: the wrapper waits on the
+mattering**. The admission is the FIRST HTTP request jr2 ever sends over a Workspace's Service: the wrapper waits on the
 Sandbox CR's `phase: Ready`, which the operator computes from the POD's readiness, and the attach then reaches into the
 pod through the API server (`kubectl exec`) — neither proves the Service dialable. The surface read dials the
 Orchestrator's Service, which is between EndpointSlices every time the Orchestrator restarts, and restarting is ordinary
 ([ADR-0007](0007-durable-machine-state.md)'s restore is built on it). Kubernetes programs the EndpointSlice behind a
 ClusterIP **after** the pod passes its probe, and until it does, kube-proxy REJECTs. **Ready is a statement about a pod;
-routable is a statement about a Service, and j2 was reading the first as the second — at both ends of the same turn.**
+routable is a statement about a Service, and jr2 was reading the first as the second — at both ends of the same turn.**
 
 Measured: this is what cost the `@kind` tier its parallel default ([ADR-0010](0010-bdd-acceptance-tests.md)). Roughly
 one parallel run in three lost a scenario whose first turn never reached the scripted model, and the symptom was read
@@ -42,8 +42,8 @@ windows more often. That is why the flake was degree-independent and serial runs
   backing off on the same capped ladder `wait` uses. This is `wait`'s own rule applied one step earlier and for the same
   reason: a request that could not connect is not a Harness that refused the prompt.
 - **Only never-delivered.** Admission is accept-and-queue
-  ([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)): a POST the Harness received but could
-  not answer has already queued a Submission, so re-sending it would run the turn **twice** — a worse failure than
+  ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)): a POST the Harness received but
+  could not answer has already queued a Submission, so re-sending it would run the turn **twice** — a worse failure than
   losing it. The test is therefore the narrow structural question "did any byte reach the wire" (the errno's
   `syscall`/`code`, read down the `cause` chain), never the broad "does this look transient". A reset connection is not
   retried.
@@ -84,7 +84,7 @@ windows more often. That is why the flake was degree-independent and serial runs
 ## What this does not fix
 
 **An unrouted `agent.fault` is still silent.** A workflow with no `agent.fault` policy does not report a lost turn; it
-stops waiting, and the run sits `active` forever with the reason nowhere `j2 status` can show it (a child machine's
+stops waiting, and the run sits `active` forever with the reason nowhere `jr2 status` can show it (a child machine's
 state value is served, its context is not). That is what made this class of failure undiagnosable for as long as it was
 — the tier's own workflow now routes the fault, which is a fixture change, not a product one. Whether the run feed
 should carry a terminal fault of its own accord is [ADR-0022](0022-observation-is-a-level-triggered-feed.md)'s territory
@@ -97,17 +97,17 @@ and is not decided here.
   is the intended trade: the address is right and the Service is late far more often than the address is wrong, and the
   fault message names the address either way.
 - **The rule generalizes, and the next seat to need it should say so out loud.** Two hops needed this and were found one
-  at a time, each by a failure. The claim is not "retry the network"; it is that j2 dials Services at the exact moment
+  at a time, each by a failure. The claim is not "retry the network"; it is that jr2 dials Services at the exact moment
   they come into existence, and that a call which never got an answer has learned nothing worth acting on. Any new
-  j2→Service call made at a lifecycle edge starts with that exposure until someone decides otherwise.
+  jr2→Service call made at a lifecycle edge starts with that exposure until someone decides otherwise.
 - The retry is invisible to the workflow by construction (ADR-0016's absorption principle): no new event, no new budget
   on the authoring surface, no bookkeeping in Machine context. **But absorbed is not the same as unmeasured, and the
   difference is load-bearing.** Absorption alone would leave the tier benefiting from a window it cannot see: if
   routability got twice as slow tomorrow, all 88 scenarios would still pass, a little slower, in silence, until the day
   the window finally closed and the suite went red as a fresh mystery. Being unseeable is precisely how this class
   survived three sessions, so each seat emits ONE line when a retry actually cost something —
-  `j2.routability seat=… attempts=… ms=… last=… url=…` — and the `@kind` tier holds a budget against it, judged once per
-  worker in `AfterAll`. A log line, not a run-feed event: the authoring surface is untouched, so nothing above
+  `jr2.routability seat=… attempts=… ms=… last=… url=…` — and the `@kind` tier holds a budget against it, judged once
+  per worker in `AfterAll`. A log line, not a run-feed event: the authoring surface is untouched, so nothing above
   contradicts itself. What the tier now asserts is not that the retry worked — the scenarios already assert that — but
   **how much of the window is being spent**, which is what turns 90s from a number read off two GitHub issues into a
   measurement of the cluster in front of us.
@@ -123,13 +123,13 @@ and is not decided here.
   one meter written twice: against the jittered 250ms→5s ladder, 8 attempts is ~9–18s of refusal, and 30s is three
   connect timeouts. The first draft budgeted 4 attempts against an observed 3 — which is not a budget, it is a flake —
   and only the second reading showed it.
-- **This is the ecosystem's answer, not a j2 workaround**, which is worth recording because "retry" reads as a patch.
+- **This is the ecosystem's answer, not a jr2 workaround**, which is worth recording because "retry" reads as a patch.
   [kind#2280](https://github.com/kubernetes-sigs/kind/issues/2280) is this defect exactly — EndpointSlices populated,
   connection still refused, up to 77s — and it establishes that waiting for the EndpointSlice is NOT sufficient, which
   retires gating the CR's `phase: Ready` on it as a narrowing rather than a fix. Knative's activator arrives at the same
   place from the other side: it
   [probes the pod itself and treats its own successful probe as authoritative](https://knative.dev/blog/articles/demystifying-activator-on-path/)
-  regardless of what Kubernetes says, exactly so traffic can start before the control plane catches up. j2's version is
+  regardless of what Kubernetes says, exactly so traffic can start before the control plane catches up. jr2's version is
   that with one fewer moving part — the first real request IS the probe — which is only safe because `neverDelivered` is
   what makes it re-sendable. A separate probe would add a round trip and put the race back (probe succeeds, the rule
   changes, the real request lands).

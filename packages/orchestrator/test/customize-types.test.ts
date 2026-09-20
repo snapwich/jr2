@@ -4,14 +4,14 @@
 //
 // The rule these claims serve: a thing code refers to by name should be typed where it is named
 // (ADR-0050). An Agent slot is xstate's own `src`, so a `customize()` of an Agent a Machine does
-// not carry must stop at `tsc`, not at the first invoke of a run — which is what `j2 up`'s
+// not carry must stop at `tsc`, not at the first invoke of a run — which is what `jr2 up`'s
 // typecheck gate makes a converge-time failure.
 //
 // The claims:
 //   1. an Agent key the Machine does not carry is an error, and a Machine carrying none takes no
 //      `agents` at all;
 //   2. a child key it does not compose is an error;
-//   3. j2's wrappers are transparent — a body's Agents are reachable through the wrapper, without
+//   3. jr2's wrappers are transparent — a body's Agents are reachable through the wrapper, without
 //      `body`, and the wrapper's own mechanism slots are not offered; and the transparency follows
 //      the wrapper's MARKER, so a slot an author spelled `body` is an ordinary child;
 //   4. an override is a PARTIAL definition: `{ model }` alone is enough, an unknown field is not;
@@ -26,13 +26,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup, type InputFrom } from "xstate";
 import { z } from "zod";
-import { defineEvent } from "@j2/agent-protocol";
+import { defineEvent } from "@jr2/agent-protocol";
 import { isAgent } from "../src/agent.ts";
 import { customize } from "../src/customize.ts";
 import { open } from "../src/parts.ts";
 import { agent } from "../src/harness-client.ts";
 import { pool, source } from "../src/pool.ts";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { workspace, type WorkspaceMachine, type Workspaced } from "../src/workspace.ts";
 
 const opus = "anthropic/claude-opus-x";
@@ -40,11 +40,12 @@ const haiku = "anthropic/claude-haiku-x";
 const done = defineEvent({ name: "done", input: z.object({}) });
 
 /** The Machine a package exports: two Agent slots, one composed child, one plain actor. */
-const child = j2Setup({ events: [done], actors: { scribe: agent({ model: haiku, instructions: "s" }) } }).createMachine(
-  { id: "child", initial: "idle", states: { idle: {} } },
-);
+const child = jr2Setup({
+  events: [done],
+  actors: { scribe: agent({ model: haiku, instructions: "s" }) },
+}).createMachine({ id: "child", initial: "idle", states: { idle: {} } });
 
-const research = j2Setup({
+const research = jr2Setup({
   events: [done],
   actors: {
     coder: agent({ model: haiku, instructions: "c" }),
@@ -91,10 +92,10 @@ function refusedChildren(): void {
   void customize(research, { actors: { child: { agents: { coder: { model: opus } } } } });
 }
 
-// --- 3: j2's wrappers are transparent ----------------------------------------------------------
+// --- 3: jr2's wrappers are transparent ----------------------------------------------------------
 
 const door = z.object({ topic: z.string() });
-const body = j2Setup({
+const body = jr2Setup({
   events: [done],
   types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, "target"> },
   actors: { coder: agent({ model: haiku, instructions: "c" }) },
@@ -107,11 +108,11 @@ const wrapped = workspace(body, {
 });
 
 // The body's Agent, reached through the wrapper — the consumer never writes `body` and never has
-// to know that j2 wrapped anything.
+// to know that jr2 wrapped anything.
 void customize(wrapped, { agents: { coder: { model: opus } }, image: "ghcr.io/acme/tools:2" });
 
 function refusedThroughTheWrapper(): void {
-  // @ts-expect-error `body` is j2's own slot: the transparency is the whole point, so it is not on
+  // @ts-expect-error `body` is jr2's own slot: the transparency is the whole point, so it is not on
   // offer as a child to customize.
   void customize(wrapped, { actors: { body: { agents: { coder: { model: opus } } } } });
   // @ts-expect-error neither are the wrapper's mechanism slots
@@ -124,7 +125,7 @@ function refusedThroughTheWrapper(): void {
 // to spell a slot `body` or `worker`, and a type that stepped through it on the spelling would
 // offer this Machine's OWN Agents nowhere and the child's everywhere — a compile-time answer the
 // runtime (which reads `wrapperBodyOf`) would then contradict.
-const namesake = j2Setup({
+const namesake = jr2Setup({
   events: [done],
   actors: { coder: agent({ model: haiku, instructions: "c" }), body: child, worker: fromPromise(async () => 1) },
 }).createMachine({ id: "namesake", initial: "idle", states: { idle: {} } });
@@ -158,7 +159,7 @@ void customize(research, { agents: { coder: { instructions: "different", workspa
 function refusedOverrides(): void {
   // @ts-expect-error not a field of an Agent definition — `prompt` is a Turn's, not a persona's
   void customize(research, { agents: { coder: { prompt: "go" } } });
-  // @ts-expect-error the scale is j2's, and "extreme" is not on it
+  // @ts-expect-error the scale is jr2's, and "extreme" is not on it
   void customize(research, { agents: { coder: { thinkingLevel: "extreme" } } });
 }
 
@@ -215,7 +216,7 @@ function refusedRepos(): void {
 // An Open MAP (`repos: open`): the wrapper's slots infer as `string`, so `repos` takes the
 // composer's own keys — as many as they write — in the same three forms, and still refuses a
 // value that is none of them.
-const anySlots = j2Setup({
+const anySlots = jr2Setup({
   events: [done],
   types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, string> },
   actors: { coder: agent({ model: haiku, instructions: "c" }) },

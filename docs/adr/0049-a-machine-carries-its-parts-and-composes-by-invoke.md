@@ -11,12 +11,12 @@ because they are one problem: **what a Machine depends on that is not inside it.
 - **Composition is Machine composition.** A workflow module imports another module's exported Machine and invokes it as
   an xstate child (`actors: { deep, quick }`, `invoke: { src: "deep" }`). One run, one snapshot, one run id; the child's
   Gates list under the parent's run and its emits ride the same feed. There is no sub-run and no
-  invoke-by-registered-name: a nested Machine is reached by `import`, never by the name `j2 run` uses. Rejected:
+  invoke-by-registered-name: a nested Machine is reached by `import`, never by the name `jr2 run` uses. Rejected:
   Temporal-style child workflows with their own run ids — a new actor kind, cross-run correlation, and cancel
   propagation, for no requirement that needs a second run id.
 - **Everything a Machine depends on rides the Machine, scoped to it.** Vocabulary already did (ADR-0011, per-Machine
   since this decision). The two remaining dependencies join it:
-  - **An Agent is an actor slot.** `j2Setup({ actors: { researcher: agent({ model, instructions, … }) } })`, invoked as
+  - **An Agent is an actor slot.** `jr2Setup({ actors: { researcher: agent({ model, instructions, … }) } })`, invoked as
     `src: "researcher"` with `{ prompt, …dials }` as input. `agent(definition)` is `agentRun` closed over one definition
     and branded with it; `agentRun` and `agent: "name"` leave the authoring surface. The typo check is xstate's own
     `src` typing — a slot the Machine does not declare is a compile error with nothing added — and Stately shows
@@ -26,12 +26,12 @@ because they are one problem: **what a Machine depends on that is not inside it.
   - **The Sandbox Image is a `workspace()` option**, static: `workspace(body, { input, image, repos, spec })` (`repos`
     is ADR-0051's, and follows the same rule). `image` is a string in one of two shapes — a `file:` URL
     (`import.meta.resolve("./image")`, a docker context the module ships) or a registry ref — or absent, which keeps
-    ADR-0037's fallback. It moved out of the per-run spec because `j2 up` must find it statically. It is never
+    ADR-0037's fallback. It moved out of the per-run spec because `jr2 up` must find it statically. It is never
     persisted: the provisioning state re-reads it off the Machine on restore.
 - **The definition rides the Turn.** The admission body carries the slot's definition; the Harness runs what it was
   handed and re-reads it per Submission as before. The Instance roster (`agents/`, then `config.agents`), its ConfigMap,
-  and `J2_AGENTS_JSON` retire — a flat roster cannot hold two `researcher`s, and a Machine edit already needs `j2 up` to
-  rebake the Orchestrator, so the ConfigMap bought nothing a Machine-carried definition loses. Placement (ADR-0031)
+  and `JR2_AGENTS_JSON` retire — a flat roster cannot hold two `researcher`s, and a Machine edit already needs `jr2 up`
+  to rebake the Orchestrator, so the ConfigMap bought nothing a Machine-carried definition loses. Placement (ADR-0031)
   reads `workspace: "none"` off the slot's definition.
 - **Parts resolve at invoke time through the live actor's logic, never a build-time closure.** `agentRun` finds its
   definition in the logic it was invoked as; `provision` reads the image off the wrapper's parts map keyed on
@@ -44,16 +44,16 @@ because they are one problem: **what a Machine depends on that is not inside it.
   beside them, since ADR-0051 makes a Repo a `workspace()` slot a composer binds. Internally an Agent override is
   xstate's `machine.provide({ actors: { researcher: agent(merged) } })`, with the override layered over the stock
   definition; a child override is the same call one level down, recursing — each level is exactly the one-level reach
-  ADR-0015 found `provide` has, held by the composer who owns the child object, never host-side injection. j2's wrappers
-  are transparent: `customize(research, { agents })` reaches the body through the `body` slot (and `pool()`'s `worker`,
-  at any depth), so a consumer never writes `body`. The images and the Repo bindings are the parts `provide` cannot
-  carry (xstate copies only implementations, and every part is keyed on the config it passes through by reference), so
-  those fields clone the wrapper's config and rebuild it with the same implementations, re-attaching what the original
-  carried. Only DECLARED parts can be retuned, and the compiler is what says so: the slots are read off xstate's own
-  `TActor` parameter, so an Agent, a Repo Slot, or a child the Machine does not carry is a type error (ADR-0050), and
-  the runtime refuses the same call naming the Machine's own slots. Rejected: a `.with()` method on the machine — it
-  needs a j2-owned machine type over xstate's, which ADR-0015 avoided, and it vanishes after any `.provide()`; a
-  callable-machine hybrid — verified to work, reads as a trick.
+  ADR-0015 found `provide` has, held by the composer who owns the child object, never host-side injection. jr2's
+  wrappers are transparent: `customize(research, { agents })` reaches the body through the `body` slot (and `pool()`'s
+  `worker`, at any depth), so a consumer never writes `body`. The images and the Repo bindings are the parts `provide`
+  cannot carry (xstate copies only implementations, and every part is keyed on the config it passes through by
+  reference), so those fields clone the wrapper's config and rebuild it with the same implementations, re-attaching what
+  the original carried. Only DECLARED parts can be retuned, and the compiler is what says so: the slots are read off
+  xstate's own `TActor` parameter, so an Agent, a Repo Slot, or a child the Machine does not carry is a type error
+  (ADR-0050), and the runtime refuses the same call naming the Machine's own slots. Rejected: a `.with()` method on the
+  machine — it needs a jr2-owned machine type over xstate's, which ADR-0015 avoided, and it vanishes after any
+  `.provide()`; a callable-machine hybrid — verified to work, reads as a trick.
 - **A package exports a Machine, nothing beside it.** The door (ADR-0033), the vocabulary, the Agents, and the image all
   ride the exported object. The three uses:
 
@@ -62,17 +62,17 @@ because they are one problem: **what a Machine depends on that is not inside it.
   export const machine = customize(research, { agents: { researcher: { model } }, image });   // retuned
   const deep = customize(research, { agents: { researcher: { model: opus } } });              // nested twice,
   const quick = customize(research, { agents: { researcher: { model: haiku } } });            // differently
-  export const machine = j2Setup({ events: [route], actors: { triager: agent(triager), deep, quick } }).createMachine(…);
+  export const machine = jr2Setup({ events: [route], actors: { triager: agent(triager), deep, quick } }).createMachine(…);
   ```
 
   A local `workflows/*.ts` is written exactly the same way; there is no package-side API.
 
 - **The wrapper's body is a named slot** (`invoke: { id: "body", src: "body" }` over `setup({ actors: { body } })`), and
-  `pool()`'s worker likewise. That is what lets `provide`, `customize`, Stately, and the `j2 up` walk reach it
+  `pool()`'s worker likewise. That is what lets `provide`, `customize`, Stately, and the `jr2 up` walk reach it
   uniformly.
-- **`j2 up` walks the registered Machines** — `implementations.actors`, descending into child Machines — to collect
+- **`jr2 up` walks the registered Machines** — `implementations.actors`, descending into child Machines — to collect
   models to preflight and `file:` image contexts to build. A context is keyed by its content digest (the same digest
-  ADR-0038 tags by), so the host at `j2 up` and the baked Orchestrator, whose `node_modules` holds the same folder,
+  ADR-0038 tags by), so the host at `jr2 up` and the baked Orchestrator, whose `node_modules` holds the same folder,
   agree without a path table. Repos are slots on the same walk (ADR-0051): a bound slot's url is collected, so its
   `Repo` resource is warm before a run asks; an open slot nobody bound is refused, naming the Machine, the slot, and the
   `customize` line that fixes it; a per-run slot is the run's business and the walk leaves it alone.
@@ -93,7 +93,7 @@ because they are one problem: **what a Machine depends on that is not inside it.
   folder it owns.
 - The ledger records which slot a Turn ran as, not the definition's text. If per-Turn auditability of instructions is
   ever needed, the admission marker can carry a definition digest.
-- `j2 dev`'s reload cache-busts the workflow module only; an edit to an imported Machine module is not picked up until
+- `jr2 dev`'s reload cache-busts the workflow module only; an edit to an imported Machine module is not picked up until
   the next full reload. Known, unaddressed here.
 - A `workflows/` file that is both discovered and imported by another registers as its own Workflow too; a Machine meant
   only for composition lives in a `_`-prefixed file or outside `workflows/`.

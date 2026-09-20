@@ -14,13 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Command j2-upload-pack is `origin`'s fetch url inside a Sandbox (ADR-0053):
+// Command jr2-upload-pack is `origin`'s fetch url inside a Sandbox (ADR-0053):
 //
-//	j2-upload-pack <service> <identity> [adapter-url]
+//	jr2-upload-pack <service> <identity> [adapter-url]
 //
 // Git runs it through its built-in `ext::` transport and substitutes `%S` for
 // the service, so nothing here is typed by a human. It lives on the runtime
-// volume at /opt/j2/bin/j2-upload-pack, which every seat of a Workspace pod
+// volume at /opt/jr2/bin/jr2-upload-pack, which every seat of a Workspace pod
 // mounts — the Harness container, the Sandbox Image's primary container, and
 // the User Container (ADR-0005) — because the fetch url lives in the shared
 // `default/.git/config` and a seat without the program has checkouts whose
@@ -32,7 +32,7 @@ package main
 import (
 	"os"
 
-	"github.com/snapwich/j2/operator/internal/uploadpack"
+	"github.com/snapwich/jr2/operator/internal/uploadpack"
 )
 
 func main() {

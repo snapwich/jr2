@@ -1,7 +1,7 @@
 # A turn compacts its own context mid-flight
 
 The retired flue runtime compacted a conversation automatically; the
-[ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md) rewrite dropped it without recording the
+[ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md) rewrite dropped it without recording the
 loss. `packages/orchestrator/src/config.ts` kept declaring `contextWindow` for a reader that no longer existed. This ADR
 is the unrecorded regression, decided.
 
@@ -13,13 +13,13 @@ conversation-continuing recovery is structurally futile — [ADR-0016](0016-agen
 ladder cannot work there. The endpoint clamped its output rather than erroring, so the observable shape is a truncated
 `stopReason`, not a 400.
 
-**The window filled MID-turn**, and that decides the seat. j2's shape is one long agentic turn per Submission
-([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)), so context grows exactly where pi
+**The window filled MID-turn**, and that decides the seat. jr2's shape is one long agentic turn per Submission
+([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)), so context grows exactly where pi
 refuses to compact: `AgentHarness.compact()` throws unless the harness is idle. But the guard guards the **method**, not
 the mechanism. pi's loop calls `prepareNextTurn` after every tool-result batch; `AgentHarness` answers it by flushing
 pending session writes and rebuilding the entire context from `session.buildContext()`; and `buildContext` already
-replays from the latest `compaction` entry. j2 constructs the Session. So a compaction entry appended at a step boundary
-is honored by the next step, by pi's own design — mid-turn compaction needs no new pi seat and no fork.
+replays from the latest `compaction` entry. jr2 constructs the Session. So a compaction entry appended at a step
+boundary is honored by the next step, by pi's own design — mid-turn compaction needs no new pi seat and no fork.
 
 **Compaction** enters the vocabulary as the cut itself, not the act of summarizing: what the model still sees, replaced
 by a summary plus a retained tail.
@@ -38,7 +38,7 @@ by a summary plus a retained tail.
   abort-replay would silently discard it rather than chain onto it. The cut runs first and `settleAbandonedMessage` maps
   over whichever array will be sent — including a rebuilt one, since the Session stores an aborted assistant message
   verbatim.
-- **The thresholds are j2-owned, derived, and have no author surface.** `reserve = max(16384, model.maxTokens)`, with
+- **The thresholds are jr2-owned, derived, and have no author surface.** `reserve = max(16384, model.maxTokens)`, with
   flue's small-window floor (`reserve × 2 ≥ contextWindow → max(1024, contextWindow / 3)`); `keepRecentTokens` 20000.
   The derivation is deliberate: the threshold is checked BEFORE a request that may emit up to `maxTokens`, so a reserve
   smaller than one full response does not reserve anything. pi's flat 16384 and flue's `min(20000, maxTokens)` — which
@@ -49,17 +49,17 @@ by a summary plus a retained tail.
   `contextWindow` resolves to 0 and **compaction is off** — said out loud here, because silently inert is how the
   original regression hid.
 - **`contextWindow` is not a compaction knob.** It sits beside `maxTokens` in the provider spec as a fact about an
-  endpoint j2 cannot enumerate. Compaction reads it. It stops being inert without becoming an author surface, and no new
-  config field appears.
+  endpoint jr2 cannot enumerate. Compaction reads it. It stops being inert without becoming an author surface, and no
+  new config field appears.
 - **The summarizer is the Turn's own model and the Turn's own thinking level.** The model because a Dial says how hard
-  to run this Turn ([ADR-0018](0018-instance-agents-are-definitions-j2-assembles-the-harness.md)) and mechanism
+  to run this Turn ([ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)) and mechanism
   inherits; a separate compaction model would need its own provider entry, its own boot validation, and its own
   unresolvable-model failure at the moment context is already full. The thinking level because overriding it would be
   half of that same argument — pi passes its own, and no evidence says otherwise yet. **The summarizer carries the
-  Submission's abort signal**, so a sweep does not wait on a summary j2 no longer wants
-  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)'s promotion ordering); j2 must hold that
+  Submission's abort signal**, so a sweep does not wait on a summary jr2 no longer wants
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)'s promotion ordering); jr2 must hold that
   signal itself, because `AgentHarness` drops the one pi's loop hands `transformContext`. **The retry budget is also
-  j2's to state** (2): pi's `retry` argument is optional and omitting it means zero attempts past the first, and the
+  jr2's to state** (2): pi's `retry` argument is optional and omitting it means zero attempts past the first, and the
   Turn's own stream `maxRetries` never reaches this call — pi builds the summarizer's request options itself. A
   compaction that fails after those retries settles the Submission `failed` as an ADR-0016 **infra** fault — no new
   fault class: a legible compaction failure beats walking into an overflow that surfaces as truncation.
@@ -69,14 +69,14 @@ by a summary plus a retained tail.
   cut's tail: up to `keepRecentTokens` of the MOST RECENT work, deleted at every cut past the first. With
   `firstKeptEntryId` alone the walk stops there, the rebuilt context is identical, and the next cut can reach the tail
   and summarize it. pi stores the tail because its `compact()` is idle-only and manually invoked — one cut per
-  conversation, where the defect cannot appear; j2's mid-turn regime cuts repeatedly on one conversation, so it must
+  conversation, where the defect cannot appear; jr2's mid-turn regime cuts repeatedly on one conversation, so it must
   not.
 - **Visible in the pod log, invisible on the wire.** The printer gets one line
   ([ADR-0023](0023-the-harness-prints-the-conversation.md)) — a reader of 161 tool calls needs the point where the agent
   stopped being able to see the first 120, or an agent that forgets what it read at step 20 reads as a defect. Nothing
   else: no `StreamEvent` type (the durable stream's one consumer is `wait`, and a compaction settles nothing), no
   history entry, nothing on the ADR-0014 open band. The asymmetry is the point — mechanics narrate, they do not surface.
-  j2's history is unaffected by construction: it records what was said, while compaction changes only what the model
+  jr2's history is unaffected by construction: it records what was said, while compaction changes only what the model
   sees, and pi's compaction entry is the durable record of the cut.
 - **ADR-0035's runaway counters do not reset on compaction, and the compaction call is not a step.** The watch counts
   tool calls per Submission; compaction is a fact about tokens. A turn that compacts and continues is still spending its
@@ -96,14 +96,14 @@ by a summary plus a retained tail.
   `588b0f5e`, whose window filled at step ~161 of a single turn. It rescues the nudges after the failure, not the
   failure.
 - **A pure transform in the `context` hook, never touching the Session.** Rejected: no compaction record for the printer
-  or the session, and the summary would have to be cached j2-side anyway to avoid an LLM call per step — which is
+  or the session, and the summary would have to be cached jr2-side anyway to avoid an LLM call per step — which is
   `appendCompaction` reimplemented worse.
 - **Wait for pi to call its own `shouldCompact()`, or to relax the idle guard.** Rejected on ADR-0027's grounds:
-  `shouldCompact()` is exported with zero internal callers, the pin is exact, and the mechanism j2 needs already exists
+  `shouldCompact()` is exported with zero internal callers, the pin is exact, and the mechanism jr2 needs already exists
   in the loop.
 - **A compaction Dial, or a definition override** (flue accepted `reserveTokens`/`keepRecentTokens`/`model` per agent).
   Rejected: compaction is neither identity nor how-hard-to-run, so it is not a Dial (ADR-0018), and ADR-0016 puts
-  budgets in j2's hands. Greenfield: no workflow has needed one.
+  budgets in jr2's hands. Greenfield: no workflow has needed one.
 - **A headroom check before each no-signal nudge** (fault fast when the window is full). Rejected: it needs a new wire
   field carrying token counts to a consumer that would use it for one branch, to guard a state compaction now prevents.
   The nudge's own first request compacts.
@@ -133,7 +133,7 @@ by a summary plus a retained tail.
   `aborted` it contributes no usage of its own and the next step would cut again on a context nothing has grown — a
   second summary over work the first already covered. A cut therefore requires assistant usage recorded AFTER the newest
   compaction entry.
-- **The pi-bump surface grows, and it is the deepest j2 has taken on.** This leans on `prepareNextTurn` rebuilding the
+- **The pi-bump surface grows, and it is the deepest jr2 has taken on.** This leans on `prepareNextTurn` rebuilding the
   context from the Session each step, on `buildContext` replaying from the latest compaction entry, and on the branch
   walk stopping at `firstKeptEntryId` when the entry carries no tail — behavior pi documents in types but does not
   promise as a caller contract, and the tail divergence above is a bet against pi's own usage of its own API. The

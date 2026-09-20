@@ -12,7 +12,7 @@
 # to the kind docker network, plus a containerd `hosts.toml` on every node mapping the ref host
 # `localhost:<port>` to that container. What it replaces is `kind load` at the published names —
 # which put the bytes on the node without a pull ever happening, so the one thing an installed kit
-# does with Kit images (pull `<kitRegistry>/j2-<x>:<kitversion>`) was covered by no tier at all.
+# does with Kit images (pull `<kitRegistry>/jr2-<x>:<kitversion>`) was covered by no tier at all.
 # That is the failure class ADR-0043 exists to delete, met a second time at a second registry.
 #
 # The storage is NOT wiped per `up`, and that asymmetry with verdaccio is the point: the wipe there
@@ -21,12 +21,12 @@
 # remainder: `IfNotPresent` keeps the first bytes a node saw of a re-pushed dev tag), and no wipe
 # here could reach it — the escape is a fresh cluster.
 #
-# Env: J2_DIST_IMAGE_PORT (default 5001 — the address scenarios put in `kitRegistry`).
+# Env: JR2_DIST_IMAGE_PORT (default 5001 — the address scenarios put in `kitRegistry`).
 set -euo pipefail
 
-port="${J2_DIST_IMAGE_PORT:-5001}"
-# In the `j2-dist` family, like the rest of the loop's state, so a stray container says whose it is.
-name="j2-dist-registry"
+port="${JR2_DIST_IMAGE_PORT:-5001}"
+# In the `jr2-dist` family, like the rest of the loop's state, so a stray container says whose it is.
+name="jr2-dist-registry"
 address="localhost:$port"
 
 # node is the one runtime this repo can assume (see scripts/dist-registry.sh) — so no curl/nc. ANY
@@ -46,7 +46,7 @@ exists() {
 }
 
 # The kind cluster this loop is pointed at — whatever the CURRENT kube context names, the same
-# address `j2 up` will resolve moments later (ADR-0019), never a cluster name written down here.
+# address `jr2 up` will resolve moments later (ADR-0019), never a cluster name written down here.
 kind_cluster() {
   local context
   context="$(kubectl config current-context 2>/dev/null || true)"
@@ -96,7 +96,7 @@ case "${1:-}" in
       # containerd reads a hosts.toml only where it has been TOLD to look, and kind's default config
       # says nothing — deploy/kind.yaml carries the `config_path` patch that makes /etc/containerd/
       # certs.d live. A cluster created before that patch ignores everything below in silence and
-      # resolves `localhost:<port>/j2-harness:...` against the node itself, so the failure would land
+      # resolves `localhost:<port>/jr2-harness:...` against the node itself, so the failure would land
       # minutes later as an ImagePullBackOff pointing at nothing.
       if ! docker exec "$node" grep -q 'certs.d' /etc/containerd/config.toml; then
         echo "node $node has no containerd registry config_path — this cluster predates deploy/kind.yaml's" >&2

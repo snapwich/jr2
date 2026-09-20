@@ -5,7 +5,7 @@
 //
 // The claims that matter, in order: the override LAYERS over the stock definition; the original
 // is untouched, so one import can be customized twice, differently (the ADR's `deep`/`quick`);
-// only DECLARED parts can be retuned, and naming one that does not exist fails loudly; j2's
+// only DECLARED parts can be retuned, and naming one that does not exist fails loudly; jr2's
 // wrappers are transparent, so a consumer never writes `body` or `worker`; and everything a
 // Machine carries — its vocabulary, its door, its Sandbox seats, its slots — is still found on
 // the result, including on the `image`/`repos` path, which cannot use `provide` and rebuilds
@@ -15,14 +15,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
 import { z } from "zod";
-import { defineEvent } from "@j2/agent-protocol";
+import { defineEvent } from "@jr2/agent-protocol";
 import { customize } from "../src/customize.ts";
 import { fingerprintOf } from "../src/fingerprint.ts";
 import { agent } from "../src/harness-client.ts";
 import { isAgent } from "../src/agent.ts";
 import { open, partsOf, sandboxPartsOf } from "../src/parts.ts";
 import { pool, source } from "../src/pool.ts";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { workspace } from "../src/workspace.ts";
 import { inputSchemaOf, vocabularyOf } from "../src/vocabulary.ts";
 
@@ -37,7 +37,7 @@ const done = defineEvent({ name: "done", input: z.object({}) });
 /** The Machine a package would export: two Agents and one vocabulary — plus, when asked, its own
  * door (ADR-0033), which only a Machine that is not a `workspace()` body may declare. */
 function research(door?: z.ZodObject) {
-  return j2Setup({
+  return jr2Setup({
     events: [done],
     actors: { coder: agent(coderDef), reviewer: agent(reviewerDef) },
   }).createMachine({
@@ -53,7 +53,7 @@ function research(door?: z.ZodObject) {
 }
 
 /** What logic a Machine holds under one slot key — `unknown` in, because these assertions read
- * PARTS off a Machine the way j2 does, not through the invoke types. */
+ * PARTS off a Machine the way jr2 does, not through the invoke types. */
 const slotAt = (machine: unknown, slot: string): unknown =>
   (machine as { implementations: { actors: Record<string, unknown> } }).implementations.actors[slot];
 
@@ -86,7 +86,7 @@ test("one import, customized twice, is two Machines — deep and quick (ADR-0049
   assert.equal(definitionAt(deep, "coder").model, opus);
   assert.deepEqual(definitionAt(quick, "coder"), { ...coderDef, thinkingLevel: "low" });
   // And a walk of both reports two Agents under one slot key — the case a flat roster could not
-  // hold, and the reason `j2 up` preflights per definition rather than per name.
+  // hold, and the reason `jr2 up` preflights per definition rather than per name.
   assert.deepEqual(
     partsOf([deep, quick])
       .agents.filter((a) => a.name === "coder")
@@ -114,7 +114,7 @@ test("only declared parts can be retuned: an unknown Agent slot fails, naming th
 
 test("a child Machine is retuned one level down — the same call, recursing", () => {
   const child = research();
-  const parent = j2Setup({
+  const parent = jr2Setup({
     events: [done],
     actors: { triager: agent({ model: haiku, instructions: "You triage.", workspace: "none" }), child },
   }).createMachine({
@@ -138,7 +138,7 @@ test("a child Machine is retuned one level down — the same call, recursing", (
 });
 
 test("a slot that composes no Machine fails, naming the ones that do", () => {
-  const machine = j2Setup({
+  const machine = jr2Setup({
     events: [],
     actors: { coder: agent(coderDef), fetchIt: fromPromise(async () => 1), child: research() },
   }).createMachine({ id: "host", initial: "idle", states: { idle: {} } });
@@ -185,10 +185,10 @@ test("a pool() is transparent to its worker, and a pool of Workspaces to what is
 
 test("a slot an AUTHOR spelled `body` is an ordinary child — transparency follows the marker", () => {
   // The counter-case to the two above: `body` and `worker` are names any author may choose, so
-  // the reach is the wrapper's own record of being one (`J2Wrapper`/`wrapperBodyOf`, parts.ts) and
+  // the reach is the wrapper's own record of being one (`JR2Wrapper`/`wrapperBodyOf`, parts.ts) and
   // never the spelling. Stepping through this Machine would retune the CHILD's Agents and refuse
   // the host's own — which is what its author named.
-  const host = j2Setup({
+  const host = jr2Setup({
     events: [done],
     actors: { coder: agent(coderDef), body: research(), worker: fromPromise(async () => 1) },
   }).createMachine({ id: "host", initial: "idle", states: { idle: { invoke: { src: "body" } } } });
@@ -261,7 +261,7 @@ test("a plain setup() Machine carries no Agents, and says so", () => {
 
 /** What a package exports (ADR-0054): the same two Agents, but the model is nobody's answer yet. */
 function unbound() {
-  return j2Setup({
+  return jr2Setup({
     events: [done],
     actors: { coder: agent({ ...coderDef, model: open }), reviewer: agent({ ...reviewerDef, model: open }) },
   }).createMachine({
@@ -282,7 +282,7 @@ test("an Agent override BINDS an Open model, and the layering is the one it alre
   // package could not, and nothing else.
   assert.deepEqual(definitionAt(bound, "coder"), { ...coderDef, model: opus });
   assert.deepEqual(definitionAt(bound, "reviewer"), { ...reviewerDef, model: haiku });
-  // And the walk of the customized Machine no longer reports them — which is what `j2 up` stops
+  // And the walk of the customized Machine no longer reports them — which is what `jr2 up` stops
   // refusing.
   assert.deepEqual(partsOf([bound]).openAgents, []);
   assert.deepEqual(
@@ -337,7 +337,7 @@ test("repos bind the workspace() the chain reaches — an open slot, through a p
     target: open,
     docs: { url: "https://example.test/handbook.git", ref: "v3" },
   });
-  // And the walk of the customized Machine reports the bound url — which is what `j2 up` warms
+  // And the walk of the customized Machine reports the bound url — which is what `jr2 up` warms
   // and what it no longer refuses.
   const walked = partsOf([bound]);
   assert.deepEqual(walked.openSlots, []);

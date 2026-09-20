@@ -3,11 +3,11 @@
 Sources: `scripts/justfile` (start-work lines 690–1775, signal 1959, task-diff/commits, me/approve/request-changes,
 merge-all, rebase-feature, notes --after, with-lock), `CLAUDE.md`, `docs/workflow.md`, `claude/.claude/agents/jr/*.md`
 (coder, code-reviewer, architect-reviewer, investigator, rebaser), `claude/.claude/prompts/jr/subagent-task.md`,
-`templates/`. Compared against `/home/richs/repos/j2/default/examples/coding/workflows/coding.ts`.
+`templates/`. Compared against `/home/richs/repos/jr2/default/examples/coding/workflows/coding.ts`.
 
 ## 1. Behavior spec — observable jr semantics, one sentence each
 
-Classification tag per item: **[P]** pure workflow policy (consumer authors), **[M]** orchestrator mechanics (j2
+Classification tag per item: **[P]** pure workflow policy (consumer authors), **[M]** orchestrator mechanics (jr2
 absorbs), **[A]** ambiguous.
 
 ### Work model & discovery
@@ -161,7 +161,7 @@ by orchestrator, read by `just signal`/`add-note`).
 - **DROPPED — deadlock detection.** jr exits 2 when open tickets exist but none ready and nothing runs; coding.ts
   `settling → idle` re-polls forever, indistinguishable from a healthy park.
 - **DROPPED — end-of-run semantics** (exit 0/2/3, escalation summary, `just me`). Replaced by parked states +
-  `emit("attention")`; the j2 run needs an equivalent queryable "what needs a human" surface (the gates list mostly is
+  `emit("attention")`; the jr2 run needs an equivalent queryable "what needs a human" surface (the gates list mostly is
   it) and a real terminal outcome.
 - **DROPPED — stacked features & base-branch resolution.** `Ticket.baseRef` is "resolved by the tk actor" (sketch) but
   the upstream-feature-branch logic (item 7), ghost/rebase handling, and merge-all are gone; merge/rebase are declared
@@ -178,7 +178,7 @@ by orchestrator, read by `just signal`/`add-note`).
 - `endpoint`/`sandbox`/`instanceId` threading + the 20-line `WorkspaceHandles` alias apologia (line 132) — brief
   decision 3 deletes.
 - `retriesLeft`/`spendRetry`/`hasRetryBudget`/`retryOrEscalate`/`reenter` — retry accounting in context; jr kept it in
-  notes, j2 absorbs (brief decision 5).
+  notes, jr2 absorbs (brief decision 5).
 - `export const events` manifest + `EventFrom` unions + names-not-defs in `tools:` — brief decision 7 deletes.
 - **`stalled` state + `resume` gate** — no jr analog; a chain blocked on a human-assigned task simply never surfaces in
   `tk ready` and the run ends. It exists to keep the Sandbox alive, i.e. a workaround for teardown-on-final; if
@@ -213,7 +213,7 @@ by orchestrator, read by `just signal`/`add-note`).
 - **Feature-depends-on-all-children readiness trick**: encodes "architect goes when the chain is done" in the dep graph
   so `tk ready` surfaces it; machine structure says it directly (coding.ts got this right).
 - **stow/rsync .claude deployment, persona/prompt extension merging, ARG_MAX byte-truncation, PGID-tree cleanup, fzf
-  watch**: host-CLI mechanics that vanish under j2 (provisioning, run feed, visualize).
+  watch**: host-CLI mechanics that vanish under jr2 (provisioning, run feed, visualize).
 - **merge-all + rebase-feature + rebaser persona (~700 lines)**: consequence of keeping merges local; PR-based redesign
   deletes it. Residual gap: stacked-branch refresh after upstream merge.
 - **Investigator prompt assembly** (find session JSONL by uuid, truncate, embed diff): mechanics; a durable run +
@@ -234,7 +234,7 @@ by orchestrator, read by `just signal`/`add-note`).
 | Signal transport, validation, stale-signal immunity (20, 21)                       | Mechanics                                               |
 | Worktree/sandbox provisioning, locking, teardown (5, 9)                            | Mechanics                                               |
 | No-signal detection, time-boxing, retry/nudge budget (24, 26)                      | Mechanics (brief 5)                                     |
-| Investigator judgment + nudge (25)                                                 | Ambiguous — consumer triage hook on j2's fault path     |
+| Investigator judgment + nudge (25)                                                 | Ambiguous — consumer triage hook on jr2's fault path    |
 | Rate-limit pause/resume (31)                                                       | Mechanics                                               |
 | Terminal outcomes, deadlock, "what needs me" surface (32–34)                       | Ambiguous — terminal states policy, surfacing mechanics |
 | Sessions log, watch, cleanup, prompt assembly (35–37)                              | Mechanics                                               |
@@ -245,9 +245,9 @@ by orchestrator, read by `just signal`/`add-note`).
    — jr's fresh-context handoff is its most deliberate design decision.
 2. Final-state-means-teardown conflicts with jr's escalation model; escalated features need a park-or-push affordance
    that doesn't reintroduce consumer-managed teardown.
-3. "Agent ended turn without firing an event" must be in j2's absorbed fault set (jr's dominant failure mode), with an
+3. "Agent ended turn without firing an event" must be in jr2's absorbed fault set (jr's dominant failure mode), with an
    optional consumer triage/nudge hook whose diagnosis reaches the escalation route.
-4. Round/retry split: j2 absorbs _infra_ retries, but review rounds are policy counters needing durable context —
+4. Round/retry split: jr2 absorbs _infra_ retries, but review rounds are policy counters needing durable context —
    trivial once offsets plumbing is gone, but reset semantics (on approval / new cycle, not per-restart) must be
    explicit.
 5. A jr run terminates; a coding.ts run parks forever. The pool primitive should support "source drained → final" and

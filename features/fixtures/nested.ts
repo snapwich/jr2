@@ -11,11 +11,11 @@
 // never settles (the stub is inert), so both admissions exist at once and the scenario reads them
 // off the stub. Nothing here needs driving — the point is what was admitted, not what came back.
 
-import { agent, customize, j2Setup } from "@j2/orchestrator";
+import { agent, customize, jr2Setup } from "@jr2/orchestrator";
 
 /** The Machine a package would export: one Agent slot, one state, everything else carried. The
  * stub never runs a model, but a slot IS its definition, so the stock one is stated. */
-const research = j2Setup({
+const research = jr2Setup({
   types: {} as { context: { endpoint: string }; input: { endpoint: string } },
   events: [],
   actors: { coder: agent({ model: "stub/base", instructions: "You are the coder." }) },
@@ -41,7 +41,7 @@ const research = j2Setup({
 const deep = customize(research, { agents: { coder: { model: "stub/deep" } } });
 const quick = customize(research, { agents: { coder: { model: "stub/quick" } } });
 
-export const machine = j2Setup({
+export const machine = jr2Setup({
   types: {} as { context: { endpoint: string }; input: { instanceId: string; endpoint: string } },
   events: [],
   actors: { deep, quick },

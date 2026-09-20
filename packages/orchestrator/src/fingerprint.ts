@@ -1,7 +1,7 @@
 // The content address of a Machine's SHAPE (ADR-0030). A persisted snapshot names the Machine it
 // was written under; restore compares and refuses a mismatch, because a workflow is matched to a
 // run by filename alone and the state volume outlives the image that wrote it — so a run parked at
-// a Gate meets whatever `j2 up` baked in next, and nothing used to notice.
+// a Gate meets whatever `jr2 up` baked in next, and nothing used to notice.
 //
 // What it hashes is RESTORABILITY, not behavior: the facts that decide whether an old snapshot can
 // still be interpreted — state ids and nesting, which state is initial, what each state invokes and
@@ -74,7 +74,7 @@ function shapeBody(body: MachineBodyDoc): ShapeBody {
 const cache = new WeakMap<AnyStateMachine, string>();
 
 /**
- * This Machine's shape, as 12 hex chars — the same width `j2 up`'s content hash uses, and for the
+ * This Machine's shape, as 12 hex chars — the same width `jr2 up`'s content hash uses, and for the
  * same reason: it is read by humans in error messages far more often than by machines.
  *
  * The workflow NAME is deliberately excluded. A run already carries its workflow, and restore looks

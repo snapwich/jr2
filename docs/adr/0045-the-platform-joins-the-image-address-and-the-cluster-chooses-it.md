@@ -1,24 +1,24 @@
 # The platform joins the image address, and the cluster chooses it
 
-[ADR-0038](0038-j2-up-builds-every-image-it-deploys.md)'s invariant — every tag is a content address, so "present
+[ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)'s invariant — every tag is a content address, so "present
 implies current" — hashed the build's **inputs** and nothing else. But the bytes are a function of (inputs × platform),
 and no build passed `--platform`: the daemon default (or a remembered `DOCKER_DEFAULT_PLATFORM`) decided silently. So
 one tag named an amd64 or an arm64 image depending on who built it last, and both skips that rest on tag equality — the
 cluster record and [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md)'s host-held listing — delivered
 an amd64 instance image to an arm64-only cluster, surfacing as an opaque rollout timeout (`exec format error`, found
-only by hand). The hole is in ADR-0038's core invariant, and it covers every image `j2 up` builds — instance, Sandbox,
+only by hand). The hole is in ADR-0038's core invariant, and it covers every image `jr2 up` builds — instance, Sandbox,
 and the checkout-mode kit three. Published Kit images were already immune
 ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md): multi-arch manifest lists, mirrored
 whole).
 
 ## Decision
 
-- **A tag names (inputs × platform set), and says so visibly**: `<repo>:<hash>-<arch>` — `j2-instance-x:4a77b1-arm64`,
+- **A tag names (inputs × platform set), and says so visibly**: `<repo>:<hash>-<arch>` — `jr2-instance-x:4a77b1-arm64`,
   and `…:4a77b1-amd64-arm64` for a multi-platform build (sorted, joined). In the tag, not the salt: the triggering
   failure was invisible precisely because the tag did not say, and a self-describing tag is diagnosability applied at
   the naming layer. Every `docker build` passes `--platform` explicitly — the daemon default and
   `DOCKER_DEFAULT_PLATFORM` stop being steering, which deletes the manual step whose forgetting was the failure.
-- **The cluster's nodes choose the platform set.** `j2 up` reads the schedulable nodes' `.status.nodeInfo.architecture`
+- **The cluster's nodes choose the platform set.** `jr2 up` reads the schedulable nodes' `.status.nodeInfo.architecture`
   — the union of the nodes an ordinary pod lands on (the Orchestrator's placement) and the Instance's Sandbox nodes
   (ADR-0052), so a tainted pool no Sandbox reaches is never built for — and intersects with the **supported set** — the
   platforms the kit releases for (`linux/amd64`, `linux/arm64`), one constant beside `KIT_IMAGES` that `just kit-push`
@@ -42,7 +42,7 @@ whole).
   exists to delete. So the converge checks emulation is available before spending any build, and the error names the fix
   (`docker run --privileged --rm tonistiigi/binfmt --install <arch>`).
 - **The host-held skip is honest again — where it can answer at all.** For singleton builds the tag now names the
-  platform and j2 always built with an explicit `--platform`, so tag-equality on the daemon once more means "present
+  platform and jr2 always built with an explicit `--platform`, so tag-equality on the daemon once more means "present
   implies current". A multi-arch ref never lands in the daemon (buildx `--push` goes straight to the registry), so the
   host skip cannot answer for it and a record-silent mixed-arch converge rebuilds — the accepted cost; ADR-0041's
   rejection of registry-truth HEAD checks stands.
@@ -64,7 +64,7 @@ whole).
 - **Explicit-only** (`platforms` required, no derivation). Rejected: taxes every single-arch user — the overwhelming
   case — with a key they should not need, inverting "the CLI does all the work".
 - **Keep `DOCKER_DEFAULT_PLATFORM` as the steering mechanism.** Rejected: an env var the user must remember is the class
-  of manual step j2 deletes, and forgetting it was the failure.
+  of manual step jr2 deletes, and forgetting it was the failure.
 
 ## Consequences
 

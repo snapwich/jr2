@@ -1,4 +1,4 @@
-# j2
+# jr2
 
 A kit for building agentic workflows modeled as [xstate](https://stately.ai/docs) state machines. Provides composable,
 xstate-compatible pieces (an Actor backed by a Harness client, worktree creation, pooling, gates) that you assemble into
@@ -11,28 +11,28 @@ Kubernetes (kind locally).
 **Machine**: The xstate state machine that defines a workflow's control flow. The unit a user authors. _Avoid_:
 workflow, graph
 
-**Workflow**: A Machine registered under a name — the unit an Orchestrator instance runs and `j2 run` addresses. Lives
+**Workflow**: A Machine registered under a name — the unit an Orchestrator instance runs and `jr2 run` addresses. Lives
 as a code module in the instance's `workflows/` directory (contract: `export const machine`); the Machine carries
 everything it needs (ADR-0049), so a Workflow is a name and nothing more. **Not** declarative config, and **not**
-shipped by the kit — the kit ships Machines (`@j2/machines`), and a packaged Machine becomes a Workflow when a workflows
-file exports it, its Open parts bound. _Avoid_: app, pipeline
+shipped by the kit — the kit ships Machines (`@jr2/machines`), and a packaged Machine becomes a Workflow when a
+workflows file exports it, its Open parts bound. _Avoid_: app, pipeline
 
 **Orchestrator**: The runtime that executes Machines. A single-writer daemon (`replicas: 1`, always in-cluster —
 ADR-0019) persisting run snapshots to its store (sqlite by default, Postgres opt-in). `replicas: 1` means single
 _writer_ (no split-brain on the snapshot), not one workflow per process — one Orchestrator hosts **many** Workflows and
 many runs, fed by both Sources (pull) and the HTTP API (push). _Avoid_: runner, engine
 
-**Instance**: A user-owned folder scaffolded by `j2 init` — `j2.config.ts` (reach and credentials: the deployment facts
-a Machine cannot carry, ADR-0050/0051) + the discovered `workflows/` directory + manifests. `j2 up` bakes the engine +
-the instance's workflows into one image and converges the target cluster; this folder is the deployed Orchestrator. A
-deployment assembly, not a sharing unit — reusable workflows/agents travel as npm packages (ADR-0019). _Avoid_:
-workspace (collides), project
+**Instance**: A user-owned folder scaffolded by `jr2 init` — `jr2.config.ts` (reach and credentials: the deployment
+facts a Machine cannot carry, ADR-0050/0051) + the discovered `workflows/` directory + manifests. `jr2 up` bakes the
+engine + the instance's workflows into one image and converges the target cluster; this folder is the deployed
+Orchestrator. A deployment assembly, not a sharing unit — reusable workflows/agents travel as npm packages (ADR-0019).
+_Avoid_: workspace (collides), project
 
-**j2 CLI**: The `j2` binary — the primary interface to an Instance (`init`, `up`, `run`, status). Operates on the
+**jr2 CLI**: The `jr2` binary — the primary interface to an Instance (`init`, `up`, `run`, status). Operates on the
 current `kubectl` context, argo/cilium-style; users reach for the CLI far more than the raw HTTP API; the CLI sits on
 top of that API. _Avoid_: cli tool
 
-**j2 Application**: An Instance under GitOps — its manifests deploy the Orchestrator plus config and secrets. The same
+**jr2 Application**: An Instance under GitOps — its manifests deploy the Orchestrator plus config and secrets. The same
 folder runs on kind locally and on a real cluster. _Avoid_: deployment
 
 **Console**: The browser surface the Orchestrator serves — one shell, master–detail: the Workflows and their runs in the
@@ -61,56 +61,57 @@ settings
 for the Kubernetes architecture — agents must not share host resources (ports, filesystem, process space). _Avoid_:
 worker pod, container
 
-**Harness**: j2's own long-running server (`@j2/harness`), hosted in two placements: inside every Sandbox, and once per
-Instance as the Instance Harness (ADR-0031). Hosts conversations over the Harness wire (ADR-0027) and executes their
+**Harness**: jr2's own long-running server (`@jr2/harness`), hosted in two placements: inside every Sandbox, and once
+per Instance as the Instance Harness (ADR-0031). Hosts conversations over the Harness wire (ADR-0027) and executes their
 Working tools; it holds no Agents of its own — each admission carries the definition it runs (ADR-0049). Ships both as
-the stock `j2-harness:<ver>` image and as the runtime j2 mounts into every Sandbox at `/opt/j2` at pod time — Working
+the stock `jr2-harness:<ver>` image and as the runtime jr2 mounts into every Sandbox at `/opt/jr2` at pod time — Working
 tools execute in this container, so the tools they can reach are the Sandbox Image's (ADR-0037). _Avoid_: flue agent,
 server, `local()`
 
-**Instance Harness**: The per-Instance Harness deployment `j2 up` converges when an Agent a registered Machine carries
+**Instance Harness**: The per-Instance Harness deployment `jr2 up` converges when an Agent a registered Machine carries
 declares `workspace: "none"` — the placement for every Menu-only Agent's Turn, regardless of any enclosing Workspace, so
 a continued conversation always lands on the Harness that holds it (ADR-0031). Its pod pairs the Harness with an Adapter
 and mounts no worktree. _Avoid_: shared harness, global harness, dev harness
 
-**Adapter**: The j2-owned sidecar container in a Sandbox that serves the current turn's Menu to the Agent over MCP and
+**Adapter**: The jr2-owned sidecar container in a Sandbox that serves the current turn's Menu to the Agent over MCP and
 forwards the Agent's picks to the Orchestrator as Gate deliveries. The Agent's only control-plane peer is this process
 on `localhost`; it never speaks to the Orchestrator. A separate container from the Harness _because_ Working tools give
 the Agent code execution there — so the Orchestrator credential lives where the Agent cannot read it. In Orchestrator
 terms it is the MCP dialect adapter, relocated into the Sandbox. _Avoid_: shim, proxy, sidecar (that's its deployment
 shape, not what it is), MCP server
 
-**Kit image**: One of the three j2-owned images an Instance deploys but never authors — `j2-harness`, `j2-adapter`,
-`j2-operator`. Built from the checkout in checkout mode; installed, pulled at published `<kitversion>` tags from the
+**Kit image**: One of the three jr2-owned images an Instance deploys but never authors — `jr2-harness`, `jr2-adapter`,
+`jr2-operator`. Built from the checkout in checkout mode; installed, pulled at published `<kitversion>` tags from the
 canonical home (`ghcr.io/snapwich`) or from a self-hosted mirror of it (`kitRegistry`, ADR-0044); one release train with
 the npm packages (ADR-0019, ADR-0038). The kit's second distribution channel: what users don't get from npm, they get as
-these images (ADR-0043). _Avoid_: system image, base image, j2 image (ambiguous with the instance image `j2 up` bakes)
+these images (ADR-0043). _Avoid_: system image, base image, jr2 image (ambiguous with the instance image `jr2 up` bakes)
 
 **Sandbox Image**: A user-owned image a Sandbox's primary container runs — the tools an Agent's Working tools can reach,
 and the shell a human gets on `exec`. A `workspace()` names it statically (ADR-0049): a `file:` URL to a docker context
-the Machine's module ships, built by `j2 up`, or a registry ref. j2 mounts the Harness runtime into the pod at
-`/opt/j2`, so the image carries zero j2 layers and its floor is glibc + git (ADR-0037). _Avoid_: workspace image (a
+the Machine's module ships, built by `jr2 up`, or a registry ref. jr2 mounts the Harness runtime into the pod at
+`/opt/jr2`, so the image carries zero jr2 layers and its floor is glibc + git (ADR-0037). _Avoid_: workspace image (a
 Workspace is a Machine; the image is the pod's), agent image, harness image (the kit's own), toolchain
 
 **Sandbox node**: A node a Sandbox may be placed on: not cordoned, matching the Instance's `sandbox.nodeSelector`, and
-carrying no taint its `sandbox.tolerations` do not tolerate — by default, wherever an ordinary pod lands, no j2 label
-required. The Repo cache agent runs on exactly the Sandbox nodes. The set moves as nodes come and go; `j2 up` reports it
-and warns when empty, never refuses. _Avoid_: worker, candidate node, eligible node, data-plane node, schedulable node
-(ADR-0045's wider set: any node not cordoned)
+carrying no taint its `sandbox.tolerations` do not tolerate — by default, wherever an ordinary pod lands, no jr2 label
+required. The Repo cache agent runs on exactly the Sandbox nodes. The set moves as nodes come and go; `jr2 up` reports
+it and warns when empty, never refuses. _Avoid_: worker, candidate node, eligible node, data-plane node, schedulable
+node (ADR-0045's wider set: any node not cordoned)
 
 **User Container**: The optional third container in a Sandbox pod — a user-owned image a `workspace()` names statically,
 in the same two shapes as the Sandbox Image and beside it (`user`, ADR-0049), running its own entrypoint with `/work`
-mounted read-write, the checkouts' two read-only halves (`/repos`, `/opt/j2`) beside it, and nothing injected into its
-process (ADR-0005, ADR-0053). The zero-contract seat: j2 never builds, probes, or commands it. For services that must
+mounted read-write, the checkouts' two read-only halves (`/repos`, `/opt/jr2`) beside it, and nothing injected into its
+process (ADR-0005, ADR-0053). The zero-contract seat: jr2 never builds, probes, or commands it. For services that must
 run unattended (an sshd for managed access) and for sessions whose credentials must stay out of the Agent's mount
 namespace (a forwarded ssh agent). Not port isolation — the pod has one network namespace. _Avoid_: sidecar (its
 deployment shape, not what it is), debug container (an ephemeral attach is a one-off mechanism, not a seat), dev
 container
 
 **Instance ID**: The identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id` on the Harness
-wire. Successive prompts to the same `(Agent name, instance id)` continue one conversation; j2 computes ids and persists
-`(name, instance id)` + stream offset host-side to re-attach after an Orchestrator restart. New agent invocations get
-fresh ids by default (the lossy handoff); continuing a conversation is opt-in. _Avoid_: conversation id, session id
+wire. Successive prompts to the same `(Agent name, instance id)` continue one conversation; jr2 computes ids and
+persists `(name, instance id)` + stream offset host-side to re-attach after an Orchestrator restart. New agent
+invocations get fresh ids by default (the lossy handoff); continuing a conversation is opt-in. _Avoid_: conversation id,
+session id
 
 **Turn**: One Agent's answer to the frame a Machine state set for it — the prompt, the work, and the single menu pick
 that ends it (ADR-0006). A turn belongs to the state that asked for it: when that state stops waiting, the turn is over,
@@ -127,19 +128,19 @@ the host persists in its ledger beside the snapshot (ADR-0016), and the coordina
 by (ADR-0007). _Avoid_: handle, ticket
 
 **Settlement**: How a Submission ends — `completed`, `failed`, or `aborted`. What the history view reports and the tests
-assert; j2 deliberately never observes the settlement of a turn it aborted (ADR-0024). _Avoid_: result, status
+assert; jr2 deliberately never observes the settlement of a turn it aborted (ADR-0024). _Avoid_: result, status
 
-**Runaway**: A Turn that will not conclude on its own — ended by the Harness when it runs past the point where j2 stops
+**Runaway**: A Turn that will not conclude on its own — ended by the Harness when it runs past the point where jr2 stops
 believing it will end. The third absorbed fault class beside infra and no-signal (ADR-0016, ADR-0035): rerolled once as
-a fresh conversation, then surfaced as the one terminal `agent.fault`. Named for what j2 observed, not the model's
+a fresh conversation, then surfaced as the one terminal `agent.fault`. Named for what jr2 observed, not the model's
 pathology. _Avoid_: degeneration (the model behavior a runaway guard usually catches, not the fault class), loop, hang,
 stall
 
 **Compaction**: The cut itself — what a conversation's model context still holds, replaced by a summary plus a retained
 tail — taken by the Harness mid-Turn at a step boundary when the context crosses its reserve (ADR-0036). Turn mechanics
-(ADR-0016): j2-owned thresholds, no author surface, not a Dial. It changes what the model sees, never what j2 recorded:
-the history view is what was said. _Avoid_: summarization (one step of taking a Compaction, and the LLM call is not the
-decision), truncation (the failure Compaction exists to prevent), pruning
+(ADR-0016): jr2-owned thresholds, no author surface, not a Dial. It changes what the model sees, never what jr2
+recorded: the history view is what was said. _Avoid_: summarization (one step of taking a Compaction, and the LLM call
+is not the decision), truncation (the failure Compaction exists to prevent), pruning
 
 **Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), narrowed
 to those its guards would currently accept (ADR-0029), served by the Adapter over MCP. What the Agent may **say**. The
@@ -147,7 +148,7 @@ derived set is the state's vocabulary and the scope delivery validates against; 
 offered, so one state can offer different Menus as its context changes. _Avoid_: tools (unqualified), tool list
 
 **Vocabulary**: The workflow events a Machine accepts — each a `defineEvent` def: a name, a payload schema, an optional
-audience — taken as values by its `j2Setup` and scoped to that Machine alone (ADR-0011). What a Gate's accepted set and
+audience — taken as values by its `jr2Setup` and scoped to that Machine alone (ADR-0011). What a Gate's accepted set and
 an Agent's Menu are drawn from, and what a delivery is validated against. A nested Machine keeps its own; the Machine
 that invokes it never sees or merges it. _Avoid_: events (unqualified — the mechanism also delivers `agent.fault`-class
 events no author declared), event manifest (the retired module export), schema
@@ -183,7 +184,7 @@ unblocked subset)
 **Gate**: A pending external input on a run — from a human or any outside system (webhook, CI) — created when a state
 invokes the `gate` actor and destroyed when the state exits. An addressable resource (`gate` id + accepted events +
 `meta` context), because concurrent children park concurrently and a caller acts on one specific decision. What
-`j2 send`, a UI inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller among many),
+`jr2 send`, a UI inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller among many),
 approval (one possible event, not the resource)
 
 **Emit**: A message a workflow author surfaces from a Machine for whoever is watching (xstate `emit({...})`), carried on
@@ -213,24 +214,24 @@ the Lease asserts outward), health (a probe concept, about serving)
 **Repo**: A git repository, identified by its url — host plus path; scheme, user, and `.git` do not distinguish two
 spellings of one Repo. A Machine names one only through a Repo Slot; the cluster keeps one read-only cache of it per
 node for Workspaces to clone against and fetch through — a fetch inside a pod asks the cache, and the cache asks the
-remote (ADR-0051, ADR-0053). There is no catalog and no repo name: `j2.config.ts` declares nothing about a Repo, and the
-set the Instance holds is whatever its Machines bind plus whatever its runs have attached. _Avoid_: project, source,
+remote (ADR-0051, ADR-0053). There is no catalog and no repo name: `jr2.config.ts` declares nothing about a Repo, and
+the set the Instance holds is whatever its Machines bind plus whatever its runs have attached. _Avoid_: project, source,
 remote, catalog entry, repo name
 
 **Repo Slot**: The name a `workspace()` gives one Repo it attaches — the key in its `repos` option, the key of the
 body's `workspace.repos` handles, and the directory under `/work`. A slot is **bound** (the Machine wrote the url),
 **open** (the Machine left it for a composer to bind with `customize`), or **per-run** (a mapper over the door binds it
-from input). Bound and open are what `j2 up` can see; per-run is the run's business. A Machine whose body names no slot
+from input). Bound and open are what `jr2 up` can see; per-run is the run's business. A Machine whose body names no slot
 declares the whole map Open (`repos: open`): the composer names every slot. The handles keep the slots in declaration
-order and j2 gives no slot a meaning — there is no `workdir`; which checkout an Agent works in is that Machine's
+order and jr2 gives no slot a meaning — there is no `workdir`; which checkout an Agent works in is that Machine's
 statement (a named slot in its prompt, or a convention over the order, as `task`'s "the first is the one the coder
 edits"). _Avoid_: role, alias, repo name, workdir, primary repo
 
 **Open**: A part a Machine declares but deliberately leaves for its composer to bind with `customize()` — a Repo Slot
 with no url, a Repo Slot map with no slots, an Agent with no model. The shape a packaged Machine ships in, because a
-package cannot know the repository, how many checkouts sit beside it, or pay for the model. `j2 up` refuses an Open part
-nobody bound and names the line that binds it; a run never sees one. _Avoid_: unset, default (an Open part has none —
-that is the point), placeholder
+package cannot know the repository, how many checkouts sit beside it, or pay for the model. `jr2 up` refuses an Open
+part nobody bound and names the line that binds it; a run never sees one. _Avoid_: unset, default (an Open part has none
+— that is the point), placeholder
 
 **Binding**: The `{ url, ref? }` a Repo Slot resolves to. `ref` is the base the branch Worktree is cut from; absent, the
 Repo's own default branch. _Avoid_: config, catalog entry
@@ -242,4 +243,4 @@ beside it. _Avoid_: directory structure, repo tree
 
 **Worktree**: A git worktree for the one branch a Workspace works on — sibling to the Sandbox's `default/` clone; work
 is sequential commits on that branch, not separate worktrees. The branch's name and granularity (per feature, per task,
-from a ticket, from run input) are the Workflow's policy, not j2's. _Avoid_: per-task worktree, task branch
+from a ticket, from run input) are the Workflow's policy, not jr2's. _Avoid_: per-task worktree, task branch

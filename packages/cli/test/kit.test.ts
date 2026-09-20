@@ -1,4 +1,4 @@
-// `j2 kit push <registry>` (ADR-0044): the installed self-hoster's mirror. No registry is ever
+// `jr2 kit push <registry>` (ADR-0044): the installed self-hoster's mirror. No registry is ever
 // touched here — the whole command is decidable from the argv it hands docker, so the seam records
 // invocations and decides which refs "resolve". Three claims: a present tag is skipped (published
 // version tags never move, so present implies current), an absent one is copied with
@@ -7,14 +7,14 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { KIT_VERSION } from "@j2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator";
 import { main } from "../src/cli.ts";
 import { kit, type RunDocker } from "../src/commands/kit.ts";
 import { publishedKitRefs } from "../src/build.ts";
 import type { Io } from "../src/output.ts";
 
 /** cwd "/" and an empty env on purpose: the command is instance-less (ADR-0044), so it must run
- * from outside any instance folder, with no kube context and no `j2.config.ts` above it. */
+ * from outside any instance folder, with no kube context and no `jr2.config.ts` above it. */
 function mkIo(): { io: Io; out: () => string; err: () => string } {
   const out: string[] = [];
   const err: string[] = [];
@@ -46,9 +46,9 @@ const targets = publishedKitRefs("reg.example.com");
 
 test("the mirror's ends are the home and the kitRegistry re-homing of it", () => {
   assert.deepEqual(targets, {
-    harness: `reg.example.com/j2-harness:${KIT_VERSION}`,
-    adapter: `reg.example.com/j2-adapter:${KIT_VERSION}`,
-    operator: `reg.example.com/j2-operator:${KIT_VERSION}`,
+    harness: `reg.example.com/jr2-harness:${KIT_VERSION}`,
+    adapter: `reg.example.com/jr2-adapter:${KIT_VERSION}`,
+    operator: `reg.example.com/jr2-operator:${KIT_VERSION}`,
   });
   assert.ok(
     Object.values(sources).every((ref) => ref.startsWith("ghcr.io/snapwich/")),
@@ -127,7 +127,7 @@ test("a source the home does not hold fails by name, pointing at the checkout-si
     (thrown: Error) => {
       const source = sources.harness.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       assert.match(thrown.message, new RegExp(source), "names the source");
-      assert.match(thrown.message, /reg\.example\.com\/j2-harness/, "names the target");
+      assert.match(thrown.message, /reg\.example\.com\/jr2-harness/, "names the target");
       assert.match(thrown.message, /just kit-push/, "names the checkout-side seeder");
       return true;
     },
@@ -144,18 +144,18 @@ test("a trailing slash on the registry is not a second slash in the ref", async 
 test("`kit` is a verb of the binary, and reaches no cluster to be one", async () => {
   // Dispatch only — the subcommand-less form returns before docker exists, so this asserts the wire
   // without spawning anything. That it works from cwd "/" with an empty env is the instance-less
-  // claim: no `j2.config.ts` resolve, no kube context, no namespace.
+  // claim: no `jr2.config.ts` resolve, no kube context, no namespace.
   const { io, err } = mkIo();
   assert.equal(await main(["kit"], io), 2);
-  assert.match(err(), /usage: j2 kit push <registry>/);
+  assert.match(err(), /usage: jr2 kit push <registry>/);
 });
 
 test("usage errors exit 2 and spend nothing", async () => {
   for (const args of [[], ["push"], ["pull", "reg.example.com"]]) {
     const { calls, docker } = mkDocker();
     const { io, err } = mkIo();
-    assert.equal(await kit(args, io, docker), 2, `\`j2 kit ${args.join(" ")}\` is a usage error`);
+    assert.equal(await kit(args, io, docker), 2, `\`jr2 kit ${args.join(" ")}\` is a usage error`);
     assert.deepEqual(calls, [], "docker is never spawned for a malformed command line");
-    assert.match(err(), /usage: j2 kit push <registry>/);
+    assert.match(err(), /usage: jr2 kit push <registry>/);
   }
 });

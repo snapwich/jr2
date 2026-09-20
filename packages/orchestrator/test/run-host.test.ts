@@ -211,7 +211,7 @@ test("a delivery outside the turn's surface is refused, naming what IS accepted"
 test("the vocabulary rides the Machine and is served per Machine node (ADR-0011, ADR-0049)", async () => {
   const host = new RunHost({ store: await mkStore() });
 
-  // A j2Setup machine carries its own defs, and the machine doc attributes them to that node —
+  // A jr2Setup machine carries its own defs, and the machine doc attributes them to that node —
   // there is no run-wide list to read them off any more.
   host.register(codingDef(new Map()));
   assert.deepEqual(
@@ -222,7 +222,7 @@ test("the vocabulary rides the Machine and is served per Machine node (ADR-0011,
     ["done", "request_review"],
   );
 
-  // A machine NOT built by j2Setup declares no workflow events.
+  // A machine NOT built by jr2Setup declares no workflow events.
   const bare = setup({}).createMachine({ id: "bare", initial: "a", states: { a: {} } });
   host.register({ name: "bare", machine: bare, provide: () => ({}) });
   assert.deepEqual(host.machine("bare")!.events, []);
@@ -335,7 +335,7 @@ test("a run whose workflow changed shape is refused, not resumed (ADR-0030)", as
   await tick();
   await waitForStamp(store, runId);
 
-  // Same workflow name, different Machine — exactly what a `j2 up` after a workflow edit produces.
+  // Same workflow name, different Machine — exactly what a `jr2 up` after a workflow edit produces.
   const hostB = new RunHost({ store, reconcile: () => true });
   hostB.register(reshapedCodingDef());
   const { reattached, lost, drifted } = await hostB.restore();
@@ -349,7 +349,7 @@ test("a run whose workflow changed shape is refused, not resumed (ADR-0030)", as
   assert.match(stored.reason ?? "", /changed shape/);
 
   // …and therefore still readable, which is the whole reason it is not marked lost: `read` returns
-  // undefined for a null blob, so a nulled snapshot would answer `j2 status` with `no run`.
+  // undefined for a null blob, so a nulled snapshot would answer `jr2 status` with `no run`.
   const read = await hostB.read(runId);
   assert.equal(read?.status, "drifted");
   assert.match(read?.reason ?? "", /coding/, "the refusal names the workflow, and both fingerprints");

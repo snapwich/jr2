@@ -1,5 +1,5 @@
 // Working tools (ADR-0027/0028): the assembled set per definition, the ADR-0028 workspace filter,
-// and j2's own grep/glob against a real fixture tree. grep must not require ripgrep on PATH —
+// and jr2's own grep/glob against a real fixture tree. grep must not require ripgrep on PATH —
 // the fallback test strips rg from PATH, so the plain-grep path is exercised deterministically.
 
 import { test } from "node:test";
@@ -87,7 +87,7 @@ test("grep: falls back to plain grep when rg is absent from PATH", async () => {
     .map((dir) => join(dir, "grep"))
     .find(existsSync);
   assert.ok(grepBin, "no grep on PATH — cannot exercise the fallback");
-  const bin = mkdtempSync(join(tmpdir(), "j2-no-rg-"));
+  const bin = mkdtempSync(join(tmpdir(), "jr2-no-rg-"));
   symlinkSync(grepBin, join(bin, "grep"));
   const path = process.env.PATH;
   process.env.PATH = bin; // execFile reads PATH at spawn time — rg now resolves to nothing

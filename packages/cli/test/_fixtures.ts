@@ -1,4 +1,4 @@
-// Shared test scaffolding: a RunHost + hono app wired with two tiny Machines, plus a J2Client bound to
+// Shared test scaffolding: a RunHost + hono app wired with two tiny Machines, plus a JR2Client bound to
 // the app's `request` so the whole client/SSE path runs WITHOUT a socket (the same trick the
 // orchestrator's own http tests use). No flue/MCP needed — these Machines are self-contained.
 //
@@ -8,8 +8,8 @@
 
 import { emit, setup } from "xstate";
 import { z } from "zod";
-import { RunHost, SqliteSnapshotStore, createApp, defineEvent, j2Setup } from "@j2/orchestrator";
-import { J2Client } from "../src/client.ts";
+import { RunHost, SqliteSnapshotStore, createApp, defineEvent, jr2Setup } from "@jr2/orchestrator";
+import { JR2Client } from "../src/client.ts";
 
 function feedMachine() {
   return setup({
@@ -48,7 +48,7 @@ function gatedMachine() {
     audience: "external",
     input: z.object({ notes: z.string() }),
   });
-  return j2Setup({
+  return jr2Setup({
     types: {} as { context: Record<string, never>; input: { instanceId: string } },
     events: [approve, requestChanges],
   }).createMachine({
@@ -69,12 +69,12 @@ function gatedMachine() {
 export type Harness = {
   host: RunHost;
   app: ReturnType<typeof createApp>;
-  client: J2Client;
+  client: JR2Client;
   /** Exposed so tests can seed ids directly — the only way to force a run-id prefix collision. */
   store: SqliteSnapshotStore;
 };
 
-/** A fresh host (in-memory store) with `feed` + `loop` registered, plus a socket-free J2Client. */
+/** A fresh host (in-memory store) with `feed` + `loop` registered, plus a socket-free JR2Client. */
 export async function mkHarness(): Promise<Harness> {
   const store = new SqliteSnapshotStore(":memory:");
   await store.init();
@@ -83,6 +83,6 @@ export async function mkHarness(): Promise<Harness> {
   host.register({ name: "loop", machine: loopMachine(), provide: () => ({}) });
   host.register({ name: "gated", machine: gatedMachine(), provide: () => ({}) });
   const app = createApp(host);
-  const client = new J2Client("http://test", (url, init) => Promise.resolve(app.request(url, init)));
+  const client = new JR2Client("http://test", (url, init) => Promise.resolve(app.request(url, init)));
   return { host, app, client, store };
 }

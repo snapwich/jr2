@@ -1,7 +1,7 @@
 // The Harness wire (ADR-0027): the five-endpoint protocol as shared shapes, plus ADR-0023's echo
 // endpoint. The stub Harness (`packages/orchestrator/src/stub-harness.ts`) is normative for the
 // five conversation endpoints, headers, and status codes; this module is those shapes as types,
-// exported as `@j2/harness/wire` so wire consumers (the Orchestrator client, tests) depend on
+// exported as `@jr2/harness/wire` so wire consumers (the Orchestrator client, tests) depend on
 // shapes, never on the server. The one documented divergence from the stub: a GET (either view)
 // on an unknown conversation is 404 — POST creates, abort answers `{ aborted: false }`
 // (ADR-0027). The echo endpoint (`POST /echo` — the run-narrative shapes at the bottom of this
@@ -20,7 +20,7 @@ export type AdmissionRequest = { message: string; definition: AgentDefinition } 
 
 /** The Admission: what `POST /agents/:name/:id` answers with (200, immediately — accept
  * and queue). The serializable three-string handle the host ledger persists (ADR-0016) and a
- * restarted Orchestrator re-attaches by. `offset` is a j2-minted opaque string. */
+ * restarted Orchestrator re-attaches by. `offset` is a jr2-minted opaque string. */
 export type AdmissionResponse = {
   streamUrl: string;
   offset: string;
@@ -66,7 +66,7 @@ export type StreamPosition = { batch: number; index: number };
 type StreamChunk<T extends string> = { type: T; conversationId: string; position: StreamPosition };
 
 /** A completed conversation message landing on the stream. `message` is the retiring SDK's
- * UI-message shape; the one part j2 ever emits is settled text. */
+ * UI-message shape; the one part jr2 ever emits is settled text. */
 export type MessageAppendedEvent = StreamChunk<"message-appended"> & {
   message: { id: string; role: "user" | "assistant"; parts: { type: "text"; text: string; state: "done" }[] };
 };

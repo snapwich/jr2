@@ -18,7 +18,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos
   verbs:
@@ -28,7 +28,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - repos/status
   - sandboxes/status
@@ -37,7 +37,7 @@ rules:
   - patch
   - update
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes
   verbs:
@@ -49,7 +49,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - core.j2.dev
+  - core.jr2.dev
   resources:
   - sandboxes/finalizers
   verbs:

@@ -50,7 +50,7 @@ test("a model with no declared contextWindow does not compact — inert, said ou
   assert.equal(compactionSettingsFor({ contextWindow: Number.NaN, maxTokens: 8192 }).enabled, false);
 });
 
-test("the retention is j2's own 20000, and the seam is the conformance suite's alone", () => {
+test("the retention is jr2's own 20000, and the seam is the conformance suite's alone", () => {
   assert.equal(compactionSettingsFor({ contextWindow: 200_000, maxTokens: 8192 }).keepRecentTokens, 20_000);
   assert.equal(compactionSettingsFor({ contextWindow: 200_000, maxTokens: 8192 }, 12).keepRecentTokens, 12);
 });

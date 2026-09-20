@@ -5,7 +5,7 @@
 // the durable stream open, and never act — the Machine parks exactly as it would against a
 // silent real Harness, and e2e drives it by playing the agent against `/mcp/<iid>` instead.
 //
-// Wire (ADR-0027 — the normative model of the five endpoints; `@j2/harness` serves it for real):
+// Wire (ADR-0027 — the normative model of the five endpoints; `@jr2/harness` serves it for real):
 //   POST /agents/:name/:id  {message, definition, model?, thinkingLevel?} → 200 { streamUrl, offset, submissionId }
 //   GET  /agents/:name/:id?offset=…[&view=updates] → 200 `[]` + Stream-Next-Offset/Up-To-Date
 //   GET  /agents/:name/:id?…&live=long-poll        → parked; 204 + same headers on timeout
@@ -24,7 +24,7 @@
 //
 // The stub is INERT, with no seam for an agent to act through, and that is now the whole of it.
 // The `onAdmit` hook this once carried had exactly one consumer — the containerized dev Harness
-// image — and that image is gone (ADR-0038): the @kind tier runs the REAL `@j2/harness` in the pod
+// image — and that image is gone (ADR-0038): the @kind tier runs the REAL `@jr2/harness` in the pod
 // against a scripted model, so nothing needs the stub to originate tool calls any more. What
 // survives is this tier's job (ADR-0031): the socket-free mechanics tier reaches the stub by
 // explicit run-input `endpoint`, the Machine parks, and e2e plays the agent from outside.

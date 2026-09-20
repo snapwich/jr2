@@ -1,19 +1,19 @@
 #!/bin/sh
-# The injection step of ADR-0037: publish j2's runtime into a pod volume so the Sandbox Image can
+# The injection step of ADR-0037: publish jr2's runtime into a pod volume so the Sandbox Image can
 # stay the user's, byte-for-byte. This script IS the init container's command — the operator runs
 # the kit's harness image with
 #
-#     command: ["/opt/j2/bin/init-copy", "<mountPath>"]
+#     command: ["/opt/jr2/bin/init-copy", "<mountPath>"]
 #
-# against an emptyDir mounted at <mountPath> (NOT at /opt/j2, which would shadow the source), and
-# the primary container then mounts that same volume at /opt/j2 with its command overridden to
-# ["/opt/j2/bin/node", "/opt/j2/src/main.ts"]. A plain recursive copy is the whole mechanism, and
+# against an emptyDir mounted at <mountPath> (NOT at /opt/jr2, which would shadow the source), and
+# the primary container then mounts that same volume at /opt/jr2 with its command overridden to
+# ["/opt/jr2/bin/node", "/opt/jr2/src/main.ts"]. A plain recursive copy is the whole mechanism, and
 # the point of a script rather than an inline `sh -c` is that the copy's rules live beside the tree
-# they copy: /opt/j2 is a PUBLISHED surface (bin/node · bin/rg · bin/init-copy · lib/*.so · src/ ·
+# they copy: /opt/jr2 is a PUBLISHED surface (bin/node · bin/rg · bin/init-copy · lib/*.so · src/ ·
 # node_modules/ · package.json) whose shape is load-bearing — node's rpath is $ORIGIN/../lib, so
 # bin/ and lib/ must land as siblings, which a whole-tree copy guarantees and a file list would not.
 #
-# Runs as the harness image's own USER 1000 (the operator hardens j2's own containers with
+# Runs as the harness image's own USER 1000 (the operator hardens jr2's own containers with
 # runAsNonRoot, ADR-0001), so the destination must be writable by it: the pod's fsGroup — the work
 # group, ADR-0005 — is what makes an emptyDir group-writable, and this failing with EACCES means
 # that fsGroup did not reach the pod.
@@ -21,19 +21,19 @@ set -eu
 
 dest="${1:-}"
 if [ -z "$dest" ]; then
-  echo "j2 init-copy: no destination — usage: init-copy <dir> (the /opt/j2 volume's mountPath)" >&2
+  echo "jr2 init-copy: no destination — usage: init-copy <dir> (the /opt/jr2 volume's mountPath)" >&2
   exit 2
 fi
 case "$dest" in
-  /opt/j2 | /opt/j2/)
-    echo "j2 init-copy: destination is the source — mount the volume elsewhere in this container" >&2
+  /opt/jr2 | /opt/jr2/)
+    echo "jr2 init-copy: destination is the source — mount the volume elsewhere in this container" >&2
     exit 2
     ;;
 esac
 
 mkdir -p "$dest"
 
-# `/opt/j2/.` (not `/opt/j2`) copies the CONTENTS, so a re-run onto an already-populated volume —
+# `/opt/jr2/.` (not `/opt/jr2`) copies the CONTENTS, so a re-run onto an already-populated volume —
 # a restarted init container — refreshes in place instead of nesting a second tree inside the first.
 # Ownership is deliberately NOT what carries: the copier's uid ends up owning the files, and the
 # primary container may run any uid at all, so the guarantee has to be the MODE. `a+rX` restates it
@@ -44,7 +44,7 @@ mkdir -p "$dest"
 # ADR-0005's work group), and this uid is not root, so preserving times onto `$dest/.` (what
 # `cp -a` does) or chmodding `$dest` is EPERM. Hence plain `-R` (mode still carries — see above —
 # and timestamps are nothing to us) and a chmod that starts BELOW the root.
-cp -R /opt/j2/. "$dest/"
+cp -R /opt/jr2/. "$dest/"
 find "$dest" -mindepth 1 -exec chmod a+rX {} +
 
 # The copy proves itself with the same binary the preflight probe uses (ADR-0037). It resolves its
@@ -52,4 +52,4 @@ find "$dest" -mindepth 1 -exec chmod a+rX {} +
 # in an init container the pod reports, rather than mid-turn in the Harness.
 "$dest/bin/node" -e ''
 
-echo "j2: runtime published to $dest"
+echo "jr2: runtime published to $dest"

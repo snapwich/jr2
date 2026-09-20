@@ -4,7 +4,7 @@
 // never hang or zombie. The kind e2e tier runs this same shape for real.
 
 import { setup } from "xstate";
-import { workspace } from "@j2/orchestrator";
+import { workspace } from "@jr2/orchestrator";
 
 const body = setup({}).createMachine({
   id: "body",

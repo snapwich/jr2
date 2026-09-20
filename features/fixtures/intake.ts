@@ -5,12 +5,12 @@
 // browser starts stays visible in the rail as a live run. Filename `intake.ts` → workflow "intake".
 
 import { z } from "zod";
-import { j2Setup } from "@j2/orchestrator";
+import { jr2Setup } from "@jr2/orchestrator";
 
 type Input = { subject: string };
 type Ctx = { subject: string };
 
-export const machine = j2Setup({
+export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
   events: [],
 }).createMachine({

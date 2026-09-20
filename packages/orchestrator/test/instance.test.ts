@@ -17,8 +17,8 @@ import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "instance");
 // The surface is authenticated (ADR-0013), so these tests must present the Instance token the boot
-// minted — exactly as the CLI does after reading `.j2/dev.json`. The signing key is supplied rather
-// than loaded, so a test never writes `.j2/secret` into the fixture folder it shares.
+// minted — exactly as the CLI does after reading `.jr2/dev.json`. The signing key is supplied rather
+// than loaded, so a test never writes `.jr2/secret` into the fixture folder it shares.
 const KEY = Buffer.alloc(32, 3);
 const auth = (inst: { instanceToken: string }) => ({ headers: { authorization: `Bearer ${inst.instanceToken}` } });
 // A workflow's parent package for module resolution; reload temp dirs live here (under the package so
@@ -107,7 +107,7 @@ test("a supplied Instance token is the accepted credential (deployed: it comes f
 });
 
 test("a fresh boot on the same store restores an in-flight run", async () => {
-  const dbDir = await mkdtemp(join(tmpdir(), "j2-instance-"));
+  const dbDir = await mkdtemp(join(tmpdir(), "jr2-instance-"));
   const dbPath = join(dbDir, "state.db");
 
   // Boot A: start a run (the stub keeps it live), let it persist, then shut down.
@@ -129,7 +129,7 @@ test("a fresh boot on the same store restores an in-flight run", async () => {
 });
 
 test("editing a workflow between boots refuses its parked runs instead of resuming them (ADR-0030)", async () => {
-  // The real sequence: a run is parked, someone edits `workflows/<name>.ts`, `j2 up` bakes a new
+  // The real sequence: a run is parked, someone edits `workflows/<name>.ts`, `jr2 up` bakes a new
   // image, and the state volume carries the old snapshot into the new Machine. The workflow name
   // still resolves, so nothing used to notice — and xstate does not validate a restored `value`,
   // it just starts with `value: undefined`. This is the only thing standing there.
@@ -138,7 +138,7 @@ test("editing a workflow between boots refuses its parked runs instead of resumi
   // distinct path is what makes the second `workflows/task.ts` a genuinely different module.
   const dirA = await mkdtemp(join(pkgDir, ".drift-a-"));
   const dirB = await mkdtemp(join(pkgDir, ".drift-b-"));
-  const dbDir = await mkdtemp(join(tmpdir(), "j2-drift-"));
+  const dbDir = await mkdtemp(join(tmpdir(), "jr2-drift-"));
   const dbPath = join(dbDir, "state.db");
   await mkdir(join(dirA, "workflows"), { recursive: true });
   await mkdir(join(dirB, "workflows"), { recursive: true });
@@ -162,7 +162,7 @@ test("editing a workflow between boots refuses its parked runs instead of resumi
       assert.equal(instB.host.status(runId), undefined, "and it is NOT live");
 
       // Refused, not erased: the run still reads, and says why. This is the difference from
-      // `markLost`, whose nulled snapshot would answer `j2 status` with `no run "<id>"`.
+      // `markLost`, whose nulled snapshot would answer `jr2 status` with `no run "<id>"`.
       const read = await instB.host.read(runId);
       assert.equal(read?.status, "drifted");
       assert.match(read?.reason ?? "", /task.*changed shape/);
@@ -200,10 +200,10 @@ test("the vocabulary rides the machine (ADR-0015) and is resolvable on the host 
   await writeFile(
     join(wfDir, "gated.ts"),
     `import { z } from "zod";\n` +
-      `import { defineEvent } from "@j2/agent-protocol";\n` +
-      `import { j2Setup } from "@j2/orchestrator";\n` +
+      `import { defineEvent } from "@jr2/agent-protocol";\n` +
+      `import { jr2Setup } from "@jr2/orchestrator";\n` +
       `const approve = defineEvent({ name: "approve", input: z.object({}) });\n` +
-      `export const machine = j2Setup({ events: [approve] })` +
+      `export const machine = jr2Setup({ events: [approve] })` +
       `.createMachine({ id: "gated", initial: "a", states: { a: { on: { approve: "b" } }, b: {} } });\n`,
   );
   const inst = await startInstance({ dir, store: new SqliteSnapshotStore(":memory:"), signingKey: KEY });
@@ -261,8 +261,8 @@ test("reload picks up added, changed, and removed workflow files (dev hot-reload
 test("images/default is a PATH CONVENTION, not discovery — one path, checked (ADR-0049/0050)", async () => {
   // The `images/<name>` scan retired with the roster it resembled: a Machine carries its own image
   // now, so a dirname is not a name any more. Exactly one path survives — the fallback leg
-  // `j2 init` scaffolds, so a local Machine never has to spell `import.meta.resolve("../images/default")`.
-  const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
+  // `jr2 init` scaffolds, so a local Machine never has to spell `import.meta.resolve("../images/default")`.
+  const dir = await mkdtemp(join(tmpdir(), "jr2-images-"));
   try {
     assert.equal(await defaultImageContext(dir), undefined, "an instance that scaffolded none");
 
@@ -281,7 +281,7 @@ test("images/default is a PATH CONVENTION, not discovery — one path, checked (
 test("images/default with no Dockerfile THROWS, naming the missing path", async () => {
   // That directory has no other reason to exist — staying quiet would leave a Sandbox Image its
   // author believes in and no converge ever builds.
-  const dir = await mkdtemp(join(tmpdir(), "j2-images-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-images-"));
   try {
     await mkdir(join(dir, "images", "default"), { recursive: true });
     await assert.rejects(defaultImageContext(dir), (err: Error) => {
@@ -295,7 +295,7 @@ test("images/default with no Dockerfile THROWS, naming the missing path", async 
 });
 
 test("loadWorkflows: the same discovery and module contract, without booting (ADR-0049's walk)", async () => {
-  // What `j2 up` calls: a Machine carries its Agents, so the converge loads the registered
+  // What `jr2 up` calls: a Machine carries its Agents, so the converge loads the registered
   // Machines and walks them. Filename = name, sorted, `_`-prefixed helpers and `.d.ts` ignored —
   // the `_` rule is load-bearing here (ADR-0049: a Machine meant only for composition, or a
   // module of shared definitions, lives in a `_`-prefixed file).
@@ -317,7 +317,7 @@ test("loadWorkflows: the same discovery and module contract, without booting (AD
     assert.equal(loaded[0]!.machine.id, "first");
 
     // The module contract is the SAME one the boot enforces — a file that exports no `machine`
-    // fails here too, so `j2 up` refuses before it converges rather than deploying a broken image.
+    // fails here too, so `jr2 up` refuses before it converges rather than deploying a broken image.
     await writeFile(join(dir, "workflows", "broken.ts"), "export const nope = 1;\n");
     await assert.rejects(loadWorkflows(dir), /workflow "broken".*no `machine` named export/s);
   } finally {
@@ -328,7 +328,7 @@ test("loadWorkflows: the same discovery and module contract, without booting (AD
 test("loadWorkflows: only ENOENT maps to empty — an unreadable workflows/ path throws", async () => {
   // A directory that exists but cannot be read must be loud, never "no workflows": the silent
   // reading deploys an instance that runs nothing and preflights nothing.
-  const dir = await mkdtemp(join(tmpdir(), "j2-workflows-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-workflows-"));
   try {
     await writeFile(join(dir, "workflows"), "not a directory\n");
     await assert.rejects(loadWorkflows(dir), (err: NodeJS.ErrnoException) => err.code === "ENOTDIR");

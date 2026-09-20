@@ -38,7 +38,7 @@ export function Nav(props: {
             void api.selectWorkflow(null, { push: true });
           },
         },
-        h("span", { class: "mark" }, "j2"),
+        h("span", { class: "mark" }, "jr2"),
       ),
       h("span", { id: "crumb-sep", class: "dim", hidden: !store.workflow }, "/"),
       h("h1", { id: "workflow-name" }, store.workflow ?? ""),

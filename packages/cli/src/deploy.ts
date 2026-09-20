@@ -1,4 +1,4 @@
-// What `j2 up` deploys (ADR-0019): pure manifest builders + the small decision helpers, kept free
+// What `jr2 up` deploys (ADR-0019): pure manifest builders + the small decision helpers, kept free
 // of subprocesses so the converge logic is unit-testable. Object names inside the instance's
 // namespace are constants (namespace is the identity); every object carries the instance label so
 // ownership is derivable from the cluster — there is no local target state.
@@ -25,7 +25,7 @@ import {
   STATE_PVC,
   type HarnessConfig,
   type SandboxPlacement,
-} from "@j2/orchestrator";
+} from "@jr2/orchestrator";
 
 export {
   GIT_SSH_SECRET,
@@ -37,20 +37,20 @@ export {
   STATE_PVC,
 };
 
-export const LABEL_INSTANCE = "j2.dev/instance";
-export const LABEL_VERSION = "j2.dev/version";
-export const LABEL_HASH = "j2.dev/content-hash";
+export const LABEL_INSTANCE = "jr2.dev/instance";
+export const LABEL_VERSION = "jr2.dev/version";
+export const LABEL_HASH = "jr2.dev/content-hash";
 
 /** The converged name→ref image map, stamped on the Orchestrator Deployment's OWN metadata so the
- * next `j2 up` can diff it and spend no docker on what has not moved (ADR-0038). An ANNOTATION, not
+ * next `jr2 up` can diff it and spend no docker on what has not moved (ADR-0038). An ANNOTATION, not
  * a label: a serialized map blows past the 63-character label-value limit immediately. */
-export const ANNOTATION_IMAGES = "j2.dev/images";
+export const ANNOTATION_IMAGES = "jr2.dev/images";
 
-export const ORCHESTRATOR_SA = "j2-orchestrator";
+export const ORCHESTRATOR_SA = "jr2-orchestrator";
 
 /** The operator's install location — per-cluster, shared by every instance (ADR-0019). */
-export const OPERATOR_NAMESPACE = "j2-system";
-export const OPERATOR_DEPLOYMENT = "j2-controller-manager";
+export const OPERATOR_NAMESPACE = "jr2-system";
+export const OPERATOR_DEPLOYMENT = "jr2-controller-manager";
 /** The operator Deployment's pod selector, as rendered into `manifests/operator.yaml`. */
 export const OPERATOR_SELECTOR = "control-plane=controller-manager";
 
@@ -77,7 +77,7 @@ export function compareVersions(a: string, b: string): number {
 
 type KubeManifest = Record<string, unknown>;
 
-/** Everything `j2 up` converges inside the instance's namespace, as one apply-able List. */
+/** Everything `jr2 up` converges inside the instance's namespace, as one apply-able List. */
 export function instanceObjects(opts: {
   name: string;
   namespace: string;
@@ -95,7 +95,7 @@ export function instanceObjects(opts: {
   /** Every image ref THIS converge resolved (ADR-0037/0038/0049): `{ harness, adapter, operator?,
    * sandbox: { <key>: ref }, sandboxUser: { <key>: user } }`, where a key is a build context's
    * content digest or the reserved `default`. It lands twice, deliberately as one JSON so the
-   * record `up` diffs and the map pods read can never disagree: as the `j2-images` ConfigMap the
+   * record `up` diffs and the map pods read can never disagree: as the `jr2-images` ConfigMap the
    * Orchestrator reads per provision, and as an annotation on the Deployment's own metadata.
    * `sandboxUser` rides along because a provision cannot inspect an image and the pod's uid-1000
    * fallback turns on whether the image declares a `USER` (up.ts, ADR-0037). */
@@ -105,7 +105,7 @@ export function instanceObjects(opts: {
    * DaemonSet and none of its RBAC is applied; `up` deletes a stale one. */
   repoCache?: { image: string; placement?: SandboxPlacement };
 }): string {
-  const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "j2" };
+  const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const meta = (name: string, extra: Record<string, string> = {}): KubeManifest => ({
     name,
     namespace: opts.namespace,
@@ -132,7 +132,7 @@ export function instanceObjects(opts: {
       kind: "Role",
       metadata: meta(ORCHESTRATOR_SA),
       rules: [
-        { apiGroups: ["core.j2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
+        { apiGroups: ["core.jr2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
         // patch/update: the token Secret is `kubectl apply`d idempotently and later ownerRef-patched.
         {
           apiGroups: [""],
@@ -162,7 +162,7 @@ export function instanceObjects(opts: {
         [HARNESS_CONFIG_KEY]: JSON.stringify(
           {
             // apiKey is deliberately dropped: it materializes into the Secret as
-            // J2_PROVIDER_API_KEY (`up`), and the Harness reads it from env — a ConfigMap is not
+            // JR2_PROVIDER_API_KEY (`up`), and the Harness reads it from env — a ConfigMap is not
             // a place for a credential.
             provider: opts.harness?.provider
               ? {
@@ -230,7 +230,7 @@ export function instanceObjects(opts: {
         // The converged image map, on the DEPLOYMENT'S OWN metadata and never on
         // `spec.template.metadata` (ADR-0038). On the pod template it would be part of the pod
         // spec, so every re-resolved ref would roll the Orchestrator — the exact cost the
-        // ConfigMap exists to avoid. Here it is a record `j2 up` reads back and diffs, which is
+        // ConfigMap exists to avoid. Here it is a record `jr2 up` reads back and diffs, which is
         // what makes a steady-state converge spend a directory walk and no docker at all.
         annotations: { [ANNOTATION_IMAGES]: imagesJson },
       },
@@ -251,18 +251,18 @@ export function instanceObjects(opts: {
                 envFrom: [{ secretRef: { name: INSTANCE_SECRET } }],
                 env: [
                   // The entrypoint derives its own Service DNS + Sandbox namespace from these.
-                  { name: "J2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
+                  { name: "JR2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
                   // What `/healthz` reports as this instance's identity. The same content address
                   // the image tag carries (ADR-0019), in-process so a CLI can ask over HTTP
                   // instead of needing kube access to read the Deployment's labels.
-                  { name: "J2_CONTENT_HASH", value: opts.hash },
+                  { name: "JR2_CONTENT_HASH", value: opts.hash },
                 ],
                 // The Orchestrator creates Repo resources and never clones (ADR-0051) — the cache
                 // agent on each node does, reading the credential Secret a Repo's `secretRef`
                 // names — so nothing of git's is mounted here: state and the image map only.
                 volumeMounts: [
-                  { name: "state", mountPath: "/instance/.j2" },
-                  // The image map, read per provision (ADR-0038). A mount, so `j2 up` rewriting
+                  { name: "state", mountPath: "/instance/.jr2" },
+                  // The image map, read per provision (ADR-0038). A mount, so `jr2 up` rewriting
                   // it costs one kubelet propagation window instead of a rollout.
                   { name: "images", mountPath: IMAGES_MOUNT, readOnly: true },
                 ],
@@ -312,11 +312,11 @@ export function instanceObjects(opts: {
 /** Where the cache agent's pod sees the node's directory: `--cache-dir`'s default. */
 const REPO_CACHE_MOUNT = "/cache";
 /** The agent's `$HOME` — an emptyDir, where it writes a deploy key for the life of the pod. */
-const REPO_CACHE_HOME = "/home/j2";
+const REPO_CACHE_HOME = "/home/jr2";
 
 /**
  * The data plane's node half (ADR-0051, ADR-0004): the cache agent as a DaemonSet, one pod per Sandbox node,
- * each the one writer of `/var/lib/j2/<namespace>/repos` on its node — the hostPath the operator
+ * each the one writer of `/var/lib/jr2/<namespace>/repos` on its node — the hostPath the operator
  * mounts one leaf of, read-only, into every Sandbox there that names the key. It runs the operator
  * image (`/manager repo-cache`), so the kit's operator ref is resolved even when the operator layer
  * itself is unmanaged.
@@ -351,8 +351,8 @@ function repoCacheObjects(opts: {
       kind: "Role",
       metadata: meta(REPO_CACHE),
       rules: [
-        { apiGroups: ["core.j2.dev"], resources: ["repos"], verbs: ["get", "list", "watch"] },
-        { apiGroups: ["core.j2.dev"], resources: ["repos/status"], verbs: ["get", "patch", "update"] },
+        { apiGroups: ["core.jr2.dev"], resources: ["repos"], verbs: ["get", "list", "watch"] },
+        { apiGroups: ["core.jr2.dev"], resources: ["repos/status"], verbs: ["get", "patch", "update"] },
         { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
         { apiGroups: [""], resources: ["secrets"], verbs: ["get"] },
       ],
@@ -392,7 +392,7 @@ function repoCacheObjects(opts: {
                   // The downward API names the node this pod is the writer for, and the namespace
                   // whose Repos and pods it watches (the agent's `--node` / `--namespace`).
                   { name: "NODE_NAME", valueFrom: { fieldRef: { fieldPath: "spec.nodeName" } } },
-                  { name: "J2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
+                  { name: "JR2_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } },
                   { name: "HOME", value: REPO_CACHE_HOME },
                 ],
                 volumeMounts: [
@@ -428,13 +428,13 @@ function repoCacheObjects(opts: {
 
 /** Where the Instance Harness's Harness container sees the CA bundle — the same path
  * `kubectlSandbox` mounts it at in a Sandbox pod (ADR-0020). */
-const CA_MOUNT = "/etc/j2/ca";
+const CA_MOUNT = "/etc/jr2/ca";
 
 /** The Adapter's port on the pod's loopback — the same default the Sandbox pod uses. */
 const ADAPTER_PORT = 8081;
 
 /**
- * The Instance Harness (ADR-0031): the per-instance Harness Deployment + Service `j2 up`
+ * The Instance Harness (ADR-0031): the per-instance Harness Deployment + Service `jr2 up`
  * converges whenever an Agent a registered Machine CARRIES declares `workspace: "none"`
  * (ADR-0049's walk) — the placement for every Menu-only Agent's Turn, regardless of any enclosing
  * Workspace. The one Harness shape, minus the Workspace: the stock Harness image plus the Adapter
@@ -449,24 +449,24 @@ export function instanceHarnessObjects(opts: {
   namespace: string;
   /** The RESOLVED stock Harness ref (ADR-0018/0031/0038) — a content-addressed tag in a kit
    * checkout, the published `<kitversion>` tag installed. Not an override seat: `images.harness`
-   * is gone, and the only Harness this instance can run is the one `j2 up` resolved.
+   * is gone, and the only Harness this instance can run is the one `jr2 up` resolved.
    *
    * The accepted asymmetry: the Instance Harness names its images HERE, in the pod template, while
-   * a Sandbox's refs travel through the `j2-images` ConfigMap. Both are right for what they are —
+   * a Sandbox's refs travel through the `jr2-images` ConfigMap. Both are right for what they are —
    * this Deployment is supposed to roll when its image moves; the Orchestrator is not. */
   harnessImage: string;
   /** The resolved Adapter ref: the Harness's one menu-delivery path, kept even though a `"none"`
    * Agent cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
   adapterImage: string;
   harness?: HarnessConfig;
-  /** The instance ships a private-CA bundle (ADR-0020): mount `j2-ca` into the Harness container. */
+  /** The instance ships a private-CA bundle (ADR-0020): mount `jr2-ca` into the Harness container. */
   caBundle?: boolean;
   /** The Instance token's sha-256 — the Harness's echo gate (ADR-0023). The digest, never the
    * token: the same env every Sandbox Harness container gets, kept here so the one-Harness-shape
    * claim stays whole even though nothing narrates to the Instance Harness today. */
   echoTokenSha256?: string;
 }): string {
-  const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "j2" };
+  const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const meta = (): KubeManifest => ({
     name: INSTANCE_HARNESS_SERVICE,
     namespace: opts.namespace,
@@ -488,21 +488,21 @@ export function instanceHarnessObjects(opts: {
     imagePullPolicy: "IfNotPresent",
     ports: [{ containerPort: INSTANCE_HARNESS_PORT }],
     // The same asymmetry the Sandbox pod builds (ADR-0013/0020): the mounted harness config and
-    // the instance's valueFrom entries ride `env` (literal values live in the j2-harness-env
+    // the instance's valueFrom entries ride `env` (literal values live in the jr2-harness-env
     // Secret), the CA trust lands here and nowhere else, and no credential ever does.
     env: [
       {
-        name: "J2_HARNESS_JSON",
+        name: "JR2_HARNESS_JSON",
         valueFrom: { configMapKeyRef: { name: HARNESS_CONFIGMAP, key: HARNESS_CONFIG_KEY } },
       },
       // The placement gate (ADR-0031): every admission carries its own definition (ADR-0049) and
       // the wire is unauthenticated in-cluster, so the Harness itself refuses any admission whose
       // definition declares Workspace access — Menu-only Agents alone run here, which is what
       // makes "no code execution in this pod" true rather than asserted.
-      { name: "J2_MENU_ONLY", value: "1" },
-      ...(opts.echoTokenSha256 ? [{ name: "J2_ECHO_TOKEN_SHA256", value: opts.echoTokenSha256 }] : []),
+      { name: "JR2_MENU_ONLY", value: "1" },
+      ...(opts.echoTokenSha256 ? [{ name: "JR2_ECHO_TOKEN_SHA256", value: opts.echoTokenSha256 }] : []),
       ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
-      { name: "J2_ADAPTER_URL", value: `http://127.0.0.1:${ADAPTER_PORT}` },
+      { name: "JR2_ADAPTER_URL", value: `http://127.0.0.1:${ADAPTER_PORT}` },
       ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
     ],
     envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(opts.harness?.envFrom ?? [])],
@@ -527,21 +527,21 @@ export function instanceHarnessObjects(opts: {
     securityContext: hardenedContainerSecurityContext(),
     env: [
       {
-        name: "J2_ORCHESTRATOR_URL",
+        name: "JR2_ORCHESTRATOR_URL",
         value: `http://${ORCHESTRATOR_SERVICE}.${opts.namespace}.svc:${ORCHESTRATOR_PORT}`,
       },
-      { name: "J2_ADAPTER_PORT", value: String(ADAPTER_PORT) },
+      { name: "JR2_ADAPTER_PORT", value: String(ADAPTER_PORT) },
       // The Adapter's bearer env, carrying a sandbox-style token SIGNED FOR THIS PLACEMENT's
       // name (`up.ts` mints it into the instance Secret): ADR-0013's delivery doctrine, extended
       // to the second placement — the token speaks only for registrations that record the
       // Instance Harness as the pod hosting their Turn (tokens.ts), never a Workspace's, and the
       // Instance token itself never enters this pod. The credential lives in this container,
-      // where no Agent can read it — and `J2_MENU_ONLY` above is what keeps that true: only
+      // where no Agent can read it — and `JR2_MENU_ONLY` above is what keeps that true: only
       // Menu-only Agents run here, so nothing in this pod executes code (ADR-0031's
       // defense-in-depth bonus).
       {
-        name: "J2_SANDBOX_TOKEN",
-        valueFrom: { secretKeyRef: { name: INSTANCE_SECRET, key: "J2_INSTANCE_HARNESS_TOKEN" } },
+        name: "JR2_SANDBOX_TOKEN",
+        valueFrom: { secretKeyRef: { name: INSTANCE_SECRET, key: "JR2_INSTANCE_HARNESS_TOKEN" } },
       },
     ],
   };
@@ -565,7 +565,7 @@ export function instanceHarnessObjects(opts: {
           spec: {
             containers: [harnessContainer, adapterContainer],
             // The operator's isolation baseline (sandbox_controller.go), mirrored: same Harness
-            // image, same "never reach the Kubernetes API" north star — J2_MENU_ONLY makes code
+            // image, same "never reach the Kubernetes API" north star — JR2_MENU_ONLY makes code
             // execution here unlikely, not unimaginable.
             automountServiceAccountToken: false,
             securityContext: {

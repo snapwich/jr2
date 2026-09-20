@@ -5,7 +5,7 @@ reviewer delivered `review_verdict`, the Machine parked on `humanReview` — and
 `review_verdict` **41 times**, 20 of them inside one 40-second window, its `notes` degrading from a paragraph to
 `"Approved."`. Eleven minutes after the run had stopped listening, both Agents were still generating.
 
-Nothing in j2 ends the submission. `agentRun` awaits `client.settle` — `wait(admission)` — which resolves only when the
+Nothing in jr2 ends the submission. `agentRun` awaits `client.settle` — `wait(admission)` — which resolves only when the
 model stops. The delivery transitions the Machine, xstate stops the invocation, and its cleanup runs `abandon()`: the
 registration is destroyed and **local** consumption is aborted. That is deliberate — a host shutdown stops every actor,
 and [ADR-0007](0007-durable-machine-state.md)'s restore needs those durable runs alive to re-attach — but the Harness is
@@ -63,7 +63,7 @@ single-threaded.
   `{"aborted": true}`, settling to `{"outcome":"aborted","error":{"type":"submission_aborted"}}` beside the coder's
   `{"outcome":"completed"}`. The run was untouched: still active, still parked, no transition and no `agent.fault`.
 
-- **j2 never observes that settlement, and the ADR does not pretend otherwise.** By construction the actor is already
+- **jr2 never observes that settlement, and the ADR does not pretend otherwise.** By construction the actor is already
   stopped when the abort fires — being stopped is the trigger — so `settle`'s rejection was swallowed by
   `if (stopped) return` before the remote outcome existed. The wire's distinct `aborted` outcome is worth having for
   **observability** (`history` reads `aborted`, not `failed`); it is not what suppresses a spurious fault. Nothing
@@ -89,8 +89,8 @@ single-threaded.
 
 Invoking a `continue` iid that is already live does **not** fail loudly — the Harness **queues**: prompts for one
 instance enter one per-instance queue in admission order, and a Submission is promoted only when it is the first
-unsettled one for its conversation ([ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md)
-asserts these semantics as j2's own; they were first discovered, mid-incident, as the behavior of the since-retired
+unsettled one for its conversation ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)
+asserts these semantics as jr2's own; they were first discovered, mid-incident, as the behavior of the since-retired
 harness runtime — the original ADR-0016 assumed the opposite, a loud per-iid fence). That cuts both ways, and both
 matter:
 

@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { j2Setup } from "../src/setup.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { customize } from "../src/customize.ts";
 import { open, sandboxPartsOf } from "../src/parts.ts";
@@ -85,9 +85,9 @@ const lifecycle = (sandbox: FakeSandbox): string[] =>
 const renews = (sandbox: FakeSandbox): number => sandbox.calls.filter((c) => c.startsWith("renew:")).length;
 
 /** A body that parks on a gate inside its Sandbox; `workspace.lost` routes to its own policy
- * (final `lost`) exactly as ADR-0012's "the wrapper emits, the body decides". j2Setup-authored:
+ * (final `lost`) exactly as ADR-0012's "the wrapper emits, the body decides". jr2Setup-authored:
  * the wrapper PROPAGATES this vocabulary onto the exported machine (ADR-0015). */
-const body = j2Setup({
+const body = jr2Setup({
   types: {} as {
     context: { handles?: { repos: Record<string, string>; branch: string } };
     // Body-facing handles only (ADR-0016): endpoint/sandbox never reach workflow code.
@@ -226,7 +226,7 @@ test("a branch named `default` faults BEFORE any pod exists — that directory i
 test("a spec deriving undefined fields (missing run input) faults BEFORE any pod exists", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
-  // The task-with-review shape: the mapping reads input fields this `j2 run --input` never carried.
+  // The task-with-review shape: the mapping reads input fields this `jr2 run --input` never carried.
   const sloppy = workspace(body, {
     repos: { app: APP },
     spec: ({ input }: { input: { branch?: string } }) => ({ branch: input.branch as string }),
@@ -239,7 +239,7 @@ test("a spec deriving undefined fields (missing run input) faults BEFORE any pod
   const final = await host.read(runId);
   assert.equal(final?.status, "error");
   assert.match(final?.fault ?? "", /workspace spec invalid: branch/);
-  assert.match(final?.fault ?? "", /run input/, "the fault points back at `j2 run --input`");
+  assert.match(final?.fault ?? "", /run input/, "the fault points back at `jr2 run --input`");
   assert.ok(
     !sandbox.calls.some((c) => c.startsWith("provision:")),
     "faulted before the port — a bad spec never costs a pod",
@@ -248,7 +248,7 @@ test("a spec deriving undefined fields (missing run input) faults BEFORE any pod
 
 test("the image is a STATIC option read off the Machine at invoke time, never the spec", async () => {
   // ADR-0049: what the Sandbox is MADE OF moved out of the per-run spec and onto the wrapper,
-  // because `j2 up` must find it by WALKING the Machine and a spec is a function of run input.
+  // because `jr2 up` must find it by WALKING the Machine and a spec is a function of run input.
   // Resolution to a ref is still the port's, so the Machine stays cluster-agnostic and no
   // content-addressed tag ever lands in a snapshot.
   const sandbox = new FakeSandbox();
@@ -421,10 +421,10 @@ test("a host without a Sandbox backend faults a workspace() run pointedly", asyn
   assert.equal(final?.status, "error");
   assert.match(final?.fault ?? "", /no Sandbox backend/);
   // The named cause and fix must exist: a Workspace is always a real Sandbox (ADR-0012), the
-  // switch is "deployed in a cluster" (server.ts), and the converging command is `j2 up`.
-  assert.match(final?.fault ?? "", /J2_NAMESPACE unset/);
-  assert.match(final?.fault ?? "", /`j2 up`/);
-  assert.doesNotMatch(final?.fault ?? "", /j2\.config\.ts/, "config declares no Repos any more (ADR-0051)");
+  // switch is "deployed in a cluster" (server.ts), and the converging command is `jr2 up`.
+  assert.match(final?.fault ?? "", /JR2_NAMESPACE unset/);
+  assert.match(final?.fault ?? "", /`jr2 up`/);
+  assert.doesNotMatch(final?.fault ?? "", /jr2\.config\.ts/, "config declares no Repos any more (ADR-0051)");
 });
 
 test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint + sandbox itself", async () => {
@@ -432,7 +432,7 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
   // enclosing wrapper via the parent chain — and the registration must record the wrapper's
   // Sandbox (the ADR-0013 token scope) with zero workflow plumbing.
   const endpoints: string[] = [];
-  const ambientBody = j2Setup({
+  const ambientBody = jr2Setup({
     types: {} as { context: Record<string, never>; input: { workspace: { branch: string } } },
     events: [approveDef],
     actors: {
@@ -478,7 +478,7 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
 // --- Repo Slots (ADR-0051) ----------------------------------------------------------------------
 
 /** A body that records the handles it was given and finishes — the geography is the claim. */
-const recorder = j2Setup({
+const recorder = jr2Setup({
   types: {} as {
     context: { handles?: { repos: Record<string, string>; branch: string } };
     input: { workspace: { repos: Record<string, string>; branch: string } };
@@ -550,7 +550,7 @@ test("a per-run slot's mapper is called with the run input, validated, and flagg
   ]);
 
   // A mapper that derives nothing (the input never carried the field) faults BEFORE the port,
-  // pointing at `j2 run --input` — the same class assertSpec catches for the branch.
+  // pointing at `jr2 run --input` — the same class assertSpec catches for the branch.
   const bad = new FakeSandbox();
   const host2 = new RunHost({ store: await mkStore(), sandbox: bad });
   host2.register({ name: "perRun", machine: perRun, provide: () => ({}) });
@@ -572,7 +572,7 @@ test("an OPEN slot nobody bound faults before the port, naming the customize lin
   await waitFor(() => host.status(runId) === undefined);
   const final = await host.read(runId);
   assert.equal(final?.status, "error");
-  // Named as `j2 up`'s walk names it: the Workflow, the slot, and a line that pastes — never the
+  // Named as `jr2 up`'s walk names it: the Workflow, the slot, and a line that pastes — never the
   // wrapper's xstate id, which every `workspace()` shares.
   assert.match(final?.fault ?? "", /workflow "packaged": Repo Slot "target" is open — nobody bound it/);
   assert.match(final?.fault ?? "", /export const machine = customize\(<import>, \{ repos: \{ target: "<url>" \} \}\)/);
@@ -581,7 +581,7 @@ test("an OPEN slot nobody bound faults before the port, naming the customize lin
 
   // Composed under a child slot, the line nests through `actors` — read off the live actor tree,
   // the same route the static walk reports (`actorSlotPath` is `partsOf`'s runtime twin).
-  const nested = j2Setup({ events: [], actors: { review: packaged } }).createMachine({
+  const nested = jr2Setup({ events: [], actors: { review: packaged } }).createMachine({
     id: "host",
     initial: "reviewing",
     states: { reviewing: { invoke: { src: "review" } } },

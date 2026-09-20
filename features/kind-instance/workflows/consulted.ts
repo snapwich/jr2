@@ -5,11 +5,11 @@
 // puts it on the Instance Harness regardless, and this workflow is where that is observable: the
 // run HAS a Sandbox, and the advisor's conversation is not on it.
 //
-// Both Agents run under the run's instance id (`j2 status` reports it): one conversation per
+// Both Agents run under the run's instance id (`jr2 status` reports it): one conversation per
 // (agent, Harness), so the two never meet — the point.
 
 import { z } from "zod";
-import { agent, defineEvent, j2Setup, workspace, type HostInjectedInput, type Workspaced } from "@j2/orchestrator";
+import { agent, defineEvent, jr2Setup, workspace, type HostInjectedInput, type Workspaced } from "@jr2/orchestrator";
 import { advisor, coder } from "./_agents.ts";
 
 const advise = defineEvent({ name: "advise", input: z.object({ summary: z.string() }) });
@@ -17,7 +17,7 @@ const finish = defineEvent({ name: "finish", input: z.object({ summary: z.string
 
 type BodyInput = Workspaced<HostInjectedInput, "app">;
 
-const body = j2Setup({
+const body = jr2Setup({
   types: {} as { context: BodyInput; input: BodyInput },
   events: [advise, finish],
   actors: { advisor: agent(advisor), coder: agent(coder) },
@@ -58,6 +58,6 @@ const body = j2Setup({
 });
 
 export const machine = workspace(body, {
-  repos: { app: { url: "http://seed.j2-e2e-seed.svc/app.git", ref: "main" } },
+  repos: { app: { url: "http://seed.jr2-e2e-seed.svc/app.git", ref: "main" } },
   spec: () => ({ branch: "feat-e2e" }),
 });

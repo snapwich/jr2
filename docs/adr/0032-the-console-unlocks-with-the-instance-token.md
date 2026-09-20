@@ -33,8 +33,8 @@ presentation surface.
 
 ## Considered options
 
-- **`j2 ui` — the CLI opens the browser through an authenticated local proxy.** A convenience layer worth building _on
-  top of_ the token field later, not a substitute: it has no answer for the deployed j2 Application behind an ingress,
+- **`jr2 ui` — the CLI opens the browser through an authenticated local proxy.** A convenience layer worth building _on
+  top of_ the token field later, not a substitute: it has no answer for the deployed jr2 Application behind an ingress,
   where the browser talks to the Service directly and the CLI is not in the path.
 - **A fourth, scoped credential** ("may answer gates, may not cancel or read context"). Still rejected, as in ADR-0014 —
   but the calculus has narrowed: it becomes worth writing only when gate-answering is delegated to people who must _not_
@@ -56,5 +56,5 @@ presentation surface.
   constraint the viz page already lives under.
 - **CONTEXT.md**: **Console** becomes a glossary term (visualizer, dashboard, UI, viz on its Avoid list).
 - **The Console's UX gets a browser tier** — `@console`-tagged Cucumber scenarios holding a Playwright page, in
-  `@j2/e2e`, excluded from the default profile ([ADR-0010](0010-bdd-acceptance-tests.md) as amended). What the page
+  `@jr2/e2e`, excluded from the default profile ([ADR-0010](0010-bdd-acceptance-tests.md) as amended). What the page
   _believes_ stays unit-tested in `console-store.test.ts`; the browser tier asserts what a user does and sees.

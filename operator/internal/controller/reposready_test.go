@@ -25,14 +25,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	corev1alpha1 "github.com/snapwich/j2/operator/api/v1alpha1"
+	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
 
 // TestReposReadiness pins ADR-0051's Ready gate over the Repo caches, branch by
 // branch: a Sandbox is Ready only once every Repo it names is present on its
 // node and fetched since the Sandbox was created; a cold node that cannot
 // clone fails the provision pointedly — and only a clone: the agent's probe of
-// a Repo no pod on the node mounts yet can fail too, and that is `j2 status`'s
+// a Repo no pod on the node mounts yet can fail too, and that is `jr2 status`'s
 // signal, not this Sandbox's verdict; a warm cache whose refresh failed is
 // Ready but stale (freshness degrades, absence does not). Every branch is a
 // pure function of the Sandbox, its node, and the Repo resources.
@@ -49,7 +49,7 @@ func TestReposReadiness(t *testing.T) {
 	later := metav1.NewTime(created.Add(2 * time.Minute))
 
 	sandbox := &corev1alpha1.Sandbox{
-		ObjectMeta: metav1.ObjectMeta{Name: "sb", Namespace: "j2-acme", CreationTimestamp: created},
+		ObjectMeta: metav1.ObjectMeta{Name: "sb", Namespace: "jr2-acme", CreationTimestamp: created},
 		Spec:       corev1alpha1.SandboxSpec{Repos: []corev1alpha1.SandboxRepo{{Key: key, URL: url}}},
 	}
 	repoWith := func(entries ...corev1alpha1.RepoNodeStatus) map[string]*corev1alpha1.Repo {
@@ -69,7 +69,7 @@ func TestReposReadiness(t *testing.T) {
 			name:    "no Repo resource holds Ready with RepoMissing",
 			repos:   map[string]*corev1alpha1.Repo{},
 			reason:  "RepoMissing",
-			message: `Repo "app-0a1b2c3d" (https://github.com/acme/app.git) does not exist in namespace j2-acme`,
+			message: `Repo "app-0a1b2c3d" (https://github.com/acme/app.git) does not exist in namespace jr2-acme`,
 		},
 		{
 			name:    "no entry for the node is pending — the agent has not cloned yet",
@@ -213,16 +213,16 @@ func TestSandboxesNamingRepo(t *testing.T) {
 	app := corev1alpha1.SandboxRepo{Key: "app-0a1b2c3d", URL: "https://github.com/acme/app.git"}
 	docs := corev1alpha1.SandboxRepo{Key: "docs-4e5f6a7b", URL: "https://github.com/acme/docs.git"}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
-		&corev1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "waits", Namespace: "j2-acme"}, Spec: names(docs, app)},
-		&corev1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "other-key", Namespace: "j2-acme"}, Spec: names(docs)},
-		&corev1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "other-ns", Namespace: "j2-beta"}, Spec: names(app)},
-		&corev1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "no-repos", Namespace: "j2-acme"}, Spec: names()},
+		&corev1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "waits", Namespace: "jr2-acme"}, Spec: names(docs, app)},
+		&corev1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "other-key", Namespace: "jr2-acme"}, Spec: names(docs)},
+		&corev1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "other-ns", Namespace: "jr2-beta"}, Spec: names(app)},
+		&corev1alpha1.Sandbox{ObjectMeta: metav1.ObjectMeta{Name: "no-repos", Namespace: "jr2-acme"}, Spec: names()},
 	).Build()
 	r := &SandboxReconciler{Client: c, Scheme: scheme}
 
-	repo := &corev1alpha1.Repo{ObjectMeta: metav1.ObjectMeta{Name: "app-0a1b2c3d", Namespace: "j2-acme"}}
+	repo := &corev1alpha1.Repo{ObjectMeta: metav1.ObjectMeta{Name: "app-0a1b2c3d", Namespace: "jr2-acme"}}
 	requests := r.sandboxesNamingRepo(context.Background(), repo)
-	if len(requests) != 1 || requests[0].Name != "waits" || requests[0].Namespace != "j2-acme" {
+	if len(requests) != 1 || requests[0].Name != "waits" || requests[0].Namespace != "jr2-acme" {
 		t.Fatalf("want exactly the Sandbox naming the key in the Repo's namespace, got %+v", requests)
 	}
 }

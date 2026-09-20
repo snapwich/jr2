@@ -1,4 +1,4 @@
-// The j2 Console — one shell, master–detail (ADR-0032). The left rail is the FLEET (every
+// The jr2 Console — one shell, master–detail (ADR-0032). The left rail is the FLEET (every
 // registered workflow, each expandable to its runs); the center is the selected workflow's Machine,
 // fetched from GET /workflows/:name/machine, laid out with elkjs (loaded as a UMD script ->
 // window.ELK), rendered as nested SVG (canvas.ts) and live-highlighted by the selected run; the
@@ -56,7 +56,7 @@ function dispatch(frame: Frame): void {
 // its STATE. Entry is validated with the cheapest guarded read (`GET /runs`), whose response also
 // happens to be the full run list — which seeds the gate inbox without waiting for a frame.
 
-const TOKEN_KEY = "j2.console.token";
+const TOKEN_KEY = "jr2.console.token";
 const token = (): string => sessionStorage.getItem(TOKEN_KEY) ?? "";
 /** Seeds the (uncontrolled) nav input once; every later read goes to sessionStorage. */
 const initialToken = token();
@@ -214,7 +214,7 @@ async function selectWorkflow(
 ): Promise<void> {
   const moved = name !== store.workflow;
   if (push && moved) history.pushState({}, "", name ? `/workflows/${encodeURIComponent(name)}` : "/");
-  document.title = name ? `j2 · ${name}` : "j2 · Console";
+  document.title = name ? `jr2 · ${name}` : "jr2 · Console";
   dispatch({ kind: "select", workflow: name });
   if (runId) dispatch({ kind: "selectRun", runId });
   if (!moved && view.doc) return; // re-selecting the selection (a popstate re-fire): nothing to do

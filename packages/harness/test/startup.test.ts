@@ -20,7 +20,7 @@ test("umask 002: what the Agent writes on /work is group-writable for the work g
   assert.equal(WORK_UMASK, 0o002);
 });
 
-test("PATH APPENDS /opt/j2/bin — the image's own toolchain still wins", () => {
+test("PATH APPENDS /opt/jr2/bin — the image's own toolchain still wins", () => {
   const { env } = rig({ PATH: "/usr/local/bin:/usr/bin" });
   assert.equal(env.PATH, `/usr/local/bin:/usr/bin:${RUNTIME_BIN}`);
 });
@@ -30,11 +30,11 @@ test("PATH: the append does not accumulate — the stock image carries it as ENV
   assert.equal(env.PATH, `/usr/bin:${RUNTIME_BIN}`);
 });
 
-test("PATH: an image that cleared PATH gets a POSIX base under the append, never j2's bin alone", () => {
+test("PATH: an image that cleared PATH gets a POSIX base under the append, never jr2's bin alone", () => {
   const { env } = rig({});
   const entries = (env.PATH ?? "").split(":");
   assert.ok(entries.includes("/usr/bin"), "the toolchain a bare PATH would have deleted");
-  assert.equal(entries.at(-1), RUNTIME_BIN, "j2's bin stays the fallback, never the first hit");
+  assert.equal(entries.at(-1), RUNTIME_BIN, "jr2's bin stays the fallback, never the first hit");
 });
 
 test("PATH: an empty entry — which means the cwd, and the cwd is agent-authored — is dropped", () => {

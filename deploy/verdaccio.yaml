@@ -15,7 +15,7 @@ listen: localhost:4873
 # is torn down per run has no secret worth guarding, and a credential it never holds is one it
 # cannot leak. (npm still refuses to publish without SOME token — the loop's npmrc carries a fake.)
 packages:
-  "@j2/*":
+  "@jr2/*":
     access: $all
     publish: $all
     unpublish: $all
@@ -23,7 +23,7 @@ packages:
     access: $all
     proxy: npmjs
 
-# An instance installs @j2/* from here and everything else from real npm through this uplink —
+# An instance installs @jr2/* from here and everything else from real npm through this uplink —
 # same as a user whose only unusual setting is a registry.
 uplinks:
   npmjs:

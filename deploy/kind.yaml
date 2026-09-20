@@ -1,15 +1,15 @@
-# Local kind cluster for j2 (`just kind-up` / `just e2e-kind-up`). Deliberately vanilla
+# Local kind cluster for jr2 (`just kind-up` / `just e2e-kind-up`). Deliberately vanilla
 # (ADR-0019): nothing is baked for any instance — no mounts, no instance binding. Any cluster
-# `kubectl` can reach works the same way; `j2 up` converges everything an instance needs into it.
+# `kubectl` can reach works the same way; `jr2 up` converges everything an instance needs into it.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-name: j2
+name: jr2
 nodes:
   - role: control-plane
 # The one exception to "vanilla", and it converges nothing and names nobody: it only tells
 # containerd that per-registry configuration EXISTS, at the path the upstream kind local-registry
 # pattern uses. Without it a `hosts.toml` written onto a node is read by nothing, and the @dist
-# tier's nodes would resolve `localhost:5001/j2-harness:<ver>` against themselves (ADR-0044). With
+# tier's nodes would resolve `localhost:5001/jr2-harness:<ver>` against themselves (ADR-0044). With
 # it and no `certs.d` entry — every other tier — nothing resolves differently at all.
 containerdConfigPatches:
   - |-

@@ -9,12 +9,12 @@ a definition lives, and the gate that enforces it.
 ## Decision
 
 - **One rule decides where a definition lives.** A thing that **code refers to by name** and that a Machine cannot carry
-  is declared in `j2.config.ts`, so the type system sees the name. A thing that **only the CLI or HTTP API refers to by
-  name** is discovered from files. Workflows are the latter — `j2 run` and `POST /workflows/:name/runs` name them, a
+  is declared in `jr2.config.ts`, so the type system sees the name. A thing that **only the CLI or HTTP API refers to by
+  name** is discovered from files. Workflows are the latter — `jr2 run` and `POST /workflows/:name/runs` name them, a
   nested Machine is reached by `import` (ADR-0049) — so `workflows/` stays filename-discovered. Agents, images, and
   Repos are neither: they ride the Machine (ADR-0049, ADR-0051), and the `agents/` folder, `config.agents`,
   `config.images`, and `config.repos` all retire. Nothing is left that code names and a Machine cannot carry, so the
-  first clause holds vacuously — and stays, so the next dependency lands on the right side of it. `j2.config.ts` holds
+  first clause holds vacuously — and stays, so the next dependency lands on the right side of it. `jr2.config.ts` holds
   reach and credentials (`harness`, `git.credentials`, `registry`), which no code names.
 - **The slot key types a Repo.** A `workspace()` declares its Repos as slots —
   `repos: { target: open, docs: { url, ref } }` — and the keys are a phantom on the wrapper type, read through
@@ -23,7 +23,7 @@ a definition lives, and the gate that enforces it.
   silent widening to `string`, and the body's `workspace.repos.<slot>` handle is typed by the same keys. There is no
   `Register`, no `RepoName`, and no `repoNames()`: the url a Machine writes is the thing, not a reference into someone
   else's file (ADR-0051). A door that offers a menu of Repos is the Instance's own `z.enum` of urls.
-- **`j2 up` typechecks the Instance before it builds anything**, and refuses on errors, naming them. The scaffold's
+- **`jr2 up` typechecks the Instance before it builds anything**, and refuses on errors, naming them. The scaffold's
   `tsc --noEmit` and pinned compiler already exist (ADR-0043's rule for the checker); this makes them a gate instead of
   a script the user may run. A wrong slot name, a `customize()` of an Agent or a Repo Slot the Machine does not carry:
   all stop here. One Repo check is converge-time and not compile-time: a registered Machine with an open slot nobody
@@ -32,8 +32,8 @@ a definition lives, and the gate that enforces it.
 
 ## Considered options
 
-- **A generated declaration** (`j2-env.d.ts` written by `init`/`up` from directory discovery), to keep `agents/` and
-  `images/` as folders and still type their names. Rejected: a generated-file class j2 does not have, an editor
+- **A generated declaration** (`jr2-env.d.ts` written by `init`/`up` from directory discovery), to keep `agents/` and
+  `images/` as folders and still type their names. Rejected: a generated-file class jr2 does not have, an editor
   staleness window, and — decisive — ADR-0049 removed the need by making the names part of the Machine.
 - **Agents and images as config entries** (`agents: { scribe }`, `images: { default: "./images/default" }`), the shape
   this ADR first took. Rejected the same day: it typed the names but kept them Instance-scoped, so a packaged Machine
@@ -50,5 +50,5 @@ a definition lives, and the gate that enforces it.
   they import. A packaged Machine compiled elsewhere carries its own parts, so its internal names are checked where it
   was built; the Repo it works on is an open slot the consumer binds with `customize`, typed by the package's own slot
   keys, or a per-run slot typed by the consumer's mapper over the door.
-- Runtime validation stays: an open slot nobody bound is a `j2 up` walk refusal, and the attach still refuses a per-run
+- Runtime validation stays: an open slot nobody bound is a `jr2 up` walk refusal, and the attach still refuses a per-run
   url no `git.credentials` entry matches (ADR-0051). The type error is the earlier check, not the only one.

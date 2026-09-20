@@ -272,7 +272,7 @@ test("a retried surface read reports what it cost, and a first-time connect stay
   assert.equal(lines.length, 1);
   assert.match(
     lines[0]!,
-    /^j2\.routability seat=surface attempts=2 ms=\d+ last=ECONNREFUSED url=http:\/\/orchestrator\.invalid\/agents\/iid-1\/surface$/,
+    /^jr2\.routability seat=surface attempts=2 ms=\d+ last=ECONNREFUSED url=http:\/\/orchestrator\.invalid\/agents\/iid-1\/surface$/,
   );
 
   // A second client whose very first attempt connects says nothing at all.
@@ -307,7 +307,7 @@ test("a surface read whose window closes names the address, not `fetch failed`",
 });
 
 // The ask (ADR-0053): `POST /fetch` on the same loopback listener. Its caller is not the Agent and
-// not MCP — it is `j2-upload-pack`, the program git runs for `origin`'s fetch url, on behalf of
+// not MCP — it is `jr2-upload-pack`, the program git runs for `origin`'s fetch url, on behalf of
 // whoever typed `git fetch` in the pod. What is asserted is that the Adapter forwards the one verb,
 // scoped to this Sandbox and carrying the token, and hands the answer back unread.
 

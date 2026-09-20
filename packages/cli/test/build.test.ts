@@ -1,4 +1,4 @@
-// The image build seam (ADR-0019/0038). Every tag `j2 up` deploys is a content address, so these
+// The image build seam (ADR-0019/0038). Every tag `jr2 up` deploys is a content address, so these
 // tests pin the properties that make one usable as a cache key at all: the same sources hash the
 // same every time, different sources do not, and the inputs each hash covers are the ones the ADRs
 // name — including the one that is now deliberately ABSENT, a Sandbox Image's dependence on the
@@ -10,7 +10,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { KIT_VERSION } from "@j2/orchestrator";
+import { KIT_VERSION } from "@jr2/orchestrator";
 import {
   assertEmulation,
   buildSandboxImage,
@@ -41,7 +41,7 @@ import {
   type ObservedImage,
   type RunCommand,
 } from "../src/build.ts";
-import { imageContextDigest } from "@j2/orchestrator";
+import { imageContextDigest } from "@jr2/orchestrator";
 
 /** Every verb, inert. Each test overrides the two or three it is about; the rest answering with
  * nothing is what keeps a build test from depending on the sweep and vice versa. */
@@ -81,14 +81,14 @@ function stagingPort(files: (out: string) => Record<string, string | Uint8Array>
   };
 }
 
-/** One image as a store reports it. Defaults are the interesting case: j2 built it, and it holds
+/** One image as a store reports it. Defaults are the interesting case: jr2 built it, and it holds
  * bytes worth reclaiming. */
 function image(over: Partial<ObservedImage> & { id: string }): ObservedImage {
   return { tags: [], bytes: 0, labeled: true, ...over };
 }
 
 async function hashOf(port: BuildPort): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "j2-build-"));
+  const root = await mkdtemp(join(tmpdir(), "jr2-build-"));
   const staged = await stageInstanceBundle(port, root);
   try {
     return staged.hash;
@@ -98,7 +98,7 @@ async function hashOf(port: BuildPort): Promise<string> {
 }
 
 /** Write `files` (relative path → content) under a fresh temp dir and return it. */
-async function mkTree(files: Record<string, string>, prefix = "j2-tree-"): Promise<string> {
+async function mkTree(files: Record<string, string>, prefix = "jr2-tree-"): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   for (const [rel, content] of Object.entries(files)) {
     await mkdir(join(root, dirname(rel)), { recursive: true });
@@ -115,15 +115,15 @@ function kitFiles(harnessSrc: string): Record<string, string> {
     "deploy/adapter/Dockerfile": "FROM node:24-alpine\n",
     "operator/Dockerfile": "FROM golang:1.23\n",
     "operator/main.go": "package main\n",
-    // The Harness image builds `j2-upload-pack` out of the operator module too (ADR-0053), so its
+    // The Harness image builds `jr2-upload-pack` out of the operator module too (ADR-0053), so its
     // address covers these and a checkout without them is not one either image can be built from.
-    "operator/go.mod": "module github.com/snapwich/j2/operator\n",
+    "operator/go.mod": "module github.com/snapwich/jr2/operator\n",
     "operator/go.sum": "",
-    "operator/cmd/j2-upload-pack/main.go": "package main\n",
+    "operator/cmd/jr2-upload-pack/main.go": "package main\n",
     "operator/internal/uploadpack/uploadpack.go": "package uploadpack\n",
-    "packages/harness/package.json": `{"name":"@j2/harness"}`,
+    "packages/harness/package.json": `{"name":"@jr2/harness"}`,
     "packages/harness/src/main.ts": harnessSrc,
-    "packages/adapter/package.json": `{"name":"@j2/adapter"}`,
+    "packages/adapter/package.json": `{"name":"@jr2/adapter"}`,
     "packages/adapter/src/main.ts": "export const a = 1;\n",
   };
 }
@@ -163,7 +163,7 @@ function pnpmStagingPort(stamp: string): BuildPort {
 /** Run `body` with `os.tmpdir()` pointed at a SYMLINK to a real directory — the macOS shape, which
  * is where the returned and resolved spellings of a staging path diverge. Restores `TMPDIR`. */
 async function withSymlinkedTmpdir(body: (root: string) => Promise<void>): Promise<void> {
-  const base = await mkdtemp(join(tmpdir(), "j2-symtmp-"));
+  const base = await mkdtemp(join(tmpdir(), "jr2-symtmp-"));
   const real = join(base, "real");
   const link = join(base, "link");
   await mkdir(real);
@@ -182,7 +182,7 @@ async function withSymlinkedTmpdir(body: (root: string) => Promise<void>): Promi
 /** Stage one Instance twice. Each call gets its own scratch dir, so the pair IS the experiment;
  * both bundles stay on disk until the caller disposes them, because the claim is about bytes. */
 async function stageTwice(port: BuildPort, other = port) {
-  const root = await mkdtemp(join(tmpdir(), "j2-build-"));
+  const root = await mkdtemp(join(tmpdir(), "jr2-build-"));
   const a = await stageInstanceBundle(port, root);
   const b = await stageInstanceBundle(other, root);
   return { a, b, dispose: () => Promise.all([a.dispose(), b.dispose()]) };
@@ -246,7 +246,7 @@ test("the seal holds where the temp root is a symlink — the macOS shape", asyn
 test("a non-UTF-8 file holding the staging path is a loud failure, never a blind rewrite", async () => {
   // /instance is SHORTER than the scratch path, so rewriting bytes inside a binary slides every
   // offset after it and ships an executable that segfaults in a Sandbox instead of a build that
-  // failed on a laptop. j2 does not know how to seal such a file, and says so, naming it.
+  // failed on a laptop. jr2 does not know how to seal such a file, and says so, naming it.
   const port = stagingPort((out) => ({
     "package.json": `{"name":"inst"}`,
     "node_modules/.pnpm/esbuild@0/node_modules/esbuild/bin/esbuild": Buffer.concat([
@@ -256,7 +256,7 @@ test("a non-UTF-8 file holding the staging path is a loud failure, never a blind
   }));
 
   await assert.rejects(
-    stageInstanceBundle(port, await mkdtemp(join(tmpdir(), "j2-build-"))),
+    stageInstanceBundle(port, await mkdtemp(join(tmpdir(), "jr2-build-"))),
     /esbuild\/bin\/esbuild.*not valid UTF-8/s,
   );
 });
@@ -265,7 +265,7 @@ test("a symlink pointing at the staging path is a loud failure — its target is
   // `contentHash` skips symlinks, and so does the seal's rewrite, so a link naming the scratch dir
   // would be neither sealed nor addressed: the bundle varies at a tag that never moves, which is
   // exactly the failure the seal exists to make impossible, arriving with no symptom. pnpm writes
-  // relative targets (a real bundle: 276 links, none absolute), so this is a guard, not a path j2
+  // relative targets (a real bundle: 276 links, none absolute), so this is a guard, not a path jr2
   // knows how to repair.
   const port: BuildPort = {
     ...nullPort(),
@@ -277,7 +277,7 @@ test("a symlink pointing at the staging path is a loud failure — its target is
   };
 
   await assert.rejects(
-    stageInstanceBundle(port, await mkdtemp(join(tmpdir(), "j2-build-"))),
+    stageInstanceBundle(port, await mkdtemp(join(tmpdir(), "jr2-build-"))),
     /symlink node_modules\/which points at the staging path/,
   );
 });
@@ -288,7 +288,7 @@ test("the bundle hash tracks the kit — a dependency's sources are image conten
   const kit = (body: string) =>
     stagingPort(() => ({
       "package.json": `{"name":"inst"}`,
-      "node_modules/.pnpm/@j2+orchestrator/node_modules/@j2/orchestrator/src/lease.ts": body,
+      "node_modules/.pnpm/@jr2+orchestrator/node_modules/@jr2/orchestrator/src/lease.ts": body,
     }));
 
   const before = await hashOf(kit("export const renew = () => 1;\n"));
@@ -297,32 +297,32 @@ test("the bundle hash tracks the kit — a dependency's sources are image conten
 });
 
 test("installed from npm, the kit three resolve to the published <kitversion> tags at the canonical home", () => {
-  // These were `j2.config.ts`'s `images` defaults; the block is gone (ADR-0038), so they live here
+  // These were `jr2.config.ts`'s `images` defaults; the block is gone (ADR-0038), so they live here
   // as the not-a-kit-checkout branch — and as the last leg of ADR-0037's Sandbox Image chain. The
-  // home is BAKED (ADR-0044): a bare `j2-harness:0.0.0` resolves to `docker.io/library/`, where
-  // nothing is, so the zero-plumbing `npm i -g @j2/cli && j2 init && j2 up` needs a real host here.
+  // home is BAKED (ADR-0044): a bare `jr2-harness:0.0.0` resolves to `docker.io/library/`, where
+  // nothing is, so the zero-plumbing `npm i -g @jr2/cli && jr2 init && jr2 up` needs a real host here.
   assert.deepEqual(publishedKitRefs(), {
-    harness: `${KIT_IMAGE_HOME}/j2-harness:${KIT_VERSION}`,
-    adapter: `${KIT_IMAGE_HOME}/j2-adapter:${KIT_VERSION}`,
-    operator: `${KIT_IMAGE_HOME}/j2-operator:${KIT_VERSION}`,
+    harness: `${KIT_IMAGE_HOME}/jr2-harness:${KIT_VERSION}`,
+    adapter: `${KIT_IMAGE_HOME}/jr2-adapter:${KIT_VERSION}`,
+    operator: `${KIT_IMAGE_HOME}/jr2-operator:${KIT_VERSION}`,
   });
   assert.equal(KIT_IMAGE_HOME, "ghcr.io/snapwich");
 });
 
 test("kitRegistry re-homes the published refs — the same tags, a self-hosted mirror (ADR-0044)", () => {
   // REPLACES the home rather than nesting under it: a mirror holds the same three tags under its
-  // own name, seeded deliberately by `j2 kit push`, never by a converge.
+  // own name, seeded deliberately by `jr2 kit push`, never by a converge.
   assert.deepEqual(publishedKitRefs("zot.example.test"), {
-    harness: `zot.example.test/j2-harness:${KIT_VERSION}`,
-    adapter: `zot.example.test/j2-adapter:${KIT_VERSION}`,
-    operator: `zot.example.test/j2-operator:${KIT_VERSION}`,
+    harness: `zot.example.test/jr2-harness:${KIT_VERSION}`,
+    adapter: `zot.example.test/jr2-adapter:${KIT_VERSION}`,
+    operator: `zot.example.test/jr2-operator:${KIT_VERSION}`,
   });
   // The version is the CLI's own either way: re-homing says where the tags live, not which ones.
-  assert.ok(Object.values(publishedKitRefs("localhost:5000/j2")).every((r) => r.endsWith(`:${KIT_VERSION}`)));
+  assert.ok(Object.values(publishedKitRefs("localhost:5000/jr2")).every((r) => r.endsWith(`:${KIT_VERSION}`)));
 });
 
 test("a kit checkout needs BOTH markers — either alone is somebody else's tree", async () => {
-  // A false positive means `j2 up` tries to docker-build a kit that is not there; a false negative
+  // A false positive means `jr2 up` tries to docker-build a kit that is not there; a false negative
   // means it deploys published images over the sources you just edited. Both markers, or neither.
   const full = await mkTree(kitFiles("export const x = 1;\n"));
   assert.equal(await detectKitCheckout(full), full);
@@ -332,7 +332,7 @@ test("a kit checkout needs BOTH markers — either alone is somebody else's tree
   const dockerfileOnly = await mkTree({ "deploy/harness/Dockerfile": "FROM node:24-slim\n" });
   assert.equal(await detectKitCheckout(dockerfileOnly), undefined);
 
-  const packageOnly = await mkTree({ "packages/harness/package.json": `{"name":"@j2/harness"}` });
+  const packageOnly = await mkTree({ "packages/harness/package.json": `{"name":"@jr2/harness"}` });
   assert.equal(await detectKitCheckout(packageOnly), undefined);
 
   const wrongName = await mkTree({
@@ -348,16 +348,16 @@ test("each kit image addresses its own sources and platform set; the registry pr
   for (const [name, ref] of Object.entries(refs)) {
     // `<hash>-<arch>` (ADR-0045): the bytes are a function of (inputs × platform), so the address
     // says which — a tag that named only the inputs delivered an amd64 image to an arm64 cluster.
-    assert.match(ref, new RegExp(`^j2-${name}:[0-9a-f]{12}-amd64$`), `${name} is content-addressed`);
+    assert.match(ref, new RegExp(`^jr2-${name}:[0-9a-f]{12}-amd64$`), `${name} is content-addressed`);
   }
   assert.deepEqual(await kitImageRefs(kit, { platforms: AMD64 }), refs, "same sources, same addresses");
 
   const both = await kitImageRefs(kit, { platforms: ["linux/arm64", "linux/amd64"] });
-  assert.match(both.harness, /^j2-harness:[0-9a-f]{12}-amd64-arm64$/, "a multi-platform build says so, sorted");
+  assert.match(both.harness, /^jr2-harness:[0-9a-f]{12}-amd64-arm64$/, "a multi-platform build says so, sorted");
   assert.notEqual(both.harness, refs.harness, "…and never collides with the single-platform address");
 
-  const pushed = await kitImageRefs(kit, { platforms: AMD64, registry: "reg.example.com/j2" });
-  assert.equal(pushed.harness, `reg.example.com/j2/${refs.harness}`);
+  const pushed = await kitImageRefs(kit, { platforms: AMD64, registry: "reg.example.com/jr2" });
+  assert.equal(pushed.harness, `reg.example.com/jr2/${refs.harness}`);
 
   // The build is the committed Dockerfile against its own context — the harness/adapter build from
   // the kit ROOT (the packages ship as source), the operator from `operator/`.
@@ -369,7 +369,7 @@ test("each kit image addresses its own sources and platform set; the registry pr
     context: kit,
     dockerfile: join(kit, "deploy", "harness", "Dockerfile"),
     // Stamped on the command line, because the committed Dockerfile stays plain (ADR-0039).
-    labels: { "j2.dev/kind": "kit" },
+    labels: { "jr2.dev/kind": "kit" },
   });
   assert.equal(kitImageBuild(kit, "operator", refs.operator, AMD64).context, join(kit, "operator"));
 });
@@ -405,21 +405,21 @@ test("kit hashes exclude only what each context's OWN .dockerignore drops", asyn
 test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", async () => {
   // The inversion ADR-0037 decided: the wrap made every Sandbox Image `COPY --from=<harness>`, so a
   // kit source edit re-tagged, rebuilt, and re-delivered every user image on the cluster. The
-  // runtime rides the pod's /opt/j2 volume now, so the harness ref moves alone and future pods pick
+  // runtime rides the pod's /opt/jr2 volume now, so the harness ref moves alone and future pods pick
   // it up — the only way an image the user merely BROUGHT could ever follow a kit update at all.
   const before = await kitImageRefs(await mkTree(kitFiles("export const x = 1;\n")), { platforms: AMD64 });
   const after = await kitImageRefs(await mkTree(kitFiles("export const x = 2;\n")), { platforms: AMD64 });
   assert.notEqual(after.harness, before.harness, "the harness ref moves with its sources");
   assert.equal(after.adapter, before.adapter, "…and only its own — the Adapter is untouched");
 
-  const image = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y cargo\n" }, "j2-image-");
+  const image = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y cargo\n" }, "jr2-image-");
   assert.equal(
     await imageContextDigest(image),
     await imageContextDigest(image),
     "the same directory is the same address, and the harness ref is not even a parameter to ask about",
   );
 
-  const edited = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y rustc\n" }, "j2-image-");
+  const edited = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y rustc\n" }, "jr2-image-");
   assert.notEqual(await imageContextDigest(edited), await imageContextDigest(image), "a Dockerfile edit moves it");
 });
 
@@ -444,7 +444,7 @@ test("`images/` rides the instance bundle, because the deployed Orchestrator rea
     "editing images/default/Dockerfile moves the instance image's address — the folder is content",
   );
 
-  const scratchRoot = await mkdtemp(join(tmpdir(), "j2-build-"));
+  const scratchRoot = await mkdtemp(join(tmpdir(), "jr2-build-"));
   const staged = await stageInstanceBundle(port("FROM node:24-slim\n"), scratchRoot);
   try {
     assert.ok(
@@ -563,7 +563,7 @@ test("a Sandbox Image is ONE build to its content tag: no intermediate name, no 
   // The wrap needed a mutable tag between the user's build and its own, which serialized concurrent
   // converges of one checkout (one converge's untag failed the other's `FROM`) — a problem space
   // that existed only because the wrap did. With the runtime arriving at pod time there is exactly
-  // one build, its context is the user's own directory, and nothing j2 generated is fed to docker.
+  // one build, its context is the user's own directory, and nothing jr2 generated is fed to docker.
   const requests: BuildRequest[] = [];
   const removed: string[] = [];
   const port: BuildPort = {
@@ -579,37 +579,37 @@ test("a Sandbox Image is ONE build to its content tag: no intermediate name, no 
   assert.equal(requests[0]!.dockerfileContent, undefined, "the user's own Dockerfile, never a generated one");
   assert.equal(requests[0]!.dockerfile, undefined, "…found where docker looks by default, in its own context");
   // Stamped on the command line — ownership is read off the image, never parsed out of its name
-  // (ADR-0039), and the user's Dockerfile keeps zero j2 knowledge.
+  // (ADR-0039), and the user's Dockerfile keeps zero jr2 knowledge.
   assert.deepEqual(requests[0], {
-    tag: "j2-sandbox-inst-default:99aa-amd64",
+    tag: "jr2-sandbox-inst-default:99aa-amd64",
     platforms: AMD64,
     context: "/tmp/images/default",
-    labels: { "j2.dev/kind": "sandbox", "j2.dev/instance": "inst" },
+    labels: { "jr2.dev/kind": "sandbox", "jr2.dev/instance": "inst" },
   });
   assert.deepEqual(removed, [], "nothing to untag: there is no intermediate to leave behind");
 });
 
 test("the sweep matches containerd's names, and a registry copy is a different ref", () => {
   // ONE normalization, on both sides: `kind load` imports into containerd, which rewrites a local
-  // tag to `docker.io/library/<name>:<tag>`, while every root — the `j2-images` map, a Sandbox's
+  // tag to `docker.io/library/<name>:<tag>`, while every root — the `jr2-images` map, a Sandbox's
   // spec.image, a pod's container image — spells it the short way. Stripping exactly that namespace
   // and nothing else is also what keeps the two COPIES apart: a keep set naming the local ref must
   // not protect the registry's copy of the same content, which under ADR-0039 is cache like any
   // other and sweeps when nothing names it.
   const images = [
-    image({ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-myinst:aa11"], bytes: 412_000_000 }),
-    image({ id: "sha256:bbb", tags: ["reg.example.com/j2-instance-myinst:aa11"], bytes: 412_000_000 }),
-    image({ id: "sha256:ccc", tags: ["docker.io/library/j2-harness:0f1e"], bytes: 238_000_000 }),
+    image({ id: "sha256:aaa", tags: ["docker.io/library/jr2-instance-myinst:aa11"], bytes: 412_000_000 }),
+    image({ id: "sha256:bbb", tags: ["reg.example.com/jr2-instance-myinst:aa11"], bytes: 412_000_000 }),
+    image({ id: "sha256:ccc", tags: ["docker.io/library/jr2-harness:0f1e"], bytes: 238_000_000 }),
   ];
-  const keep = ["j2-instance-myinst:aa11", "j2-harness:0f1e"];
+  const keep = ["jr2-instance-myinst:aa11", "jr2-harness:0f1e"];
 
   assert.deepEqual(nodeSweepPlan(images, keep), {
-    remove: [{ id: "sha256:bbb", tags: ["reg.example.com/j2-instance-myinst:aa11"], bytes: 412_000_000 }],
+    remove: [{ id: "sha256:bbb", tags: ["reg.example.com/jr2-instance-myinst:aa11"], bytes: 412_000_000 }],
     kept: [],
   });
 
   // …and the registry's copy IS kept once a root names it by its own, host-qualified ref.
-  assert.deepEqual(nodeSweepPlan(images, [...keep, "reg.example.com/j2-instance-myinst:aa11"]).remove, []);
+  assert.deepEqual(nodeSweepPlan(images, [...keep, "reg.example.com/jr2-instance-myinst:aa11"]).remove, []);
 });
 
 test("a node image id is removed whole, once — and a mixed id is kept whole and said", () => {
@@ -620,13 +620,13 @@ test("a node image id is removed whole, once — and a mixed id is kept whole an
   const shared = [
     image({
       id: "sha256:ddd",
-      tags: ["docker.io/library/j2-sandbox-myinst-default:99aa", "docker.io/library/j2-sandbox-other-default:99aa"],
+      tags: ["docker.io/library/jr2-sandbox-myinst-default:99aa", "docker.io/library/jr2-sandbox-other-default:99aa"],
       bytes: 500,
     }),
   ];
-  assert.deepEqual(nodeSweepPlan(shared, ["j2-sandbox-other-default:99aa"]), {
+  assert.deepEqual(nodeSweepPlan(shared, ["jr2-sandbox-other-default:99aa"]), {
     remove: [],
-    kept: ["docker.io/library/j2-sandbox-myinst-default:99aa"],
+    kept: ["docker.io/library/jr2-sandbox-myinst-default:99aa"],
   });
 
   // The failure observed live: three unreachable tags on one id (hash-moving edits that produced
@@ -636,36 +636,36 @@ test("a node image id is removed whole, once — and a mixed id is kept whole an
     image({
       id: "sha256:eee",
       tags: [
-        "docker.io/library/j2-sandbox-myinst-default:c0cc",
-        "docker.io/library/j2-sandbox-myinst-default:b1aa",
-        "docker.io/library/j2-instance-myinst:77ff",
+        "docker.io/library/jr2-sandbox-myinst-default:c0cc",
+        "docker.io/library/jr2-sandbox-myinst-default:b1aa",
+        "docker.io/library/jr2-instance-myinst:77ff",
       ],
       bytes: 900,
     }),
   ];
-  assert.deepEqual(nodeSweepPlan(triple, ["j2-instance-myinst:88ee"]), {
+  assert.deepEqual(nodeSweepPlan(triple, ["jr2-instance-myinst:88ee"]), {
     remove: [{ id: "sha256:eee", tags: triple[0]!.tags, bytes: 900 }],
     kept: [],
   });
 });
 
 test("an unlabeled image is invisible — not removed, not kept, not reported", () => {
-  // Images built before ADR-0039 carry no stamp, and neither does anything j2 never built. Sweeping
+  // Images built before ADR-0039 carry no stamp, and neither does anything jr2 never built. Sweeping
   // them means guessing by name again, which is the whole primitive being deleted — so they are not
   // "kept" either: the sweep has nothing to say about an image that is not its business.
   const images = [
-    image({ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-old:beef"], bytes: 100, labeled: false }),
+    image({ id: "sha256:aaa", tags: ["docker.io/library/jr2-instance-old:beef"], bytes: 100, labeled: false }),
     image({ id: "sha256:bbb", tags: ["docker.io/library/postgres:16"], bytes: 200, labeled: false }),
-    image({ id: "sha256:ccc", tags: ["docker.io/library/j2-instance-new:c0de"], bytes: 300 }),
+    image({ id: "sha256:ccc", tags: ["docker.io/library/jr2-instance-new:c0de"], bytes: 300 }),
   ];
   assert.deepEqual(nodeSweepPlan(images, []), {
-    remove: [{ id: "sha256:ccc", tags: ["docker.io/library/j2-instance-new:c0de"], bytes: 300 }],
+    remove: [{ id: "sha256:ccc", tags: ["docker.io/library/jr2-instance-new:c0de"], bytes: 300 }],
     kept: [],
   });
   // The ref removed is the store's OWN spelling — normalization decides reachability, never what
   // is handed back to `docker rmi`, which knows only the tags it holds.
   assert.deepEqual(hostSweepPlan(images, []).remove, [
-    { ref: "docker.io/library/j2-instance-new:c0de", id: "sha256:ccc", bytes: 300 },
+    { ref: "docker.io/library/jr2-instance-new:c0de", id: "sha256:ccc", bytes: 300 },
   ]);
 });
 
@@ -675,11 +675,11 @@ test("reachability beats any naming: a kit ref goes when nothing names it, a str
   // cluster, it collects like everything else. The converse matters just as much: a ref no name
   // grammar would recognize is untouchable while a live root names it.
   const images = [
-    image({ id: "sha256:kit", tags: ["docker.io/library/j2-harness:0f1e"], bytes: 238_000_000 }),
+    image({ id: "sha256:kit", tags: ["docker.io/library/jr2-harness:0f1e"], bytes: 238_000_000 }),
     image({ id: "sha256:odd", tags: ["docker.io/library/whatever-i-named-it:v3"], bytes: 10 }),
   ];
   assert.deepEqual(nodeSweepPlan(images, ["whatever-i-named-it:v3"]), {
-    remove: [{ id: "sha256:kit", tags: ["docker.io/library/j2-harness:0f1e"], bytes: 238_000_000 }],
+    remove: [{ id: "sha256:kit", tags: ["docker.io/library/jr2-harness:0f1e"], bytes: 238_000_000 }],
     kept: [],
   });
 });
@@ -688,17 +688,17 @@ test("the host sweeps per TAG, and credits an id's bytes exactly once — on the
   // `docker rmi <tag>` untags: the id lives on under its other tags, and the disk comes back only
   // with the last one. So the host plan is per ref (no mixed-id case at all), while the byte
   // accounting is per id — summing per tag would report an image twice for having two names.
-  const twoTags = image({ id: "sha256:aaa", tags: ["j2-instance-x:aa", "j2-instance-x:bb"], bytes: 1_000 });
+  const twoTags = image({ id: "sha256:aaa", tags: ["jr2-instance-x:aa", "jr2-instance-x:bb"], bytes: 1_000 });
 
   // One tag reachable: the other still goes, but nothing is reclaimed by dropping a name.
-  const partial = hostSweepPlan([twoTags], ["j2-instance-x:aa"]);
-  assert.deepEqual(partial, { remove: [{ ref: "j2-instance-x:bb", id: "sha256:aaa", bytes: 0 }], bytes: 0 });
+  const partial = hostSweepPlan([twoTags], ["jr2-instance-x:aa"]);
+  assert.deepEqual(partial, { remove: [{ ref: "jr2-instance-x:bb", id: "sha256:aaa", bytes: 0 }], bytes: 0 });
 
   // Both unreachable: two removals, one credit.
   const whole = hostSweepPlan([twoTags], []);
   assert.deepEqual(
     whole.remove.map((r) => r.ref),
-    ["j2-instance-x:aa", "j2-instance-x:bb"],
+    ["jr2-instance-x:aa", "jr2-instance-x:bb"],
   );
   assert.equal(whole.bytes, 1_000, "the id's size is credited once, not once per tag");
 });
@@ -708,11 +708,11 @@ test("a labeled image with no tags left is garbage by construction, and goes by 
   // leaves the same tagless id on a node. No keep set can ever name one — and a ref-only sweep
   // leaks exactly them, which after a Dockerfile-iteration session is most of the disk.
   const orphan = image({ id: "sha256:dead", tags: [], bytes: 2_000 });
-  assert.deepEqual(hostSweepPlan([orphan], ["j2-instance-x:aa"]), {
+  assert.deepEqual(hostSweepPlan([orphan], ["jr2-instance-x:aa"]), {
     remove: [{ ref: "sha256:dead", id: "sha256:dead", bytes: 2_000 }],
     bytes: 2_000,
   });
-  assert.deepEqual(nodeSweepPlan([orphan], ["j2-instance-x:aa"]).remove, [
+  assert.deepEqual(nodeSweepPlan([orphan], ["jr2-instance-x:aa"]).remove, [
     { id: "sha256:dead", tags: [], bytes: 2_000 },
   ]);
 });
@@ -722,22 +722,22 @@ test("a failed removal is reported and the loop goes on; already-gone is success
   // delete-if-present has to be read out of the error, and one image's failure must never abandon
   // everything queued behind it (ADR-0039).
   const images = [
-    image({ id: "sha256:aaa", tags: ["j2-a:1"], bytes: 10 }),
-    image({ id: "sha256:bbb", tags: ["j2-b:1"], bytes: 20 }),
-    image({ id: "sha256:ccc", tags: ["j2-c:1"], bytes: 40 }),
+    image({ id: "sha256:aaa", tags: ["jr2-a:1"], bytes: 10 }),
+    image({ id: "sha256:bbb", tags: ["jr2-b:1"], bytes: 20 }),
+    image({ id: "sha256:ccc", tags: ["jr2-c:1"], bytes: 40 }),
   ];
   const port: BuildPort = {
     ...nullPort(),
     hostImages: async () => images,
     removeHostImage: async (ref) => {
-      if (ref === "j2-a:1") throw new Error("Error response from daemon: No such image: j2-a:1");
-      if (ref === "j2-b:1") throw new Error("Error response from daemon: conflict: image is in use\nby a container");
+      if (ref === "jr2-a:1") throw new Error("Error response from daemon: No such image: jr2-a:1");
+      if (ref === "jr2-b:1") throw new Error("Error response from daemon: conflict: image is in use\nby a container");
     },
   };
 
   return sweepHost(port, { keep: [] }).then((result) => {
-    assert.deepEqual(result.removed, ["j2-a:1", "j2-c:1"], "absent IS the goal state, however it got there");
-    assert.deepEqual(result.failed, ["j2-b:1 (Error response from daemon: conflict: image is in use)"]);
+    assert.deepEqual(result.removed, ["jr2-a:1", "jr2-c:1"], "absent IS the goal state, however it got there");
+    assert.deepEqual(result.failed, ["jr2-b:1 (Error response from daemon: conflict: image is in use)"]);
     assert.equal(result.bytes, 40, "an image something else already took gave US no bytes back");
   });
 });
@@ -773,23 +773,23 @@ function nodeStore(
 
 test("the node sweep reaches every node, one rmi per id, and sums what it took", async () => {
   const nodes = () => ({
-    "j2-control-plane": [
-      image({ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-x:aa"], bytes: 1_000 }),
-      image({ id: "sha256:bbb", tags: ["docker.io/library/j2-harness:0f1e"], bytes: 2_000 }),
+    "jr2-control-plane": [
+      image({ id: "sha256:aaa", tags: ["docker.io/library/jr2-instance-x:aa"], bytes: 1_000 }),
+      image({ id: "sha256:bbb", tags: ["docker.io/library/jr2-harness:0f1e"], bytes: 2_000 }),
     ],
-    "j2-worker": [image({ id: "sha256:aaa", tags: ["docker.io/library/j2-instance-x:aa"], bytes: 1_000 })],
+    "jr2-worker": [image({ id: "sha256:aaa", tags: ["docker.io/library/jr2-instance-x:aa"], bytes: 1_000 })],
   });
   const port = nodeStore(nodes());
 
-  const result = await sweepNodes(port, { cluster: "j2", keep: ["j2-harness:0f1e"] });
-  assert.deepEqual(port.calls, ["j2-control-plane sha256:aaa", "j2-worker sha256:aaa"], "each node holds its copy");
-  assert.deepEqual(result.removed, ["docker.io/library/j2-instance-x:aa", "docker.io/library/j2-instance-x:aa"]);
+  const result = await sweepNodes(port, { cluster: "jr2", keep: ["jr2-harness:0f1e"] });
+  assert.deepEqual(port.calls, ["jr2-control-plane sha256:aaa", "jr2-worker sha256:aaa"], "each node holds its copy");
+  assert.deepEqual(result.removed, ["docker.io/library/jr2-instance-x:aa", "docker.io/library/jr2-instance-x:aa"]);
   assert.equal(result.bytes, 2_000, "two nodes, two copies, two lots of disk");
   assert.deepEqual(result.failed, []);
 
-  // A dry run answers the same plan and touches nothing (`j2 gc --dry-run`, ADR-0039).
+  // A dry run answers the same plan and touches nothing (`jr2 gc --dry-run`, ADR-0039).
   const untouched = nodeStore(nodes());
-  const dry = await sweepNodes(untouched, { cluster: "j2", keep: ["j2-harness:0f1e"], dryRun: true });
+  const dry = await sweepNodes(untouched, { cluster: "jr2", keep: ["jr2-harness:0f1e"], dryRun: true });
   assert.deepEqual(untouched.calls, []);
   assert.deepEqual(dry.removed, result.removed);
 });
@@ -797,22 +797,22 @@ test("the node sweep reaches every node, one rmi per id, and sums what it took",
 test("a node removal is confirmed by re-listing — an exit code is not a reclaimed byte", async () => {
   // The failure this exists for: `crictl rmi <id>` exits 0 on a kind node having dropped only the
   // names CRI knows, while the image lives on under the `import-<date>@<digest>` ref `kind load`
-  // also wrote — so the store says success, the disk says nothing was freed, and the next `j2 gc`
+  // also wrote — so the store says success, the disk says nothing was freed, and the next `jr2 gc`
   // re-plans the very same id. Trusting the exit code makes the one number ADR-0039 prints a lie.
   const port = nodeStore(
     {
-      "j2-control-plane": [
-        image({ id: "sha256:stays", tags: ["docker.io/library/j2-instance-x:aa"], bytes: 400_000_000 }),
-        image({ id: "sha256:goes", tags: ["docker.io/library/j2-instance-x:bb"], bytes: 1_000 }),
+      "jr2-control-plane": [
+        image({ id: "sha256:stays", tags: ["docker.io/library/jr2-instance-x:aa"], bytes: 400_000_000 }),
+        image({ id: "sha256:goes", tags: ["docker.io/library/jr2-instance-x:bb"], bytes: 1_000 }),
       ],
     },
     { keeps: ["sha256:stays"] },
   );
 
-  const result = await sweepNodes(port, { cluster: "j2", keep: [] });
-  assert.deepEqual(result.removed, ["docker.io/library/j2-instance-x:bb"], "only what the node no longer holds");
+  const result = await sweepNodes(port, { cluster: "jr2", keep: [] });
+  assert.deepEqual(result.removed, ["docker.io/library/jr2-instance-x:bb"], "only what the node no longer holds");
   assert.equal(result.bytes, 1_000, "the 400 MB the store kept are not the user's to celebrate");
-  assert.deepEqual(result.failed, ["docker.io/library/j2-instance-x:aa (the node still holds it after the removal)"]);
+  assert.deepEqual(result.failed, ["docker.io/library/jr2-instance-x:aa (the node still holds it after the removal)"]);
 });
 
 test("a re-list that cannot answer leaves the removals unverified, and unverified is not reclaimed", async () => {
@@ -821,24 +821,24 @@ test("a re-list that cannot answer leaves the removals unverified, and unverifie
     ...nullPort(),
     nodeImages: async () => {
       if (++listings > 1) throw new Error("Cannot connect to the Docker daemon\nis it running?");
-      return [{ node: "j2-control-plane", images: [image({ id: "sha256:a", tags: ["j2-x:1"], bytes: 10 })] }];
+      return [{ node: "jr2-control-plane", images: [image({ id: "sha256:a", tags: ["jr2-x:1"], bytes: 10 })] }];
     },
   };
-  const result = await sweepNodes(port, { cluster: "j2", keep: [] });
+  const result = await sweepNodes(port, { cluster: "jr2", keep: [] });
   assert.deepEqual(result.removed, []);
   assert.equal(result.bytes, 0);
-  assert.deepEqual(result.failed, ["j2-x:1 (could not verify the removal: Cannot connect to the Docker daemon)"]);
+  assert.deepEqual(result.failed, ["jr2-x:1 (could not verify the removal: Cannot connect to the Docker daemon)"]);
 });
 
 test("one image swept on both stores is one image, however each store spells it", async () => {
-  // The host says `j2-adapter:33a4`, containerd says `docker.io/library/j2-adapter:33a4`. Merging
+  // The host says `jr2-adapter:33a4`, containerd says `docker.io/library/jr2-adapter:33a4`. Merging
   // raw strings reports one image twice; the bytes stay summed, because the two copies are two
   // lots of the user's disk (the same rule as two nodes holding one ref).
   const merged = mergeSweeps(
-    { removed: ["j2-adapter:33a4"], kept: [], failed: [], bytes: 217_000_000 },
-    { removed: ["docker.io/library/j2-adapter:33a4"], kept: [], failed: [], bytes: 224_000_000 },
+    { removed: ["jr2-adapter:33a4"], kept: [], failed: [], bytes: 217_000_000 },
+    { removed: ["docker.io/library/jr2-adapter:33a4"], kept: [], failed: [], bytes: 224_000_000 },
   );
-  assert.deepEqual(merged.removed, ["j2-adapter:33a4"], "one image, once, in the spelling a root would use");
+  assert.deepEqual(merged.removed, ["jr2-adapter:33a4"], "one image, once, in the spelling a root would use");
   assert.equal(merged.bytes, 441_000_000);
 });
 
@@ -846,7 +846,7 @@ test("a node whose images will not say who built them stops the sweep instead of
   // A broken label read makes every image read as unlabeled, and unlabeled is invisible — so the
   // whole node sweep becomes a no-op that prints "swept nothing". One id nobody answers for is
   // still fine: that one is gone or racing, and the rest of the node is swept normally.
-  const ok = await crictlLabels("j2-control-plane", ["sha256:a", "sha256:b"], async (batch) => {
+  const ok = await crictlLabels("jr2-control-plane", ["sha256:a", "sha256:b"], async (batch) => {
     if (batch.length > 1) throw new Error("crictl: no such image sha256:b");
     if (batch[0] === "sha256:b") throw new Error("crictl: no such image sha256:b");
     return JSON.stringify({
@@ -858,10 +858,10 @@ test("a node whose images will not say who built them stops the sweep instead of
 
   await assert.rejects(
     () =>
-      crictlLabels("j2-control-plane", ["sha256:a"], async () => {
+      crictlLabels("jr2-control-plane", ["sha256:a"], async () => {
         throw new Error('OCI runtime exec failed: exec: "crictl": executable file not found in $PATH');
       }),
-    /no image on node "j2-control-plane" would say who built it.*crictl.*not found/s,
+    /no image on node "jr2-control-plane" would say who built it.*crictl.*not found/s,
   );
 });
 
@@ -883,7 +883,7 @@ function recordingRun(): { calls: Array<{ command: string; args: string[]; cwd: 
 
 /** A scratch `outDir` that does NOT exist yet — the shape `stageInstanceBundle` hands the port. */
 async function bundleOut(): Promise<string> {
-  return join(await mkdtemp(join(tmpdir(), "j2-bundle-")), "bundle");
+  return join(await mkdtemp(join(tmpdir(), "jr2-bundle-")), "bundle");
 }
 
 test("each lockfile selects the package manager that speaks it, frozen and production-only", async () => {
@@ -898,7 +898,7 @@ test("each lockfile selects the package manager that speaks it, frozen and produ
     ["bun.lockb", ["bun", "install", "--production", "--frozen-lockfile"]],
   ];
   for (const [lockfile, argv] of table) {
-    const instance = await mkTree({ "package.json": `{"name":"inst"}`, [lockfile]: "lock\n" }, "j2-instance-");
+    const instance = await mkTree({ "package.json": `{"name":"inst"}`, [lockfile]: "lock\n" }, "jr2-instance-");
     const out = await bundleOut();
     const { calls, run } = recordingRun();
     await bundleInstance(instance, out, run);
@@ -914,11 +914,11 @@ test("a standalone instance is staged from its committed bytes, never from its n
   // The lockfile — not the user's `node_modules/` — is the input, and that is forced (ADR-0043):
   // the GitOps/CI path runs from a clean checkout where no `node_modules` exists, and a copied tree
   // bakes in accidents rather than declarations. ADR-0019's derivability rule, applied to deps.
-  // `.j2/` is CLI-local state and `.git/` is history: neither is image content.
+  // `.jr2/` is CLI-local state and `.git/` is history: neither is image content.
   //
   // `.env*` and `.npmrc` are the sharper case, and the reason this asserts the WHOLE listing: they
-  // are where a user is told to keep credentials (`j2 init` gitignores `.env` in those words), and
-  // `j2 up` reads `.env` host-side into the Orchestrator's Secret. Copied, an API key would sit in
+  // are where a user is told to keep credentials (`jr2 init` gitignores `.env` in those words), and
+  // `jr2 up` reads `.env` host-side into the Orchestrator's Secret. Copied, an API key would sit in
   // an image layer and in the content address naming it — so rotating the key alone would re-tag
   // the image and roll the Orchestrator.
   const instance = await mkTree(
@@ -927,13 +927,13 @@ test("a standalone instance is staged from its committed bytes, never from its n
       "package-lock.json": "lock\n",
       "workflows/feature.ts": "export const machine = 1;\n",
       "node_modules/left-pad/index.js": "module.exports = 1;\n",
-      ".j2/state.json": `{"token":"…"}`,
+      ".jr2/state.json": `{"token":"…"}`,
       ".git/HEAD": "ref: refs/heads/main\n",
       ".env": "ANTHROPIC_API_KEY=sk-secret\n",
-      ".env.local": "J2_GIT_TOKEN=ghp-secret\n",
+      ".env.local": "JR2_GIT_TOKEN=ghp-secret\n",
       ".npmrc": `//registry.npmjs.org/:_authToken=npm-secret\n`,
     },
-    "j2-instance-",
+    "jr2-instance-",
   );
   const out = await bundleOut();
   await bundleInstance(instance, out, recordingRun().run);
@@ -949,7 +949,7 @@ test("the instance's own shape decides the bundle, not the CLI's provenance", as
   // test process runs out of the kit checkout, which is what makes the case real rather than
   // hypothetical.
   assert.ok(await detectKitCheckout(), "the CLI under test IS a kit checkout");
-  const standalone = await mkTree({ "package.json": `{"name":"inst"}`, "pnpm-lock.yaml": "lock\n" }, "j2-instance-");
+  const standalone = await mkTree({ "package.json": `{"name":"inst"}`, "pnpm-lock.yaml": "lock\n" }, "jr2-instance-");
   const { calls, run } = recordingRun();
   await bundleInstance(standalone, await bundleOut(), run);
   assert.equal(calls[0]?.args[0], "install", "the standalone instance still installs from its lockfile");
@@ -958,7 +958,7 @@ test("the instance's own shape decides the bundle, not the CLI's provenance", as
   // lockfile of its own — the workspace root holds it (templates/*, in this checkout).
   const root = await mkTree(
     { "pnpm-workspace.yaml": "packages:\n  - templates/*\n", "templates/default/package.json": `{"name":"default"}` },
-    "j2-workspace-",
+    "jr2-workspace-",
   );
   const member = join(root, "templates", "default");
   const out = await bundleOut();
@@ -976,7 +976,7 @@ test("no lockfile, two package managers, and yarn are each a named refusal", asy
   // user stopped maintaining. Yarn is deliberately out for v1: one filename hides two incompatible
   // generations, and berry defaults to PnP — no `node_modules` at all, which the image's resolution
   // model cannot host.
-  const none = await mkTree({ "package.json": `{"name":"inst"}` }, "j2-instance-");
+  const none = await mkTree({ "package.json": `{"name":"inst"}` }, "jr2-instance-");
   await assert.rejects(
     lockfileInstall(none),
     /no lockfile.*npm \(package-lock\.json\), pnpm \(pnpm-lock\.yaml\), bun \(bun\.lock or bun\.lockb\)/s,
@@ -984,20 +984,20 @@ test("no lockfile, two package managers, and yarn are each a named refusal", asy
 
   const two = await mkTree(
     { "package.json": `{"name":"inst"}`, "package-lock.json": "lock\n", "pnpm-lock.yaml": "lock\n" },
-    "j2-instance-",
+    "jr2-instance-",
   );
   await assert.rejects(
     lockfileInstall(two),
     /more than one package manager \(npm: package-lock\.json; pnpm: pnpm-lock\.yaml\)/,
   );
 
-  const yarn = await mkTree({ "package.json": `{"name":"inst"}`, "yarn.lock": "lock\n" }, "j2-instance-");
+  const yarn = await mkTree({ "package.json": `{"name":"inst"}`, "yarn.lock": "lock\n" }, "jr2-instance-");
   await assert.rejects(lockfileInstall(yarn), /yarn is not supported — use npm, pnpm, or bun/);
 
   // Both bun spellings is a migration, not an ambiguity: one manager, one command.
   const bun = await mkTree(
     { "package.json": `{"name":"inst"}`, "bun.lock": "lock\n", "bun.lockb": "bin\n" },
-    "j2-instance-",
+    "jr2-instance-",
   );
   assert.deepEqual(await lockfileInstall(bun), {
     command: "bun",

@@ -8,7 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createActor, setup, sendTo } from "xstate";
 import { z } from "zod";
-import { defineEvent, eventMap } from "@j2/agent-protocol";
+import { defineEvent, eventMap } from "@jr2/agent-protocol";
 import { agentActorWith, type AgentRunOptions } from "../src/actor.ts";
 import type { AgentAdmission, AgentRunInput, AgentRunPort } from "../src/actor.ts";
 import type { AgentDeclaration, AgentDefinition } from "../src/agent.ts";
@@ -61,7 +61,7 @@ function harness(
   });
 
   // The menu resolves against the INVOKING Machine's vocabulary (ADR-0011, ADR-0049), so the
-  // parent carries it — what `j2Setup` does for an authored machine, done by hand here because
+  // parent carries it — what `jr2Setup` does for an authored machine, done by hand here because
   // these fixtures exercise the actor over a plain `setup()` parent.
   attachVocabulary(machine, eventMap("test", [pingEvent]));
   const actor = createActor(machine);
@@ -136,7 +136,7 @@ test("registers its event surface on start; delivery lands on the invoking state
 });
 
 test("an Open model is refused at start — the second fence, before a Turn is admitted (ADR-0054)", () => {
-  // `j2 up`'s walk is the first fence and covers every registered Machine; this is what catches an
+  // `jr2 up`'s walk is the first fence and covers every registered Machine; this is what catches an
   // import nobody registered as itself. It refuses BEFORE admitting, because the wire takes a
   // string and a Symbol would leave the Harness with a slot key and no model.
   const mock = new MockFlueClient();
@@ -179,7 +179,7 @@ test('explicit input.endpoint wins over everything — even a "none" definition 
     { ...baseInput, sandbox: "stub-1" },
     undefined,
     NONE,
-    { instanceHarness: "http://j2-instance-harness.ns.svc:8080" },
+    { instanceHarness: "http://jr2-instance-harness.ns.svc:8080" },
     AMBIENT,
   );
   await tick();
@@ -191,16 +191,16 @@ test('explicit input.endpoint wins over everything — even a "none" definition 
 test('workspace "none" → the Instance Harness, and the registration records the placement as its scope (ADR-0031)', async () => {
   const mock = new MockFlueClient();
   const { endpoints, table } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, NONE, {
-    instanceHarness: "http://j2-instance-harness.ns.svc:8080",
+    instanceHarness: "http://jr2-instance-harness.ns.svc:8080",
   });
   await tick();
 
-  assert.deepEqual(endpoints, ["http://j2-instance-harness.ns.svc:8080"]);
+  assert.deepEqual(endpoints, ["http://jr2-instance-harness.ns.svc:8080"]);
   const reg = table.lookup(agentAddress("inst-42"));
   assert.ok(reg, "the surface registered");
   // ADR-0013's doctrine on the second placement: only a token signed for the Instance Harness's
   // own name (its Adapter's — deploy.ts) or the Instance token may deliver this surface's picks.
-  assert.equal(reg.sandbox, "j2-instance-harness");
+  assert.equal(reg.sandbox, "jr2-instance-harness");
 });
 
 test('definition-wins: "none" inside an enclosing workspace() still lands on the Instance Harness', async () => {
@@ -212,15 +212,15 @@ test('definition-wins: "none" inside an enclosing workspace() still lands on the
     { ...baseInput, endpoint: undefined },
     undefined,
     NONE,
-    { instanceHarness: "http://j2-instance-harness.ns.svc:8080" },
+    { instanceHarness: "http://jr2-instance-harness.ns.svc:8080" },
     AMBIENT,
   );
   await tick();
 
-  assert.deepEqual(endpoints, ["http://j2-instance-harness.ns.svc:8080"], "not the workspace's Harness");
+  assert.deepEqual(endpoints, ["http://jr2-instance-harness.ns.svc:8080"], "not the workspace's Harness");
   assert.equal(
     table.lookup(agentAddress("inst-42"))?.sandbox,
-    "j2-instance-harness",
+    "jr2-instance-harness",
     "…and not the workspace's Sandbox: the placement is the scope",
   );
 });
@@ -435,7 +435,7 @@ test("runaway: a continuation gets NO reroll — straight to the fault (ADR-0035
   mock.faultSettled("runaway", "exceeded 128 steps");
   await tick();
 
-  assert.equal(mock.admits.length, 1, "j2 does not invent a conversation the workflow asked to continue");
+  assert.equal(mock.admits.length, 1, "jr2 does not invent a conversation the workflow asked to continue");
   const faults = received.filter((e) => e.type === "agent.fault");
   assert.equal(faults.length, 1);
   assert.match(String(faults[0]!.reason), /exceeded 128 steps/);

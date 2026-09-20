@@ -5,16 +5,16 @@
 bake workflows into the instance image, while the state PVC outlives every rollout. And a persisted run is matched to
 its workflow by **filename stem** — `this.workflowDefs.get(blob.workflow)`.
 
-Those three facts compose into a hole. Park a run at a Gate, edit `workflows/task.ts`, `j2 up`. The name still resolves.
-The def found under it is a different Machine. Nothing checks, and — this is the part that decides the shape of the fix
-— **xstate does not validate a restored state value.** A snapshot whose `value` names a state the new chart does not
-have does not throw: `createActor` accepts it and the run starts with `value: undefined`, carrying on from nowhere.
-There is no downstream check to fall back on. Either restore refuses, or nothing does.
+Those three facts compose into a hole. Park a run at a Gate, edit `workflows/task.ts`, `jr2 up`. The name still
+resolves. The def found under it is a different Machine. Nothing checks, and — this is the part that decides the shape
+of the fix — **xstate does not validate a restored state value.** A snapshot whose `value` names a state the new chart
+does not have does not throw: `createActor` accepts it and the run starts with `value: undefined`, carrying on from
+nowhere. There is no downstream check to fall back on. Either restore refuses, or nothing does.
 
 ## Decision
 
 **Every save stamps the shape of the Machine that wrote it; every restore compares before interpreting.** `RunBlob`
-gains `machine`, a 12-hex digest — the same width `j2 up`'s content hash uses, and for the same reason: it is read by
+gains `machine`, a 12-hex digest — the same width `jr2 up`'s content hash uses, and for the same reason: it is read by
 people in error messages more often than by code. A mismatch is refused before `reconcile`, because proving a Sandbox is
 alive for a run that cannot be read is wasted work.
 
@@ -29,14 +29,14 @@ projected down to the facts a snapshot has to agree with:
 
 Deliberately excluded: guard bodies, actions and assigns, prompts, descriptions. Editing a guard changes what a run does
 _next_; it does not make the snapshot unreadable. The alternative — any edit to a workflow strands its parked runs — is
-defensible in the abstract and unusable in practice: it makes `j2 dev`'s reload a migration event and prompt-tuning a
+defensible in the abstract and unusable in practice: it makes `jr2 dev`'s reload a migration event and prompt-tuning a
 stop-the-world operation. **Drift means "I can no longer read what I saved," not "something changed."**
 
 **Absent means drift.** A blob written before the stamp existed cannot be vouched for, and the point is to never
-interpret one that cannot be. Greenfield, so a stale local `.j2/state.db` is deleted, not migrated.
+interpret one that cannot be. Greenfield, so a stale local `.jr2/state.db` is deleted, not migrated.
 
 **A drifted run is refused, kept, and readable.** Not `markLost`: that nulls the snapshot, and `read()` returns
-undefined for a null blob, so `j2 status <id>` would answer `no run "<id>"` — a refusal indistinguishable from a run
+undefined for a null blob, so `jr2 status <id>` would answer `no run "<id>"` — a refusal indistinguishable from a run
 that never existed, on precisely the run a human most needs to look at. `drifted` is its own status, the snapshot is
 untouched, and `RunStatus` gains `reason`, which nothing on any HTTP route surfaced before. The refusal names the
 workflow and both digests.
@@ -58,9 +58,9 @@ reachable only by asking after a run id nobody knows to ask about.
 
 - **Hash the workflow module source, or the whole config including guards and actions.** Rejected — see above. Maximal
   safety at the cost of making every workflow edit a migration.
-- **Reuse `J2_CONTENT_HASH`**, which `j2 up` already computes and injects. Rejected: it is a digest of the whole staged
-  bundle, so it moves on a lockfile bump, a README edit, or a kit upgrade — constant false drift — and it is absent
-  under `j2 dev` entirely.
+- **Reuse `JR2_CONTENT_HASH`**, which `jr2 up` already computes and injects. Rejected: it is a digest of the whole
+  staged bundle, so it moves on a lockfile bump, a README edit, or a kit upgrade — constant false drift — and it is
+  absent under `jr2 dev` entirely.
 - **Topology plus named guards** (`setup()` keys and named functions). Rejected: inline arrows collapse to `"inline"` in
   the doc and would stay invisible, so the coverage is uneven in a way no one could predict from reading a workflow.
 - **A `machine_snapshots` schema column.** Rejected: `init()` is a single `CREATE TABLE IF NOT EXISTS` with no migration
@@ -73,12 +73,12 @@ reachable only by asking after a run id nobody knows to ask about.
 ## Consequences
 
 - **Editing a workflow strands its parked runs, by design.** Draining before a shape-changing deploy is now a real
-  operational step. `j2 dev`'s reload is unaffected for logic edits, which is the common case, and in-flight runs
+  operational step. `jr2 dev`'s reload is unaffected for logic edits, which is the common case, and in-flight runs
   already keep the definition they started on.
 - **There is no migration path.** A drifted run can be read and cancelled; it cannot be adapted onto the new Machine.
   That is deliberate for now — a migration story needs a way to express what a state maps to, which nothing here does.
-- **A drifted run is not in `j2 runs`**, which lists only the live registry. It is reachable through the announce line
-  and `j2 status <id>`. If stranded runs become common enough to browse, the listing is where that belongs.
+- **A drifted run is not in `jr2 runs`**, which lists only the live registry. It is reachable through the announce line
+  and `jr2 status <id>`. If stranded runs become common enough to browse, the listing is where that belongs.
 - **The digest is only as complete as the walk.** A state running `enqueueActions` can spawn children no static analysis
   recovers (`machine-doc.ts`'s `opaqueStates`); the opacity is folded into the hash, but what it hides is not. Drift
   inside such a subtree can go unnoticed.

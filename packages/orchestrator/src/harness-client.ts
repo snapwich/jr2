@@ -2,7 +2,7 @@
 // drives one Agent run over the five-endpoint wire — and `agent(definition)`, the Agent slot built
 // on it (ADR-0049: a Machine carries its Agents; the client is constructed from `input.endpoint`).
 //
-// The wire is j2's own (`./wire.ts` is the shape contract as this client reads it; the stub Harness
+// The wire is jr2's own (`./wire.ts` is the shape contract as this client reads it; the stub Harness
 // is the normative server model), so this module speaks plain `fetch` — no SDK. Keeping it here (not in `actor.ts`)
 // is what keeps the run-lifecycle actor and its unit tests wire-free (see actor.ts header). The
 // port is built over an INJECTABLE client (`harnessAgentRunPort(client)`) so the mapping logic is
@@ -12,7 +12,7 @@
 // Channel split (ADR-0002, refined by ADR-0016): the Harness wire carries **lifecycle only** —
 // domain events go up the MCP channel via the Adapter. The client's `send`/`wait` pair is exactly
 // that lifecycle surface: `send` answers with a serializable Admission
-// (`{ streamUrl, offset, submissionId }` — j2's durable re-attach handle, stored in the host
+// (`{ streamUrl, offset, submissionId }` — jr2's durable re-attach handle, stored in the host
 // ledger), and `wait(admission)` follows the durable stream from the admission offset to the
 // Submission's Settlement — a long-poll loop that advances by the `stream-next-offset` header and
 // reconnects from the SAME offset on network failure (capped backoff, indefinitely: pod death is
@@ -30,7 +30,7 @@
 //
 // `abort` is the third verb, and ADR-0024 wires it to the END OF THE INVOCATION: a turn ends with
 // the state that asked for it. It sweeps the running Submission and everything queued behind it to
-// the distinct `aborted` Settlement — worth having for observability, though j2 never reads it
+// the distinct `aborted` Settlement — worth having for observability, though jr2 never reads it
 // (the actor is stopped by then; see actor.ts).
 
 import { agentActorWith } from "./actor.ts";
@@ -129,7 +129,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
    *
    * This is `wait`'s reconnect rule, applied one step earlier and for the same reason: a request
    * that could not connect is not a Harness that refused the prompt. It matters here because the
-   * admission is the FIRST thing j2 ever sends over the Sandbox's Service — provisioning waits on
+   * admission is the FIRST thing jr2 ever sends over the Sandbox's Service — provisioning waits on
    * the CR's `phase: Ready`, which the operator computes from the POD, and the attach reaches the
    * pod through the API server, so nothing before this has proven the Service dialable. Ready is
    * not routable: the EndpointSlice behind the ClusterIP is programmed after the pod passes its
@@ -324,7 +324,7 @@ export function createEchoPush(options: {
   return async (events) => {
     const url = new URL("/echo", options.baseUrl).toString();
     // The echo is log-only, un-retried, and fires at workspace attach — which makes it the FIRST
-    // thing to touch a Sandbox's Service and therefore j2's earliest witness that the Service is
+    // thing to touch a Sandbox's Service and therefore jr2's earliest witness that the Service is
     // not routable yet (ADR-0042). It is only a witness if it says what went wrong: bare
     // `fetch failed` in the pod log is what let that condition hide.
     const res = await fetchImpl(url, {
@@ -344,7 +344,7 @@ export function createEchoPush(options: {
 
 /**
  * THE authoring surface for an Agent (ADR-0049): one definition in, one actor slot out —
- * `j2Setup({ actors: { coder: agent({ model, instructions }) } })`, invoked as `src: "coder"`.
+ * `jr2Setup({ actors: { coder: agent({ model, instructions }) } })`, invoked as `src: "coder"`.
  * The slot key is the Agent's name (the Harness route, the minted iid, the markers), so a name
  * the Machine does not carry is a compile error on `src`, and two Machines in one run may each
  * carry their own `coder`.
@@ -430,11 +430,11 @@ async function errorDetail(res: Response): Promise<string> {
 
 /**
  * The marker the `@kind` tier greps for, and therefore a CONTRACT — duplicated verbatim in
- * `@j2/adapter` (the two packages share no runtime dependency) and matched in
+ * `@jr2/adapter` (the two packages share no runtime dependency) and matched in
  * `features/steps/kind.steps.ts`. Renaming it on one side does not break a build; it silently turns
  * the tier's routability budget into a check that passes because it matches nothing.
  */
-const ROUTABILITY_MARKER = "j2.routability";
+const ROUTABILITY_MARKER = "jr2.routability";
 
 /**
  * What a retry at a lifecycle edge COST, emitted once, only when there was a cost.

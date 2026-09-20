@@ -20,7 +20,7 @@ test("boots the instance from env and announces its address as one JSON line", a
   const lines: string[] = [];
   const inst = await serverMain({
     dir: fixtureDir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64 },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64 },
     announce: (line) => lines.push(line),
   });
   try {
@@ -37,17 +37,17 @@ test("boots the instance from env and announces its address as one JSON line", a
   }
 });
 
-test("J2_SIGNING_KEY from env keeps the key out of the pod filesystem", async () => {
-  // A dir with no `.j2/secret`: with the env key supplied, none may be minted onto disk — the key
+test("JR2_SIGNING_KEY from env keeps the key out of the pod filesystem", async () => {
+  // A dir with no `.jr2/secret`: with the env key supplied, none may be minted onto disk — the key
   // must live in the Secret so Sandbox tokens survive a pod restart (ADR-0013/0019).
-  const dir = await mkdtemp(join(tmpdir(), "j2-server-"));
+  const dir = await mkdtemp(join(tmpdir(), "jr2-server-"));
   const inst = await serverMain({
     dir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_SIGNING_KEY: KEY_B64 },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_SIGNING_KEY: KEY_B64 },
     announce: () => {},
   });
   try {
-    await assert.rejects(access(join(dir, ".j2", "secret")), "signing key must not be written to disk");
+    await assert.rejects(access(join(dir, ".jr2", "secret")), "signing key must not be written to disk");
   } finally {
     await inst.close();
   }
@@ -56,10 +56,10 @@ test("J2_SIGNING_KEY from env keeps the key out of the pod filesystem", async ()
 /** An instance folder whose one workflow is a `workspace()` — a registered Machine that composes
  * a Sandbox, which is the data-plane switch (ADR-0051). The body is trivial and no run needs to
  * reach a cluster: what the boot decides off this Machine is the claim. Imported by absolute path,
- * like the bootstrap fixture: a temp folder resolves no bare `@j2/orchestrator`. */
+ * like the bootstrap fixture: a temp folder resolves no bare `@jr2/orchestrator`. */
 async function mkWorkspaceInstance(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "j2-server-ws-"));
-  await writeFile(join(dir, "j2.config.ts"), `export default { name: "ws" };\n`);
+  const dir = await mkdtemp(join(tmpdir(), "jr2-server-ws-"));
+  await writeFile(join(dir, "jr2.config.ts"), `export default { name: "ws" };\n`);
   await mkdir(join(dir, "workflows"), { recursive: true });
   const src = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "index.ts")).href;
   await writeFile(
@@ -104,16 +104,16 @@ async function announcedRepos(lines: string[], count: number): Promise<Array<Rec
   return lines.slice(1).map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
-test("a registered Machine composing a Sandbox + J2_NAMESPACE → the data plane is wired (ADR-0051)", async () => {
-  // The switch is read off the WALK, not off config: nothing in j2.config.ts says "this instance
-  // has Workspaces". Deployed (J2_NAMESPACE set), the kubectl backend is built and the instance
+test("a registered Machine composing a Sandbox + JR2_NAMESPACE → the data plane is wired (ADR-0051)", async () => {
+  // The switch is read off the WALK, not off config: nothing in jr2.config.ts says "this instance
+  // has Workspaces". Deployed (JR2_NAMESPACE set), the kubectl backend is built and the instance
   // reports a data plane. The blast pattern ADR-0038 chose still holds: no image map is mounted
   // here, and the boot serves anyway — only a provision would fail.
   const dir = await mkWorkspaceInstance();
   const kubectl = fakeKubectl();
   const inst = await serverMain({
     dir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "ws" },
     announce: () => {},
     exec: kubectl.exec,
   });
@@ -123,7 +123,7 @@ test("a registered Machine composing a Sandbox + J2_NAMESPACE → the data plane
     // …and the Repos are READ THROUGH to the cluster, per request (ADR-0048/0051).
     assert.deepEqual(repos.repos, []);
     assert.ok(
-      kubectl.calls.some((a) => a[0] === "get" && a[1] === "repos.core.j2.dev" && a.includes("ws")),
+      kubectl.calls.some((a) => a[0] === "get" && a[1] === "repos.core.jr2.dev" && a.includes("ws")),
       "GET /repos asked the namespace's Repo resources",
     );
     // And the pod's route out is wired to the same cluster (ADR-0053): the ask reads the Sandbox
@@ -154,7 +154,7 @@ test("the boot creates one bound Repo resource per identity its Machines bind, a
   const kubectl = fakeKubectl();
   const inst = await serverMain({
     dir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "ws" },
     announce: (line) => lines.push(line),
     exec: kubectl.exec,
   });
@@ -164,9 +164,9 @@ test("the boot creates one bound Repo resource per identity its Machines bind, a
     const create = kubectl.calls.find((a) => a[0] === "create")!;
     assert.ok(create, "kubectl create of the resource");
     assert.ok(create.includes("--namespace") && create.includes("ws"), "in the instance's namespace");
-    // The label `j2 gc` honors, then the reconcile that drops it from what nothing binds any more.
+    // The label `jr2 gc` honors, then the reconcile that drops it from what nothing binds any more.
     const reconcile = kubectl.calls.find(
-      (a) => a[0] === "get" && a[1] === "repos.core.j2.dev" && a.includes("j2.dev/bound=true"),
+      (a) => a[0] === "get" && a[1] === "repos.core.jr2.dev" && a.includes("jr2.dev/bound=true"),
     );
     assert.ok(reconcile, "reconcileBound read the bound resources");
     assert.ok(
@@ -183,26 +183,26 @@ test("the boot creates one bound Repo resource per identity its Machines bind, a
 test("a boot finding its bound Repo already there RESTATES the Machine's spec — the boot is the one writer (ADR-0051)", async () => {
   // A redeploy: the resource stands from the last boot. The boot binds — one merge patch carrying
   // the walk's url — where a provision would only move the clock; so a url or credential moved in
-  // j2.config.ts reaches the cache at the next `j2 up`, and never from a run.
+  // jr2.config.ts reaches the cache at the next `jr2 up`, and never from a run.
   const dir = await mkWorkspaceInstance();
   const lines: string[] = [];
   const kubectl = fakeKubectl((args) =>
-    args[0] === "create" ? "Error from server (AlreadyExists): repos.core.j2.dev already exists" : undefined,
+    args[0] === "create" ? "Error from server (AlreadyExists): repos.core.jr2.dev already exists" : undefined,
   );
   const inst = await serverMain({
     dir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "ws" },
     announce: (line) => lines.push(line),
     exec: kubectl.exec,
   });
   try {
     const { key } = repoIdentity("https://example.test/app.git");
     assert.deepEqual(await announcedRepos(lines, 1), [{ repo: key, url: "https://example.test/app.git", bound: true }]);
-    const patch = kubectl.calls.find((a) => a[0] === "patch" && a[1] === "repos.core.j2.dev" && a[2] === key);
+    const patch = kubectl.calls.find((a) => a[0] === "patch" && a[1] === "repos.core.jr2.dev" && a[2] === key);
     assert.ok(patch, "the boot patched the existing resource");
     const body = JSON.parse(patch!.at(-1)!) as { spec?: { url?: string }; metadata?: { labels?: unknown } };
     assert.equal(body.spec?.url, "https://example.test/app.git");
-    assert.deepEqual(body.metadata?.labels, { "j2.dev/bound": "true" });
+    assert.deepEqual(body.metadata?.labels, { "jr2.dev/bound": "true" });
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });
@@ -213,11 +213,11 @@ test("a Repo the cluster refuses is announced as an error, and the process serve
   const dir = await mkWorkspaceInstance();
   const lines: string[] = [];
   const kubectl = fakeKubectl((args) =>
-    args[0] === "create" ? "Error from server (Forbidden): repos.core.j2.dev is forbidden" : undefined,
+    args[0] === "create" ? "Error from server (Forbidden): repos.core.jr2.dev is forbidden" : undefined,
   );
   const inst = await serverMain({
     dir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "ws" },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "ws" },
     announce: (line) => lines.push(line),
     exec: kubectl.exec,
   });
@@ -237,11 +237,11 @@ test("a Repo the cluster refuses is announced as an error, and the process serve
 
 test("the same Machine with NO namespace → no port, and a workspace() run faults 'no Sandbox backend'", async () => {
   // A Workspace is always a real Sandbox (ADR-0012): a host-booted process has no cluster to drive,
-  // so the switch stays off and the run says exactly why — durably, on the run, naming `j2 up`.
+  // so the switch stays off and the run says exactly why — durably, on the run, naming `jr2 up`.
   const dir = await mkWorkspaceInstance();
   const inst = await serverMain({
     dir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64 },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64 },
     announce: () => {},
   });
   try {
@@ -261,8 +261,8 @@ test("the same Machine with NO namespace → no port, and a workspace() run faul
     }
     assert.equal(final?.status, "error");
     assert.match(final?.fault ?? "", /no Sandbox backend/);
-    assert.match(final?.fault ?? "", /J2_NAMESPACE unset/);
-    assert.match(final?.fault ?? "", /`j2 up`/);
+    assert.match(final?.fault ?? "", /JR2_NAMESPACE unset/);
+    assert.match(final?.fault ?? "", /`jr2 up`/);
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });
@@ -273,7 +273,7 @@ test("no registered Machine composes a Sandbox → no data plane, even deployed"
   const kubectl = fakeKubectl();
   const inst = await serverMain({
     dir: fixtureDir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "echo" },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "echo" },
     announce: () => {},
     exec: kubectl.exec,
   });
@@ -282,7 +282,7 @@ test("no registered Machine composes a Sandbox → no data plane, even deployed"
     assert.deepEqual(repos, { dataPlane: false, repos: [] });
     // …and `GET /repos` answered that WITHOUT reading the cluster: no data plane, no read-through.
     assert.deepEqual(
-      kubectl.calls.filter((a) => a[0] === "get" && !a.includes("j2.dev/bound=true")),
+      kubectl.calls.filter((a) => a[0] === "get" && !a.includes("jr2.dev/bound=true")),
       [],
     );
   } finally {
@@ -292,25 +292,25 @@ test("no registered Machine composes a Sandbox → no data plane, even deployed"
 
 test("an Instance that stopped composing a Sandbox unlabels the Repos its last deploy bound (ADR-0051)", async () => {
   // The last `workspace()` dropped from the Machines: nothing binds the Repos the previous deploys
-  // labeled, and no cache agent is converged for them any more (`j2 up` deletes the DaemonSet).
-  // The boot still reconciles, because the bound label is `j2 gc`'s only "keep this" — left on,
+  // labeled, and no cache agent is converged for them any more (`jr2 up` deletes the DaemonSet).
+  // The boot still reconciles, because the bound label is `jr2 gc`'s only "keep this" — left on,
   // the resources are uncollectable forever and nothing ever evicts the node caches behind them.
-  const bound = { items: [{ metadata: { name: "app-11111111", labels: { "j2.dev/bound": "true" } } }] };
+  const bound = { items: [{ metadata: { name: "app-11111111", labels: { "jr2.dev/bound": "true" } } }] };
   const kubectl = fakeKubectl();
   const exec: KubectlExec = async (args, opts) =>
-    args[0] === "get" && args.includes("j2.dev/bound=true")
+    args[0] === "get" && args.includes("jr2.dev/bound=true")
       ? { stdout: JSON.stringify(bound), stderr: "" }
       : kubectl.exec(args, opts);
   const inst = await serverMain({
     dir: fixtureDir,
-    env: { PORT: "0", HOST: "127.0.0.1", J2_INSTANCE_TOKEN: "tok", J2_SIGNING_KEY: KEY_B64, J2_NAMESPACE: "echo" },
+    env: { PORT: "0", HOST: "127.0.0.1", JR2_INSTANCE_TOKEN: "tok", JR2_SIGNING_KEY: KEY_B64, JR2_NAMESPACE: "echo" },
     announce: () => {},
     exec,
   });
   try {
     const label = await until(kubectl.calls, (a) => a[0] === "label");
-    assert.deepEqual(label.slice(0, 3), ["label", "repos.core.j2.dev", "app-11111111"]);
-    assert.ok(label.includes("j2.dev/bound-"), "kubectl's spelling for removing the label");
+    assert.deepEqual(label.slice(0, 3), ["label", "repos.core.jr2.dev", "app-11111111"]);
+    assert.ok(label.includes("jr2.dev/bound-"), "kubectl's spelling for removing the label");
     assert.ok(label.includes("--namespace") && label.includes("echo"), "in the instance's namespace");
     // The walk binds nothing, so the reconcile is the whole pass: no resource is created or stated.
     assert.deepEqual(

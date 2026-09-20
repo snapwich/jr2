@@ -1,6 +1,6 @@
 # Control events are workflow-defined and delivered by closure, not routed
 
-Two decisions, out of the jr-parity design exercise: **j2 ships the event mechanism and zero events**, and **an event
+Two decisions, out of the jr-parity design exercise: **jr2 ships the event mechanism and zero events**, and **an event
 binds to a Machine state through the actor that exposes it** — delivery is a closure created at invoke time, so no
 routing layer exists anywhere.
 
@@ -10,7 +10,7 @@ routing layer exists anywhere.
 tagged objects, never `oneOf` — the ADR-0006 encoding rule), an optional audience tag (`agent` | `external` | `any`,
 ADR-0015), and an optional semantics tag (`ack` | `deferred` | `poll`). It is a **pure factory — no import-time side
 effects, no global registry**. Because actor **inputs are serializable** (ADR-0007) they carry event _names_, so
-resolution needs a name→def scope; that scope is **per-Machine**: `j2Setup` takes the defs as values and attaches the
+resolution needs a name→def scope; that scope is **per-Machine**: `jr2Setup` takes the defs as values and attaches the
 vocabulary to the machine (ADR-0015 — discovery reads it there; the module contract is `export const machine` alone),
 and `gate`/`agentRun` resolve names against **the Machine that invoked them** — `self._parent.logic`, public xstate API
 — never a run-wide set. Names are local to their Machine: `coding`'s `approve` and `release`'s `approve` may differ, and
@@ -25,11 +25,11 @@ run-scoped set this ADR first specified (`RunBinding.events`, the root's vocabul
 events the root's problem to re-declare, and turned a same-name-different-payload pair into a collision that the
 per-Machine defs had already avoided.
 
-`defineEvent` also carries the TypeScript side: `j2Setup` derives the machine's event union from the defs — one source
+`defineEvent` also carries the TypeScript side: `jr2Setup` derives the machine's event union from the defs — one source
 of truth, no schema/type drift, and the machine stays fully typed for xstate tooling.
 
-There is no j2-blessed event vocabulary. `request_review`, `review_verdict`, `approve` are the _coding workflow's_
-words; another workflow defines others. j2 owns only definition, transport, validation, and delivery.
+There is no jr2-blessed event vocabulary. `request_review`, `review_verdict`, `approve` are the _coding workflow's_
+words; another workflow defines others. jr2 owns only definition, transport, validation, and delivery.
 
 ## Agent side: invoke-scoped registration, delivery via `sendBack`
 
@@ -53,7 +53,7 @@ implemented once, in the registration table.
 
 ## External side: the same primitive over HTTP (`gate`), and each gate is a resource
 
-`gate` is the symmetric actor for **every non-agent caller** — humans (`j2 send`, a UI), webhook translators, CI, other
+`gate` is the symmetric actor for **every non-agent caller** — humans (`jr2 send`, a UI), webhook translators, CI, other
 systems. "Human" is policy, not mechanism, so the actor is not named for one caller. Each invocation is an addressable
 **gate**: input is `{ gate?, meta? }` — `gate` an optional authored id (the id is derived when absent — below), `meta`
 serializable caller/integration context (PR URL, title); its accepted set derives from the gated state's transitions
@@ -72,13 +72,13 @@ ADR-0017). Two obvious later additions, both deferred: a cross-run inbox (`GET /
 derived gate ids (`--gate F-12` resolving an unambiguous segment, git-style like run-id prefixes).
 
 **The gate id is derived; authoring one is the exception.** Absent an authored `gate`, the id is the gate actor's own
-path below the run root, and j2Setup's menu-derivation walk names an unnamed gate invoke with its state key path so the
+path below the run root, and jr2Setup's menu-derivation walk names an unnamed gate invoke with its state key path so the
 leaf segment is readable — `F-12.body.humanReview`, not xstate's `0.body.humanReview` default. This is unique wherever
 concurrently live siblings have distinct actor ids — the invariant any correct fan-out already maintains, because xstate
 keys children by id (a duplicate silently shadows the children-map entry and breaks `xstate.done.actor.<id>`
 correlation). Authored ids exist for meaningful flat names (jr's feature id) and collision on them is a loud invoke-time
 error. Derivation runs at actor start, not the input mapper — deterministic from structure, so recomputation on every
-(re)start is restore-stable, and one mechanism serves j2Setup and plain-`setup` machines alike (the walk contributes id
+(re)start is restore-stable, and one mechanism serves jr2Setup and plain-`setup` machines alike (the walk contributes id
 _quality_ only, never correctness). Rejected: a workflow-computed id as the default (`gate: context.feature.id`) — it
 quietly violated the address doctrine (Consequences below), making the gate id the one caller-facing address a workflow
 computed by hand, and a machine with a static id (`"humanReview"`) was correct standalone but a latent, timing-dependent
@@ -113,7 +113,7 @@ Tests mock by `machine.provide()` at the layer under test.
 
 ## Consequences
 
-- Addresses are computed by j2, never by the workflow — iids always (ADR-0016): fresh per invocation by default (the
+- Addresses are computed by jr2, never by the workflow — iids always (ADR-0016): fresh per invocation by default (the
   lossy handoff), or derived from `(run, enclosing child id, agent, scope)` under `session: "continue"`; gate ids
   derived from the gate's actor path by default, authored only to give external callers a meaningful name. Durable
   handles live in the host ledger (ADR-0016), not in machine contexts.

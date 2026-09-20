@@ -1,4 +1,4 @@
-// J2Client against a real RunHost + hono app over `app.request` (no socket). Proves every verb's wire
+// JR2Client against a real RunHost + hono app over `app.request` (no socket). Proves every verb's wire
 // call: workflows/list, start (+ unknown → throw), the SSE feed (replay + emit + terminal), read-through
 // after settle, and the down-channel `send`.
 
@@ -60,7 +60,7 @@ test("sendToGate() delivers a workflow event with input, surfaces refusals as th
   const { client } = await mkHarness();
   const { runId } = await client.start("gated");
 
-  // The open gate is discoverable on the run status (what `j2 status` shows).
+  // The open gate is discoverable on the run status (what `jr2 status` shows).
   const status = (await client.read(runId)) as unknown as { gates?: Array<{ gate: string }> };
   assert.equal(status?.gates?.[0]?.gate, "review-1");
 

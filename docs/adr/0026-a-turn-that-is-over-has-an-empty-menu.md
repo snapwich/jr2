@@ -13,7 +13,7 @@ wrong. A signal that cries wolf cannot also be the alarm: the one case where the
 acting against a turn nobody waits on — becomes indistinguishable from routine noise. (The incident that first surfaced
 the noise — an advisory session the since-retired harness runtime opened after every aborted turn, 404-ing on every
 successful run — went away with that runtime;
-[ADR-0027](0027-the-harness-is-j2s-own-server-flue-retires-the-wire-stays.md). The race is the leg the decision stands
+[ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md). The race is the leg the decision stands
 on.)
 
 ## Decision
