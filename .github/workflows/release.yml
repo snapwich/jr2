@@ -175,8 +175,11 @@ jobs:
       # `packages/*` member that is not `private` (the same rule publish.test.ts asserts) — and the
       # ORDER is pnpm's own topological walk, dependencies first, so a publish that fails half way
       # leaves packages whose own dependencies resolve — and APPROVE them in that same order, for
-      # the same reason; neither is written down here a second time. `--provenance` because the
-      # identity is the job's; a tarball published this way carries proof of the tree it came from.
+      # the same reason; neither is written down here a second time. `--provenance=false` because
+      # npm signs provenance only for a PUBLIC source repository (E422 "Unsupported GitHub Actions
+      # source repository visibility" otherwise), and this one is private; the identity is still
+      # the job's. Drop the flag the day the repository goes public — a tarball published with it
+      # carries proof of the tree it came from.
       #
       # A version already LIVE on npm is SKIPPED, not failed: published versions never move, so
       # present means done — a re-run of this job after a failure past this point converges instead
@@ -196,6 +199,6 @@ jobs:
               continue
             fi
             tarball="$(pnpm -C "$dir" pack --pack-destination "$out" | tail -1)"
-            npm stage publish "$tarball" --provenance --access public
+            npm stage publish "$tarball" --provenance=false --access public
           done
           echo "staged v$ver. Approve with 2FA, dependencies first: npm stage list, then npm stage approve <stage-id>"
