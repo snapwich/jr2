@@ -1,6 +1,6 @@
 {
   "name": "@jr2/cli",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "The jr2 CLI: init, up, run — the interface to a jr2 Instance.",
   "license": "MIT",
   "private": false,

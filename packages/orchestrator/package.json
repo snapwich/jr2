@@ -1,6 +1,6 @@
 {
   "name": "@jr2/orchestrator",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "The jr2 Orchestrator: xstate runtime, HTTP API and Console, and the kit pieces a Workflow imports.",
   "license": "MIT",
   "private": false,
