@@ -1,6 +1,6 @@
 {
   "name": "@jr2/agent-protocol",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The jr2 Orchestrator↔Agent wire: defineEvent and nothing else.",
   "license": "MIT",
   "private": false,
