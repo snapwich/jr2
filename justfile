@@ -247,8 +247,9 @@ e2e-dist:
 # never rewritten at publish time. The recipe bumps, runs the unit gate, commits `release: <ver>`
 # and tags `v<ver>`; the human pushes `main` and the tag, and .github/workflows/release.yml does
 # the rest in order — check the tag against the manifests, every tier on a runner kind cluster,
-# Kit images to their home, THEN npm. The guard against an accidental publish is the credential:
-# no dev box holds an npmjs token, and the job holds none either (trusted publishing).
+# Kit images to their home, THEN the packages STAGED on npm — a 2FA approval per package makes them
+# live. The guard against an accidental publish is the credential: no dev box holds an npmjs token,
+# and the job holds none either (trusted publishing, stage-only).
 
 # bump every manifest (patch|minor|major|x.y.z), gate, commit, and tag — then `git push origin main v<ver>`
 release bump:

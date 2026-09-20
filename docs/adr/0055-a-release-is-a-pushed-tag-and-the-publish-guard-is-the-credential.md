@@ -34,11 +34,18 @@ version, images, gate, trigger.
   and `@kind` and `@dist` on a kind cluster the job creates on the runner (the operator's own e2e job already works this
   way) — so the installed path is proven on the tree that publishes, not on a maintainer's box the day before. Then
   `scripts/kit-push.sh ghcr.io/snapwich` (multi-arch, `GITHUB_TOKEN` with `packages: write`), and **only then** npm:
-  each public package is packed with pnpm, which rewrites `workspace:*` to the exact version, and published with
-  `npm publish`, which is the client that speaks trusted publishing — in pnpm's topological order, dependencies first,
-  skipping a version npm already holds so a re-run converges. The order is the contract: a package whose images are not
-  at the home fails at pull on the user's first `jr2 up`
-  ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)); images with no package are inert.
+  each public package is packed with pnpm, which rewrites `workspace:*` to the exact version, and **staged** with
+  `npm stage publish`, the client that speaks trusted publishing — in pnpm's topological order, dependencies first,
+  skipping a version npm already holds live so a re-run converges. The order is the contract: a package whose images are
+  not at the home fails at pull on the user's first `jr2 up`
+  ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)); images with no package are inert,
+  and stay so while the packages sit staged.
+- **The job stages; the maintainer approves.** Each trusted publisher is configured for `npm stage publish` only, so the
+  tag produces four staged tarballs and one 2FA approval per package (`npm stage approve`, dependencies first) makes
+  them live. This is the one human act a release keeps, and it is kept on purpose: the job's identity is bound to the
+  repository and the workflow file, so a stolen GitHub session or a bad edit to that file could otherwise publish under
+  the project's name; staged, it can stage and nothing more. It is not a runbook step — nothing has to be remembered in
+  order, the staged tarballs wait.
 - **`ci.yml` on push and PR is the light gate**: frozen install, typecheck, format check, `pnpm -r test`, the default
   Cucumber profile — minutes, no docker. The heavy tiers run on the tag and by hand (`just e2e-kind`, `just e2e-dist`)
   when a change touches build, deploy, or dist code.

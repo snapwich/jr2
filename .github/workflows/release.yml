@@ -5,17 +5,22 @@
 #      the installed path proven on the exact tree that ships, not on a maintainer's box the day
 #      before
 #   3. the three Kit images, multi-arch, to their canonical home (ADR-0044)
-#   4. the four packages to npm, dependencies first
+#   4. the four packages STAGED on npm, dependencies first — live once the maintainer approves
 #
 # 3 before 4 is the contract: an installed kit pulls `<home>/jr2-<x>:<version>` on its first
 # `jr2 up`, so a package whose images are not there fails at the user; images with no package are
-# inert.
+# inert — and stay so while the packages sit staged.
 #
 # No token anywhere. GHCR takes the job's own GITHUB_TOKEN; npm takes the job's OIDC identity
 # (trusted publishing, `id-token: write`), which is also the accidental-publish guard — no dev box
-# can do what this job does, because nothing it holds exists outside it. Bootstrap, once: the very
-# first version is published by hand with a token (npm attaches a trusted publisher only to a
-# package that exists), the trusted publisher is configured on all four, and the token revoked.
+# can do what this job does, because nothing it holds exists outside it. And the job STAGES rather
+# than publishes: each trusted publisher is configured for `npm stage publish` only ("allow npm
+# publish" left unchecked), so a tag makes four staged tarballs and the maintainer's 2FA approval
+# (`npm stage approve <stage-id>`, or the Staged Packages tab on npmjs.com) makes them live. A
+# stolen GitHub session or a bad change to this file can stage and nothing more. Bootstrap, once:
+# the very first version is published by hand with a token (npm attaches a trusted publisher only
+# to a package that exists), the trusted publisher is configured on all four, and the token
+# revoked.
 name: kit / Release
 
 on:
@@ -30,7 +35,7 @@ jobs:
       contents: read
       packages: write # GHCR push
       id-token: write # npm trusted publishing
-    name: Gate, push images, publish
+    name: Gate, push images, stage
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -94,6 +99,19 @@ jobs:
       - name: Default e2e profile
         run: pnpm --filter @jr2/e2e test:e2e
 
+      # The hosted runner starts with ~14 GB free, and the heavy tiers spend more than that: every
+      # image the tiers build lands three times — in the daemon, as the tar `kind load` writes to
+      # /tmp, and in the node's containerd — and the first tagged run died at exactly that point
+      # (`docker save … no space left on device`, after 17 of 22 @kind scenarios). The runner
+      # image ships toolchains this job never touches; deleting them frees ~25-30 GB. `df` before
+      # and after, so the next disk failure is read off the log instead of guessed at.
+      - name: Free runner disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune --all --force >/dev/null
+          df -h /
+
       # A VANILLA cluster (ADR-0038); both heavy tiers share it, the way the recipes say they may.
       - name: kind cluster
         run: just e2e-kind-up
@@ -129,19 +147,24 @@ jobs:
       - name: Push the Kit images at their published tags
         run: just kit-push ghcr.io/snapwich
 
-      # Packed with pnpm (which rewrites `workspace:*` to the exact version, ADR-0043) and published
+      # Staged publishing is npm >= 11.15 (Node 24 bundles an older one); the release must not
+      # depend on which npm the runner image happened to ship.
+      - name: npm that speaks staged publishing
+        run: npm install -g npm@^11.15.0 && npm --version
+
+      # Packed with pnpm (which rewrites `workspace:*` to the exact version, ADR-0043) and STAGED
       # with npm (which speaks trusted publishing). The SET is what the manifests say — every
       # `packages/*` member that is not `private` (the same rule publish.test.ts asserts) — and the
       # ORDER is pnpm's own topological walk, dependencies first, so a publish that fails half way
-      # leaves packages whose own dependencies resolve; neither is written down here a second time.
-      # `--provenance` because the identity is the job's; a tarball published this way carries
-      # proof of the tree it came from.
+      # leaves packages whose own dependencies resolve — and APPROVE them in that same order, for
+      # the same reason; neither is written down here a second time. `--provenance` because the
+      # identity is the job's; a tarball published this way carries proof of the tree it came from.
       #
-      # A version already on npm is SKIPPED, not failed: published versions never move, so present
-      # means done — a re-run of this job after a failure past this point converges instead of
-      # dying on the first 403, and the bootstrap (the first version, published by hand so a
+      # A version already LIVE on npm is SKIPPED, not failed: published versions never move, so
+      # present means done — a re-run of this job after a failure past this point converges instead
+      # of dying on the first 403, and the bootstrap (the first version, published by hand so a
       # trusted publisher can be attached to it) passes through here clean.
-      - name: Publish to npm
+      - name: Stage on npm
         run: |
           set -euo pipefail
           ver="${GITHUB_REF_NAME#v}"
@@ -151,9 +174,10 @@ jobs:
             name="$(node -p "const m = require('$dir/package.json'); m.private ? '' : m.name")"
             [[ -n "$name" ]] || continue
             if npm view "$name@$ver" version >/dev/null 2>&1; then
-              echo "$name@$ver is already on npm — skipped"
+              echo "$name@$ver is already live on npm — skipped"
               continue
             fi
             tarball="$(pnpm -C "$dir" pack --pack-destination "$out" | tail -1)"
-            npm publish "$tarball" --provenance
+            npm stage publish "$tarball" --provenance --access public
           done
+          echo "staged v$ver. Approve with 2FA, dependencies first: npm stage list, then npm stage approve <stage-id>"

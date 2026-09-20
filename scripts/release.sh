@@ -137,7 +137,8 @@ git tag -a "v$next" -m "jr2 $next"
 cat >&2 <<MSG
 
 tagged v$next. The tag push is the release (ADR-0055): the job checks the tag against the manifests,
-runs every tier, pushes the Kit images to their home, then publishes to npm.
+runs every tier, pushes the Kit images to their home, then stages the packages on npm — approve
+them with 2FA, dependencies first (npm stage list; npm stage approve <stage-id>), and they are live.
 
   git push origin main v$next
 
