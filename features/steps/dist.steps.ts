@@ -12,7 +12,7 @@
 import { Given, Then, When } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { stat, writeFile } from "node:fs/promises";
+import { realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { IMAGES_CONFIGMAP, IMAGES_KEY } from "@jr2/orchestrator";
@@ -142,11 +142,18 @@ When(
       deployed?: { orchestrator?: { version?: string; hash?: string; error?: string } };
       skew: string;
     }>();
-    assert.ok(report.cli.path.startsWith(this.dir), `the copy that ran is the Instance's own, not ${report.cli.path}`);
+    // Real paths on both sides: the report resolves symlinks (ADR-0056 compares real paths), and
+    // macOS's `tmpdir()` is itself a symlink (`/var` → `/private/var`).
+    const instanceRoot = await realpath(this.dir);
+    const prefix = await realpath(dirname(dirname(this.dist.binDir)));
+    assert.ok(
+      report.cli.path.startsWith(instanceRoot),
+      `the copy that ran is the Instance's own under ${instanceRoot}, not ${report.cli.path}`,
+    );
     assert.ok(report.global, "the global on PATH said it handed off");
     assert.ok(
-      report.global.path.startsWith(dirname(dirname(this.dist.binDir))),
-      `the global is the one in the throwaway prefix, not ${report.global.path}`,
+      report.global.path.startsWith(prefix),
+      `the global is the one in the throwaway prefix ${prefix}, not ${report.global.path}`,
     );
     assert.equal(report.global.version, report.cli.version, "published from one verdaccio: one number");
     assert.equal(report.kit?.check, "ok", "the Instance's orchestrator is the copy its CLI runs against");
