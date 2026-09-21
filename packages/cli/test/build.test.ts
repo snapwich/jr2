@@ -881,6 +881,18 @@ function recordingRun(): { calls: Array<{ command: string; args: string[]; cwd: 
   return { calls, run: async (command, args, cwd) => void calls.push({ command, args, cwd }) };
 }
 
+/** {@link recordingRun} that also writes `outDir`, the way a matching `pnpm deploy` does. */
+function deployingRun(): { calls: Array<{ command: string; args: string[]; cwd: string }>; run: RunCommand } {
+  const { calls, run } = recordingRun();
+  return {
+    calls,
+    run: async (command, args, cwd) => {
+      await run(command, args, cwd);
+      await mkdir(args.at(-1)!, { recursive: true });
+    },
+  };
+}
+
 /** A scratch `outDir` that does NOT exist yet — the shape `stageInstanceBundle` hands the port. */
 async function bundleOut(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "jr2-bundle-")), "bundle");
@@ -943,11 +955,11 @@ test("a standalone instance is staged from its committed bytes, never from its n
 });
 
 test("the instance's own shape decides the bundle, not the CLI's provenance", async () => {
-  // Keyed on a `pnpm-workspace.yaml` above the INSTANCE, never on `detectKitCheckout()`: a checkout
-  // CLI can legitimately drive a standalone instance (a developer's /tmp folder), and `pnpm deploy`
-  // would fail there — its job, materializing workspace symlinks, only exists in a workspace. This
-  // test process runs out of the kit checkout, which is what makes the case real rather than
-  // hypothetical.
+  // Keyed on the INSTANCE's own lockfile, then on a `pnpm-workspace.yaml` above it — never on
+  // `detectKitCheckout()`: a checkout CLI can legitimately drive a standalone instance (a
+  // developer's /tmp folder), and `pnpm deploy` would fail there — its job, materializing workspace
+  // symlinks, only exists in a workspace. This test process runs out of the kit checkout, which is
+  // what makes the case real rather than hypothetical.
   assert.ok(await detectKitCheckout(), "the CLI under test IS a kit checkout");
   const standalone = await mkTree({ "package.json": `{"name":"inst"}`, "pnpm-lock.yaml": "lock\n" }, "jr2-instance-");
   const { calls, run } = recordingRun();
@@ -957,17 +969,56 @@ test("the instance's own shape decides the bundle, not the CLI's provenance", as
   // The mirror case: a workspace member takes `pnpm deploy --legacy` unchanged, and needs no
   // lockfile of its own — the workspace root holds it (templates/*, in this checkout).
   const root = await mkTree(
-    { "pnpm-workspace.yaml": "packages:\n  - templates/*\n", "templates/default/package.json": `{"name":"default"}` },
+    {
+      "pnpm-workspace.yaml": "packages:\n  - templates/*\n",
+      "pnpm-lock.yaml": "lock\n",
+      "templates/default/package.json": `{"name":"default"}`,
+      "docs/intro/package.json": `{"name":"intro"}`,
+      "docs/intro/package-lock.json": "lock\n",
+    },
     "jr2-workspace-",
   );
   const member = join(root, "templates", "default");
   const out = await bundleOut();
-  const member_ = recordingRun();
+  const member_ = deployingRun();
   await bundleInstance(member, out, member_.run);
   assert.deepEqual(member_.calls, [
     { command: "pnpm", args: ["--filter", "default", "--prod", "deploy", "--legacy", out], cwd: member },
   ]);
-  await assert.rejects(stat(out), "pnpm deploy writes the bundle itself — nothing is staged for it");
+
+  // A standalone instance committed INSIDE the workspace — the kit's own `docs/intro`, under the
+  // checkout's `pnpm-workspace.yaml` and deliberately not one of its packages. Its own lockfile says
+  // it is self-contained, and that is asked FIRST: the workspace file above it is a fact about an
+  // ancestor. Keyed the other way round, it went to `pnpm deploy`, which pnpm answers for a
+  // non-member with "No projects matched the filters" and exit 0 — no bundle, and an ENOENT from
+  // the seal was the first anyone heard of it.
+  const nested = join(root, "docs", "intro");
+  const nestedOut = await bundleOut();
+  const nested_ = recordingRun();
+  await bundleInstance(nested, nestedOut, nested_.run);
+  assert.deepEqual(nested_.calls, [{ command: "npm", args: ["ci", "--omit=dev"], cwd: nestedOut }]);
+  assert.deepEqual((await readdir(nestedOut)).sort(), ["package-lock.json", "package.json"]);
+});
+
+test("a workspace non-member with no lockfile is a named refusal, not pnpm's silent exit 0", async () => {
+  // pnpm exits 0 for a `--filter` that names no member — "No projects matched the filters" — having
+  // deployed nothing. The deploy branch checks the bundle exists and names BOTH ways out, because
+  // the instance has exactly two: join the workspace, or carry a lockfile and be standalone.
+  const root = await mkTree(
+    { "pnpm-workspace.yaml": "packages:\n  - templates/*\n", "docs/intro/package.json": `{"name":"intro"}` },
+    "jr2-workspace-",
+  );
+  const nested = join(root, "docs", "intro");
+  const out = await bundleOut();
+  const { calls, run } = recordingRun();
+  await assert.rejects(
+    bundleInstance(nested, out, run),
+    (err: Error) =>
+      err.message.includes(`pnpm deploy wrote no bundle for ${nested}`) &&
+      err.message.includes(`workspace at ${root}`) &&
+      /add it to the workspace's `packages:`, or install and commit a lockfile/.test(err.message),
+  );
+  assert.equal(calls[0]?.args[3], "deploy", "the deploy ran — the refusal is about what it left behind");
 });
 
 test("no lockfile, two package managers, and yarn are each a named refusal", async () => {

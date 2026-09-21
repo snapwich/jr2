@@ -86,11 +86,19 @@ PM-neutral install hint — and instances upgrade the kit by editing two dep lin
 ## The bundle installs from the lockfile, with the lockfile's own package manager
 
 The instance-image bundle ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)) is keyed off the **instance's own
-workspace membership** — the nearest `pnpm-workspace.yaml` at or above the instance directory — and not off the mode
-`jr2 up` detects for its Kit image refs. That membership, not the CLI's provenance, is what says whether `pnpm deploy`
-can run at all, and the two keys disagree in both directions: a checkout CLI legitimately drives a standalone instance
-(a developer's `/tmp` folder), and an installed kit legitimately drives an instance nested in the user's own pnpm
-monorepo — which carries no lockfile of its own, because the workspace root holds it.
+shape** — and not off the mode `jr2 up` detects for its Kit image refs. Asked in order: does the instance carry a
+lockfile of its own; if not, is there a `pnpm-workspace.yaml` at or above it. The instance's shape, not the CLI's
+provenance, is what says whether `pnpm deploy` can run at all, and the two keys disagree in both directions: a checkout
+CLI legitimately drives a standalone instance (a developer's `/tmp` folder), and an installed kit legitimately drives an
+instance nested in the user's own pnpm monorepo — which carries no lockfile of its own, because the workspace root holds
+it.
+
+_Amended:_ the key was first written as the workspace file alone — "is there a `pnpm-workspace.yaml` above me" — which
+is a fact about an ancestor, not the instance. A standalone instance committed inside the kit checkout (`docs/intro`,
+deliberately not in `packages:`) went to `pnpm deploy`, which answers a `--filter` naming no member with "No projects
+matched the filters" and **exit 0**: no bundle, and the failure surfaced as an ENOENT from the seal. The lockfile is
+asked first because a member never has one and a standalone instance always does; and the deploy branch now checks the
+bundle exists, naming both ways out (join the workspace, or commit a lockfile) when it does not.
 
 - **Workspace member**: unchanged `pnpm deploy --legacy`. Its job — materializing workspace symlinks — only exists in a
   workspace. pnpm is a **contributor prerequisite** (like go for the operator), and in the one installed-mode shape that

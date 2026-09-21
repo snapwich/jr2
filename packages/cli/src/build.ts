@@ -998,30 +998,47 @@ const execCommand: RunCommand = async (command, args, cwd) => {
 
 /**
  * Materialize the Instance into `outDir` (ADR-0043, as amended there). Two shapes, and the key is
- * the INSTANCE's own: walk up for a `pnpm-workspace.yaml`, because that — not
- * {@link detectKitCheckout} — is what says whether `pnpm deploy` can run at all. A checkout CLI can
- * legitimately drive a standalone instance (the developer's `/tmp` folder), and keying on the CLI's
- * own provenance would send that instance down a path whose job — materializing workspace symlinks
- * — only exists in a workspace. The mirror holds too: an INSTALLED kit driving an instance nested
- * in the user's own pnpm monorepo takes `pnpm deploy`, because that instance carries no lockfile of
- * its own — the workspace root holds it.
+ * the INSTANCE's own, asked in this order:
  *
- * - Workspace member (the kit checkout's `templates/*` and `features/kind-instance`): `pnpm deploy
- *   --legacy`, unchanged. pnpm is a contributor prerequisite, like go for the operator, never a
- *   product dependency.
- * - Standalone: stage a copy ({@link BUNDLE_STAGE_EXCLUDE}) and run a frozen production install
- *   from the committed lockfile ({@link lockfileInstall}) inside it.
+ * 1. Its own lockfile. An instance that carries one is self-contained — the lockfile IS its
+ *    dependency graph, wherever the folder sits — so it is staged as a copy
+ *    ({@link BUNDLE_STAGE_EXCLUDE}) and installed frozen and production-only by the lockfile's own
+ *    package manager ({@link lockfileInstall}). This is how a standalone instance committed INSIDE
+ *    a pnpm monorepo bundles: the kit's own `docs/intro` sits under the checkout's
+ *    `pnpm-workspace.yaml` and is deliberately not one of its packages.
+ * 2. A `pnpm-workspace.yaml` above it. A workspace member carries no lockfile of its own — the
+ *    workspace root holds it — so it is the ABSENCE of one that sends the instance to `pnpm deploy
+ *    --legacy`, unchanged. pnpm is a contributor prerequisite, like go for the operator, never a
+ *    product dependency.
+ * 3. Neither: {@link lockfileInstall}'s named refusal.
+ *
+ * Neither key is {@link detectKitCheckout}: a checkout CLI legitimately drives a standalone
+ * instance (the developer's `/tmp` folder), and an installed kit legitimately drives a member of
+ * the user's own monorepo. Asking "is there a workspace file above me" FIRST — the previous rule —
+ * answered a question about an ancestor, and sent shape (1) down `pnpm deploy`, which pnpm answers
+ * for a non-member with "No projects matched the filters" and exit 0: no bundle, and the failure
+ * surfaced later as an ENOENT from the seal. That silent success is why the deploy branch checks
+ * that the bundle exists, and names the shape when it does not.
  */
 export async function bundleInstance(
   instanceDir: string,
   outDir: string,
   run: RunCommand = execCommand,
 ): Promise<void> {
-  if (await pnpmWorkspaceRoot(instanceDir)) {
+  const root = (await hasOwnLockfile(instanceDir)) ? undefined : await pnpmWorkspaceRoot(instanceDir);
+  if (root) {
     const pkg = JSON.parse(await readFile(join(instanceDir, "package.json"), "utf8")) as { name?: string };
     if (!pkg.name) throw new Error(`${instanceDir}/package.json has no "name" — needed to bundle the instance`);
     // --legacy: materialize (copy) workspace deps into the bundle rather than linking them.
     await run("pnpm", ["--filter", pkg.name, "--prod", "deploy", "--legacy", outDir], instanceDir);
+    // pnpm exits 0 — "No projects matched the filters" — for a `--filter` that names no member.
+    if (!(await exists(outDir))) {
+      throw new Error(
+        `pnpm deploy wrote no bundle for ${instanceDir}: it sits under the pnpm workspace at ${root} but is not ` +
+          `one of its packages, and it has no lockfile of its own — add it to the workspace's \`packages:\`, ` +
+          `or install and commit a lockfile so it bundles as a standalone instance`,
+      );
+    }
     return;
   }
   // Asked before the copy: an instance with no lockfile must fail on the cheap half.
@@ -1033,9 +1050,26 @@ export async function bundleInstance(
   await run(command, args, outDir);
 }
 
-/** The nearest `pnpm-workspace.yaml` at or above `dir`, i.e. "is this instance a workspace member".
- * A file test, not a manifest parse: pnpm's own membership rule starts here, and a `packages:` glob
- * that excluded this directory would leave `pnpm deploy --filter` failing loudly by name. */
+/** Whether the instance carries a lockfile of ANY manager — yarn included, so a yarn instance under
+ * a workspace reaches {@link lockfileInstall}'s named refusal rather than `pnpm deploy`. */
+async function hasOwnLockfile(instanceDir: string): Promise<boolean> {
+  const present = new Set(await readdir(instanceDir));
+  return [...LOCKFILE_INSTALLS.flatMap((row) => row.lockfiles), YARN_LOCKFILE].some((f) => present.has(f));
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The nearest `pnpm-workspace.yaml` at or above `dir`. A file test, not a manifest parse:
+ * membership proper is pnpm's to decide, and this is asked only for an instance with no lockfile of
+ * its own ({@link bundleInstance}). A `packages:` glob that excludes the directory does NOT fail
+ * `pnpm deploy --filter` — pnpm exits 0 having deployed nothing — which the caller checks. */
 async function pnpmWorkspaceRoot(dir: string): Promise<string | undefined> {
   let d = resolve(dir);
   for (;;) {
