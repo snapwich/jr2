@@ -264,9 +264,16 @@ e2e-dist:
 # and tags `v<ver>`; the human pushes `main` and the tag, and .github/workflows/release.yml does
 # the rest in order — check the tag against the manifests, every tier on a runner kind cluster,
 # Kit images to their home, THEN the packages STAGED on npm — a 2FA approval per package makes them
-# live. The guard against an accidental publish is the credential: no dev box holds an npmjs token,
-# and the job holds none either (trusted publishing, stage-only).
+# live. `just publish` is the same irreversible half run by hand from the pushed tag, for a 0.x
+# release that cannot wait on the job: a 2FA prompt per package instead of an approval, and the
+# job converges behind it (live versions skipped). The guard against an accidental publish is the
+# credential either way: the job holds no token (trusted publishing, stage-only), and a dev box's
+# login publishes nothing without its second factor.
 
 # bump every manifest (patch|minor|major|x.y.z), gate, commit, and tag — then `git push origin main v<ver>`
 release bump:
     scripts/release.sh {{ bump }}
+
+# from the pushed tag, by hand: Kit images to ghcr.io/snapwich, then `npm publish` each package (2FA per package)
+publish platforms="":
+    scripts/publish.sh {{ platforms }}

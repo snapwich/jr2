@@ -159,46 +159,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The canonical home is BAKED into the binary (`KIT_IMAGE_HOME`, packages/cli/src/build.ts),
-      # so it is spelled here to match, not derived from the repository owner: a fork that pushed
-      # to its own GHCR would ship a CLI that still pulls from this one.
-      - name: Push the Kit images at their published tags
-        run: just kit-push ghcr.io/snapwich
-
       # Staged publishing is npm >= 11.15 (Node 24 bundles an older one); the release must not
       # depend on which npm the runner image happened to ship.
       - name: npm that speaks staged publishing
         run: npm install -g npm@^11.15.0 && npm --version
 
-      # Packed with pnpm (which rewrites `workspace:*` to the exact version, ADR-0043) and STAGED
-      # with npm (which speaks trusted publishing). The SET is what the manifests say — every
-      # `packages/*` member that is not `private` (the same rule publish.test.ts asserts) — and the
-      # ORDER is pnpm's own topological walk, dependencies first, so a publish that fails half way
-      # leaves packages whose own dependencies resolve — and APPROVE them in that same order, for
-      # the same reason; neither is written down here a second time. `--provenance=false` because
-      # npm signs provenance only for a PUBLIC source repository (E422 "Unsupported GitHub Actions
-      # source repository visibility" otherwise), and this one is private; the identity is still
-      # the job's. Drop the flag the day the repository goes public — a tarball published with it
-      # carries proof of the tree it came from.
-      #
-      # A version already LIVE on npm is SKIPPED, not failed: published versions never move, so
-      # present means done — a re-run of this job after a failure past this point converges instead
-      # of dying on the first 403, and the bootstrap (the first version, published by hand so a
-      # trusted publisher can be attached to it) passes through here clean.
-      - name: Stage on npm
+      # One script, two executors (ADR-0055): the same walk a maintainer runs by hand as
+      # `just publish`, here with `--stage` — the Kit images to their home, then each public
+      # package packed and STAGED on npm, dependencies first, versions already live skipped.
+      - name: Push the Kit images, then stage on npm
         run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME#v}"
-          out="$RUNNER_TEMP/tarballs"
-          mkdir -p "$out"
-          for dir in $(pnpm -r --workspace-concurrency=1 --filter './packages/*' exec pwd); do
-            name="$(node -p "const m = require('$dir/package.json'); m.private ? '' : m.name")"
-            [[ -n "$name" ]] || continue
-            if npm view "$name@$ver" version >/dev/null 2>&1; then
-              echo "$name@$ver is already live on npm — skipped"
-              continue
-            fi
-            tarball="$(pnpm -C "$dir" pack --pack-destination "$out" | tail -1)"
-            npm stage publish "$tarball" --provenance=false --access public
-          done
-          echo "staged v$ver. Approve with 2FA, dependencies first: npm stage list, then npm stage approve <stage-id>"
+          scripts/publish.sh --stage
+          echo "staged ${GITHUB_REF_NAME}. Approve with 2FA, dependencies first: npm stage list, then npm stage approve <stage-id>"

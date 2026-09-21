@@ -47,7 +47,9 @@ git push origin main vx.y.0
 The tag runs `.github/workflows/release.yml`: every tier on a runner kind cluster, the Kit images to `ghcr.io/snapwich`,
 then the four packages **staged** on npm by trusted publishing. Approve them with 2FA, dependencies first
 (`npm stage list`, then `npm stage approve <stage-id>`, or the Staged Packages tab on npmjs.com), and the release is
-live. No dev box holds an npm token; that absence is the guard.
+live. Or, when a release cannot wait on the job, `just publish` from the pushed tag does the same half by hand — images,
+then `npm publish` with a 2FA prompt per package — and the job converges behind it. Either way the guard is the
+credential: the job holds no token, and a login without its second factor publishes nothing.
 
 ## License
 

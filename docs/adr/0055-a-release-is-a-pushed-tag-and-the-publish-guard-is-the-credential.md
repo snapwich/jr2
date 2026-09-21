@@ -46,6 +46,12 @@ version, images, gate, trigger.
   repository and the workflow file, so a stolen GitHub session or a bad edit to that file could otherwise publish under
   the project's name; staged, it can stage and nothing more. It is not a runbook step — nothing has to be remembered in
   order, the staged tarballs wait.
+- **Two executors of one train.** `scripts/publish.sh` is the irreversible half — images, then packages, dependencies
+  first, live versions skipped — and the job runs it with `--stage`. A maintainer runs it as `just publish` from the
+  pushed tag when a 0.x release cannot wait the job's hour: `npm publish` with a 2FA prompt per package in place of an
+  approval, and the job converges behind it. The checks are the same in both (lockstep, clean tree, HEAD is the pushed
+  tag), and so is the guard: a login alone publishes nothing under write-2FA, so a dev box holds no credential that
+  publishes by itself.
 - **`ci.yml` on push and PR is the light gate**: frozen install, typecheck, format check, `pnpm -r test`, the default
   Cucumber profile — minutes, no docker. The heavy tiers run on the tag and by hand (`just e2e-kind`, `just e2e-dist`)
   when a change touches build, deploy, or dist code.
@@ -79,8 +85,9 @@ version, images, gate, trigger.
   configuration" no longer holds; the rest of that list does.
 - **Bootstrap, once:** create the `jr2` org on npmjs (a scope is a user or an org), publish the first version by hand
   with a token — npm attaches a trusted publisher only to a package that already exists — then configure the trusted
-  publisher on all four packages and revoke the token. After that no token exists anywhere. Likewise once: make the
-  three GHCR packages public after the first push, because GHCR creates them private.
+  publisher on all four packages and revoke the token. After that no token that publishes on its own exists anywhere:
+  the job's identity stages, a maintainer's login needs its second factor. Likewise once: make the three GHCR packages
+  public after the first push, because GHCR creates them private.
 - `publish.test.ts` asserts no registry, `access: public`, and `engines`; `dist-publish.sh` drops its manifest read-back
   and passes `--registry`; the `@dist` fixture takes its registry from `JR2_DIST_PORT`'s default rather than the
   manifest; `kit-push.sh`'s cli-vs-orchestrator cross-check widens to every manifest; `just release` is new;
