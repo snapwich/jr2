@@ -1,6 +1,6 @@
 {
   "name": "@jr2/machines",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "The Machines the jr2 kit ships: packaged xstate Machines that leave their parts Open for a composer to bind.",
   "license": "MIT",
   "private": false,
