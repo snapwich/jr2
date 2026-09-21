@@ -96,7 +96,8 @@ esac
 
 # A release is a commit of its own on a clean tree: the gate below must run on exactly what the
 # tag will name — and a clean tree is what lets a FAILED gate put everything back (below).
-if [[ -n "$(git status --porcelain)" ]]; then
+# Untracked files are not the tree: they are neither in the tag nor swept into the commit.
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "the working tree is not clean — commit or stash first; a release commit carries only the bump" >&2
   exit 1
 fi
@@ -130,7 +131,7 @@ pnpm -r typecheck
 pnpm -r --if-present test
 
 trap - ERR
-git add -A
+git add -u
 git commit -q -m "release: $next"
 git tag -a "v$next" -m "jr2 $next"
 
