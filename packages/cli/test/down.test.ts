@@ -15,6 +15,7 @@ import { down } from "../src/commands/down.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { Io } from "../src/output.ts";
+import { linkKit } from "./_kit.ts";
 
 /** The cluster's live roots, as the sweep reads them (ADR-0039) — this is what `down` is left
  * looking at AFTER the namespace delete, so a scenario writes the OTHER instances, not its own. */
@@ -126,6 +127,7 @@ function mkSweep(
 async function mkWorld(kube: KubeAdmin, confirm: boolean, build?: BuildPort) {
   const root = await mkdtemp(join(tmpdir(), "jr2-down-"));
   await writeFile(join(root, "jr2.config.ts"), `export default { name: "myinst" };\n`);
+  await linkKit(root);
   // An authored Sandbox Image — no longer load-bearing for the sweep (nothing derives a name any
   // more, ADR-0039), kept because a real instance folder has one and `down` must ignore it.
   await mkdir(join(root, "images", "default"), { recursive: true });

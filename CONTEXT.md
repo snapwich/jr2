@@ -30,7 +30,19 @@ _Avoid_: workspace (collides), project
 
 **jr2 CLI**: The `jr2` binary — the primary interface to an Instance (`init`, `up`, `run`, status). Operates on the
 current `kubectl` context, argo/cilium-style; users reach for the CLI far more than the raw HTTP API; the CLI sits on
-top of that API. _Avoid_: cli tool
+top of that API. Installed twice: globally, and as the Instance's own `@jr2/cli` devDependency; the global one hands off
+(see Handoff) so the copy that runs is the one the Instance pins. _Avoid_: cli tool, launcher (the global copy is the
+same package, not a different thing)
+
+**Handoff**: What a global `jr2` does when run inside an Instance that resolves its own `@jr2/cli` to a different copy:
+it runs that copy's binary with the same arguments and returns its exit code, and does nothing else (the gulp/grunt
+model). No Instance, or the Instance resolves the running copy itself — no handoff, the global runs. _Avoid_: shim,
+proxy, wrapper, delegate, relaunch, re-exec
+
+**Kit version**: The one version an Instance is — the `@jr2/orchestrator` the Instance resolves, because that is what
+its image bakes. The Instance's `@jr2/cli` must be the same copy (one real path), and the published Kit image tags equal
+it (one release train, ADR-0019). Two copies of the orchestrator on one Instance is not a version, it is a refusal.
+_Avoid_: CLI version, orchestrator version, kit release (when meaning the Instance's pin)
 
 **jr2 Application**: An Instance under GitOps — its manifests deploy the Orchestrator plus config and secrets. The same
 folder runs on kind locally and on a real cluster. _Avoid_: deployment

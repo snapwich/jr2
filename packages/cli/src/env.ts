@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { findRoot } from "./instance.ts";
+import { findRoot } from "./root.ts";
 import { activity, type Io } from "./output.ts";
 
 /**

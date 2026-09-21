@@ -13,19 +13,22 @@
 // Templates mirror `templates/default/` verbatim (that folder is the model instance, ADR-0054) —
 // byte-for-byte except package.json's `name`/`description`, which are per-instance.
 // `test/init.test.ts` enforces that; without it the two drift silently, and since the manifest
-// carries KIT_VERSION that same test is the version-bump tripwire (bump the kit, re-render the
+// carries the kit version that same test is the version-bump tripwire (bump the kit, re-render the
 // template). Existing files are left untouched (init is additive); created paths are reported on
 // stderr.
 //
 // ONE template serves both checkout and installed mode (ADR-0043) — a branch there would mean the
 // tested output and the shipped output diverge. So the scaffold names no package manager, and pins
-// @jr2/* at the exact running KIT_VERSION: 0.x minors break, and the checkout resolves that literal
-// to its own packages via `linkWorkspacePackages: true`.
+// @jr2/* at the exact running version: 0.x minors break, and the checkout resolves that literal
+// to its own packages via `linkWorkspacePackages: true`. The number is the CLI's OWN (ADR-0056),
+// not the orchestrator's `KIT_VERSION`: a global `jr2` with no Instance around it must scaffold
+// without a peer resolved, and the two numbers are equal by construction (one release train,
+// lockstep — ADR-0055).
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { KIT_VERSION } from "@jr2/orchestrator";
+import { CLI_VERSION } from "../kit-version.ts";
 import { activity, type Io } from "../output.ts";
 
 export async function init(args: string[], io: Io): Promise<number> {
@@ -90,8 +93,8 @@ function packageJson(name: string): string {
       private: true,
       type: "module",
       scripts: { typecheck: "tsc --noEmit" },
-      dependencies: { "@jr2/orchestrator": KIT_VERSION, xstate: "^5.18.0" },
-      devDependencies: { "@jr2/cli": KIT_VERSION, "@types/node": "^26.0.1", typescript: "^5.6.0" },
+      dependencies: { "@jr2/orchestrator": CLI_VERSION, xstate: "^5.18.0" },
+      devDependencies: { "@jr2/cli": CLI_VERSION, "@types/node": "^26.0.1", typescript: "^5.6.0" },
     },
     null,
     2,

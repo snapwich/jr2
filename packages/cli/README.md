@@ -15,4 +15,9 @@ jr2 run <workflow>
 Orchestrator, Sandboxes, secrets), and every other verb (`run`, `runs`, `status`, `logs`, `send`, `down`, `gc`,
 `kit push`) talks to what `up` deployed. Node 24, a kube context, and docker for the image `up` builds.
 
+Inside an Instance, the global `jr2` hands off to the Instance's own `@jr2/cli` (the gulp model), so the version that
+runs is the one the Instance pins and the global's stops mattering. An Instance has one kit version: `@jr2/cli` and
+`@jr2/orchestrator` at the same exact number — every verb refuses a mismatch by name. Upgrade by editing both lines and
+reinstalling.
+
 Docs, glossary, and architecture decisions: [github.com/snapwich/jr2](https://github.com/snapwich/jr2).

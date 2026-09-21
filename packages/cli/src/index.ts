@@ -6,6 +6,7 @@ export { JR2Client } from "./client.ts";
 export type { RunStatus, RunFeedEvent, RunEvent, FetchLike } from "./client.ts";
 export type { Io } from "./output.ts";
 export { resolveRoot, resolveTarget } from "./instance.ts";
+export { assertKitVersion, resolvePackage, CLI_VERSION } from "./kit-version.ts";
 export type { Target, TargetOptions } from "./instance.ts";
 export { kubectlKube } from "./kube.ts";
 export type { KubePort } from "./kube.ts";

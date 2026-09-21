@@ -2,7 +2,9 @@
 // folder we are in, and WHERE its deployed orchestrator is.
 //
 //   - `resolveRoot` walks up from cwd to the dir holding `jr2.config.ts` — the root marker (mirrors
-//     flue's `flue.config.ts`).
+//     flue's `flue.config.ts`) — and refuses unless that Instance and this CLI resolve the same
+//     `@jr2/orchestrator` (ADR-0056: an Instance has one Kit version). Every Instance verb goes
+//     through it; `--url` verbs skip the walk and so skip the check.
 //   - `resolveTarget` finds the orchestrator. `--url` / `JR2_URL` (+ `JR2_TOKEN`) short-circuits
 //     everything — the ingress-exposed/remote-caller escape hatch, no folder walk. Otherwise the
 //     DEPLOYMENT is addressed by the current kube context + the instance's namespace (`-n` >
@@ -11,27 +13,21 @@
 //     kube RBAC is the real gate, and no local state file can go stale (ADR-0019).
 //   - Every resolution prints its target on stderr, so ambient-context drift stays visible.
 
-import { existsSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename } from "node:path";
 import { loadConfig } from "@jr2/orchestrator";
 import { INSTANCE_SECRET, kubectlKube, ORCHESTRATOR_PORT, ORCHESTRATOR_SERVICE } from "./kube.ts";
+import { assertKitVersion } from "./kit-version.ts";
 import { activity, type Io } from "./output.ts";
+import { findRoot } from "./root.ts";
 
-/** Walk up from `cwd` to the directory containing `jr2.config.ts`; `undefined` if there is none. */
-export function findRoot(cwd: string): string | undefined {
-  let dir = cwd;
-  for (;;) {
-    if (existsSync(join(dir, "jr2.config.ts"))) return dir;
-    const parent = dirname(dir);
-    if (parent === dir) return undefined;
-    dir = parent;
-  }
-}
+export { findRoot } from "./root.ts";
 
-/** `findRoot`, for the callers that cannot proceed without one. */
+/** `findRoot` for the callers that cannot proceed without one — and the Kit version check, which
+ * every Instance verb therefore makes before it reads a byte of the Instance. */
 export function resolveRoot(cwd: string): string {
   const root = findRoot(cwd);
   if (!root) throw new Error("not inside a jr2 instance — no jr2.config.ts found walking up from cwd");
+  assertKitVersion(root);
   return root;
 }
 

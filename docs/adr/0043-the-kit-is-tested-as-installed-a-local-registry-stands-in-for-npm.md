@@ -81,7 +81,10 @@ grows no checkout/installed branch, because a branch means the tested output and
 `templates/default` carries the same literal, so the byte-for-byte mirror test survives and becomes the version-bump
 tripwire. The checkout resolves the exact version to its own packages via `linkWorkspacePackages: true`; kit inter-deps
 stay `workspace:*` (publish rewrites them at pack). The scaffold names no package manager — no `packageManager` field, a
-PM-neutral install hint — and instances upgrade the kit by editing two dep lines, which pre-1.0 is a feature.
+PM-neutral install hint — and instances upgrade the kit by editing two dep lines, which pre-1.0 is a feature. (**Amended
+by [ADR-0056](0056-a-global-jr2-hands-off-to-the-instances-own-and-an-instance-has-one-kit-version.md)**: the two lines
+must name one number — a global `jr2` hands off to the Instance's own `@jr2/cli`, and a CLI whose orchestrator is not
+the Instance's refuses.)
 
 ## The bundle installs from the lockfile, with the lockfile's own package manager
 

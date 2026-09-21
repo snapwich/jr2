@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { resolveRoot, resolveTarget } from "../src/instance.ts";
+import { linkKit } from "./_kit.ts";
 import type { KubePort } from "../src/kube.ts";
 import type { Io } from "../src/output.ts";
 
@@ -42,6 +43,7 @@ const untouchableKube: KubePort = {
 async function mkInstance(config = "export default {};\n"): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "jr2-cli-inst-"));
   await writeFile(join(root, "jr2.config.ts"), config);
+  await linkKit(root);
   return root;
 }
 

@@ -98,13 +98,13 @@ importers:
 
   packages/cli:
     dependencies:
-      '@jr2/orchestrator':
-        specifier: workspace:*
-        version: link:../orchestrator
       ts-blank-space:
         specifier: ^0.9.0
         version: 0.9.0
     devDependencies:
+      '@jr2/orchestrator':
+        specifier: workspace:*
+        version: link:../orchestrator
       '@types/node':
         specifier: ^26.0.1
         version: 26.0.1

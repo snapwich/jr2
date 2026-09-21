@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { KIT_VERSION, sandboxToken } from "@jr2/orchestrator";
+import { linkKit } from "./_kit.ts";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
 import type { BuildPort, ObservedImage } from "../src/build.ts";
@@ -244,6 +245,7 @@ async function mkInstance(config: string, name = "myinst", agents?: Record<strin
   const root = await mkdtemp(join(tmpdir(), `jr2-up-${name}-`));
   await writeFile(join(root, "jr2.config.ts"), config);
   await writeFile(join(root, "package.json"), JSON.stringify({ name: `inst-${name}`, version: "0.0.0" }));
+  await linkKit(root);
   await mkdir(join(root, "workflows"), { recursive: true });
   if (agents) {
     const slots = Object.entries(agents)
