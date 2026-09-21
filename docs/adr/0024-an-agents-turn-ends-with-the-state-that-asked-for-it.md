@@ -71,7 +71,7 @@ single-threaded.
 - **`AgentRunPort` gains `abort(agentName, instanceId)`**, so the port stays the injectable seam and a unit test can
   assert the abort without a live Harness — the same shape as `admit`/`settle`.
 - **An abort is ordered before the next `send` on the same instance id.** The run binding keeps `iid → pending abort`,
-  and `agentRun` awaits it before `admit`. This is `session: "continue"`-scoped by construction: a fresh session mints a
+  and `agentRun` awaits it before `admit`. This is `continue: true`-scoped by construction: a fresh session mints a
   random suffix and cannot collide. Without it the feature loses turns **silently** — see below.
 - **The receipt becomes self-describing**: `POST /agents/:iid/events` answers
   `{ delivered: true, event: "review_verdict", turnComplete: true, deliveryId }`. `turnComplete` is read off the same
@@ -94,8 +94,8 @@ asserts these semantics as jr2's own; they were first discovered, mid-incident, 
 harness runtime — the original ADR-0016 assumed the opposite, a loud per-iid fence). That cuts both ways, and both
 matter:
 
-- **`session: "continue"` was unusable before this ADR, not merely fragile.** A runaway submission does not fail the
-  next state's `send` — it makes it queue behind work that may never finish, and the state hangs with no error.
+- **`continue: true` was unusable before this ADR, not merely fragile.** A runaway submission does not fail the next
+  state's `send` — it makes it queue behind work that may never finish, and the state hangs with no error.
 - **Ordering is mandatory, not hygiene.** Abort sweeps the running Submission and everything queued behind it
   (ADR-0027). An abort that loses the race to the next `send` therefore kills the new turn **before it runs at all** —
   no error, no fault, the Agent simply never speaks. Silent turn loss is the worst failure mode available, which is why
@@ -130,8 +130,8 @@ matter:
 
 - **The primary win is correctness**: a Workspace stops carrying Agents the Machine does not know are running. Tokens
   and wall-clock are the secondary benefit, and they are large — the tail of an ended turn is currently unbounded.
-- **`session: "continue"` becomes usable for the first time.** It is exercised by no workflow today (`setup.ts:296`,
-  `actor.ts:74`, one unit test), which is why the queue semantics went unnoticed.
+- **`continue: true` becomes usable for the first time.** Before this ADR no workflow exercised continuation, which is
+  why the queue semantics went unnoticed; `task` (ADR-0054) exercises it now.
 - **A failed abort is not reportable.** The actor is stopped, so there is no `agent.fault` to raise, and the run's
   telemetry channel carries only `RetryTelemetry`. The call is fire-and-forget; an orphan still 404s on every tool call
   and settles on its own. Widening telemetry is a separate decision.

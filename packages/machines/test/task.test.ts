@@ -1,8 +1,8 @@
 // Mechanics assertions for `task` (ADR-0054), driven through a REAL RunHost against the kit's
 // public seams only — a mock AgentRunPort behind the Machine's own `coder` slot and a fake
-// SandboxPort — so the door, the walk's view of the Open parts, the pinned conversation's identity
-// across a Gate round trip, and the two settlements are exercised the way a run experiences them,
-// socket-free. No cluster, no Harness, no wire.
+// SandboxPort — so the door, the walk's view of the Open parts, each Turn's Frame (ADR-0057), the
+// continued conversation's identity across a Gate round trip, and the two settlements are
+// exercised the way a run experiences them, socket-free. No cluster, no Harness, no wire.
 //
 // This is the DEFAULT-GATE half of the Machine's cover. It does not stand in for the `@kind`
 // scenario (ADR-0054's first Consequence): the only proof a shipped Machine works in jr2 is the
@@ -223,6 +223,9 @@ test("working → finish parks at the review Gate, with the branch and worktree 
   assert.deepEqual(first.tools, ["finish"], "the Menu derives from this state's agent transitions");
   assert.match(first.prompt ?? "", new RegExp(PROMPT));
   assert.match(first.prompt ?? "", /Work in \/work\/target\/jr2\/task-/);
+  // The other half of the Frame (ADR-0057): the Working tools are rooted in the worktree, so the
+  // prompt's geography and the tools' relative paths cannot disagree.
+  assert.equal(first.cwd, `/work/target/jr2/task-${instanceId}`);
   assert.equal(port.definitions[0]!.model, MODEL, "the admission carries the Machine's bound definition");
 
   // The default branch is the run's own id (ADR-0054), so two concurrent runs never collide.
@@ -279,11 +282,30 @@ test("more than one slot: the first the consumer wrote is the one the coder edit
   assert.doesNotMatch(one.port.admits[0]!.prompt ?? "", /Also checked out/);
 });
 
+test("with more than one slot bound, the Turn's cwd is the FIRST slot's worktree (ADR-0057)", async () => {
+  // `task` always states its `cwd`, because "the first slot is the one the coder edits" is this
+  // Machine's convention and a convention is stated, not defaulted (ADR-0051/0057). So the
+  // multi-slot refusal — which is what an absent `cwd` under two slots earns — never fires here,
+  // and the coder's tools are rooted where its prompt says to work.
+  const LIB = "https://github.com/acme/lib.git";
+  const twoRepo = customize(task, {
+    repos: { target: { url: REPO }, reference: { url: LIB } },
+    agents: { coder: { model: MODEL } },
+  });
+  const { port } = await startRun({ prompt: PROMPT, branch: "wip" }, twoRepo);
+  const first = port.admits[0]!;
+  assert.equal(first.cwd, "/work/target/wip", "the first slot the consumer wrote, not the second");
+  assert.match(first.prompt ?? "", /Work in \/work\/target\/wip/, "the prompt says the same directory");
+});
+
 test("request_changes continues the SAME conversation, and approve ends the run and the Sandbox", async () => {
   const { port, sandbox, host, runId } = await startRun({ prompt: PROMPT, branch: "feat/json-flag" });
   const conversation = port.admits[0]!.instanceId;
-  assert.equal(conversation, `${runId}/coder/coder/g0`, "the pin derives one run-scoped id");
-  assert.equal(port.admits[0]!.continuation, true, "a pinned conversation opts out of the ADR-0035 reroll");
+  // `continue: true` is the whole surface (ADR-0057): the id is STRUCTURAL —
+  // `<runId>/<machine actor path>/<agent>`, the body being the wrapper's `body` slot — so the
+  // Machine names no conversation and two Pool children of `task` could never meet.
+  assert.equal(conversation, `${runId}/body/coder`);
+  assert.equal(port.admits[0]!.continuation, true, "a continued conversation opts out of the ADR-0035 reroll");
 
   host.sendToAgent(conversation, { type: "finish", summary: "done" });
   await waitFor(() => host.gates(runId).length === 1);
@@ -311,7 +333,7 @@ test("request_changes continues the SAME conversation, and approve ends the run 
 
 test("a terminal agent.fault parks at the same Gate, and the NEXT Turn is a fresh conversation", async () => {
   const { port, host, runId } = await startRun({ prompt: PROMPT, branch: "wip" });
-  assert.equal(port.admits[0]!.instanceId, `${runId}/coder/coder/g0`);
+  assert.equal(port.admits[0]!.instanceId, `${runId}/body/coder`);
 
   // jr2 has already retried, nudged and rerolled (ADR-0016/0027/0035); this is the one terminal
   // telemetry, and the Machine routes it to the human rather than swallowing it.
@@ -327,12 +349,16 @@ test("a terminal agent.fault parks at the same Gate, and the NEXT Turn is a fres
   host.sendToGate(runId, gate.gate, { type: "request_changes", notes: "try again, smaller steps" });
   await waitFor(() => port.admits.length === 2);
 
-  // The conversation the pin named is GONE — ADR-0035 rerolls a runaway and then faults, so
-  // continuing it would address a dead one. The generation is what makes the next Turn fresh…
+  // The conversation is GONE — ADR-0035 rerolls a runaway and then faults, so continuing it would
+  // address a dead one. jr2 burns it: the terminal fault bumps the conversation's epoch in the
+  // ledger, and the next `continue` mints `<id>/<epoch>` — a virgin conversation the Machine
+  // neither counts nor names (ADR-0057)…
   const second = port.admits[1]!;
-  assert.equal(second.instanceId, `${runId}/coder/coder/g1`);
-  // …and a fresh conversation holds nothing, so this Turn is framed from scratch: the task, the
-  // geography, and the human's notes.
+  assert.equal(second.instanceId, `${runId}/body/coder/1`);
+  assert.equal(second.continuation, true, "still a continuation — of the conversation jr2 minted fresh");
+  // …and a virgin conversation holds nothing, so this Turn is framed from scratch: the task, the
+  // geography, and the human's notes. That re-briefing is prompt policy, which is why `turns`
+  // stays and resets here.
   assert.match(second.prompt ?? "", new RegExp(PROMPT));
   assert.match(second.prompt ?? "", /Work in \/work\/target\/wip/);
   assert.match(second.prompt ?? "", /try again, smaller steps/);

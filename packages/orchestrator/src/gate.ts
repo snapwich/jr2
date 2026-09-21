@@ -46,7 +46,7 @@ export const gate = fromCallback<DeliveredEvent, GateInput | undefined>(({ input
   const binding = runBindingOf(system);
   // The derived id is deterministic from machine structure, so recomputing it on every (re)start
   // is restore-stable and needs no input-mapper persistence — the mapper is only load-bearing
-  // where minting has a random component (mintIid's fresh-session suffix, ADR-0016).
+  // where minting has a random component (mintIid's fresh-Turn suffix, ADR-0016).
   const path = actorPath(self);
   const id = input.gate ?? path.join(".");
   if (!id) {

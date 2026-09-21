@@ -11,7 +11,14 @@ import { defineEvent, doneEvent, requestReviewEvent } from "@jr2/agent-protocol"
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { agent } from "../src/harness-client.ts";
-import type { AgentAdmission, AgentAdmitOptions, AgentRunInput, AgentRunPort } from "../src/actor.ts";
+import type {
+  AgentAdmission,
+  AgentAdmitOptions,
+  AgentRunInput,
+  AgentRunPort,
+  AgentTurnInput,
+  AgentTurnPlacement,
+} from "../src/actor.ts";
 import type { AgentDefinition } from "../src/agent.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
@@ -98,7 +105,7 @@ export class MockFlueClient implements AgentRunPort {
   }
 }
 
-export type Ctx = { instanceId: string; sandbox?: string; summary?: string };
+export type Ctx = { sandbox?: string; summary?: string };
 
 /** The Agent these fixtures carry (ADR-0049): a slot's definition, declared by the Machine itself.
  * Its CONTENT never matters here — no model is ever called — but its identity does: the same
@@ -121,35 +128,44 @@ export const coderDefinition: AgentDefinition = {
  * omitting it, one that belongs to no pod at all (a workspace-less run against the stub Harness).
  */
 export const codingTemplate = jr2Setup({
-  types: {} as { context: Ctx; input: { instanceId: string; sandbox?: string } },
+  types: {} as { context: Ctx; input: { sandbox?: string } },
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
 }).createMachine({
   id: "m",
-  context: ({ input }) => ({ instanceId: input.instanceId, sandbox: input.sandbox }),
+  context: ({ input }) => ({ sandbox: input.sandbox }),
   initial: "active",
   states: {
     active: {
       invoke: {
         id: "coder",
         src: "coder",
-        input: ({ context }) => ({
-          instanceId: context.instanceId,
+        // The mechanics tier's seat, WRITTEN DOWN (ADR-0057): this Turn states its placement
+        // because there is no `workspace()` here to resolve it from, and the annotation is what
+        // makes the pair legal — an `AgentTurnInput` alone carries no mechanism at all.
+        input: ({ context }): AgentTurnInput & AgentTurnPlacement => ({
           endpoint: "http://harness.invalid", // the mock port never dials it
           sandbox: context.sandbox,
           prompt: "do work",
-          tools: ["done", "request_review"],
         }),
+      },
+      // The Menu is derived from the INVOKING state's transitions (ADR-0015), so they live here,
+      // on the state that holds the Turn; the substates record how far the turn got, and `.review`
+      // is an internal target, so the pick that moves the record does not restart the Turn. The
+      // guard is what makes the second `request_review` a pick that moves nothing (ADR-0029): one
+      // review per Turn, and the Menu the next Submission lists narrows to `done`.
+      on: {
+        request_review: {
+          target: ".review",
+          guard: ({ context }) => context.summary === undefined,
+          actions: assign({ summary: ({ event }) => event.summary }),
+        },
+        done: "#m.done",
       },
       initial: "running",
       states: {
-        running: {
-          on: {
-            request_review: { target: "review", actions: assign({ summary: ({ event }) => event.summary }) },
-            done: "#m.done",
-          },
-        },
-        review: { on: { done: "#m.done" } },
+        running: {},
+        review: {},
       },
     },
     done: { type: "final" },
@@ -171,47 +187,58 @@ export function codingDef(clients: Map<string, MockFlueClient>): WorkflowDef {
 }
 
 /**
- * TWO turns of ONE conversation: both states invoke the `coder` slot with the same instance id — what
- * `session: "continue"` derives (ADR-0016). It is the shape ADR-0024's ordering rule exists for:
- * the second turn's admission must queue behind the first turn's abort, and the pick that ended
- * the first turn must read `turnComplete` even though the next state re-registers that address.
+ * TWO turns of ONE conversation: both states say `continue: true`, so both land on this Agent's
+ * one conversation in this Machine instance (ADR-0057). It is the shape ADR-0024's ordering rule
+ * exists for: the second turn's admission must queue behind the first turn's abort, and the pick
+ * that ended the first turn must read `turnComplete` even though the next state re-registers that
+ * address.
  */
 export const continuedTemplate = jr2Setup({
-  types: {} as { context: Ctx; input: { instanceId: string } },
+  types: {} as { context: Ctx; input: Record<string, never> },
   events: [doneEvent, requestReviewEvent],
   actors: { coder: agent(coderDefinition) },
 }).createMachine({
   id: "c",
-  context: ({ input }) => ({ instanceId: input.instanceId }),
+  context: {},
   initial: "first",
   states: {
     first: {
       invoke: {
         src: "coder",
-        input: ({ context }) => ({
-          instanceId: context.instanceId,
+        input: {
+          continue: true,
           endpoint: "http://harness.invalid",
           prompt: "turn one",
-          tools: ["request_review"],
-        }),
+        } satisfies AgentTurnInput & AgentTurnPlacement,
       },
       on: { request_review: "second" },
     },
     second: {
       invoke: {
         src: "coder",
-        input: ({ context }) => ({
-          instanceId: context.instanceId, // the SAME conversation
+        // The SAME conversation: the states of one Machine differ by Menu, not by conversation.
+        input: {
+          continue: true,
           endpoint: "http://harness.invalid",
           prompt: "turn two",
-          tools: ["done"],
-        }),
+        } satisfies AgentTurnInput & AgentTurnPlacement,
       },
       on: { done: "#c.done" },
     },
     done: { type: "final" },
   },
 });
+
+/** The Instance ID the `continued` fixture's two turns share — structural, so the test derives it
+ * exactly as jr2 does (ADR-0057): `<runId>/<machine actor path>/<agent>`, root machine, epoch 0. */
+export const continuedIidOf = (runId: string): string => `${runId}/root/coder`;
+
+/** The iid of a run's live `coder` Turn, discovered the way the world discovers it — off the
+ * admission. jr2 mints every id (ADR-0057), so a test that wants one asks the Harness side. */
+export async function admittedIid(client: MockFlueClient): Promise<string> {
+  await waitFor(() => client.admits.length > 0);
+  return client.admits[0]!.instanceId;
+}
 
 /** The two-turn workflow, over one MockFlueClient per run (both turns share it, as one Harness). */
 export function continuedDef(clients: Map<string, MockFlueClient>): WorkflowDef {

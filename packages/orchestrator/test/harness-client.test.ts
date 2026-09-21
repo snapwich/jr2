@@ -90,6 +90,75 @@ test("send POSTs the prompt and resolves with the admission — streamUrl absolu
   assert.deepEqual(adm, { streamUrl: "http://h.test/agents/coder/inst-1", offset: "3", submissionId: "sub-9" });
 });
 
+test("the Frame's cwd rides the admit body beside the prompt (ADR-0057)", async () => {
+  const { calls, fetch } = scriptedFetch([
+    () =>
+      new Response(JSON.stringify({ streamUrl: "/agents/coder/inst-1", offset: "0", submissionId: "sub-1" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  ]);
+  await client(fetch).send("coder", "inst-1", {
+    message: "do the thing",
+    cwd: "/work/target/feature",
+    definition: coder,
+  });
+  // The Frame is the prompt AND the directory: a worktree path exists only once a run does, so it
+  // travels with the Turn, never on the definition.
+  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
+    message: "do the thing",
+    cwd: "/work/target/feature",
+    definition: coder,
+  });
+});
+
+test("an empty Frame cwd is SENT, not dropped — the refusal lives at the Harness (ADR-0057)", async () => {
+  const { calls, fetch } = scriptedFetch([
+    () =>
+      new Response(JSON.stringify({ streamUrl: "/agents/coder/inst-1", offset: "0", submissionId: "sub-1" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  ]);
+  await client(fetch).send("coder", "inst-1", { message: "do the thing", cwd: "", definition: coder });
+  // A mapper that computed an empty worktree path must hit the Harness's 400. Dropping it here
+  // would resolve `/work` instead — the silent wrong directory ADR-0057 exists for.
+  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
+    message: "do the thing",
+    cwd: "",
+    definition: coder,
+  });
+});
+
+test("the port puts the Frame's cwd on the admit body — the production hop actor → port → send (ADR-0057)", async () => {
+  // The two tests above drive `send` directly; this one drives the PORT, which is what the actor
+  // calls. The mapping `AgentRunInput.cwd` → the posted body is the only place the Frame can be
+  // lost between the run input and the wire, so it is asserted here and not inferred.
+  const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
+  const port = harnessAgentRunPort(client(fetch));
+
+  await port.admit({ ...baseInput, cwd: "/work/target/feature" }, { definition: coder });
+
+  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
+    message: "do the thing",
+    cwd: "/work/target/feature",
+    definition: coder,
+  });
+});
+
+test("an admitted definition is IDENTITY only — `description` is Console material, stripped at the wire (ADR-0057)", async () => {
+  // ADR-0057: the Harness stops validating `description`, and the Orchestrator strips it before
+  // admission. `send` builds the body, so the strip lives there and covers every caller.
+  const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
+
+  await client(fetch).send("coder", "inst-1", {
+    message: "do the thing",
+    definition: { ...coder, description: "the one who writes the code" },
+  });
+
+  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), { message: "do the thing", definition: coder });
+});
+
 test("a refused admission is an error carrying the wire's detail", async () => {
   const { fetch } = scriptedFetch([() => new Response(JSON.stringify({ error: "no such agent" }), { status: 404 })]);
   await assert.rejects(

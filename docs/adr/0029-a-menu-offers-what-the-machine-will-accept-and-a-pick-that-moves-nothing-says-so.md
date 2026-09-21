@@ -86,7 +86,7 @@ why an option did nothing, which is precisely what an Agent cannot do.
   than a tool that silently does nothing.
 - **`on: { X: {} }` — targetless and actionless — drops off the menu**, matching xstate's `can()`. A handler that
   neither targets nor acts is not a handler. No such handler exists in the repo today; the behavior is pinned by a test.
-- **The menu is now a function of context**, so two turns of one conversation (`session: "continue"`) can legitimately
-  see different menus. That was already true across states; it is now true within one.
+- **The menu is now a function of context**, so two turns of one conversation (`continue: true`) can legitimately see
+  different menus. That was already true across states; it is now true within one.
 - **Two receipt declarations stay hand-synchronized** across `run-host.ts` and `adapter.ts`. Unchanged by this ADR, and
   now carrying one more field — the cost of the packages not importing each other.

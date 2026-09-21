@@ -30,7 +30,11 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
  * (ADR-0031): the value the Agent actor reads off its own slot's definition to place the Turn. */
 export type WorkspaceAccess = "write" | "read" | "none";
 
-/** The plain-data Agent definition (ADR-0018). Must stay JSON-serializable: the definition rides
+/** The plain-data Agent definition (ADR-0018): IDENTITY plus one default. A Turn's Frame — what
+ * it is about and where it works — is not here and cannot be (ADR-0057): a Worktree path exists
+ * only once a run has a branch, so no definition written before the run could name one.
+ *
+ * Must stay JSON-serializable: the definition rides
  * the Turn to the Harness (ADR-0049), so anything non-serializable would be silently lost — grow
  * this contract deliberately. ADR-0028 added a restriction vocabulary (`workspace`), not an
  * extension one: custom tool implementations stay out of the contract. */
@@ -45,9 +49,6 @@ export type AgentDefinition = {
   instructions: string;
   /** Optional static description — observability, never sent to the model. */
   description?: string;
-  /** Working directory inside the Sandbox. Default `/work` — the pod volume the attach step put
-   * the worktrees on (ADR-0005); override only for non-Workspace layouts. */
-  cwd?: string;
   /** Reasoning effort. Omitted → the runtime's default. An invocation may override it for one
    * Turn (`AgentTurnInput.thinkingLevel`) — effort is a property of the task's difficulty, so the
    * same persona legitimately runs at different settings in different Machines. */
@@ -56,9 +57,9 @@ export type AgentDefinition = {
    * not `tools` (that names the control-plane Menu, what it may SAY). `"read"` withholds the
    * write/edit Working tools; bash stays, so this states intent and stops the honest path — the
    * detached review worktree is the containment. `"none"` withholds the ENTIRE Working toolset:
-   * the Menu-only Agent converses and picks from its Menu, nothing else (`cwd` is moot — only
-   * Working tools consume it) — and places the Turn on the Instance Harness (ADR-0031).
-   * Default `"write"`. */
+   * the Menu-only Agent converses and picks from its Menu, nothing else (so its Turn frames no
+   * directory — only Working tools consume one) — and places the Turn on the Instance Harness
+   * (ADR-0031). Default `"write"`. */
   workspace?: WorkspaceAccess;
 };
 

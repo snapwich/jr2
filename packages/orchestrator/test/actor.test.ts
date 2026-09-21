@@ -250,6 +250,90 @@ test('the loud no-Harness error names the definition\'s own workspace value ("re
   assert.match(String(errEvent?.error?.message), /agent "coder" has workspace: "read"/);
 });
 
+// --- The Frame's cwd (ADR-0057): the Turn's own → "none" → the one Repo Slot → refusal → none ---
+
+/** A two-slot Workspace — the case with no answer, because the kit gives no slot a meaning
+ * (ADR-0051): the state must say which Worktree the Turn works in. */
+const TWO_SLOTS: AmbientHandles = {
+  ...AMBIENT,
+  repos: { target: "/work/target/main", docs: "/work/docs/main" },
+};
+
+test("the Turn's own cwd is the Frame — it wins over every resolution (ADR-0057)", async () => {
+  const mock = new MockFlueClient();
+  harness(mock, { ...baseInput, endpoint: undefined, cwd: "/work/target/review" }, undefined, READ, {}, TWO_SLOTS);
+  await tick();
+
+  assert.equal(mock.admitted?.cwd, "/work/target/review", "what the state said, not what the Workspace holds");
+});
+
+test("under a Workspace with ONE Repo Slot an absent cwd resolves to that slot's Worktree (ADR-0057)", async () => {
+  const mock = new MockFlueClient();
+  harness(mock, { ...baseInput, endpoint: undefined }, undefined, READ, {}, AMBIENT);
+  await tick();
+
+  // With one slot there is nothing to privilege, so no convention is smuggled in (ADR-0051).
+  assert.equal(mock.admitted?.cwd, "/work/app/main");
+});
+
+test('a workspace: "none" Agent frames no directory — only Working tools consume one (ADR-0028/0057)', async () => {
+  const mock = new MockFlueClient();
+  harness(
+    mock,
+    { ...baseInput, endpoint: undefined },
+    undefined,
+    NONE,
+    { instanceHarness: "http://jr2-instance-harness.ns.svc:8080" },
+    AMBIENT,
+  );
+  await tick();
+
+  assert.equal(mock.admitted?.cwd, undefined, "the Menu-only Agent has no Working tools to root");
+});
+
+test("a Menu-only Agent handed a cwd keeps it — the Frame is what the STATE said (ADR-0057)", async () => {
+  const mock = new MockFlueClient();
+  harness(
+    mock,
+    { ...baseInput, endpoint: undefined, cwd: "/work/notes" },
+    undefined,
+    NONE,
+    { instanceHarness: "http://jr2-instance-harness.ns.svc:8080" },
+    AMBIENT,
+  );
+  await tick();
+
+  // Resolution is what `workspace: "none"` silences, not the Frame: a state that names a
+  // directory is never second-guessed, and the Instance Harness simply has no Working tools to
+  // root there (ADR-0028/0031).
+  assert.equal(mock.admitted?.cwd, "/work/notes");
+});
+
+test("no Workspace and no cwd: the Frame says nothing and the Harness keeps /work (ADR-0057)", async () => {
+  const mock = new MockFlueClient();
+  harness(mock, baseInput); // the stub path — an explicit endpoint and no workspace() to resolve from
+  await tick();
+
+  assert.equal(mock.admitted?.cwd, undefined, "absent is the one silent case, and it says /work");
+});
+
+test("more than one Repo Slot and no cwd REFUSES the Turn, naming the slots and the line (ADR-0057)", async () => {
+  const mock = new MockFlueClient();
+  const { received, table } = harness(mock, { ...baseInput, endpoint: undefined }, undefined, READ, {}, TWO_SLOTS);
+  await tick();
+
+  const errEvent = received.find((e) => e.type.startsWith("xstate.error.actor")) as { error?: Error } | undefined;
+  assert.ok(errEvent, "the invoke must error at start");
+  const message = String(errEvent?.error?.message);
+  assert.match(message, /agent "coder"/, "names the slot, like the Open-model fence");
+  assert.match(message, /target, docs/, "names the slots, in declaration order");
+  assert.match(message, /cwd: context\.workspace\.repos\.<slot>/, "names the exact line to add");
+  assert.doesNotMatch(message, /repos\.target/, "and privileges no slot while it says the kit privileges none");
+  assert.match(message, /ADR-0057/);
+  assert.deepEqual(mock.admits, [], "refused BEFORE any admission — no pod is spent on it");
+  assert.equal(table.lookup(agentAddress("inst-42")), undefined, "and before any surface is registered");
+});
+
 test("a tools name outside the INVOKING MACHINE's vocabulary errors the invoke at start", () => {
   const mock = new MockFlueClient();
   // The harness machine's "*" catches the xstate error event (a real workflow without a handler
@@ -274,7 +358,7 @@ test("a failed settlement surfaces as agent.fault telemetry", async () => {
 
 test("every admission carries the SLOT's definition — the Harness holds no roster (ADR-0049)", async () => {
   const mock = new MockFlueClient();
-  const definition: AgentDefinition = { model: "vllm/qwen", instructions: "be the coder", cwd: "/work" };
+  const definition: AgentDefinition = { model: "vllm/qwen", instructions: "be the coder", workspace: "read" };
   const { received } = harness(mock, baseInput, undefined, definition);
   await tick();
 
@@ -371,7 +455,7 @@ test("a CANCEL abandons the run locally and destroys the registration", async ()
 
 // --- Runaway: ended by the Harness, rerolled once, then a fault (ADR-0035) ---------------------
 
-test("runaway: a fresh-session turn is rerolled ONCE — fresh conversation, IDENTICAL prompt", async () => {
+test("runaway: a FRESH turn is rerolled ONCE — fresh conversation, IDENTICAL prompt", async () => {
   const mock = new MockFlueClient();
   const { received, ledger, telemetry, table } = harness(mock, baseInput);
   await tick();
@@ -428,9 +512,18 @@ test("runaway: a second runaway is the ONE terminal agent.fault, carrying the ru
   assert.match(String(faults[0]!.reason), /repeated an identical tool call 4 times/);
 });
 
-test("runaway: a continuation gets NO reroll — straight to the fault (ADR-0035)", async () => {
+test("runaway: a continuation gets NO reroll, and its terminal fault BURNS it (ADR-0035, ADR-0057)", async () => {
   const mock = new MockFlueClient();
-  const { received } = harness(mock, { ...baseInput, continuation: true });
+  const burned: string[] = [];
+  const { received } = harness(
+    mock,
+    { ...baseInput, instanceId: "run-1/root/coder", continuation: true },
+    undefined,
+    undefined,
+    {
+      bumpEpoch: (conversation) => burned.push(conversation),
+    },
+  );
   await tick();
   mock.faultSettled("runaway", "exceeded 128 steps");
   await tick();
@@ -439,6 +532,9 @@ test("runaway: a continuation gets NO reroll — straight to the fault (ADR-0035
   const faults = received.filter((e) => e.type === "agent.fault");
   assert.equal(faults.length, 1);
   assert.match(String(faults[0]!.reason), /exceeded 128 steps/);
+  // The poisoned context is not worth continuing, so the next `continue` must not land on it. The
+  // actor names the conversation the way the mapper minted it — from the invoking Machine's path.
+  assert.deepEqual(burned, ["run-1/root/coder"]);
 });
 
 test("a typed settlement failure that is NOT runaway keeps its terminal behavior", async () => {
@@ -576,8 +672,8 @@ test("a failing abort is swallowed — there is no one left to report it to", as
   assert.ok(!received.some((e) => e.type === "agent.fault"), "the actor is stopped: nothing to fault");
 });
 
-test("the next turn on the same iid waits for the pending abort (session: continue — ADR-0024)", async () => {
-  // Two states, one iid: exactly what `session: "continue"` produces. flue QUEUES per instance, so
+test("the next turn on the same iid waits for the pending abort (continue: true — ADR-0024)", async () => {
+  // Two states, one iid: exactly what `continue: true` produces. flue QUEUES per instance, so
   // an abort that lost this race would settle the SECOND submission before it ran — a silently
   // lost turn, the worst failure available.
   const mock = new MockFlueClient();

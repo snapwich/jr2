@@ -22,19 +22,20 @@ import { Type } from "@earendil-works/pi-ai";
 import type { AgentDefinition } from "./spec.ts";
 
 /** A Working tool, in the shape the harness assembly consumes (`setTools`). The built-in file
- * tools draw cwd from the harness's `toolContext` (`NodeExecutionEnv`); grep/glob close over the
- * same cwd directly. */
+ * tools draw the Frame's cwd from the harness's `toolContext` (`NodeExecutionEnv`); grep/glob
+ * close over the same cwd directly. */
 export type WorkingTool = AgentHarnessTool<ExecutionToolContext>;
 
 /** Output bound for grep/glob — a search that would flood the context truncates, loudly. */
 const MAX_LINES = 200;
 
 /**
- * The Working tools for one definition, rooted at the resolved cwd. Full set (default
- * `workspace: "write"`): read, write, edit, bash, grep, glob. `workspace: "read"` withholds write
- * and edit; `workspace: "none"` withholds everything — the Agent converses and picks from its
- * Menu alone (ADR-0028). The field is the definition's own (`spec.ts`, mirroring the
- * Orchestrator's `AgentDefinition`).
+ * The Working tools for one definition, rooted at `cwd` — the Turn's Frame, resolved (ADR-0057:
+ * where a Turn works rides the Turn, never the definition, because a worktree path exists only
+ * once a run does). Full set (default `workspace: "write"`): read, write, edit, bash, grep, glob.
+ * `workspace: "read"` withholds write and edit; `workspace: "none"` withholds everything — the
+ * Agent converses and picks from its Menu alone (ADR-0028). That field IS the definition's own
+ * (`spec.ts`, mirroring the Orchestrator's `AgentDefinition`): what an Agent may do is identity.
  */
 export function workingToolsFor(definition: AgentDefinition, cwd: string): WorkingTool[] {
   if (definition.workspace === "none") return [];

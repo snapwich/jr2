@@ -41,13 +41,13 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   a meaning: the first is where the coder works, any others are checkouts the first Turn frames for the coder to read;
   one Agent `coder` with an Open model. `working` invokes `coder`; its `finish { summary }` parks at the `review` Gate
   (meta: summary, branch, worktree), as does a terminal `agent.fault` (meta: reason). `approve` reaches the final state
-  and tears the Workspace down; `request_changes { notes }` **continues the same conversation**
-  (`conversation: "coder"`) — one human steering one Agent wants the Agent to remember what it did, unlike ADR-0049's
-  coder⇄reviewer handoff, which is lossy on purpose. No round cap: the human is the cap. Rejected: a per-run Repo on the
-  door — a packaged door cannot enumerate the Instance's repos, and "a Workflow is a name" reads best when the name
-  means "a prompt against THIS repo". Rejected: a named `target: open` slot — the body reads the first checkout the
-  handles carry, never `repos.target`, so the name claimed a shape the body did not have and shut out the one thing a
-  task commonly wants beside its repository: another checkout to read.
+  and tears the Workspace down; `request_changes { notes }` **continues the same conversation** (`continue: true`,
+  ADR-0057) — one human steering one Agent wants the Agent to remember what it did, unlike ADR-0049's coder⇄reviewer
+  handoff, which is lossy on purpose. No round cap: the human is the cap. Rejected: a per-run Repo on the door — a
+  packaged door cannot enumerate the Instance's repos, and "a Workflow is a name" reads best when the name means "a
+  prompt against THIS repo". Rejected: a named `target: open` slot — the body reads the first checkout the handles
+  carry, never `repos.target`, so the name claimed a shape the body did not have and shut out the one thing a task
+  commonly wants beside its repository: another checkout to read.
 - **The Machine does not push.** ADR-0005/0053: the Agent holds no credential and the push url is the caller's own
   spelling with the caller's own credential. The Gate park is the inspection window — exec in, review, push, then
   `approve`, and unpushed commits go with the pod, as ADR-0012 always said. A credentialed push out of the pod is a
@@ -74,6 +74,5 @@ doing so found the one part ADR-0049/0051 left a package unable to leave unsaid:
   `examples/`; the citations are retargeted in place.
 - A `customize` that binds a model is now the common consumer line, not the exotic one; `jr2 up`'s refusal for an Open
   Agent prints it, as it does for an Open Repo Slot.
-- The `triaged-task` mechanics test, the one cluster-free test of the `conversation:` pin, goes with `examples/coding`;
-  `task`'s test takes over the pin, and the `@kind` `consulted`/`advised` fixtures already hold Instance Harness
-  placement.
+- The `triaged-task` mechanics test went with `examples/coding`, and the cross-Machine conversation pin it exercised
+  went with ADR-0057; the `@kind` `consulted`/`advised` fixtures hold Instance Harness placement.

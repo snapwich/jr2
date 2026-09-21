@@ -38,9 +38,10 @@ collapses into repetition.
   the reroll, not different instructions. Budget 1 (a defaulted knob): a runaway retry costs an entire turn, and two
   independent rolls both running away is evidence the task itself is pathological — that belongs with the workflow's
   fault routing, not a third attempt.
-- **A `session: "continue"` invocation gets no retry — straight to the fault.** The one recovery jr2 knows is a fresh
-  conversation, and that is exactly what the author opted out of; jr2 does not invent a new conversation the workflow
-  asked to continue. The fault routing decides what the history is worth.
+- **A `continue: true` invocation gets no retry — straight to the fault.** The one recovery jr2 knows is the identical
+  prompt on a fresh conversation, and a continued Turn's prompt is meaningless fresh. The fault retires that
+  conversation: jr2 bumps its epoch, so the next `continue` on the Agent lands on a virgin one (ADR-0057), and the fault
+  routing decides what to brief it with.
 - **Exhaustion emits the same single terminal `agent.fault { reason }`.** The workflow surface does not change; routing
   (park at a Gate, re-invoke at a higher Dial) stays workflow policy, and `task-with-review`'s existing `agent.fault`
   arm already handles it. Retry attempts surface as run-feed telemetry like nudge attempts.

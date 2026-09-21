@@ -14,6 +14,31 @@ const tick = (ms = 25) => new Promise((r) => setTimeout(r, ms));
  * records it — the only place a socket-level test can see that it left this host. */
 const coder = { model: "anthropic/claude-x", instructions: "be the coder" };
 
+test("the stub records the Frame's cwd off the wire — the Turn's directory left this host (ADR-0057)", async () => {
+  // The only socket-level place the Frame can be seen: a mechanics-tier test asserts which
+  // directory a state gave a Turn exactly as it asserts the prompt (ADR-0057).
+  const stub = await startStubHarness({ longPollMs: 50 });
+  try {
+    const port = createHarnessAgentRunClient({ baseUrl: stub.url });
+    await port.admit(
+      {
+        agentName: "coder",
+        instanceId: "iid-1",
+        endpoint: stub.url,
+        prompt: "hello",
+        cwd: "/work/target/feature",
+        tools: [],
+      },
+      { definition: coder },
+    );
+    assert.deepEqual(stub.admissions, [
+      { agentName: "coder", instanceId: "iid-1", message: "hello", cwd: "/work/target/feature", definition: coder },
+    ]);
+  } finally {
+    await stub.close();
+  }
+});
+
 test("the real wire port admits against the stub, gets its admission, and parks in settle", async () => {
   const stub = await startStubHarness({ longPollMs: 200 });
   try {
@@ -57,7 +82,7 @@ test("abort ends every unsettled submission for the instance, and history says s
     const port = createHarnessAgentRunClient({ baseUrl: stub.url });
     const input = { agentName: "coder", instanceId: "iid-9", endpoint: stub.url, prompt: "go", tools: [] };
     const first = await port.admit(input, { definition: coder });
-    // A second submission on the same instance — what `session: "continue"` produces, and what
+    // A second submission on the same instance — what `continue: true` produces, and what
     // flue queues rather than rejects. An abort ends the running one AND everything behind it.
     const queued = await port.admit(input, { definition: coder });
 

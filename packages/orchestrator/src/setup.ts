@@ -46,7 +46,7 @@ import { eventMap, type EventDef, type EventFrom } from "@jr2/agent-protocol";
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { gate } from "./gate.ts";
-import { actorPath, boundRunId } from "./registration.ts";
+import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
 import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
 
 /**
@@ -264,7 +264,9 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
       const wrapOne = (inv: LooseInvoke): LooseInvoke => {
         // The slot key IS the Agent name (ADR-0049) — read off the declaration, never authored.
         if (typeof inv?.src === "string" && isAgent(actors[inv.src])) {
-          return { ...inv, input: wrapAgentInput(inv.input, pick(names, "agent"), inv.src) };
+          const derived = pick(names, "agent");
+          if (derived.length === 0) refuseBuriedPicks(node, inv.src, path, pick);
+          return { ...inv, input: wrapAgentInput(inv.input, derived, inv.src) };
         }
         if (inv?.src === "gate") {
           const wrapped: LooseInvoke = { ...inv, input: wrapGateInput(inv.input, pick(names, "external")) };
@@ -291,32 +293,106 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
   return walk(config as LooseState, new Set(), []);
 }
 
+/**
+ * Refuse the one shape that LOOKS like a Menu and is not one (ADR-0015, ADR-0057): an Agent
+ * invoked on a state whose picks are written in its SUBSTATES.
+ *
+ * A Menu derives from the invoking state's own + ANCESTOR transitions, per statechart semantics,
+ * so a pick written below that state is one the Turn is never offered — the model is handed a
+ * Menu it cannot end its turn with, and the actor reads an empty Menu as a Turn that ended as
+ * intended, so nothing nudges and nothing faults: the run parks. Until ADR-0057 the `tools:`
+ * override papered over it; with the override gone the kit says it here, at build, where `jr2 up`
+ * walks every registered Machine.
+ *
+ * An EMPTY Menu is not itself wrong — a state moved by a Gate or a timer asks its Agent for text
+ * and nothing else — so only the contradiction is refused: no Menu here, and picks below.
+ */
+function refuseBuriedPicks(
+  node: LooseState,
+  agentName: string,
+  path: readonly string[],
+  pick: (names: Set<string>, kind: "agent" | "external") => string[],
+): void {
+  const below = new Set<string>();
+  const descend = (n: LooseState): void => {
+    for (const key of Object.keys(n.on ?? {})) if (!key.includes(".") && key !== "*") below.add(key);
+    for (const child of Object.values(n.states ?? {})) descend(child);
+  };
+  for (const child of Object.values(node.states ?? {})) descend(child);
+
+  const buried = pick(below, "agent");
+  if (buried.length === 0) return;
+  const state = path.length ? path.join(".") : "(the machine root)";
+  throw new Error(
+    `agent "${agentName}" is invoked on state "${state}", which derives an EMPTY Menu while the ` +
+      `states BELOW it handle ${buried.join(", ")} — a Menu is the invoking state's own plus its ` +
+      `ancestors' transitions (ADR-0015), so a pick written below is one the Turn can never be ` +
+      `offered, and a Turn with no Menu ends with no pick at all. Move it onto "${state}" (guard ` +
+      `it if it must not always be offered — ADR-0029), or, if this Turn is deliberately ` +
+      `menu-less, the pick belongs to another invoke.`,
+  );
+}
+
 const resolveInput = (orig: unknown, args: InputArgs): Record<string, unknown> =>
   (typeof orig === "function" ? (orig as (a: InputArgs) => unknown)(args) : (orig ?? {})) as Record<string, unknown>;
+
+/**
+ * Every key a Turn's input may carry (ADR-0057): the Frame (`prompt`, `cwd`), the Dials (`model`,
+ * `thinkingLevel`), `continue`, and the Placement seat the stub tier states (`endpoint`,
+ * `sandbox`). Anything else is refused at RUNTIME, because no type can catch it: an invoke's input
+ * is a function returning a union, and the conditional spreads authors write inside it defeat
+ * excess-property checking — so a misspelled `continue` or a key from some other surface would
+ * compile and then silently take a fresh conversation every Turn, the class of quiet wrong
+ * behavior ADR-0057 was written to end.
+ */
+const TURN_INPUT_KEYS: ReadonlySet<string> = new Set([
+  "prompt",
+  "cwd",
+  "continue",
+  "model",
+  "thinkingLevel",
+  "endpoint",
+  "sandbox",
+]);
+
+/** Refuse a Turn whose input carries a key a Turn has no use for, before anything is minted or
+ * admitted. The message names the slot, the keys found, and the whole surface (ADR-0057). */
+function refuseUnknownKeys(consumer: object, agentName: string): void {
+  const unknown = Object.keys(consumer).filter((key) => !TURN_INPUT_KEYS.has(key));
+  if (unknown.length === 0) return;
+  throw new Error(
+    `agent "${agentName}": the Turn's input carries ${unknown.map((k) => `\`${k}\``).join(", ")}, which a ` +
+      `Turn has no use for — its input is its Frame (\`prompt\`, \`cwd\`), its Dials (\`model\`, ` +
+      `\`thinkingLevel\`), and \`continue\` (ADR-0057)`,
+  );
+}
 
 /** Wrap an Agent slot's invoke input: name the Agent (the slot key), append the derived menu, and
  * finalize the mechanism fields. */
 function wrapAgentInput(orig: unknown, derived: string[], agentName: string) {
   return (args: InputArgs): AgentRunInput => {
     const consumer = resolveInput(orig, args) as Partial<AgentTurnInput & AgentRunInput>;
+    refuseUnknownKeys(consumer, agentName);
     return {
       agentName,
-      instanceId: consumer.instanceId ?? mintIid(consumer, agentName, args.self),
+      // jr2 mints every id (ADR-0016, ADR-0057): the Turn's input carries no id to honor, so
+      // nothing a Machine writes can address a conversation jr2 did not derive.
+      instanceId: mintIid(consumer, agentName, args.self),
       endpoint: consumer.endpoint,
       sandbox: consumer.sandbox,
       prompt: consumer.prompt,
+      // The Frame's other half (ADR-0057) — WHERE this Turn works. Passed through as written; the
+      // actor resolves an ABSENT one against the enclosing Workspace, which only it can see.
+      cwd: consumer.cwd,
       // This turn's dials (ADR-0018) — passed straight through; the Harness layers
       // them over the definition when the Submission starts.
       model: consumer.model,
       thinkingLevel: consumer.thinkingLevel,
-      // ADR-0035's reroll gate: closed to `session: "continue"` and a `conversation` pin (the
-      // runaway recovery is a FRESH conversation — exactly what they opted out of), and to a
-      // caller-passed iid — fresh on first use, but not jr2-minted, so no reroll identity may
-      // derive from it (ADR-0016's minting doctrine).
-      ...(consumer.session === "continue" || consumer.conversation || consumer.instanceId
-        ? { continuation: true }
-        : {}),
-      tools: consumer.tools ?? derived,
+      // ADR-0035's reroll gate: closed to `continue: true`, which names an EXISTING conversation
+      // while the runaway's one recovery is a fresh one — exactly what it opted out of.
+      ...(consumer.continue === true ? { continuation: true } : {}),
+      // The Menu (ADR-0015): always the derived one, since ADR-0057 retired the override.
+      tools: derived,
     };
   };
 }
@@ -330,31 +406,30 @@ function wrapGateInput(orig: unknown, derived: string[]) {
 }
 
 /**
- * Mint the instance id (ADR-0016). It is minted in the INPUT MAPPER — not the actor — because
- * the input is the persistence vehicle: restore re-spawns from the persisted input without
- * re-running the mapper (same conversation), while a fresh transition re-runs it (new one).
+ * Mint the instance id (ADR-0016, ADR-0057). It is minted in the INPUT MAPPER — not the actor —
+ * because the input is the persistence vehicle: restore re-spawns from the persisted input
+ * without re-running the mapper (same conversation), while a fresh transition re-runs it.
  *
- * - Default (fresh session, jr's lossy handoff): a new conversation per invocation — a random
- *   suffix under a readable `<runId>/<actor-path>/<agent>` prefix.
- * - `session: "continue"` (+ optional `scope`): the iid derives deterministically from
- *   `(run, actor path, agent, scope)`, so re-invocations continue ONE flue conversation. The
- *   actor path excludes the root actor (its id is generated per process — everything below it
- *   is author-named and stable across restore). Invoking a continue iid that is already live
- *   fails loudly at the registration table (one live surface per address).
- * - `conversation` (the cross-machine continue): a workflow-chosen name REPLACES the actor path,
- *   so invocations in different machines — a pre-workspace triage state and a state inside the
- *   `workspace()` body — derive one iid and continue one conversation. Same determinism, same
- *   restore behavior, same already-live check as `session: "continue"`.
+ * Both spellings are built on {@link continuedIid}, `<runId>/<machine actor path>/<agent>` — the
+ * Agent's ONE conversation in this Machine instance. The machine actor path excludes the root
+ * actor (its id is generated per process) and the invoke's own leaf id (states of one Machine
+ * share the conversation, ADR-0057), so two Pool children — whose ids are their items' — can
+ * never meet.
+ *
+ * - Default (FRESH, jr's lossy handoff): a new conversation per invocation — that id plus a
+ *   random suffix.
+ * - `continue: true`: that id exactly, at epoch 0 — the author writes a boolean, because in a
+ *   state machine the identity (the run, the Machine instance, the Agent slot) is already on the
+ *   page. Once jr2 has faulted the conversation, the ledger's epoch suffixes it (`<id>/1`,
+ *   `<id>/2`, …): a virgin conversation, since no fault leaves one worth continuing (ADR-0035).
+ *   **Epoch 0 is never spelled** — the unsuffixed id IS the first conversation, which keeps the
+ *   common case readable on the Harness route, in the ledger and in the logs. Invoking a live
+ *   continued id fails loudly at the registration table (one live surface per address).
  */
-function mintIid(
-  consumer: { session?: "continue"; scope?: string; conversation?: string },
-  agentName: string,
-  self: AnyActorRef,
-): string {
+function mintIid(consumer: { continue?: true }, agentName: string, self: AnyActorRef): string {
   const runId = boundRunId(self.system) ?? "local";
-  const scope = consumer.scope ? `/${consumer.scope}` : "";
-  if (consumer.conversation) return `${runId}/${consumer.conversation}/${agentName}${scope}`;
-  const path = actorPath(self).join(".") || "root";
-  if (consumer.session === "continue") return `${runId}/${path}/${agentName}${scope}`;
-  return `${runId}/${path}/${agentName}${scope}/${randomUUID().slice(0, 8)}`;
+  const conversation = continuedIid(self, runId, agentName);
+  if (!consumer.continue) return `${conversation}/${randomUUID().slice(0, 8)}`;
+  const epoch = boundEpoch(self.system, conversation);
+  return epoch === 0 ? conversation : `${conversation}/${epoch}`;
 }

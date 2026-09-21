@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { createAuthenticator, mintInstanceToken, sandboxToken } from "../src/tokens.ts";
-import { codingDef, gatedDef, mkStore } from "./_fixtures.ts";
+import { admittedIid, codingDef, gatedDef, mkStore, MockFlueClient } from "./_fixtures.ts";
 
 const KEY = Buffer.alloc(32, 7);
 const INSTANCE_TOKEN = mintInstanceToken();
@@ -28,10 +28,15 @@ const INSTANCE_TOKEN = mintInstanceToken();
 /** An authenticated app: one instance token, and Sandbox tokens signed by this key. */
 async function mkApp() {
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(new Map()));
+  const clients = new Map<string, MockFlueClient>();
+  host.register(codingDef(clients));
   host.register(gatedDef());
   const app = createApp(host, createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY }));
-  return { host, app };
+  /** The live Turn's address, as the Adapter holds it: jr2 mints every iid (ADR-0057), so the
+   * test reads it off the admission and encodes it — a minted id carries path separators. */
+  const agentPath = async (run: { instanceId: string }, suffix: string) =>
+    `/agents/${encodeURIComponent(await admittedIid(clients.get(run.instanceId)!))}/${suffix}`;
+  return { host, app, agentPath };
 }
 
 const post = (body: unknown, token?: string): RequestInit => ({
@@ -45,28 +50,30 @@ const post = (body: unknown, token?: string): RequestInit => ({
 const get = (token?: string): RequestInit => (token ? { headers: { authorization: `Bearer ${token}` } } : {});
 
 test("no token, or a forged one, drives nothing", async () => {
-  const { host, app } = await mkApp();
-  const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  const { host, app, agentPath } = await mkApp();
+  const run = await host.start("coding", { sandbox: "ws-1" });
+  const surface = await agentPath(run, "surface");
 
-  assert.equal((await app.request(`/runs/${runId}`)).status, 401);
-  assert.equal((await app.request(`/agents/${instanceId}/surface`)).status, 401);
-  assert.equal((await app.request(`/agents/${instanceId}/events`, post({ type: "done" }))).status, 401);
+  assert.equal((await app.request(`/runs/${run.runId}`)).status, 401);
+  assert.equal((await app.request(surface)).status, 401);
+  assert.equal((await app.request(await agentPath(run, "events"), post({ type: "done" }))).status, 401);
 
   // The Sandbox token is a SIGNED NAME: knowing the name is not holding the token. An Agent knows
   // its own Sandbox name (it is in its pod's env) — that is deliberately not enough.
   const forged = `ws-1.${"A".repeat(43)}`;
-  assert.equal((await app.request(`/agents/${instanceId}/surface`, get(forged))).status, 401);
-  assert.equal((await app.request(`/agents/${instanceId}/surface`, get("ws-1"))).status, 401);
+  assert.equal((await app.request(surface, get(forged))).status, 401);
+  assert.equal((await app.request(surface, get("ws-1"))).status, 401);
 });
 
 test("a Sandbox token drives its own agent surface", async () => {
-  const { host, app } = await mkApp();
-  const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  const { host, app, agentPath } = await mkApp();
+  const run = await host.start("coding", { sandbox: "ws-1" });
+  const { runId } = run;
   const token = sandboxToken(KEY, "ws-1");
 
-  assert.equal((await app.request(`/agents/${instanceId}/surface`, get(token))).status, 200);
+  assert.equal((await app.request(await agentPath(run, "surface"), get(token))).status, 200);
   const call = await app.request(
-    `/agents/${instanceId}/events`,
+    await agentPath(run, "events"),
     post({ type: "request_review", summary: "PR" }, token),
   );
   assert.equal(call.status, 200);
@@ -156,34 +163,36 @@ test("a Sandbox token cannot deliver to a gate — an Agent does not approve its
 });
 
 test("a Sandbox token cannot speak for another Sandbox's Agent", async () => {
-  const { host, app } = await mkApp();
+  const { host, app, agentPath } = await mkApp();
   const mine = await host.start("coding", { sandbox: "ws-mine" });
   const theirs = await host.start("coding", { sandbox: "ws-theirs" });
   const token = sandboxToken(KEY, "ws-mine");
 
-  // Why this matters, concretely (ADR-0013): `coding.ts`'s iids are DERIVABLE — `<runIid>/<featureId>
-  // /<scope>/<role>` — and feature ids are readable from the Work Source. A merely run-scoped token
-  // would let one feature's coder inject a `review_verdict` into another feature's reviewer.
-  assert.equal((await app.request(`/agents/${theirs.instanceId}/surface`, get(token))).status, 403);
-  const inject = await app.request(`/agents/${theirs.instanceId}/events`, post({ type: "done" }, token));
+  // Why this matters, concretely (ADR-0013): a continued iid is DERIVABLE — `<runId>/<machine
+  // actor path>/<agent>` (ADR-0057), and a Pool's actor path is its item's id, readable from the
+  // Work Source. A merely run-scoped token would let one item's coder inject a verdict into
+  // another item's reviewer.
+  assert.equal((await app.request(await agentPath(theirs, "surface"), get(token))).status, 403);
+  const inject = await app.request(await agentPath(theirs, "events"), post({ type: "done" }, token));
   assert.equal(inject.status, 403);
   assert.equal(host.status(theirs.runId)?.status, "active", "the other run did not move");
 
-  assert.equal((await app.request(`/agents/${mine.instanceId}/surface`, get(token))).status, 200);
+  assert.equal((await app.request(await agentPath(mine, "surface"), get(token))).status, 200);
 });
 
 test("a Sandbox token cannot claim a workspace-less agent (no pod owns it)", async () => {
-  const { host, app } = await mkApp();
+  const { host, app, agentPath } = await mkApp();
   // The mechanics-tier shape: an Agent turn against the stub Harness on the host, in no Sandbox.
-  const { instanceId } = await host.start("coding");
+  const run = await host.start("coding");
   const token = sandboxToken(KEY, "ws-1");
+  const surface = await agentPath(run, "surface");
 
-  assert.equal((await app.request(`/agents/${instanceId}/surface`, get(token))).status, 403);
-  assert.equal((await app.request(`/agents/${instanceId}/surface`, get(INSTANCE_TOKEN))).status, 200);
+  assert.equal((await app.request(surface, get(token))).status, 403);
+  assert.equal((await app.request(surface, get(INSTANCE_TOKEN))).status, 200);
 });
 
 test("the Instance Harness's token speaks for the Turns placed there, and for no Workspace's (ADR-0031)", async () => {
-  const { host, app } = await mkApp();
+  const { host, app, agentPath } = await mkApp();
   // A Menu-only registration records the placement's name as its scope (actor.ts); the Instance
   // Harness Adapter bears a token signed for exactly that name (up.ts/deploy.ts) — the same
   // signed-name doctrine that keeps one feature's coder out of another's reviewer, extended to
@@ -193,9 +202,9 @@ test("the Instance Harness's token speaks for the Turns placed there, and for no
   const workspace = await host.start("coding", { sandbox: "ws-1" });
   const token = sandboxToken(KEY, "jr2-instance-harness");
 
-  assert.equal((await app.request(`/agents/${menuOnly.instanceId}/surface`, get(token))).status, 200);
-  assert.equal((await app.request(`/agents/${workspace.instanceId}/surface`, get(token))).status, 403);
-  const inject = await app.request(`/agents/${workspace.instanceId}/events`, post({ type: "done" }, token));
+  assert.equal((await app.request(await agentPath(menuOnly, "surface"), get(token))).status, 200);
+  assert.equal((await app.request(await agentPath(workspace, "surface"), get(token))).status, 403);
+  const inject = await app.request(await agentPath(workspace, "events"), post({ type: "done" }, token));
   assert.equal(inject.status, 403);
   assert.equal(host.status(workspace.runId)?.status, "active", "the Workspace run did not move");
 });

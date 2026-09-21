@@ -115,7 +115,8 @@ type RunChild = { id: string; value: unknown; children: RunChild[] };
 type WsStatus = {
   status: string;
   value: string;
-  /** The run's agent instance id — the iid the Harness is admitted under, and the Adapter's path. */
+  /** The RUN's own seed Instance ID (ADR-0033) — what names `task`'s default branch. It is not a
+   * conversation address: jr2 mints those structurally (ADR-0057, {@link continuedIid}). */
   instanceId: string;
   context: { endpoint?: string; output?: { outcome?: string } };
   /** The body lives here: a wrapper's own `value` is only ever provisioning/attaching/running. */
@@ -154,6 +155,22 @@ async function waitForAttached(world: E2EWorld): Promise<WsStatus> {
 function anyChildIn(children: RunChild[], value: string): boolean {
   return children.some((c) => c.value === value || anyChildIn(c.children, value));
 }
+
+/**
+ * The Instance ID of a continued conversation, spelled the way jr2 mints it (ADR-0057):
+ * `<runId>/<machine actor path>/<agent>` — the Agent's ONE conversation in one Machine instance,
+ * whichever of that Machine's states asked for the Turn.
+ *
+ * `machine` is the actor path of the Machine that INVOKED the Agent, below the run's root:
+ * `root` for a Machine a run STARTS with (`advised`), and `body` for the Machine a `workspace()`
+ * invokes inside its Workspace — every other kind workflow, and the kit's `task`.
+ *
+ * Spelled out rather than discovered, because it IS the claim: a Turn that took a fresh
+ * conversation lands at another address, and this one then answers 404 with the prompt nowhere on
+ * the pod. It is also how a human finds a conversation —
+ * `curl localhost:8080/agents/<agent>/<iid>?view=history`.
+ */
+const continuedIid = (runId: string, machine: "root" | "body", agent: string): string => `${runId}/${machine}/${agent}`;
 
 /**
  * What the Harness itself says became of this instance's turns (`?view=history` — ADR-0027's wire;
@@ -288,7 +305,7 @@ When(
   "the Harness container posts {string} straight to the Orchestrator",
   async function (this: E2EWorld, tool: string): Promise<void> {
     const pod = (await waitForReadySandbox(this)).metadata.name;
-    const iid = (await wsStatus(this)).instanceId;
+    const iid = continuedIid(this.runId!, "body", "coder");
     const url = (
       await kubectl(this, [
         "get",
@@ -710,7 +727,7 @@ Then("the run's body is in {string}", async function (this: E2EWorld, value: str
 Then(
   "the Harness reports {int} of the Agent's turns settled as {string}",
   async function (this: E2EWorld, count: number, outcome: string): Promise<void> {
-    const iid = (await wsStatus(this)).instanceId;
+    const iid = continuedIid(this.runId!, "body", "coder");
     let last: Array<{ outcome: string }> = [];
     for (let i = 0; i < 60; i++) {
       last = await settlements(this, iid);
@@ -1184,13 +1201,27 @@ async function conversationStatus(world: E2EWorld, pod: string, agent: string, i
   return status;
 }
 
-/** The run's instance id — the iid every Agent of the kind fixtures is admitted under. */
+/** The RUN's own seed Instance ID, as `jr2 status` reports it (ADR-0033). It names the run and
+ * nothing else — jr2 mints every Agent conversation id itself (ADR-0057) — so the one claim it
+ * still serves here is `task`'s default branch, `jr2/task-<run id>`. */
 async function runInstanceId(world: E2EWorld): Promise<string> {
   const r = await world.runCli(["status", world.runId!]);
   assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   const { instanceId } = world.resultJson<{ instanceId: string }>();
   assert.ok(instanceId, "the run reports its instance id");
   return instanceId;
+}
+
+/** The Machine an Agent's Turn was invoked from, as a step names it — `root` (the Machine the run
+ * starts with) or `body` (the Machine a `workspace()` invokes inside its Workspace). It is the
+ * middle segment of the Instance ID (ADR-0057), so the step text says out loud which conversation
+ * it is asking about. */
+function machineOf(word: string): "root" | "body" {
+  assert.ok(
+    word === "root" || word === "body",
+    `a kind fixture invokes its Agents from "root" or "body", not "${word}"`,
+  );
+  return word;
 }
 
 /**
@@ -1236,10 +1267,10 @@ Then(
 );
 
 Then(
-  "the Instance Harness holds the {string} conversation of the run",
+  "the Instance Harness holds the {string} conversation of the run's {word} Machine",
   { timeout: 180_000 },
-  async function (this: E2EWorld, agent: string): Promise<void> {
-    const iid = await runInstanceId(this);
+  async function (this: E2EWorld, agent: string, machine: string): Promise<void> {
+    const iid = continuedIid(this.runId!, machineOf(machine), agent);
     const pod = await instanceHarnessPod(this);
     let last = 0;
     for (let i = 0; i < 90; i++) {
@@ -1257,16 +1288,19 @@ Then(
 /** The other half of definition-wins: the run HAS a Sandbox, and its Harness never saw the
  * advisor's conversation. Asked after the Instance Harness answered 200 for the same (agent, iid),
  * so a 404 here is placement, not timing. */
-Then("the run's Sandbox holds no {string} conversation", async function (this: E2EWorld, agent: string): Promise<void> {
-  const iid = await runInstanceId(this);
-  const pod = (await waitForReadySandbox(this)).metadata.name;
-  const status = await conversationStatus(this, pod, agent, iid);
-  assert.equal(
-    status,
-    404,
-    `the Sandbox's Harness answered ${status} for /agents/${agent}/${iid} — nearest-wins placement, which ADR-0031 rejects`,
-  );
-});
+Then(
+  "the run's Sandbox holds no {string} conversation of the run's {word} Machine",
+  async function (this: E2EWorld, agent: string, machine: string): Promise<void> {
+    const iid = continuedIid(this.runId!, machineOf(machine), agent);
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const status = await conversationStatus(this, pod, agent, iid);
+    assert.equal(
+      status,
+      404,
+      `the Sandbox's Harness answered ${status} for /agents/${agent}/${iid} — nearest-wins placement, which ADR-0031 rejects`,
+    );
+  },
+);
 
 Then("no Sandbox was provisioned for the run", async function (this: E2EWorld): Promise<void> {
   assert.deepEqual(await sandboxesFor(this), [], "a Menu-only workflow composes no Sandbox and provisions none");
@@ -1449,14 +1483,12 @@ Then(
 // `jr2 send`, read the branch off the Gate's own meta.
 
 /**
- * Where `task`'s coder conversation lives on the pod (ADR-0016/0054). The Machine PINS it —
- * `conversation: "coder"`, `scope: "g<generation>"` — so jr2 derives `<runId>/<pin>/<agent>/<scope>`
- * and every Turn of the run addresses that one conversation. Spelled out rather than discovered
- * because it IS the claim: a `request_changes` that briefed a fresh coder would derive a different
- * iid, and this address would answer 404 with the first prompt nowhere on the pod. It is also how a
- * human finds the conversation — `curl localhost:8080/agents/coder/<iid>?view=history`.
+ * Where `task`'s coder conversation lives on the pod (ADR-0054/0057). The Machine writes
+ * `continue: true` and nothing else, so jr2 mints the structural id and every Turn of the run
+ * lands on that one conversation. `task`'s Agent is invoked from the body the `workspace()` runs
+ * inside the Workspace, which is the `body` segment.
  */
-const taskCoderIid = (runId: string, generation = 0): string => `${runId}/coder/coder/g${generation}`;
+const taskCoderIid = (runId: string): string => continuedIid(runId, "body", "coder");
 
 /** A conversation as its Harness reports it (`?view=history` — ADR-0027): `settlements` is the
  * asserted contract, `messages` the best-effort record of what was said. Read over a port-forward
@@ -1639,8 +1671,9 @@ When("I send {string} to the Gate", async function (this: E2EWorld, event: strin
  *
  * Three things at ONE address: the door's prompt, framed as the first Turn; a settled turn behind
  * it; and the human's notes as a LATER user message. A `task` that started over would derive a
- * different iid (a new `scope`, which is what a terminal fault does on purpose) and this address
- * would hold the notes alone — or nothing at all.
+ * different iid — which is what a terminal fault does on purpose, since it burns the conversation
+ * and the next `continue` mints `<iid>/<epoch>` (ADR-0057) — and this address would hold the notes
+ * alone, or nothing at all.
  */
 Then(
   "the coder's conversation carries the prompt {string} and then the notes {string}",
@@ -1665,6 +1698,79 @@ Then(
     throw new Error(
       `/agents/coder/${iid} does not hold the prompt and then the notes (${last === undefined ? "no such conversation — the second Turn started a new one" : JSON.stringify(last.messages)})`,
     );
+  },
+);
+
+// --- the Frame's cwd, where only a real pod can answer (ADR-0057) ---------------------------------
+//
+// The incident these steps play: a model that writes a RELATIVE path. Every Working tool resolves
+// one against the Turn's `cwd` — the Frame — so where the bytes land is the whole claim, and it is
+// invisible from the Orchestrator, which sees a turn that finished either way.
+
+/** The model answers with the `write` WORKING tool at a bare filename. No Menu tool is picked, so
+ * the Machine does not move; what moves is the file — somewhere. */
+When(
+  "the Agent writes {string} through its write Working tool",
+  async function (this: E2EWorld, path: string): Promise<void> {
+    await waitForAttached(this); // the Worktree the Frame names exists only once attach is done
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    await this.provider.release("write", { path, content: "written by the coder\n" });
+  },
+);
+
+/** The directories between a Worktree and `/work`, inclusive of `/work` — every place a relative
+ * path could have landed instead. `/work` is the last of them, and is where a definition-level
+ * `cwd` could only ever have pointed: the parent of every checkout (ADR-0057). */
+function above(worktree: string): string[] {
+  const dirs: string[] = [];
+  for (let dir = worktree; dir.length > "/work".length; ) {
+    dir = dir.slice(0, dir.lastIndexOf("/"));
+    dirs.push(dir);
+  }
+  return dirs;
+}
+
+/**
+ * The regression, inverted into an assertion (ADR-0057): the bare filename the model wrote
+ * resolved INSIDE the Worktree the Gate names, and no directory above it holds a copy. The probe
+ * REPORTS every place the name exists rather than asserting each absence, so a failure says where
+ * the work actually went — which is the one thing the incident could not tell anybody.
+ */
+Then(
+  "the file {string} is in the Worktree the Gate names and in no directory above it",
+  async function (this: E2EWorld, name: string): Promise<void> {
+    const gate = await openGate(this);
+    const worktree = String(gate.meta?.worktree ?? "");
+    assert.ok(worktree, `the Gate carries the worktree (got: ${JSON.stringify(gate.meta)})`);
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const script = [worktree, ...above(worktree)]
+      .map((dir) => `[ -e '${dir}/${name}' ] && echo '${dir}/${name}'`)
+      .join("\n");
+    const found = (await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-c", `${script}\nexit 0`]))
+      .split("\n")
+      .filter(Boolean);
+    assert.deepEqual(
+      found,
+      [`${worktree}/${name}`],
+      `a relative path must resolve at the Turn's Frame and nowhere else — /work is where a ` +
+        `definition-level cwd would have put it (ADR-0057)`,
+    );
+  },
+);
+
+/** …and the commit the model made with a bare `git add` is the branch's tip, in that same
+ * Worktree. The Frame roots bash too, so a Turn that worked in the wrong directory would have had
+ * nothing to add and no branch to move. */
+Then(
+  "the Worktree the Gate names has the commit {string} on its branch",
+  async function (this: E2EWorld, subject: string): Promise<void> {
+    const gate = await openGate(this);
+    const worktree = String(gate.meta?.worktree ?? "");
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const git = (args: string[]): Promise<string> =>
+      kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "git", "-C", worktree, ...args]);
+    assert.equal((await git(["branch", "--show-current"])).trim(), gate.meta?.branch, "on the branch, not detached");
+    assert.equal((await git(["log", "-1", "--pretty=%s"])).trim(), subject, "the coder's commit is the branch's tip");
   },
 );
 
@@ -1817,14 +1923,10 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
   await mkdir(dir, { recursive: true });
 
   const status = await probe(async () => (await world.runCli(["status", world.runId ?? ""])).stdout);
-  // The iid the Harness is admitted under — read off `jr2 status`, which is also the dump's copy.
-  const iid = (() => {
-    try {
-      return (JSON.parse(status.trim().split("\n").pop() ?? "{}") as { instanceId?: string }).instanceId;
-    } catch {
-      return undefined;
-    }
-  })();
+  // The conversation the pod's Harness holds, derived (ADR-0057) rather than read off the status:
+  // `jr2 status` reports the RUN's id, which names no conversation. Every kind workflow with a
+  // Sandbox invokes its coder from the `workspace()`'s body, so one spelling covers the dump.
+  const iid = world.runId ? continuedIid(world.runId, "body", "coder") : undefined;
 
   // The provider's side, first: how many requests EVER reached this scenario's scripted model, and
   // whether any of them streamed. Zero streaming is the flake's signature — the pod's turn loop
@@ -1838,7 +1940,10 @@ async function dumpKindDiagnostics(world: E2EWorld, scenarioName: string): Promi
         "\n",
     ],
     ["jr2-status.json", status],
-    ["harness-history.json", iid ? probe(() => harnessHistory(world, iid)) : "<no instanceId in jr2 status>\n"],
+    [
+      "harness-history.json",
+      iid ? probe(() => harnessHistory(world, iid)) : "<no runId to derive a conversation from>\n",
+    ],
     ["pods.txt", probe(() => kubectl(world, ["get", "pods", "-o", "wide"]))],
     ["sandboxes.yaml", probe(() => kubectl(world, ["get", "sandbox", "-o", "yaml"]))],
     // The other side of an ask (ADR-0051/0053): the cache agent writes its per-node verdict here —

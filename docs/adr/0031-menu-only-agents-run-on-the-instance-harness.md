@@ -21,12 +21,12 @@ built.
   ADR-0018 drew for model preflight); a declared-but-never-invoked `"none"` Agent over-deploys, erring toward "the
   convention works when you need it". No config key names, sizes, addresses, or enables it.
 - **Placement is definition-wins, not nearest-wins.** A `workspace: "none"` Agent's Turn runs on the Instance Harness
-  _always_ — even invoked from inside a `workspace()`. The deciding scenario is conversation continuation: a
-  conversation is an Instance ID _on one Harness_ (the server holds the history), and a run-scoped advisor is exactly
-  the Agent one continues across workspace boundaries. Nearest-wins would route the same `(agent, iid)` to a different
-  server mid-conversation — silent amnesia, indistinguishable from a bad model — or to a pod that no longer exists.
-  Definition-wins makes the hazard structurally impossible for the Agents most likely to hit it, and makes "which pod's
-  logs" a function of the Agent alone.
+  _always_ — even invoked from inside a `workspace()`. It is ADR-0028's thesis extended one step: an Agent that touches
+  no Workspace has no reason to run in one, and a Sandbox — torn down at its Workspace's final state, replaced after an
+  eviction — is the wrong home for a conversation whose definition says it needs no Workspace. A conversation is an
+  Instance ID _on one Harness_ (the server holds the history), so placement must be a function of the definition, not of
+  where an invocation happens to sit; nearest-wins would make the Harness that holds a `"none"` conversation an accident
+  of authoring. Definition-wins also makes "which pod's logs" a function of the Agent alone.
 - **The cohesive per-run log is solved by projection, not placement.** The cost of definition-wins — decisions vanishing
   from the Workspace pod's log — is repaid by [ADR-0023](0023-the-harness-prints-the-conversation.md)'s echo: the
   enclosing Workspace's Harness prints the run's narrative (admission + pick markers for remotely-hosted Turns, Emits,

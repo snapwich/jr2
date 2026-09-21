@@ -10,6 +10,11 @@
 //
 // `_`-prefixed, so workflow discovery skips it: this module is imported, never registered.
 //
+// No directory here (ADR-0057): where a Turn works is its Frame, not the persona's — under a
+// Workspace with one Repo Slot the actor frames that slot's Worktree, and every Working tool takes
+// its cwd from there rather than from the Harness process's own, which is why the image is free to
+// put its WORKDIR wherever its author wants.
+//
 // The instructions are honest prose rather than a script. What an Agent does on a turn is
 // decided by the scripted MODEL (`features/steps/fake-provider.ts`), which parks until a scenario
 // releases it — a real Agent that is still thinking, from the Machine's side.
@@ -19,10 +24,6 @@ import type { AgentDefinition } from "@jr2/orchestrator";
 export const coder = {
   model: "fake/model-x",
   description: "The @kind tier's worker: works in its Workspace worktree and picks from its Menu.",
-  // Explicit, though `/work` is also the default (ADR-0037): it is the worktree volume's root, and
-  // every Working tool takes its cwd from HERE rather than from the Harness process's own — which
-  // is why the image is free to put its WORKDIR wherever its author wants.
-  cwd: "/work",
   instructions: `You are the worker on a small autonomous team. Each conversation names a
 worktree and a branch to work in.
 
@@ -36,7 +37,8 @@ worktree and a branch to work in.
  * The tier's MENU-ONLY Agent (ADR-0028/0031): `workspace: "none"` withholds the whole Working
  * toolset and places every Turn of it on the Instance Harness — the Deployment `jr2 up` converges
  * for this instance because this definition exists, and where the Turn lands even when the
- * Machine invoking it sits inside a `workspace()`. No `cwd`: nothing of its consumes one.
+ * Machine invoking it sits inside a `workspace()`. Its Turns frame no directory either: nothing of
+ * its consumes one (ADR-0057).
  */
 export const advisor = {
   model: "fake/model-x",

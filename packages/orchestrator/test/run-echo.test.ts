@@ -47,13 +47,13 @@ class EchoSandbox implements SandboxPort {
  * turn (explicit endpoint — the stub-path stand-in for an Instance-Harness-hosted decisioner),
  * whose pick finishes the run. The port factory is baked into the body's own actors (an inline-
  * invoked machine is out of `provide()`'s reach), one client for every turn — a test tells the
- * turns apart by their explicit iids.
+ * turns apart by the Agent each minted iid names (ADR-0057).
  */
 function echoDef(client: MockFlueClient): WorkflowDef {
   const body = jr2Setup({
     types: {} as {
-      context: { instanceId: string; tag: string };
-      input: { instanceId: string; tag?: string; workspace: { branch: string } };
+      context: { tag: string };
+      input: { tag?: string; workspace: { branch: string } };
       emitted: { type: "note"; message: string };
     },
     events: [doneEvent, requestReviewEvent],
@@ -65,18 +65,11 @@ function echoDef(client: MockFlueClient): WorkflowDef {
     },
   }).createMachine({
     id: "body",
-    context: ({ input }) => ({ instanceId: input.instanceId, tag: input.tag ?? "solo" }),
+    context: ({ input }) => ({ tag: input.tag ?? "solo" }),
     initial: "local",
     states: {
       local: {
-        invoke: {
-          src: "coder",
-          input: ({ context }) => ({
-            instanceId: `${context.instanceId}/local`,
-            prompt: "code it",
-            tools: ["request_review"],
-          }),
-        },
+        invoke: { src: "coder", input: { prompt: "code it" } },
         on: {
           request_review: {
             target: "remote",
@@ -87,12 +80,7 @@ function echoDef(client: MockFlueClient): WorkflowDef {
       remote: {
         invoke: {
           src: "decider",
-          input: ({ context }) => ({
-            instanceId: `${context.instanceId}/remote`,
-            endpoint: "http://decider.test",
-            prompt: "approve or not",
-            tools: ["done"],
-          }),
+          input: { endpoint: "http://decider.test", prompt: "approve or not" },
         },
         on: { done: "finished" },
       },
@@ -106,9 +94,16 @@ function echoDef(client: MockFlueClient): WorkflowDef {
   return { name: "echoed", machine: wrapped, provide: () => ({}) };
 }
 
-/** One run's admits, told apart by the iid prefix its body derives from the run's instance id. */
-const admitsOf = (client: MockFlueClient, instanceId: string): AgentRunInput[] =>
-  client.admits.filter((a) => a.instanceId.startsWith(`${instanceId}/`));
+/** One run's admits: every minted iid is run-scoped by construction (ADR-0057), so the run id is
+ * the prefix — no fixture has to invent one. */
+const admitsOf = (client: MockFlueClient, runId: string): AgentRunInput[] =>
+  client.admits.filter((a) => a.instanceId.startsWith(`${runId}/`));
+
+/** The live iid of one run's Turn on the named Agent — the address a delivery goes to. */
+const iidOf = (client: MockFlueClient, runId: string, agentName: string): string =>
+  admitsOf(client, runId)
+    .filter((a) => a.agentName === agentName)
+    .at(-1)!.instanceId;
 
 type Push = { endpoint: string; events: EchoEvent[] };
 
@@ -131,7 +126,7 @@ test("tee + backfill: the Workspace's log opens with the preamble, then follows 
   host.register(echoDef(client));
 
   const feed: RunFeedEvent[] = [];
-  const { runId, instanceId } = await host.start("echoed");
+  const { runId } = await host.start("echoed");
   host.subscribe(runId, (e) => feed.push(e));
   await waitFor(() => pushes.length > 0);
 
@@ -146,12 +141,12 @@ test("tee + backfill: the Workspace's log opens with the preamble, then follows 
 
   // The LOCAL turn runs on this Workspace's own Harness: its transcript prints there, so its
   // markers ride the FEED but never the echo — markers, not mirrors.
-  await waitFor(() => admitsOf(client, instanceId).length === 1);
+  await waitFor(() => admitsOf(client, runId).length === 1);
   await waitFor(() => feed.some((e) => e.kind === "admission" && e.agent === "coder"));
   const localAdmission = feed.find((e) => e.kind === "admission" && e.agent === "coder");
   assert.equal(localAdmission?.kind === "admission" ? localAdmission.endpoint : undefined, target);
 
-  host.sendToAgent(`${instanceId}/local`, { type: "request_review", summary: "PR up" });
+  host.sendToAgent(iidOf(client, runId, "coder"), { type: "request_review", summary: "PR up" });
 
   // The pick moved the run: the Emit (payload included — instance-gated wire) and the status
   // delta tee live; the local turn's admission/pick markers do not.
@@ -166,12 +161,12 @@ test("tee + backfill: the Workspace's log opens with the preamble, then follows 
 
   // The REMOTE turn (hosted elsewhere) echoes exactly two narrative lines: its admission (agent +
   // framing) and its settlement pick — never a transcript, which the echo cannot even carry.
-  await waitFor(() => admitsOf(client, instanceId).length === 2);
+  await waitFor(() => admitsOf(client, runId).length === 2);
   await waitFor(() => flat().some((e) => e.kind === "admission" && e.agent === "decider"));
   const admission = flat().find((e) => e.kind === "admission" && e.agent === "decider");
   assert.deepEqual(admission, { kind: "admission", agent: "decider", prompt: "approve or not" });
 
-  host.sendToAgent(`${instanceId}/remote`, { type: "done", summary: "ship it" });
+  host.sendToAgent(iidOf(client, runId, "decider"), { type: "done", summary: "ship it" });
   await waitFor(() => flat().some((e) => e.kind === "pick" && e.agent === "decider"));
   const pick = flat().find((e) => e.kind === "pick" && e.agent === "decider");
   assert.deepEqual(pick, { kind: "pick", agent: "decider", event: "done", payload: { summary: "ship it" } });
@@ -196,8 +191,8 @@ test("lineage: a Workspace's echo carries its OWNING run's feed only — never a
   const a = await host.start("echoed", { tag: "A" });
   const b = await host.start("echoed", { tag: "B" });
   for (const run of [a, b]) {
-    await waitFor(() => admitsOf(client, run.instanceId).length === 1);
-    host.sendToAgent(`${run.instanceId}/local`, { type: "request_review", summary: "up" });
+    await waitFor(() => admitsOf(client, run.runId).length === 1);
+    host.sendToAgent(iidOf(client, run.runId, "coder"), { type: "request_review", summary: "up" });
   }
   await waitFor(() =>
     [a, b].every((run) =>
@@ -229,11 +224,11 @@ test("fire-and-forget: the echo target down costs one log line — the run is un
   host.register(echoDef(client));
   const logged = t.mock.method(console, "error", () => {});
 
-  const { runId, instanceId } = await host.start("echoed");
-  await waitFor(() => admitsOf(client, instanceId).length === 1);
-  host.sendToAgent(`${instanceId}/local`, { type: "request_review", summary: "up" });
-  await waitFor(() => admitsOf(client, instanceId).length === 2);
-  host.sendToAgent(`${instanceId}/remote`, { type: "done" });
+  const { runId } = await host.start("echoed");
+  await waitFor(() => admitsOf(client, runId).length === 1);
+  host.sendToAgent(iidOf(client, runId, "coder"), { type: "request_review", summary: "up" });
+  await waitFor(() => admitsOf(client, runId).length === 2);
+  host.sendToAgent(iidOf(client, runId, "decider"), { type: "done" });
 
   // The run settles `done` — no fault, no stall — while every push was refused.
   await waitFor(() => host.status(runId) === undefined);
@@ -250,11 +245,11 @@ test("a host with no echo factory runs identically — the echo is a courtesy, n
   const client = new MockFlueClient();
   const host = new RunHost({ store: await mkStore(), sandbox: new EchoSandbox() }); // no `echo`
   host.register(echoDef(client));
-  const { runId, instanceId } = await host.start("echoed");
-  await waitFor(() => admitsOf(client, instanceId).length === 1);
-  host.sendToAgent(`${instanceId}/local`, { type: "request_review", summary: "up" });
-  await waitFor(() => admitsOf(client, instanceId).length === 2);
-  host.sendToAgent(`${instanceId}/remote`, { type: "done" });
+  const { runId } = await host.start("echoed");
+  await waitFor(() => admitsOf(client, runId).length === 1);
+  host.sendToAgent(iidOf(client, runId, "coder"), { type: "request_review", summary: "up" });
+  await waitFor(() => admitsOf(client, runId).length === 2);
+  host.sendToAgent(iidOf(client, runId, "decider"), { type: "done" });
   await waitFor(() => host.status(runId) === undefined);
   assert.equal((await host.read(runId))?.status, "done");
 });

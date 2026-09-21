@@ -82,7 +82,8 @@ export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined
 /**
  * What the HOST adds to the input of the machine a run STARTS with, beside the door
  * (`RunHost.start`). One field today: the run's seed Instance ID, minted with the run and
- * reported by `jr2 status`, so an external caller can address the run's first conversation.
+ * reported by `jr2 status`. It names the RUN, never a conversation — jr2 mints every Agent
+ * Instance ID in the input mapper (ADR-0016, ADR-0057), and a Machine cannot pass one in.
  *
  * It is deliberately NOT door material (ADR-0033): no caller sends it — `start` overwrites
  * whatever arrived, after the parse — and it is never served as JSON Schema, so putting it in a

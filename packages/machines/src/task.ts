@@ -8,8 +8,9 @@
 // cannot pay for one. A consumer binds both on the line that registers this Machine as a
 // Workflow, naming every slot. The ORDER is this Machine's convention, not the kit's (ADR-0051:
 // the handles keep declaration order and the kit reads nothing into it): the FIRST slot is the
-// one the coder works in, and any others are attached beside it for the coder to read (a library
-// the change targets, a handbook):
+// one the coder works in — its Worktree is the `cwd` every Turn is framed with (ADR-0057), so the
+// Working tools are rooted where the prompt says to work — and any others are attached beside it
+// for the coder to read (a library the change targets, a handbook):
 //
 //   export const machine = customize(task, {
 //     repos: {
@@ -123,18 +124,12 @@ const requestChanges = defineEvent({
 type BodyInput = Workspaced<TaskInput & HostInjectedInput, string>;
 
 type BodyContext = BodyInput & {
-  /**
-   * Which conversation the coder's Turns ride. `request_changes` continues the SAME conversation —
-   * one human steering one Agent wants the Agent to remember what it did (ADR-0054) — but a
-   * terminal `agent.fault` means jr2 already rerolled that conversation and gave up on it
-   * (ADR-0035), so there is nothing left to continue. Bumping the generation folds into the
-   * conversation's disambiguator, and the next Turn starts a fresh conversation instead of
-   * addressing a dead one.
-   */
-  generation: number;
-  /** Turns COMPLETED on the current conversation. Zero means the next Turn is its first, so the
-   * prompt has to carry the whole task and the worktree framing again — which is exactly what a
-   * post-fault Turn needs and a continued one does not. */
+  /** Turns COMPLETED on the conversation the next Turn will land on. Zero means that Turn is its
+   * first, so the prompt has to carry the whole task and the worktree framing again — which is
+   * exactly what a post-fault Turn needs and a continued one does not. It counts for the PROMPT
+   * alone: the conversation itself is jr2's, and a terminal `agent.fault` burns it in the ledger
+   * so the next `continue` is virgin (ADR-0057). Re-briefing that Turn is what stays here, because
+   * jr2 cannot write the prompt. */
   turns: number;
   /** The coder's own account of the last finished Turn — the Gate's `summary`. */
   summary?: string;
@@ -143,11 +138,6 @@ type BodyContext = BodyInput & {
   /** The human's last notes, which are the next Turn's prompt. */
   notes?: string;
 };
-
-/** The conversation pin (ADR-0016): a workflow-chosen name, so every `working` Turn of a run
- * derives one deterministic instance id and the coder's context survives the round trip through
- * the Gate. The name is the slot key, because that is what the conversation is about. */
-const CONVERSATION = "coder";
 
 export const body = jr2Setup({
   types: {} as { context: BodyContext; input: BodyInput; output: TaskOutput },
@@ -165,8 +155,8 @@ export const body = jr2Setup({
       workspace: "write",
       instructions: `You are a software engineer working alone on one task, in a container of your own.
 
-- Edit only inside the worktree the conversation names as yours. Nothing you write outside it
-  survives. Any other checkout it names is there for you to read.
+- Edit only inside the worktree your turn names as yours — your tools are already rooted in it.
+  Nothing you write outside it survives. Any other checkout the turn names is there for you to read.
 - Commit your work on the named branch. You cannot push, and you do not need to: a human reads the
   branch in this container before the run ends.
 - Read before you write, and prefer the smallest change that does the task.
@@ -176,7 +166,7 @@ export const body = jr2Setup({
   },
 }).createMachine({
   id: "task",
-  context: ({ input }) => ({ ...input, generation: 0, turns: 0 }),
+  context: ({ input }) => ({ ...input, turns: 0 }),
   initial: "working",
 
   // Our Sandbox is gone — reaped, or replaced after an eviction (ADR-0021). The pod-local clone and
@@ -188,12 +178,17 @@ export const body = jr2Setup({
       invoke: {
         src: "coder",
         input: ({ context }) => ({
+          // This Turn's FRAME (ADR-0057): what it is about, and where it works. The `cwd` is
+          // stated rather than left to the single-slot default, because "the first slot is the one
+          // the coder edits" is this Machine's convention (`worktreeOf`) and a convention is
+          // stated — a consumer who binds a second slot must not change where the coder works.
           prompt: coderPrompt(context),
-          // One conversation per generation (see `BodyContext.generation`). `scope` is the
-          // disambiguator the pin already has for exactly this: it rides the derived iid, so a
-          // post-fault Turn addresses a new conversation instead of a dead one.
-          conversation: CONVERSATION,
-          scope: `g${context.generation}`,
+          cwd: worktreeOf(context).path,
+          // One human steering one Agent wants the Agent to remember what it did (ADR-0054), so
+          // every `working` Turn lands on this Machine instance's one coder conversation. The
+          // boolean names nothing: the id is structural (ADR-0057), and a conversation jr2 has
+          // faulted is burned — the next `continue` mints a virgin one.
+          continue: true,
           // This run's Dials, if the caller set them (ADR-0018/0054) — passed straight through,
           // layered over the bound definition when the Submission starts.
           ...(context.model !== undefined ? { model: context.model } : {}),
@@ -212,14 +207,14 @@ export const body = jr2Setup({
         },
         // ADR-0016's ONE terminal telemetry, ROUTED: jr2 has already retried, nudged and rerolled
         // (ADR-0027/0035), so this is the end of that conversation, not of the run. Park at the
-        // same Gate — the Workspace is still alive and the work so far is still on the branch —
-        // and start the next Turn on a fresh conversation.
+        // same Gate — the Workspace is still alive and the work so far is still on the branch.
+        // The dead conversation is jr2's to bury (it bumps the epoch, so the next `continue` is
+        // virgin — ADR-0057); what belongs here is the RE-BRIEF, which `turns: 0` asks for.
         "agent.fault": {
           target: "review",
           actions: assign({
             reason: ({ event }) => event.reason,
             summary: undefined,
-            generation: ({ context }) => context.generation + 1,
             turns: 0,
           }),
         },
@@ -312,14 +307,16 @@ function branchOf(input: TaskInput): string {
 }
 
 /**
- * The turn's framing. The FIRST Turn of a conversation carries the whole task and the geography,
- * because the conversation holds nothing yet; every Turn after it carries the human's notes alone,
- * because the coder remembers the rest (ADR-0054's continued conversation). A post-fault Turn is a
- * first Turn again — that is what `turns` counts.
+ * Half the Turn's Frame (ADR-0057) — what it is about. The FIRST Turn of a conversation carries
+ * the whole task and the geography, because the conversation holds nothing yet; every Turn after
+ * it carries the human's notes alone, because the coder remembers the rest (ADR-0054's continued
+ * conversation). A post-fault Turn is a first Turn again — that is what `turns` counts.
  *
- * The geography is every slot the handles carry (ADR-0051): the first is where the work goes, and
- * each other checkout is named by the consumer's own word for it, at the path the attach put it —
- * the only way the coder can learn what is beside it, since the package never knew.
+ * The geography is every slot the handles carry (ADR-0051): the first is where the work goes —
+ * and it is the Frame's `cwd`, so the Working tools are rooted there and the prose only says what
+ * the tools already do — and each other checkout is named by the consumer's own word for it, at
+ * the path the attach put it, the only way the coder can learn what is beside it since the package
+ * never knew.
  */
 function coderPrompt(context: BodyContext): string {
   const notes = context.notes ? `\n\nThe human reviewed your work and asks for changes:\n${context.notes}` : "";
@@ -332,7 +329,8 @@ function coderPrompt(context: BodyContext): string {
     .join("");
   return (
     `${context.prompt}${notes}\n\n` +
-    `Work in ${worktree.path}, on branch ${branch}. Commit what you do there, then call finish.` +
+    `Work in ${worktree.path}, on branch ${branch} — your tools are rooted there, so a relative ` +
+    `path lands inside it. Commit what you do there, then call finish.` +
     (beside ? `\n\nAlso checked out beside it, for you to read:${beside}` : "")
   );
 }

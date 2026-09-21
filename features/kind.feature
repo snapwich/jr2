@@ -302,7 +302,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       Given the kind instance is serving
       When I start the "advised" workflow detached
       Then the model was offered "advise" from the Menu and no Working tools
-      And the Instance Harness holds the "advisor" conversation of the run
+      And the Instance Harness holds the "advisor" conversation of the run's root Machine
       When the model answers "advise" with summary "ship it"
       Then the run's status shows "done"
       And no Sandbox was provisioned for the run
@@ -312,8 +312,8 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "consulted" workflow detached
       Then the run's Sandbox becomes Ready
       And the model was offered "advise" from the Menu and no Working tools
-      And the Instance Harness holds the "advisor" conversation of the run
-      And the run's Sandbox holds no "advisor" conversation
+      And the Instance Harness holds the "advisor" conversation of the run's body Machine
+      And the run's Sandbox holds no "advisor" conversation of the run's body Machine
       When the model answers "advise" with summary "keep it small"
       And the Agent in the Sandbox calls "finish" with summary "done"
       Then the run's body settled as "finished"
@@ -391,3 +391,30 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's status shows "done"
       And the run's body settled as "approved"
       And the run's Sandbox is destroyed
+
+  Rule: a Turn's Frame roots the Working tools, so a relative path lands in the Worktree
+    ADR-0057, and the incident it was written for: a live `task` run whose prompt said "work in
+    /work/target/summarize" while every Working tool resolved relative paths at `/work`, because
+    `cwd` lived on the Agent definition and a definition is written before any run — before any
+    worktree — exists. The model wrote its file outside the worktree, called `finish`, and the run
+    parked at `review` claiming done. Nothing failed; the work was simply not there.
+
+    The Frame is what closed it: `cwd` rides the Turn, the Harness roots the Working tools at it,
+    and `task` frames the Worktree of the slot the coder edits. Only a real pod can answer where a
+    relative path went, so the claim is played here — the scripted model writes a bare filename and
+    commits with bare `git add`, and the file has to be in the Worktree and in no directory above
+    it. `/work` is exactly where the retired definition-level `cwd` could only ever have pointed.
+
+    Scenario: a relative path from the model lands in the Worktree, and the commit is on the branch
+      Given the kind instance is serving
+      When I start the "task" workflow with prompt "write a SUMMARY.md for this repository" detached
+      Then the run's Sandbox becomes Ready
+      When the Agent writes "SUMMARY.md" through its write Working tool
+      And the Agent runs "git add SUMMARY.md && git -c user.email=coder@jr2 -c user.name=coder commit -q -m jr2-frame-ok && git log -1 --pretty=format:committed-%s" through its bash Working tool
+      # The marker is the git OUTPUT, not the command: `%s` is expanded by git, so only a bash tool
+      # that ran in the Worktree — where the relative `git add` found the file — can produce it.
+      Then the model was shown the tool result "committed-jr2-frame-ok"
+      When the Agent in the Sandbox calls "finish" with summary "wrote the summary"
+      Then the run parks at the "review" Gate, with summary "wrote the summary"
+      And the file "SUMMARY.md" is in the Worktree the Gate names and in no directory above it
+      And the Worktree the Gate names has the commit "jr2-frame-ok" on its branch

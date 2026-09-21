@@ -156,6 +156,22 @@ export function actorPath(ref: AnyActorRef): string[] {
   return segments;
 }
 
+/**
+ * The Instance ID of an Agent's ONE continued conversation in one Machine instance (ADR-0057):
+ * `<runId>/<machine actor path>/<agent>`, which is also its epoch-0 spelling. `machine` is the
+ * actor of the INVOKING Machine — the invoke's own leaf id is deliberately absent, because every
+ * state of one Machine that says `continue` means the same conversation, and two Machine
+ * instances (two Pool children, whose ids are the items') can never meet.
+ *
+ * One derivation, two readers, so they cannot drift: `mintIid` builds every iid on it (a fresh
+ * Turn adds a random suffix, a burned conversation's successor its epoch), and the Agent actor
+ * names the conversation it burns with it.
+ */
+export function continuedIid(machine: AnyActorRef | undefined, runId: string, agentName: string): string {
+  const path = (machine ? actorPath(machine).join(".") : "") || "root";
+  return `${runId}/${path}/${agentName}`;
+}
+
 /** The address of a run's gate: gate ids are run-scoped by construction (ADR-0011). */
 export function gateAddress(runId: string, gate: string): string {
   return `gate/${runId}/${gate}`;
@@ -238,6 +254,22 @@ export type RunBinding = {
    */
   recordAdmission?: (instanceId: string, admission: AgentAdmission) => void;
   /**
+   * The epoch ledger's READ half (ADR-0057): the current epoch of a continued conversation,
+   * keyed by its base Instance ID ({@link continuedIid}). The input mapper reads it AT MINT TIME,
+   * so the minted id persists with the input — a restore re-attaches the same conversation, and
+   * only a fresh transition (which re-runs the mapper) sees a bump. Optional: a bare unit-test
+   * binding has no burned conversations, so every conversation reads epoch 0.
+   */
+  epochOf?: (conversation: string) => number;
+  /**
+   * The epoch ledger's WRITE half (ADR-0057): the terminal `agent.fault` burns the conversation
+   * it ended, and the next `continue` on that Agent mints `<conversation>/<epoch>` — a virgin
+   * conversation. No fault leaves a conversation worth continuing (ADR-0035): a runaway either
+   * had its reroll or holds a poisoned context, and infra and no-signal mean the Harness that
+   * held it is unreachable. Persisted beside the snapshot with the admission ledger.
+   */
+  bumpEpoch?: (conversation: string) => void;
+  /**
    * Surface absorbed-retry telemetry on the run feed (ADR-0016): attempts are observable, but
    * as `{ child, attempt }` — state-key-class data, never iids (ADR-0014's line holds on the
    * open feed).
@@ -301,6 +333,12 @@ export function bindRun(system: AnyActorSystem, binding: RunBinding): void {
  * uses, so a machine stays constructible and provide()-testable with no host at all. */
 export function boundRunId(system: AnyActorSystem): string | undefined {
   return bindings.get(system)?.runId;
+}
+
+/** The epoch of a continued conversation, or 0 outside a jr2 host (and for one nothing has
+ * burned) — the SOFT read `jr2Setup`'s iid minting uses, beside {@link boundRunId}. */
+export function boundEpoch(system: AnyActorSystem, conversation: string): number {
+  return bindings.get(system)?.epochOf?.(conversation) ?? 0;
 }
 
 /** Actor-side: resolve the run this actor tree belongs to. Throws outside a jr2 host. */

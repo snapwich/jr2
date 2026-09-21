@@ -16,9 +16,24 @@ import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import { E2EWorld } from "./world.ts";
 
+/** `instanceId` here is the RUN's own seed id (ADR-0033) — never a conversation address, which
+ * jr2 mints structurally ({@link coderIid}, ADR-0057). */
 type Status = { runId: string; instanceId: string; status: string; value: unknown };
 type Gate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
 type Surface = { accepts: Array<{ name: string }> };
+
+/**
+ * Where this tier's Agent conversation lives (ADR-0057). Every fixture here invokes its `coder`
+ * from the Machine the run STARTS with — its actor path below the root is empty, which the id
+ * spells `root` — and says `continue`, so jr2 mints exactly `<runId>/root/coder`. Spelled out
+ * rather than read off the run: the run's own `instanceId` names the RUN (ADR-0033), never a
+ * conversation, and a Turn that did not continue would carry a random suffix nobody outside the
+ * Orchestrator can see.
+ */
+const coderIid = (world: E2EWorld): string => {
+  assert.ok(world.runId, "a runId was carried from a prior step");
+  return `${world.runId}/root/coder`;
+};
 
 /** `jr2 status <runId>` → the machine-readable RunStatus (black-box observation path). */
 async function status(world: E2EWorld): Promise<Status> {
@@ -48,8 +63,9 @@ async function gates(world: E2EWorld): Promise<Gate[]> {
 
 /** `GET /agents/:iid/surface` — what the Adapter would render as this turn's `tools/list`. */
 async function agentSurface(world: E2EWorld): Promise<Response> {
-  const s = await status(world);
-  return fetch(`${world.server?.url}/agents/${s.instanceId}/surface`, { headers: world.authHeaders() });
+  return fetch(`${world.server?.url}/agents/${encodeURIComponent(coderIid(world))}/surface`, {
+    headers: world.authHeaders(),
+  });
 }
 
 Given("the instance also has the {string} workflow", async function (this: E2EWorld, name: string): Promise<void> {
@@ -83,8 +99,7 @@ Given(
 When(
   "the agent calls {string} with summary {string}",
   async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
-    const s = await status(this);
-    const res = await fetch(`${this.server?.url}/agents/${s.instanceId}/events`, {
+    const res = await fetch(`${this.server?.url}/agents/${encodeURIComponent(coderIid(this))}/events`, {
       method: "POST",
       headers: { "content-type": "application/json", ...this.authHeaders() },
       body: JSON.stringify({ type: tool, summary }),
@@ -102,8 +117,7 @@ When(
 When(
   "the agent calls {string} with summary {string} and is told it moved nothing",
   async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
-    const s = await status(this);
-    const res = await fetch(`${this.server?.url}/agents/${s.instanceId}/events`, {
+    const res = await fetch(`${this.server?.url}/agents/${encodeURIComponent(coderIid(this))}/events`, {
       method: "POST",
       headers: { "content-type": "application/json", ...this.authHeaders() },
       body: JSON.stringify({ type: tool, summary }),
@@ -220,7 +234,7 @@ Then("gate {string} is gone", async function (this: E2EWorld, gateId: string): P
 Then(
   "the stub Harness reports the Agent's turn settled as {string}",
   async function (this: E2EWorld, outcome: string): Promise<void> {
-    const iid = (await status(this)).instanceId;
+    const iid = coderIid(this);
     const url = `${await this.stubHarnessUrl()}/agents/coder/${encodeURIComponent(iid)}?view=history`;
     let settlements: Array<{ outcome: string }> = [];
     for (let i = 0; i < 100; i++) {

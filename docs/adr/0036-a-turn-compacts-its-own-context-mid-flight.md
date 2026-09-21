@@ -126,8 +126,8 @@ by a summary plus a retained tail.
   now true by construction — so a nudge ladder observed dying with a full context again is evidence compaction failed,
   not evidence the ladder needs a gate.
 - The degenerate edges resolve the same way: a tool result larger than the reserve leaves nothing worth cutting, and a
-  `session: "continue"` invocation can arrive on a conversation already at the ceiling. Both compact, and if the context
-  is still over, the turn fails as infra.
+  `continue: true` invocation can arrive on a conversation already at the ceiling. Both compact, and if the context is
+  still over, the turn fails as infra.
 - A cut does not lower the reading that triggered it: pi estimates from the last valid assistant usage, and a cut
   RETAINS recent assistant messages, so the number survives the cut. When the request after a cut ends `error` or
   `aborted` it contributes no usage of its own and the next step would cut again on a context nothing has grown — a

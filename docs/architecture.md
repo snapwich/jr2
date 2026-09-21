@@ -132,7 +132,7 @@ sequenceDiagram
 
   S->>A: invoke src: "coder" { prompt, Dials }
   A->>A: register this state's Menu under the Agent's address
-  A->>H: POST /agents/:name/:id — prompt + the slot's definition + Dials
+  A->>H: POST /agents/:name/:id — the Frame (prompt + cwd) + the slot's definition + Dials
   H-->>A: Admission { streamUrl, offset, submissionId }
   Note over A: Admission persisted beside the snapshot —<br/>a restarted Orchestrator re-attaches by it (ADR-0016)
 

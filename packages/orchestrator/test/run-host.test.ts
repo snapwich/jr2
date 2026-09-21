@@ -9,17 +9,31 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup } from "xstate";
 import { RunHost, type RunStatus, type WorkflowDef } from "../src/run-host.ts";
-import { codingDef, continuedDef, mkStore, MockFlueClient, pipelineDef, tick, waitFor } from "./_fixtures.ts";
+import {
+  admittedIid,
+  codingDef,
+  continuedDef,
+  continuedIidOf,
+  mkStore,
+  MockFlueClient,
+  pipelineDef,
+  tick,
+  waitFor,
+} from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 
 test("an Agent's delivery routes into the owning run's Machine", async () => {
   const store = await mkStore();
+  const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store });
-  host.register(codingDef(new Map()));
+  host.register(codingDef(clients));
   const { runId, instanceId } = await host.start("coding");
+  // jr2 mints the conversation (ADR-0057), so the address is discovered off the admission —
+  // exactly as an Adapter learns the iid it was started with.
+  const iid = await admittedIid(clients.get(instanceId)!);
 
-  const receipt = host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  const receipt = host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
   // Every delivery is addressable after the fact — the room a deferred result needs (ADR-0013).
   assert.ok(receipt.deliveryId, "a delivery answers with a receipt");
   await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
@@ -28,17 +42,19 @@ test("an Agent's delivery routes into the owning run's Machine", async () => {
   assert.deepEqual(status?.value, { active: "review" });
   assert.equal((status?.context as Ctx).summary, "PR up");
 
-  host.sendToAgent(instanceId, { type: "done" });
+  host.sendToAgent(iid, { type: "done" });
   await waitFor(() => host.status(runId) === undefined); // final → dropped from the registry
 });
 
 test("the receipt is self-describing: it says whether the turn is over (ADR-0024)", async () => {
+  const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(new Map()));
+  host.register(codingDef(clients));
   const { instanceId } = await host.start("coding");
+  const iid = await admittedIid(clients.get(instanceId)!);
 
   // `request_review` moves the machine WITHIN the invoking state, so the same turn is still live.
-  const open = host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  const open = host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
   assert.equal(open.delivered, true);
   assert.equal(open.event, "request_review");
   assert.equal(open.turnComplete, false, "the invoking state is still waiting — this turn is not over");
@@ -47,17 +63,19 @@ test("the receipt is self-describing: it says whether the turn is over (ADR-0024
   // registration. That this is already TRUE when `deliver()` returns is the whole claim: xstate's
   // `sendBack` reaches the mailbox synchronously, so the flag reports what happened rather than
   // what was hoped. If an xstate bump ever breaks that, this test fails instead of a live run.
-  const over = host.sendToAgent(instanceId, { type: "done" });
+  const over = host.sendToAgent(iid, { type: "done" });
   assert.equal(over.turnComplete, true, "the state stopped waiting — the turn is over");
   assert.ok(over.deliveryId, "a delivery stays addressable after the fact (ADR-0013)");
 });
 
 test("a pick no transition accepts says so, instead of reading as a move (ADR-0029)", async () => {
+  const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(new Map()));
+  host.register(codingDef(clients));
   const { runId, instanceId } = await host.start("coding");
+  const iid = await admittedIid(clients.get(instanceId)!);
 
-  const moved = host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  const moved = host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
   assert.equal(moved.moved, true);
   assert.equal(moved.turnComplete, false, "moved WITHIN the invoking state: still the same turn");
   await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
@@ -65,7 +83,7 @@ test("a pick no transition accepts says so, instead of reading as a move (ADR-00
   // `review` handles only `done`, and the invoke lives on the ANCESTOR — so this delivery is
   // well-formed, arrives, and moves nothing, while the registration survives. Before `moved` the
   // two outcomes above and below were the same receipt, and the Agent's only move was to retry.
-  const rejected = host.sendToAgent(instanceId, { type: "request_review", summary: "again" });
+  const rejected = host.sendToAgent(iid, { type: "request_review", summary: "again" });
   assert.equal(rejected.delivered, true, "it arrived — validation is unchanged");
   assert.equal(rejected.moved, false, "…and nothing accepted it");
   assert.equal(rejected.turnComplete, false, "which is NOT the same claim as the turn being over");
@@ -73,28 +91,30 @@ test("a pick no transition accepts says so, instead of reading as a move (ADR-00
 });
 
 test("the surface stops offering what the current state cannot accept (ADR-0029)", async () => {
+  const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(new Map()));
+  host.register(codingDef(clients));
   const { runId, instanceId } = await host.start("coding");
+  const iid = await admittedIid(clients.get(instanceId)!);
 
   assert.deepEqual(
     host
-      .agentSurface(instanceId)
+      .agentSurface(iid)
       ?.accepts.map((a) => a.name)
       .sort(),
     ["done", "request_review"],
   );
 
-  host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
   await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
 
   // Same turn, same registration, same vocabulary — a narrower menu, because `review` handles only
   // `done`. The Adapter re-lists per Submission, so this is what the next Submission sees.
   assert.deepEqual(
-    host.agentSurface(instanceId)?.accepts.map((a) => a.name),
+    host.agentSurface(iid)?.accepts.map((a) => a.name),
     ["done"],
   );
-  assert.ok(host.agentSurface(instanceId), "the surface still EXISTS — the turn did not end");
+  assert.ok(host.agentSurface(iid), "the surface still EXISTS — the turn did not end");
 });
 
 test("one conversation, two turns: the abort is ordered ahead of the next turn's admission", async () => {
@@ -103,16 +123,19 @@ test("one conversation, two turns: the abort is ordered ahead of the next turn's
   host.register(continuedDef(clients));
   const { runId, instanceId } = await host.start("continued");
   const flue = clients.get(instanceId)!;
+  // Both turns say `continue: true`, so both land on the Machine instance's one conversation —
+  // structural, so the test derives the address exactly as jr2 does (ADR-0057).
+  const iid = continuedIidOf(runId);
   flue.holdAborts = true;
   await waitFor(() => flue.admits.length === 1);
 
   // The pick that ends turn one. The next state re-registers the SAME address a moment later, so
   // an existence check would call this turn unfinished; the receipt tracks the REGISTRATION.
-  const receipt = host.sendToAgent(instanceId, { type: "request_review", summary: "PR up" });
+  const receipt = host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
   assert.equal(receipt.turnComplete, true, "the state that asked for turn one stopped waiting");
 
   await tick();
-  assert.deepEqual(flue.aborts, [{ agentName: "coder", instanceId }], "turn one's submission is ended");
+  assert.deepEqual(flue.aborts, [{ agentName: "coder", instanceId: iid }], "turn one's submission is ended");
   assert.equal(flue.admits.length, 1, "turn two waits: an abort that overtook it would settle it unrun");
 
   flue.releaseAborts();
@@ -120,7 +143,7 @@ test("one conversation, two turns: the abort is ordered ahead of the next turn's
   assert.equal(flue.admits[1]!.prompt, "turn two");
 
   // …and turn two still drives the Machine, which is the whole point of ordering it.
-  host.sendToAgent(instanceId, { type: "done" });
+  host.sendToAgent(iid, { type: "done" });
   await waitFor(() => host.status(runId) === undefined);
 });
 
@@ -130,14 +153,14 @@ test("CANCEL ends the run: its Agents' turns end, and it does not come back (ADR
   const host = new RunHost({ store });
   host.register(codingDef(clients));
   const { runId, instanceId } = await host.start("coding");
-  await waitFor(() => clients.get(instanceId)!.admits.length === 1);
+  const iid = await admittedIid(clients.get(instanceId)!);
 
   await host.cancel(runId);
 
   // The human said abandon, so the Agent stops being asked and stops answering (ADR-0024).
-  assert.deepEqual(clients.get(instanceId)!.aborts, [{ agentName: "coder", instanceId }]);
+  assert.deepEqual(clients.get(instanceId)!.aborts, [{ agentName: "coder", instanceId: iid }]);
   assert.equal(host.status(runId), undefined, "gone from the live registry");
-  assert.equal(host.agentSurface(instanceId), undefined, "and its surface went with it");
+  assert.equal(host.agentSurface(iid), undefined, "and its surface went with it");
 
   // Terminal in the store: `read` reports how it ended, keeping where it was when it did…
   const read = await host.read(runId);
@@ -173,12 +196,14 @@ test("stop() is the other verb: no abort, and the run restores (ADR-0007/0025)",
 });
 
 test("the agent surface IS the invoking state's registration, and dies with it", async () => {
+  const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(new Map()));
+  host.register(codingDef(clients));
   const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  const iid = await admittedIid(clients.get(instanceId)!);
 
   // What the Adapter renders as `tools/list`: this turn's events, their schemas, their semantics.
-  const surface = host.agentSurface(instanceId);
+  const surface = host.agentSurface(iid);
   assert.equal(surface?.runId, runId);
   assert.equal(surface?.sandbox, "ws-1", "the surface records its Sandbox — what scopes its token");
   assert.deepEqual(
@@ -193,18 +218,20 @@ test("the agent surface IS the invoking state's registration, and dies with it",
 
   // The state exits → the registration goes with it → there is no surface to serve. The Adapter
   // needs no `list_changed` to learn this: it re-lists per turn, and a dead turn has no menu.
-  host.sendToAgent(instanceId, { type: "done" });
+  host.sendToAgent(iid, { type: "done" });
   await waitFor(() => host.status(runId) === undefined);
-  assert.equal(host.agentSurface(instanceId), undefined);
+  assert.equal(host.agentSurface(iid), undefined);
 });
 
 test("a delivery outside the turn's surface is refused, naming what IS accepted", async () => {
+  const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(new Map()));
+  host.register(codingDef(clients));
   const { instanceId } = await host.start("coding");
+  const iid = await admittedIid(clients.get(instanceId)!);
 
-  assert.throws(() => host.sendToAgent(instanceId, { type: "merge" }), /does not accept "merge".*accepts:/s);
-  assert.throws(() => host.sendToAgent(instanceId, { type: "request_review" }), /invalid "request_review" payload/);
+  assert.throws(() => host.sendToAgent(iid, { type: "merge" }), /does not accept "merge".*accepts:/s);
+  assert.throws(() => host.sendToAgent(iid, { type: "request_review" }), /invalid "request_review" payload/);
   assert.throws(() => host.sendToAgent("no-such-iid", { type: "done" }), /no live registration/);
 });
 
@@ -238,12 +265,48 @@ test("the admission is ledgered host-side and persisted beside the snapshot (ADR
 
   const minted = clients.get(instanceId)!.minted;
   assert.ok(minted, "the run was admitted");
+  const iid = await admittedIid(clients.get(instanceId)!);
   let agents: Record<string, unknown> | undefined;
   await waitFor(() => {
     void store.load(runId).then((l) => (agents = (l?.snapshot as { agents?: Record<string, unknown> })?.agents));
-    return agents?.[instanceId] !== undefined;
+    return agents?.[iid] !== undefined;
   });
-  assert.deepEqual(agents?.[instanceId], { ...minted, instanceId }, "the durable handle rides RunBlob.agents");
+  assert.deepEqual(agents?.[iid], { ...minted, instanceId: iid }, "the durable handle rides RunBlob.agents");
+});
+
+test("a burned conversation rides the RunBlob, and a restored run still avoids it (ADR-0057)", async () => {
+  const store = await mkStore();
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store });
+  host.register(continuedDef(clients));
+  const { runId, instanceId } = await host.start("continued");
+  const conversation = continuedIidOf(runId);
+  const flue = clients.get(instanceId)!;
+  await waitFor(() => flue.admits.length === 1);
+  assert.equal(flue.admits[0]!.instanceId, conversation, "turn one is the Machine instance's conversation");
+
+  // An infra fault is terminal for a continuation — no reroll (ADR-0035) — so the conversation is
+  // burned: its epoch goes to the ledger BESIDE the admissions, in the same blob.
+  flue.fault("the harness that held it went away");
+  let epochs: Record<string, number> | undefined;
+  await waitFor(() => {
+    void store.load(runId).then((l) => (epochs = (l?.snapshot as { epochs?: Record<string, number> })?.epochs));
+    return epochs?.[conversation] === 1;
+  });
+
+  // A restart must not hand the next `continue` a dead conversation, so restore seeds the epoch
+  // from the blob: the state after the fault route mints the VIRGIN id, not the burned one.
+  await host.stop(runId);
+  const clientsB = new Map<string, MockFlueClient>();
+  const second = new RunHost({ store, reconcile: () => true });
+  second.register(continuedDef(clientsB));
+  assert.deepEqual((await second.restore()).reattached, [runId]);
+  await tick();
+
+  second.sendToAgent(conversation, { type: "request_review", summary: "PR up" });
+  const flueB = clientsB.get(instanceId)!;
+  await waitFor(() => flueB.admits.length === 1);
+  assert.equal(flueB.admits[0]!.instanceId, `${conversation}/1`, "turn two lands on a virgin conversation");
 });
 
 test("a second host restores an in-flight run and re-attaches by persisted admission", async () => {
@@ -256,11 +319,12 @@ test("a second host restores an in-flight run and re-attaches by persisted admis
   const { runId, instanceId } = await hostA.start("coding");
   await tick();
   const minted = clientsA.get(instanceId)!.minted!;
+  const iid = await admittedIid(clientsA.get(instanceId)!);
   let persisted = false;
   await waitFor(() => {
     void store
       .load(runId)
-      .then((l) => (persisted = !!(l?.snapshot as { agents?: Record<string, unknown> })?.agents?.[instanceId]));
+      .then((l) => (persisted = !!(l?.snapshot as { agents?: Record<string, unknown> })?.agents?.[iid]));
     return persisted;
   });
 
@@ -277,7 +341,7 @@ test("a second host restores an in-flight run and re-attaches by persisted admis
   assert.equal(reattachedClient!.admitted, undefined, "re-attach must not re-POST the prompt");
   assert.deepEqual(
     reattachedClient!.settled,
-    [{ ...minted, instanceId }],
+    [{ ...minted, instanceId: iid }],
     "settlement follows the PERSISTED admission",
   );
 });

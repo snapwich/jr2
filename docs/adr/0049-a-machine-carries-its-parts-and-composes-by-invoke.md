@@ -97,9 +97,8 @@ because they are one problem: **what a Machine depends on that is not inside it.
   the next full reload. Known, unaddressed here.
 - A `workflows/` file that is both discovered and imported by another registers as its own Workflow too; a Machine meant
   only for composition lives in a `_`-prefixed file or outside `workflows/`.
-- Same-name slots across Machines plus a `conversation:` pin continue one conversation under two personas, and nothing
-  refuses it. The obvious guard — a definition digest on the ledger record (ADR-0016), compared before a continuation is
-  admitted — is NOT taken here, because it cannot tell the two cases apart: it would equally refuse a run whose only
-  change is an edited `instructions` after a redeploy, which ADR-0030 deliberately lets continue (shape decides
-  restorability, not behavior). A refusal needs a persona identity that survives a retune but not a swap, and this
-  decision does not settle what that is. Known, unaddressed here.
+- A conversation belongs to one Agent slot in one Machine instance by construction — the continued iid is
+  `<run>/<machine actor path>/<agent>` (ADR-0057) — so no continuation can cross personas. What a continuation does NOT
+  check is that the definition behind the slot is the one that started it: a run whose `instructions` were edited before
+  a redeploy continues, which ADR-0030 deliberately allows (shape decides restorability, not behavior). A definition
+  digest on the ledger record would refuse exactly that, so it is not taken.

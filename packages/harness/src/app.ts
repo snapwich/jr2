@@ -14,6 +14,7 @@ import { Conversation, type RunSubmission, type UpdatesView } from "./conversati
 import { renderEchoEvent, type PrinterOut } from "./printer.ts";
 import {
   definitionFault,
+  frameFault,
   resolveDefinition,
   type AgentDefinition,
   type ResolvedDefinition,
@@ -101,6 +102,10 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
     // the Machine declared, which is the name the author wrote.
     const fault = definitionFault(agentName, sent?.definition);
     if (fault) return c.json({ error: fault }, 400);
+    // The Frame is checked beside it, and for the opposite reason to the dials below: a Turn whose
+    // `cwd` was dropped runs in the wrong directory and says nothing (ADR-0057).
+    const framing = frameFault(agentName, sent);
+    if (framing) return c.json({ error: framing }, 400);
     const submission = admissionRequest(sent, sent?.definition as AgentDefinition);
     const resolved = resolveDefinition(submission.definition, submission);
     // The Instance Harness placement gate (ADR-0031): identity precedes dials. Checked against
@@ -199,15 +204,17 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   return app;
 }
 
-/** The admit body, taken defensively: a missing/garbage `message` admits an empty prompt (the
- * pre-dials behavior), and a non-string dial is dropped rather than passed on as one. The
- * `definition` is passed in already validated (`definitionFault` ran first), because a turn cannot
- * be defaulted into existence the way a missing prompt can. */
+/** The admit body, taken defensively where defaulting is honest: a missing/garbage `message`
+ * admits an empty prompt, and a non-string dial is dropped rather than passed on as one. The
+ * `definition` and the Frame's `cwd` are passed in already validated (`definitionFault` and
+ * `frameFault` ran first): a turn cannot be defaulted into existence the way a missing prompt
+ * can, and a defaulted `cwd` is the silent wrong directory ADR-0057 refuses. */
 function admissionRequest(body: unknown, definition: AgentDefinition): AdmissionRequest {
   const sent = (body ?? {}) as Record<string, unknown>;
   return {
     definition,
     message: typeof sent.message === "string" ? sent.message : "",
+    ...(typeof sent.cwd === "string" ? { cwd: sent.cwd } : {}),
     ...(typeof sent.model === "string" ? { model: sent.model } : {}),
     ...(typeof sent.thinkingLevel === "string"
       ? { thinkingLevel: sent.thinkingLevel as TurnDials["thinkingLevel"] }

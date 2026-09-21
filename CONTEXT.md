@@ -65,9 +65,22 @@ persona, roster entry
 
 **Dials**: The two fields a Machine state may set for one Turn on top of an Agent's definition — `model` and
 `thinkingLevel` — because they say how hard to run, not who is running (ADR-0018). Everything else in a definition is
-identity (`instructions`, `workspace`, `cwd`) and only the definition sets it: an invocation that rewrote identity would
-make the Agent's name a lie, and overriding `workspace` would void ADR-0028's containment. _Avoid_: options, overrides,
-settings
+identity (`instructions`, `workspace`) and only the definition sets it: an invocation that rewrote identity would make
+the Agent's name a lie, and overriding `workspace` would void ADR-0028's containment. What a Turn is about and where it
+works is neither: that is its Frame. _Avoid_: options, overrides, settings
+
+**Frame**: What a Machine state sets for one Turn that is neither identity nor a Dial — the prompt, and the directory
+the Working tools are rooted at (`cwd`). Per Turn by nature: a worktree path exists only once a run does, so no
+definition can name it. Under a Workspace with one Repo Slot the directory is that slot's Worktree; with more, the state
+must say which. The directory is ABSOLUTE or the Turn is refused at admission: a relative one would resolve against
+wherever the Harness process happens to sit, which is the silent wrong directory the Frame exists to end. _Avoid_:
+overrides, input (unqualified), working directory (the mechanism, not the concept)
+
+**Turn Placement**: The mechanism half of a Turn — WHERE its Harness is (`endpoint`) and which Sandbox may deliver its
+picks (`sandbox`) — stated instead of resolved (`AgentTurnPlacement`). Not an authoring surface: a real run states
+neither, because a Sandbox Agent resolves both from the enclosing Workspace (ADR-0016) and a `workspace: "none"` Agent
+lands on the Instance Harness (ADR-0031). It is the seat the mechanics tier sits in, which has no `workspace()` to
+resolve from and a dev Harness that is just a URL (ADR-0057). _Avoid_: coordinates, connection, transport
 
 **Sandbox**: The isolated pod that gives an Agent a host-level sandbox plus its own filesystem. The primary motivation
 for the Kubernetes architecture — agents must not share host resources (ports, filesystem, process space). _Avoid_:
@@ -122,8 +135,10 @@ container
 **Instance ID**: The identifier for a resumable Agent exchange — the `<id>` in `POST /agents/:name/:id` on the Harness
 wire. Successive prompts to the same `(Agent name, instance id)` continue one conversation; jr2 computes ids and
 persists `(name, instance id)` + stream offset host-side to re-attach after an Orchestrator restart. New agent
-invocations get fresh ids by default (the lossy handoff); continuing a conversation is opt-in. _Avoid_: conversation id,
-session id
+invocations get fresh ids by default (the lossy handoff); continuing is opt-in per Turn (`continue`) and names nothing:
+one Agent has one continued conversation per Machine instance, which every state of that Machine may continue. A
+conversation jr2 has faulted is never continued — the next continue lands on a fresh one. _Avoid_: conversation id,
+session id, conversation pin, scope
 
 **Turn**: One Agent's answer to the frame a Machine state set for it — the prompt, the work, and the single menu pick
 that ends it (ADR-0006). A turn belongs to the state that asked for it: when that state stops waiting, the turn is over,
@@ -157,7 +172,10 @@ is not the decision), truncation (the failure Compaction exists to prevent), pru
 **Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), narrowed
 to those its guards would currently accept (ADR-0029), served by the Adapter over MCP. What the Agent may **say**. The
 derived set is the state's vocabulary and the scope delivery validates against; the Menu is what a given turn is
-offered, so one state can offer different Menus as its context changes. _Avoid_: tools (unqualified), tool list
+offered, so one state can offer different Menus as its context changes. It derives from the INVOKING state and its
+ancestors, never from the states below it, so a pick written in a substate is one the Turn can never be offered — and a
+Machine shaped that way is refused at build (ADR-0057 retired the hand-written Menu that used to hide it). _Avoid_:
+tools (unqualified), tool list
 
 **Vocabulary**: The workflow events a Machine accepts — each a `defineEvent` def: a name, a payload schema, an optional
 audience — taken as values by its `jr2Setup` and scoped to that Machine alone (ADR-0011). What a Gate's accepted set and

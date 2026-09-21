@@ -12,13 +12,14 @@ import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { KIT_VERSION } from "../src/config.ts";
 import type { RepoStatus } from "../src/repos.ts";
-import { codingDef, gatedDef, mkStore, waitFor } from "./_fixtures.ts";
+import { admittedIid, codingDef, gatedDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 /** A host + app pair with the `coding` workflow registered. */
 async function mkApp() {
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(new Map()));
-  return { host, app: createApp(host) };
+  const clients = new Map<string, MockFlueClient>();
+  host.register(codingDef(clients));
+  return { host, app: createApp(host), clients };
 }
 
 const jsonPost = (body: unknown): RequestInit => ({
@@ -77,11 +78,15 @@ test("unknown run and unknown workflow are 404", async () => {
 });
 
 test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, then both are gone", async () => {
-  const { host, app } = await mkApp();
+  const { host, app, clients } = await mkApp();
   const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  // The Adapter is handed its iid; jr2 minted it (ADR-0057), so the test reads it off the
+  // admission rather than inventing one — and addresses it the way the Adapter does, encoded,
+  // because a minted id carries the path separators its structure is made of.
+  const iid = await admittedIid(clients.get(instanceId)!);
 
   // What the Adapter reads to build `tools/list`: names, input schemas (JSON Schema), semantics.
-  const surface = await app.request(`/agents/${instanceId}/surface`);
+  const surface = await app.request(`/agents/${encodeURIComponent(iid)}/surface`);
   assert.equal(surface.status, 200);
   const menu = (await surface.json()) as {
     sandbox: string;
@@ -96,7 +101,7 @@ test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, t
   // What a `tools/call` becomes: a delivery, answered with a self-describing receipt (ADR-0024) —
   // addressable, and honest about whether the turn it belonged to is over.
   const call = await app.request(
-    `/agents/${instanceId}/events`,
+    `/agents/${encodeURIComponent(iid)}/events`,
     jsonPost({ type: "request_review", summary: "PR up" }),
   );
   assert.equal(call.status, 200);
@@ -113,13 +118,13 @@ test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, t
   await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
 
   // A name this turn does not accept → 400 naming what it does. (Validation is the table's.)
-  const bad = await app.request(`/agents/${instanceId}/events`, jsonPost({ type: "merge" }));
+  const bad = await app.request(`/agents/${encodeURIComponent(iid)}/events`, jsonPost({ type: "merge" }));
   assert.equal(bad.status, 400);
 
   // The run settles → the registration goes → the surface 404s. The one catch point.
-  await app.request(`/agents/${instanceId}/events`, jsonPost({ type: "done" }));
+  await app.request(`/agents/${encodeURIComponent(iid)}/events`, jsonPost({ type: "done" }));
   await waitFor(() => host.status(runId) === undefined);
-  assert.equal((await app.request(`/agents/${instanceId}/surface`)).status, 404);
+  assert.equal((await app.request(`/agents/${encodeURIComponent(iid)}/surface`)).status, 404);
 });
 
 test("POST /runs/:id/events takes CANCEL, and nothing else", async () => {
@@ -137,8 +142,9 @@ test("POST /runs/:id/events takes CANCEL, and nothing else", async () => {
 });
 
 test("SSE: GET /runs/:id/events streams a status delta on transition", async () => {
-  const { host, app } = await mkApp();
+  const { host, app, clients } = await mkApp();
   const { runId, instanceId } = await host.start("coding");
+  const iid = await admittedIid(clients.get(instanceId)!);
 
   const res = await app.request(`/runs/${runId}/events`);
   assert.equal(res.status, 200);
@@ -147,7 +153,10 @@ test("SSE: GET /runs/:id/events streams a status delta on transition", async () 
 
   try {
     // Drive a transition (running → review); the SSE feed should push its new status.
-    await app.request(`/agents/${instanceId}/events`, jsonPost({ type: "request_review", summary: "PR up" }));
+    await app.request(
+      `/agents/${encodeURIComponent(iid)}/events`,
+      jsonPost({ type: "request_review", summary: "PR up" }),
+    );
 
     // The feed replays the current status on attach (value "running"), then pushes the review
     // delta — and the pick's Turn marker (ADR-0023) rides this feed too, mentioning

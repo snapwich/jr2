@@ -4,7 +4,7 @@
 // play the one sequence that actually happens: edit a workflow, redeploy, meet the parked runs.
 
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup } from "@jr2/orchestrator";
+import { agent, defineEvent, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator";
 
 const requestReview = defineEvent({
   name: "request_review",
@@ -17,8 +17,8 @@ const escalate = defineEvent({
   input: z.object({ reason: z.string() }),
 });
 
-type Input = { instanceId: string; endpoint: string; attempts?: number };
-type Ctx = { instanceId: string; endpoint: string; attempts: number };
+type Input = { endpoint: string; attempts?: number };
+type Ctx = { endpoint: string; attempts: number };
 
 /** The Agent this Machine carries (ADR-0049): a slot, so the name the Turn is admitted under is
  * the slot key. The definition's CONTENT is inert here — the tier's stub Harness never runs a
@@ -35,7 +35,6 @@ export const machine = jr2Setup({
 }).createMachine({
   id: "guarded",
   context: ({ input }) => ({
-    instanceId: input.instanceId,
     endpoint: input.endpoint,
     attempts: input.attempts ?? 0,
   }),
@@ -44,11 +43,12 @@ export const machine = jr2Setup({
     implementing: {
       invoke: {
         src: "coder",
-        input: ({ context }) => ({
-          instanceId: context.instanceId,
+        // Same Turn as `guarded`'s — the Frame, `continue`, and the stub tier's mechanism seat
+        // (ADR-0057). Only the STATE KEY differs, which is the whole point of this fixture.
+        input: ({ context }): AgentTurnInput & AgentTurnPlacement => ({
           endpoint: context.endpoint,
           prompt: "Do the work, then call request_review with a summary.",
-          tools: [requestReview.name, escalate.name],
+          continue: true,
         }),
       },
       on: {

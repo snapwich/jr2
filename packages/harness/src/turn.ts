@@ -1,7 +1,8 @@
 // The Turn (ADR-0027): one Submission's execution — the `runSubmission` a Conversation pumps.
 // Per Submission the definition is read off the ADMISSION that queued it (ADR-0049: the Agent
-// definition rides the Turn; model, instructions, cwd and thinkingLevel resolve when the turn
-// starts, so a later Submission on the same conversation may carry a retuned one), a FRESH MCP client fetches the Menu from the
+// definition rides the Turn; model, instructions and thinkingLevel resolve when the turn starts,
+// with the Frame's cwd beside them — ADR-0057 — so a later Submission on the same conversation may
+// carry a retuned one and a different worktree), a FRESH MCP client fetches the Menu from the
 // Adapter (the previous turn's connection closes deterministically — the leak is bounded to
 // one), and the same pi session carries the conversation: a later Submission is the next
 // `prompt()` on the same AgentHarness. Settlement mapping: a throw settles `failed` (the Menu
@@ -109,9 +110,13 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     watch.streak = 0;
     watch.signature = "";
     watch.tripped = "";
-    // This Submission's dials layer over the definition it carries (ADR-0018/0049). Read HERE,
-    // per Submission, so one `continue` conversation can queue turns at different settings — the
-    // `setModel`/`setThinkingLevel` reconciliation below already handles the change.
+    // This Submission's Frame and dials layer over the definition it carries (ADR-0018/0049/0057).
+    // Read HERE, per Submission, so one `continue` conversation can queue turns at different
+    // settings and in different worktrees — the `setModel`/`setThinkingLevel` reconciliation below
+    // handles a changed dial, and a changed `cwd` re-roots the Working tools two ways, because
+    // they take their root two ways (`working-tools.ts`): `setTools` below rebuilds grep and glob,
+    // which close over it, while pi's read/write/edit/bash read the `toolContext` callback below,
+    // which pi resolves per turn off `current.definition`.
     const definition = resolveDefinition(submission.definition, submission);
     const model = resolveModel(deps.models, definition.model);
     const thinkingLevel = definition.thinkingLevel ? mapThinkingLevel(definition.thinkingLevel) : "off";

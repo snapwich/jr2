@@ -15,6 +15,8 @@
 // `AgentDefinition` and `HarnessConfig` deliberately without importing them — the stock image
 // carries no Orchestrator.
 
+import { isAbsolute } from "node:path";
+
 /** jr2's reasoning-effort scale (mirrors `@jr2/orchestrator`'s `ThinkingLevel`). A strict subset of
  * pi's — every value passes through to the runtime unmapped. */
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -26,7 +28,11 @@ const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "
 /** What an Agent may DO to the Workspace (ADR-0028), as data — same reason. */
 const WORKSPACE_ACCESS: readonly string[] = ["write", "read", "none"];
 
-/** The plain-data Agent definition (ADR-0018), as the admission body carries it (ADR-0049). */
+/** The plain-data Agent definition (ADR-0018), as the admission body carries it (ADR-0049) —
+ * IDENTITY alone (ADR-0057). What a Turn is about and where it works is the Turn's Frame
+ * ({@link TurnFrame}), how hard to run is its Dials ({@link TurnDials}), and the Agent's
+ * `description` never arrives: it is Console material, which the Orchestrator strips before
+ * admission. */
 export type AgentDefinition = {
   /** Model specifier, `<provider>/<modelId>`. REQUIRED — there is no instance-wide default
    * (ADR-0018): an Agent is independently valid, and this is the only place a model is
@@ -34,10 +40,6 @@ export type AgentDefinition = {
   model: string;
   /** The Agent's system prompt. */
   instructions: string;
-  /** Optional static description — observability, never sent to the model. */
-  description?: string;
-  /** Working directory inside the Sandbox. Default `/work` (ADR-0005). */
-  cwd?: string;
   /** Reasoning effort. Omitted → the runtime's default. */
   thinkingLevel?: ThinkingLevel;
   /** What the Agent may DO to the Workspace (ADR-0028): `"read"` withholds write/edit from the
@@ -71,18 +73,32 @@ export type HarnessSpec = {
   provider?: ProviderSpec;
 };
 
-/** What a Machine state may set for one Turn on top of the definition (ADR-0018) — the
- * DIALS (how hard to run), never identity (`instructions`/`workspace`/`cwd`, which would make the
- * Agent's name a lie). Rides the admit body per Submission, so one `continue` conversation may
- * queue Submissions at different settings. */
+/** What this Turn is ABOUT and WHERE it works — the Frame (ADR-0057). Neither identity nor a
+ * Dial: a directory says where, which is the same kind of fact as the prompt, and a worktree path
+ * (`/work/<slot>/<branch>`) exists only once a run has a branch, so no definition can name one.
+ * `message` is the prompt as the wire spells it; both ride the admit body, `cwd` beside the
+ * prompt and the Dials. */
+export type TurnFrame = {
+  /** The prompt — this Turn's next user message on the conversation. */
+  message: string;
+  /** Where the Working tools are rooted. Absent → `/work` (ADR-0005), which is what a
+   * stub-Harness run with no Workspace wants. */
+  cwd?: string;
+};
+
+/** What a Machine state may set for one Turn on top of the definition (ADR-0018) — the DIALS:
+ * how hard to run. Never identity (`instructions`/`workspace`, which would make the Agent's name a
+ * lie) and never the Frame (`message`/`cwd` — what the Turn is about and where it works, ADR-0057;
+ * a directory is not a measure of effort). Rides the admit body per Submission, so one `continue`
+ * conversation may queue Submissions at different settings. */
 export type TurnDials = {
   model?: string;
   thinkingLevel?: ThinkingLevel;
 };
 
-/** One definition with its per-Submission resolution applied: the Submission's dials, the `/work`
- * cwd default, and the `"write"` workspace default (ADR-0028) are resolved here, so a turn works
- * from concrete values. */
+/** One definition with its per-Submission resolution applied: the Submission's dials, the Frame's
+ * `cwd` with its `/work` default (ADR-0057), and the `"write"` workspace default (ADR-0028) are
+ * resolved here, so a turn works from concrete values. */
 export type ResolvedDefinition = {
   model: string;
   instructions: string;
@@ -108,16 +124,12 @@ export function definitionFault(agentName: string, definition: unknown): string 
       `(ADR-0049), so \`definition: { model, instructions, … }\` is required on the admit body`
     );
   }
-  const { model, instructions, cwd, description, thinkingLevel, workspace } = definition as Record<string, unknown>;
+  const { model, instructions, thinkingLevel, workspace } = definition as Record<string, unknown>;
   if (typeof instructions !== "string" || instructions.length === 0) {
     return `${named}: the definition has no \`instructions\` — an Agent is its model plus its prompt (ADR-0018)`;
   }
   if (typeof model !== "string" || model.length === 0) {
     return `${named}: the definition names no model — a definition must name one, there is no instance-wide default (ADR-0018)`;
-  }
-  if (cwd !== undefined && typeof cwd !== "string") return `${named}: \`cwd\` must be a path string`;
-  if (description !== undefined && typeof description !== "string") {
-    return `${named}: \`description\` must be a string`;
   }
   if (thinkingLevel !== undefined && !THINKING_LEVELS.includes(thinkingLevel as string)) {
     return `${named}: thinkingLevel "${String(thinkingLevel)}" is not one of ${THINKING_LEVELS.join("|")}`;
@@ -128,16 +140,42 @@ export function definitionFault(agentName: string, definition: unknown): string 
   return undefined;
 }
 
+/**
+ * Why this Turn's Frame cannot frame a Turn, or undefined when it can (ADR-0057) — the Frame's
+ * half of the admission check, `cwd` alone. A missing `message` is an empty prompt, which is a
+ * turn a model can still answer; a `cwd` that is not an absolute path is a turn that would root
+ * its Working tools somewhere nobody named — `/work`, the parent of every checkout where grep and
+ * glob hit the pristine clone beside the worktree, or, for a relative path, wherever this process
+ * happens to sit — and say nothing. That silence is what ADR-0057 was written for, so this is a
+ * refusal, never a drop.
+ */
+export function frameFault(agentName: string, frame: unknown): string | undefined {
+  if (typeof frame !== "object" || frame === null) return undefined;
+  const { cwd } = frame as Record<string, unknown>;
+  if (cwd === undefined) return undefined;
+  if (typeof cwd !== "string" || !isAbsolute(cwd)) {
+    return (
+      `agent "${agentName}": the Turn's Frame carries a \`cwd\` that is not an absolute path — the Frame says ` +
+      `WHERE this Turn works (ADR-0057), and a Turn rooted anywhere else would work in the wrong directory silently`
+    );
+  }
+  return undefined;
+}
+
 /** The definition this Submission runs, defaults applied — the per-Submission read
- * (model/instructions/cwd/thinkingLevel resolve when the turn starts, ADR-0027). `dials` is this
- * Submission's override layer: the definition supplies the default, the invocation may turn it. */
-export function resolveDefinition(definition: AgentDefinition, dials?: TurnDials): ResolvedDefinition {
-  const model = dials?.model ?? definition.model;
-  const thinkingLevel = dials?.thinkingLevel ?? definition.thinkingLevel;
+ * (model/instructions/thinkingLevel resolve when the turn starts, ADR-0027; `cwd` comes from this
+ * Turn's Frame, ADR-0057). `turn` is this Submission's Frame and Dials: the definition supplies
+ * the identity and the default effort, the Turn says where it works and may turn the dials. */
+export function resolveDefinition(
+  definition: AgentDefinition,
+  turn?: TurnDials & Pick<TurnFrame, "cwd">,
+): ResolvedDefinition {
+  const model = turn?.model ?? definition.model;
+  const thinkingLevel = turn?.thinkingLevel ?? definition.thinkingLevel;
   return {
     model,
     instructions: definition.instructions,
-    cwd: definition.cwd ?? "/work",
+    cwd: turn?.cwd ?? "/work",
     workspace: definition.workspace ?? "write",
     ...(thinkingLevel ? { thinkingLevel } : {}),
   };

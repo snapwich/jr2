@@ -236,6 +236,43 @@ test("dials ride the admit body to the turn (ADR-0018)", async () => {
   });
 });
 
+test("the Frame's cwd rides the admit body to the turn (ADR-0057)", async () => {
+  const { app, runs } = scripted();
+  const res = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", cwd: "/work/target/feature", definition: CODER }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 200);
+  // Frame beside Dials on one flat body: where this Turn works is the same kind of fact as what
+  // it is about, and the turn reads both off the admission that queued it.
+  assert.deepEqual(runs[0]!.submission, { definition: CODER, message: "go", cwd: "/work/target/feature" });
+});
+
+test("a Frame cwd that is not an absolute path is a 400 — never a silent /work (ADR-0057)", async () => {
+  const { app, runs } = scripted();
+  const res = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", cwd: 7, definition: CODER }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as { error: string }).error, /agent "coder".*Frame/s);
+  // A relative path is the same incident dressed as a path: it would root the Working tools
+  // wherever the Harness process sits, which no Machine named.
+  const relative = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", cwd: "target/feature", definition: CODER }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(relative.status, 400);
+  assert.match(((await relative.json()) as { error: string }).error, /absolute/);
+  assert.equal(runs.length, 0, "nothing ran");
+  // A dial is dropped when it is garbage; a cwd is refused, because dropping it roots the Turn in
+  // the parent of every checkout and nothing says so.
+  assert.equal((await app.request("/agents/coder/i1")).status, 404);
+});
+
 test("a dial-less admission is unchanged — no keys invented for the turn", async () => {
   const { app, runs } = scripted();
   await admit(app, "/agents/coder/i1");

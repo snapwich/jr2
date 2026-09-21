@@ -12,7 +12,7 @@ import { z } from "zod";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { jr2Setup } from "../src/setup.ts";
-import { codingDef, gatedDef, mkStore, pipelineDef, waitFor } from "./_fixtures.ts";
+import { admittedIid, codingDef, gatedDef, mkStore, MockFlueClient, pipelineDef, waitFor } from "./_fixtures.ts";
 import type { MachineDoc } from "../src/machine-doc.ts";
 
 /** A workflow that declares its start input (ADR-0033) — what the detail JSON must serve. */
@@ -30,11 +30,16 @@ const titledTemplate = jr2Setup({
 /** The app with its host in hand — the observation routes need live runs to observe. */
 async function mkLive() {
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(new Map()));
+  const clients = new Map<string, MockFlueClient>();
+  host.register(codingDef(clients));
   host.register(gatedDef());
   host.register(pipelineDef());
   host.register({ name: "titled", machine: titledTemplate, provide: () => ({}) });
-  return { host, app: createApp(host) };
+  /** The live Turn's delivery route, as the Adapter holds it: jr2 mints every iid (ADR-0057), so
+   * the test reads it off the admission and encodes its path separators. */
+  const agentEvents = async (seed: string) =>
+    `/agents/${encodeURIComponent(await admittedIid(clients.get(seed)!))}/events`;
+  return { host, app: createApp(host), agentEvents };
 }
 
 /** A browser navigation's Accept header — text/html preferred, wildcard tail. */
@@ -140,8 +145,9 @@ test("GET /workflows/:name/runs lists that workflow's live runs, and no other's"
 });
 
 test("SSE: the observation feed streams state, never context", async () => {
-  const { host, app } = await mkLive();
+  const { host, app, agentEvents } = await mkLive();
   const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  const events = await agentEvents(instanceId);
 
   const res = await app.request(`/workflows/coding/runs/${runId}/events`);
   assert.equal(res.status, 200);
@@ -151,7 +157,7 @@ test("SSE: the observation feed streams state, never context", async () => {
   try {
     // A transition carrying a payload into context — `summary` lands in the run's context, and is
     // exactly the class of thing (a PR body, a branch, a verdict) this feed must not hand a browser.
-    await app.request(`/agents/${instanceId}/events`, {
+    await app.request(events, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ type: "request_review", summary: "SECRET-PR-BODY" }),
@@ -260,11 +266,12 @@ test("the workflow feed announces a run leaving, and never another workflow's ru
 });
 
 test("the workflow feed streams state, never context — the same line as the per-run feed", async () => {
-  const { host, app } = await mkLive();
+  const { host, app, agentEvents } = await mkLive();
   const { instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  const events = await agentEvents(instanceId);
 
   const res = await app.request("/workflows/coding/events");
-  await app.request(`/agents/${instanceId}/events`, {
+  await app.request(events, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ type: "request_review", summary: "SECRET-PR-BODY" }),

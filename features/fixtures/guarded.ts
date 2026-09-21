@@ -1,10 +1,11 @@
 // An e2e fixture for ADR-0029: a workflow whose transitions are GUARDED, so the surface and the
 // delivery receipt have something to disagree about.
 //
-// `tools:` is explicit for the same reason `review.ts` does it — the steps address the surface at
-// the RUN's instance id, and the derived path mints its own. So this fixture exercises the guard
-// FILTER over the wire, not the derivation; derivation is `setup.test.ts`'s job. The filter reads
-// whatever is registered, however it got there, which is what makes that split sound.
+// The Menu is DERIVED, never written (ADR-0057 retired the override): the two transitions below
+// are the Menu, so what this fixture exercises over the wire is the guard FILTER, not the
+// derivation — derivation is `setup.test.ts`'s job. The filter reads whatever is registered, which
+// is what makes that split sound. The Turn says `continue`, so the surface the steps drive sits at
+// the structural id `<runId>/root/coder` (ADR-0057): this Machine is the run's root.
 //
 // Two guard shapes on purpose, because they are handled differently:
 //   `escalate`       — guarded on CONTEXT. Answerable before the Agent picks, so it is filtered off
@@ -15,7 +16,7 @@
 // Filename `guarded.ts` → workflow "guarded".
 
 import { z } from "zod";
-import { agent, defineEvent, jr2Setup } from "@jr2/orchestrator";
+import { agent, defineEvent, jr2Setup, type AgentTurnInput, type AgentTurnPlacement } from "@jr2/orchestrator";
 
 const requestReview = defineEvent({
   name: "request_review",
@@ -28,8 +29,8 @@ const escalate = defineEvent({
   input: z.object({ reason: z.string() }),
 });
 
-type Input = { instanceId: string; endpoint: string; attempts?: number };
-type Ctx = { instanceId: string; endpoint: string; attempts: number };
+type Input = { endpoint: string; attempts?: number };
+type Ctx = { endpoint: string; attempts: number };
 
 /** The Agent this Machine carries (ADR-0049): a slot, so the name the Turn is admitted under is
  * the slot key. The definition's CONTENT is inert here — the tier's stub Harness never runs a
@@ -46,7 +47,6 @@ export const machine = jr2Setup({
 }).createMachine({
   id: "guarded",
   context: ({ input }) => ({
-    instanceId: input.instanceId,
     endpoint: input.endpoint,
     attempts: input.attempts ?? 0,
   }),
@@ -55,11 +55,13 @@ export const machine = jr2Setup({
     working: {
       invoke: {
         src: "coder",
-        input: ({ context }) => ({
-          instanceId: context.instanceId,
+        // The Frame, whether it continues, and the MECHANISM seat this tier sits in (ADR-0057):
+        // `endpoint` is `AgentTurnPlacement`, because a workspace-less fixture has no
+        // `workspace()` to resolve a Harness from.
+        input: ({ context }): AgentTurnInput & AgentTurnPlacement => ({
           endpoint: context.endpoint,
           prompt: "Do the work, then call request_review with a summary.",
-          tools: [requestReview.name, escalate.name],
+          continue: true,
         }),
       },
       on: {

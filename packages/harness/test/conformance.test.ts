@@ -8,7 +8,9 @@
 
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
 import type { Surface } from "@jr2/adapter";
@@ -50,21 +52,25 @@ function surfaceWith(...names: string[]): Surface {
 }
 
 /** The Agents this suite runs, as the Machines that carry them would hand them over — every
- * admission below carries one (ADR-0049); this process holds no roster. */
+ * admission below carries one (ADR-0049); this process holds no roster. Identity only: where each
+ * Turn works rides its Frame (`frameCwd` below, ADR-0057). */
 const definitions: Record<string, AgentDefinition> = {
   [AGENT]: {
     model: "fake/model-x",
     instructions: "Review what you are handed, then answer through the menu.",
-    cwd: tmpdir(),
   },
-  // No cwd on purpose — it is moot for `workspace: "none"` (only Working tools consume it), so
-  // the /work default resolving to a directory that does not exist must not matter.
   [DECISIONER]: {
     model: "fake/model-x",
     instructions: "Read the inputs, then pick the next event from the menu.",
     workspace: "none",
   },
 };
+
+/** The Frame's `cwd` each Agent's Turns carry (ADR-0057) — a real directory for the Agent whose
+ * bash calls run in one. The Menu-only Agent has none on purpose: it is moot for
+ * `workspace: "none"` (only Working tools consume a cwd), so the `/work` default resolving to a
+ * directory that does not exist must not matter. */
+const frameCwd: Record<string, string | undefined> = { [AGENT]: tmpdir() };
 
 let provider: FakeProvider;
 let sandbox: FakeSandbox;
@@ -159,12 +165,15 @@ async function admit(
   dials?: { model?: string; thinkingLevel?: string },
   agent = AGENT,
   via: Hono = app,
+  frame?: { cwd: string },
 ): Promise<{ offset: string; submissionId: string }> {
+  const cwd = frame ? frame.cwd : frameCwd[agent];
   const res = await via.request(conversationPath(iid, agent), {
     method: "POST",
     // The definition rides every admission (ADR-0049) — the real turn loop reads the one it was
-    // handed, so this suite hands it the same one the Machine's slot would.
-    body: JSON.stringify({ message, definition: definitions[agent], ...dials }),
+    // handed, so this suite hands it the same one the Machine's slot would — and the Frame rides
+    // beside it (ADR-0057): the prompt, and where this Turn works.
+    body: JSON.stringify({ message, ...(cwd ? { cwd } : {}), definition: definitions[agent], ...dials }),
     headers: { "content-type": "application/json" },
   });
   assert.equal(res.status, 200);
@@ -281,6 +290,37 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
   }
   // …and the pick alone is what settled the turn: it reached the Orchestrator as a delivery.
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
+});
+
+test("the Frame's cwd is re-read per Submission: two turns of one conversation work in different directories (ADR-0057)", async () => {
+  // The one claim the old identity cwd could never make — it was fixed when the harness was
+  // assembled, so it could not go stale. A `continue` conversation that moves to a second worktree
+  // depends on pi resolving `toolContext` per turn; if a pi bump ever froze it at assembly, the
+  // second turn would list the FIRST worktree and say nothing. That is what this canary watches.
+  const dirA = await mkdtemp(join(tmpdir(), "conf-frame-a-"));
+  const dirB = await mkdtemp(join(tmpdir(), "conf-frame-b-"));
+  await writeFile(join(dirA, "MARK_ALPHA"), "");
+  await writeFile(join(dirB, "MARK_BRAVO"), "");
+  provider.reset([
+    { toolCall: { id: "call_1", name: "bash", args: '{"command":"ls"}' } },
+    { text: "Listed the first worktree." },
+    { toolCall: { id: "call_2", name: "bash", args: '{"command":"ls"}' } },
+    { text: "Listed the second worktree." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/frame-cwd";
+
+  const first = await admit(iid, "Look around.", undefined, AGENT, app, { cwd: dirA });
+  assert.equal((await settled(iid, first)).outcome, "completed");
+  const second = await admit(iid, "Look around again.", undefined, AGENT, app, { cwd: dirB });
+  assert.equal((await settled(iid, second)).outcome, "completed");
+
+  // The tool result is the last message of the request that FOLLOWS each bash call.
+  const resultAfter = (index: number): string => JSON.stringify(provider.calls[index]?.messages.at(-1) ?? {});
+  assert.match(resultAfter(1), /MARK_ALPHA/, "turn 1 ran bash in the cwd ITS Frame named");
+  const afterSecond = resultAfter(3);
+  assert.match(afterSecond, /MARK_BRAVO/, "turn 2 ran bash in the cwd the SECOND Frame named");
+  assert.ok(!afterSecond.includes("MARK_ALPHA"), "turn 2 did not stay rooted where turn 1 was");
 });
 
 test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018)", async () => {

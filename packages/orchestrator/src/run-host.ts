@@ -334,6 +334,19 @@ type RunBlob = {
   machine?: string;
   snapshot: unknown;
   agents?: Record<string, AgentAdmission>;
+  /**
+   * The EPOCH ledger (ADR-0057): a continued conversation's base Instance ID
+   * (`<runId>/<machine actor path>/<agent>`) → the epoch the next `continue` on it lands on. An
+   * entry appears only once a terminal `agent.fault` has burned that conversation; everything
+   * else reads 0, which is the unsuffixed id itself.
+   *
+   * It rides THIS blob rather than a store of its own for the same reasons `agents` does: it is
+   * per-run state with the run's exact lifetime, and saving it in the same write gives it the
+   * snapshot's atomicity — a restore that re-attached a Turn but forgot which conversations were
+   * burned would hand the next `continue` a dead one. Keyed by the BASE id (never the minted
+   * `<id>/<epoch>`), so one conversation has exactly one counter however often it burns.
+   */
+  epochs?: Record<string, number>;
   fault?: string;
 };
 
@@ -346,6 +359,8 @@ type LiveRun = {
   binding: RunBinding;
   /** The live admission ledger (ADR-0016): persisted as `RunBlob.agents`, seeded on restore. */
   agents: Record<string, AgentAdmission>;
+  /** The live epoch ledger (ADR-0057): persisted as `RunBlob.epochs`, seeded on restore. */
+  epochs: Record<string, number>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
@@ -534,6 +549,9 @@ export class RunHost {
           record,
           def,
           agents,
+          // The burned conversations come back with the admissions (ADR-0057): a restored run's
+          // next `continue` must land where this run's last one did, not on a dead conversation.
+          blob.epochs ?? {},
         );
         actor.start();
         reattached.push(stored.runId);
@@ -608,7 +626,7 @@ export class RunHost {
     // `sendBack` synchronously, so a pick that moved the Machine out of that state has already
     // destroyed this registration by now.
     //
-    // IDENTITY, not existence: under `session: "continue"` the next state re-registers the SAME
+    // IDENTITY, not existence: under `continue: true` the next state re-registers the SAME
     // address for its own turn, and that is a new turn — this one still ended.
     return {
       delivered: true,
@@ -929,6 +947,7 @@ export class RunHost {
     record: RunRecord,
     def: WorkflowDef,
     agents: Record<string, AgentAdmission> = {},
+    epochs: Record<string, number> = {},
   ): AnyActor {
     let live: LiveRun | undefined;
     let scheduled = false;
@@ -954,6 +973,17 @@ export class RunHost {
         agents[instanceId] = admission;
         const run = this.runs.get(record.runId);
         if (run && run.agents === agents) this.persist(run);
+      },
+      // The epoch ledger's two halves (ADR-0057). The read is what the input mapper mints from;
+      // the write is the terminal `agent.fault` burning the conversation it ended, saved in the
+      // same RunBlob as the admission ledger — and, like it, saved AT THE WRITE rather than
+      // waiting for the next transition, because a crash between the fault and the next state's
+      // invoke would otherwise restore into the burned conversation.
+      epochOf: (conversation) => epochs[conversation] ?? 0,
+      bumpEpoch: (conversation) => {
+        epochs[conversation] = (epochs[conversation] ?? 0) + 1;
+        const run = this.runs.get(record.runId);
+        if (run && run.epochs === epochs) this.persist(run);
       },
       // Absorbed-retry attempts go straight to the run's observers (SSE/CLI watch) — they are
       // feed events, not machine events (ADR-0016: the workflow sees only the terminal fault).
@@ -1002,7 +1032,7 @@ export class RunHost {
         if (ev.type === "@xstate.snapshot") schedule();
       },
     });
-    live = this.track(record, actor, def, agents, binding);
+    live = this.track(record, actor, def, agents, epochs, binding);
     return actor;
   }
 
@@ -1011,9 +1041,10 @@ export class RunHost {
     actor: AnyActor,
     def: WorkflowDef,
     agents: Record<string, AgentAdmission>,
+    epochs: Record<string, number>,
     binding: RunBinding,
   ): LiveRun {
-    const run: LiveRun = { record, actor, def, agents, binding, listeners: new Set(), feedSoFar: [] };
+    const run: LiveRun = { record, actor, def, agents, epochs, binding, listeners: new Set(), feedSoFar: [] };
     this.runs.set(record.runId, run);
     // Ordinary persistence rides the inspection stream (see `spawn`); the subscription exists
     // for the ERROR channel: an errored actor (an invoke threw — e.g. ADR-0011's invoke-time
@@ -1068,6 +1099,7 @@ export class RunHost {
       machine: fingerprintOf(run.def.machine),
       snapshot: serialized,
       agents: run.agents,
+      epochs: run.epochs,
       fault: run.fault,
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);

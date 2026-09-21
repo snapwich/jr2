@@ -4,8 +4,9 @@
 // Turn is admitted THERE, with no Sandbox provisioned for the run. The pod runs the stock Harness
 // under `JR2_MENU_ONLY`, so the placement is enforced by the pod itself, not merely chosen.
 //
-// The instance id is the RUN's (the host's injection, ADR-0016) — what `jr2 status` reports and
-// what the kind steps read the Instance Harness's history under.
+// The Turn says `continue`, so its conversation is addressable from outside: jr2 mints the
+// structural id `<runId>/<machine actor path>/<agent>` (ADR-0057), and the kind steps read the
+// Instance Harness's history under exactly that.
 
 import { z } from "zod";
 import { agent, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orchestrator";
@@ -28,11 +29,11 @@ export const machine = jr2Setup({
         src: "advisor",
         // No endpoint, no sandbox, and no enclosing workspace(): the DEFINITION places the Turn
         // (ADR-0031) — on the Instance Harness, whose address a deployed Orchestrator derives
-        // from its namespace.
-        input: ({ context }) => ({
-          instanceId: context.instanceId,
-          tools: [advise.name],
+        // from its namespace. No Menu either: it derives from the `advise` below (ADR-0015), and
+        // no `cwd`: a Menu-only Agent has no Working tools to root (ADR-0028/0057).
+        input: () => ({
           prompt: "what should the team do next?",
+          continue: true,
         }),
       },
       on: { advise: { target: "advised" } },

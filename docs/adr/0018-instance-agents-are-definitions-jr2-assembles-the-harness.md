@@ -24,13 +24,13 @@ Machine cannot carry (ADR-0049/0050: the definition is one of the things it can)
   operator and Adapter images, ADR-0019). An instance builds **no** Harness image. The image is `@jr2/harness`, jr2's
   own server (ADR-0027), honoring the operator's image contracts.
 - **The definition rides the Turn, never the image.** The admission body carries the slot's definition (ADR-0049); the
-  server validates it loudly and re-reads model/instructions/cwd per Submission. No image is built anywhere for a
-  definition edit. (A ConfigMap roster read at boot — `JR2_AGENTS_JSON` — was the mechanism between the codegen-at-boot
-  cut and this one; it retired because a Machine edit already rebakes the Orchestrator, so the roster bought nothing a
-  Machine-carried definition loses.)
-- **The kit's server assembly carries the mechanism**: the Adapter leash, the workspace cwd, tool assembly — existing
-  only in kit code, unforgettable by construction (symmetric with ADR-0016 making endpoint/sandbox threading
-  unrepresentable in workflows).
+  server validates it loudly and re-reads model/instructions per Submission, with the Turn's Frame (`prompt`, `cwd`) and
+  Dials beside it on the admit body (ADR-0057). No image is built anywhere for a definition edit. (A ConfigMap roster
+  read at boot — `JR2_AGENTS_JSON` — was the mechanism between the codegen-at-boot cut and this one; it retired because
+  a Machine edit already rebakes the Orchestrator, so the roster bought nothing a Machine-carried definition loses.)
+- **The kit's server assembly carries the mechanism**: the Adapter leash, rooting the Working tools at the Frame's cwd,
+  tool assembly — existing only in kit code, unforgettable by construction (symmetric with ADR-0016 making
+  endpoint/sandbox threading unrepresentable in workflows).
 - **`harness` is the agent-runtime section of `jr2.config.ts`** — it declares what the instance can **reach**, never
   which model to use: a custom provider (`{ api, baseUrl }` plus token limits — `contextWindow`/`maxTokens`,
   provider-level and per-model, since a custom id has no catalog entry and unset limits resolve to 0, starving
@@ -52,10 +52,13 @@ knob wearing a persona's filename, so `agentRun` takes two optional **dials**, `
 the definition per Submission.
 
 The line that keeps this from becoming "re-specify the definition at the call site": **identity vs. dial.** Identity —
-`instructions`, `access`, `cwd` — is definition-only: a call site that rewrote it would make the Agent's name a lie, and
+`instructions`, `access` — is definition-only: a call site that rewrote it would make the Agent's name a lie, and
 `access` carries [ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)'s containment claim
 that a read-only reviewer _cannot_ write, which per-invocation escalation would void. **ADR-0028 is therefore untouched
-by the dials.** Dials say only how hard to run: it is still the coder, it is the coder running hot.
+by the dials.** Dials say only how hard to run: it is still the coder, it is the coder running hot. What the Turn is
+about and where it works — `prompt`, `cwd` — is neither identity nor a dial but the Turn's **Frame**
+([ADR-0057](0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md)): per Turn by nature, since a worktree path
+exists only once a run does, and no more a property of the persona than the prompt is.
 
 Where a model is checked: two seats, each where the knowledge is. At **converge**, `jr2 up` walks the registered
 Machines for the definitions they carry (ADR-0049) and probes a configured provider once per distinct model they name.

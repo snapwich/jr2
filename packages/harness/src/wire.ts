@@ -8,15 +8,19 @@
 // file) is the real Harness's alone: the stub hosts turns for tests, and nothing ever narrates
 // to it.
 
-import type { AgentDefinition, TurnDials } from "./spec.ts";
+import type { AgentDefinition, TurnDials, TurnFrame } from "./spec.ts";
 
-/** What `POST /agents/:name/:id` accepts. `message` is the prompt; `definition` is the Agent the
- * Machine's slot carries (ADR-0049) — it rides every admission, because the Harness holds no
- * roster and the `:name` in the route is a SLOT KEY, unique only within its Machine. The dials are
- * this Submission's override layer over that definition (ADR-0018) — omitted, the Harness runs the
+/** What `POST /agents/:name/:id` accepts — one Turn, in the three pieces ADR-0057 names it by.
+ * The FRAME is `message` (the prompt) and `cwd` (where the Working tools are rooted): flat
+ * siblings on the body, because where a Turn works is the same kind of fact as what it is about,
+ * and flattening keeps ADR-0027's wire as it was. The DEFINITION is the Agent the Machine's slot
+ * carries (ADR-0049) — it rides every admission, because the Harness holds no roster and the
+ * `:name` in the route is a SLOT KEY, unique only within its Machine. The DIALS are this
+ * Submission's override layer over that definition (ADR-0018) — omitted, the Harness runs the
  * definition's own values. A definition that cannot run (missing fields, an unresolvable `model`)
- * is rejected at admission (400, naming the slot), not settled `failed` mid-run. */
-export type AdmissionRequest = { message: string; definition: AgentDefinition } & TurnDials;
+ * or a Frame that cannot frame (a `cwd` that is not a path) is rejected at admission (400, naming
+ * the slot), not settled `failed` mid-run. */
+export type AdmissionRequest = { definition: AgentDefinition } & TurnFrame & TurnDials;
 
 /** The Admission: what `POST /agents/:name/:id` answers with (200, immediately — accept
  * and queue). The serializable three-string handle the host ledger persists (ADR-0016) and a

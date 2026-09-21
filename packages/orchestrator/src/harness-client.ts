@@ -49,16 +49,21 @@ import {
 /** The three-verb wire client (the injectable seam — structurally what `@flue/sdk`'s
  * `agents.{send,wait,abort}` was, minus the SDK). */
 export type HarnessClient = {
-  /** `POST /agents/:name/:id {message, definition, model?, thinkingLevel?}` → the Admission, with
-   * `streamUrl` resolved absolute. The DEFINITION is the slot's, carried by the Machine and sent
-   * with every admission (ADR-0049) — the Harness keeps no roster, so `:name` alone would name
-   * nothing there. The optional dials are this Submission's override layer (ADR-0018); omitted,
-   * the Harness runs the definition's own values. */
+  /** `POST /agents/:name/:id {message, cwd?, definition, model?, thinkingLevel?}` → the Admission,
+   * with `streamUrl` resolved absolute. The FRAME is `message` and `cwd` — what this Turn is about
+   * and where it works (ADR-0057), flat siblings on the body. The DEFINITION is the slot's,
+   * carried by the Machine and sent with every admission (ADR-0049) — the Harness keeps no roster,
+   * so `:name` alone would name nothing there — and it travels as IDENTITY alone, because this
+   * verb strips `description` (ADR-0057; see {@link admittedDefinition}). The optional dials are this Submission's override
+   * layer (ADR-0018); omitted, the Harness runs the definition's own values. */
   send(
     agentName: string,
     instanceId: string,
     options: {
       message: string;
+      /** Where the Working tools are rooted for this Turn (ADR-0057). Omitted, the Harness keeps
+       * `/work` — the stub-Harness run with no Workspace. */
+      cwd?: string;
       definition: AgentDefinition;
       model?: string;
       thinkingLevel?: ThinkingLevel;
@@ -190,9 +195,18 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             message: sendOptions.message,
+            // The other half of the Frame (ADR-0057): where this Turn works. Omitted only when
+            // UNSET, and the Harness keeps `/work`; anything else — including the empty string a
+            // miscomputed worktree path would produce — travels, because a `cwd` the Harness
+            // cannot read as an absolute path is a 400 there. Dropping it here would hand that
+            // Turn the `/work` default instead: the silent wrong directory ADR-0057 exists for.
+            ...(sendOptions.cwd === undefined ? {} : { cwd: sendOptions.cwd }),
             // The Agent this Turn runs (ADR-0049) — plain data, validated at admission by the
             // Harness, which 400s naming the slot rather than settling a Submission `failed`.
-            definition: sendOptions.definition,
+            // IDENTITY only: `description` is stripped here (ADR-0057). It is Console material —
+            // `machine-doc.ts` and the surface read it — and the Harness neither validates nor
+            // uses it, so it has no business on the Turn's wire.
+            definition: admittedDefinition(sendOptions.definition),
             // Omitted when unset, so an admission with no dials is byte-identical to before.
             ...(sendOptions.model ? { model: sendOptions.model } : {}),
             ...(sendOptions.thinkingLevel ? { thinkingLevel: sendOptions.thinkingLevel } : {}),
@@ -271,6 +285,15 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   };
 }
 
+/** The definition as the ADMISSION carries it (ADR-0057): identity alone. `description` is
+ * Console material the Orchestrator strips before admission — the Harness has no use for it and
+ * no longer validates it. Every other field travels, so a field added to the definition reaches
+ * the Harness without a change here. */
+function admittedDefinition(definition: AgentDefinition): Omit<AgentDefinition, "description"> {
+  const { description: _description, ...identity } = definition;
+  return identity;
+}
+
 /** Build an `AgentRunPort` over an injected wire client. Stateless — the admission IS the handle. */
 export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
   return {
@@ -280,6 +303,10 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
       }
       return await client.send(input.agentName, input.instanceId, {
         message: input.prompt,
+        // The Frame's other half (ADR-0057) — absent on a workspace-less run, where `/work` is
+        // what the Harness keeps. Absent means UNSET: a cwd the mapper computed travels as it is,
+        // to the Harness's refusal if it is not a path.
+        ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         definition: opts.definition,
         model: input.model,
         thinkingLevel: input.thinkingLevel,

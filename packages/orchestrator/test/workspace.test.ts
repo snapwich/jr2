@@ -432,6 +432,7 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
   // enclosing wrapper via the parent chain — and the registration must record the wrapper's
   // Sandbox (the ADR-0013 token scope) with zero workflow plumbing.
   const endpoints: string[] = [];
+  const client = new MockFlueClient();
   const ambientBody = jr2Setup({
     types: {} as { context: Record<string, never>; input: { workspace: { branch: string } } },
     events: [approveDef],
@@ -439,7 +440,7 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
       coder: agentActorWith(
         (endpoint: string) => {
           endpoints.push(endpoint);
-          return new MockFlueClient();
+          return client;
         },
         { model: "test/model", instructions: "i" },
       ),
@@ -450,10 +451,7 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
     initial: "coding",
     states: {
       coding: {
-        invoke: {
-          src: "coder",
-          input: { instanceId: "amb-1", prompt: "go", tools: [] },
-        },
+        invoke: { src: "coder", input: { prompt: "go" } },
         on: { approve: "done" },
       },
       done: { type: "final" },
@@ -469,7 +467,8 @@ test("ambient resolution (ADR-0016): an Agent inside a workspace finds endpoint 
   await waitFor(() => endpoints.length === 1);
   assert.deepEqual(endpoints, ["http://sandbox.test"], "the wrapper's endpoint, never threaded by the workflow");
 
-  const surface = host.agentSurface("amb-1");
+  // jr2 minted the iid (ADR-0057); the admission is where a reader learns it.
+  const surface = host.agentSurface(client.admits[0]!.instanceId);
   const crName = [...sandbox.provisioned.keys()][0]!;
   assert.equal(surface?.sandbox, crName, "the registration records the ENCLOSING wrapper's Sandbox (ADR-0013)");
   assert.ok(host.status(runId), "run parked on the mock agent, alive");
@@ -527,6 +526,50 @@ test("slots resolve in declaration order; the handles are keyed by slot, in that
     ["docs", "app"],
     "declaration order, not alphabetical — through the persisted snapshot too",
   );
+});
+
+test("two bound Repo Slots and a Turn that frames no cwd: the run is refused, naming the slots (ADR-0057)", async () => {
+  // The composition trap ADR-0057 accepted with open eyes: a Machine that ran yesterday under one
+  // Repo Slot refuses today under two, in a `customize` line its author never sees. `jr2 up`
+  // cannot see it either — the invoke's input is a function — so the refusal has to be explicit at
+  // the FIRST Turn, and it is asserted here against a real two-slot Machine rather than a
+  // hand-registered handle, because it is the WORKSPACE's slot count that decides.
+  const client = new MockFlueClient();
+  const unframed = jr2Setup({
+    types: {} as {
+      context: Record<string, never>;
+      input: { workspace: { repos: Record<string, string>; branch: string } };
+    },
+    events: [],
+    actors: { coder: agentActorWith(() => client, { model: "test/model", instructions: "i" }) },
+  }).createMachine({
+    id: "unframed",
+    context: {},
+    initial: "coding",
+    // The Frame is a prompt and nothing else — which is legal under one slot and a refusal here.
+    states: { coding: { invoke: { src: "coder", input: { prompt: "go" } } } },
+  });
+
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register({
+    name: "twoSlots",
+    machine: workspace(unframed, {
+      repos: { docs: { url: "https://example.test/handbook.git", ref: "v3" }, app: APP },
+      spec: () => ({ branch: "feat-2" }),
+    }),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("twoSlots");
+  await waitFor(() => host.status(runId) === undefined);
+
+  const fault = (await host.read(runId))?.fault ?? "";
+  assert.equal((await host.read(runId))?.status, "error");
+  // The slots in DECLARATION order, which is the order the composer wrote and the only order that
+  // helps them pick (ADR-0051) — and the line that ends it.
+  assert.match(fault, /agent "coder" works under a Workspace carrying more than one Repo Slot \(docs, app\)/);
+  assert.match(fault, /cwd: context\.workspace\.repos\.<slot>/);
+  assert.deepEqual(client.admits, [], "refused BEFORE admission — no Turn, so no model was spent");
 });
 
 test("a per-run slot's mapper is called with the run input, validated, and flagged for the fence", async () => {

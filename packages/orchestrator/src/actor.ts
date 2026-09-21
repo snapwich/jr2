@@ -43,10 +43,16 @@
 // at all, and restore is a fresh process, so there is nothing to infer it from.
 
 import { fromCallback, type CallbackActorLogic } from "xstate";
-import { requireBoundAgent, type AgentDeclaration, type AgentDefinition, type ThinkingLevel } from "./agent.ts";
-import { ambientHandlesFor } from "./ambient.ts";
+import {
+  requireBoundAgent,
+  type AgentDeclaration,
+  type AgentDefinition,
+  type ThinkingLevel,
+  type WorkspaceAccess,
+} from "./agent.ts";
+import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
-import { agentAddress, resolveAccepts, runBindingOf } from "./registration.ts";
+import { agentAddress, continuedIid, resolveAccepts, runBindingOf } from "./registration.ts";
 
 /**
  * One admitted Submission — the durable re-attach handle (ADR-0016). The wire fields are
@@ -72,19 +78,33 @@ export type AgentAdmission = {
 };
 
 /**
- * What a WORKFLOW writes on an Agent slot's invoke (ADR-0015/0016/0049): this turn's prompt —
- * everything else is derived. The AGENT is not written here at all: the slot key is its name
- * (`actors: { coder: agent(def) }`, `src: "coder"`), so a name the Machine does not carry is a
- * compile error on `src` instead of a runtime miss. `jr2Setup.createMachine` wraps the invoke
- * input to finalize it into {@link AgentRunInput}: the slot key lands as `agentName`, the tool
- * menu derives from the invoking state's transitions, the instance id is minted (fresh session by
- * default; `session: "continue"` or a `conversation` pin derives a deterministic id so
- * re-invocations continue one conversation), and endpoint/sandbox resolve ambiently from the
- * enclosing `workspace()`.
+ * What a WORKFLOW writes on an Agent slot's invoke (ADR-0015/0016/0049/0057): this Turn's FRAME,
+ * its DIALS, and whether it CONTINUES — nothing else. The AGENT is not written here at all: the
+ * slot key is its name (`actors: { coder: agent(def) }`, `src: "coder"`), so a name the Machine
+ * does not carry is a compile error on `src` instead of a runtime miss.
+ *
+ * `jr2Setup.createMachine` wraps the invoke input to finalize it into {@link AgentRunInput}: the
+ * slot key lands as `agentName`, the tool menu derives from the invoking state's transitions, the
+ * instance id is MINTED (never written here — fresh by default; `continue: true` derives the
+ * Agent's one conversation in this Machine instance), and endpoint/sandbox resolve ambiently from
+ * the enclosing `workspace()`.
  */
 export type AgentTurnInput = {
-  /** This turn's task framing — lands as the conversation's next user message. */
+  /** Half this Turn's FRAME (ADR-0057) — what it is about: the prompt lands as the conversation's
+   * next user message. Neither identity nor a Dial. */
   prompt: string;
+  /**
+   * The other half of the FRAME (ADR-0057) — WHERE this Turn works: the absolute directory the
+   * Harness roots the Working tools at. Per Turn by nature, which is why no definition names one:
+   * a Worktree path (`/work/<slot>/<branch>`) exists only once a run has a branch.
+   *
+   * Absent, the actor resolves it before admission: a `workspace: "none"` Agent frames no
+   * directory (it has no Working tools to root — ADR-0028), a Workspace with ONE Repo Slot frames
+   * that slot's Worktree, a Workspace with more REFUSES the Turn (the kit gives no slot a meaning
+   * — ADR-0051 — so the state must say which), and a run with no Workspace at all frames nothing
+   * and the Harness keeps `/work`. A relative path is refused at admission, by the Harness.
+   */
+  cwd?: string;
   /**
    * This turn's DIALS (ADR-0018) — how hard to run, layered over the definition's own
    * values. One definition value may be carried by several Machines, so the same persona
@@ -92,38 +112,46 @@ export type AgentTurnInput = {
    * and the same reviewer on an architecture change want identical instructions and different
    * effort.
    *
-   * IDENTITY is deliberately absent — no `instructions`, `workspace` or `cwd` here. A call site
-   * that rewrote those would make the Agent's name a lie, and `workspace` in particular carries
+   * IDENTITY is deliberately absent — no `instructions` or `workspace` here. A call site that
+   * rewrote those would make the Agent's name a lie, and `workspace` in particular carries
    * ADR-0028's containment claim, which per-invocation escalation would void.
    */
   model?: string;
   thinkingLevel?: ThinkingLevel;
   /**
-   * Session continuity (ADR-0016). Absent = FRESH: every invocation is a new conversation
-   * (jr's lossy handoff — revision agents read notes + code, never the prior conversation).
-   * `"continue"` = the same `(state path, agent, scope)` re-invocation continues ONE
-   * conversation; the prompt lands as its next user turn.
+   * Continue this Agent's ONE conversation in this Machine instance (ADR-0016, ADR-0057) — the
+   * whole continuation surface. Absent, every invocation is a FRESH conversation (jr's lossy
+   * handoff — revision agents read notes + code, never the prior conversation). Present, the
+   * prompt lands as the next user turn of that conversation, whichever state of the Machine
+   * invokes it: states differ by Menu (a coder in `implement` offers `finish`; the same coder in
+   * `fix` offers `finish` and `dispute`) and the conversation is wanted across them.
+   *
+   * It names nothing, because the id is STRUCTURAL — `<runId>/<machine actor path>/<agent>` — and
+   * a caller-chosen key could only restate that, or contradict it. Two Agents therefore never
+   * share a conversation (the name is in the id), and two Pool children never collide (each
+   * worker is its own Machine instance). A conversation jr2 has faulted is never continued: the
+   * next `continue` lands on a virgin one (ADR-0035, ADR-0057) — and re-briefing that Turn is the
+   * author's, because jr2 cannot write that prompt.
    */
-  session?: "continue";
-  /** Distinguishes conversations that would otherwise share a `continue` identity (e.g. a
-   * reviewer fresh per task: `scope: task.id`). */
-  scope?: string;
-  /**
-   * Pin the conversation to a workflow-chosen name — the CROSS-MACHINE continue (ADR-0016's
-   * opt-in continuation, where `session: "continue"` cannot reach: its derived id carries the
-   * invoking actor's path, so it only spans states of one machine). Invocations naming the same
-   * `conversation` derive ONE deterministic, run-scoped instance id (`<runId>/<name>/<agent>`)
-   * wherever in the actor tree they sit — a triage state before the `workspace()` and an assess
-   * state inside its body continue one conversation, the prompt landing as its next user turn.
-   * Only sound where every invocation lands on the same Harness, because a conversation is an
-   * Instance ID on ONE server: a `workspace: "none"` Agent (always the Instance Harness —
-   * definition-wins, ADR-0031) or a fixed explicit `endpoint`.
-   */
-  conversation?: string;
-  /** Workspace-less runs only (stub Harness): explicit endpoint, no ambient resolution. */
+  continue?: true;
+};
+
+/**
+ * MECHANISM, not authoring surface (ADR-0057): where a Turn's Harness is and which Sandbox scopes
+ * its deliveries, STATED instead of resolved. It is the seat the stub tier sits in — a
+ * mechanics-tier test has no `workspace()` to resolve from, and a dev Harness is just a URL
+ * (ADR-0011) — so it is exported for those tests and for nothing else.
+ *
+ * A real run states neither: a Sandbox Agent resolves both ambiently from the enclosing
+ * `workspace()` (ADR-0016), and a `workspace: "none"` Agent lands on the Instance Harness
+ * (ADR-0031). Stated, it wins over both, because a URL a test wrote is the one thing no ambient
+ * walk can know about.
+ */
+export type AgentTurnPlacement = {
+  /** The Harness base URL this Turn is admitted over. */
   endpoint?: string;
-  /** Escape hatch: override the derived menu. */
-  tools?: readonly string[];
+  /** The Sandbox whose Adapter token may deliver this Turn's picks (ADR-0013). */
+  sandbox?: string;
 };
 
 /** What the actor is invoked with AFTER jr2Setup finalization: the durable handle, this turn's
@@ -149,6 +177,9 @@ export type AgentRunInput = {
    */
   sandbox?: string;
   prompt?: string;
+  /** The other half of this Turn's Frame (ADR-0057): where the Working tools are rooted. Rides the
+   * admit body beside the prompt; absent, the Harness keeps `/work`. */
+  cwd?: string;
   /** This turn's dials, passed through from {@link AgentTurnInput}. Plain strings, so they ride
    * the persisted child input; on restore the Submission already exists server-side with its
    * model fixed, so a re-attach never re-resolves them. */
@@ -160,20 +191,15 @@ export type AgentRunInput = {
    */
   attach?: AgentAdmission;
   /**
-   * This invocation is closed to the ADR-0035 reroll — set by the input mapper for
-   * `session: "continue"` and a `conversation` pin (both name an EXISTING conversation, and
-   * the runaway's one recovery is a fresh one — exactly what they opted out of), and for a
-   * caller-passed `instanceId` (fresh on its first invocation, but jr2 did not mint the id and
-   * must not derive reroll identity from one it does not own — ADR-0016's minting doctrine).
-   * A gated runaway goes straight to the terminal fault.
+   * This invocation CONTINUES an existing conversation — set by the input mapper from
+   * `continue: true` alone (ADR-0057), and nothing else. Two things hang off it:
    *
-   * A continuation carries NO check that it continues the same persona (ADR-0049, closing
-   * consequence, open): two Machines that each carry a `coder` slot and pin the same
-   * `conversation` continue one conversation under two definitions, and the second Turn gets its
-   * own instructions and Working-tool filter over the first's context. The ledger holds no
-   * definition to compare against, and adding a digest would refuse an edited-`instructions`
-   * redeploy too, which ADR-0030 lets continue — so the refusal waits on a persona identity that
-   * survives a retune.
+   *   - it is closed to the ADR-0035 reroll: the runaway's one recovery is a fresh conversation,
+   *     which is exactly what a continuation opted out of, and a continued Turn's prompt
+   *     ("Continue.") is meaningless replayed fresh. A gated runaway goes straight to the fault;
+   *   - a terminal `agent.fault` BURNS the conversation (ADR-0057): the epoch bumps in the host
+   *     ledger, so the next `continue` on this Agent mints a virgin id. Nothing is burned for a
+   *     fresh invocation, which already mints its own conversation.
    */
   continuation?: boolean;
   /** Event names (from the invoking Machine's vocabulary) this invocation accepts over MCP. */
@@ -277,6 +303,50 @@ function nudgePrompt(tools: readonly string[]): string {
   );
 }
 
+/**
+ * Where this Turn works — the Frame's other half (ADR-0057), resolved before admission.
+ *
+ * The state's own `cwd` IS the Frame and wins outright, for every Agent: what is resolved here is
+ * an ABSENT one, and a directory a state named is never second-guessed — a Menu-only Agent handed
+ * one simply has no Working tools to root there (ADR-0028/0031).
+ *
+ * Absent, a Menu-only Agent frames no directory; a Workspace with ONE Repo Slot frames that
+ * slot's Worktree, which privileges nothing because there is nothing to choose between (ADR-0051);
+ * a Workspace with more REFUSES the Turn, naming the slots in declaration order and the line that
+ * ends it, because the kit gives no slot a meaning and a wrong guess is the silent failure
+ * ADR-0057 was written for; and a run outside any Workspace frames nothing, so the Harness keeps
+ * `/work`.
+ *
+ * Resolution counts SLOTS, and a slot's Worktree is the writable branch checkout. The detached
+ * review Worktree (`AmbientHandles.review`, ADR-0028's reviewer seat) is never resolved to: it is
+ * per review round, so only the reviewing state knows which one, and it frames it (ADR-0028 hands
+ * the reviewer its path as "cwd and prompt"). A `workspace: "read"` Agent that frames nothing
+ * under a one-slot Workspace therefore works in the branch checkout with `write`/`edit` withheld
+ * and `bash` kept — the tool layer's hint, not containment (ADR-0028): containment is the
+ * detached review Worktree, and only a reviewing state that requested one can frame it.
+ *
+ * The refusal throws at invoke, like the Open-model fence: loudly, at the first Turn, before a
+ * surface is registered or a pod is spent.
+ */
+function frameCwd(
+  instanceId: string,
+  input: AgentRunInput,
+  workspace: WorkspaceAccess,
+  ambient: AmbientHandles | undefined,
+): string | undefined {
+  if (input.cwd !== undefined) return input.cwd;
+  if (workspace === "none") return undefined;
+  const slots = Object.keys(ambient?.repos ?? {});
+  if (slots.length === 0) return undefined;
+  if (slots.length === 1) return ambient!.repos[slots[0]!];
+  throw new Error(
+    `turn ${instanceId}: agent "${input.agentName}" works under a Workspace carrying more than one ` +
+      `Repo Slot (${slots.join(", ")}) and its Turn framed no \`cwd\` — say which Worktree it works ` +
+      `in (\`cwd: context.workspace.repos.<slot>\`, one of those), because the kit gives no slot a ` +
+      `meaning (ADR-0051) and a Turn's Frame is where it works (ADR-0057)`,
+  );
+}
+
 /** One Agent slot's logic: the run-lifecycle actor closed over ONE definition and BRANDED with it
  * (ADR-0049). The brand is the whole resolution mechanism — the actor reads its definition off its
  * own closure, `jr2Setup` recognizes the slot by `isAgent`, and a `.provide()` that swaps the slot
@@ -285,7 +355,10 @@ function nudgePrompt(tools: readonly string[]): string {
  * The brand is a RUNTIME property, read back through `isAgent`, and deliberately NOT part of this
  * type: the unit-test seam is `provide({ actors: { coder: fake } })` (ADR-0049), and a required
  * `definition` here would make every fake carry a definition it never uses. */
-export type AgentLogic = CallbackActorLogic<AgentRunReceiveEvent, AgentTurnInput | AgentRunInput>;
+export type AgentLogic = CallbackActorLogic<
+  AgentRunReceiveEvent,
+  AgentTurnInput | (AgentTurnInput & AgentTurnPlacement) | AgentRunInput
+>;
 
 /**
  * Build one Agent slot's actor logic over an injected port factory — the seam `agent()` (bound to
@@ -313,7 +386,10 @@ export function agentActorWith(
   // Typed as the union so BOTH shapes typecheck on an invoke: jr2Setup machines write
   // AgentTurnInput (and the config wrapper finalizes it before the actor ever runs); plain
   // setup() machines must pass the finalized shape themselves — checked loudly below.
-  const logic = fromCallback<AgentRunReceiveEvent, AgentTurnInput | AgentRunInput>((args) => {
+  const logic = fromCallback<
+    AgentRunReceiveEvent,
+    AgentTurnInput | (AgentTurnInput & AgentTurnPlacement) | AgentRunInput
+  >((args) => {
     const { system, self, sendBack, receive } = args;
     const input = args.input as AgentRunInput;
     const { instanceId } = input;
@@ -339,6 +415,9 @@ export function agentActorWith(
     // are unreachable (ADR-0013).
     const binding = runBindingOf(system);
     const workspace = definition.workspace ?? "write";
+    // The enclosing workspace()'s handles, walked structurally up the actor parent chain — the
+    // Harness coordinates below and the Frame's `cwd` both read them (ADR-0013/0016/0057).
+    const ambient = ambientHandlesFor(self);
     let endpoint: string;
     let sandbox: string | undefined;
     if (input.endpoint) {
@@ -359,7 +438,6 @@ export function agentActorWith(
       // Workspace's. The Instance token still may (it is the operator, tokens.ts).
       sandbox = INSTANCE_HARNESS_SERVICE;
     } else {
-      const ambient = ambientHandlesFor(self);
       if (!ambient?.endpoint) {
         throw new Error(
           `turn ${instanceId}: agent "${input.agentName}" has workspace: "${workspace}" — ` +
@@ -370,6 +448,12 @@ export function agentActorWith(
       endpoint = ambient.endpoint;
       sandbox = input.sandbox ?? ambient.sandbox;
     }
+
+    // The Frame's other half (ADR-0057): WHERE this Turn works. Resolved HERE, before any surface
+    // is registered and before a pod is spent, because the answer is a fact about the run — a
+    // Worktree path exists only once a run has a branch, so no definition could have named it.
+    const cwd = frameCwd(instanceId, input, workspace, ambient);
+    const framed: AgentRunInput = cwd === undefined ? input : { ...input, cwd };
 
     // Register this invocation's event surface (throws on a name outside the INVOKING MACHINE's
     // vocabulary — ADR-0011's invoke-time check, scoped to `self._parent.logic` because names are
@@ -476,17 +560,23 @@ export function agentActorWith(
     // Any budget exhausting emits the ONE terminal `agent.fault { reason }`.
     void (async () => {
       const fault = (reason: string) => {
-        if (!stopped) sendBack({ type: "agent.fault", instanceId, reason } satisfies FaultTelemetry);
+        if (stopped) return;
+        // Burn the conversation before the fault lands (ADR-0057): the state the fault routes to
+        // may invoke this Agent again in the same macrostep, and its mapper must already read the
+        // bumped epoch. Continuations only — a fresh invocation mints its own conversation, so
+        // there is nothing to burn.
+        if (input.continuation) binding.bumpEpoch?.(continuedIid(self._parent, binding.runId, input.agentName));
+        sendBack({ type: "agent.fault", instanceId, reason } satisfies FaultTelemetry);
       };
       try {
         // Queue behind any abort still in flight for this iid (ADR-0024). Non-trivial only under
-        // `session: "continue"`, which is the only way two invocations share an instance id — and
+        // `continue: true`, which is the only way two invocations share an instance id — and
         // there it is mandatory: the Harness queues per conversation and an abort settles what
         // is queued behind it, so losing this race would kill the new turn before it ran, silently.
         await pendingAborts.get(instanceId);
         let admission = input.attach;
         if (!admission) {
-          admission = await client.admit(input, { definition, signal: controller.signal });
+          admission = await client.admit(framed, { definition, signal: controller.signal });
           ledger(admission);
           // The admission marker (ADR-0023): the Turn and its framing, once — a re-attach
           // continues a Turn already announced, and a nudge (below) is mechanism, not narrative
@@ -521,7 +611,7 @@ export function agentActorWith(
             currentIid = `${instanceId}-r${rerolls}`;
             registerSurface(currentIid);
             admission = await client.admit(
-              { ...input, attach: undefined, instanceId: currentIid },
+              { ...framed, attach: undefined, instanceId: currentIid },
               { definition, signal: controller.signal },
             );
             ledger(admission);
@@ -540,7 +630,7 @@ export function agentActorWith(
             reason: "no-signal nudge",
           });
           admission = await client.admit(
-            { ...input, attach: undefined, instanceId: currentIid, prompt: nudgePrompt(input.tools) },
+            { ...framed, attach: undefined, instanceId: currentIid, prompt: nudgePrompt(input.tools) },
             { definition, signal: controller.signal },
           );
           ledger(admission);

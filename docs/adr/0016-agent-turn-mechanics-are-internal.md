@@ -56,22 +56,26 @@ projected to `{ child, attempt }` — no iids on the open observation feed
 
 jr's most deliberate design decision is the **lossy handoff** — every relaunch is a fresh session; revision coders read
 the notes and the code, never the prior agent's conversation. That is the default: each `agentRun` invocation is a new
-conversation. `session: "continue"` + `scope` opts into same-instance-id continuation: the iid derives from
-`(run, enclosing child id, agent, scope)`; the per-invocation prompt lands as the next user turn; the tool menu still
-re-derives from the invoking state (one conversation can travel across states). Mid-turn restore re-attaches the
-in-flight turn in both modes — `session` governs only what a _new invocation_ means. `scope` is the one place
-conversation identity legitimately needs a consumer word; it is not conventioned away. (This corrects the jr-parity
-exercise's "same iid = jr's resume machinery, free" — an inversion of jr's actual semantics.)
+conversation. `continue: true` opts into continuation
+([ADR-0057](0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md)): the Turn lands on this Agent's one
+conversation in this Machine instance, iid `<run>/<machine actor path>/<agent>` plus the epoch jr2 bumps on a terminal
+fault; the per-invocation prompt lands as the next user turn; the tool menu still re-derives from the invoking state
+(one conversation travels across the states of its Machine). Mid-turn restore re-attaches the in-flight turn in both
+modes — `continue` governs only what a _new invocation_ means. The author names nothing: in a state machine the
+conversation's identity is already on the page. (This corrects the jr-parity exercise's "same iid = jr's resume
+machinery, free" — an inversion of jr's actual semantics.)
 
-A `continue` invocation onto a live iid does **not** fail loudly — it queues. The Harness accepts and queues: prompts
-for one instance enter one per-instance queue in admission order, and a Submission is promoted only when it is the first
-unsettled one for its conversation (ADR-0027 states this as jr2's own semantics). A queued prompt waits behind work that
-may never finish, which is why [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md) both ends the
-turn and orders the abort ahead of the next `send`.
+Two live invocations of one continued iid — parallel states — are refused at the registration table: one live surface
+per address. A Submission that arrives behind a live one on the Harness queues: prompts for one instance enter one
+per-instance queue in admission order, and a Submission is promoted only when it is the first unsettled one for its
+conversation (ADR-0027 states this as jr2's own semantics). A queued prompt waits behind work that may never finish,
+which is why [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md) both ends the turn and orders the
+abort ahead of the next `send`.
 
 The minting doctrine — addresses are computed by jr2, never by the workflow — covers gate ids too: a gate with no
 authored id derives one from its actor path below the run root, through the same walk `mintIid` uses (`actorPath` in
 registration.ts; ADR-0011). The two mint at different seats for a reason: iids must be minted in the input mapper
-because minting has a random component (the fresh-session suffix) — the input is what persists — while a path-derived
-gate id is deterministic from machine structure, so it is recomputed at every actor (re)start and is restore-stable by
-construction. The mapper rule is about non-determinism, not a blanket rule about where ids are born.
+because minting has a random component (the fresh-session suffix) and a ledger read (the continued conversation's epoch)
+— the input is what persists — while a path-derived gate id is deterministic from machine structure, so it is recomputed
+at every actor (re)start and is restore-stable by construction. The mapper rule is about non-determinism, not a blanket
+rule about where ids are born.
