@@ -320,9 +320,11 @@ When(
     // node, not curl: it is what the image has, and it is what a bash Working tool would use.
     // Resolvable in an `exec` shell because the IMAGE carries it — the Harness's PATH append is a
     // process-level setting (startup.ts) that no exec inherits, and jr2 writes nothing into the
-    // image's env (ADR-0037).
+    // image's env (ADR-0037). The iid is ONE path segment on the wire, encoded as the Adapter
+    // encodes it (adapter.ts): pasted raw, its slashes would miss the route and the 404 would be
+    // the router's, not the refusal under test.
     const probe =
-      `fetch(${JSON.stringify(`${url}/agents/${iid}/events`)},{method:"POST",` +
+      `fetch(${JSON.stringify(`${url}/agents/${encodeURIComponent(iid)}/events`)},{method:"POST",` +
       `headers:{"content-type":"application/json"},` +
       `body:${JSON.stringify(JSON.stringify({ type: tool, summary: "self-approved" }))}})` +
       `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message))`;
