@@ -1361,13 +1361,19 @@ async function preflightProvider(
           `${err instanceof Error ? err.message : err}\n` +
           `  - localhost never works from a pod; use a LAN address\n` +
           `  - the model id must be exactly what the endpoint serves (vLLM: GET /v1/models)\n` +
-          `  - vLLM needs --enable-auto-tool-choice and a matching --tool-call-parser`,
+          `  - vLLM needs --enable-auto-tool-choice and a matching --tool-call-parser\n` +
+          `  - finish_reason "length" means the model ran out of tokens before the call (a thinking model reasons first)`,
       );
     }
   }
 }
 
-/** The in-cluster probe: GET /models, then one chat completion that must answer with tool_calls. */
+/**
+ * The in-cluster probe: GET /models, then one chat completion that must answer with tool_calls. The budget
+ * is generous because a thinking model (Qwen3, DeepSeek-R1) reasons BEFORE it calls the tool, and that
+ * reasoning counts against max_tokens — at 64 the completion ended with finish_reason "length" and an
+ * empty tool_calls, which read as "the endpoint cannot call tools" when it could.
+ */
 function providerProbeScript(baseUrl: string, model: string, apiKey?: string): string {
   const base = JSON.stringify(baseUrl.replace(/\/+$/, ""));
   const headers = apiKey
@@ -1378,14 +1384,15 @@ function providerProbeScript(baseUrl: string, model: string, apiKey?: string): s
     `const m = await fetch(${base} + "/models", { headers: h });` +
     `if (!m.ok) throw new Error("GET /models: HTTP " + m.status);` +
     `const c = await fetch(${base} + "/chat/completions", { method: "POST", headers: h, body: JSON.stringify({` +
-    ` model: ${JSON.stringify(model)}, max_tokens: 64,` +
+    ` model: ${JSON.stringify(model)}, max_tokens: 1024,` +
     ` messages: [{ role: "user", content: "Call the ping tool." }],` +
     ` tools: [{ type: "function", function: { name: "ping", description: "reply with a ping", parameters: { type: "object", properties: {} } } }]` +
     ` }) });` +
     `const j = await c.json();` +
     `if (!c.ok) throw new Error("POST /chat/completions: HTTP " + c.status + " " + JSON.stringify(j).slice(0, 300));` +
-    `const calls = j.choices?.[0]?.message?.tool_calls;` +
-    `if (!calls?.length) throw new Error("completion carried no tool_calls");` +
+    `const choice = j.choices?.[0];` +
+    `const calls = choice?.message?.tool_calls;` +
+    `if (!calls?.length) throw new Error("completion carried no tool_calls (finish_reason " + JSON.stringify(choice?.finish_reason ?? null) + ")");` +
     `console.log("PROVIDER OK");`
   );
 }
