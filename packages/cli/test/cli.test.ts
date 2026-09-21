@@ -183,7 +183,8 @@ test("send resolves before it writes — an unresolvable id never reaches CANCEL
 test("`jr2 status` with no run reports the data plane and every Repo, failing nodes with git's own error", async () => {
   // ADR-0048's third claim on ADR-0051's shape: the cache agent degrades a Repo on one node instead
   // of the daemon, so the way to learn a clone never landed is to ask the instance — not to tail
-  // pod logs. Per NODE, because that is where a cache lives.
+  // pod logs. Per NODE, because that is where a cache lives. A REPORT verb (ADR-0009 as amended):
+  // the table is stdout, and `--json` swaps in the object.
   const repos = [
     {
       key: "app-0123abcd",
@@ -219,26 +220,37 @@ test("`jr2 status` with no run reports the data plane and every Repo, failing no
     asked.some((u) => u.endsWith("/repos")),
     "no run named → the instance's own status",
   );
-  assert.deepEqual(
-    JSON.parse(out().trim()),
-    { dataPlane: true, repos },
-    "an object on stdout: the switch and the Repos",
-  );
+  assert.match(out(), /^data plane: yes$/m);
+  assert.match(out(), /^repo app-0123abcd \(git@github\.com:acme\/app\.git\)  bound$/m);
   assert.match(
-    err(),
-    /repo app-0123abcd \(git@github\.com:acme\/app\.git\) on node kind-worker: absent — Permission denied \(publickey\)\./,
-    "a cold clone that failed: the cache is absent on that node",
+    out(),
+    /^  node kind-worker: absent — Permission denied \(publickey\)\.$/m,
+    "a cold clone that failed: the cache is absent on that node, with git's own error",
   );
-  assert.doesNotMatch(err(), /kind-worker2/, "a synced node needs no line");
-  assert.doesNotMatch(err(), /infra/, "a Repo no node has tried yet needs no line");
-  assert.match(err(), /keeps retrying/, "…and the way out: register the key, the cache agent closes the window");
+  assert.match(out(), /^  node kind-worker2: present, synced$/m, "every node is a line in the table");
+  assert.match(out(), /^repo infra-89abcdef/m, "a Repo no node has tried yet is still listed");
+  assert.match(out(), /keeps retrying/, "…and the way out: register the key, the cache agent closes the window");
   assert.match(
-    err(),
+    out(),
     /absent: Workspaces needing that cache on that node wait/,
     "absence parks the provision (ADR-0051)",
   );
-  assert.doesNotMatch(err(), /stale:/, "no warm cache failed a fetch, so no stale line");
-  assert.doesNotMatch(err(), /no data plane/);
+  assert.doesNotMatch(out(), /stale:/, "no warm cache failed a fetch, so no stale line");
+  assert.doesNotMatch(out(), /no data plane/);
+  assert.equal(err(), "→ http://test\n", "stderr carries the target line and nothing of the table");
+
+  // `--json`: the object, nothing else.
+  const json = mkIo({
+    env: { JR2_URL: "http://test" },
+    fetch: () => Promise.resolve(Response.json({ dataPlane: true, repos })),
+  });
+  assert.equal(await main(["status", "--json"], json.io), 0);
+  assert.deepEqual(
+    JSON.parse(json.out().trim()),
+    { dataPlane: true, repos },
+    "the switch and the Repos, as one object",
+  );
+  assert.equal(json.err(), "→ http://test\n");
 
   // Freshness degrades, absence does not (ADR-0004/0051): a fetch that fails on a WARM cache is
   // stale, and an attach proceeds on what the cache holds — the hint must not claim Workspaces wait.
@@ -247,10 +259,10 @@ test("`jr2 status` with no run reports the data plane and every Repo, failing no
     fetch: () => Promise.resolve(Response.json({ dataPlane: true, repos: staleOnly })),
   });
   assert.equal(await main(["status"], warm.io), 0);
-  assert.match(warm.err(), /on node kind-worker: stale — Could not resolve host: github\.com/);
-  assert.match(warm.err(), /stale: attaches proceed on what the cache holds/);
-  assert.doesNotMatch(warm.err(), /wait until/, "a stale cache parks nothing");
-  assert.doesNotMatch(warm.err(), /absent/);
+  assert.match(warm.out(), /node kind-worker: stale — Could not resolve host: github\.com/);
+  assert.match(warm.out(), /stale: attaches proceed on what the cache holds/);
+  assert.doesNotMatch(warm.out(), /wait until/, "a stale cache parks nothing");
+  assert.doesNotMatch(warm.out(), /absent/);
 
   // No data plane is an answer, not an empty list (ADR-0051).
   const none = mkIo({
@@ -258,6 +270,30 @@ test("`jr2 status` with no run reports the data plane and every Repo, failing no
     fetch: () => Promise.resolve(Response.json({ dataPlane: false, repos: [] })),
   });
   assert.equal(await main(["status"], none.io), 0);
-  assert.deepEqual(JSON.parse(none.out().trim()), { dataPlane: false, repos: [] });
-  assert.match(none.err(), /no data plane \(no registered Machine composes a Sandbox\)/);
+  assert.match(none.out(), /no data plane \(no registered Machine composes a Sandbox\)/);
+});
+
+test("`jr2 version` is a report verb: a table on stdout, `--json` the object, exit 0 either way", async () => {
+  const { app } = await mkHarness();
+  const table = mkIo({
+    cwd: "/",
+    env: { JR2_URL: "http://test" },
+    fetch: (url, init) => Promise.resolve(app.request(url, init)),
+  });
+  assert.equal(await main(["version"], table.io), 0);
+  assert.match(table.out(), /^cli:\s+\d+\.\d+\.\d+/m, "the copy that runs, first");
+  assert.match(table.out(), /^instance:\s+none/m, "cwd / is inside no Instance");
+  assert.match(
+    table.out(),
+    /^orchestrator:\s+\d+\.\d+\.\d+/m,
+    "--url reaches the orchestrator's /healthz all the same",
+  );
+  assert.equal(table.err(), "→ http://test\n", "the target line is activity; the table is not");
+
+  const json = mkIo({ cwd: "/", env: {} });
+  assert.equal(await main(["--version", "--json"], json.io), 0, "`--version` is the conventional spelling");
+  const report = JSON.parse(json.out().trim()) as { cli: { version: string }; deployed?: unknown; skew: string };
+  assert.match(report.cli.version, /^\d+\.\d+\.\d+/);
+  assert.equal(report.deployed, undefined, "no Instance and no --url: nothing to address");
+  assert.equal(report.skew, "unknown");
 });

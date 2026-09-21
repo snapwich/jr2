@@ -77,9 +77,10 @@ When("I follow the logs of that run while it is cancelled", async function (this
 });
 
 /** `jr2 status` with NO run names the instance (ADR-0048/0051): its data-plane switch and the
- * per-node state of every Repo resource — the report a human asks for when a Repo will not clone. */
+ * per-node state of every Repo resource — the report a human asks for when a Repo will not clone.
+ * A REPORT verb (ADR-0009 as amended): `--json` for the object the assertion reads. */
 When("I ask for the instance's status", async function (this: E2EWorld): Promise<void> {
-  await this.runCli(["status"]);
+  await this.runCli(["status", "--json"]);
 });
 
 // --- assertions ----------------------------------------------------------------------------------
@@ -110,12 +111,16 @@ Then("the run appears in the runs list", function (this: E2EWorld): void {
 
 /** The data plane is read off the registered Machines (ADR-0051), not off config: an instance
  * none of whose Machines compose a Sandbox has none, and says so rather than listing zero Repos. */
-Then("it reports no data plane", function (this: E2EWorld): void {
+Then("it reports no data plane", async function (this: E2EWorld): Promise<void> {
   assert.equal(this.last?.code, 0, `jr2 status failed: ${this.last?.stderr}`);
   const report = this.resultJson<{ dataPlane: boolean; repos: unknown[] }>();
   assert.equal(report.dataPlane, false, "no registered Machine composes a Sandbox");
   assert.deepEqual(report.repos, [], "and there are no Repo resources to report");
-  assert.match(this.last?.stderr ?? "", /no data plane/, "the answer is spelled out, not left as an empty list");
+  // And the table, the form without `--json`: the answer is spelled out, not left as an empty list.
+  const table = await this.runCli(["status"]);
+  assert.equal(table.code, 0, `jr2 status failed: ${table.stderr}`);
+  assert.match(table.stdout, /no data plane/, "the table says so in words");
+  assert.doesNotMatch(table.stdout, /^\{/, "a report verb prints no JSON without --json");
 });
 
 Then("the status is {string}", function (this: E2EWorld, status: string): void {

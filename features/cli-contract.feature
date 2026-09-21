@@ -48,3 +48,26 @@ Feature: The CLI contract
       When I start "intake" with input '{"subject": 5}'
       Then the command exits 1
       And stderr refuses the input for workflow "intake" naming "subject"
+
+  Rule: jr2 version reports what runs here and what is deployed, and never refuses
+    ADR-0009 as amended. The report you paste into a bug: the copy that runs, the Instance's Kit
+    version, and the orchestrator's own account of itself over `/healthz` — side by side, so the gap
+    is the diagnosis. A REPORT verb: a table on stdout, `--json` the one object, exit 0 whatever it
+    finds. This tier's instance lives under the checkout, so it resolves the workspace's own kit: the
+    kit line is `ok` and the verdict is `same`. (The uninstalled and mismatched shapes, which every
+    other Instance verb refuses under ADR-0056, are unit-tested as lines in `version.test.ts`.)
+
+    Background:
+      Given a fresh instance
+      And the orchestrator is serving
+
+    Scenario: the table names the CLI, the kit, and the orchestrator, all at one number
+      When I ask for the version
+      Then the command exits 0
+      And the version table names this CLI and the serving orchestrator
+      And the version table says the kit is this checkout's
+
+    Scenario: --json is the same report as one object
+      When I ask for the version as JSON
+      Then the command exits 0
+      And the version report's orchestrator is the CLI's own version

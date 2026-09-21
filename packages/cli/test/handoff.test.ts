@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { handoffTarget } from "../src/handoff.ts";
-import { CLI_ROOT } from "../src/kit-version.ts";
+import { HANDOFF_ENV, handedOffFrom, handoffTarget } from "../src/handoff.ts";
+import { CLI_ROOT, CLI_VERSION } from "../src/kit-version.ts";
 import { fakeKit } from "./_kit.ts";
 
 const BIN = fileURLToPath(new URL("../bin/jr2.js", import.meta.url));
@@ -68,7 +68,7 @@ test("an Instance with ANOTHER @jr2/cli → hand off to its bin, from any depth"
   }
 });
 
-test("the launcher runs the local bin with the same argv and returns its exit code", async () => {
+test("the launcher runs the local bin with the same argv, names itself in the env, and returns its exit code", async () => {
   const root = await mkInstance();
   try {
     const record = join(root, "argv.json");
@@ -77,7 +77,7 @@ test("the launcher runs the local bin with the same argv and returns its exit co
       "@jr2/cli",
       "9.9.9",
       `import { writeFileSync } from "node:fs";\n` +
-        `writeFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)));\n` +
+        `writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), from: process.env.${HANDOFF_ENV} }));\n` +
         `process.exitCode = 7;\n`,
     );
     type Exit = { code?: number; stdout: string; stderr: string };
@@ -85,7 +85,10 @@ test("the launcher runs the local bin with the same argv and returns its exit co
       (e: Exit) => e,
     );
     assert.equal(r.code, 7, `the local bin's exit code came back (stderr: ${r.stderr})`);
-    assert.deepEqual(JSON.parse(await readFile(record, "utf8")), ["runs", "--namespace", "x"]);
+    const recorded = JSON.parse(await readFile(record, "utf8")) as { argv: string[]; from: string };
+    assert.deepEqual(recorded.argv, ["runs", "--namespace", "x"]);
+    // ADR-0056 as amended: the one env var, so `jr2 version` can print the global that handed off.
+    assert.deepEqual(handedOffFrom({ [HANDOFF_ENV]: recorded.from }), { version: CLI_VERSION, path: CLI_ROOT });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -99,4 +102,18 @@ test("outside any Instance the launcher runs itself", async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("handedOffFrom reads `<version> <path>` and nothing else", () => {
+  assert.equal(handedOffFrom({}), undefined, "no handoff, or a global that predates the variable");
+  assert.equal(handedOffFrom({ [HANDOFF_ENV]: "" }), undefined);
+  assert.equal(handedOffFrom({ [HANDOFF_ENV]: "0.1.1" }), undefined, "half a value is no value");
+  assert.deepEqual(handedOffFrom({ [HANDOFF_ENV]: "0.1.1 /opt/x/node_modules/@jr2/cli" }), {
+    version: "0.1.1",
+    path: "/opt/x/node_modules/@jr2/cli",
+  });
+  assert.deepEqual(handedOffFrom({ [HANDOFF_ENV]: "0.1.1 /a path/with spaces" }), {
+    version: "0.1.1",
+    path: "/a path/with spaces",
+  });
 });

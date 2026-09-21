@@ -8,7 +8,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertKitVersion, CLI_ROOT, CLI_VERSION, resolvePackage } from "../src/kit-version.ts";
+import {
+  assertKitVersion,
+  checkKitVersion,
+  CLI_ROOT,
+  CLI_VERSION,
+  pinnedVersion,
+  resolvePackage,
+} from "../src/kit-version.ts";
 import { fakeKit, linkKit } from "./_kit.ts";
 
 async function mkInstance(): Promise<string> {
@@ -98,6 +105,44 @@ test("another orchestrator beside a local CLI → refuses, and says pin both at 
         return true;
       },
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("checkKitVersion answers the same question as a report — the form `jr2 version` prints", async () => {
+  const root = await mkInstance();
+  try {
+    const none = checkKitVersion(root);
+    assert.equal(none.ok, false);
+    assert.equal(none.instance, undefined, "nothing installed → unresolved, not a throw");
+    assert.ok(none.own, "this CLI's own peer is still named");
+
+    await fakeKit(root, "@jr2/orchestrator", "9.9.9");
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ name: "inst", version: "0.0.0", dependencies: { "@jr2/orchestrator": "9.9.10" } }),
+    );
+    const other = checkKitVersion(root);
+    assert.equal(other.ok, false);
+    assert.equal(other.instance?.version, "9.9.9", "the Instance's own resolution is the Kit version");
+    assert.equal(other.pinned, "9.9.10", "the manifest's pin, verbatim — here disagreeing with what resolves");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("pinnedVersion reads any dependency block, and answers undefined for no manifest or no line", async () => {
+  const root = await mkInstance();
+  try {
+    assert.equal(pinnedVersion(root, "@jr2/orchestrator"), undefined);
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ devDependencies: { "@jr2/cli": "0.1.3" }, dependencies: { "@jr2/orchestrator": "^0.1.0" } }),
+    );
+    assert.equal(pinnedVersion(root, "@jr2/cli"), "0.1.3");
+    assert.equal(pinnedVersion(root, "@jr2/orchestrator"), "^0.1.0", "a range stays a range");
+    assert.equal(pinnedVersion(join(root, "nowhere"), "@jr2/cli"), undefined);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

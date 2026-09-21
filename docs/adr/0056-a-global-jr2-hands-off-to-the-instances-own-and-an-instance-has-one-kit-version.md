@@ -15,10 +15,12 @@ patched one symptom of. This ADR settles which binary runs, and what "the Instan
 - **A global `jr2` hands off (the gulp/grunt model).** Before any verb, the binary walks up from cwd to `jr2.config.ts`
   (ADR-0009's root marker). If that folder resolves `@jr2/cli` to a real path other than its own, it runs that package's
   `bin.jr2` with the same arguments and stdio, and exits with its code. Nothing else — no flag parsing, no verb
-  exceptions (`--url` inside an Instance still hands off; the rule stays one sentence). No Instance, or the Instance
-  resolves the running copy itself (a workspace member in the checkout, `npx jr2`, `pnpm jr2`): no handoff, the binary
-  runs. So `jr2 init` runs the global, and an Instance with no `node_modules` yet runs the global too, which then meets
-  the check below.
+  exceptions (`--url` inside an Instance still hands off; the rule stays one sentence). _Amended 2026-09-20:_ plus one
+  env var, `JR2_HANDOFF_FROM=<version> <realpath>`, naming the copy that handed off. `jr2 version` prints it as the
+  `global` line, so "is my global out of date" is answered without leaving the Instance; nothing else reads it. It is
+  the only fact the local copy cannot learn on its own (`npm ls -g` is slow and per-manager). A global that predates the
+  variable hands off without it, and the report then shows no `global` line at all — indistinguishable from `npx jr2`,
+  and there is no third source to ask.
 - **Spawn, not import.** gulp loads the local gulp in-process because local gulp is a _library_ its CLI drives; here the
   local is a _binary_. Spawning couples the global to one contract — the local package's `bin` field, npm's own, stable
   across versions — and the local's preamble runs: its pinned `ts-blank-space`, its hooks, whatever a future bin adds.

@@ -121,6 +121,46 @@ When("I converge it onto the cluster", { timeout: 900_000 }, async function (thi
   assert.match(r.stderr, /images: installed kit/, "the installed CLI took installed mode, not checkout mode");
 });
 
+/**
+ * `jr2 version --json` from the installed global, inside the Instance it just converged. Three
+ * claims in one report (ADR-0009/0056 as amended): `cli` is the Instance's OWN copy (its path is
+ * under the Instance), `global` is the copy on PATH that handed off (its path is under the
+ * throwaway prefix), and the deployed orchestrator answers the same number — so `skew` is `same`.
+ */
+When(
+  "jr2 version names the Instance's own jr2, the global that handed off, and the deployed orchestrator",
+  { timeout: 120_000 },
+  async function (this: E2EWorld): Promise<void> {
+    assert.ok(this.dist, "a @dist scenario has its installed kit");
+    const r = await this.runCli(["version", "--json"]);
+    assert.equal(r.code, 0, `jr2 version failed: ${r.stderr}`);
+    const report = this.resultJson<{
+      cli: { version: string; path: string };
+      global?: { version: string; path: string };
+      kit?: { version?: string; check: string };
+      instance?: { mode: string };
+      deployed?: { orchestrator?: { version?: string; hash?: string; error?: string } };
+      skew: string;
+    }>();
+    assert.ok(report.cli.path.startsWith(this.dir), `the copy that ran is the Instance's own, not ${report.cli.path}`);
+    assert.ok(report.global, "the global on PATH said it handed off");
+    assert.ok(
+      report.global.path.startsWith(dirname(dirname(this.dist.binDir))),
+      `the global is the one in the throwaway prefix, not ${report.global.path}`,
+    );
+    assert.equal(report.global.version, report.cli.version, "published from one verdaccio: one number");
+    assert.equal(report.kit?.check, "ok", "the Instance's orchestrator is the copy its CLI runs against");
+    assert.equal(report.instance?.mode, "installed");
+    assert.equal(
+      report.deployed?.orchestrator?.version,
+      report.cli.version,
+      report.deployed?.orchestrator?.error ?? "the deployed orchestrator answers the CLI's number",
+    );
+    assert.ok(report.deployed?.orchestrator?.hash, "a deployed image has a content hash to report");
+    assert.equal(report.skew, "same");
+  },
+);
+
 /** `jr2 down --yes`, from the installed binary: removes the instance's namespace and sweeps the
  * images its roots no longer protect (ADR-0019/0039). `--yes` because the verb always confirms,
  * and there is no one at the prompt. */

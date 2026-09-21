@@ -60,15 +60,60 @@ const ORCHESTRATOR = "@jr2/orchestrator";
 const CLI = "@jr2/cli";
 
 /**
+ * The ADR-0056 question, answered rather than asserted: what the Instance at `root` resolves
+ * `@jr2/orchestrator` to, what this CLI resolves it to, and whether they are one copy. `ok` is the
+ * real-path identity, never a version compare. `jr2 version` prints this; every other Instance verb
+ * goes through {@link assertKitVersion}, which turns a not-ok answer into the refusal.
+ */
+export type KitCheck = {
+  /** The Instance's own resolution — its Kit version; absent when nothing resolves from `root`. */
+  instance?: ResolvedPackage;
+  /** This CLI's peer; absent for a global with no orchestrator beside it. */
+  own?: ResolvedPackage;
+  /** What the Instance's manifest PINS for `@jr2/orchestrator`, verbatim — so "edited the line,
+   * never reinstalled" is visible as a pin that disagrees with what resolves. */
+  pinned?: string;
+  ok: boolean;
+};
+
+export function checkKitVersion(root: string): KitCheck {
+  const instance = resolvePackage(ORCHESTRATOR, root);
+  const own = resolvePackage(ORCHESTRATOR, CLI_ROOT);
+  return {
+    instance,
+    own,
+    pinned: pinnedVersion(root, ORCHESTRATOR),
+    ok: instance !== undefined && own !== undefined && instance.root === own.root,
+  };
+}
+
+/** The version `root/package.json` pins for `name`, from any dependency block; `undefined` when
+ * there is no manifest or no such line. The pin as WRITTEN — a range stays a range. */
+export function pinnedVersion(root: string, name: string): string | undefined {
+  try {
+    const m = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as Record<
+      string,
+      Record<string, string> | undefined
+    >;
+    for (const block of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+      const pin = m[block]?.[name];
+      if (pin !== undefined) return pin;
+    }
+  } catch {
+    // no manifest, or not JSON — the Instance has no pin to speak of
+  }
+  return undefined;
+}
+
+/**
  * Refuse unless the Instance at `root` and this CLI resolve the SAME `@jr2/orchestrator`. The
  * message names both versions and the lines to edit: an Instance with no `@jr2/cli` of its own is
  * told to add one (the launcher then hands off to it); one that has it is told to pin both lines
  * at one number.
  */
 export function assertKitVersion(root: string): void {
-  const instance = resolvePackage(ORCHESTRATOR, root);
-  const own = resolvePackage(ORCHESTRATOR, CLI_ROOT);
-  if (instance && own && instance.root === own.root) return;
+  const { instance, own, ok } = checkKitVersion(root);
+  if (ok) return;
 
   const manifest = join(root, "package.json");
   const local = instance && resolvePackage(CLI, root);

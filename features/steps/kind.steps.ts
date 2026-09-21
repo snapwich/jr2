@@ -645,7 +645,7 @@ Then(
     const key = repoKey(url);
     let last: RepoStatus | undefined;
     for (let i = 0; i < 60; i++) {
-      const r = await this.runCli(["status"]);
+      const r = await this.runCli(["status", "--json"]);
       assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
       const { dataPlane, repos } = this.resultJson<{ dataPlane: boolean; repos: RepoStatus[] }>();
       assert.equal(dataPlane, true, "an instance whose Machines compose a Sandbox has a data plane");
@@ -1287,16 +1287,25 @@ Then(
     const key = repoKey(url);
     let last: RepoStatus | undefined;
     for (let i = 0; i < 90; i++) {
-      const r = await this.runCli(["status"]);
+      const r = await this.runCli(["status", "--json"]);
       assert.equal(r.code, 0, `jr2 status must still answer with a degraded Repo (ADR-0048): ${r.stderr}`);
       const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
       last = repos.find((repo) => repo.key === key);
       const failed = last?.nodes.find((n) => !n.present && !n.synced && n.lastError);
       if (failed) {
+        // The table a human reads (ADR-0009 as amended: a report verb) spells the node out with
+        // git's own error — the same fact the object above carries as `lastError`.
+        const table = await this.runCli(["status"]);
+        assert.equal(table.code, 0, `jr2 status failed: ${table.stderr}`);
         assert.match(
-          r.stderr,
-          new RegExp(`repo ${rx(key)} \\(${rx(url)}\\) on node ${rx(failed.node)}: absent — `),
-          "the failing node is spelled out on stderr with git's own error",
+          table.stdout,
+          new RegExp(`^repo ${rx(key)} \\(${rx(url)}\\)`, "m"),
+          "the Repo heads its block in the table",
+        );
+        assert.match(
+          table.stdout,
+          new RegExp(`^  node ${rx(failed.node)}: absent — `, "m"),
+          "the failing node is spelled out in the table with git's own error",
         );
         assert.match(failed.lastError ?? "", /not found/i, `git's own words name the cause: ${failed.lastError}`);
         return;
@@ -1390,7 +1399,7 @@ When(
 
 Then("jr2 status no longer lists repo {string}", async function (this: E2EWorld, url: string): Promise<void> {
   const key = repoKey(url);
-  const r = await this.runCli(["status"]);
+  const r = await this.runCli(["status", "--json"]);
   assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
   assert.ok(!repos.some((repo) => repo.key === key), `Repo ${key} is still listed after the sweep`);
@@ -1398,7 +1407,7 @@ Then("jr2 status no longer lists repo {string}", async function (this: E2EWorld,
 
 Then("jr2 status still lists repo {string} as bound", async function (this: E2EWorld, url: string): Promise<void> {
   const key = repoKey(url);
-  const r = await this.runCli(["status"]);
+  const r = await this.runCli(["status", "--json"]);
   assert.equal(r.code, 0, `jr2 status failed: ${r.stderr}`);
   const { repos } = this.resultJson<{ repos: RepoStatus[] }>();
   const bound = repos.find((repo) => repo.key === key);

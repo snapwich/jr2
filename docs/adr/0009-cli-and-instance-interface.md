@@ -126,6 +126,9 @@ jr2 gc [--dry-run]                 # sweep unreachable labeled images — the sa
 # kit (instance-less)
 jr2 kit push <registry>            # mirror the published Kit images into a self-hosted registry (ADR-0044)
 
+# what runs where
+jr2 version [--local] [--json]     # this jr2, the global that handed off, the Instance's Kit, and what the cluster runs
+
 # runs / workflows (wrap the HTTP API)
 jr2 run <workflow> [--input <json>] [--detach]
 jr2 runs   jr2 status [runId|abbrev]   jr2 logs <runId|abbrev> [-f]   # bare `status` = the instance's repos (ADR-0048)
@@ -159,6 +162,32 @@ port-forward the Orchestrator Service for the duration of the command and read t
 Secret (kube RBAC is the gate). `--url` / `JR2_URL` (+ token env) overrides both — the ingress-exposed/remote-caller
 case — and skips the folder walk entirely. Every run-verb prints the context it targets on stderr, so ambient-context
 drift is visible (ADR-0019).
+
+**Two output classes (amended 2026-09-20).** The stream rule below — JSON result on stdout, activity on stderr — was
+written for `jr2 run`, whose reason is the pipe: `jr2 run … | jq` must yield the result alone. It generalises to every
+**result verb** — `run`, `runs`, `status <runId>`, `send`, `logs` — because their result is small and the stderr lines
+beside it are advisory. It does not generalise to a **report verb** — `version`, and `status` with no run id — whose
+output is a diagnosis a human reads whole: dual-printing there shows a JSON blob and a partial table, and the readable
+form exists nowhere. So a report verb prints its human table on **stdout**, and `--json` swaps the table for the one
+object. No `isatty` sniffing: output that changes with how it is invoked is a debugging trap of its own. `up`, `down`,
+`gc` are neither class — activity only, no result.
+
+**`jr2 version` (amended 2026-09-20).** The report you paste into a bug: what is _here_ and what is _deployed_, side by
+side, so the gap between the halves is the answer ("you edited the pin and never ran `jr2 up`"). The local half: `cli`
+(the copy that runs — version + real path, so the path says global or Instance), `global` (the copy that handed off,
+ADR-0056), `kit` (the `@jr2/orchestrator` the Instance resolves + the ADR-0056 check result, and
+`package.json pins X, reinstall` when the manifest disagrees with what is installed), `instance` (name, root, and mode:
+kit checkout or installed from which registry — the reader needs the mode to know whether deployed Kit tags are versions
+or content hashes), `node`. The deployed half, best-effort: `orchestrator` (what the pod answers on `/healthz` —
+version + hash, flagging a Deployment label that disagrees as an incomplete rollout), `operator` (its version label —
+never downgraded, so no skew verdict on it), `harness`/`adapter` and any Sandbox Image refs from the `jr2-images`
+ConfigMap pods actually read, and one `skew` verdict comparing the two kit numbers: `same`/`behind`/`ahead`/`unknown`,
+with the `jr2 up` consequence spelled out and, in checkout mode, a reminder that `same` is weak and the hash is the
+address. Nothing is computed that `jr2 up` computes: no bundle staging, no local hash. It is the one Instance verb that
+reads the Instance without asserting it — a Kit mismatch is a line, never the ADR-0056 refusal, because this is the verb
+you reach for when that refusal fires. It hands off like every verb. `TARGET_ARGS` as every run verb; `--url` leaves
+only the orchestrator line; `--local` skips the cluster. Exit 0 whatever it finds: a report. No registry lookup: "out of
+date" here means behind the Instance, and `npm view` answers the other question.
 
 **`jr2 run` — blocking, attach-by-default.** Start the run, stream activity to **stderr**, print the terminal
 `RunStatus` as JSON to **stdout**, exit — so `jr2 run … | jq` yields just the result. It **attaches to the running

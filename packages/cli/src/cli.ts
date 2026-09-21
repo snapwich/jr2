@@ -15,11 +15,14 @@ import { up } from "./commands/up.ts";
 import { down } from "./commands/down.ts";
 import { gc } from "./commands/gc.ts";
 import { kit } from "./commands/kit.ts";
+import { version } from "./commands/version.ts";
 
 const USAGE = `jr2 — orchestrate agentic workflows (ADR-0009)
 
 usage: jr2 <command> [args]
 
+  version [--local] [--json]        what runs here (this jr2, the global that handed off, the
+                                    Instance's Kit) and what the cluster runs; --local skips the cluster
   init [dir] [--name <n>]            scaffold a new instance folder
   up [--yes] [--force]              converge the current kube context to this instance (ADR-0019)
   down [--all]                      remove the instance from the cluster (--all: operator too)
@@ -30,7 +33,7 @@ usage: jr2 <command> [args]
        [--detach]                   ...or just print the runId and return
   runs                              list live runs
   status [runId]                    print a run's current status (read-through),
-                                    or the instance's Repos, per node, when given none (ADR-0048/0051)
+         [--json]                   or the instance's Repos, per node, when given none (ADR-0048/0051)
   logs <runId> [-f]                 replay a run's status; -f to follow until it settles
   send <runId> --event CANCEL       abandon a live run
   send <runId> --gate <gate> --event <name> [--input <json>]
@@ -40,7 +43,11 @@ run ids: any <runId> above may be abbreviated to a unique prefix (4+ chars, git-
          an ambiguous prefix lists the candidates and fails rather than guessing
 
 global (run verbs): -n/--namespace <ns>, --context <ctx> address the deployment (ADR-0019);
-                    --url <u> / JR2_URL attaches to a specific orchestrator (skips kube entirely)`;
+                    --url <u> / JR2_URL attaches to a specific orchestrator (skips kube entirely)
+
+output: result verbs (run, runs, status <runId>, send, logs) print one JSON result on stdout and
+        activity on stderr, so \`jr2 run … | jq\` yields the result; report verbs (version, bare
+        status) print a table on stdout, or the one object with --json`;
 
 /**
  * The catch-all half of skew reporting: a route-shaped failure gets ONE extra line naming what the
@@ -88,6 +95,9 @@ export async function main(argv: string[], io: Io = defaultIo): Promise<number> 
         return await gc(rest, io);
       case "kit":
         return await kit(rest, io);
+      case "version":
+      case "--version":
+        return await version(rest, io);
       case "help":
       case "--help":
       case "-h":
