@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>jr2 — an agent's control flow belongs in a machine you wrote</title>
+    <link rel="stylesheet" href="node_modules/reveal.js/dist/reset.css" />
+    <link rel="stylesheet" href="node_modules/reveal.js/dist/reveal.css" />
+    <link rel="stylesheet" href="theme.css" />
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+        <!-- ============================================================================ title -->
+        <section class="center">
+          <h1>jr2</h1>
+          <p>Agentic workflows as state machines.</p>
+          <p class="dim">Rich Snapp · technical meetup · 45 min</p>
+        </section>
+
+        <!-- ====================================================================== before: TODO -->
+        <section class="todo">
+          <h2>TODO — before the demo</h2>
+          <p class="dim">~20 min. Bullet these out later; one slide per beat.</p>
+          <ul>
+            <li>the problem: control flow hidden in a prompt</li>
+            <li>what a Machine buys you (xstate, states a human can read)</li>
+            <li>a Turn, and where it ends — ADR-0024, ADR-0057</li>
+            <li>a Gate is not a feature, it is a state — ADR-0011, ADR-0029</li>
+            <li>host isolation: why a Sandbox is a pod — ADR-0001, ADR-0005</li>
+            <li>the shape of the kit: CLI, Orchestrator, Harness, Adapter, operator</li>
+          </ul>
+        </section>
+
+        <!-- ======================================================================== the demo -->
+        <!-- ONE stack, one background, one load: `stage.html` holds the Console and the tmux
+             session, and moving DOWN through these children never reloads it (verified: reveal
+             loads a stack's background iframe once, and only when preloadIframes is on). So the
+             `task` run fires near the top and is still the same live page eight slides later. -->
+        <section id="demo" data-background-iframe="stage.html" data-background-transition="none" data-preload>
+          <section class="over">
+            <div class="card">
+              <h2>the instance, on disk</h2>
+              <ul>
+                <li><code>jr2.config.ts</code> — what this deployment can reach</li>
+                <li><code>workflows/</code> — <code>ping</code>, <code>task</code></li>
+                <li><code>images/default/</code> — what a Sandbox is made of</li>
+              </ul>
+              <p class="adr">ADR-0009 · ADR-0019 · ADR-0050</p>
+            </div>
+          </section>
+
+          <section class="over" data-pane="terminal" data-step="up">
+            <div class="card">
+              <h2>one converging command</h2>
+              <p>Idempotent. Every image reports what it did <em>not</em> have to do.</p>
+              <p class="adr">ADR-0019 · ADR-0038 · ADR-0041</p>
+            </div>
+          </section>
+
+          <section class="over" data-pane="both" data-step="ping">
+            <div class="card">
+              <h2>a Machine and nothing else</h2>
+              <p>No Agent. No Sandbox. No model. <span class="dim">The run is the machine moving.</span></p>
+              <p class="adr">ADR-0011 · ADR-0022</p>
+            </div>
+          </section>
+
+          <section class="over" data-pane="both" data-step="task">
+            <div class="card">
+              <h2>now the one with an Agent in it</h2>
+              <p>Detached on purpose — it will park at a Gate and wait for me.</p>
+              <p class="adr">ADR-0012 · ADR-0018 · ADR-0028</p>
+            </div>
+          </section>
+
+          <section class="todo" data-pane="console">
+            <div class="card wide">
+              <h2>TODO — talk over the live run</h2>
+              <p class="dim">
+                3–5 slides, no commands. The Console is animating behind them; the run reaches its Gate while you talk.
+                Candidates:
+              </p>
+              <ul>
+                <li>what the Harness is doing right now — one Turn, start to end</li>
+                <li>the Sandbox that just appeared, and what it may touch</li>
+                <li>the Workspace lease and the Repo cache</li>
+                <li>why the model never chooses the control flow</li>
+              </ul>
+            </div>
+          </section>
+
+          <section class="over" data-pane="both" data-step="gate">
+            <div class="card">
+              <h2>parked</h2>
+              <p>The Gate names the decision and <em>exactly</em> the events it will accept.</p>
+              <p class="adr">ADR-0011 · ADR-0026 · ADR-0029</p>
+            </div>
+          </section>
+
+          <section class="over" data-pane="both" data-step="changes">
+            <div class="card">
+              <h2>say no</h2>
+              <p>A workflow-defined event. Another Turn, same Workspace.</p>
+              <p class="adr">ADR-0011 · ADR-0021</p>
+            </div>
+          </section>
+
+          <section class="over" data-pane="both" data-step="approve">
+            <div class="card">
+              <h2>say yes</h2>
+              <p>The Workspace goes. <strong>The Machine never pushes.</strong></p>
+              <p class="adr">ADR-0021 · ADR-0028</p>
+            </div>
+          </section>
+        </section>
+
+        <!-- ======================================================================= after: TODO -->
+        <section class="todo">
+          <h2>TODO — after the demo</h2>
+          <p class="dim">~10 min.</p>
+          <ul>
+            <li>what you just saw, named: Instance, Machine, Turn, Gate, Sandbox</li>
+            <li>what jr2 refuses to do, and why</li>
+            <li>where this is going / what is unfinished</li>
+            <li>questions</li>
+          </ul>
+        </section>
+
+        <!-- ============================================================================ close -->
+        <section class="center">
+          <h2>try it</h2>
+          <pre><code>npm i -g @jr2/cli
+jr2 init my-agents
+jr2 up</code></pre>
+          <p class="dim">github.com/&lt;org&gt;/jr2 · CONTEXT.md for the words · docs/adr for the whys</p>
+        </section>
+      </div>
+    </div>
+
+    <script type="module">
+      import Reveal from "./node_modules/reveal.js/dist/reveal.esm.js";
+
+      const deck = new Reveal({
+        hash: true,
+        center: false,
+        // 16:9 and almost no margin: the deck's job here is to be a frame around a running
+        // instance, so the stage should reach the edges of the screen it is projected on.
+        width: 1280,
+        height: 720,
+        margin: 0.02,
+        slideNumber: "c/t",
+        controls: true,
+        progress: true,
+        transition: "fade",
+        backgroundTransition: "none",
+        // Without this, reveal never sets the src of a STACK's background iframe at all — the
+        // element exists and stays empty. With it, the stage loads once at init and survives every
+        // move inside the demo section. Verified against reveal 5 with a load counter.
+        preloadIframes: true,
+      });
+      await deck.initialize();
+
+      // --- the stage: emphasis follows the slide -------------------------------------------------
+      // The slide's background, then the STACK background above it — that is the element holding the
+      // one stage iframe. Derived from the slide rather than matched by id so a second demo stack
+      // later needs no new code, and so it cannot accidentally match the section itself (reveal puts
+      // a `.stack` class on both the section and its background).
+      function stageFrame(slide) {
+        const bg = deck.getSlideBackground(slide);
+        const stack = bg?.classList.contains("stack") ? bg : bg?.closest(".slide-background.stack");
+        return stack?.querySelector(":scope > .slide-background-content > iframe") ?? null;
+      }
+
+      function tellStage(slide) {
+        const frame = stageFrame(slide);
+        if (!frame?.contentWindow) return;
+        frame.contentWindow.postMessage(
+          { pane: slide.dataset.pane ?? "console", path: slide.dataset.console },
+          location.origin,
+        );
+      }
+
+      // --- the fire controls: label and command both come from demo.json ------------------------
+      // A CLICK is the only way to run anything: nothing fires on slide entry, so arriving at a
+      // slide — or coming back to one — is always free, and there is no key to hit by accident.
+      const demo = await fetch("demo.json").then((r) => r.json());
+
+      for (const slide of document.querySelectorAll("section[data-step]")) {
+        const id = slide.dataset.step;
+        const step = demo.steps[id];
+        const button = document.createElement("button");
+        button.className = "fire";
+        button.dataset.step = id;
+        button.textContent = step ? step.cmd : `MISSING STEP "${id}" in demo.json`;
+        if (step?.note) {
+          const said = document.createElement("span");
+          said.className = "said";
+          said.textContent = step.note;
+          button.append(said);
+        }
+        button.addEventListener("click", () => fireStep(button));
+        (slide.querySelector(".card") ?? slide).append(button);
+      }
+
+      async function fireStep(button) {
+        const said = button.querySelector(".said");
+        button.dataset.state = "firing";
+        try {
+          const res = await fetch(`step/${button.dataset.step}`, { method: "POST" });
+          const body = await res.json();
+          button.dataset.state = res.ok ? "fired" : "failed";
+          if (said) said.textContent = res.ok ? "fired" : body.error;
+        } catch (err) {
+          button.dataset.state = "failed";
+          if (said) said.textContent = String(err.message ?? err);
+        }
+      }
+
+      // --- reaching the stage ------------------------------------------------------------------
+      // `i` makes the stage live: clicks reach the Console and the terminal (the card keeps its
+      // own), and every key you press is RETYPED into the tmux pane. The keyboard itself never
+      // leaves the deck — see the forwarder below for why — so Ctrl-Escape releases, and so does
+      // leaving the slide, which keeps the state from following you into the next section. The badge
+      // is a button as well as a sign, for releasing with the pointer.
+      const badge = document.createElement("button");
+      badge.className = "stage-badge";
+      badge.textContent = "stage live — Ctrl-Escape to release";
+      badge.addEventListener("click", () => setLive(false));
+      document.body.append(badge);
+
+      let live = false;
+
+      function setLive(next) {
+        if (next === live) return;
+        live = next;
+        document.querySelector(".reveal").classList.toggle("stage-live", live);
+        document.body.classList.toggle("stage-live", live);
+        // Live or not, the DECK holds the keyboard. Nothing is focused in the stage on purpose.
+        if (!live) {
+          document.activeElement?.blur?.();
+          window.focus();
+        }
+      }
+
+      // ttyd focuses its terminal the moment it connects, and that reaches out of the background
+      // iframe: the deck's activeElement becomes the stage, so the arrow keys stop navigating before
+      // anyone has pressed anything. A window `blur` while `document.hasFocus()` is STILL TRUE is
+      // exactly "focus moved into a child frame", so it is handed straight back. Switching apps also
+      // blurs, but with hasFocus() false, and is left alone. While live the deck needs focus even
+      // more than usual, since that is where the keystrokes it forwards come from — the one thing
+      // this concedes is a click into a Console FIELD, which the demo never does (ADR-0032: the
+      // token is never unlocked on stage).
+      addEventListener("blur", () => {
+        setTimeout(() => {
+          if (!document.hasFocus()) return;
+          const stolen = document.activeElement;
+          if (stolen instanceof HTMLIFrameElement) {
+            stolen.blur();
+            window.focus();
+          }
+        }, 0);
+      });
+
+      // Typing into the stage, without giving the stage the keyboard. xterm.js takes the caret from
+      // a real CLICK and from nothing else a parent page can do — `contentWindow.focus()` is a no-op
+      // across origins, and focusing the iframe ELEMENT lands on its document, not on xterm's hidden
+      // textarea. So the deck keeps focus and retypes each keystroke through `/keys`, the same
+      // `send-keys` path the fire buttons use. Consequences worth knowing: the deck always hears the
+      // keyboard, so a release key works at all and a clicker works; and one queue, chained,
+      // because two `fetch` calls in flight can land out of order and spell the command wrong.
+      const named = {
+        Enter: "Enter",
+        Escape: "Escape",
+        Tab: "Tab",
+        Backspace: "BSpace",
+        Delete: "DC",
+        Insert: "IC",
+        ArrowUp: "Up",
+        ArrowDown: "Down",
+        ArrowLeft: "Left",
+        ArrowRight: "Right",
+        Home: "Home",
+        End: "End",
+        PageUp: "PPage",
+        PageDown: "NPage",
+      };
+      function asTmuxKey(event) {
+        if (named[event.key]) return { key: named[event.key] };
+        if (event.ctrlKey && event.key.length === 1) return { key: `C-${event.key}` };
+        if (event.altKey && event.key.length === 1) return { key: `M-${event.key}` };
+        if (event.key.length === 1) return { literal: event.key };
+        return null;
+      }
+      let queue = Promise.resolve();
+      function forward(payload) {
+        queue = queue.then(() =>
+          fetch("/keys", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          }).catch(() => {}),
+        );
+      }
+
+      // Captured on the DOCUMENT, and stopped there: reveal listens on the document too, so a key
+      // meant for the terminal would also page the deck. Not through `deck.configure({ keyboard })`,
+      // because configure() runs a sync that REBUILDS the backgrounds — reloading the stage iframe
+      // and resetting the Console, the one thing this layout exists to avoid. ⌘ combinations are
+      // left alone, so the browser's own shortcuts still work while live.
+      document.addEventListener(
+        "keydown",
+        (event) => {
+          if (!live || event.metaKey) return;
+          event.stopImmediatePropagation();
+          event.preventDefault();
+          // CTRL-Escape, not Escape: plain Escape belongs to whatever is running in the pane —
+          // k9s, vim, less all read it as "go back", and a release key that those programs need is
+          // a release key you cannot use while they are on screen.
+          if (event.key === "Escape" && event.ctrlKey) return setLive(false);
+          const payload = asTmuxKey(event);
+          if (payload) forward(payload);
+        },
+        true,
+      );
+
+      // Going live only. While live, `i` is a letter you typed — Ctrl-Escape is the way out.
+      deck.addKeyBinding({ keyCode: 73, key: "i", description: "type into the stage (Ctrl-Escape releases)" }, () => {
+        setLive(true);
+      });
+
+      deck.on("slidechanged", () => setLive(false));
+
+      deck.on("ready", (e) => tellStage(e.currentSlide));
+      deck.on("slidechanged", (e) => tellStage(e.currentSlide));
+    </script>
+  </body>
+</html>

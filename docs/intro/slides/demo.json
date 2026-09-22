@@ -1,0 +1,51 @@
+{
+  "comment": [
+    "Every command the deck can fire, and the ONE place each one is written: a slide renders the",
+    "string from here and `POST /step/:id` sends that same string into the tmux pane, so what the",
+    "room reads and what the shell runs cannot drift.",
+    "",
+    "`interrupt: true` sends C-c before the command — for a step that follows something still",
+    "streaming. Without it the server refuses to fire into a busy pane rather than interleave keys",
+    "with whatever you are typing yourself.",
+    "",
+    "`jr2 run` attaches by default and a run parked at a Gate parks INDEFINITELY, which would hold",
+    "the pane for the rest of the talk — hence `--detach` on `task`, and the runId captured into",
+    "$RUN for the Gate deliveries that follow (the pane is one long-lived shell, so it remembers)."
+  ],
+  "steps": {
+    "up": {
+      "cmd": "jr2 up",
+      "note": "Converges the instance. Warm, every image reports `fresh — build skipped`."
+    },
+    "ping": {
+      "cmd": "jr2 run ping --input '{\"message\":\"hi\"}'",
+      "note": "No Agent, no Sandbox, no model — the Machine and nothing else."
+    },
+    "task": {
+      "cmd": "RUN=$(jr2 run task --input '{\"prompt\":\"Add a --version flag to the CLI.\"}' --detach | jq -r .runId) && echo \"run $RUN\"",
+      "note": "Detached on purpose: the run parks at the review Gate and would hold this pane."
+    },
+    "watch": {
+      "cmd": "jr2 logs $RUN -f",
+      "note": "Optional — the Console behind these slides is already showing this.",
+      "interrupt": true
+    },
+    "gate": {
+      "cmd": "jr2 status $RUN | jq '{state, gates}'",
+      "interrupt": true,
+      "note": "The Gate names the pending decision and the events it accepts."
+    },
+    "changes": {
+      "cmd": "jr2 send $RUN --gate review --event request_changes --input '{\"notes\":\"Use commander.\"}'",
+      "note": "A workflow-defined event. The Machine goes back for another Turn; the Workspace lives."
+    },
+    "approve": {
+      "cmd": "jr2 send $RUN --gate review --event approve",
+      "note": "Tears the Workspace down. The Machine never pushes."
+    },
+    "down": {
+      "cmd": "jr2 down",
+      "note": "Only if you want to show it — the instance is gone after this."
+    }
+  }
+}

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>intro — stage</title>
+    <!-- The ONE background the whole demo section frames (ADR-0032's Console on the left, the tmux
+         session on the right). It is one page rather than two backgrounds because reveal.js loads a
+         background iframe once per slide element: a second stack would mean a second connection and
+         a Console that re-animates from scratch. One page, one load, and the slides only ask it to
+         shift emphasis. -->
+    <style>
+      :root {
+        --ink: #0a0f1a;
+        --line: #223048;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--ink);
+        overflow: hidden;
+      }
+      /* Emphasis by OVERLAY, not by collapsing a track. The terminal reports its size to tmux now
+         (stage.mjs), so a pane animated down to 0fr would resize the tmux window to one column and
+         reflow the scrollback — the demo's own output — on the way. So both panes keep a fixed half
+         of the stage, and the emphasized one is lifted to cover the whole of it. The console never
+         forces a resize at all; the terminal has exactly two widths, and snaps between them, because
+         a transition would report every intermediate width down the socket. */
+      #panes {
+        position: relative;
+        height: 100%;
+      }
+      iframe {
+        position: absolute;
+        top: 0;
+        height: 100%;
+        width: 50%;
+        border: 0;
+        display: block;
+      }
+      #console {
+        left: 0;
+      }
+      #terminal {
+        left: 50%;
+        border-left: 1px solid var(--line);
+      }
+      body[data-pane="console"] #console {
+        width: 100%;
+        z-index: 1;
+      }
+      body[data-pane="terminal"] #terminal {
+        left: 0;
+        width: 100%;
+        border-left: 0;
+        z-index: 1;
+      }
+    </style>
+  </head>
+  <body data-pane="both">
+    <div id="panes">
+      <iframe id="console" title="jr2 Console"></iframe>
+      <iframe id="terminal" title="tmux session"></iframe>
+    </div>
+    <script type="module">
+      const q = new URLSearchParams(location.search);
+      const consolePort = q.get("console") ?? "8080";
+      const terminalPort = q.get("terminal") ?? "7681";
+      const consoleFrame = document.getElementById("console");
+      const terminalFrame = document.getElementById("terminal");
+
+      consoleFrame.src = `http://localhost:${consolePort}${q.get("path") ?? "/workflows/task"}`;
+      terminalFrame.src = `http://localhost:${terminalPort}`;
+
+      // The deck is same-origin with this page, so it just says what it wants emphasized. A `path`
+      // is honored only when it actually changes — resetting src would drop the Console's feed.
+      addEventListener("message", (e) => {
+        if (e.origin !== location.origin || typeof e.data !== "object" || e.data === null) return;
+        const { pane, path } = e.data;
+        if (pane) document.body.dataset.pane = pane;
+        // No focusing of panes from here: nothing in the stage is ever given the keyboard. The deck
+        // keeps it and retypes keystrokes into tmux, because xterm.js takes the caret from a real
+        // click and from nothing a parent page can do across origins.
+        if (path) {
+          const next = `http://localhost:${consolePort}${path}`;
+          if (consoleFrame.src !== next) consoleFrame.src = next;
+        }
+      });
+    </script>
+  </body>
+</html>

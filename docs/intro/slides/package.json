@@ -1,0 +1,15 @@
+{
+  "name": "intro-slides",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The jr2 intro talk: a reveal.js deck that frames the live instance beside it.",
+  "scripts": {
+    "start": "node stage.mjs",
+    "stage": "node stage.mjs",
+    "slides": "node server.mjs"
+  },
+  "dependencies": {
+    "reveal.js": "^5.1.0"
+  }
+}

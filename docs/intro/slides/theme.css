@@ -1,0 +1,326 @@
+/* The deck wears the Console's own look (packages/orchestrator/console/style.css): the same ink
+   canvas, the same monospace instrumentation type, the same phosphor-green live highlight. The demo
+   slides sit directly on top of the running Console, so a second palette would put a visible seam
+   across the middle of the talk. */
+
+:root {
+  --ink: #0a0f1a;
+  --ink-2: #0e1524;
+  --line: #223048;
+  --line-soft: #182338;
+  --text: #c8d6e8;
+  --text-dim: #5f7189;
+  --phosphor: #4ef0a7;
+  --phosphor-soft: rgba(78, 240, 167, 0.12);
+  --amber: #f0c04e;
+  --red: #f06a5f;
+  --blue: #6aa7f0;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+.reveal-viewport {
+  background: var(--ink);
+}
+
+/* reveal ships `reset.css` (line-height 1, every margin stripped) and expects a THEME to put the
+   typography back. This deck loads no stock theme, so it supplies the whole of it here — without
+   these two blocks, lines overlap and headings sit on the text below them. */
+.reveal {
+  font-family: var(--mono);
+  font-size: 30px;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+.reveal p,
+.reveal ul,
+.reveal ol,
+.reveal pre,
+.reveal table {
+  margin: 0 0 0.6em;
+}
+
+.reveal p:last-child,
+.reveal ul:last-child,
+.reveal ol:last-child {
+  margin-bottom: 0;
+}
+
+.reveal h1,
+.reveal h2,
+.reveal h3 {
+  font-family: var(--mono);
+  font-weight: 600;
+  line-height: 1.15;
+  margin: 0 0 0.6em;
+  text-transform: none;
+  letter-spacing: -0.01em;
+  color: var(--phosphor);
+  text-shadow: none;
+}
+
+.reveal h1 {
+  font-size: 1.9em;
+}
+.reveal h2 {
+  font-size: 1.3em;
+}
+.reveal h3 {
+  font-size: 1em;
+  color: var(--text);
+}
+
+.reveal a {
+  color: var(--blue);
+}
+.reveal strong {
+  color: var(--phosphor);
+}
+.reveal em {
+  color: var(--amber);
+  font-style: normal;
+}
+
+/* `center: false` in the deck config: a slide is the full stage, so a demo card can anchor to a
+   corner of it. The slides that WANT centering say so. */
+.reveal .slides section {
+  text-align: left;
+  padding: 1.2em 0 0;
+}
+
+/* `!important` earns itself here: reveal writes `display: block` INLINE on the present slide, so a
+   stylesheet cannot make it a flex container any other way. */
+.reveal .slides section.center {
+  height: 100%;
+  padding: 0;
+  display: flex !important;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+/* A command block is read left to right even on a centered slide. */
+.reveal .slides section.center pre {
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: left;
+}
+
+.reveal ul,
+.reveal ol {
+  display: block;
+  margin-left: 1.2em;
+}
+.reveal li {
+  margin: 0.35em 0;
+  line-height: 1.35;
+}
+.reveal li::marker {
+  color: var(--text-dim);
+}
+
+.reveal code {
+  color: var(--phosphor);
+  background: var(--phosphor-soft);
+  padding: 0.05em 0.3em;
+  border-radius: 3px;
+}
+
+/* A block of commands is one panel, not a run of highlighted words — so the inline treatment is
+   undone inside `pre`, where reveal's own layout also leaves the sizing to the theme. */
+.reveal pre {
+  font-size: 0.62em;
+  width: auto;
+  box-shadow: none;
+}
+
+.reveal pre code {
+  display: block;
+  padding: 0.7em 0.9em;
+  line-height: 1.45;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: auto;
+  max-height: none;
+}
+
+.reveal .dim {
+  color: var(--text-dim);
+}
+.reveal .adr {
+  color: var(--text-dim);
+  font-size: 0.6em;
+}
+
+.reveal .progress {
+  color: var(--phosphor);
+  height: 3px;
+}
+.reveal .controls {
+  color: var(--text-dim);
+}
+.reveal .slide-number {
+  background: none;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+
+/* --- the demo section ------------------------------------------------------------------------- */
+
+/* A slide sitting on the live instrument. The instrument is the point, so the words take one
+   corner of the stage and nothing else: a card sized to its own content, not a full-bleed scrim.
+   Anything that dims the whole frame — a page-wide backdrop-filter, an 80%-opaque panel — makes the
+   Console unreadable at the back of a room, which is the one thing this layout exists to prevent. */
+.reveal .slides section.over,
+.reveal .slides section.stack > section {
+  height: 100%;
+  padding: 0;
+}
+
+.reveal .card {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 42%;
+  min-width: 380px;
+  font-size: 0.6em;
+  line-height: 1.4;
+  padding: 0.8em 0.95em;
+  background: rgba(10, 15, 26, 0.86);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--phosphor);
+  border-radius: 4px;
+}
+
+/* Prose over the Console wants more room than a command does — still a card, still a corner. */
+.reveal .card.wide {
+  width: 56%;
+}
+
+.reveal .card h2 {
+  font-size: 1.25em;
+  margin: 0 0 0.45em;
+}
+
+.reveal .card p {
+  margin: 0 0 0.45em;
+}
+
+/* Keep the markers inside the card's own padding. */
+.reveal .card ul {
+  margin: 0 0 0.45em 1.1em;
+}
+
+.reveal .card > *:last-child {
+  margin-bottom: 0;
+}
+
+.reveal .card li {
+  margin: 0.2em 0;
+}
+
+/* The fire control. The label is written by demo.json, never by hand: same string the shell runs. */
+.reveal button.fire {
+  display: block;
+  width: 100%;
+  margin: 0.55em 0 0;
+  padding: 0.45em 0.6em;
+  font-family: var(--mono);
+  font-size: 0.85em;
+  text-align: left;
+  color: var(--phosphor);
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--phosphor);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.reveal button.fire:hover {
+  background: #142033;
+}
+.reveal button.fire::before {
+  content: "$ ";
+  color: var(--text-dim);
+}
+.reveal button.fire[data-state="fired"] {
+  border-left-color: var(--amber);
+}
+.reveal button.fire[data-state="failed"] {
+  border-left-color: var(--red);
+  color: var(--red);
+}
+.reveal button.fire .said {
+  display: block;
+  margin-top: 0.3em;
+  color: var(--text-dim);
+  font-size: 0.85em;
+}
+.reveal button.fire .said::before {
+  content: "";
+}
+
+/* --- placeholders for the slides that are not written yet ------------------------------------- */
+
+.reveal section.todo {
+  border-left: 3px solid var(--amber);
+  padding-left: 0.8em;
+}
+.reveal section.todo h2 {
+  color: var(--amber);
+}
+.reveal section.todo li {
+  color: var(--text-dim);
+}
+
+/* --- reaching the stage (the `i` key) ---------------------------------------------------------
+
+   reveal's own `data-background-interactive` works by setting `pointer-events: none` on the whole
+   slide section, which would take the fire buttons with it. Same idea one level finer: the SLIDE
+   stops taking clicks, the card keeps taking them, so the Console and the terminal are reachable
+   without giving up the controls sitting on top of them. Deliberate and reversible, because a
+   click INTO the terminal hands it the keyboard and the deck stops hearing arrow keys. */
+
+/* The SECTION is the hit target, so it is the thing that must stop taking clicks — the same
+   element reveal's own `data-background-interactive` turns off. Setting it on `.slides` alone is
+   not enough: the present section carries its own value and stays hittable. */
+.reveal.stage-live .slides,
+.reveal.stage-live .slides section {
+  pointer-events: none;
+}
+
+.reveal.stage-live .card,
+.reveal.stage-live .card * {
+  pointer-events: auto;
+}
+
+/* A vertical child has its OWN (empty) background element nested inside the stack's, drawn on top
+   of it — so it, not the stage, is what a click lands on. Only the stack's background carries the
+   iframe, so every other one steps out of the way. */
+.reveal.stage-live .slide-background:not(.stack) {
+  pointer-events: none;
+}
+
+.stage-badge {
+  display: none;
+  border: 0;
+  cursor: pointer;
+  position: fixed;
+  top: 12px;
+  right: 14px;
+  z-index: 40;
+  padding: 0.25em 0.6em;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--phosphor);
+  border-radius: 3px;
+}
+
+.reveal.stage-live ~ .stage-badge,
+body.stage-live .stage-badge {
+  display: block;
+  pointer-events: auto;
+}

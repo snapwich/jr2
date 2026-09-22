@@ -1,0 +1,20 @@
+{
+  "name": "intro",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "llama": "set -a && . ./.env && set +a && LLAMA_API_KEY=\"$JR2_PROVIDER_API_KEY\" llama-server -hf unsloth/Qwen3-32B-GGUF:UD-Q4_K_XL --host 0.0.0.0 --port 8000 --jinja -c 65536 --rope-scaling yarn --rope-scale 1.6 -ctk q8_0 -ctv q8_0 -fa on"
+  },
+  "dependencies": {
+    "@jr2/machines": "0.2.0",
+    "@jr2/orchestrator": "0.2.0",
+    "xstate": "^5.18.0"
+  },
+  "devDependencies": {
+    "@jr2/cli": "0.2.0",
+    "@types/node": "^26.0.1",
+    "typescript": "^5.6.0"
+  }
+}
