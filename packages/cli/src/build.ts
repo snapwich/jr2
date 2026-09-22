@@ -1004,8 +1004,8 @@ const execCommand: RunCommand = async (command, args, cwd) => {
  *    dependency graph, wherever the folder sits — so it is staged as a copy
  *    ({@link BUNDLE_STAGE_EXCLUDE}) and installed frozen and production-only by the lockfile's own
  *    package manager ({@link lockfileInstall}). This is how a standalone instance committed INSIDE
- *    a pnpm monorepo bundles: the kit's own `docs/intro` sits under the checkout's
- *    `pnpm-workspace.yaml` and is deliberately not one of its packages.
+ *    a pnpm monorepo bundles: it sits under a `pnpm-workspace.yaml` that does not list it, so the
+ *    workspace above it says nothing about how it installs.
  * 2. A `pnpm-workspace.yaml` above it. A workspace member carries no lockfile of its own — the
  *    workspace root holds it — so it is the ABSENCE of one that sends the instance to `pnpm deploy
  *    --legacy`, unchanged. pnpm is a contributor prerequisite, like go for the operator, never a

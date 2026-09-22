@@ -53,4 +53,3 @@ patched one symptom of. This ADR settles which binary runs, and what "the Instan
 - The `@dist` tier exercises the handoff for free: its installed global drives an Instance whose own `@jr2/cli` came
   from the same verdaccio at a different real path. The mode-line assertion it already makes now asserts the local
   copy's line.
-- `docs/intro` bumps `@jr2/cli` to the number its orchestrator already carries.

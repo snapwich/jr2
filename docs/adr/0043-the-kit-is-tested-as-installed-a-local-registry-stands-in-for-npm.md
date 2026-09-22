@@ -97,11 +97,11 @@ instance nested in the user's own pnpm monorepo — which carries no lockfile of
 it.
 
 _Amended:_ the key was first written as the workspace file alone — "is there a `pnpm-workspace.yaml` above me" — which
-is a fact about an ancestor, not the instance. A standalone instance committed inside the kit checkout (`docs/intro`,
-deliberately not in `packages:`) went to `pnpm deploy`, which answers a `--filter` naming no member with "No projects
-matched the filters" and **exit 0**: no bundle, and the failure surfaced as an ENOENT from the seal. The lockfile is
-asked first because a member never has one and a standalone instance always does; and the deploy branch now checks the
-bundle exists, naming both ways out (join the workspace, or commit a lockfile) when it does not.
+is a fact about an ancestor, not the instance. A standalone instance committed inside a checkout whose
+`pnpm-workspace.yaml` does not list it went to `pnpm deploy`, which answers a `--filter` naming no member with "No
+projects matched the filters" and **exit 0**: no bundle, and the failure surfaced as an ENOENT from the seal. The
+lockfile is asked first because a member never has one and a standalone instance always does; and the deploy branch now
+checks the bundle exists, naming both ways out (join the workspace, or commit a lockfile) when it does not.
 
 - **Workspace member**: unchanged `pnpm deploy --legacy`. Its job — materializing workspace symlinks — only exists in a
   workspace. pnpm is a **contributor prerequisite** (like go for the operator), and in the one installed-mode shape that

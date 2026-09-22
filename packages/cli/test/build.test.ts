@@ -973,8 +973,8 @@ test("the instance's own shape decides the bundle, not the CLI's provenance", as
       "pnpm-workspace.yaml": "packages:\n  - templates/*\n",
       "pnpm-lock.yaml": "lock\n",
       "templates/default/package.json": `{"name":"default"}`,
-      "docs/intro/package.json": `{"name":"intro"}`,
-      "docs/intro/package-lock.json": "lock\n",
+      "examples/nested/package.json": `{"name":"intro"}`,
+      "examples/nested/package-lock.json": "lock\n",
     },
     "jr2-workspace-",
   );
@@ -986,13 +986,13 @@ test("the instance's own shape decides the bundle, not the CLI's provenance", as
     { command: "pnpm", args: ["--filter", "default", "--prod", "deploy", "--legacy", out], cwd: member },
   ]);
 
-  // A standalone instance committed INSIDE the workspace — the kit's own `docs/intro`, under the
-  // checkout's `pnpm-workspace.yaml` and deliberately not one of its packages. Its own lockfile says
+  // A standalone instance committed INSIDE the workspace — under its `pnpm-workspace.yaml`, and
+  // deliberately not one of its packages. Its own lockfile says
   // it is self-contained, and that is asked FIRST: the workspace file above it is a fact about an
   // ancestor. Keyed the other way round, it went to `pnpm deploy`, which pnpm answers for a
   // non-member with "No projects matched the filters" and exit 0 — no bundle, and an ENOENT from
   // the seal was the first anyone heard of it.
-  const nested = join(root, "docs", "intro");
+  const nested = join(root, "examples", "nested");
   const nestedOut = await bundleOut();
   const nested_ = recordingRun();
   await bundleInstance(nested, nestedOut, nested_.run);
@@ -1005,10 +1005,10 @@ test("a workspace non-member with no lockfile is a named refusal, not pnpm's sil
   // deployed nothing. The deploy branch checks the bundle exists and names BOTH ways out, because
   // the instance has exactly two: join the workspace, or carry a lockfile and be standalone.
   const root = await mkTree(
-    { "pnpm-workspace.yaml": "packages:\n  - templates/*\n", "docs/intro/package.json": `{"name":"intro"}` },
+    { "pnpm-workspace.yaml": "packages:\n  - templates/*\n", "examples/nested/package.json": `{"name":"intro"}` },
     "jr2-workspace-",
   );
-  const nested = join(root, "docs", "intro");
+  const nested = join(root, "examples", "nested");
   const out = await bundleOut();
   const { calls, run } = recordingRun();
   await assert.rejects(
