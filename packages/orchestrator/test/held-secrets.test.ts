@@ -1,4 +1,4 @@
-// Held secrets (ADR-0059): `heldSecretsOf`, the one function every refusal lives in — R1 to R12,
+// Held secrets (ADR-0059): `heldSecretsOf`, the one function every refusal lives in — R1 to R13,
 // each with the config path it names, and never a value in a message — plus the defaults it
 // resolves (a known model key's host, from the catalog or from the table), the implicit
 // `JR2_PROVIDER_API_KEY`, the three `hosts` forms, and the Stand-in itself.
@@ -313,6 +313,38 @@ test("R10: a referenced Secret or key that does not exist", () => {
   const { manifest, values } = heldSecretsOf(config, { secretKeys: () => ["anthropic"] });
   assert.deepEqual(manifest.secrets[0]!.source, { kind: "secret", secret: "team", key: "anthropic" });
   assert.deepEqual(values, {}, "a referenced value is never read");
+});
+
+test("R13: a held Secret key that harness.env or harness.envFrom also hands the Harness", () => {
+  const ref = { name: "team", key: "gateway" };
+  const lookups: HeldLookups = { secretKeys: () => ["gateway"] };
+  const config = (extra: JR2Config["harness"]): JR2Config => ({
+    harness: {
+      ...extra,
+      heldSecrets: [{ name: "GATEWAY_KEY", valueFrom: { secretKeyRef: ref }, hosts: ["gw.example.com"] }],
+    },
+  });
+  // The whole Secret, under its own key names: the Agent reads `gateway` from its env.
+  assert.match(
+    refusal(config({ envFrom: [{ secretRef: { name: "team" } }] }), lookups),
+    /harness\.envFrom\[0\] loads Secret "team", which GATEWAY_KEY holds/,
+  );
+  // The same key under another name.
+  assert.match(
+    refusal(config({ env: [{ name: "GW", valueFrom: { secretKeyRef: ref } }] }), lookups),
+    /harness\.env\[0\] reads key "gateway" of Secret "team", which GATEWAY_KEY holds/,
+  );
+  // Another key of the same Secret, and another Secret loaded whole, are the user's to hand over.
+  assert.equal(
+    heldSecretsOf(
+      config({
+        env: [{ name: "REGION", valueFrom: { secretKeyRef: { name: "team", key: "region" } } }],
+        envFrom: [{ secretRef: { name: "other" } }],
+      }),
+      lookups,
+    ).manifest.secrets.length,
+    1,
+  );
 });
 
 test("R11: while a secret is held, harness.env may not set the proxy or the trust variables", () => {

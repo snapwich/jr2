@@ -8,7 +8,7 @@
 // This module is the pure half, shared by every seat that needs it:
 //
 //   standIn(name)        the value the Harness sees — deterministic and public
-//   heldSecretsOf(...)   `jr2 up`'s normalization: every refusal (R1–R12), every warning, and the
+//   heldSecretsOf(...)   `jr2 up`'s normalization: every refusal (R1–R13), every warning, and the
 //                        engine-neutral manifest (`held.json`) every composition reads
 //
 // It runs HOST-SIDE, in `jr2 up`, because only there does the config carry values: in-cluster,
@@ -282,6 +282,25 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
     // R4
     const source = sourceOf(e, lookups);
     if (source.kind === "literal") values[e.name] = e.value as string;
+
+    // R13: a held value the Harness container is also handed, under any name, is not held.
+    if (source.kind === "secret") {
+      for (const [i, ref] of (harness.envFrom ?? []).entries()) {
+        if (ref.secretRef?.name !== source.secret) continue;
+        throw new Error(
+          `harness.envFrom[${i}] loads Secret "${source.secret}", which ${e.name} holds — the Agent would read ` +
+            `key "${source.key}" from its env. Move the held key to a Secret harness.envFrom does not load (ADR-0059)`,
+        );
+      }
+      for (const [i, v] of env.entries()) {
+        const ref = (v.valueFrom as { secretKeyRef?: { name?: string; key?: string } } | undefined)?.secretKeyRef;
+        if (ref?.name !== source.secret || ref.key !== source.key) continue;
+        throw new Error(
+          `harness.env[${i}] reads key "${source.key}" of Secret "${source.secret}", which ${e.name} holds — the ` +
+            `Agent would read it as ${v.name}. Drop the entry; the Harness sees the Stand-in as ${e.name} (ADR-0059)`,
+        );
+      }
+    }
 
     // R6
     const headers = [...(e.headers ?? DEFAULT_CREDENTIAL_HEADERS)];

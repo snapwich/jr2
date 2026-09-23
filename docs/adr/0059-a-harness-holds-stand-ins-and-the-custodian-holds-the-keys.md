@@ -131,6 +131,7 @@ decision generalizes that container. It holds every credential the Harness uses,
   | R10 | A `secretKeyRef` whose Secret or key does not exist.                                                                                                 |
   | R11 | While a secret is held: `harness.env` sets a proxy or trust variable.                                                                                |
   | R12 | A `paths` entry that does not start with `/`, or holds `..`, `%2e` or `%2f`.                                                                         |
+  | R13 | A `secretKeyRef` whose Secret `harness.envFrom` loads, or whose key a `harness.env` `secretKeyRef` reads.                                            |
 
   Each message names the config path, never a value, and says what to write instead. A SigV4 or ADC credential in
   `harness.env` is warned about, not refused. A known model key with no `hosts` is bound to the host its provider's
@@ -191,7 +192,8 @@ decision generalizes that container. It holds every credential the Harness uses,
 - **What this closes, and what it does not.** The Agent cannot take a model key or the Sandbox token out of the pod. It
   can still **spend** a key through the Custodian while its pod lives, on any path `paths` allows. A key with admin
   rights can mint a new key, and a minted key is one the Agent can take away: use a key with no admin rights, and narrow
-  `paths`.
+  `paths`. The User Container shares the pod's loopback, so a human in it can spend a key the same way. That human
+  cannot read one either.
 - **Response echo.** Responses pass unchanged. An upstream that echoes the full credential in a response hands it to the
   Agent. Providers mask keys in errors; jr2 does not scrub responses.
 - **Bypass.** A client that ignores `HTTPS_PROXY` goes direct and sends the Stand-in, which is worth nothing. It is not
