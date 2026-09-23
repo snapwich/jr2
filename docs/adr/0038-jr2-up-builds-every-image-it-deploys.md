@@ -14,10 +14,12 @@ class of build-it-yourself-first image on top of that.
   resolving from its own module URL and requiring _both_ `deploy/harness/Dockerfile` and `packages/harness/package.json`
   naming `@jr2/harness`. In a checkout it builds the Harness, Adapter, and operator images; installed from npm those
   paths do not resolve, so a real instance takes the published-`<kitversion>` path and never needs docker for kit
-  images. **The checkout is the signal** — no flag, no config key, no env. The `just` recipes survive as shortcuts for
-  building one image without a converge, never as prerequisites. A registry-ref Sandbox Image (ADR-0037) is the one
-  deployed image whose source is nobody's here: never built, labeled, or delivered by jr2 — the cluster pulls it, and
-  its tag discipline is its owner's.
+  images. **The checkout is the signal** — no flag, no config key, no env. A CLI loaded from under `node_modules` is
+  never a checkout, even when a checkout contains it: an instance inside the repository that installs `@jr2/*` from npm
+  takes its pinned version's published images, never a build of HEAD beside an Orchestrator at the pin. The `just`
+  recipes survive as shortcuts for building one image without a converge, never as prerequisites. A registry-ref Sandbox
+  Image (ADR-0037) is the one deployed image whose source is nobody's here: never built, labeled, or delivered by jr2 —
+  the cluster pulls it, and its tag discipline is its owner's.
 - **Every tag is a content address.** Instance, Sandbox, Harness, Adapter, operator — each addressed by its own inputs
   and its platform set, the platform as a visible tag suffix
   ([ADR-0045](0045-the-platform-joins-the-image-address-and-the-cluster-chooses-it.md)). Three things follow:

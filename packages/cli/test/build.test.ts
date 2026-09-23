@@ -342,6 +342,18 @@ test("a kit checkout needs BOTH markers — either alone is somebody else's tree
   assert.equal(await detectKitCheckout(wrongName), undefined);
 });
 
+test("a CLI installed under node_modules is never a checkout, even inside one", async () => {
+  // An instance that lives in a kit checkout (docs/intro) but installs @jr2/* from npm: walking up
+  // from the installed CLI reaches the checkout root, and building from it would deploy a Harness
+  // at HEAD beside an Orchestrator at the pinned version. The installed copy's version is the kit.
+  const full = await mkTree(kitFiles("export const x = 1;\n"));
+  const installed = join(full, "docs", "instance", "node_modules", "@jr2", "cli", "dist");
+  assert.equal(await detectKitCheckout(installed), undefined);
+  // pnpm's layout nests the real copy deeper, still under node_modules.
+  const pnpm = join(full, "node_modules", ".pnpm", "@jr2+cli@0.2.1", "node_modules", "@jr2", "cli", "src");
+  assert.equal(await detectKitCheckout(pnpm), undefined);
+});
+
 test("each kit image addresses its own sources and platform set; the registry prefixes a built ref", async () => {
   const kit = await mkTree(kitFiles("export const x = 1;\n"));
   const refs = await kitImageRefs(kit, { platforms: AMD64 });

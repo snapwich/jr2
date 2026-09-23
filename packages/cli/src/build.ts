@@ -34,7 +34,7 @@ import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { cp, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { KIT_VERSION } from "@jr2/orchestrator";
@@ -468,12 +468,18 @@ export function publishedKitRefs(kitRegistry?: string): KitImageRefs {
  * requiring BOTH `deploy/harness/Dockerfile` and a `packages/harness/package.json` that names
  * `@jr2/harness`. Either marker alone matches an unrelated tree — someone else's `deploy/harness`,
  * or a vendored copy of one package — and a false positive means `jr2 up` tries to docker-build a
- * kit that is not there. Installed from npm neither resolves and the answer is `undefined`.
+ * kit that is not there. Installed from npm the answer is `undefined`.
+ *
+ * A module under `node_modules` came from a registry, so the walk stops there: an instance that
+ * lives INSIDE a checkout but installs `@jr2/*` from npm would otherwise reach the checkout root and
+ * build a Harness at HEAD beside an Orchestrator at the pinned version. The checkout's own instances
+ * link the workspace packages, and node resolves those links, so their CLI loads from `packages/`.
  */
 export async function detectKitCheckout(
   fromDir: string = fileURLToPath(new URL(".", import.meta.url)),
 ): Promise<string | undefined> {
   let dir = resolve(fromDir);
+  if (dir.split(sep).includes("node_modules")) return undefined;
   for (;;) {
     if (await isKitRoot(dir)) return dir;
     const parent = dirname(dir);
