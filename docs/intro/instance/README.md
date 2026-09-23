@@ -61,8 +61,8 @@ then answer:
 ```sh
 jr2 status                                                   # the run, the Gate, the branch
 jr2 logs <runId> -f
-jr2 send <runId> --gate review --event request_changes --input '{"notes":"Also accept -v."}'
-jr2 send <runId> --gate review --event approve
+jr2 send <runId> --gate body.review --event request_changes --input '{"notes":"Also accept -v."}'
+jr2 send <runId> --gate body.review --event approve
 ```
 
 `approve` tears the Workspace down. **The Machine never pushes** — anything uncommitted to a remote goes with the pod.

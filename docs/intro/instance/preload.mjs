@@ -1,6 +1,6 @@
 // `npm run preload` — put every image the demo runs onto the kind node, so the talk needs no network.
 //
-// `jr2 up` delivers only what it BUILDS (instance, Harness, Adapter, operator, Sandbox Image). Every
+// `jr2 up` delivers only what it BUILDS (instance, Sandbox Image; in a kit checkout, the kit too). Every
 // other image is a registry ref the kubelet pulls when a pod first asks for it — on a cold node with
 // no network, that pod sits in ImagePullBackOff while the room watches. This loads those refs ahead
 // of time: from the host's docker if it holds them, from the registry otherwise (so run it ONLINE).
@@ -101,10 +101,13 @@ export async function ensureImages(cluster, refs) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const cluster = await kindCluster();
   console.log(`preload → kind cluster "${cluster}"`);
-  await ensureImages(cluster, EXTRA_IMAGES);
-  const kit = await missingImages(cluster, await kitImages());
-  if (kit.length > 0) {
-    console.log(`  missing images jr2 up delivered — run \`npx jr2 up --force\`:\n    ${kit.join("\n    ")}`);
+  // A kit ref with a registry in it is a PUBLISHED image (installed mode, ADR-0044): the kubelet
+  // pulls it, so it is preloaded like the rest. A bare ref is one `jr2 up` built and delivered.
+  const kit = await kitImages();
+  await ensureImages(cluster, [...EXTRA_IMAGES, ...kit.filter((ref) => ref.includes("/"))]);
+  const lost = await missingImages(cluster, kit);
+  if (lost.length > 0) {
+    console.log(`  missing images jr2 up delivered — run \`npx jr2 up --force\`:\n    ${lost.join("\n    ")}`);
     process.exit(1);
   }
   console.log("  every image the demo runs is on the node");
