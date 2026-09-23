@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, copyFile, link, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, copyFile, link, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -433,22 +433,29 @@ const FAKE_CA_CRT = fileURLToPath(new URL("../.tmp/fake-provider-ca.crt", import
  * four parallel workers share it, so the first to LINK its file into place wins, and every other
  * worker reads that one. Only its certificate reaches the cluster (as `caBundle`); its key signs
  * each worker's provider leaf and never leaves this host.
+ *
+ * Cucumber's workers are THREADS of one process, so a temp name carries random bytes, not the pid:
+ * with the pid, two workers wrote one file and the second link found it already removed. The
+ * `.crt` another worker's `jr2 up` may be reading is replaced by a rename, never rewritten in place.
  */
 async function fakeProviderCa(): Promise<Pem> {
   await mkdir(dirname(FAKE_CA_JSON), { recursive: true });
   const read = async (): Promise<Pem | undefined> =>
     JSON.parse(await readFile(FAKE_CA_JSON, "utf8").catch(() => "null")) as Pem | undefined;
+  const mine = (path: string) => `${path}.${randomBytes(6).toString("hex")}`;
   let ca = await read();
   if (!ca) {
-    const mine = `${FAKE_CA_JSON}.${process.pid}`;
-    await writeFile(mine, JSON.stringify(issueCa("jr2-e2e-fake-provider")));
-    await link(mine, FAKE_CA_JSON).catch((err: NodeJS.ErrnoException) => {
+    const json = mine(FAKE_CA_JSON);
+    await writeFile(json, JSON.stringify(issueCa("jr2-e2e-fake-provider")));
+    await link(json, FAKE_CA_JSON).catch((err: NodeJS.ErrnoException) => {
       if (err.code !== "EEXIST") throw err;
     });
-    await rm(mine, { force: true });
+    await rm(json, { force: true });
     ca = (await read())!;
   }
-  await writeFile(FAKE_CA_CRT, ca.cert);
+  const crt = mine(FAKE_CA_CRT);
+  await writeFile(crt, ca.cert);
+  await rename(crt, FAKE_CA_CRT);
   return ca;
 }
 

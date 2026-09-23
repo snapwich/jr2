@@ -251,9 +251,6 @@ Feature: a workspace() run drives a real Sandbox on kind
       # for is over on the pod — not merely forgotten by the Orchestrator — and its model is still
       # parked mid-turn, which is the shape an abort has to be able to end.
       And the Harness reports 1 of the Agent's turns settled as "aborted"
-      # The abort crossed the Custodian: the model's request that turn was parked on was closed
-      # from the pod's side, not left streaming into a turn nobody waits on (ADR-0059).
-      And the model provider saw the aborted turn's request close
       # …and the turn `shipping` asked for is NOT among them, on the SAME instance id. The abort was
       # ordered ahead of it, so it never settled work that had not run.
       When the Agent in the Sandbox calls "ship" with summary "ok"

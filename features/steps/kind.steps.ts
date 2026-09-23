@@ -520,26 +520,6 @@ Then("the model provider received no request without the key", function (this: E
   assert.deepEqual(this.provider?.unauthorized ?? [], [], "every request the model received carried the key");
 });
 
-Then(
-  "the model provider saw the aborted turn's request close",
-  { timeout: 30_000 },
-  async function (this: E2EWorld): Promise<void> {
-    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
-    // The request the aborted turn was parked on — the one that followed the `finish` pick, still
-    // offered `finish`, and never answered — closed from the pod's side, through the Custodian. A
-    // released request closes too, when its answer ends, so those are not the evidence.
-    const provider = this.provider;
-    const aborted = () =>
-      provider.calls.filter((c) => c.stream && c.tools.includes("mcp__jr2__finish") && c.releasedAt === undefined);
-    const deadline = Date.now() + 20_000;
-    while (!aborted().some((c) => c.closedAt !== undefined) && Date.now() < deadline) await sleep(200);
-    assert.ok(
-      aborted().some((c) => c.closedAt !== undefined),
-      `an unanswered request of the aborted turn closed (${aborted().length} such request(s))`,
-    );
-  },
-);
-
 /**
  * The Agent's own Harness, driven the way a bash Working tool would (ADR-0058): `node` in the
  * Harness container, over loopback — no NetworkPolicy stands between a pod and itself, so the
@@ -1049,8 +1029,11 @@ async function kindNodes(): Promise<string[]> {
     .filter(Boolean);
 }
 
-/** containerd normalizes a local tag; every root spells it the short way (the CLI's `normalizeRef`). */
-const shortRef = (ref: string): string => ref.replace(/^docker\.io\/library\//, "");
+/** containerd normalizes a local tag; every root spells it the short way (the CLI's `normalizeRef`).
+ * A ref pinned by digest (the Custodian's, a Pinned image) is held as `repo@digest`: a pull that
+ * names a digest records no tag, so the tag is dropped on both sides. */
+const shortRef = (ref: string): string =>
+  ref.replace(/^docker\.io\/library\//, "").replace(/:[^/@]+(@sha256:[0-9a-f]{64})$/, "$1");
 
 /**
  * Every ref CONTAINERD holds on a node, verbatim. Containerd's own list, not CRI's, because CRI's

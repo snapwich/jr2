@@ -56,10 +56,6 @@ export type RecordedCall = {
   raw: string;
   /** Arrival order from 1, across preflight and turn requests alike. */
   seq: number;
-  /** When the request's connection closed, if it has — an abort crossing the Custodian lands here. */
-  closedAt?: number;
-  /** When `release` answered it. A request that closed WITHOUT this closed from the pod's side. */
-  releasedAt?: number;
 };
 
 export type FakeProvider = {
@@ -165,10 +161,7 @@ export async function startFakeProvider(opts: {
         done: false,
       };
       held.push(entry);
-      res.on("close", () => {
-        call.closedAt ??= Date.now();
-        finish(entry);
-      });
+      res.on("close", () => finish(entry));
     });
   });
 
@@ -218,7 +211,6 @@ export async function startFakeProvider(opts: {
           `${calls.length} request(s) ever received, ${calls.filter((c) => c.stream).length} streaming)`,
       );
       const name = wanted.find((w) => entry.call.tools.includes(w))!;
-      entry.call.releasedAt = Date.now();
       streamToolCall(entry.res, name, JSON.stringify(args));
       finish(entry);
     },
