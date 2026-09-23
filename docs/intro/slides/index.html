@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>jr2 — an agent's control flow belongs in a machine you wrote</title>
+    <title>jr2 — agentic workflows as state machines, off your laptop</title>
     <link rel="stylesheet" href="node_modules/reveal.js/dist/reset.css" />
     <link rel="stylesheet" href="node_modules/reveal.js/dist/reveal.css" />
     <link rel="stylesheet" href="theme.css" />
@@ -14,22 +14,42 @@
         <!-- ============================================================================ title -->
         <section class="center">
           <h1>jr2</h1>
-          <p>Agentic workflows as state machines.</p>
+          <p>Agentic workflows as state machines, off your laptop.</p>
           <p class="dim">Rich Snapp · technical meetup · 45 min</p>
         </section>
 
-        <!-- ====================================================================== before: TODO -->
+        <!-- ========================================================================== before -->
+        <!-- Two claims, in the order the demo proves them: A — control flow belongs in code, not
+             markdown (ping, triage); B — agent work belongs off your laptop (task, its Sandbox). -->
         <section class="todo">
-          <h2>TODO — before the demo</h2>
-          <p class="dim">~20 min. Bullet these out later; one slide per beat.</p>
-          <ul>
-            <li>the problem: control flow hidden in a prompt</li>
-            <li>what a Machine buys you (xstate, states a human can read)</li>
-            <li>a Turn, and where it ends — ADR-0024, ADR-0057</li>
-            <li>a Gate is not a feature, it is a state — ADR-0011, ADR-0029</li>
-            <li>host isolation: why a Sandbox is a pod — ADR-0001, ADR-0005</li>
-            <li>the shape of the kit: CLI, Orchestrator, Harness, Adapter, operator</li>
-          </ul>
+          <h2>control flow in markdown</h2>
+          <p class="dim">[screenshot: @DavidKPiano — "control flow in markdown for agents … will look really silly"]</p>
+          <p class="dim">claim A: the problem</p>
+        </section>
+        <section class="todo">
+          <h2>different problems, different workflows</h2>
+          <p class="dim">claim A: no one prompt covers them all</p>
+        </section>
+        <section class="todo">
+          <h2>a workflow you can read</h2>
+          <p class="dim">claim A: Claude wrote every Machine in this repo; review the graph, not the transcript</p>
+        </section>
+        <section class="todo">
+          <h2>a filesystem sandbox is not isolation</h2>
+          <p class="dim">claim B: leaked resources, locking on a shared host, harness and user share credentials</p>
+        </section>
+        <section class="todo">
+          <h2>one host is one host</h2>
+          <p class="dim">claim B: more than one machine, headless, reachable from other systems</p>
+        </section>
+        <section class="todo">
+          <h2>jr2: Machines on a cluster, Agents in pods</h2>
+          <p class="dim">bridge into the demo</p>
+        </section>
+        <section class="todo">
+          <h2>the whiteboard defense</h2>
+          <p class="dim">[screenshot: @mitchellh — "the whiteboard defense"]</p>
+          <p class="dim">talk is cheap: a live run, and every part explained as it moves</p>
         </section>
 
         <!-- ======================================================================== the demo -->
@@ -43,7 +63,7 @@
               <h2>the instance, on disk</h2>
               <ul>
                 <li><code>jr2.config.ts</code> — what this deployment can reach</li>
-                <li><code>workflows/</code> — <code>ping</code>, <code>task</code></li>
+                <li><code>workflows/</code> — <code>ping</code>, <code>triage</code>, <code>task</code></li>
                 <li><code>images/default/</code> — what a Sandbox is made of</li>
               </ul>
               <p class="adr">ADR-0009 · ADR-0019 · ADR-0050</p>
@@ -58,11 +78,51 @@
             </div>
           </section>
 
+          <section class="over todo" data-pane="terminal" data-step="pods">
+            <div class="card">
+              <h2>what is running before any run</h2>
+              <p class="dim">the Orchestrator, the operator, the Instance Harness; no Sandbox</p>
+            </div>
+          </section>
+
           <section class="over" data-pane="both" data-step="ping">
             <div class="card">
               <h2>a Machine and nothing else</h2>
               <p>No Agent. No Sandbox. No model. <span class="dim">The run is the machine moving.</span></p>
               <p class="adr">ADR-0011 · ADR-0022</p>
+            </div>
+          </section>
+
+          <section class="over todo" data-pane="both" data-step="triage">
+            <div class="card">
+              <h2>the model picks; the Machine drew the edges</h2>
+              <p>
+                A Menu-only Agent. Its Menu is <code>accept</code>, <code>needs_info</code>, <code>reject</code> — and a
+                pick outside them moves nothing.
+              </p>
+              <p class="adr">ADR-0015 · ADR-0029 · ADR-0031</p>
+            </div>
+          </section>
+
+          <section class="over todo" data-pane="both" data-step="clarify">
+            <div class="card">
+              <h2>the human answers; the model picks again</h2>
+              <p class="dim"><code>answer</code> is the Gate's alone — no Agent state can offer it</p>
+              <p class="adr">ADR-0011 · ADR-0015</p>
+            </div>
+          </section>
+
+          <section class="over todo" data-pane="terminal" data-step="triaged">
+            <div class="card">
+              <h2>accepted, restated</h2>
+              <p class="dim">the summary is the next workflow's prompt</p>
+            </div>
+          </section>
+
+          <section class="over todo" data-pane="terminal" data-step="pods">
+            <div class="card">
+              <h2>no pod appeared</h2>
+              <p class="dim">isolation is spent only where code runs</p>
             </div>
           </section>
 
@@ -74,19 +134,19 @@
             </div>
           </section>
 
-          <section class="todo" data-pane="console">
-            <div class="card wide">
-              <h2>TODO — talk over the live run</h2>
-              <p class="dim">
-                3–5 slides, no commands. The Console is animating behind them; the run reaches its Gate while you talk.
-                Candidates:
-              </p>
-              <ul>
-                <li>what the Harness is doing right now — one Turn, start to end</li>
-                <li>the Sandbox that just appeared, and what it may touch</li>
-                <li>the Workspace lease and the Repo cache</li>
-                <li>why the model never chooses the control flow</li>
-              </ul>
+          <section class="over todo" data-pane="terminal" data-step="containers">
+            <div class="card">
+              <h2>the pod that just appeared</h2>
+              <p class="dim">Harness, Adapter, User Container</p>
+              <p class="adr">ADR-0005</p>
+            </div>
+          </section>
+
+          <section class="over todo" data-pane="k9s">
+            <div class="card">
+              <h2>one Turn, start to end</h2>
+              <p class="dim">talk while the run works toward its Gate</p>
+              <p class="adr">ADR-0024 · ADR-0057</p>
             </div>
           </section>
 
@@ -113,18 +173,37 @@
               <p class="adr">ADR-0021 · ADR-0028</p>
             </div>
           </section>
+
+          <section class="over todo" data-pane="terminal" data-step="pods">
+            <div class="card">
+              <h2>the pod is gone</h2>
+              <p class="dim">the Workspace ended with the run</p>
+            </div>
+          </section>
         </section>
 
-        <!-- ======================================================================= after: TODO -->
+        <!-- =========================================================================== after -->
         <section class="todo">
-          <h2>TODO — after the demo</h2>
-          <p class="dim">~10 min.</p>
-          <ul>
-            <li>what you just saw, named: Instance, Machine, Turn, Gate, Sandbox</li>
-            <li>what jr2 refuses to do, and why</li>
-            <li>where this is going / what is unfinished</li>
-            <li>questions</li>
-          </ul>
+          <h2>what jr2 refuses to do</h2>
+          <p class="dim">
+            the model never picks the control flow · the Machine never pushes · the Agent never holds the Orchestrator
+            credential
+          </p>
+        </section>
+        <section class="todo">
+          <h2>what else is in the box</h2>
+          <p class="dim">model agnostic · typed Instances · composable Machines</p>
+        </section>
+        <section class="todo">
+          <h2>next: agents that write Machines at runtime</h2>
+          <p class="dim">today Claude writes them at design time</p>
+        </section>
+        <section class="todo">
+          <h2>next: held secrets</h2>
+          <p class="dim">tools that reach outside (Slack, SMS), with credentials the Agent never holds — ADR-0058</p>
+        </section>
+        <section class="todo">
+          <h2>questions</h2>
         </section>
 
         <!-- ============================================================================ close -->
@@ -225,7 +304,8 @@ jr2 up</code></pre>
       // is a button as well as a sign, for releasing with the pointer.
       const badge = document.createElement("button");
       badge.className = "stage-badge";
-      badge.textContent = "stage live — Ctrl-Escape to release";
+      const RELEASE = "stage live — Ctrl-Escape to release";
+      badge.textContent = RELEASE;
       badge.addEventListener("click", () => setLive(false));
       document.body.append(badge);
 
@@ -248,19 +328,34 @@ jr2 up</code></pre>
       // anyone has pressed anything. A window `blur` while `document.hasFocus()` is STILL TRUE is
       // exactly "focus moved into a child frame", so it is handed straight back. Switching apps also
       // blurs, but with hasFocus() false, and is left alone. While live the deck needs focus even
-      // more than usual, since that is where the keystrokes it forwards come from — the one thing
-      // this concedes is a click into a Console FIELD, which the demo never does (ADR-0032: the
-      // token is never unlocked on stage).
-      addEventListener("blur", () => {
-        setTimeout(() => {
-          if (!document.hasFocus()) return;
-          const stolen = document.activeElement;
-          if (stolen instanceof HTMLIFrameElement) {
-            stolen.blur();
-            window.focus();
-          }
-        }, 0);
-      });
+      // more than usual, since that is where the keystrokes it forwards come from. The one exception
+      // is a pane that wants the REAL keyboard while live: the Console's token field (ADR-0032), and
+      // k9s, which is the presenter's and never hears a forwarded key. Both are cross-origin, so the
+      // deck cannot tell a field from a link; the rule is physical instead: such a pane holds the
+      // keyboard while the POINTER is on it. Moving off it (or clicking the demo terminal) hands the
+      // keyboard back, and with it Ctrl-Escape. The stage is
+      // same-origin, so which pane took focus is readable, and its iframe elements hear both events.
+      function reclaim() {
+        badge.textContent = RELEASE;
+        if (!document.hasFocus()) return;
+        const stolen = document.activeElement;
+        if (!(stolen instanceof HTMLIFrameElement)) return;
+        const pane = stolen.contentDocument?.activeElement;
+        if (live && (pane?.id === "console" || pane?.id === "k9s") && pane.matches(":hover")) {
+          badge.textContent = `${pane.title} has the keyboard — move the pointer off it to release`;
+          const back = () => {
+            pane.removeEventListener("blur", back);
+            pane.removeEventListener("mouseleave", back);
+            setTimeout(reclaim, 0);
+          };
+          pane.addEventListener("blur", back);
+          pane.addEventListener("mouseleave", back);
+          return;
+        }
+        stolen.blur();
+        window.focus();
+      }
+      addEventListener("blur", () => setTimeout(reclaim, 0));
 
       // Typing into the stage, without giving the stage the keyboard. xterm.js takes the caret from
       // a real CLICK and from nothing else a parent page can do — `contentWindow.focus()` is a no-op

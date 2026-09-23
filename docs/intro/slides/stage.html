@@ -25,7 +25,12 @@
          reflow the scrollback — the demo's own output — on the way. So both panes keep a fixed half
          of the stage, and the emphasized one is lifted to cover the whole of it. The console never
          forces a resize at all; the terminal has exactly two widths, and snaps between them, because
-         a transition would report every intermediate width down the socket. */
+         a transition would report every intermediate width down the socket.
+
+         k9s is the presenter's pane and shows wherever the terminal shows, always in the bottom of
+         the right half: under the demo terminal, lifted with it when the terminal is emphasized (the
+         bottom-left is the slide card's), and covered with it when the Console is. So the terminal is always half the stage tall — only its width
+         changes, as before. */
       #panes {
         position: relative;
         height: 100%;
@@ -43,7 +48,15 @@
       }
       #terminal {
         left: 50%;
+        height: 50%;
         border-left: 1px solid var(--line);
+      }
+      #k9s {
+        top: 50%;
+        left: 50%;
+        height: 50%;
+        border-left: 1px solid var(--line);
+        border-top: 1px solid var(--line);
       }
       body[data-pane="console"] #console {
         width: 100%;
@@ -55,22 +68,41 @@
         border-left: 0;
         z-index: 1;
       }
+      body[data-pane="terminal"] #k9s {
+        z-index: 1;
+      }
+      /* A slide that probes a live run: the Console on the left, k9s taking the whole right half.
+         It covers the terminal rather than moving it, so tmux sees no resize. */
+      body[data-pane="k9s"] #k9s {
+        top: 0;
+        height: 100%;
+        border-top: 0;
+        z-index: 1;
+      }
+      /* The quarter left under the card would show a slice of the Console. Hide it — `visibility`,
+         not `display`, so the page stays loaded and its feed keeps running. */
+      body[data-pane="terminal"] #console {
+        visibility: hidden;
+      }
     </style>
   </head>
   <body data-pane="both">
     <div id="panes">
       <iframe id="console" title="jr2 Console"></iframe>
       <iframe id="terminal" title="tmux session"></iframe>
+      <iframe id="k9s" title="k9s"></iframe>
     </div>
     <script type="module">
       const q = new URLSearchParams(location.search);
       const consolePort = q.get("console") ?? "8080";
       const terminalPort = q.get("terminal") ?? "7681";
+      const k9sPort = q.get("k9s") ?? "7682";
       const consoleFrame = document.getElementById("console");
       const terminalFrame = document.getElementById("terminal");
 
       consoleFrame.src = `http://localhost:${consolePort}${q.get("path") ?? "/workflows/task"}`;
       terminalFrame.src = `http://localhost:${terminalPort}`;
+      document.getElementById("k9s").src = `http://localhost:${k9sPort}`;
 
       // The deck is same-origin with this page, so it just says what it wants emphasized. A `path`
       // is honored only when it actually changes — resetting src would drop the Console's feed.

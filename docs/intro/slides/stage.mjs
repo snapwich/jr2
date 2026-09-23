@@ -5,9 +5,10 @@
 // answering, or two live runs (the Console auto-selects the FIRST one it knows, so a stale run
 // steals the picture the audience is meant to be watching).
 //
-// Then three processes: ttyd serving the demo session (writable), the port-forward that gives the
-// Console a stable address, and this deck's own server. Ctrl-C takes down all three and kills the
-// `intro` session with them, so `stage` is the whole lifecycle and nothing of the talk outlives it.
+// Then four processes: ttyd serving the demo session (writable), a second ttyd serving k9s (the
+// presenter's own pane — the deck never types into it), the port-forward that gives the Console a
+// stable address, and this deck's own server. Ctrl-C takes down all four and kills both tmux
+// sessions with them, so `stage` is the whole lifecycle and nothing of the talk outlives it.
 // The cost is that the session's scrollback and its `$RUN` go too: after a restart, a Gate still
 // parked server-side needs its runId again (`jr2 runs`).
 
@@ -25,9 +26,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const INSTANCE = resolve(HERE, "..", "instance");
 
 const SESSION = "intro";
+/** k9s runs in a tmux session of its own, so a stage reload re-attaches instead of restarting it. */
+const K9S_SESSION = "intro-k9s";
 const NAMESPACE = "intro";
 const DECK_PORT = Number(process.env.JR2_DECK_PORT ?? 9000);
 const TERMINAL_PORT = Number(process.env.JR2_TERMINAL_PORT ?? 7681);
+const K9S_PORT = Number(process.env.JR2_K9S_PORT ?? 7682);
 const CONSOLE_PORT = Number(process.env.JR2_CONSOLE_PORT ?? 8080);
 /** The Service `jr2 up` deploys (packages/orchestrator/src/names.ts). */
 const ORCHESTRATOR_PORT = 4000;
@@ -74,19 +78,20 @@ async function onPath(bin) {
   return false;
 }
 
-for (const bin of ["tmux", "ttyd", "kubectl", "jq"]) {
+for (const bin of ["tmux", "ttyd", "kubectl", "jq", "k9s"]) {
   if (!(await onPath(bin))) die(`${bin} is not installed`, `brew install ${bin}`);
 }
-ok("tmux, ttyd, kubectl, jq");
+ok("tmux, ttyd, kubectl, jq, k9s");
 
 for (const [port, what] of [
   [DECK_PORT, "deck"],
   [TERMINAL_PORT, "terminal"],
+  [K9S_PORT, "k9s"],
   [CONSOLE_PORT, "console forward"],
 ]) {
   if (!(await free(port))) die(`port ${port} (${what}) is already in use`, `lsof -nP -iTCP:${port} -sTCP:LISTEN`);
 }
-ok(`ports ${DECK_PORT}, ${TERMINAL_PORT}, ${CONSOLE_PORT} free`);
+ok(`ports ${DECK_PORT}, ${TERMINAL_PORT}, ${K9S_PORT}, ${CONSOLE_PORT} free`);
 
 const context = await out("kubectl", ["config", "current-context"]).catch(() => "");
 if (!context) die("no current kube context", "kind create cluster --name jr2 && kubectl config use-context kind-jr2");
@@ -173,7 +178,7 @@ await exec("tmux", [
 // which a resize or a detach undoes.
 const window = (await out("tmux", ["list-windows", "-t=" + SESSION, "-F", "#{window_id}"])).split("\n")[0];
 await exec("tmux", ["set-option", "-t", window, "window-size", "smallest"]);
-// --- the three processes --------------------------------------------------------------------------
+// --- the four processes --------------------------------------------------------------------------
 
 const children = [];
 function start(name, cmd, args) {
@@ -204,6 +209,29 @@ start("ttyd", "ttyd", [
   "-t",
   "=" + SESSION,
 ]);
+// k9s, for the presenter alone: the deck fires no step into it and forwards no key to it — it takes
+// the keyboard from a real click, like any terminal. Attach-or-create on every connection, so a
+// reload rejoins the running k9s and a `:q` is undone by the next connect. Loopback-bound for the
+// same reason as the demo terminal.
+start("k9s", "ttyd", [
+  "-W",
+  "-p",
+  String(K9S_PORT),
+  "-i",
+  "127.0.0.1",
+  "-t",
+  "fontSize=14",
+  "-t",
+  'theme={"background":"#0a0f1a","foreground":"#c8d6e8","cursor":"#4ef0a7"}',
+  "tmux",
+  "new-session",
+  "-A",
+  "-s",
+  K9S_SESSION,
+  "k9s",
+  "-n",
+  NAMESPACE,
+]);
 start("forward", "kubectl", [
   "port-forward",
   "-n",
@@ -218,9 +246,10 @@ stage up
   deck      http://localhost:${DECK_PORT}
   console   http://localhost:${CONSOLE_PORT}      (forwarded from ${NAMESPACE}/jr2-orchestrator)
   terminal  http://localhost:${TERMINAL_PORT}      (tmux "${SESSION}", writable)
+  k9s       http://localhost:${K9S_PORT}      (tmux "${K9S_SESSION}", yours alone)
 
   you type here:  tmux attach -t =${SESSION}
-  ctrl-c here stops the three processes and kills the ${SESSION} session
+  ctrl-c here stops the four processes and kills the ${SESSION} and ${K9S_SESSION} sessions
 `);
 
 let closing = false;
@@ -230,6 +259,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     closing = true;
     for (const child of children) child.kill();
     await exec("tmux", ["kill-session", "-t=" + SESSION]).catch(() => {});
+    await exec("tmux", ["kill-session", "-t=" + K9S_SESSION]).catch(() => {});
     console.log("\nstage down");
     process.exit(0);
   });

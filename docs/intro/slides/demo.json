@@ -17,9 +17,25 @@
       "cmd": "jr2 up",
       "note": "Converges the instance. Warm, every image reports `fresh — build skipped`."
     },
+    "pods": {
+      "cmd": "kubectl get pods -n jr2-system && kubectl get pods -n intro",
+      "note": "The kit (jr2-system) and this Instance (intro). A Sandbox is a pod here while a run holds one."
+    },
     "ping": {
       "cmd": "jr2 run ping --input '{\"message\":\"hi\"}'",
       "note": "No Agent, no Sandbox, no model — the Machine and nothing else."
+    },
+    "triage": {
+      "cmd": "RUN=$(jr2 run triage --input '{\"request\":\"People keep asking what version they are running.\"}' --detach | jq -r .runId) && echo \"run $RUN\"",
+      "note": "Vague on purpose: the Agent picks needs_info and the run parks at the clarify Gate."
+    },
+    "clarify": {
+      "cmd": "jr2 send $RUN --gate clarify --event answer --input '{\"info\":\"Add a --version flag to the CLI that prints the version in package.json.\"}'",
+      "note": "The human's answer. The Agent triages again with it in hand, and accepts."
+    },
+    "triaged": {
+      "cmd": "jr2 status $RUN | jq '{status, value, summary: .context.summary}'",
+      "note": "The accepted request, restated as one sentence — the prompt `task` runs next."
     },
     "task": {
       "cmd": "RUN=$(jr2 run task --input '{\"prompt\":\"Add a --version flag to the CLI.\"}' --detach | jq -r .runId) && echo \"run $RUN\"",
@@ -28,6 +44,11 @@
     "watch": {
       "cmd": "jr2 logs $RUN -f",
       "note": "Optional — the Console behind these slides is already showing this.",
+      "interrupt": true
+    },
+    "containers": {
+      "cmd": "kubectl get pods -n intro -l sandbox.jr2.dev/name -o custom-columns='POD:.metadata.name,CONTAINERS:.spec.containers[*].name'",
+      "note": "One Sandbox, three containers: Harness, Adapter, User Container.",
       "interrupt": true
     },
     "gate": {

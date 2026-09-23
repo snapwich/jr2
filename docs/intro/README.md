@@ -14,11 +14,12 @@ describing one.
 Everything the instance needs — Node >= 24, Docker, kind, kubectl, llama.cpp; see
 [instance/README.md](./instance/README.md) — plus:
 
-| What   | Why                                                   |
-| ------ | ----------------------------------------------------- |
-| `tmux` | the session every demo command runs in                |
-| `ttyd` | serves that session to the deck — `brew install ttyd` |
-| `jq`   | the `task` step reads a runId out of JSON             |
+| What   | Why                                                          |
+| ------ | ------------------------------------------------------------ |
+| `tmux` | the session every demo command runs in                       |
+| `ttyd` | serves that session to the deck — `brew install ttyd`        |
+| `k9s`  | the presenter's pane under the terminal — `brew install k9s` |
+| `jq`   | the `task` step reads a runId out of JSON                    |
 
 ## Before the talk
 
@@ -49,7 +50,8 @@ cd instance && npx jr2 up                      # once, so subsequent ups are fas
 cd slides   && npm install && npm start        # shell 2 — preflight, then the deck
 ```
 
-Open the deck at `http://localhost:9000`. It frames the Console (`:8080`) and the demo terminal (`:7681`).
+Open the deck at `http://localhost:9000`. It frames the Console (`:8080`), the demo terminal (`:7681`), and k9s
+(`:7682`).
 
 `npm start` checks its prerequisites first and names what is missing. Ctrl-C in shell 2 stops everything it started, the
 tmux session included.

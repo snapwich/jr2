@@ -268,6 +268,14 @@
   border-left: 3px solid var(--amber);
   padding-left: 0.8em;
 }
+/* An overlay slide fills the stage, so its own border would run over the terminal — mark the card. */
+.reveal .slides section.over.todo {
+  border-left: none;
+  padding-left: 0;
+}
+.reveal section.over.todo .card {
+  border-left: 3px solid var(--amber);
+}
 .reveal section.todo h2 {
   color: var(--amber);
 }
