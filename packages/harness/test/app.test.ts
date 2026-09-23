@@ -26,6 +26,8 @@ function scripted(overrides?: Partial<HarnessAppDeps>) {
   const runs: ScriptedRun[] = [];
   const app = harnessApp({
     longPollMs: 25,
+    // Routing alone is under test here; the gate is `auth.test.ts`'s (ADR-0058).
+    checkBearer: () => true,
     runSubmissionFor: () => (submission, signal) =>
       new Promise<void>((resolve, reject) => {
         runs.push({ message: submission.message, submission, resolve, reject });
@@ -296,10 +298,10 @@ test("an admission that cannot run is a 400 — no conversation, no Submission",
 });
 
 test("the Instance Harness admits Menu-only Agents alone — Workspace access is a 403 (ADR-0031)", async () => {
-  // Every admission carries its own definition (ADR-0049) and the wire is unauthenticated
-  // in-cluster, so the placement gate is the Harness's own: without it, any in-cluster caller
-  // could POST a `workspace: "write"` definition here and be handed the Working tools — code
-  // execution in the one pod ADR-0031 says has none.
+  // Every admission carries its own definition (ADR-0049), so the placement gate is the Harness's
+  // own: without it, a caller holding this placement's bearer (ADR-0058) could POST a
+  // `workspace: "write"` definition here and be handed the Working tools — code execution in the
+  // one pod ADR-0031 says has none. The bearer narrows who may try; this decides what.
   const menuOnlyDef: AgentDefinition = { model: "faux/model", instructions: "pick", workspace: "none" };
   const { app, runs } = scripted({ menuOnly: true });
 

@@ -257,8 +257,10 @@ export interface AgentRunPort {
  * Machine edit that changed it. */
 export type AgentAdmitOptions = { definition: AgentDefinition; signal?: AbortSignal };
 
-/** Build a port for one invocation from its serializable input (ADR-0011 static-import doctrine). */
-export type AgentRunPortFactory = (endpoint: string) => AgentRunPort;
+/** Build a port for one invocation from its serializable input (ADR-0011 static-import doctrine),
+ * plus the Harness bearer for the placement that input resolved to (ADR-0058) — absent where no
+ * placement is named (the stub path) or the host derives none. */
+export type AgentRunPortFactory = (endpoint: string, bearer?: string) => AgentRunPort;
 
 /** Absorbed-turn-mechanics knobs (ADR-0016): defaulted, never Machine context. */
 export type AgentRunOptions = {
@@ -504,7 +506,10 @@ export function agentActorWith(
       );
     registerSurface(currentIid);
 
-    const client = portFactory(endpoint);
+    // The Harness bearer (ADR-0058) is derived from the SAME name the registration records as its
+    // delivery scope: the pod hosting this Turn. One name, both directions — the Adapter there may
+    // speak for these picks, and only this bearer may drive the conversation there.
+    const client = portFactory(endpoint, sandbox === undefined ? undefined : binding.harnessBearer?.(sandbox));
     const controller = new AbortController();
     // Shared per run, created on demand so the ordering guarantee holds for any binding.
     const pendingAborts = (binding.pendingAborts ??= new Map<string, Promise<void>>());

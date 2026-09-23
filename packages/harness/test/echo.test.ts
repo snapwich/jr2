@@ -1,6 +1,6 @@
 // The run-narrative echo (ADR-0023): rendering per event kind, and the wire route. Rendering is
 // the printer's craft — label-prefixed lines, bounded payloads, no ANSI — and the route is
-// instance-token-gated without the token ever entering this process (the injected bearer check).
+// gated on the placement's bearer (ADR-0058) without the bearer ever resting in this process (the injected check).
 // Socket-free: the route is driven via `app.request()`, lines land in a collector.
 
 import { test } from "node:test";
@@ -76,11 +76,11 @@ test("an event this renderer does not recognize prints nothing — the log never
 
 // ---- The wire route (`POST /echo`) -------------------------------------------------------------
 
-function echoApp(opts: { gate?: boolean } = {}) {
+function echoApp() {
   const lines: string[] = [];
   const app = harnessApp({
     runSubmissionFor: () => () => Promise.resolve(),
-    ...(opts.gate === false ? {} : { checkEchoBearer: (bearer) => bearer === "instance-token" }),
+    checkBearer: (bearer) => bearer === "harness-bearer",
     echoOut: { write: (chunk: string) => void lines.push(chunk) },
   });
   return { app, lines };
@@ -105,7 +105,7 @@ test("echo: renders each event to the out, in order, and answers the line count"
     { kind: "pick", agent: "decisioner", event: "approve" },
     { kind: "emit", event: { type: "shipped" } },
   ];
-  const res = await app.request("/echo", post(events, "instance-token"));
+  const res = await app.request("/echo", post(events, "harness-bearer"));
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { printed: 4 });
   assert.deepEqual(lines, [
@@ -116,7 +116,7 @@ test("echo: renders each event to the out, in order, and answers the line count"
   ]);
 });
 
-test("echo: instance-token-gated — a missing or wrong bearer is 401, and nothing prints", async () => {
+test("echo: bearer-gated (ADR-0058) — a missing or wrong bearer is 401, and nothing prints", async () => {
   const { app, lines } = echoApp();
   for (const init of [post([{ kind: "emit", event: { type: "x" } }]), post([], "wrong")]) {
     const res = await app.request("/echo", init);
@@ -125,23 +125,15 @@ test("echo: instance-token-gated — a missing or wrong bearer is 401, and nothi
   assert.deepEqual(lines, []);
 });
 
-test("echo: a Harness with no gate configured refuses — it never prints on faith", async () => {
-  const { app, lines } = echoApp({ gate: false });
-  const res = await app.request("/echo", post([{ kind: "emit", event: { type: "x" } }], "instance-token"));
-  assert.equal(res.status, 403);
-  assert.match(((await res.json()) as { error: string }).error, /JR2_ECHO_TOKEN_SHA256/);
-  assert.deepEqual(lines, []);
-});
-
 test("echo: a body that is not { events: [...] } is 400", async () => {
   const { app } = echoApp();
   const res = await app.request("/echo", {
     method: "POST",
     body: "not json",
-    headers: { "content-type": "application/json", authorization: "Bearer instance-token" },
+    headers: { "content-type": "application/json", authorization: "Bearer harness-bearer" },
   });
   assert.equal(res.status, 400);
-  const noArray = await app.request("/echo", post(undefined, "instance-token"));
+  const noArray = await app.request("/echo", post(undefined, "harness-bearer"));
   assert.equal(noArray.status, 400);
 });
 
@@ -149,7 +141,7 @@ test("echo: unrenderable events are skipped, not errors — the batch's good lin
   const { app, lines } = echoApp();
   const res = await app.request(
     "/echo",
-    post([{ kind: "mystery" }, { kind: "emit", event: { type: "ok" } }], "instance-token"),
+    post([{ kind: "mystery" }, { kind: "emit", event: { type: "ok" } }], "harness-bearer"),
   );
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { printed: 1 });

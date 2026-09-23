@@ -59,6 +59,7 @@ import {
   loadWorkflows,
   matchCredential,
   partsOf,
+  harnessTokenDigest,
   sandboxToken,
   type CarriedAgent,
   type CarriedImage,
@@ -750,9 +751,9 @@ export async function up(args: string[], io: Io): Promise<number> {
         adapterImage: refs.adapter,
         harness: config.harness,
         caBundle: caPem !== undefined,
-        // The echo gate (ADR-0023): the digest of the token materialized above — the same env
-        // the orchestrator stamps onto every Sandbox Harness at provision.
-        echoTokenSha256: createHash("sha256").update(instanceToken).digest("base64url"),
+        // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
+        // placement from the kept key — the same shape it stamps onto every Sandbox at provision.
+        bearerSha256: harnessTokenDigest(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
       }),
       ...ctx,
     });

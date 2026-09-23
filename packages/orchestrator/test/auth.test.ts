@@ -237,3 +237,17 @@ test("the Repo report is Instance-band: a Repo's url plus git's error is state, 
   assert.equal((await app.request("/repos", get(sandboxToken(KEY, "ws-mine")))).status, 403);
   assert.equal((await app.request("/repos", get(INSTANCE_TOKEN))).status, 200);
 });
+
+test("starting a run is Instance-band: a Sandbox token starts nothing", async () => {
+  // A Sandbox token's whole scope is delivering to its OWN agent surface (ADR-0013). Starting a
+  // run is not on that surface: an Agent that could start `deploy` — or itself, in a loop — would
+  // spend Sandboxes and model calls nobody asked for. No Adapter forwards this route today, and
+  // that is not what refuses it: the principal is.
+  const { app } = await mkApp();
+  assert.equal((await app.request("/workflows/coding/runs", post({ sandbox: "ws-x" }))).status, 401);
+  assert.equal(
+    (await app.request("/workflows/coding/runs", post({ sandbox: "ws-x" }, sandboxToken(KEY, "ws-mine")))).status,
+    403,
+  );
+  assert.equal((await app.request("/workflows/coding/runs", post({ sandbox: "ws-x" }, INSTANCE_TOKEN))).status, 201);
+});

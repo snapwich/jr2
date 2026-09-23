@@ -247,6 +247,13 @@ export type RunBinding = {
    */
   instanceHarness?: string;
   /**
+   * The Harness bearer for a placement (ADR-0058): `harnessToken(signingKey, placement)`, closed
+   * over the key by the host. The Agent actor asks it for the pod its Turn resolved to; the echo
+   * attach asks it for the Workspace's. Absent (bare unit-test bindings, the stub path), no bearer
+   * is sent — which only a Harness that checks nothing accepts.
+   */
+  harnessBearer?: (placement: string) => string;
+  /**
    * Record an Agent invocation's durable admission in the host ledger (ADR-0016): persisted
    * beside the snapshot in the same RunBlob save, keyed by iid (globally unique, so the map is
    * flat). Optional so a bare unit-test binding can omit it — then admissions simply are not
@@ -283,12 +290,13 @@ export type RunBinding = {
   marker?: (event: TurnMarker) => void;
   /**
    * Attach the run-narrative echo to a Workspace's Harness (ADR-0023): the host replays the
-   * run's feed-so-far to `endpoint`, then tees live; returns the detach. Called by `workspace()`'s
+   * run's feed-so-far to `endpoint` — the Harness in `placement`'s pod, pushed with that
+   * placement's bearer (ADR-0058) — then tees live; returns the detach. Called by `workspace()`'s
    * registrar — the same restore-safe seat the ambient handles ride — and scoped to the OWNING
    * run by construction: the binding is per-run, so a sibling run's feed is unreachable.
    * Host-supplied; absent = no echo.
    */
-  echo?: (endpoint: string) => () => void;
+  echo?: (endpoint: string, placement: string) => () => void;
   /**
    * The HOST is ending this run for its own reasons (ADR-0024). An Agent invocation ending
    * normally ends the Agent's turn — the state stopped waiting — but `RunHost.stop()` is the one

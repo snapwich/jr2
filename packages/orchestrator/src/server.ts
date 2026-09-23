@@ -25,7 +25,6 @@
 // previous deploy bound — an Instance that drops its last `workspace()` leaves `jr2 gc` able to
 // collect what it stopped using.
 
-import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { loadConfig } from "./config.ts";
 import { loadWorkflows, startInstance, type RunningInstance } from "./instance.ts";
@@ -70,10 +69,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // by nature, which is what lets live Sandboxes outlive orchestrator restarts (ADR-0013).
   const namespace = env.JR2_NAMESPACE;
 
-  // Resolved HERE, not left for startInstance to mint: every Sandbox Harness gets the token's
-  // sha-256 as its echo gate (ADR-0023, below), so the token must exist before the first
-  // provision. From the instance Secret when deployed; per-boot for a host-booted fixture,
-  // exactly as before.
+  // From the instance Secret when deployed; per-boot for a host-booted fixture.
   const instanceToken = env.JR2_INSTANCE_TOKEN ?? mintInstanceToken();
 
   // The data-plane switch (ADR-0012/0031/0051): a registered Machine COMPOSES a Sandbox — read off
@@ -123,13 +119,6 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
           {
             name: "JR2_HARNESS_JSON",
             valueFrom: { configMapKeyRef: { name: HARNESS_CONFIGMAP, key: HARNESS_CONFIG_KEY } },
-          },
-          // The echo gate (ADR-0023): the Harness verifies echo bearers against this sha-256. The
-          // digest, never the token — the Agent executes code in the Harness container, and a
-          // digest inverts to nothing (the Instance token itself never enters a Sandbox, ADR-0013).
-          {
-            name: "JR2_ECHO_TOKEN_SHA256",
-            value: createHash("sha256").update(instanceToken).digest("base64url"),
           },
           ...(config?.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
         ],

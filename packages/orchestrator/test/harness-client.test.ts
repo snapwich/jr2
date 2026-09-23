@@ -426,9 +426,9 @@ test("abort POSTs the third verb and drops the answer (ADR-0024)", async () => {
   assert.equal(calls[0]!.init?.method, "POST");
 });
 
-test("createEchoPush POSTs the structured events to /echo, bearing the Instance token (ADR-0023)", async () => {
+test("createEchoPush POSTs the structured events to /echo, bearing the Workspace's Harness bearer (ADR-0023, ADR-0058)", async () => {
   const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify({ printed: 2 }), { status: 200 })]);
-  const push = createEchoPush({ baseUrl: "http://ws.test", token: "instance-token", fetch });
+  const push = createEchoPush({ baseUrl: "http://ws.test", token: "placement-bearer", fetch });
 
   const events: EchoEvent[] = [
     { kind: "emit", event: { type: "note" } },
@@ -438,7 +438,7 @@ test("createEchoPush POSTs the structured events to /echo, bearing the Instance 
 
   assert.equal(calls[0]!.url.toString(), "http://ws.test/echo");
   assert.equal(calls[0]!.init?.method, "POST");
-  assert.equal((calls[0]!.init?.headers as Record<string, string>).authorization, "Bearer instance-token");
+  assert.equal((calls[0]!.init?.headers as Record<string, string>).authorization, "Bearer placement-bearer");
   assert.deepEqual(JSON.parse(String(calls[0]!.init?.body)), { events });
 });
 
@@ -449,4 +449,42 @@ test("a refused echo rejects with the wire's detail — the TEE decides fire-and
     () => push([{ kind: "emit", event: { type: "note" } }]),
     (err: unknown) => err instanceof Error && /echo failed \(401\): unauthorized/.test(err.message),
   );
+});
+
+test("a bearer rides every wire call — admit, each stream poll, and abort (ADR-0058)", async () => {
+  // The Harness gates all five routes on the bearer derived for its placement. A call that
+  // dropped it would 401 — on the stream, a reconnect loop that never settles — so every verb is
+  // asserted, the long-poll included.
+  const { calls, fetch } = scriptedFetch([
+    () => new Response(JSON.stringify(admission), { status: 200 }),
+    () => parkedResponse("1"),
+    () => streamResponse([settledChunk("sub-1", "completed")], "2"),
+    () => new Response(JSON.stringify({ aborted: false }), { status: 200 }),
+  ]);
+  const c = createHarnessClient({ baseUrl: "http://h.test", fetch, token: "placement-bearer" });
+  const adm = await c.send("coder", "inst-1", { message: "go", definition: coder });
+  await c.wait(adm);
+  await c.abort("coder", "inst-1");
+  assert.equal(calls.length, 4);
+  for (const call of calls) {
+    assert.equal(new Headers(call.init?.headers).get("authorization"), "Bearer placement-bearer", call.url.toString());
+  }
+});
+
+test("no bearer configured sends no authorization header — the stub Harness path", async () => {
+  const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
+  await client(fetch).send("coder", "inst-1", { message: "go", definition: coder });
+  assert.equal(new Headers(calls[0]!.init?.headers).get("authorization"), null);
+});
+
+test("a stream the Harness refuses (401) is a fault, not a reconnect — a wrong bearer never heals by retrying", async () => {
+  const { calls, fetch } = scriptedFetch([
+    () => new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 }),
+  ]);
+  await assert.rejects(client(fetch).wait(admission), (err: unknown) => {
+    assert.ok(err instanceof SettlementFault);
+    assert.match(err.message, /401.*ADR-0058/s);
+    return true;
+  });
+  assert.equal(calls.length, 1);
 });

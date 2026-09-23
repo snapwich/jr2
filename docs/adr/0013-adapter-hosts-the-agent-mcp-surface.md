@@ -105,8 +105,12 @@ needed either (ADR-0006).
 - **The `@kind` e2e tier owns the pod → Orchestrator leg** — the dev Harness image carries a scripted agent that
   actually calls its tool through the Adapter, so a broken leg is a red test. The mechanics tier plays `/agents/:iid/*`
   from the host, which is honestly simulating the Adapter, not an Agent.
-- **NetworkPolicy (ADR-0001's next isolation layer) is still wanted, but it is not the control.** It bounds where the
-  pod may talk; only the token bounds what it may _do_.
+- **NetworkPolicy is a second layer, not the control.** It bounds where a pod may talk; only the token bounds what it
+  may _do_. `jr2 up` converges ingress policies that admit only the Orchestrator to a Harness pod
+  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)); the Orchestrator itself is left reachable, because an
+  Adapter in every Harness pod must reach it and no policy can tell the Adapter's packets from the Agent's.
+- **The Harness wire is authenticated in the other direction.** The Orchestrator bears a token derived for the placement
+  on every Harness call, and the Harness holds only its digest (ADR-0058). Same signed-name idea, reversed caller.
 - **Open: authn for non-kube callers.** The Instance token rides kube RBAC for anyone with cluster creds; what an
   ingress-exposed jr2 Application uses for human/webhook callers without them (`--url` mode) is out of scope here
   (ADR-0014 inherits the same question).

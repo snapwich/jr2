@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { KIT_VERSION, sandboxToken } from "@jr2/orchestrator";
+import { KIT_VERSION, harnessTokenDigest, sandboxToken } from "@jr2/orchestrator";
 import { linkKit } from "./_kit.ts";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
@@ -1973,6 +1973,76 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   );
   const bearer = adapter.env.find((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN");
   assert.deepEqual(bearer.valueFrom, { secretKeyRef: { name: "jr2-instance", key: "JR2_INSTANCE_HARNESS_TOKEN" } });
+});
+
+test("the Instance Harness checks the bearer derived for ITS placement — a digest, never the Instance token's (ADR-0058)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-instance"`))!;
+  const secret = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
+  )!;
+  const key = Buffer.from(secret.stringData.JR2_SIGNING_KEY, "base64");
+  const env = findInstanceHarness(w).deployment!.spec.template.spec.containers[0].env as Array<{
+    name: string;
+    value?: string;
+  }>;
+  // Last, so a `harness.env` entry of the same name cannot choose it.
+  assert.deepEqual(env.at(-1), {
+    name: "JR2_HARNESS_TOKEN_SHA256",
+    value: harnessTokenDigest(key, "jr2-instance-harness"),
+  });
+  assert.ok(!env.some((e) => e.name === "JR2_ECHO_TOKEN_SHA256"), "the Instance token's digest is gone");
+});
+
+/** The NetworkPolicies the instance List carries, by name. */
+function policiesOf(w: World): Record<string, Record<string, any>> {
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-orchestrator"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  return Object.fromEntries(items.filter((i) => i.kind === "NetworkPolicy").map((i) => [i.metadata.name, i]));
+}
+
+test("ingress to every Harness pod is the Orchestrator's alone — Sandboxes and the Instance Harness (ADR-0058)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const policies = policiesOf(w);
+
+  // Only the Orchestrator's pods, and only this instance's: a second instance's Orchestrator in
+  // another namespace is not a peer — `podSelector` alone never crosses a namespace.
+  const fromOrchestrator = [
+    { from: [{ podSelector: { matchLabels: { app: "jr2-orchestrator", "jr2.dev/instance": "myinst" } } }] },
+  ];
+  const sandboxes = policies["jr2-sandbox-ingress"]!;
+  assert.equal(sandboxes.metadata.namespace, "myinst");
+  // Every pod the operator makes for a Sandbox carries this label (helpers.go) — and only those.
+  assert.deepEqual(sandboxes.spec.podSelector, {
+    matchExpressions: [{ key: "sandbox.jr2.dev/name", operator: "Exists" }],
+  });
+  assert.deepEqual(sandboxes.spec.policyTypes, ["Ingress"], "egress is not decided here (ADR-0058)");
+  assert.deepEqual(sandboxes.spec.ingress, fromOrchestrator);
+
+  const instanceHarness = policies["jr2-instance-harness-ingress"]!;
+  assert.deepEqual(instanceHarness.spec.podSelector, { matchLabels: { app: "jr2-instance-harness" } });
+  assert.deepEqual(instanceHarness.spec.policyTypes, ["Ingress"]);
+  assert.deepEqual(instanceHarness.spec.ingress, fromOrchestrator);
+
+  // The Orchestrator itself is NOT selected: every route there is token-gated (ADR-0013), and an
+  // Adapter in any Harness pod must reach it.
+  for (const policy of Object.values(policies)) {
+    assert.notDeepEqual(policy.spec.podSelector, { matchLabels: { app: "jr2-orchestrator" } });
+  }
+});
+
+test("the ingress policies converge with the instance, whatever it composes — a Harness pod is never unguarded", async () => {
+  // No Sandbox and no "none" Agent: the policies still ship, so the first Harness pod a later
+  // `jr2 up` adds is born selected, never in a window before its policy exists.
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst");
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.deepEqual(Object.keys(policiesOf(w)).sort(), ["jr2-instance-harness-ingress", "jr2-sandbox-ingress"]);
 });
 
 test("both readiness probes set a period — a ~1s boot must not be billed as a 10s rollout wait", async () => {

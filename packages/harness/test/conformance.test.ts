@@ -114,6 +114,8 @@ before(async () => {
   const appWith = (seams?: { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number }): Hono =>
     harnessApp({
       longPollMs: 250,
+      // The turn loop is under test here; the wire's gate is `auth.test.ts`'s (ADR-0058).
+      checkBearer: () => true,
       // The real composition (`main.ts`): admission rejects a definition (or dial) the turn
       // could not run.
       checkAdmission: (resolved) => admissionFault(models, resolved),

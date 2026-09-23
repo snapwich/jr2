@@ -43,9 +43,16 @@ function harness(
   const telemetry: RetryTelemetry[] = [];
   const table = new RegistrationTable();
   const endpoints: string[] = [];
+  const bearers: Array<string | undefined> = [];
 
   const machine = setup({
-    actors: { run: agentActorWith((endpoint: string) => (endpoints.push(endpoint), client), definition, options) },
+    actors: {
+      run: agentActorWith(
+        (endpoint: string, bearer?: string) => (endpoints.push(endpoint), bearers.push(bearer), client),
+        definition,
+        options,
+      ),
+    },
   }).createMachine({
     id: "parent",
     initial: "running",
@@ -79,7 +86,7 @@ function harness(
   if (ambient) registerAmbientHandles(actor, ambient);
   actor.subscribe({ error: (err) => errors.push(err) }); // xstate reports invoke errors here, not out of start()
   actor.start();
-  return { actor, received, table, errors, ledger, endpoints, telemetry, binding };
+  return { actor, received, table, errors, ledger, endpoints, bearers, telemetry, binding };
 }
 
 const baseInput: AgentRunInput = {
@@ -232,6 +239,43 @@ test("everyone else resolves the enclosing workspace(): ambient endpoint AND san
 
   assert.deepEqual(endpoints, ["http://ws-1.harness.local:8080"]);
   assert.equal(table.lookup(agentAddress("inst-42"))?.sandbox, "ws-1", "the ADR-0013 token scope");
+});
+
+// --- The Harness bearer (ADR-0058): derived from the PLACEMENT the registration records ----------
+
+/** The host's derivation, as a test can read it back: the placement's name, tagged. */
+const bearerFor = (placement: string) => `bearer-for:${placement}`;
+
+test("the port is built with the bearer of the placement the Turn resolved — per placement arm (ADR-0058)", async () => {
+  const none = harness(new MockFlueClient(), { ...baseInput, endpoint: undefined }, undefined, NONE, {
+    instanceHarness: "http://jr2-instance-harness.ns.svc:8080",
+    harnessBearer: bearerFor,
+  });
+  const ambient = harness(
+    new MockFlueClient(),
+    { ...baseInput, endpoint: undefined },
+    undefined,
+    READ,
+    { harnessBearer: bearerFor },
+    AMBIENT,
+  );
+  const explicit = harness(new MockFlueClient(), { ...baseInput, sandbox: "stub-1" }, undefined, READ, {
+    harnessBearer: bearerFor,
+  });
+  await tick();
+
+  // The bearer and the delivery scope are one name: the pod hosting the Turn.
+  assert.deepEqual(none.bearers, ["bearer-for:jr2-instance-harness"]);
+  assert.deepEqual(ambient.bearers, ["bearer-for:ws-1"]);
+  assert.deepEqual(explicit.bearers, ["bearer-for:stub-1"]);
+});
+
+test("no placement name (the stub path) or no host derivation → no bearer, never a guessed one", async () => {
+  const stub = harness(new MockFlueClient(), baseInput, undefined, READ, { harnessBearer: bearerFor });
+  const bare = harness(new MockFlueClient(), { ...baseInput, sandbox: "stub-1" }, undefined, READ);
+  await tick();
+  assert.deepEqual(stub.bearers, [undefined]);
+  assert.deepEqual(bare.bearers, [undefined]);
 });
 
 test('workspace "none" with no Instance Harness address → loud error at start, naming both', () => {

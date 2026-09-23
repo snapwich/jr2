@@ -48,6 +48,10 @@ export const ANNOTATION_IMAGES = "jr2.dev/images";
 
 export const ORCHESTRATOR_SA = "jr2-orchestrator";
 
+/** The two ingress NetworkPolicies (ADR-0058) — see `harnessIngressPolicies`. */
+export const SANDBOX_INGRESS_POLICY = "jr2-sandbox-ingress";
+export const INSTANCE_HARNESS_INGRESS_POLICY = "jr2-instance-harness-ingress";
+
 /** The operator's install location — per-cluster, shared by every instance (ADR-0019). */
 export const OPERATOR_NAMESPACE = "jr2-system";
 export const OPERATOR_DEPLOYMENT = "jr2-controller-manager";
@@ -303,10 +307,49 @@ export function instanceObjects(opts: {
         ports: [{ port: ORCHESTRATOR_PORT, targetPort: ORCHESTRATOR_PORT }],
       },
     },
+    ...harnessIngressPolicies(opts.name, meta),
     ...(opts.repoCache ? repoCacheObjects({ ...opts.repoCache, namespace: opts.namespace, labels, meta }) : []),
   ];
 
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
+}
+
+/** The operator's label on every Sandbox pod (operator/internal/controller/helpers.go) — and on no
+ * other pod, which is what lets one selector mean "every Sandbox, now and later". */
+const SANDBOX_POD_LABEL = "sandbox.jr2.dev/name";
+
+/**
+ * Ingress to every Harness pod is the Orchestrator's alone (ADR-0058) — the NetworkPolicy half of
+ * the wire's defense; the bearer is the other, and the control (ADR-0013: policy bounds where a pod
+ * may talk, only a token bounds what it may do). One policy per placement: every Sandbox pod, by
+ * the label the operator stamps on each, and the Instance Harness.
+ *
+ * Converged UNCONDITIONALLY, not only when a Machine composes a Sandbox or declares a `"none"`
+ * Agent: a policy that selects nothing costs nothing, and a pod born before its policy would be a
+ * window. The peer is this instance's Orchestrator and no other — a `podSelector` never crosses the
+ * namespace, and the instance label pins it within one. What is NOT here, on purpose:
+ *
+ * - The Orchestrator is not selected. Every route there is token-gated, and an Adapter in any
+ *   Harness pod must reach it; a policy could not tell the Adapter's packets from the Agent's.
+ * - No egress. What a Sandbox may reach is its own decision (ADR-0058 records it open).
+ * - No port. The Orchestrator speaks only the Harness wire to these pods, and a port here would
+ *   have to track the CR's `port`; `kubectl port-forward` (the CLI, a human's shell into the User
+ *   Container — ADR-0005) and kubelet probes never cross a policy at all.
+ */
+function harnessIngressPolicies(instance: string, meta: (name: string) => KubeManifest): KubeManifest[] {
+  const fromOrchestrator = [
+    { from: [{ podSelector: { matchLabels: { app: ORCHESTRATOR_SERVICE, [LABEL_INSTANCE]: instance } } }] },
+  ];
+  const policy = (name: string, podSelector: Record<string, unknown>): KubeManifest => ({
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: meta(name),
+    spec: { podSelector, policyTypes: ["Ingress"], ingress: fromOrchestrator },
+  });
+  return [
+    policy(SANDBOX_INGRESS_POLICY, { matchExpressions: [{ key: SANDBOX_POD_LABEL, operator: "Exists" }] }),
+    policy(INSTANCE_HARNESS_INGRESS_POLICY, { matchLabels: { app: INSTANCE_HARNESS_SERVICE } }),
+  ];
 }
 
 /** Where the cache agent's pod sees the node's directory: `--cache-dir`'s default. */
@@ -461,10 +504,11 @@ export function instanceHarnessObjects(opts: {
   harness?: HarnessConfig;
   /** The instance ships a private-CA bundle (ADR-0020): mount `jr2-ca` into the Harness container. */
   caBundle?: boolean;
-  /** The Instance token's sha-256 — the Harness's echo gate (ADR-0023). The digest, never the
-   * token: the same env every Sandbox Harness container gets, kept here so the one-Harness-shape
-   * claim stays whole even though nothing narrates to the Instance Harness today. */
-  echoTokenSha256?: string;
+  /** The digest of this placement's Harness bearer (ADR-0058; `harnessTokenDigest(key,
+   * "jr2-instance-harness")`) — the wire's gate. The digest, never the bearer: the same shape
+   * every Sandbox Harness container gets, so this pod can verify the Orchestrator and mint
+   * nothing. */
+  bearerSha256: string;
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const meta = (): KubeManifest => ({
@@ -495,15 +539,16 @@ export function instanceHarnessObjects(opts: {
         name: "JR2_HARNESS_JSON",
         valueFrom: { configMapKeyRef: { name: HARNESS_CONFIGMAP, key: HARNESS_CONFIG_KEY } },
       },
-      // The placement gate (ADR-0031): every admission carries its own definition (ADR-0049) and
-      // the wire is unauthenticated in-cluster, so the Harness itself refuses any admission whose
-      // definition declares Workspace access — Menu-only Agents alone run here, which is what
-      // makes "no code execution in this pod" true rather than asserted.
+      // The placement gate (ADR-0031): every admission carries its own definition (ADR-0049), so
+      // the Harness itself refuses any admission whose definition declares Workspace access —
+      // Menu-only Agents alone run here, which is what makes "no code execution in this pod" true
+      // rather than asserted. The bearer (below) narrows who may try; this decides what.
       { name: "JR2_MENU_ONLY", value: "1" },
-      ...(opts.echoTokenSha256 ? [{ name: "JR2_ECHO_TOKEN_SHA256", value: opts.echoTokenSha256 }] : []),
       ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
       { name: "JR2_ADAPTER_URL", value: `http://127.0.0.1:${ADAPTER_PORT}` },
       ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
+      // The wire's gate (ADR-0058), last — as on a Sandbox — so no `harness.env` entry chooses it.
+      { name: "JR2_HARNESS_TOKEN_SHA256", value: opts.bearerSha256 },
     ],
     envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(opts.harness?.envFrom ?? [])],
     ...(opts.caBundle ? { volumeMounts: [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] } : {}),

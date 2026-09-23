@@ -25,7 +25,15 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { IMAGES_CONFIGMAP, IMAGES_KEY, repoIdentity, repoKey, type RepoStatus } from "@jr2/orchestrator";
+import {
+  IMAGES_CONFIGMAP,
+  IMAGES_KEY,
+  INSTANCE_HARNESS_SERVICE,
+  harnessToken,
+  repoIdentity,
+  repoKey,
+  type RepoStatus,
+} from "@jr2/orchestrator";
 import { ensureSeed, pushToSeed, SEED_URL } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
@@ -73,6 +81,22 @@ async function withPodForward(
   } finally {
     child.kill();
   }
+}
+
+/**
+ * The Harness bearer for one placement (ADR-0058), as this tier must present it: every Harness
+ * route is gated, so reading a conversation over a port-forward is the Orchestrator's call to
+ * make, made here with the Orchestrator's own derivation over the instance's signing key (read the
+ * way the CLI reads the Instance token — over the kube API, RBAC the gate). `placement` is the
+ * Sandbox's name, or `jr2-instance-harness`.
+ */
+async function harnessAuth(world: E2EWorld, placement: string): Promise<Record<string, string>> {
+  const key = (
+    await kubectl(world, ["get", "secret", "jr2-instance", "-o", "jsonpath={.data.JR2_SIGNING_KEY}"])
+  ).trim();
+  assert.ok(key, "the instance Secret carries the signing key `jr2 up` minted");
+  const signingKey = Buffer.from(Buffer.from(key, "base64").toString("utf8"), "base64");
+  return { authorization: `Bearer ${harnessToken(signingKey, placement)}` };
 }
 
 /** Scale the in-cluster orchestrator (deployed by `jr2 up`) — the @kind restart/stop lever. */
@@ -168,7 +192,8 @@ function anyChildIn(children: RunChild[], value: string): boolean {
  * Spelled out rather than discovered, because it IS the claim: a Turn that took a fresh
  * conversation lands at another address, and this one then answers 404 with the prompt nowhere on
  * the pod. It is also how a human finds a conversation —
- * `curl localhost:8080/agents/<agent>/<iid>?view=history`.
+ * `curl -H "authorization: Bearer <placement bearer>" localhost:8080/agents/<agent>/<iid>?view=history`
+ * (ADR-0058: the wire is gated — `harnessAuth` below derives the bearer).
  */
 const continuedIid = (runId: string, machine: "root" | "body", agent: string): string => `${runId}/${machine}/${agent}`;
 
@@ -181,9 +206,10 @@ const continuedIid = (runId: string, machine: "root" | "body", agent: string): s
  */
 async function settlements(world: E2EWorld, iid: string): Promise<Array<{ submissionId: string; outcome: string }>> {
   const pod = (await waitForReadySandbox(world)).metadata.name;
+  const headers = await harnessAuth(world, pod);
   let found: Array<{ submissionId: string; outcome: string }> = [];
   await withPodForward(world, pod, 8080, async (localUrl) => {
-    const res = await fetch(`${localUrl}/agents/coder/${encodeURIComponent(iid)}?view=history`);
+    const res = await fetch(`${localUrl}/agents/coder/${encodeURIComponent(iid)}?view=history`, { headers });
     assert.equal(res.status, 200, "the Harness serves the conversation history");
     found =
       ((await res.json()) as { settlements?: Array<{ submissionId: string; outcome: string }> }).settlements ?? [];
@@ -331,6 +357,55 @@ When(
     this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
   },
 );
+
+/**
+ * The Agent's own Harness, driven the way a bash Working tool would (ADR-0058): `node` in the
+ * Harness container, over loopback — no NetworkPolicy stands between a pod and itself, so the
+ * refusal under test is the bearer's alone. It even knows the address of a live conversation (the
+ * iids are derivable); what it lacks is the bearer, whose digest is all its env carries.
+ */
+When("the Harness container admits a Turn to its own Harness", async function (this: E2EWorld): Promise<void> {
+  const pod = (await waitForReadySandbox(this)).metadata.name;
+  const iid = continuedIid(this.runId!, "body", "coder");
+  const probe =
+    `fetch(${JSON.stringify(`http://127.0.0.1:8080/agents/coder/${encodeURIComponent(iid)}`)},{method:"POST",` +
+    `headers:{"content-type":"application/json"},` +
+    `body:${JSON.stringify(JSON.stringify({ message: "call finish", definition: { model: "x/y", instructions: "i" } }))}})` +
+    `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message))`;
+  this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
+});
+
+Then("the Harness refuses it as unauthorized", function (this: E2EWorld): void {
+  assert.match(
+    this.podSays ?? "",
+    /HTTP 401/,
+    `the Harness must refuse a caller bearing no placement bearer (pod said: ${this.podSays?.trim()})`,
+  );
+});
+
+/**
+ * Lateral reach (ADR-0058): from the Agent's container to the Instance Harness's Service. With the
+ * policy in force the connection never completes; without it the answer would be the bearer's 401
+ * — so the assertion is on the TRANSPORT failing, never on a status, which is what tells the two
+ * controls apart.
+ */
+When("the Harness container dials the Instance Harness", async function (this: E2EWorld): Promise<void> {
+  const pod = (await waitForReadySandbox(this)).metadata.name;
+  const url = `http://${INSTANCE_HARNESS_SERVICE}.${this.namespace}.svc:8080/agents/advisor/probe?view=history`;
+  const probe =
+    `fetch(${JSON.stringify(url)},{signal:AbortSignal.timeout(5000)})` +
+    `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.name,e.message))`;
+  this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
+});
+
+Then("the connection never completes", function (this: E2EWorld): void {
+  assert.match(
+    this.podSays ?? "",
+    /^ERR TimeoutError/m,
+    `a Sandbox must not reach the Instance Harness — the ingress policy admits the Orchestrator alone ` +
+      `(pod said: ${this.podSays?.trim()})`,
+  );
+});
 
 /**
  * The detached review worktree (ADR-0028), attached the way the attach step will: the same
@@ -1192,11 +1267,19 @@ async function instanceHarnessPod(world: E2EWorld): Promise<string> {
 }
 
 /** What a Harness answers when asked for one conversation: 200 with its history, or 404 — the
- * `?view=history` wire (ADR-0027), read over a port-forward to the pod. */
-async function conversationStatus(world: E2EWorld, pod: string, agent: string, iid: string): Promise<number> {
+ * `?view=history` wire (ADR-0027), read over a port-forward to the pod, bearing the bearer of the
+ * `placement` that pod is (ADR-0058). */
+async function conversationStatus(
+  world: E2EWorld,
+  pod: string,
+  placement: string,
+  agent: string,
+  iid: string,
+): Promise<number> {
+  const headers = await harnessAuth(world, placement);
   let status = 0;
   await withPodForward(world, pod, 8080, async (localUrl) => {
-    const res = await fetch(`${localUrl}/agents/${agent}/${encodeURIComponent(iid)}?view=history`);
+    const res = await fetch(`${localUrl}/agents/${agent}/${encodeURIComponent(iid)}?view=history`, { headers });
     status = res.status;
     await res.text();
   });
@@ -1276,7 +1359,7 @@ Then(
     const pod = await instanceHarnessPod(this);
     let last = 0;
     for (let i = 0; i < 90; i++) {
-      last = await conversationStatus(this, pod, agent, iid);
+      last = await conversationStatus(this, pod, INSTANCE_HARNESS_SERVICE, agent, iid);
       if (last === 200) return;
       await sleep(1000);
     }
@@ -1295,7 +1378,7 @@ Then(
   async function (this: E2EWorld, agent: string, machine: string): Promise<void> {
     const iid = continuedIid(this.runId!, machineOf(machine), agent);
     const pod = (await waitForReadySandbox(this)).metadata.name;
-    const status = await conversationStatus(this, pod, agent, iid);
+    const status = await conversationStatus(this, pod, pod, agent, iid);
     assert.equal(
       status,
       404,
@@ -1502,9 +1585,10 @@ type Conversation = { messages: Array<{ role: string; text: string }>; settlemen
  * the address the first one pinned. */
 async function conversationOf(world: E2EWorld, agent: string, iid: string): Promise<Conversation | undefined> {
   const pod = (await waitForReadySandbox(world)).metadata.name;
+  const headers = await harnessAuth(world, pod);
   let found: Conversation | undefined;
   await withPodForward(world, pod, 8080, async (localUrl) => {
-    const res = await fetch(`${localUrl}/agents/${agent}/${encodeURIComponent(iid)}?view=history`);
+    const res = await fetch(`${localUrl}/agents/${agent}/${encodeURIComponent(iid)}?view=history`, { headers });
     if (res.status === 404) {
       await res.text();
       return;
@@ -1806,9 +1890,10 @@ async function probe(fn: () => Promise<string>): Promise<string> {
 async function harnessHistory(world: E2EWorld, iid: string): Promise<string> {
   const pod = (await sandboxesFor(world)).find((s) => s.status?.phase === "Ready")?.metadata.name;
   if (!pod) return "<no Ready Sandbox to read the history from>\n";
+  const headers = await harnessAuth(world, pod);
   let body = "";
   await withPodForward(world, pod, 8080, async (localUrl) => {
-    const res = await fetch(`${localUrl}/agents/coder/${encodeURIComponent(iid)}?view=history`);
+    const res = await fetch(`${localUrl}/agents/coder/${encodeURIComponent(iid)}?view=history`, { headers });
     body = `HTTP ${res.status}\n${await res.text()}\n`;
   });
   return body;

@@ -80,6 +80,10 @@ export type HarnessClient = {
 export type HarnessClientOptions = {
   /** The Harness base URL — what a workspace publishes, or a stub's `url`. */
   baseUrl: string;
+  /** The Harness bearer for this placement (ADR-0058; `harnessToken` in tokens.ts) — sent on
+   * every call, the long-poll included. Absent only where no placement exists: an explicit-
+   * `endpoint` run against the stub Harness, which checks nothing. */
+  token?: string;
   /** Injectable for socket-free tests. Default: global `fetch`. */
   fetch?: typeof fetch;
   /** Reconnect backoff floor/ceiling (capped exponential, jittered per rung — see `jittered`;
@@ -125,6 +129,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
   const backoffMaxMs = options.backoffMaxMs ?? 5_000;
   const admitWindowMs = options.admitWindowMs ?? 90_000;
   const log = options.log ?? ((line: string) => console.warn(line));
+  const authorization: Record<string, string> = options.token ? { authorization: `Bearer ${options.token}` } : {};
 
   const conversationUrl = (agentName: string, instanceId: string) =>
     new URL(`/agents/${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`, baseUrl).toString();
@@ -192,7 +197,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
         url,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...authorization },
           body: JSON.stringify({
             message: sendOptions.message,
             // The other half of the Frame (ADR-0057): where this Turn works. Omitted only when
@@ -238,11 +243,19 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
         let events: StreamEvent[];
         let nextOffset: string | null;
         try {
-          const res = await fetchImpl(url.toString(), { signal });
+          const res = await fetchImpl(url.toString(), { headers: authorization, signal });
           if (res.status === 404) {
             throw new SettlementFault(
               `conversation lost: the harness answered 404 for submission "${admission.submissionId}" — ` +
                 `a conversation lives as long as its Harness process (ADR-0027)`,
+            );
+          }
+          // Refused, not unreachable: the bearer is derived, so a Harness that rejects it now
+          // rejects it on every retry — reconnecting would park the Turn forever, silently.
+          if (res.status === 401 || res.status === 403) {
+            throw new SettlementFault(
+              `harness refused the stream read (${res.status}) for submission "${admission.submissionId}": ` +
+                `${await errorDetail(res)} — the bearer is not this placement's (ADR-0058)`,
             );
           }
           if (!res.ok && res.status !== 204) {
@@ -274,6 +287,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
     async abort(agentName, instanceId, opts) {
       const res = await fetchImpl(`${conversationUrl(agentName, instanceId)}/abort`, {
         method: "POST",
+        headers: authorization,
         signal: opts?.signal,
       });
       if (!res.ok) {
@@ -334,16 +348,16 @@ export function createHarnessAgentRunClient(options: HarnessClientOptions): Agen
 
 /**
  * The run-narrative echo push (ADR-0023): `POST /echo { events }` against one Workspace Harness,
- * bearing the Instance token (the endpoint is instance-token-gated — the Harness verifies the
- * bearer against the token's sha-256, never holding the token itself). The payload is the
+ * bearing that placement's Harness bearer (ADR-0058 — the Harness verifies it against a sha-256,
+ * never holding it at rest). The payload is the
  * STRUCTURED feed events; the Harness renders. A non-OK answer rejects, and the CALLER treats
  * that as log-and-continue — fire-and-forget lives in the tee (run-host.ts), not here, so a test
  * can still assert a push failed.
  */
 export function createEchoPush(options: {
   baseUrl: string;
-  /** The Instance token — the echo bearer. */
-  token: string;
+  /** The Workspace's Harness bearer (ADR-0058). Absent only against the stub Harness. */
+  token?: string;
   /** Injectable for socket-free tests. Default: global `fetch`. */
   fetch?: typeof fetch;
 }): (events: EchoEvent[]) => Promise<void> {
@@ -356,7 +370,10 @@ export function createEchoPush(options: {
     // `fetch failed` in the pod log is what let that condition hide.
     const res = await fetchImpl(url, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${options.token}` },
+      headers: {
+        "content-type": "application/json",
+        ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+      },
       body: JSON.stringify({ events }),
     }).catch((err: unknown) => {
       throw new Error(`harness echo to ${url} failed: ${transportDetail(err)}`, { cause: err });
@@ -386,7 +403,10 @@ export function createEchoPush(options: {
  * still an `AgentDefinition`: the actor narrows on start and refuses an Open one there.
  */
 export function agent(declaration: AgentDeclaration): AgentLogic {
-  return agentActorWith((endpoint) => createHarnessAgentRunClient({ baseUrl: endpoint }), declaration);
+  return agentActorWith(
+    (endpoint, bearer) => createHarnessAgentRunClient({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
+    declaration,
+  );
 }
 
 /** A stream read worth retrying (server hiccup) — internal to the reconnect loop, never thrown out. */

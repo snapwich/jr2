@@ -70,8 +70,8 @@ flowchart LR
   hook -->|"Gate delivery"| api
   host -->|"Sandbox CR + Lease, via the Kubernetes API"| operator
   operator -->|"reconciles the CR into this pod;<br/>reaps it when the Lease lapses"| sb
-  host -->|"Harness wire"| harness
-  host -->|"Harness wire"| ihh
+  host -->|"Harness wire · placement bearer"| harness
+  host -->|"Harness wire · placement bearer"| ihh
   harness -->|"MCP: the Menu, on localhost"| adapter
   adapter -->|"Gate delivery · Sandbox token"| api
   ihh -->|"MCP, on localhost"| iha
@@ -96,14 +96,16 @@ flowchart LR
 The Agent's only control-plane peer is the Adapter on the pod's loopback (ADR-0013). The Harness container gets the
 Adapter's URL and nothing else: no Orchestrator URL, no token. So the container that executes code cannot reach the
 control plane, and the container that can reach it executes nothing. The Instance token, which unlocks control in the
-CLI and Console, never enters any pod (ADR-0032). Nothing in the cluster represents a run; a Workspace's liveness is a
-Lease the Actor renews, and the operator reaps a Sandbox whose Lease lapsed (ADR-0001, ADR-0021). The Instance Harness
-is the same two containers without a Worktree, and hosts every Menu-only Agent's Turn (ADR-0031).
+CLI and Console, never enters any pod (ADR-0032). The wire runs the other way authenticated too: the Orchestrator bears
+a token derived for each Harness pod, the Harness holds only its digest, and an ingress NetworkPolicy admits no other
+pod (ADR-0058). Nothing in the cluster represents a run; a Workspace's liveness is a Lease the Actor renews, and the
+operator reaps a Sandbox whose Lease lapsed (ADR-0001, ADR-0021). The Instance Harness is the same two containers
+without a Worktree, and hosts every Menu-only Agent's Turn (ADR-0031).
 
 **Answers**
 
 - **Isolation** — the Sandbox pod: its own network and process space, `/work` shared only inside the pod; the Adapter
-  and Harness split; the operator's reap on a lapsed Lease.
+  and Harness split; a Harness that answers the Orchestrator alone; the operator's reap on a lapsed Lease.
 - **Distribution** — the Run host holds Actors and the ledger; the Harness wire is the only thing between an Actor and
   its Agent, so the Sandbox lands on any node.
 - **Model agnostic** — the Harness is the sole box that talks to a provider.

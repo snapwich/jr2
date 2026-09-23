@@ -688,7 +688,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     const wrapperRef = self._parent;
     if (!wrapperRef) return;
     const disposeHandles = registerAmbientHandles(wrapperRef, input.handles);
-    const detachEcho = runBindingOf(system as AnyActorSystem).echo?.(input.handles.endpoint);
+    const detachEcho = runBindingOf(system as AnyActorSystem).echo?.(input.handles.endpoint, input.handles.sandbox);
     return () => {
       detachEcho?.();
       disposeHandles();

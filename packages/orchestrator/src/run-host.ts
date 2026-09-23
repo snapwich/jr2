@@ -312,13 +312,18 @@ export type RunHostOptions = {
   sandbox?: SandboxPort;
   /** The Instance Harness base URL (ADR-0031) — where `workspace: "none"` Turns are admitted. */
   instanceHarness?: string;
+  /** The Harness bearer for a placement (ADR-0058) — `startInstance` closes `harnessToken` over the
+   * signing key. Handed to every run's binding, and to the echo pusher below. Absent, no Harness
+   * call bears one: only the stub Harness answers such a host. */
+  harnessBearer?: (placement: string) => string;
   /**
    * Build the run-narrative echo pusher for one Workspace's Harness (ADR-0023) — the seam a fake
-   * echo server rides in tests; `startInstance` binds the real wire push (harness-client.ts),
-   * closed over the Instance token. Absent = no echo: a host without it runs identically, because
-   * the echo is a courtesy view of the feed, never a dependency of the run.
+   * echo server rides in tests; `startInstance` binds the real wire push (harness-client.ts).
+   * `bearer` is that Workspace's Harness bearer (ADR-0058), when the host derives one. Absent = no
+   * echo: a host without it runs identically, because the echo is a courtesy view of the feed,
+   * never a dependency of the run.
    */
-  echo?: (endpoint: string) => (events: EchoEvent[]) => Promise<void>;
+  echo?: (endpoint: string, bearer: string | undefined) => (events: EchoEvent[]) => Promise<void>;
 };
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs.
@@ -383,7 +388,11 @@ export class RunHost {
   private readonly onRestoreError?: (runId: string, err: unknown) => void;
   private readonly sandbox?: SandboxPort;
   private readonly instanceHarness?: string;
-  private readonly echoFactory?: (endpoint: string) => (events: EchoEvent[]) => Promise<void>;
+  private readonly harnessBearer?: (placement: string) => string;
+  private readonly echoFactory?: (
+    endpoint: string,
+    bearer: string | undefined,
+  ) => (events: EchoEvent[]) => Promise<void>;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
   private readonly runs = new Map<string, LiveRun>();
   /**
@@ -401,6 +410,7 @@ export class RunHost {
     this.onRestoreError = opts.onRestoreError;
     this.sandbox = opts.sandbox;
     this.instanceHarness = opts.instanceHarness;
+    this.harnessBearer = opts.harnessBearer;
     this.echoFactory = opts.echo;
   }
 
@@ -883,11 +893,11 @@ export class RunHost {
    * Scoped to the OWNING run's lineage by construction: it reads one run's buffer and listeners
    * and nothing else — a sibling run's events cannot reach this endpoint through here.
    */
-  private attachEcho(runId: string, endpoint: string): () => void {
+  private attachEcho(runId: string, endpoint: string, placement: string): () => void {
     const run = this.runs.get(runId);
     const factory = this.echoFactory;
     if (!run || !factory) return () => {};
-    const push = factory(endpoint);
+    const push = factory(endpoint, this.harnessBearer?.(placement));
     let chain = Promise.resolve();
     let reported = false;
     const enqueue = (events: EchoEvent[]): void => {
@@ -965,6 +975,7 @@ export class RunHost {
       table: this.table,
       sandbox: this.sandbox,
       instanceHarness: this.instanceHarness,
+      ...(this.harnessBearer ? { harnessBearer: this.harnessBearer } : {}),
       // The admission ledger's write half (ADR-0016): the Agent actor reports the durable handle the
       // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
@@ -999,7 +1010,7 @@ export class RunHost {
         if (run && run.binding === binding) this.feed(run, event);
       },
       // The run-narrative echo attach (ADR-0023), called from `workspace()`'s registrar.
-      echo: (endpoint) => this.attachEcho(record.runId, endpoint),
+      echo: (endpoint, placement) => this.attachEcho(record.runId, endpoint, placement),
     };
     let bound = false;
     const actor = createActor(machine, {

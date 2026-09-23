@@ -18,6 +18,7 @@ open           /workflows, /workflows/:name/machine, /viz/*        structure
                /workflows/:name/runs, …/runs/:runId/events         OBSERVATION (new)
 authenticated  /agents/:iid/*                                      the Agent's surface  [Sandbox token]
 instanceOnly   /runs, /runs/:id, /runs/:id/events (GET + POST)     run state + control  [Instance token]
+               POST /workflows/:name/runs                          starting a run (ADR-0058)
                /runs/:id/gates/:gate/events                        gates (ADR-0011/0013)
 ```
 

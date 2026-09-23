@@ -1,6 +1,9 @@
 // The Harness wire, served (ADR-0027): the five conversation endpoints, shaped byte-for-byte on
-// the stub Harness (`packages/orchestrator/src/stub-harness.ts`, the normative model) with the
-// one documented divergence — a GET (either view) on an unknown conversation is 404. POST creates
+// the stub Harness (`packages/orchestrator/src/stub-harness.ts`, the normative model) with two
+// documented divergences. First, every route is AUTHENTICATED (ADR-0058): the bearer the
+// Orchestrator derives for this placement, checked before anything else, so a refusal says nothing
+// about which conversations exist — the stub is a host-side test fixture and checks nothing.
+// Second, a GET (either view) on an unknown conversation is 404. POST creates
 // (that is admission), abort answers `{ aborted: false }`: the stub is inert by design, but a
 // real Harness that answered a lost conversation with silence would park a re-attached wait
 // forever. Plus ADR-0023's echo (`POST /echo`): the run-narrative events the Orchestrator tees
@@ -9,7 +12,7 @@
 // pi.
 
 import { Hono } from "hono";
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
 import { renderEchoEvent, type PrinterOut } from "./printer.ts";
 import {
@@ -55,22 +58,22 @@ export type HarnessAppDeps = {
   longPollMs?: number;
   /**
    * Deployed as the Instance Harness (`JR2_MENU_ONLY` — deploy.ts), this process admits Menu-only
-   * Agents ALONE. The wire is unauthenticated in-cluster and the admission carries its own
-   * definition (ADR-0049), so without this gate any in-cluster caller could POST a
-   * `workspace: "write"` definition here and be handed Working tools — code execution in the one
-   * pod ADR-0031 claims has none. Placement is definition-wins; a Turn this Harness refuses runs
+   * Agents ALONE. The admission carries its own definition (ADR-0049), so without this gate a
+   * caller holding this placement's bearer could POST a `workspace: "write"` definition here and be
+   * handed Working tools — code execution in the one pod ADR-0031 claims has none. The bearer
+   * (ADR-0058) narrows who can try; this gate still decides what the definition may be. Placement is definition-wins; a Turn this Harness refuses runs
    * on its Workspace's Harness or nowhere. Omitted (a Sandbox's Harness), every definition admits.
    */
   menuOnly?: boolean;
   /**
-   * Verify an echo bearer (ADR-0023): the endpoint is INSTANCE-token-gated, but the raw token
-   * must never enter this process — the Agent has code execution in the Harness container
-   * (tokens.ts: "it never enters a Sandbox") — so the check is injected: `main.ts` compares
-   * sha256(bearer) against `JR2_ECHO_TOKEN_SHA256` from the env. Omitted, the endpoint refuses
-   * everything (403): a Harness nobody equipped prints no narrative, and the pushing side is
-   * fire-and-forget about it.
+   * Verify a request's bearer (ADR-0058) — every route but the unknown-route answers is gated on
+   * it: admit, stream, history, abort, and the echo. The bearer is the one the Orchestrator derives
+   * for THIS placement, and it must never rest in this process — the Agent has code execution in
+   * the Harness container — so the check is injected: `main.ts` compares sha256(bearer) against
+   * `JR2_HARNESS_TOKEN_SHA256` from the env, a digest that verifies and mints nothing. Required: a
+   * Harness with no way to check a bearer is not a Harness that admits on faith.
    */
-  checkEchoBearer?: (bearer: string | undefined) => boolean;
+  checkBearer: (bearer: string | undefined) => boolean;
   /** Where echo lines land — the pod log (`process.stdout`) unless a test collects them. */
   echoOut?: PrinterOut;
 };
@@ -92,6 +95,16 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
     `${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
 
   const app = new Hono();
+
+  // The gate (ADR-0058), ahead of every route that names a conversation or prints: a caller without
+  // this placement's bearer learns nothing — not whether a conversation exists (401 before 404),
+  // and a refused admission creates none.
+  const gate: MiddlewareHandler = async (c, next) => {
+    if (!deps.checkBearer(bearerOf(c))) return c.json({ error: "unauthorized" }, 401);
+    return next();
+  };
+  app.use("/agents/*", gate);
+  app.use("/echo", gate);
 
   app.post("/agents/:name/:id", async (c) => {
     const agentName = c.req.param("name");
@@ -171,15 +184,9 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   // The run-narrative echo (ADR-0023): "print these events". The body is the STRUCTURED feed —
   // rendering is this side's craft (printer.ts), so the wire never carries preformatted strings.
   // Rendering is total: an event the renderer does not recognize prints nothing and fails
-  // nothing, because the log is a courtesy view and the feed remains the record.
+  // nothing, because the log is a courtesy view and the feed remains the record. Gated like the
+  // conversation routes, on the same bearer (ADR-0058) — the Instance token no longer travels here.
   app.post("/echo", async (c) => {
-    if (!deps.checkEchoBearer) {
-      return c.json(
-        { error: "echo is not enabled on this harness (no JR2_ECHO_TOKEN_SHA256 in its environment)" },
-        403,
-      );
-    }
-    if (!deps.checkEchoBearer(bearerOf(c))) return c.json({ error: "unauthorized" }, 401);
     const body = (await c.req.json().catch(() => undefined)) as { events?: unknown } | undefined;
     if (!body || !Array.isArray(body.events)) {
       return c.json({ error: "echo body must be { events: [...] } — the structured feed events (ADR-0023)" }, 400);

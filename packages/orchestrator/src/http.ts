@@ -27,9 +27,10 @@
 //                 control.
 //   authenticated any principal we minted a token for. The Agent's surface lives here, scoped
 //                 further per-registration by `mayDeliverToAgent`.
-//   instanceOnly  the Instance token ALONE. Run control and full run state (`/runs*`): a Sandbox
-//                 token authenticates but is refused, because reading another feature's context or
-//                 cancelling a run is not on the Agent's surface any more than a Gate is.
+//   instanceOnly  the Instance token ALONE. Run control — starting a run included (ADR-0058) — and
+//                 full run state (`/runs*`): a Sandbox token authenticates but is refused, because
+//                 starting work, reading another feature's context, or cancelling a run is not on
+//                 the Agent's surface any more than a Gate is.
 
 import { readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -356,8 +357,10 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // Push work: start a run of a registered workflow. Unknown workflow → host.start throws → 404.
   // A body failing the machine's declared input schema (ADR-0033) → 400 naming the accepted
   // shape — the same error class, and the same wire mapping, as a gate delivery failing its
-  // schema (`POST /runs/:id/gates/:gate/events` below).
-  app.post("/workflows/:name/runs", authenticated, async (c) => {
+  // schema (`POST /runs/:id/gates/:gate/events` below). Instance-band (ADR-0058): starting work is
+  // run control, and a Sandbox token's scope is its own agent surface — no Adapter forwarding this
+  // route is what keeps an Agent from starting runs today, and that is not a control.
+  app.post("/workflows/:name/runs", instanceOnly, async (c) => {
     const name = c.req.param("name");
     const input = await readJson(c.req.text());
     try {

@@ -37,15 +37,16 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   pod log should read as the whole story of the run that owns it: not just the conversations hosted there, but the
   decisions and Emits that happened around them — a ticket claimed before the Workspace existed, a Menu pick a
   [Menu-only Agent](0031-menu-only-agents-run-on-the-instance-harness.md) made on the Instance Harness. The mechanism is
-  a projection of the observation feed (ADR-0022), not a second record: the Harness wire gains one instance-token-gated
-  endpoint ("print these events"), and the Orchestrator — the feed's one subscriber — tees the owning run's events to
-  the enclosing Workspace's Harness. At attach it replays the run's feed-so-far (the log opens with its preamble: why
-  this Workspace exists); thereafter it tees live. The Harness renders — the wire payload is the structured event, and
-  printing stays this ADR's craft. Three boundaries: **markers, not mirrors** — a remotely-hosted Turn echoes its
-  admission and its pick, never its transcript (the transcript prints exactly once, where the Turn ran); **fire and
-  forget** — a failed echo never fails anything, the feed remains the record and the log is a courtesy view; **Emit is
-  the only author API** — a workflow that wants prose in the log Emits it (ADR-0011's vocabulary discipline holds; no
-  `log()` primitive exists or will).
+  a projection of the observation feed (ADR-0022), not a second record: the Harness wire gains one endpoint ("print
+  these events"), gated like every Harness route on the placement's bearer
+  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), and the Orchestrator — the feed's one subscriber —
+  tees the owning run's events to the enclosing Workspace's Harness. At attach it replays the run's feed-so-far (the log
+  opens with its preamble: why this Workspace exists); thereafter it tees live. The Harness renders — the wire payload
+  is the structured event, and printing stays this ADR's craft. Three boundaries: **markers, not mirrors** — a
+  remotely-hosted Turn echoes its admission and its pick, never its transcript (the transcript prints exactly once,
+  where the Turn ran); **fire and forget** — a failed echo never fails anything, the feed remains the record and the log
+  is a courtesy view; **Emit is the only author API** — a workflow that wants prose in the log Emits it (ADR-0011's
+  vocabulary discipline holds; no `log()` primitive exists or will).
 - **Live-only, and jr2 promises nothing beyond the pod.** A conversation lives exactly as long as its Harness process
   (ADR-0027), so a Sandbox teardown (ADR-0012) or a lost Workspace (ADR-0021) takes it with it — the same contract
   ADR-0012 already set for the pod-local clone. A cluster that ships logs will outlive the pod anyway; that is the log
@@ -78,10 +79,10 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
 
 ## Consequences
 
-- **The echo does not widen ADR-0014's open band.** The echo endpoint is instance-token-gated wire, so Emit payloads may
-  ride it — the tokenless observation band still carries Emit types alone. What it does widen is the pod-log surface: a
-  run's narrative becomes readable by whoever can read the Workspace pod's logs, the same audience the conversation
-  bullet below already grants.
+- **The echo does not widen ADR-0014's open band.** The echo endpoint is authenticated wire (the placement's bearer,
+  ADR-0058), so Emit payloads may ride it — the tokenless observation band still carries Emit types alone. What it does
+  widen is the pod-log surface: a run's narrative becomes readable by whoever can read the Workspace pod's logs, the
+  same audience the conversation bullet below already grants.
 - **A scoped exception to ADR-0014**, recorded there. Observation is open and everything sensitive sits behind
   `instanceOnly`; this puts an Agent's reasoning in front of whoever can read pod logs. Excluding tool results bounds it
   to what an Agent reasons aloud rather than what it happened to read. Fine on kind; a real decision on a shared

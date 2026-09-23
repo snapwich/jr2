@@ -52,14 +52,14 @@ still the same pod (ADR-0021). One exchange, both directions.
 These are accepted gaps in the current operator, recorded so they aren't silently forgotten. Each is a deliberate
 deferral.
 
-- **Network isolation is not yet enforced.** The pod is hardened at the host boundary —
-  `automountServiceAccountToken: false`, pod/container `securityContext` (`runAsNonRoot`,
-  `allowPrivilegeEscalation: false`, drop `ALL`, seccomp `RuntimeDefault`) — but nothing yet restricts pod _egress_. An
-  untrusted Agent can still reach the cluster's API server IP and sibling Sandbox Services over the pod network. The
-  next isolation layer is a default-deny `NetworkPolicy` per Sandbox (deny egress to the API server and to other
-  Sandboxes, allow only what the workflow needs). Requires a CNI that enforces NetworkPolicy (kind's default `kindnet`
-  does not; Calico/Cilium do). Note the ADR-0013 boundary does not depend on this: only the token bounds what a pod may
-  _do_; NetworkPolicy would bound where it may _talk_.
+- **Egress is not restricted.** The pod is hardened at the host boundary — `automountServiceAccountToken: false`,
+  pod/container `securityContext` (`runAsNonRoot`, `allowPrivilegeEscalation: false`, drop `ALL`, seccomp
+  `RuntimeDefault`) — and its _ingress_ is the Orchestrator's alone: `jr2 up` converges a NetworkPolicy that admits no
+  other pod to a Sandbox ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), which kind's `kindnet`
+  enforces. Nothing yet restricts _egress_: an untrusted Agent can still reach the cluster's API server IP (it holds no
+  credential there) and the internet. A default-deny egress policy with an allowlist is the next layer, and ADR-0058
+  records it open. The ADR-0013 boundary does not depend on either: only the token bounds what a pod may _do_;
+  NetworkPolicy bounds where it may _talk_.
 - **Sidecars are plain containers, not native sidecars.** They are scheduled as ordinary `containers`, not Kubernetes
   ≥1.29 native sidecars (`initContainers` with `restartPolicy: Always`). There is no start-ordering or
   termination-ordering guarantee between the Harness and its sidecars — the Harness may begin serving before the Adapter

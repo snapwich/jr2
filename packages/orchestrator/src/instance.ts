@@ -29,7 +29,7 @@ import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
-import { createAuthenticator, loadSigningKey, mintInstanceToken } from "./tokens.ts";
+import { createAuthenticator, harnessToken, loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 
 export type InstanceOptions = {
@@ -113,19 +113,25 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   }
   await store.init();
 
-  // Resolved BEFORE the host: the Instance token is also the echo bearer (ADR-0023), so the
-  // host's echo pusher closes over it. Served under in step 4 below, unchanged.
+  // Resolved BEFORE the host, and the signing key with it: the host derives every Harness bearer
+  // from the key (ADR-0058) — admission, stream, abort, echo. The key is loaded from (or minted
+  // into) the instance folder, NOT generated per process: live Sandboxes outlive a restart, their
+  // Adapters still bear tokens this key signed, and their Harnesses still check bearers it derived.
+  // The Instance token is per-boot; the key is not. Both are served under in step 4 below.
   const instanceToken = opts.instanceToken ?? mintInstanceToken();
+  const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));
 
   const host = new RunHost({
     store,
     reconcile: opts.reconcile,
     sandbox: opts.sandbox,
     instanceHarness: opts.instanceHarness,
+    harnessBearer: (placement) => harnessToken(signingKey, placement),
     // The run-narrative echo (ADR-0023): tee a run's feed to its enclosing Workspace's Harness,
-    // authenticated as the instance. The wire push is here and the fire-and-forget is the
-    // host's, so a Harness that refuses (or is gone) costs a log line at most.
-    echo: (endpoint) => createEchoPush({ baseUrl: endpoint, token: instanceToken }),
+    // bearing that Workspace's Harness bearer (ADR-0058) — never the Instance token, which would
+    // otherwise pass through a process the Agent executes code beside. The wire push is here and
+    // the fire-and-forget is the host's, so a Harness that refuses (or is gone) costs a log line.
+    echo: (endpoint, bearer) => createEchoPush({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
     // A run left `live` to be retried is otherwise unexplained — the announce line names it, this
     // says why (ADR-0030). stderr, because it is a fault, not the boot's structured result.
     onRestoreError: (runId, err) =>
@@ -153,10 +159,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // discoverable by asking after a specific run id nobody knows to ask about.
   const restored = await host.restore();
 
-  // 4. Serve, authenticated (ADR-0013). The signing key is loaded from (or minted into) the
-  // instance folder, NOT generated per process: live Sandboxes outlive a restart, and their
-  // Adapters still bear tokens this key signed. The Instance token is per-boot; the key is not.
-  const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));
+  // 4. Serve, authenticated (ADR-0013) — the token and key resolved above.
   const auth = createAuthenticator({ instanceToken, signingKey });
   // The Repos are read PER REQUEST, never snapshotted here: a cache the agent cloned minutes
   // after boot must show as present the next time anyone asks (ADR-0048/0051).

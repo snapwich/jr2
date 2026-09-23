@@ -20,6 +20,7 @@ import { imageContextDigest } from "../src/images.ts";
 import { repoKey } from "../src/repo-identity.ts";
 import { attachScript, kubectlSandbox, rootImageFault } from "../src/sandbox-kubectl.ts";
 import type { KubectlExec } from "../src/sandbox-kubectl.ts";
+import { harnessToken, harnessTokenDigest } from "../src/tokens.ts";
 import type { RepoResources } from "../src/repos.ts";
 import type { ProvisionedRepo } from "../src/workspace.ts";
 
@@ -611,9 +612,35 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
   const applied = crOf(calls);
   assert.deepEqual(
     applied.spec.env.map((e: { name: string }) => e.name),
-    ["FLUE_LOG", "JR2_ADAPTER_URL"],
+    ["FLUE_LOG", "JR2_ADAPTER_URL", "JR2_HARNESS_TOKEN_SHA256"],
   );
   assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "anthropic" } }]);
+});
+
+test("each Sandbox's Harness gets the DIGEST of its own placement's bearer, last — never the bearer (ADR-0058)", async () => {
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const port = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    exec,
+    // An instance's `harness.env` naming the same var cannot open the gate: the mechanism's rides last.
+    env: [{ name: "JR2_HARNESS_TOKEN_SHA256", value: "attacker-chosen" }],
+  });
+  await port.provision({ name: "sb-a", runId: "r", workflow: "w", ...withApp });
+  await port.provision({ name: "sb-b", runId: "r", workflow: "w", ...withApp });
+  const crs = calls
+    .filter((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))
+    .map((c) => JSON.parse(c.input!));
+  const digestOf = (cr: { spec: { env: Array<{ name: string; value?: string }> } }) =>
+    cr.spec.env.filter((e) => e.name === "JR2_HARNESS_TOKEN_SHA256").at(-1)?.value;
+
+  assert.equal(digestOf(crs[0]), harnessTokenDigest(provisionable.signingKey, "sb-a"));
+  assert.equal(digestOf(crs[1]), harnessTokenDigest(provisionable.signingKey, "sb-b"));
+  assert.notEqual(digestOf(crs[0]), digestOf(crs[1]), "one pod's bearer opens no other pod");
+  // The bearer itself appears nowhere in what the pod is given — not in the CR, not in a Secret.
+  for (const call of calls) {
+    assert.ok(!call.input?.includes(harnessToken(provisionable.signingKey, "sb-a")));
+  }
 });
 
 test("the Adapter is UNCONDITIONAL and is the pod's only credential holder", async () => {
@@ -652,6 +679,7 @@ test("caBundle: the jr2-ca ConfigMap mounts into the HARNESS container with NODE
   assert.deepEqual(applied.spec.env, [
     { name: "JR2_ADAPTER_URL", value: "http://127.0.0.1:8081" },
     { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/ca.crt" },
+    { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(provisionable.signingKey, "sb-ca") },
   ]);
   assert.deepEqual(applied.spec.volumes.at(-1), { name: "ca", configMap: { name: "jr2-ca" } });
   // CR-level volumeMounts land on the HARNESS container only (operator contract) — the ADR-0020

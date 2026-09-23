@@ -21,13 +21,20 @@
 //                   Harness's Adapter bears one signed for that placement's Service name
 //                   (ADR-0031), scoping it to the Menu-only registrations placed there.
 //
+// And one bearer the other way (ADR-0058), which is no principal here because this server never
+// checks it:
+//
+//   Harness bearer  what the Orchestrator presents to the Harness in one pod — admit, stream,
+//                   abort, echo. Derived per placement (`harnessToken`); the Harness holds only
+//                   its sha-256 (`harnessTokenDigest`), so it verifies and mints nothing.
+//
 // The Sandbox token is a SIGNED NAME, not a random string in a table: `<sandbox>.<hmac(key, name)>`,
 // verified by recomputing. Three things fall out that a token table would have to work for — the
 // Orchestrator holds no per-Sandbox state, `provision` stays idempotent (re-minting yields the same
 // token, so a re-applied Secret is a no-op), and a token minted before a restart still verifies
 // after one, which is exactly what ADR-0012's re-attach promises the still-running Adapter.
 
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -44,6 +51,29 @@ export type Authenticator = (bearer: string | undefined) => Principal | undefine
 /** The Sandbox token for one Sandbox: its name, signed. Same name + key → same token, always. */
 export function sandboxToken(key: Buffer, sandbox: string): string {
   return `${sandbox}.${sign(key, sandbox)}`;
+}
+
+/**
+ * The Harness bearer for one placement (ADR-0058): what the Orchestrator presents on every Harness
+ * wire call — admit, stream, abort, echo — to the Harness in the pod `placement` names (a
+ * Sandbox, or `jr2-instance-harness`). The same signed-name idea as the Sandbox token, turned the
+ * other way: here the Orchestrator is the CALLER. Deterministic for the same reason — a restarted
+ * Orchestrator re-derives the bearer a live Harness already checks against.
+ *
+ * Domain-separated from `sandboxToken` by the `harness:` prefix, which no DNS-label name can
+ * produce, so no Sandbox token ever doubles as a Harness bearer or the reverse.
+ */
+export function harnessToken(key: Buffer, placement: string): string {
+  return sign(key, `harness:${placement}`);
+}
+
+/**
+ * What the Harness in `placement` holds to CHECK its bearer: the sha-256 of it, never the bearer
+ * (ADR-0058). The Agent executes code in that container, and a digest inverts to nothing — so the
+ * Harness can verify its own bearer and can mint none, for itself or for any other pod.
+ */
+export function harnessTokenDigest(key: Buffer, placement: string): string {
+  return createHash("sha256").update(harnessToken(key, placement)).digest("base64url");
 }
 
 /** Mint the per-boot Instance token (opaque and random — it names nothing, it just IS the trust). */

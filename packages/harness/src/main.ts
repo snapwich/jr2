@@ -40,12 +40,16 @@ const adapterUrl = required(
 );
 const models = modelsFor(harness, process.env);
 
-// The echo gate (ADR-0023): the endpoint is instance-token-gated, but the raw Instance token must
-// never enter this container (the Agent has code execution here — tokens.ts), so the env carries
-// its sha-256 and a bearer verifies by hashing. Digests compare with `===` on purpose: what a
-// timing leak could reveal is a hash prefix, which inverts to nothing. Absent → no gate → the
-// echo endpoint refuses, and the Orchestrator's fire-and-forget push shrugs.
-const echoTokenSha256 = process.env.JR2_ECHO_TOKEN_SHA256;
+// The wire's gate (ADR-0058): the Orchestrator bears a token derived for THIS placement, and the
+// env carries only its sha-256 — the Agent has code execution in this container, and a digest
+// verifies without minting, for this pod or any other. Required at boot: a Harness that could not
+// check a bearer would admit anyone who can reach it, which is the hole this closes. Digests
+// compare with `===` on purpose: what a timing leak could reveal is a hash prefix, which inverts to
+// nothing.
+const bearerSha256 = required(
+  "JR2_HARNESS_TOKEN_SHA256",
+  "the Harness cannot authenticate the Orchestrator, and an unauthenticated wire lets any pod that reaches it drive its conversations (ADR-0058)",
+);
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("base64url");
 
 const app = harnessApp({
@@ -55,9 +59,7 @@ const app = harnessApp({
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code
   // execution in this pod" a property, not a comment.
   ...(process.env.JR2_MENU_ONLY ? { menuOnly: true } : {}),
-  ...(echoTokenSha256
-    ? { checkEchoBearer: (bearer: string | undefined) => bearer !== undefined && sha256(bearer) === echoTokenSha256 }
-    : {}),
+  checkBearer: (bearer) => bearer !== undefined && sha256(bearer) === bearerSha256,
 });
 
 const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0" }, (info) => {

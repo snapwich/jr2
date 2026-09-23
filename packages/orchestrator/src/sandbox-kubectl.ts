@@ -69,7 +69,7 @@ import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } 
 import { CA_CONFIGMAP, IMAGES_KEY, IMAGES_MOUNT, REPOS_MOUNT } from "./names.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import type { RepoResources } from "./repos.ts";
-import { sandboxToken } from "./tokens.ts";
+import { harnessTokenDigest, sandboxToken } from "./tokens.ts";
 import type { ProvisionedRepo, SandboxPort, WorkspaceSpec } from "./workspace.ts";
 
 /** Run one kubectl invocation to completion. `input` is piped to stdin (`apply -f -`). */
@@ -423,15 +423,23 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   ];
 
   // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
-  // config) first, then the mechanism-owned vars (the Adapter address, the CA trust path), which
-  // win on collision. Note the asymmetry stands (ADR-0013): user env/envFrom land on the HARNESS
-  // container only — never on the Adapter, whose env is minted here and carries the pod's only
-  // credential.
-  const harnessEnv = (): HarnessEnvVar[] => [
-    ...(opts.env ?? []),
-    { name: "JR2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` },
-    ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
-  ];
+  // config) first, then the mechanism-owned vars (the Adapter address, the CA trust path, the
+  // wire's gate), which win on collision. Note the asymmetry stands (ADR-0013): user env/envFrom
+  // land on the HARNESS container only — never on the Adapter, whose env is minted here and
+  // carries the pod's only credential.
+  //
+  // The gate rides LAST (ADR-0058): the digest of the bearer the Orchestrator derives for THIS
+  // Sandbox. A digest because the Agent reads this env; last because a `harness.env` entry of the
+  // same name must not be able to choose the Harness's credential.
+  const harnessEnv = (name: string): HarnessEnvVar[] => {
+    if (!opts.signingKey) throw new Error("kubectlSandbox: a Harness needs a signingKey to check its bearer");
+    return [
+      ...(opts.env ?? []),
+      { name: "JR2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` },
+      ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
+      { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(opts.signingKey, name) },
+    ];
+  };
 
   /**
    * The two init steps, in order (ADR-0037). They are plain container fragments the operator
@@ -573,7 +581,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // this used to carry was unreachable. The seat's own vars (the fallback `HOME`) come
         // FIRST, so the instance's `harness.env` can still override them the way it overrides
         // anything the image set.
-        env: [...seat.env, ...harnessEnv()],
+        env: [...seat.env, ...harnessEnv(req.name)],
         ...(opts.envFrom?.length ? { envFrom: opts.envFrom } : {}),
         // What the AGENT gets: an address on its own loopback, and no credential anywhere. This is
         // the only thing in the pod that tells it how to reach its Machine (ADR-0013).

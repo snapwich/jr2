@@ -105,14 +105,14 @@ const iidOf = (client: MockFlueClient, runId: string, agentName: string): string
     .filter((a) => a.agentName === agentName)
     .at(-1)!.instanceId;
 
-type Push = { endpoint: string; events: EchoEvent[] };
+type Push = { endpoint: string; bearer: string | undefined; events: EchoEvent[] };
 
 /** A fake echo server at the factory seam: records pushes, optionally refusing every one. */
 function fakeEcho(opts: { down?: boolean } = {}) {
   const pushes: Push[] = [];
-  const factory = (endpoint: string) => async (events: EchoEvent[]) => {
+  const factory = (endpoint: string, bearer: string | undefined) => async (events: EchoEvent[]) => {
     if (opts.down) throw new Error("connect ECONNREFUSED (the Workspace pod is gone)");
-    pushes.push({ endpoint, events });
+    pushes.push({ endpoint, bearer, events });
   };
   const flat = () => pushes.flatMap((p) => p.events);
   return { pushes, flat, factory };
@@ -252,4 +252,24 @@ test("a host with no echo factory runs identically — the echo is a courtesy, n
   host.sendToAgent(iidOf(client, runId, "decider"), { type: "done" });
   await waitFor(() => host.status(runId) === undefined);
   assert.equal((await host.read(runId))?.status, "done");
+});
+
+test("the echo bears its Workspace's Harness bearer — derived for that pod, never the Instance token (ADR-0058)", async () => {
+  const client = new MockFlueClient();
+  const { pushes, factory } = fakeEcho();
+  const sandbox = new EchoSandbox();
+  const host = new RunHost({
+    store: await mkStore(),
+    sandbox,
+    echo: factory,
+    harnessBearer: (placement) => `bearer-for:${placement}`,
+  });
+  host.register(echoDef(client));
+  const { runId } = await host.start("echoed");
+  await waitFor(() => pushes.length > 0);
+
+  // The endpoint is `http://<sandbox name>.test` (EchoSandbox), so the name is read back off it.
+  const name = new URL(sandbox.endpointOf(runId)!).hostname.replace(/\.test$/, "");
+  assert.ok(pushes.every((p) => p.bearer === `bearer-for:${name}`));
+  await host.stop(runId);
 });

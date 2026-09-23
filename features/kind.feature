@@ -173,6 +173,32 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the delivery is refused as unauthorized
       And the run has not settled
 
+  Rule: a Harness answers the Orchestrator alone
+    ADR-0058. The Harness wire drives conversations — admit a Turn, read its history, abort it — and
+    its iids are derivable (ADR-0013/0057), so a caller that can reach a Harness must also hold the
+    bearer the Orchestrator derives for that pod, which no pod holds (the Harness keeps only its
+    digest). And no pod but the Orchestrator reaches a Harness pod at all: an ingress NetworkPolicy
+    per placement, which kindnet enforces. The bearer is the control; the policy bounds where a pod
+    may talk.
+
+    Scenario: the Agent cannot drive its own Harness's wire
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      # Loopback: the same pod, so no NetworkPolicy is between them — the bearer alone refuses.
+      When the Harness container admits a Turn to its own Harness
+      Then the Harness refuses it as unauthorized
+      And the run has not settled
+
+    Scenario: a Sandbox cannot reach the Instance Harness
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      # The Instance Harness holds every Menu-only conversation in the Instance (ADR-0031), and the
+      # kind instance's advisor converges one in every scenario's namespace.
+      When the Harness container dials the Instance Harness
+      Then the connection never completes
+
   Rule: an Agent's turn ends when the state that asked for it stops waiting
     ADR-0024. Leaving an Agent invoke means "I am no longer interested in this answer", so the
     submission behind it is ended — at the Harness, which is the only place that end is observable
