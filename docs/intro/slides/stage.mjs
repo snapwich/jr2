@@ -18,6 +18,7 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { EXTRA_IMAGES, kindCluster, kitImages, missingImages } from "../instance/preload.mjs";
 
 const exec = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -104,6 +105,27 @@ const replicas = await out("kubectl", [
 ]).catch(() => "");
 if (replicas === "1") ok(`orchestrator ready in namespace ${NAMESPACE}`);
 else die(`no ready orchestrator in namespace ${NAMESPACE}`, `cd ../instance && npx jr2 up`);
+
+// The talk runs with no network (README: "Before the talk"), so every image a pod will ask for must
+// already be on the node, and the repo `task` clones must be served from inside the cluster.
+const seed = await out("kubectl", [
+  "-n",
+  "intro-seed",
+  "get",
+  "deploy",
+  "seed",
+  "-o",
+  "jsonpath={.status.readyReplicas}",
+]).catch(() => "");
+if (seed === "1") ok("toy repo served in-cluster (intro-seed)");
+else die("the toy repo is not served in-cluster", "cd ../instance && npm run seed");
+
+const cluster = await kindCluster().catch(() => null);
+if (cluster) {
+  const missing = await missingImages(cluster, [...EXTRA_IMAGES, ...(await kitImages())]);
+  if (missing.length === 0) ok("every image the demo runs is on the node");
+  else die(`not on the node: ${missing.join(", ")}`, "cd ../instance && npm run preload (online)");
+} else warn("not a kind cluster — skipping the image check");
 
 const env = await readFile(join(INSTANCE, ".env"), "utf8").catch(() => "");
 const key = /^JR2_PROVIDER_API_KEY=(.*)$/m.exec(env)?.[1]?.trim();

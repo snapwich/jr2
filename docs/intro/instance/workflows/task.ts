@@ -15,9 +15,10 @@ import { task } from "@jr2/machines";
 
 export const machine = customize(task, {
   // Slot order is this Machine's convention, not the kit's: the FIRST slot is where the coder
-  // works. The url must match an entry in this instance's credentials fence (jr2.config.ts).
+  // works. The url must match an entry in this instance's credentials fence (jr2.config.ts). It is
+  // the toy repo (`../repo/`), served in-cluster by `npm run seed`, so the demo clones offline.
   repos: {
-    target: { url: "https://github.com/snapwich/richsnapp.com" },
+    target: { url: "http://seed.intro-seed.svc/greet.git", ref: "main" },
   },
   // The model specifier is `<provider id>/<model>`: `local` is the provider in jr2.config.ts, and
   // everything after the first `/` is handed to llama-server verbatim — it must be exactly what
@@ -25,5 +26,6 @@ export const machine = customize(task, {
   agents: {
     coder: { model: "local/qwen3.6-35b-a3b" },
   },
+  // A registry ref `jr2 up` does not deliver: `npm run preload` puts it on the node.
   user: "ghcr.io/snapwich/dev:k8s-arm64",
 });

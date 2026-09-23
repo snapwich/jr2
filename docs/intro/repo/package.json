@@ -1,0 +1,10 @@
+{
+  "name": "greet",
+  "version": "1.4.0",
+  "description": "Says hello.",
+  "type": "module",
+  "bin": {
+    "greet": "bin/greet.js"
+  },
+  "license": "MIT"
+}

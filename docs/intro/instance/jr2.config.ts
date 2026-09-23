@@ -11,7 +11,8 @@ export default defineConfig({
     // today's two implicit defaults made visible (JR2_GIT_TOKEN from .env for https, the jr2-git-ssh Secret
     // for ssh). Narrow it to your hosts (`match: "github.com/yourorg/"`) before anything untrusted can start
     // a run. The longest match wins; the url's scheme picks token vs sshKey.
-    credentials: [{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }],
+    // The toy repo `npm run seed` serves in-cluster over plain http: admitted, and spent no credential on.
+    credentials: [{ match: "*", token: "JR2_GIT_TOKEN", sshKey: "jr2-git-ssh" }, { match: "seed.intro-seed.svc/" }],
   },
   // The model provider (ADR-0018): an OpenAI-compatible endpoint this instance can REACH. It says
   // nothing about WHICH model to use — an Agent definition names `local/<model>` and resolves its

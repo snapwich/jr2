@@ -61,7 +61,7 @@ then answer:
 ```sh
 jr2 status                                                   # the run, the Gate, the branch
 jr2 logs <runId> -f
-jr2 send <runId> --gate review --event request_changes --input '{"notes":"Use commander."}'
+jr2 send <runId> --gate review --event request_changes --input '{"notes":"Also accept -v."}'
 jr2 send <runId> --gate review --event approve
 ```
 

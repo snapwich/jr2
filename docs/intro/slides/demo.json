@@ -31,12 +31,12 @@
       "interrupt": true
     },
     "gate": {
-      "cmd": "jr2 status $RUN | jq '{state, gates}'",
+      "cmd": "jr2 status $RUN | jq '{status, value, gates}'",
       "interrupt": true,
       "note": "The Gate names the pending decision and the events it accepts."
     },
     "changes": {
-      "cmd": "jr2 send $RUN --gate review --event request_changes --input '{\"notes\":\"Use commander.\"}'",
+      "cmd": "jr2 send $RUN --gate review --event request_changes --input '{\"notes\":\"Also accept -v.\"}'",
       "note": "A workflow-defined event. The Machine goes back for another Turn; the Workspace lives."
     },
     "approve": {
