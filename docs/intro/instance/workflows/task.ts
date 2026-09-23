@@ -23,6 +23,6 @@ export const machine = customize(task, {
   // everything after the first `/` is handed to llama-server verbatim — it must be exactly what
   // `GET /v1/models` serves.
   agents: {
-    coder: { model: "local/unsloth/Qwen3-32B-GGUF:UD-Q4_K_XL" },
+    coder: { model: "local/qwen3.6-35b-a3b" },
   },
 });

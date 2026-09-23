@@ -31,7 +31,7 @@ export default defineConfig({
       // limits resolve to 0 and Compaction is left with no context budget. The key is the model id
       // AFTER the `local/` prefix — exactly what `GET /v1/models` serves. `contextWindow` must
       // match llama-server's `-c` — `npm run llama` in this folder starts exactly that endpoint.
-      models: { "unsloth/Qwen3-32B-GGUF:UD-Q4_K_XL": { contextWindow: 65_536, maxTokens: 4096 } },
+      models: { "qwen3.6-35b-a3b": { contextWindow: 65_536, maxTokens: 4096 } },
     },
   },
   // Where Sandboxes land (ADR-0052): by default wherever an ordinary pod lands — not cordoned, no taint — and

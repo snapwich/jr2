@@ -12,8 +12,8 @@ out. Two workflows: `ping` (no Agent, no Sandbox) and `task` (a coder in a Sandb
 | [kind](https://kind.sigs.k8s.io) + kubectl                                    | the cluster `jr2 up` converges into |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) (`brew install llama.cpp`) | serves the model                    |
 
-The model — `unsloth/Qwen3-32B-GGUF:UD-Q4_K_XL`, ~19 GB — downloads on the first `npm run llama`. Budget ~28 GB of RAM
-for the server, and leave the Docker VM its own.
+The model — `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q6_K_XL`, ~30 GB — downloads on the first `npm run llama`. Budget ~40 GB of
+RAM for the server, and leave the Docker VM its own.
 
 ## Setup
 
