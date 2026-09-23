@@ -21,10 +21,10 @@ Structured content:
 ```
 
 A UUID, printed twice, against instructions that say it MUST finish by calling the tool and never say when finishing is
-finished. So it calls again — and the retry does not even reach a tool. `serverForTurn` rebuilds the turn's server per
-request, so a call after the state moved on fails at `GET /agents/:iid/surface` and the Adapter answers **HTTP 404 to
-the MCP transport** (verified against the running pod: `{"error":"no live surface for agent ..."}`). A connection
-failure is the most retry-inviting thing available, and the model retries, trimming its answer each time.
+finished. So it calls again — and the retry does not even reach a tool. The Menu's server was rebuilt per request, so a
+call after the state moved on failed at `GET /agents/:iid/surface` and came back as **HTTP 404 on the tool's transport**
+(verified against the running pod: `{"error":"no live surface for agent ..."}`). A connection failure is the most
+retry-inviting thing available, and the model retries, trimming its answer each time.
 
 **It is a coin flip, which is what rules out fixing this with words.** In the second run the coder called once and
 settled `completed`, while the reviewer ran away; in the first, both ran away. The same prompt, the same model, the same
@@ -76,11 +76,12 @@ single-threaded.
 - **The receipt becomes self-describing**: `POST /agents/:iid/events` answers
   `{ delivered: true, event: "review_verdict", turnComplete: true, deliveryId }`. `turnComplete` is read off the same
   table the guarantee uses — whether the registration just delivered to is still live — so it reports what happened
-  rather than what was hoped. `deliveryId` is unchanged ([ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md) keeps
-  it as the room a deferred result will need). **This is the hint, not the guarantee**, and it is named for the Agent's
-  frame rather than the wire's: the Agent has no submissions, it has a Turn (CONTEXT.md).
-- **The Adapter renders the receipt as prose**, because a model reads text before `structuredContent`: the pick was
-  delivered, the workflow consumed it, the turn is over.
+  rather than what was hoped. `deliveryId` is unchanged
+  ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) keeps it as the room a deferred
+  result will need). **This is the hint, not the guarantee**, and it is named for the Agent's frame rather than the
+  wire's: the Agent has no submissions, it has a Turn (CONTEXT.md).
+- **The Harness renders the receipt as prose**, because a model reads the tool result's text: the pick was delivered,
+  the workflow consumed it, the turn is over.
 - **The Agent instructions gain the stop half.** "You MUST finish by calling `review_verdict`" is half a contract — it
   says how to finish and never that finishing is finished. The Agent definitions a Machine carries (an Agent is a slot
   on the Machine that carries it — ADR-0049) say to call it **once**, then stop.
@@ -119,12 +120,11 @@ matter:
 - **Abort from the host, in `sendToAgent`.** Rejected three ways: it puts a data-plane client in the delivery path
   (ADR-0013 answers deliveries from the registration table alone), it makes a delivery await a remote call before
   answering, and it only ever covers endings caused by deliveries — the narrow rule again, wearing a different hat.
-- **Have the Adapter close the MCP transport when the surface goes.** Rejected: the Adapter has no push channel by
-  design (ADR-0013 — it asks per connection, and the answer is the turn), and a tool server disappearing does not stop a
-  model already generating.
-- **Make the event `deferred` and hold the call open.** Rejected: reserved-not-built (ADR-0013), and the MCP client's 60
-  s per-request timeout means the answer would be poll-with-progress anyway. It also solves a different problem — giving
-  the Agent an _answer_ — where this one is about giving it an _end_.
+- **Take the Menu's tools away when the surface goes.** Rejected: nothing pushes to the Harness by design (ADR-0013 — it
+  asks per turn, and the answer is the turn), and a tool disappearing does not stop a model already generating.
+- **Make the event `deferred` and hold the call open.** Rejected: reserved-not-built (ADR-0013), and a held tool call
+  would have to be poll-with-progress anyway. It also solves a different problem — giving the Agent an _answer_ — where
+  this one is about giving it an _end_.
 
 ## Consequences
 

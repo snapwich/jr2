@@ -106,7 +106,7 @@ async function bringUp(): Promise<InstalledKit> {
   state = { dir, env };
   await exec(script("dist-registry.sh"), ["up"], { env, maxBuffer: BIG });
   // The second stand-in (ADR-0044): the Kit image home. Up before the publish, which pushes the
-  // three images into it, and it is the script that also points the cluster's nodes at it — a node
+  // Kit images into it, and it is the script that also points the cluster's nodes at it — a node
   // that cannot resolve this address fails the tier here, by name, instead of as an
   // ImagePullBackOff three minutes into a converge.
   await exec(script("dist-image-registry.sh"), ["up"], { env, maxBuffer: BIG });

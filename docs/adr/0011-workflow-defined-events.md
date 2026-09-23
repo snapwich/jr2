@@ -45,11 +45,11 @@ root). The binding _is_ the closure.
   exactly the live registration.
 - **One catch point.** A call for an unregistered iid (settled run, exited state) is rejected at the demux.
 
-**Transport: the Agent's registration is served from the Sandbox** (ADR-0013). The Orchestrator speaks no MCP: it serves
-`GET /agents/:iid/surface` + `POST /agents/:iid/events` under the Sandbox token, and the pod's Adapter renders that as
-the MCP server the Agent's Harness connects to on `localhost` (`…/mcp/<iid>` — the Harness re-lists tools per Submission
-(ADR-0013), so the iid in the path is all the addressing needed). Lookup, validation, delivery, and lifecycle stay
-implemented once, in the registration table.
+**Transport: the Agent's registration is read from the Sandbox** (ADR-0013). The Orchestrator speaks no MCP: it serves
+`GET /agents/:iid/surface` + `POST /agents/:iid/events` under the Sandbox token, and the pod's Harness reads them
+through the Custodian on `localhost`, which holds the token, and presents the surface to its model as the Menu (the
+Harness re-reads per Submission, so the iid in the path is all the addressing needed). Lookup, validation, delivery, and
+lifecycle stay implemented once, in the registration table.
 
 ## External side: the same primitive over HTTP (`gate`), and each gate is a resource
 
@@ -86,12 +86,12 @@ collision once composed under a pool, firing only when two children park concurr
 the walk (a second dialect and an error case for plain-setup callers), and xstate's default invoke ids as the name
 (invoke-index noise no caller cares about).
 
-The full symmetry: **agents deliver through their per-iid registration (via the Adapter); everything else delivers over
-HTTP (per-gate registration).** Two dialects, one primitive, zero routing. Internally that is literal structure: one
-registration table (`address → { accepted event defs, deliver closure, meta }`) that `agentRun` and `gate` register
-into, with the Adapter surface and the gates HTTP API as dialect adapters over it — a future caller class (a Slack
-bridge, an email reply) is another adapter, not a third mechanism. The table is implementation structure, not vocabulary
-— workflows speak only `defineEvent` / `agentRun` / `gate`.
+The full symmetry: **agents deliver through their per-iid registration (via the Custodian); everything else delivers
+over HTTP (per-gate registration).** Two dialects, one primitive, zero routing. Internally that is literal structure:
+one registration table (`address → { accepted event defs, deliver closure, meta }`) that `agentRun` and `gate` register
+into, with the agent surface and the gates HTTP API as dialect adapters over it — a future caller class (a Slack bridge,
+an email reply) is another adapter, not a third mechanism. The table is implementation structure, not vocabulary —
+workflows speak only `defineEvent` / `agentRun` / `gate`.
 
 `CANCEL` stays reserved as the run-level infra interrupt. jr's "exit 3 and let the human drive the bash script" becomes
 "park in a durable state that advertises its human surface."
@@ -120,7 +120,7 @@ Tests mock by `machine.provide()` at the layer under test.
 - **Test stubbing happens at the wire, not in the actor.** The e2e tier (ADR-0010) hosts a wire-compatible stub Harness
   beside its orchestrator fixture (admits the agent, holds the stream open, never acts). An endpoint is just a URL, so
   `agentRun` keeps a single code path and cannot tell it is talking to a fake. Scope: **workspace-less test workflows
-  only**, which pass `endpoint` directly in run input — e2e drives their Machines by playing the Adapter against
+  only**, which pass `endpoint` directly in run input — e2e drives their Machines by playing the Harness's Menu against
   `/agents/<iid>/*` with no cluster. Workflows that invoke `workspace()` always get real Sandboxes (the data plane is
   never faked — ADR-0009); their e2e tier requires kind.
 - Unsolicited mid-turn steering remains the residual hard case (ADR-0002/0006).

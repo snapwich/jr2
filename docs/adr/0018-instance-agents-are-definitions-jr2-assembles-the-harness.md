@@ -3,13 +3,13 @@
 Building the first real Harness (the jr-parity exercise, 2026-07-18) landed a **full harness-framework project** in the
 instance — package.json, runtime config, Dockerfile, per-agent source (under flue, the embedded framework since retired
 — [ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md)). That put jr2 mechanism in the user's
-hands: the [ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md) Adapter leash (connect the MCP surface per Submission
-— forget it and the Agent is silently mute, the same footgun class ADR-0016 removed from workflows), the ADR-0004/0012
-sandbox geography (working tools execute in the Harness container against `/work`), the dependency pin that must match
-the Orchestrator's wire, and the image contracts the operator imposes (numeric uid, `:8080` = Ready, git present). The
-only content a user genuinely owns is the persona: model + instructions (+ someday tools/skills). CONTEXT.md already
-promised the split — an Agent is a definition jr2 maps into the Harness, and the Instance folder holds only what a
-Machine cannot carry (ADR-0049/0050: the definition is one of the things it can).
+hands: the [ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) leash (read the Menu per
+Submission — forget it and the Agent is silently mute, the same footgun class ADR-0016 removed from workflows), the
+ADR-0004/0012 sandbox geography (working tools execute in the Harness container against `/work`), the dependency pin
+that must match the Orchestrator's wire, and the image contracts the operator imposes (numeric uid, `:8080` = Ready, git
+present). The only content a user genuinely owns is the persona: model + instructions (+ someday tools/skills).
+CONTEXT.md already promised the split — an Agent is a definition jr2 maps into the Harness, and the Instance folder
+holds only what a Machine cannot carry (ADR-0049/0050: the definition is one of the things it can).
 
 ## Decision
 
@@ -21,27 +21,39 @@ Machine cannot carry (ADR-0049/0050: the definition is one of the things it can)
   filename-discovered `agents/<name>.ts`, mirroring `workflows/`, and a second put them in `jr2.config.ts`; both were
   Instance rosters, and a roster cannot hold two Machines' `coder`s.)
 - **The Harness image is stock and published** — `jr2-harness:<kitversion>`, one release train with the kit (like the
-  operator and Adapter images, ADR-0019). An instance builds **no** Harness image. The image is `@jr2/harness`, jr2's
-  own server (ADR-0027), honoring the operator's image contracts.
+  operator image, ADR-0019). An instance builds **no** Harness image. The image is `@jr2/harness`, jr2's own server
+  (ADR-0027), honoring the operator's image contracts.
 - **The definition rides the Turn, never the image.** The admission body carries the slot's definition (ADR-0049); the
   server validates it loudly and re-reads model/instructions per Submission, with the Turn's Frame (`prompt`, `cwd`) and
   Dials beside it on the admit body (ADR-0057). No image is built anywhere for a definition edit. (A ConfigMap roster
   read at boot — `JR2_AGENTS_JSON` — was the mechanism between the codegen-at-boot cut and this one; it retired because
   a Machine edit already rebakes the Orchestrator, so the roster bought nothing a Machine-carried definition loses.)
-- **The kit's server assembly carries the mechanism**: the Adapter leash, rooting the Working tools at the Frame's cwd,
+- **The kit's server assembly carries the mechanism**: the Menu leash, rooting the Working tools at the Frame's cwd,
   tool assembly — existing only in kit code, unforgettable by construction (symmetric with ADR-0016 making
   endpoint/sandbox threading unrepresentable in workflows).
 - **`harness` is the agent-runtime section of `jr2.config.ts`** — it declares what the instance can **reach**, never
   which model to use: a custom provider (`{ api, baseUrl }` plus token limits — `contextWindow`/`maxTokens`,
   provider-level and per-model, since a custom id has no catalog entry and unset limits resolve to 0, starving
-  auto-compaction — e.g. an OpenAI-compatible vLLM endpoint), and the env/creds Agents need. It moved out of `sandbox`
-  deliberately: `sandbox` is pod-transport (it still _carries_ this env to the Harness container), but model concerns
-  are Harness semantics and users configure them here. `jr2 up` preflights a configured provider from inside the
-  cluster, per distinct model the definitions name (ADR-0019). An instance-wide default model was tried and removed: it
-  was reached through `.env` (`JR2_MODEL`), which put a design decision in the file reserved for deployment-varying
+  auto-compaction — e.g. an OpenAI-compatible vLLM endpoint), the gateways pi's catalog providers send their calls to
+  (`catalog`, below), the credentials Agents use (`heldSecrets`, below), and any other env Agents need. It moved out of
+  `sandbox` deliberately: `sandbox` is pod-transport (it still _carries_ this env to the Harness container), but model
+  concerns are Harness semantics and users configure them here. `jr2 up` preflights a configured provider from inside
+  the cluster, per distinct model the definitions name (ADR-0019). An instance-wide default model was tried and removed:
+  it was reached through `.env` (`JR2_MODEL`), which put a design decision in the file reserved for deployment-varying
   values (ADR-0019) — and split one fact in two, since the endpoint's per-model token limits were already committed in
   `jr2.config.ts` keyed by the very model id `.env` was choosing. The honest split: **`harness` declares reach; the
   definition makes the choice.**
+- **Credentials are held, not handed over**
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Agent executes code in the
+  Harness container, so a key there is a key it can take away. `harness.heldSecrets` declares each credential with the
+  hosts it may reach; `jr2 up` gives the value to the Custodian and to no other container, and the Harness container's
+  env holds the key's Stand-in. `harness.provider.apiKey` is one implicitly: the held secret `JR2_PROVIDER_API_KEY`,
+  bound to `baseUrl`'s host, so it leaves the `jr2-harness-env` Secret and `baseUrl` must be `https://` when a key is
+  set. A known model key in `harness.env`, or in an `envFrom` Secret, is refused.
+- **A catalog provider can be moved to a gateway, and stays a catalog provider.** `harness.catalog.<id>.baseUrl`
+  replaces the base URL of every model of one pi catalog provider — a LiteLLM gateway in front of Bedrock, for
+  `anthropic/…`. The catalog keeps its limits, cost and thinking levels; only the endpoint moves. It is reach, not a
+  model choice: it says nothing about which model an Agent names.
 
 ## Dials: a workflow may set two of a definition's fields for one Turn
 

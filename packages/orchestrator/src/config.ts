@@ -276,7 +276,7 @@ export type JR2Config = {
    *
    * Separate from `registry` on purpose: `registry` addresses images THIS converge builds,
    * `kitRegistry` addresses artifacts the kit already published. One key for both would make every
-   * private-registry user mirror three images they could have pulled from the home. */
+   * private-registry user mirror the Kit images they could have pulled from the home. */
   kitRegistry?: string;
   /** What `jr2 up` builds its images FOR — docker platform strings, e.g. `["linux/arm64"]`
    * (deployment-varying — resolve from env). Absent → derived from the cluster's schedulable nodes

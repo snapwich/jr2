@@ -1,65 +1,75 @@
-# The Agent's MCP surface lives in the Sandbox, not the Orchestrator
+# The Agent reaches its Machine through a container it cannot read
 
 An earlier cut put the Agent's tool surface on the Orchestrator (`/mcp/:instanceId`), which meant an Agent must dial
 **into** the control plane to drive its Machine. Validating the workspace slice on kind (2026-07-12) showed that leg did
 not exist and could not be safely built as specified: nothing passed a callback URL into a Sandbox, `jr2 dev` bound
 loopback, and — the real problem — an Agent that can reach the delivery API can deliver to **any** registration in its
-run, including its own human-review Gate. So the MCP server lives **in the Sandbox**: a jr2-owned **Adapter** sidecar
-serves the current turn's menu to the Agent over `localhost` and forwards its picks to the Orchestrator, which speaks no
-MCP at all and keeps one HTTP surface over the registration table it already has (ADR-0011).
+run, including its own human-review Gate. The fix is not to hide the API from the Agent. Working tools give the Agent
+code execution in the Harness container, which shares the pod's network namespace, so it can reach any address the pod
+can. The fix is where the credential lives: in a container of the same pod that the Agent executes nothing in — the
+**Custodian** ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Orchestrator speaks
+no MCP, and keeps one HTTP surface over the registration table it already has
+([ADR-0011](0011-workflow-defined-events.md)).
 
-## The enabling fact: the Harness connects per Submission
+## The enabling fact: the Harness reads its Menu per Submission
 
-Each Submission, the Harness connects a fresh MCP client to `$JR2_ADAPTER_URL/mcp/<iid>` and lists the server's tools,
-adapting them into the turn's tool set (named `mcp__jr2__<tool>`, so the server key is visible to the model — shipped
-instructions and the printer's prefix-stripping depend on that naming;
-[ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md) states this as explicit jr2 code, never
-written by users). The Harness names the iid itself, so the Adapter never has to _learn_ which turn is live — no push
-channel, no long-poll, no `sandbox → active turn` index, no second inbound port on the pod. And because the Harness
-re-connects (and so re-lists) per Submission while a jr2 menu only changes at turn boundaries, no `list_changed` push is
-needed either (ADR-0006).
+Each Submission, the Harness reads `GET /agents/<iid>/surface` and presents the answer to its model as the turn's Menu,
+as tools named `mcp__jr2__<event>` (shipped instructions and the printer's prefix-stripping depend on that name;
+[ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md) states it as explicit jr2 code, never
+written by users). The Harness names the iid itself, so nothing has to _learn_ which turn is live — no push channel, no
+long-poll, no `sandbox → active turn` index, no second inbound port on the pod. And because the Harness re-reads per
+Submission while a jr2 menu only changes at turn boundaries, no `list_changed` push is needed either (ADR-0006).
 
 ## Decision
 
-- **The Adapter is a jr2-owned container in the Sandbox pod** (ADR-0005). It hosts the MCP server the Agent's Harness
-  connects to on `localhost`, and it is the **only** thing in the pod that talks to the Orchestrator. The Agent's sole
-  control-plane peer is a process it can reach but whose credential it cannot read.
-- **It is a separate container from the Harness, and that is the whole point.** The working tools give the Agent code
-  execution _in the Harness container_ — so a credential there is a credential the Agent holds. Split, and the Agent is
-  confined to a `localhost` menu the Machine set for the turn it is already in. This is what makes ADR-0006's "the Agent
-  never steers the workflow" **enforced** rather than advertised.
-- **The Orchestrator hosts no MCP.** The registration table stays the one internal primitive; it keeps two thin HTTP
-  adapters, neither of them MCP:
+- **The Custodian carries the Agent's Menu, and holds the credential that makes it work.** It is a jr2-composed
+  container in every Harness pod ([ADR-0005](0005-sandbox-pod-composition.md)). The Sandbox token is mounted into it as
+  a file, and into no other container. The Harness container holds the token's Stand-in,
+  `JR2_SANDBOX_TOKEN=jr2-held-JR2_SANDBOX_TOKEN`, and reaches the Orchestrator only through the Custodian's control
+  listener on `127.0.0.1:8081`. The Custodian forwards three routes, with the token put in place of the Stand-in, and
+  answers every other route itself:
+
+  ```
+  GET  /agents/<iid>/surface   the Menu                                   → the Orchestrator
+  POST /agents/<iid>/events    a pick                                     → the Orchestrator
+  POST /fetch                  the ask (ADR-0053), for THIS pod's Sandbox → POST /sandboxes/<name>/fetch
+  anything else                404
+  ```
+
+  So the Agent's sole control-plane peer is a container it can reach but whose credential it cannot read. That is what
+  makes ADR-0006's "the Agent never steers the workflow" **enforced** rather than advertised.
+
+- **The Harness presents the Menu to its model itself.** There is no MCP server and no MCP client. `menu.ts` turns each
+  accepted event into a pi tool, with the event's JSON Schema as its parameters, and turns a call into one
+  `POST …/events`. The receipt comes back as prose
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A 404 on the surface is an empty Menu
+  ([ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)).
+- **The Orchestrator hosts no MCP, and judges every pick.** The registration table stays the one internal primitive; it
+  keeps two thin HTTP surfaces, neither of them MCP:
 
   ```
   # human / webhook / CI — the Gate resource of ADR-0011, authenticated
   GET  /runs/:id                       → open gates: accepts + schemas + meta     [Instance token]
   POST /runs/:id/gates/:gate/events    → validate + deliver                       [Instance token]
 
-  # the Adapter's surface
+  # the Agent's, through its pod's Custodian
   GET  /agents/:iid/surface            → accepts + schemas + semantics            [Sandbox token]
-  POST /agents/:iid/events             → validate + deliver → { deliveryId }      [Sandbox token]
+  POST /agents/:iid/events             → validate + deliver → the receipt          [Sandbox token]
   ```
 
-  The receipt grew in [ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md):
-  `{ delivered, event, turnComplete, deliveryId }`, rendered as prose by the Adapter. `deliveryId` is unchanged and
-  still the room a deferred result will need.
-
-  The Adapter renders `/agents/:iid/surface` as `tools/list` and a `tools/call` as `POST …/events`. Lookup, validation,
-  delivery, and lifecycle stay implemented once, in the table.
-
-  An iid with no live registration used to make the Adapter's `/mcp/:iid` answer 404. It now serves an **empty menu**
-  ([ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)) — the Harness re-connects after the turn ends, so the
-  refusal fired on every successful turn. The Orchestrator's own `GET /agents/:iid/surface` above is unchanged.
+  The receipt is `{ delivered, event, moved, turnComplete, deliveryId }`. `deliveryId` is still the room a deferred
+  result will need. Lookup, validation, delivery and lifecycle are implemented once, in the table. The token's scope,
+  the live registration, and the event's name and payload are judged here and nowhere else; the Custodian forwards and
+  decides nothing about a pick.
 
 - **Bearer tokens, because the boundary is otherwise theater.** The Harness container shares the pod's network
   namespace, so an Agent can `curl` the Orchestrator directly; a per-pod NetworkPolicy cannot distinguish it from the
-  Adapter. Only authentication closes this.
+  Custodian. Only authentication closes this.
   - **Sandbox token** — minted per Sandbox at provision (a signed Sandbox name, so re-provision after a restart yields
-    the same token), delivered as a Secret via the CR's `envFrom` into the **Adapter container only** — user
-    `sandbox.env`/`envFrom` land on the Harness container, never the Adapter. Authorizes exactly: deliver to agent
-    registrations **whose Sandbox is this one**. Never a Gate (they are not on that surface at all), never another
-    Sandbox.
+    the same token), delivered as a Secret mounted into the **Custodian container only**. User `harness.env`/`envFrom`
+    land on the Harness container, never the Custodian. Authorizes exactly: deliver to agent registrations **whose
+    Sandbox is this one**, and ask for this Sandbox's fetch. Never a Gate (they are not on that surface at all), never
+    another Sandbox. The Stand-in the Harness holds is refused on every route.
   - **Instance token** — the human/CLI credential for Gates and run control. Minted into an in-cluster Secret at
     `jr2 up`; the CLI reads it over the kube API (RBAC is the gate) while port-forwarding the Service (ADR-0019).
   - An agent registration records its Sandbox **ambiently**: `agentRun` resolves the enclosing `workspace()` and records
@@ -68,47 +78,47 @@ needed either (ADR-0006).
     silent). A run-scoped token instead of a Sandbox-scoped one would be genuinely exploitable: derivable iids plus
     readable ticket ids would let one feature's coder inject a `review_verdict` into another feature's reviewer.
 - **Reachability, narrowed to one caller.** The Orchestrator is always in-cluster (ADR-0019), so the route home is
-  simply **Service DNS**; the Sandbox CR carries it to the Adapter as env (`JR2_ORCHESTRATOR_URL`). The Agent still
-  never makes this call: the Adapter does.
+  simply **Service DNS**, which `jr2 up` writes into the Custodian's configuration. The Harness is told the Custodian's
+  loopback address (`JR2_CUSTODIAN_URL`) and nothing else.
 - **Deferred tool results are reserved, not built.** ADR-0006's `deferred`/`poll` semantics stay in the model and the
-  wire leaves room for them: the surface listing ships each def's `semantics` (so the Adapter can tell an awaiting tool
-  from a fire-and-forget one), and an agent-surface delivery returns a **receipt with a `deliveryId`** (so an outcome is
-  addressable after the fact; the gates surface answers `{ ok: true }` — external callers need no receipt). Registering
-  a `deferred` or `poll` def **fails loudly as unimplemented** — a silent downgrade to `ack` would be a lying tool
-  contract. How a _Machine_ answers a deferred call is deliberately left open: the MCP client's 60 s per-request timeout
-  means the answer will be poll-with-progress, not a held socket (ADR-0002) — an Adapter concern when it lands.
+  wire leaves room for them: the surface listing ships each def's `semantics`, and an agent-surface delivery returns a
+  **receipt with a `deliveryId`** (so an outcome is addressable after the fact; the gates surface answers `{ ok: true }`
+  — external callers need no receipt). Registering a `deferred` or `poll` def **fails loudly as unimplemented** — a
+  silent downgrade to `ack` would be a lying tool contract — and the Harness refuses a turn whose surface offers one.
 
 ## Considered options
 
 - **Agent talks to the Orchestrator directly** (the original cut, plus a callback URL). Rejected: the credential lands
   in a container where the Agent has code execution, so the Agent can deliver `approve` to its own human-review Gate —
   it merges its own PR. The tool menu is advisory once you hold the key to the API.
-- **Translation inside the Harness process** (it already knows the iid and the tools). Rejected for the same reason —
-  same container, same code execution, same credential. And the knowledge locality is illusory: the menu originates in
-  the _Machine_, so it must travel Orchestrator → pod regardless; hosting the server in the Harness only changes which
-  container it lands in.
-- **Adapter as a transparent MCP relay** (proxy `/mcp/:iid` to an Orchestrator MCP server, adding auth). Tempting
-  because deferred results would work for free. Rejected: it keeps the Orchestrator bilingual and keeps the MCP
-  transport in the control plane, while still requiring the separate container for the credential — so it pays the
-  Adapter's full cost and collects none of the simplification.
+- **A jr2-owned Adapter container that serves the Menu over MCP on loopback and holds the token.** It meets the claim,
+  but a whole container, image and package exist to translate two HTTP calls into MCP and back. Model keys need a
+  container the Agent executes nothing in anyway (ADR-0059); one container can hold every credential, and the
+  translation then has no reason to live outside the Harness.
+- **Translation inside the Harness, with the credential there too.** Rejected — same container, same code execution,
+  same credential. The translation is inside the Harness now; the credential is not.
+- **The Orchestrator serves MCP, and the Custodian forwards it.** Rejected: it keeps the MCP transport and its session
+  handling in the control plane and on both ends, to carry two plain HTTP calls.
 - **A uniform `/registrations/:address` API** for every caller. Rejected: it dissolves the run-scoped, discoverable Gate
   resource ADR-0011 designed on purpose (a webhook translator finds its Gate by `meta.prUrl`; `GET /runs/:id` lists open
-  decisions) in exchange for aesthetic symmetry. The win here is "no MCP in the Orchestrator", not "one URL".
+  decisions) in exchange for aesthetic symmetry.
 
 ## Consequences
 
 - **The operator needs no change.** ADR-0001 made sidecars generic container fragments the operator schedules without
-  understanding; the Adapter is exactly that. `kubectlSandbox` injects it (plus the token Secret, minted before the CR
-  so the pod never waits on it, and owner-ref'd to the CR so Kubernetes reaps it with the Sandbox).
-- **The Orchestrator carries no MCP dependency**; the Adapter (its own package + published image,
-  `jr2-adapter:<kitversion>` — ADR-0019) does.
-- **The `@kind` e2e tier owns the pod → Orchestrator leg** — the dev Harness image carries a scripted agent that
-  actually calls its tool through the Adapter, so a broken leg is a red test. The mechanics tier plays `/agents/:iid/*`
-  from the host, which is honestly simulating the Adapter, not an Agent.
+  understanding; the Custodian is exactly that. `kubectlSandbox` composes it (plus the token Secret, minted before the
+  CR so the pod never waits on it, and owner-ref'd to the CR so Kubernetes reaps it with the Sandbox).
+- **Nothing in jr2 speaks MCP.** The Orchestrator, the Harness and the CLI carry no MCP dependency.
+- **One container holds the Sandbox token and every model key.** A fault in the Custodian's engine is a fault in the one
+  container that holds both. ADR-0059 records the trade.
+- **The `@kind` e2e tier owns the pod → Orchestrator leg** — the pod's Harness actually calls its tool through the
+  Custodian, so a broken leg is a red test, and a Harness container that posts a pick straight to the Orchestrator with
+  the Stand-in it holds is refused. The mechanics tier plays `/agents/:iid/*` from the host, which is honestly
+  simulating the Harness's Menu, not an Agent.
 - **NetworkPolicy is a second layer, not the control.** It bounds where a pod may talk; only the token bounds what it
   may _do_. `jr2 up` converges ingress policies that admit only the Orchestrator to a Harness pod
-  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)); the Orchestrator itself is left reachable, because an
-  Adapter in every Harness pod must reach it and no policy can tell the Adapter's packets from the Agent's.
+  ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)); the Orchestrator itself is left reachable, because a
+  Custodian in every Harness pod must reach it and no policy can tell the Custodian's packets from the Agent's.
 - **The Harness wire is authenticated in the other direction.** The Orchestrator bears a token derived for the placement
   on every Harness call, and the Harness holds only its digest (ADR-0058). Same signed-name idea, reversed caller.
 - **Open: authn for non-kube callers.** The Instance token rides kube RBAC for anyone with cluster creds; what an

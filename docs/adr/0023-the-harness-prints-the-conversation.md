@@ -24,8 +24,8 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   or version.
 - **The Harness is the right seat because it already holds both halves of the label.** It knows its Agent's name and the
   iid arrives per Submission. So a line is `[<agent>] [<iid>] …` with no lookup, no correlation table, and no
-  orchestrator round trip. Nothing else in the pod knows both: the Adapter sees only the Machine's event menu, and
-  working-tool execution happens inside the Harness, invisible to every other jr2 process there.
+  orchestrator round trip. Nothing else in the pod knows both: the Custodian sees routes and names, never a
+  conversation, and working-tool execution happens inside the Harness, invisible to every other jr2 process there.
 - **Reasoning prints; results do not.** Prompts, assistant text, thinking, and tool calls with truncated inputs. File
   contents, command output, and API responses never print. This is one cut serving two purposes, which is why it is a
   boundary and not an unfinished implementation: tool results are where the secrets are, and they are also most of the
@@ -60,10 +60,11 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   one at a time. It buys no isolation — containers in a pod share the network namespace, so it does not even fix the
   port contention that motivates it (ADR-0005:31) — and the git contention it would address is prohibited anyway
   (ADR-0004:95). What it actually buys is `kubectl logs -c <agent>`: a container, to avoid a prefix.
-- **A trace from the Adapter.** Tempting, and wrong on the facts. The Adapter serves the Machine's event menu and
-  forwards the Agent's picks (`adapter.ts:12-14`) — a handful of deliveries per turn. The Agent's working tools execute
-  in the Harness, never touching it. An Adapter trace shows `deliver: review_done` and none of the four things worth
-  watching.
+- **A trace from the Custodian.** Tempting, and wrong on the facts. The Custodian carries the Menu's reads and the
+  Agent's picks — a handful of deliveries per turn — and the model calls, and it logs names only, never a body
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Agent's working tools execute in
+  the Harness, never touching it. A Custodian trace shows `action=intercept … method=POST` and none of the four things
+  worth watching.
 - **Tee the stream host-side, in the Orchestrator** (the one place holding an admission and an open stream). Genuinely
   viable, and better on governance: addressable by run, and `instanceOnly` puts it behind the band ADR-0014 already
   enforces. Rejected as the larger build for the smaller reader — it needs an API, a CLI, and a format, to serve a

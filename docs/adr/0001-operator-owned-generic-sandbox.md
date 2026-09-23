@@ -20,13 +20,13 @@ step (worktree setup as its own state that can fail independently) and an operat
 The CR's `spec.image` is the **Harness** — jr2's own server hosting the instance's Agents (ADR-0005/0018/0027).
 Everything else in the pod rides `spec.sidecars`: plain Kubernetes `Container` fragments (image, ports, env,
 volumeMounts) the operator schedules **without understanding them** — exactly as a Deployment's pod template carries
-arbitrary containers without the controller knowing their roles. That is how the Adapter (ADR-0013) and the User
-Container (ADR-0005) land in the pod with zero operator awareness: `kubectlSandbox` compiles them into the sidecar list
-when it builds the CR. Containers cannot be added to a live pod (native containers, that is), so everything a Sandbox
-will run must be in the spec at spin-up.
+arbitrary containers without the controller knowing their roles. That is how the Custodian (ADR-0013, ADR-0059) and the
+User Container (ADR-0005) land in the pod with zero operator awareness: `kubectlSandbox` compiles them into the sidecar
+list when it builds the CR. Containers cannot be added to a live pod (native containers, that is), so everything a
+Sandbox will run must be in the spec at spin-up.
 
-One Harness **image** serves many **Agents** — the Harness resolves model, instructions, and MCP tool sources at runtime
-without a rebuild, re-reading the mounted definitions per Submission (ADR-0018) and connecting the Adapter's tool menu
+One Harness **image** serves many **Agents** — the Harness resolves model, instructions, and its Menu at runtime without
+a rebuild, reading the definition each admission carries (ADR-0018, ADR-0049) and reading the Menu through the Custodian
 per turn (ADR-0013). So the Orchestrator injects a fixed Harness image plus **config** (env + the prepared worktree),
 never a per-Agent image build. The HTTP prompt body itself carries only `{message, images}`, so anything persona-shaping
 is set at provision time, not per request.
@@ -62,8 +62,10 @@ deferral.
   NetworkPolicy bounds where it may _talk_.
 - **Sidecars are plain containers, not native sidecars.** They are scheduled as ordinary `containers`, not Kubernetes
   ≥1.29 native sidecars (`initContainers` with `restartPolicy: Always`). There is no start-ordering or
-  termination-ordering guarantee between the Harness and its sidecars — the Harness may begin serving before the Adapter
-  is up, or outlive it during shutdown. Revisit if ordering becomes load-bearing.
+  termination-ordering guarantee between the Harness and its sidecars — the Harness may begin serving before the
+  Custodian is up, or outlive it during shutdown. Start-up is covered without ordering: the Custodian's readiness probe
+  holds the pod's Ready, which holds the Sandbox's, so no Turn is admitted before it serves (ADR-0059). Revisit if
+  ordering becomes load-bearing.
 - **`reconcileStatus` writes status unconditionally.** Every reconcile issues a `Status().Update`, even when nothing
   changed. Harmless today (reconciles are event-driven, not hot-looping), but add an equality guard before the write if
   a status busy-loop ever appears.

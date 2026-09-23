@@ -1,4 +1,4 @@
-# The Sandbox pod's containers: Harness, Adapter, and an optional User Container
+# The Sandbox pod's containers: Harness, Custodian, and an optional User Container
 
 A Sandbox pod composes up to three containers around one shared worktree volume (`/work`):
 
@@ -7,10 +7,13 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
   `/opt/jr2` and the command overridden to start the Harness. The Agent's toolchain lives here because the Working tools
   (read/write/edit/bash) execute here — the tools the Agent can reach are this image's. It is also where a human
   `kubectl exec`s to inspect a run with the agent's exact tools, worktrees, and filesystem.
-- **Adapter container** — jr2-owned sidecar ([ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)): serves the Agent
-  its MCP tool menu on `localhost` and is the pod's credential holder for the control plane. It exists as a separate
-  container precisely _because_ the Working tools give the Agent code execution in the Harness container — the
-  Orchestrator credential lives where the Agent cannot read it.
+- **Custodian container** — jr2-composed sidecar, upstream Envoy configured by `jr2 up`
+  ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md),
+  [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): the pod's credential holder. It holds
+  the Sandbox token and every held secret — model API keys above all — as files, and carries the Harness's traffic out:
+  its Menu and the ask to the Orchestrator, and its outbound HTTPS. It exists as a separate container precisely
+  _because_ the Working tools give the Agent code execution in the Harness container — the credentials live where the
+  Agent cannot read them, and the Harness container's env holds only their Stand-ins.
 - **User Container** — opt-in third seat, composed only when the `workspace()` names its image (a `file:` docker context
   the Machine ships or a registry ref, the same resolution as the Sandbox Image, no default —
   [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)). The whole authoring surface is that one
@@ -35,8 +38,16 @@ and agent see identical files. Neither `/repos` nor `/opt/jr2` is a second excep
 worktrees are `--shared` clones whose alternates resolve objects from `/repos/<key>`, so a seat holding `/work` alone
 holds checkouts whose every borrowed object is missing — git in the User Container dies on "unable to normalize
 alternate object path". And their `origin` fetches through a program on `/opt/jr2` (ADR-0053), so a seat without that
-volume holds checkouts whose `git fetch` dies. The Adapter mounts none of the three — the pod's credential holder has no
-business in the working tree.
+volume holds checkouts whose `git fetch` dies. The Custodian mounts none of the three — the pod's credential holder has
+no business in the working tree.
+
+What each container mounts of the credentials, stated once:
+
+| Container   | Mounts                                                                                                                                                                             |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `harness`   | `jr2-ca` at `/etc/jr2/ca` (the trust bundles). None of the Custodian's volumes.                                                                                                    |
+| `custodian` | its values (the Sandbox token, `jr2-held-secrets`, each user `secretKeyRef`) at `/etc/jr2/custodian/values`; its leaves (`jr2-held-tls`); its config (`jr2-held`); `upstream.crt`. |
+| `user`      | the checkouts' three volumes, and nothing else.                                                                                                                                    |
 
 One git wall stays the image's own: git's dubious-ownership guard fires in the User Container whenever its uid differs
 from the Harness's (the attach created the trees), and `safe.directory` is honored only from system/global config —
@@ -95,19 +106,21 @@ The seat is zero-_contract_, not zero-_physics_. What an image brought here must
 
 - **The entrypoint must block.** The pod's restart policy restarts an exited container, so a `CMD` that finishes
   crash-loops. Run a long-lived process — an sshd, an IDE server, `sleep infinity` at minimum.
-- **`:8080` and the Adapter's port are taken** — one network namespace. Everything else is the image's.
+- **The Harness's and the Custodian's ports are taken** — one network namespace: `:8080` (the Harness), and the
+  Custodian's `127.0.0.1:8081` (control), `127.0.0.1:15001` (egress) and `:15021` (health). Everything else is the
+  image's.
 - **Root is allowed.** The hardened security context (non-root, all capabilities dropped, no escalation) applies to the
-  seats jr2 owns — Harness and Adapter, per container — and deliberately not here: the seat's identity is "what jr2 does
-  not own", and hardening it is an opinion. A root sshd that binds `:22` and setuids sessions down to its login user —
-  the standard shape for managed access — runs unmodified; a platform that wants this seat hardened hardens its own
-  image or its namespace's Pod Security profile. The credential-visibility boundary never depended on this seat being
-  unprivileged, only on the Agent executing nothing in it.
+  seats jr2 owns — Harness and Custodian, per container — and deliberately not here: the seat's identity is "what jr2
+  does not own", and hardening it is an opinion. A root sshd that binds `:22` and setuids sessions down to its login
+  user — the standard shape for managed access — runs unmodified; a platform that wants this seat hardened hardens its
+  own image or its namespace's Pod Security profile. The credential-visibility boundary never depended on this seat
+  being unprivileged, only on the Agent executing nothing in it.
 
 ## Why separate containers, not one image
 
-- **Image ownership** — the Sandbox Image is the user's (ADR-0037), the Adapter is a tiny jr2-owned image, and the User
-  Container is whatever its owner wants, contract-free because jr2 puts nothing in it. None bloats or constrains the
-  others.
+- **Image ownership** — the Sandbox Image is the user's (ADR-0037), the Custodian is a pinned upstream image, and the
+  User Container is whatever its owner wants, contract-free because jr2 puts nothing in it. None bloats or constrains
+  the others.
 - **Independent resource limits** — the agent loop and a heavy interactive session get separate cpu/memory limits, so a
   runaway build in the User Container can't starve the agent (and vice-versa).
 - **Lifecycle independence** — a Harness crash restarts only the Harness; an interactive session in the User Container
@@ -119,11 +132,12 @@ The **pod** is the isolation unit (one per Workspace, the k8s north-star): its c
 namespace, node, and the worktree volume, and are one trust domain in every isolation sense. The one property a
 container edge does provide is **credential visibility** — the asymmetry ADR-0013 builds on: the Agent executes code in
 the Harness container and none in the others, so a secret that exists only in another container's mount namespace is out
-of its reach. That is why the Adapter holds the Orchestrator credential, and it is what the User Container offers a
-human session — with its edges stated plainly:
+of its reach. That is why the Custodian holds the Orchestrator credential and the model keys, and it is what the User
+Container offers a human session — with its edges stated plainly:
 
 - It holds only for what stays in the private filesystem or session. Anything on `/work` or listening on `localhost` is
-  shared with the Agent — the pod has one network namespace.
+  shared with the Agent — the pod has one network namespace. The Custodian's listeners are on `localhost` too; what they
+  hand out is a key's USE toward its bound host, never the key (ADR-0059).
 - A live forwarded agent socket is usable by anything that executes as that session's user in that namespace — so a
   session holding one should not blindly execute what it finds on `/work` (the worktree is agent-authored; sourcing its
   `direnv`, running its scripts, or trusting its `justfile` volunteers the boundary away).
@@ -166,12 +180,13 @@ human session — with its edges stated plainly:
   `kubectlSandbox` supplies the images. Absent a `user` entry in the spec, the pod runs two containers.
 - jr2 does not gate readiness on the User Container and never restarts the pod for it; it lives and dies by the pod's
   own policy.
-- **Operator**: `runAsNonRoot` moves from the pod level to the two jr2-owned containers; the hardened-by-default rule
-  for sidecar specs exempts the `user` container; the pod gains `fsGroup` (`spec.workGroup ?? 2000`). **Orchestrator**:
-  the attach script stamps the default ACL on each repo root _before_ the clone that fills it — inheritance happens at
-  creation, never retroactively. **Harness image**: vendors the static `work-acl` into `/opt/jr2/bin` (ADR-0037's
-  surface). **Harness**: sets `umask 002` at startup. `shareProcessNamespace` stays off — ever — because the
-  credential-visibility boundary depends on it.
+- **Operator**: `runAsNonRoot` moves from the pod level to the two jr2-owned containers (the Custodian states its own
+  context: non-root, read-only root filesystem, no capabilities); the hardened-by-default rule for sidecar specs exempts
+  the `user` container; the pod gains `fsGroup` (`spec.workGroup ?? 2000`). **Orchestrator**: the attach script stamps
+  the default ACL on each repo root _before_ the clone that fills it — inheritance happens at creation, never
+  retroactively. **Harness image**: vendors the static `work-acl` into `/opt/jr2/bin` (ADR-0037's surface). **Harness**:
+  sets `umask 002` at startup. `shareProcessNamespace` stays off — ever — because the credential-visibility boundary
+  depends on it.
 - The Harness container's `/work` writes being group-writable widens nothing: every process that could abuse group
   access already runs in the same trust domain, and the work group exists only inside this pod.
 - **Routable access is a follow-up, deliberately untaken**: the operator's Service serves the Harness at `:8080`, and a

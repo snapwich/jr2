@@ -1,27 +1,36 @@
-# `jr2 up` builds every image it deploys
+# `jr2 up` builds every image it deploys, except a pinned one
 
 [ADR-0019](0019-one-converging-command-against-the-current-context.md) promised one converging command, but `jr2 up`
-builds exactly one image — the instance's. The Harness, Adapter, and operator images come from `just` recipes at
-**mutable tags** (`jr2-harness:local`), pointed at by `images` overrides in `jr2.config.ts`. Nothing can detect that a
-mutable tag moved, so editing `packages/harness/src` and running `jr2 up` reports convergence onto pods running last
-week's code — the failure the instance image already fixed for itself by hashing the materialized bundle rather than the
-source folder. [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md) would add a second
-class of build-it-yourself-first image on top of that.
+builds exactly one image — the instance's. The Harness and operator images come from `just` recipes at **mutable tags**
+(`jr2-harness:local`), pointed at by `images` overrides in `jr2.config.ts`. Nothing can detect that a mutable tag moved,
+so editing `packages/harness/src` and running `jr2 up` reports convergence onto pods running last week's code — the
+failure the instance image already fixed for itself by hashing the materialized bundle rather than the source folder.
+[ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md) would add a second class of
+build-it-yourself-first image on top of that.
 
 ## Decision
 
 - **Every image `jr2 up` deploys, `jr2 up` builds — when its source is visible.** The CLI detects a kit checkout by
   resolving from its own module URL and requiring _both_ `deploy/harness/Dockerfile` and `packages/harness/package.json`
-  naming `@jr2/harness`. In a checkout it builds the Harness, Adapter, and operator images; installed from npm those
-  paths do not resolve, so a real instance takes the published-`<kitversion>` path and never needs docker for kit
-  images. **The checkout is the signal** — no flag, no config key, no env. A CLI loaded from under `node_modules` is
-  never a checkout, even when a checkout contains it: an instance inside the repository that installs `@jr2/*` from npm
-  takes its pinned version's published images, never a build of HEAD beside an Orchestrator at the pin. The `just`
-  recipes survive as shortcuts for building one image without a converge, never as prerequisites. A registry-ref Sandbox
-  Image (ADR-0037) is the one deployed image whose source is nobody's here: never built, labeled, or delivered by jr2 —
-  the cluster pulls it, and its tag discipline is its owner's.
-- **Every tag is a content address.** Instance, Sandbox, Harness, Adapter, operator — each addressed by its own inputs
-  and its platform set, the platform as a visible tag suffix
+  naming `@jr2/harness`. In a checkout it builds the Harness and operator images; installed from npm those paths do not
+  resolve, so a real instance takes the published-`<kitversion>` path and never needs docker for kit images. **The
+  checkout is the signal** — no flag, no config key, no env. A CLI loaded from under `node_modules` is never a checkout,
+  even when a checkout contains it: an instance inside the repository that installs `@jr2/*` from npm takes its pinned
+  version's published images, never a build of HEAD beside an Orchestrator at the pin. The `just` recipes survive as
+  shortcuts for building one image without a converge, never as prerequisites. A registry-ref Sandbox Image (ADR-0037)
+  is the one deployed image whose source is nobody's here: never built, labeled, or delivered by jr2 — the cluster pulls
+  it, and its tag discipline is its owner's.
+- **A Pinned image is deployed and never built.** The Custodian runs upstream Envoy
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)): jr2 writes its configuration and
+  none of its code, so there is no source to build from and a jr2-built Envoy would be a fork to maintain. The kit names
+  it by tag AND digest (`CUSTODIAN_IMAGE` in `@jr2/orchestrator`), so a kit version deploys exactly one set of bytes in
+  both worlds — checkout and installed alike — and `imagePullPolicy: IfNotPresent` is correct for the same reason a
+  content-addressed tag is. `jr2 up` resolves its ref into the image map (the `custodian` key) — re-homed onto
+  `kitRegistry` when one is set ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)) — and
+  delivers nothing: a node pulls it. It is not a Kit image (CONTEXT.md: "Pinned image"), and moving the pin is a kit
+  change.
+- **Every tag is a content address.** Instance, Sandbox, Harness, operator — each addressed by its own inputs and its
+  platform set, the platform as a visible tag suffix
   ([ADR-0045](0045-the-platform-joins-the-image-address-and-the-cluster-chooses-it.md)). Three things follow:
   `imagePullPolicy: IfNotPresent` becomes _correct_ rather than lucky (a unique tag per content means "present" implies
   "current"), which is what makes kind and a real cluster behave identically instead of needing `Never` on one and
@@ -60,11 +69,11 @@ class of build-it-yourself-first image on top of that.
   map is data consulted when creating a pod, not configuration defining the process. The cost is a stale-read window of
   one kubelet propagation after `jr2 up`, and that two workspaces provisioned seconds apart can straddle a change —
   which was already true across a roll.
-- **The `images` config block is deleted outright — no key, no env escape hatch.** Its `harness`/`adapter`/`operator`
-  entries were kit-dev overrides that auto-build now covers; the User Container's image is a static `workspace()` option
-  the Machine carries, not config (ADR-0005, [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), so
-  no `user` entry belongs here either. Nobody should be able to run a patched Harness against a real cluster: that is
-  ADR-0027's "no eject hatch" enforced rather than merely stated.
+- **The `images` config block is deleted outright — no key, no env escape hatch.** Its per-image entries were kit-dev
+  overrides that auto-build now covers; the User Container's image is a static `workspace()` option the Machine carries,
+  not config (ADR-0005, [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)), so no `user` entry
+  belongs here either. Nobody should be able to run a patched Harness against a real cluster: that is ADR-0027's "no
+  eject hatch" enforced rather than merely stated.
 - **`jr2 up` reports live workspaces on an older image; it never re-images one.** Provision is create-if-absent, so a
   running Sandbox keeps the image its CR was created with — the only safe behavior, since replacing the pod takes the
   worktrees and unpushed commits with it, which is precisely the Continuity break

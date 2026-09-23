@@ -17,7 +17,7 @@ Feature: the kit, as a user installs it
   every run — the npm registry's storage is wiped per run, so its uplink cache is always cold:
     just e2e-dist-up      # a kind cluster; the suite fixture does the rest
     just e2e-dist
-  The fixture stands up both registries, publishes the kit, pushes the three Kit images at their
+  The fixture stands up both registries, publishes the kit, pushes the Kit images at their
   published tags, and installs the CLI into a throwaway prefix ONCE per suite run; scenarios isolate
   by namespace and temp folder.
 

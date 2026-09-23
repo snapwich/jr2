@@ -28,18 +28,21 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   Nothing else in git talks to a remote, so `status`, `log`, and `rebase` stay local. The push url is unchanged: the
   Binding's own spelling, the caller's own credential, never the Agent's (ADR-0005).
 
-- **The ask rides the Sandbox CR and reaches the agent through the pod.** The program asks the Adapter on `localhost`;
-  the Adapter, with the Sandbox token it already holds, asks the Orchestrator; the Orchestrator patches one annotation
-  on the Sandbox CR, per Repo key, timestamp value — the Lease's shape, an annotation the Orchestrator writes. The
-  operator copies it onto the pod as it copies everything else the pod needs from the CR, and the cache agent's `asked`
-  becomes the later of the pod's creation and its ask for that key. Demand stays read off pods alone. The mark is a
-  coalescer: however many fetches are in flight before one lands, the remote is fetched once, and a fetch that started
-  before the ask does not satisfy it — the agent stamps `lastFetched` with the attempt's start, which is what makes that
-  true.
+- **The ask rides the Sandbox CR and reaches the agent through the pod.** The program asks the Custodian on `localhost`
+  (`POST /fetch`, with the Sandbox token's Stand-in — a constant, because the User Container gets no env); the Custodian
+  puts the token it holds in place of the Stand-in and asks the Orchestrator for THIS pod's Sandbox
+  (`POST /sandboxes/<name>/fetch` — the program cannot name another,
+  [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); the Orchestrator patches one
+  annotation on the Sandbox CR, per Repo key, timestamp value — the Lease's shape, an annotation the Orchestrator
+  writes. The operator copies it onto the pod as it copies everything else the pod needs from the CR, and the cache
+  agent's `asked` becomes the later of the pod's creation and its ask for that key. Demand stays read off pods alone.
+  The mark is a coalescer: however many fetches are in flight before one lands, the remote is fetched once, and a fetch
+  that started before the ask does not satisfy it — the agent stamps `lastFetched` with the attempt's start, which is
+  what makes that true.
 - **The landing is reported on the Sandbox, standing and per key.** The verdict the operator already computes on the way
   to `Ready` — fresh, stale with git's error, or still cloning, per Repo, against the CR's creation — becomes a standing
   entry on the Sandbox status computed against the later of creation and the ask. `Ready` itself stays as it was:
-  sticky, once per pod life. The Orchestrator's route waits on that entry, then answers the Adapter, which answers the
+  sticky, once per pod life. The Orchestrator's route waits on that entry, then answers the Custodian, which answers the
   program. One wait, and it is the wait an attach already makes.
 - **The scope is the Sandbox token's scope, and no seat gains a credential.** A Sandbox may ask for the caches it mounts
   and nothing else; the remote is reached by the cache agent with the Repo CR's `secretRef`, the credential that cloned
@@ -75,8 +78,8 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 - **A Menu pick** (`need_fresh`, declared with `defineEvent`, a `fetching` state the pick transitions to). Rejected: a
   Turn boundary per fetch, an author opt-in per state, and a transition for something that moves the Machine nowhere. A
   fetch is not part of a Machine's Vocabulary.
-- **A named tool served by the Adapter** (`mcp__jr2__fetch` beside the Menu). Rejected: the model must learn a tool and
-  remember to call it before the verb it already knows, and a human at a shell gets nothing from it.
+- **A named Menu tool** (`mcp__jr2__fetch` beside the Menu's events). Rejected: the model must learn a tool and remember
+  to call it before the verb it already knows, and a human at a shell gets nothing from it.
 - **Shorten the interval.** Rejected: polling per node per Repo, and the latency is still the interval.
 - **The ask on the Repo CR.** Rejected: every node holding the cache fetches, and the wait must then name a node.
 - **The cache agent reads Sandbox CRs.** Rejected: two sources of demand where one exists, and a new RBAC grant for the
@@ -99,9 +102,9 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
   pod, User Container included. It is the natural home for in-pod jr2 functionality that does not yet exist.
 - A fetch inside a pod is a remote round trip through the node agent, seconds rather than milliseconds. Every git
   command that fetches pays it; none that does not.
-- The Sandbox status grows a standing per-key Repo entry; the Adapter gains a loopback route; the Orchestrator gains a
-  Sandbox-token route. No new credential, no new watch in the cache agent, no git knowledge in the operator beyond the
-  timestamp comparison it already makes.
+- The Sandbox status grows a standing per-key Repo entry; the Custodian carries one loopback route for it; the
+  Orchestrator gains a Sandbox-token route. No new credential, no new watch in the cache agent, no git knowledge in the
+  operator beyond the timestamp comparison it already makes.
 - The rewind gotcha vanishes: a human who fetched around the cache with their own credential advanced a remote-tracking
   ref the Agent's next cache fetch forced back. Nobody fetches around the cache now.
 - The Harness `bash` tool's own timeout still bounds a fetch the way it bounds any slow command.

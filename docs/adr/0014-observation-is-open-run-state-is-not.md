@@ -1,9 +1,10 @@
 # Observation is open; run state and control need the Instance token
 
-[ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md) minted two tokens and scoped them for **delivery** — a Sandbox
-token may deliver to its own agent registrations, an Instance token may deliver to gates. It said nothing about who may
-**read** a run or **cancel** one, and the code took the obvious shortcut: `authenticated`, meaning any token we minted.
-That is a hole. It also left the visualizer with no way in at all, which is the same question from the other side.
+[ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) minted two tokens and scoped them
+for **delivery** — a Sandbox token may deliver to its own agent registrations, an Instance token may deliver to gates.
+It said nothing about who may **read** a run or **cancel** one, and the code took the obvious shortcut: `authenticated`,
+meaning any token we minted. That is a hole. It also left the visualizer with no way in at all, which is the same
+question from the other side.
 
 Building `jr2 visualize` (the Machine renderer and its live run highlighting) forced both halves at once: the page is a
 **browser**, and a browser holds no token. So this ADR splits the HTTP surface into **three bands**, and adds an

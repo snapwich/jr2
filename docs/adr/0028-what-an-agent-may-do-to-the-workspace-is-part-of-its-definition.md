@@ -3,7 +3,7 @@
 jr2 is exact about what an Agent may **say** and silent about what it may **do**. The control plane is a menu the
 Machine sets per turn — derived from the invoking state's transitions
 ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)), served from a separate container
-([ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)), unforgettable by construction
+([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)), unforgettable by construction
 ([ADR-0016](0016-agent-turn-mechanics-are-internal.md)). The data plane is one identical working toolset with full write
 access to the shared Workspace, for every Agent, in every state.
 

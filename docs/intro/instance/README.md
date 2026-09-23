@@ -26,7 +26,7 @@ kubectl config use-context kind-jr2     # jr2 up converges into the CURRENT cont
 `.env` (git-ignored) holds the two values that vary by machine. Both are already written:
 
 ```sh
-JR2_PROVIDER_URL=http://192.168.5.2:8000/v1   # the macOS host, from inside a Colima VM
+JR2_PROVIDER_URL=https://192.168.5.2:8000/v1  # the macOS host, from inside a Colima VM
 JR2_PROVIDER_API_KEY=<64 hex chars>           # generated at setup
 ```
 
@@ -34,9 +34,17 @@ The url is the endpoint **as a pod sees it**: `localhost` never works from insid
 carry `host.docker.internal`. On Docker Desktop, or on Linux, that address differs — anything a pod can reach is fine.
 
 The key is the fence. The cluster must dial IN, so the server binds `0.0.0.0` and is therefore on your LAN; without a
-key, any device on the subnet could use the GPU and read `/props`. `npm run llama` reads the key from this file and
-`jr2 up` materializes it into the instance's Secret, so it is written once and never lands in a manifest. To rotate it,
-edit `.env` and restart both.
+key, any device on the subnet could use the GPU and read `/props`. `npm run llama` reads the key from this file, and
+`jr2 up` gives it to the pod's Custodian and to nothing else: the Agent's container holds only a stand-in
+([ADR-0059](../../adr/0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Custodian puts the key
+on the wire over TLS only, so the endpoint serves HTTPS with a certificate for its address. Make it once, after `.env`
+is written:
+
+```sh
+npm run certs                           # a CA (certs/ca.crt, named as harness.caBundle) and a leaf for the url's host
+```
+
+To rotate the key, edit `.env`, restart the model, and re-run `jr2 up`.
 
 ## Run
 

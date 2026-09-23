@@ -95,21 +95,41 @@ server, `local()`
 
 **Instance Harness**: The per-Instance Harness deployment `jr2 up` converges when an Agent a registered Machine carries
 declares `workspace: "none"` — the placement for every Menu-only Agent's Turn, regardless of any enclosing Workspace, so
-a continued conversation always lands on the Harness that holds it (ADR-0031). Its pod pairs the Harness with an Adapter
-and mounts no worktree. _Avoid_: shared harness, global harness, dev harness
+a continued conversation always lands on the Harness that holds it (ADR-0031). Its pod pairs the Harness with a
+Custodian and mounts no worktree. _Avoid_: shared harness, global harness, dev harness
 
-**Adapter**: The jr2-owned sidecar container in a Sandbox that serves the current turn's Menu to the Agent over MCP and
-forwards the Agent's picks to the Orchestrator as Gate deliveries. The Agent's only control-plane peer is this process
-on `localhost`; it never speaks to the Orchestrator. A separate container from the Harness _because_ Working tools give
-the Agent code execution there — so the Orchestrator credential lives where the Agent cannot read it. In Orchestrator
-terms it is the MCP dialect adapter, relocated into the Sandbox. _Avoid_: shim, proxy, sidecar (that's its deployment
-shape, not what it is), MCP server
+**Custodian**: The jr2-composed container in every Harness pod — a Sandbox and the Instance Harness — that holds the
+pod's credentials and carries the Harness's traffic out. It holds the Sandbox token, and carries the Harness's Menu
+reads and picks and every pod's ask to the Orchestrator on three routes and no other (ADR-0013, ADR-0053). It holds
+every Held secret, and carries the Harness's outbound HTTPS (`HTTPS_PROXY`): toward a host a Held secret is bound to, it
+ends TLS with a leaf `jr2 up` issued from the Instance's CA, swaps the Stand-in for the value in the named headers, and
+opens its own verified TLS to the host; every other host it tunnels untouched (ADR-0059). A separate container from the
+Harness because the Agent executes code in the Harness container and none here (ADR-0005). It controls no egress — a
+client that goes around it sends only a Stand-in. Its engine is Envoy, a Pinned image, configured by `jr2 up`. _Avoid_:
+proxy (the mechanism, and the Handoff's word), sidecar (its deployment shape), MITM, vault, egress gateway, firewall
 
-**Kit image**: One of the three jr2-owned images an Instance deploys but never authors — `jr2-harness`, `jr2-adapter`,
-`jr2-operator`. Built from the checkout in checkout mode; installed, pulled at published `<kitversion>` tags from the
-canonical home (`ghcr.io/snapwich`) or from a self-hosted mirror of it (`kitRegistry`, ADR-0044); one release train with
-the npm packages (ADR-0019, ADR-0038). The kit's second distribution channel: what users don't get from npm, they get as
-these images (ADR-0043). _Avoid_: system image, base image, jr2 image (ambiguous with the instance image `jr2 up` bakes)
+**Held secret**: A credential the Harness uses but never holds — a model API key above all, and the Sandbox token.
+`jr2.config.ts` declares it with the hosts it may reach (`harness.heldSecrets`; `harness.provider.apiKey` is one
+implicitly), and `jr2 up` gives its value to the Custodian and to no other container. The Harness container's env
+carries only its Stand-in, and the Custodian puts the value into requests toward those hosts alone (ADR-0059). What the
+Agent can take out of the pod is the Stand-in, which is worth nothing outside it. What it can still do is spend the
+secret, through the Custodian, while its pod lives. _Avoid_: masked secret, injected secret, proxied key, secret
+(unqualified)
+
+**Stand-in**: The value a Held secret's env var holds in the Harness container — `jr2-held-<NAME>`, deterministic and
+public. It means something only to the Custodian, and only toward a host the secret is bound to; sent anywhere else, it
+arrives as it left. _Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
+
+**Kit image**: One of the two jr2-owned images an Instance deploys but never authors — `jr2-harness`, `jr2-operator`.
+Built from the checkout in checkout mode; installed, pulled at published `<kitversion>` tags from the canonical home
+(`ghcr.io/snapwich`) or from a self-hosted mirror of it (`kitRegistry`, ADR-0044); one release train with the npm
+packages (ADR-0019, ADR-0038). The kit's second distribution channel: what users don't get from npm, they get as these
+images (ADR-0043). _Avoid_: system image, base image, jr2 image (ambiguous with the instance image `jr2 up` bakes)
+
+**Pinned image**: An image an Instance deploys that jr2 neither owns nor builds — one today, the Custodian's Envoy. The
+kit names it by tag and digest, so a kit version deploys exactly one set of bytes; `kitRegistry` re-homes it and
+`jr2 kit push` mirrors it like a Kit image, but `just kit-push` builds only Kit images (ADR-0038, ADR-0044, ADR-0059).
+_Avoid_: kit image (it is not jr2-owned), vendored image, third-party image, base image
 
 **Sandbox Image**: A user-owned image a Sandbox's primary container runs — the tools an Agent's Working tools can reach,
 and the shell a human gets on `exec`. A `workspace()` names it statically (ADR-0049): a `file:` URL to a docker context
@@ -128,7 +148,8 @@ in the same two shapes as the Sandbox Image and beside it (`user`, ADR-0049), ru
 mounted read-write, the checkouts' two read-only halves (`/repos`, `/opt/jr2`) beside it, and nothing injected into its
 process (ADR-0005, ADR-0053). The zero-contract seat: jr2 never builds, probes, or commands it. For services that must
 run unattended (an sshd for managed access) and for sessions whose credentials must stay out of the Agent's mount
-namespace (a forwarded ssh agent). Not port isolation — the pod has one network namespace. _Avoid_: sidecar (its
+namespace (a forwarded ssh agent). Not port isolation — the pod has one network namespace, so the ports the Harness and
+the Custodian listen on (`8080`, `8081`, `15001` on loopback, `15021`) are taken here too. _Avoid_: sidecar (its
 deployment shape, not what it is), debug container (an ephemeral attach is a one-off mechanism, not a seat), dev
 container
 
@@ -170,12 +191,12 @@ recorded: the history view is what was said. _Avoid_: summarization (one step of
 is not the decision), truncation (the failure Compaction exists to prevent), pruning
 
 **Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), narrowed
-to those its guards would currently accept (ADR-0029), served by the Adapter over MCP. What the Agent may **say**. The
-derived set is the state's vocabulary and the scope delivery validates against; the Menu is what a given turn is
-offered, so one state can offer different Menus as its context changes. It derives from the INVOKING state and its
-ancestors, never from the states below it, so a pick written in a substate is one the Turn can never be offered — and a
-Machine shaped that way is refused at build (ADR-0057 retired the hand-written Menu that used to hide it). _Avoid_:
-tools (unqualified), tool list
+to those its guards would currently accept (ADR-0029), read by the Harness through the Custodian and presented to its
+model as tools named `mcp__jr2__<event>` (ADR-0013). What the Agent may **say**. The derived set is the state's
+vocabulary and the scope delivery validates against; the Menu is what a given turn is offered, so one state can offer
+different Menus as its context changes. It derives from the INVOKING state and its ancestors, never from the states
+below it, so a pick written in a substate is one the Turn can never be offered — and a Machine shaped that way is
+refused at build (ADR-0057 retired the hand-written Menu that used to hide it). _Avoid_: tools (unqualified), tool list
 
 **Vocabulary**: The workflow events a Machine accepts — each a `defineEvent` def: a name, a payload schema, an optional
 audience — taken as values by its `jr2Setup` and scoped to that Machine alone (ADR-0011). What a Gate's accepted set and

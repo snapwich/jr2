@@ -21,11 +21,11 @@ what makes this restore-safe: invoked actors restart on snapshot restore, entry 
 fail loudly, unless input carries an explicit `endpoint` (the dev-stub, workspace-less path). Body-facing workspace
 handles are `{ repos, branch }` ([ADR-0012](0012-workspace-wrapper-machine.md)).
 
-**[ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)'s token scoping survives and strengthens**: the registration
-records the Sandbox resolved from the enclosing wrapper — the same deterministic `workspaceName()` the token was minted
-for — so the consumer can no longer forget to pass it (the baba71f incident: `sandbox` omitted, every tool call 403'd,
-fail-closed but silent). The parent chain resolves the _enclosing_ wrapper structurally, never a sibling's;
-cross-feature event injection stays impossible.
+**[ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)'s token scoping survives and
+strengthens**: the registration records the Sandbox resolved from the enclosing wrapper — the same deterministic
+`workspaceName()` the token was minted for — so the consumer can no longer forget to pass it (the baba71f incident:
+`sandbox` omitted, every tool call 403'd, fail-closed but silent). The parent chain resolves the _enclosing_ wrapper
+structurally, never a sibling's; cross-feature event injection stays impossible.
 
 ## Offsets live in a host ledger (deletes `context.offsets` and the `agent.offset` event)
 

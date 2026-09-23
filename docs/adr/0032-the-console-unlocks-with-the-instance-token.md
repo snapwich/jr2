@@ -27,9 +27,9 @@ presentation surface.
 - **Page addresses content-negotiate; JSON is the default dialect.** `/` and `/workflows/:name` serve the Console shell
   to `Accept: text/html` and JSON to everything else — so the workflow-detail resource keeps its natural address (the
   run-input schema's home, [ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)) and no future page has to
-  squat on a mangled sibling path. Nothing existing moves: EventSource asks `text/event-stream`, and the Adapter and CLI
-  never ask for HTML. `/viz/*` is deleted (greenfield, no redirects); assets move to `/assets/*`, which also retires the
-  "a workflow named `assets` is shadowed" hazard.
+  squat on a mangled sibling path. Nothing existing moves: EventSource asks `text/event-stream`, and the Harness's Menu
+  and the CLI never ask for HTML. `/viz/*` is deleted (greenfield, no redirects); assets move to `/assets/*`, which also
+  retires the "a workflow named `assets` is shadowed" hazard.
 
 ## Considered options
 
@@ -43,7 +43,8 @@ presentation surface.
   convenience the token already solves, and the open band has an unresolved exposure question as it stands (spawn ids —
   the ADR-0014 open call). The projection stays the one place the line is drawn.
 - **A `/ui` path prefix, or moving the API under `/api`.** Rejected for negotiation: the first is ceremony on the
-  address a human types, the second churns the Adapter, the CLI, and the ADR-0009/0013 route tables for cosmetics.
+  address a human types, the second churns the Harness's Menu, the Custodian's route allowlist, the CLI, and the
+  ADR-0009/0013 route tables for cosmetics.
 
 ## Consequences
 
