@@ -139,3 +139,38 @@ test("loadConfig passes git.credentials through and refuses a mis-shaped entry b
   await assert.rejects(bad(`{ credentials: "*" }`), /at git\.credentials:/);
   await assert.rejects(bad(`[]`), /at git:/);
 });
+
+test("loadConfig checks harness.heldSecrets and harness.catalog by SHAPE — in-cluster, where .env reads undefined", async () => {
+  const write = async (harness: string) => {
+    const d = await mkdtemp(join(tmpdir(), "jr2-config-"));
+    await writeFile(join(d, "jr2.config.ts"), `export default { harness: ${harness} };\n`);
+    return loadConfig(d);
+  };
+  // The Orchestrator evaluates the same file with no `.env`: a value reads undefined and a gateway
+  // reads "". Both pass here — presence and every rule are `jr2 up`'s, host-side (ADR-0059).
+  assert.deepEqual(
+    await write(
+      `{ catalog: { anthropic: { baseUrl: process.env.NOT_SET ?? "" } }, heldSecrets: [{ name: "ANTHROPIC_API_KEY", value: process.env.NOT_SET, paths: ["/v1/messages"] }] }`,
+    ),
+    {
+      harness: {
+        catalog: { anthropic: { baseUrl: "" } },
+        heldSecrets: [{ name: "ANTHROPIC_API_KEY", value: undefined, paths: ["/v1/messages"] }],
+      },
+    },
+  );
+  await assert.rejects(
+    () => write(`{ heldSecrets: [{ name: "A", value: "x" }, { name: "B", hosts: "gw.example.com" }] }`),
+    /at harness\.heldSecrets\[1\]\.hosts: .*\(ADR-0059\)/,
+  );
+  await assert.rejects(() => write(`{ heldSecrets: [{ name: "A", valu: "x" }] }`), /at harness\.heldSecrets\[0\]/);
+  await assert.rejects(
+    () => write(`{ heldSecrets: [{ name: "A", valueFrom: { secretKeyRef: { name: "s" } } }] }`),
+    /at harness\.heldSecrets\[0\]\.valueFrom\.secretKeyRef\.key/,
+  );
+  await assert.rejects(
+    () => write(`{ catalog: { anthropic: { url: "https://x" } } }`),
+    /at harness\.catalog\.anthropic/,
+  );
+  await assert.rejects(() => write(`{ heldSecrets: {} }`), /at harness\.heldSecrets: expected an array/);
+});
