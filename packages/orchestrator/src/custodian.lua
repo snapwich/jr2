@@ -42,8 +42,9 @@ for _, s in ipairs(HELD.secrets) do
   VALUE[s.name] = load(s.name)
 end
 
-local CREDENTIAL = { ["authorization"] = true, ["x-api-key"] = true, ["x-goog-api-key"] = true,
-  ["api-key"] = true, ["proxy-authorization"] = true }
+-- The headers every bound target treats as a credential (`CREDENTIAL_HEADERS`, held-secrets.ts).
+local CREDENTIAL = {}
+for _, h in ipairs(HELD.credential) do CREDENTIAL[h] = true end
 
 -- Everything a target's requests may carry a credential in: the fixed set, plus every header a
 -- secret bound to it names.

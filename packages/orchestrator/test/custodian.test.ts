@@ -182,6 +182,10 @@ test("the script: a generated table of names, headers, paths and targets in fron
   assert.match(script, /HELD\.targets\["litellm\.corp\.example:443"\] = \{ HELD\.secrets\[2\] \}/);
   assert.match(script, /HELD\.targets\["10\.0\.0\.5:8000"\] = \{ HELD\.secrets\[3\] \}/);
   assert.match(script, /hosts = 2 \}/);
+  assert.match(
+    script,
+    /HELD\.credential = \{ "authorization", "x-api-key", "x-goog-api-key", "api-key", "proxy-authorization" \}/,
+  );
   assert.match(script, /function envoy_on_request/, "the fixed half follows");
   // The values are read from the mounted files at start; the script names only where.
   assert.match(script, /\/etc\/jr2\/custodian\/values\//);
