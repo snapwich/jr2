@@ -301,7 +301,7 @@ function deployedRows(d: NonNullable<VersionReport["deployed"]>, r: VersionRepor
   }
   if (d.images) {
     if (d.images.harness) rows.push(["harness", d.images.harness]);
-    if (d.images.adapter) rows.push(["adapter", d.images.adapter]);
+    if (d.images.custodian) rows.push(["custodian", d.images.custodian]);
     for (const [key, ref] of Object.entries(d.images.sandbox ?? {})) rows.push([`sandbox ${key}`, ref]);
   }
   const verdict = skewSentence(r);

@@ -24,7 +24,7 @@
 // `--platform` passed explicitly on every build. The cluster's schedulable nodes choose that set
 // (`platforms` in the config overrides absolutely), so the daemon default and
 // `DOCKER_DEFAULT_PLATFORM` steer nothing any more. In a kit CHECKOUT the built set includes the
-// Harness, Adapter, and operator; installed from npm those sources do not resolve and the published
+// Harness and the operator; installed from npm those sources do not resolve and the published
 // `<kitversion>` refs are used with no docker at all (they are multi-arch manifest lists, so they
 // take no suffix and never had this hole). There is no `images` config block and no env escape
 // hatch — nobody gets to point a real cluster at a hand-picked Harness (ADR-0027's no-eject-hatch,
@@ -45,14 +45,22 @@
 // labeled objects found → converge silently (it's home); nothing → confirm first-time setup
 // (`--yes` for CI); objects labeled as a DIFFERENT instance → refuse.
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { open, readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  custodianBootstrap,
+  custodianRef,
+  custodianScript,
   customizeLine,
   defaultImageContext,
+  heldSecretsOf,
+  HELD_CA_SECRET,
+  HELD_SECRETS_SECRET,
+  HELD_TLS_SECRET,
+  ORCHESTRATOR_PORT,
   imageContextDigest,
   isSshUrl,
   loadConfig,
@@ -64,9 +72,11 @@ import {
   type CarriedAgent,
   type CarriedImage,
   type CarriedRepo,
+  type HeldManifest,
   type ImageRefs,
   type JR2Config,
 } from "@jr2/orchestrator";
+import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
 import {
   assertEmulation,
   buildSandboxImage,
@@ -102,6 +112,8 @@ import {
   OPERATOR_SELECTOR,
   operatorManifest,
   REPO_CACHE,
+  trustObject,
+  type HeldObjects,
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import {
@@ -323,16 +335,20 @@ export async function up(args: string[], io: Io): Promise<number> {
   activity(
     io,
     kitRoot
-      ? `images: kit checkout at ${kitRoot} — building the Harness, Adapter, and operator from source`
-      : `images: installed kit — the published v${KIT_VERSION} Harness, Adapter, and operator, pulled from ` +
+      ? `images: kit checkout at ${kitRoot} — building the Harness and operator from source`
+      : `images: installed kit — the published v${KIT_VERSION} Harness and operator, pulled from ` +
           `${config.kitRegistry ? `${config.kitRegistry} (kitRegistry)` : KIT_IMAGE_HOME}`,
   );
+  // The Custodian's image is deployed and never built, in either world (ADR-0038, ADR-0059): the
+  // pinned upstream Envoy, re-homed onto `kitRegistry` like a Kit image when one is set.
+  const custodianImage = custodianRef(config.kitRegistry);
+  activity(io, `custodian image: ${custodianImage} (pinned, deployed — never built)`);
 
   // Read the Orchestrator Deployment ONCE: it carries both convergence records — the instance
   // image's content hash (a label) and the previous name→ref map (an annotation, ADR-0038).
   const orch = await kube.getJson({ kind: "deployment", name: ORCHESTRATOR_SERVICE, namespace, ...ctx });
   const previous = previousImages(orch);
-  const converged: ConvergedImages = { harness: refs.harness, adapter: refs.adapter, sandbox: {}, sandboxUser: {} };
+  const converged: ConvergedImages = { harness: refs.harness, custodian: custodianImage, sandbox: {}, sandboxUser: {} };
 
   // ONE transport branch for every image (ADR-0038), so instance, kit, and Sandbox Images cannot
   // drift into three delivery stories.
@@ -474,13 +490,11 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
 
   // --- the kit's own runtime images (ADR-0038) ---------------------------------------------------
-  // Built here rather than lazily beside their consumers. The Harness is the injection source
+  // Built here rather than lazily beside its consumers. The Harness is the injection source
   // (ADR-0037): the pod's `runtime` init step copies `/opt/jr2` out of this exact ref onto the
-  // volume the Sandbox Image mounts. The Adapter is deployed into every Sandbox this instance
-  // provisions. Neither is a hash input for a Sandbox Image — the runtime rides the pod's volume,
-  // so a kit edit re-images future pods and re-tags nothing of the user's.
+  // volume the Sandbox Image mounts. It is not a hash input for a Sandbox Image — the runtime rides
+  // the pod's volume, so a kit edit re-images future pods and re-tags nothing of the user's.
   await ensureKitImage("harness");
-  await ensureKitImage("adapter");
 
   // --- instance image (content-addressed by the bundle) ------------------------------------------
   // Stage first, THEN decide: the hash is over the materialized bundle — the actual image inputs,
@@ -613,10 +627,10 @@ export async function up(args: string[], io: Io): Promise<number> {
   const secretData: Record<string, string> = {
     JR2_INSTANCE_TOKEN: instanceToken,
     JR2_SIGNING_KEY: signingKey,
-    // The Instance Harness Adapter's credential (ADR-0013/0031): a sandbox-style token signed
+    // The Instance Harness Custodian's credential (ADR-0013/0031): a sandbox-style token signed
     // for the placement's name — it may deliver only to Turns hosted THERE (tokens.ts), so the
     // Instance token never enters that pod. Derived from the kept key, so re-runs converge to
-    // the same value; live Adapters keep verifying.
+    // the same value; live Custodians keep verifying.
     JR2_INSTANCE_HARNESS_TOKEN: sandboxToken(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
   };
   // Git tokens (ADR-0019/0051): every env var a `git.credentials` entry names, materialized from
@@ -629,28 +643,48 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // The HARNESS containers' env — a separate Secret (ADR-0013): Agent code executes where these
   // land, so the Instance token/signing key above must be unreachable from it. Values declared in
-  // config (usually read off process.env/.env) materialize here (ADR-0019); so does the provider
-  // key — the ConfigMap'd harness config carries the provider MINUS this (ADR-0018).
+  // config (usually read off process.env/.env) materialize here (ADR-0019). The provider key does
+  // NOT: it is a held secret (ADR-0059), and the Agent can read everything in this Secret.
   const harnessEnvData: Record<string, string> = {};
   for (const v of config.harness?.env ?? []) if (v.value !== undefined) harnessEnvData[v.name] = v.value;
-  if (config.harness?.provider?.apiKey) harnessEnvData.JR2_PROVIDER_API_KEY = config.harness.provider.apiKey;
 
   // Preflight referenced-but-unmanaged Secrets: turn the CreateContainerConfigError hang into an
-  // immediate, named error (ADR-0019). Sealed/External Secrets ride this seam untouched.
+  // immediate, named error (ADR-0019). Sealed/External Secrets ride this seam untouched. The read
+  // keeps each one's key NAMES (never a value), which the held-secret rules check for a model key.
+  const envFromKeys = new Map<string, string[]>();
   for (const ref of config.harness?.envFrom ?? []) {
-    const refName = ref.secretRef?.name;
+    const refName = ref.secretRef?.name ?? ref.configMapRef?.name;
     if (!refName) continue;
-    if (!(await kube.getJson({ kind: "secret", name: refName, namespace, ...ctx }))) {
+    const kind = ref.secretRef ? "secret" : "configmap";
+    const found = await kube.getJson<KubeObject & { data?: Record<string, string> }>({
+      kind,
+      name: refName,
+      namespace,
+      ...ctx,
+    });
+    if (!found && kind === "secret") {
       throw new Error(
         `harness.envFrom references Secret "${refName}", which does not exist in namespace "${namespace}" — ` +
           `create it first: kubectl -n ${namespace} create secret generic ${refName} --from-literal=KEY=...`,
       );
     }
+    envFromKeys.set(`${kind}/${refName}`, Object.keys(found?.data ?? {}));
   }
 
   // --- private-CA bundle (ADR-0020): read HERE, host-side — the in-cluster config eval never
   // touches the file (the path may not exist there); consumers get the ConfigMap.
   const caPem = await readCaBundle(root, config);
+
+  // --- held secrets (ADR-0059): resolved HERE, host-side, where `.env` exists ------------------
+  const held = await resolveHeld(io, kube, {
+    config,
+    name,
+    namespace,
+    ctx,
+    envFromKeys,
+    models: agents.map((a) => a.definition.model).filter((m): m is string => typeof m === "string"),
+    caBundle: caPem,
+  });
 
   // --- git over ssh: where the key comes from (ADR-0019, ADR-0047) -------------------------------
   // Runs BEFORE the apply, because a missing key source is a converge that must not start, and the
@@ -662,6 +696,10 @@ export async function up(args: string[], io: Io): Promise<number> {
   await preflightProvider(io, kube, config, agents, namespace, ctx, caPem);
 
   // --- apply + rollout ---------------------------------------------------------------------------
+  // The trust bundles first, and server-side: every pod that mounts them must find them, and they
+  // carry every root certificate — past what client-side apply's annotation can hold.
+  const trust = trustObject({ name, namespace, caBundle: caPem, bundles: held.bundles });
+  if (trust) await kube.apply({ manifest: trust, serverSide: true, ...ctx });
   activity(io, `orchestrator: applying (image ${tag})`);
   await kube.apply({
     manifest: instanceObjects({
@@ -672,12 +710,21 @@ export async function up(args: string[], io: Io): Promise<number> {
       secretData,
       harnessEnvData,
       harness: config.harness,
-      caBundle: caPem,
+      held: held.objects,
       imageRefs: converged,
       repoCache: carried.composesSandbox ? { image: operatorImage!, placement: config.sandbox } : undefined,
     }),
     ...ctx,
   });
+  // No secret held any more: the Custodian's Secrets go with it. The CA stays (`jr2-held-ca`), so a
+  // later converge that holds one again issues leaves under the same CA.
+  if (held.objects.manifest.secrets.length === 0) {
+    for (const secret of [HELD_SECRETS_SECRET, HELD_TLS_SECRET]) {
+      await kube.deleteObject({ kind: "secret", name: secret, namespace, ...ctx });
+    }
+  } else if (Object.keys(held.objects.values).length === 0) {
+    await kube.deleteObject({ kind: "secret", name: HELD_SECRETS_SECRET, namespace, ...ctx });
+  }
   activity(io, "orchestrator: waiting for rollout");
   await awaitRollout(kube, {
     name: ORCHESTRATOR_SERVICE,
@@ -748,7 +795,9 @@ export async function up(args: string[], io: Io): Promise<number> {
         name,
         namespace,
         harnessImage,
-        adapterImage: refs.adapter,
+        custodianImage,
+        held: held.objects.manifest,
+        heldDigest: heldDigest(Buffer.from(signingKey, "base64"), held.objects),
         harness: config.harness,
         caBundle: caPem !== undefined,
         // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
@@ -787,7 +836,7 @@ export async function up(args: string[], io: Io): Promise<number> {
 }
 
 /**
- * Every image ref one converge resolved. The Orchestrator reads `harness`/`adapter`/`sandbox` from
+ * Every image ref one converge resolved. The Orchestrator reads `harness`/`custodian`/`sandbox` from
  * the mounted map (`ImageRefs`); `operator` rides the same JSON because the record `jr2 up` diffs
  * must cover every image it builds, and one map is what keeps the record it diffs and the map pods
  * read from ever disagreeing (ADR-0038).
@@ -820,7 +869,7 @@ function previousImages(orch?: KubeObject): Partial<ConvergedImages> | undefined
 
 /** Every ref one image map names, flattened — the kit's own plus each Sandbox Image. */
 function mapRefs(map: Partial<ConvergedImages>): string[] {
-  return [map.harness, map.adapter, map.operator, ...Object.values(map.sandbox ?? {})].filter(
+  return [map.harness, map.custodian, map.operator, ...Object.values(map.sandbox ?? {})].filter(
     (ref): ref is string => typeof ref === "string",
   );
 }
@@ -870,6 +919,97 @@ async function sweepAfterConverge(
   } catch (err) {
     activity(io, `images: sweep skipped (${err instanceof Error ? err.message : err}) — the converge stands`);
   }
+}
+
+/**
+ * Held secrets, resolved (ADR-0059): the rules (`heldSecretsOf`, fed what only the cluster knows),
+ * the per-Instance CA (kept, or minted on first need), one leaf per bound target (reused while it
+ * still fits), the trust bundles, and the Custodian's rendered config. Narrated one line per secret
+ * — its name, its hosts, its source — and never a value.
+ */
+async function resolveHeld(
+  io: Io,
+  kube: KubeAdmin,
+  opts: {
+    config: JR2Config;
+    name: string;
+    namespace: string;
+    ctx: { context?: string };
+    envFromKeys: Map<string, string[]>;
+    models: string[];
+    /** The user's `caBundle` (ADR-0020): trusted upstream, and by the Harness beside the jr2 CA. */
+    caBundle?: string;
+  },
+): Promise<{ objects: HeldObjects; bundles?: { extra: string; bundle: string; upstream: string } }> {
+  const { config, namespace, ctx } = opts;
+  type Data = KubeObject & { data?: Record<string, string> };
+  const decode = (data: Record<string, string> | undefined, key: string): string | undefined =>
+    data?.[key] === undefined ? undefined : Buffer.from(data[key], "base64").toString("utf8");
+
+  // R10: a referenced Secret and key must exist. Read once per Secret — key NAMES, never values.
+  const referenced = new Map<string, string[] | undefined>();
+  for (const s of config.harness?.heldSecrets ?? []) {
+    const ref = s.valueFrom?.secretKeyRef.name;
+    if (ref === undefined || referenced.has(ref)) continue;
+    const found = await kube.getJson<Data>({ kind: "secret", name: ref, namespace, ...ctx });
+    referenced.set(ref, found ? Object.keys(found.data ?? {}) : undefined);
+  }
+  const { manifest, values, warnings } = heldSecretsOf(config, {
+    envFromKeys: opts.envFromKeys,
+    secretKeys: (secret) => referenced.get(secret),
+    models: opts.models,
+  });
+  for (const warning of warnings) activity(io, `warning: ${warning}`);
+  const orchestrator = { host: `${ORCHESTRATOR_SERVICE}.${namespace}.svc`, port: ORCHESTRATOR_PORT };
+  const rendered = {
+    bootstrap: JSON.stringify(custodianBootstrap(manifest, orchestrator)),
+    script: custodianScript(manifest),
+  };
+  if (manifest.secrets.length === 0) {
+    return { objects: { manifest, values, leaves: {}, ...rendered } };
+  }
+  for (const s of manifest.secrets) {
+    const where = s.hosts.map((h) => (h.port === 443 ? h.host : `${h.host}:${h.port}`)).join(", ");
+    const source = s.source.kind === "literal" ? "literal" : `secret ${s.source.secret}/${s.source.key}`;
+    activity(io, `held secret ${s.name} → ${where} (${source})`);
+  }
+
+  // The CA: kept whenever the cluster holds a usable one — a live pod's Harness trusts it from its
+  // start, so a leaf a restarted Custodian reads must still chain to it. A human rotates it by
+  // deleting the Secret.
+  const stored = await kube.getJson<Data>({ kind: "secret", name: HELD_CA_SECRET, namespace, ...ctx });
+  const kept = { cert: decode(stored?.data, "ca.crt") ?? "", key: decode(stored?.data, "ca.key") ?? "" };
+  const ca: Pem = stored && caFits(kept) ? kept : issueCa(opts.name);
+  if (ca !== kept) activity(io, `held secrets: minted the Instance's CA into ${HELD_CA_SECRET}`);
+
+  const tls = await kube.getJson<Data>({ kind: "secret", name: HELD_TLS_SECRET, namespace, ...ctx });
+  const leaves: Record<string, Pem> = {};
+  for (const s of manifest.secrets) {
+    for (const h of s.hosts) {
+      if (leaves[h.leaf]) continue;
+      const existing = {
+        cert: decode(tls?.data, `${h.leaf}.crt`) ?? "",
+        key: decode(tls?.data, `${h.leaf}.key`) ?? "",
+      };
+      leaves[h.leaf] = leafFits(existing, ca, h.host) ? existing : issueLeaf(ca, h.host);
+    }
+  }
+  return {
+    objects: { manifest, values, ca, leaves, ...rendered },
+    bundles: trustBundles(ca.cert, opts.caBundle),
+  };
+}
+
+/** The Instance Harness's `jr2.dev/held-digest` (ADR-0059): an HMAC over every held-secret input,
+ * keyed with the signing key so the annotation reveals nothing about a value. */
+function heldDigest(key: Buffer, held: HeldObjects): string {
+  const mac = createHmac("sha256", key);
+  mac.update(JSON.stringify(held.manifest));
+  for (const stem of Object.keys(held.leaves).sort()) mac.update(`${stem}:${fingerprint(held.leaves[stem]!.cert)}`);
+  for (const name of Object.keys(held.values).sort()) mac.update(`${name}=${held.values[name]}`);
+  mac.update(held.bootstrap);
+  mac.update(held.script);
+  return mac.digest("base64url").slice(0, 32);
 }
 
 /** The one delivery failure that is a configuration error rather than a docker one (ADR-0019). */
@@ -955,7 +1095,7 @@ async function verifyRunningImage(
   // thing serving — the question is what the cluster runs now, not what it is done running.
   const live = pods.filter((p) => !p.metadata.deletionTimestamp);
   // `container` narrows a multi-container pod to the one this layer's image claim is about
-  // (the Instance Harness pod also carries the Adapter, which is not this check's business).
+  // (the Instance Harness pod also carries the Custodian, which is not this check's business).
   const stale = live.filter((p) =>
     p.spec.containers.some((c) => (container === undefined || c.name === container) && c.image !== image),
   );

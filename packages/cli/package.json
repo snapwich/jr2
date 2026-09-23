@@ -37,7 +37,8 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test"
+    "test": "node --test",
+    "test:custodian": "node --test --test-concurrency=1 test/custodian.docker.ts"
   },
   "dependencies": {
     "ts-blank-space": "^0.9.0"
@@ -46,6 +47,7 @@
     "@jr2/orchestrator": "workspace:*"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "0.91.1",
     "@jr2/orchestrator": "workspace:*",
     "@types/node": "^26.0.1",
     "xstate": "^5.18.0",

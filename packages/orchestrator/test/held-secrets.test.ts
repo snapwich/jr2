@@ -5,6 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import type { JR2Config } from "../src/config.ts";
 import { heldSecretsOf, leafStem, parseTarget, standIn, type HeldLookups } from "../src/held-secrets.ts";
 
@@ -34,6 +36,16 @@ test("the Stand-in: deterministic, public, per name, and never an Anthropic OAut
   assert.notEqual(standIn("A"), standIn("B"));
   assert.match(standIn("JR2_PROVIDER_API_KEY"), /^[A-Za-z0-9_-]+$/);
   assert.ok(!standIn("ANTHROPIC_OAUTH_TOKEN").includes("sk-ant-oat"));
+});
+
+test("jr2-upload-pack presents the same Stand-in: the Go literal is standIn(JR2_SANDBOX_TOKEN)", async () => {
+  // The User Container gets no env (ADR-0005), so the program carries the Stand-in as a constant —
+  // two spellings of one value, pinned here so a rename on one side cannot pass silently.
+  const go = await readFile(
+    fileURLToPath(new URL("../../../operator/internal/uploadpack/uploadpack.go", import.meta.url)),
+    "utf8",
+  );
+  assert.match(go, new RegExp(`SandboxTokenStandIn = "${standIn("JR2_SANDBOX_TOKEN")}"`));
 });
 
 test("a literal is normalized: hosts parsed, the leaf stem derived, default headers, the value kept host-side", () => {

@@ -131,14 +131,19 @@ func (e *exec1) fn(path string, argv []string, env []string) error {
 	return nil
 }
 
-// adapter stands in for the loopback Adapter: it records the body it was asked
-// with and answers what the test names.
-func adapter(t *testing.T, status int, body any) (*httptest.Server, *string) {
+// custodian stands in for the loopback Custodian: it records the body it was
+// asked with and answers what the test names. It answers only the Stand-in —
+// the Custodian swaps that bearer and no other (ADR-0059).
+func custodian(t *testing.T, status int, body any) (*httptest.Server, *string) {
 	t.Helper()
 	asked := new(string)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/fetch" {
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+SandboxTokenStandIn {
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 		read, _ := io.ReadAll(r.Body)
@@ -174,7 +179,7 @@ func run(t *testing.T, p pod, args []string, env []string, client *http.Client) 
 
 func TestAFetchThatLandsExecsUploadPackOnTheCacheAndSaysNothing(t *testing.T) {
 	p := layout(t)
-	server, asked := adapter(t, http.StatusOK, map[string]any{keyFetched: someTime})
+	server, asked := custodian(t, http.StatusOK, map[string]any{keyFetched: someTime})
 
 	code, stderr, e := run(t, p, []string{ServiceUploadPack, identity, server.URL}, nil, server.Client())
 
@@ -200,7 +205,7 @@ func TestAFetchThatLandsExecsUploadPackOnTheCacheAndSaysNothing(t *testing.T) {
 
 func TestAStaleAnswerWarnsOnceAndServesTheCacheAnyway(t *testing.T) {
 	p := layout(t)
-	server, _ := adapter(t, http.StatusOK, map[string]any{
+	server, _ := custodian(t, http.StatusOK, map[string]any{
 		keyStale: "fatal: could not read Username for 'https://github.com'",
 		keyAsOf:  earlier,
 	})
@@ -219,7 +224,7 @@ func TestAStaleAnswerWarnsOnceAndServesTheCacheAnyway(t *testing.T) {
 
 func TestAStaleAnswerWithNoTimeSaysTheCacheIsOfAnUnknownTime(t *testing.T) {
 	p := layout(t)
-	server, _ := adapter(t, http.StatusOK, map[string]any{keyStale: "the cache has never been fetched", keyAsOf: nil})
+	server, _ := custodian(t, http.StatusOK, map[string]any{keyStale: "the cache has never been fetched", keyAsOf: nil})
 
 	_, stderr, e := run(t, p, []string{ServiceUploadPack, identity, server.URL}, nil, server.Client())
 
@@ -236,14 +241,14 @@ func TestEveryOtherAnswerIsAlsoOneWarningAndTheSameExec(t *testing.T) {
 		body   any
 		reason string
 	}{
-		"a status that is not 200": {http.StatusForbidden, "not this Sandbox's Repo", "the adapter answered 403 Forbidden: not this Sandbox's Repo"},
-		"a body that is not json":  {http.StatusOK, "<html>nope</html>", "the adapter's answer is not the shape jr2 speaks:"},
+		"a status that is not 200": {http.StatusForbidden, "not this Sandbox's Repo", "the custodian answered 403 Forbidden: not this Sandbox's Repo"},
+		"a body that is not json":  {http.StatusOK, "<html>nope</html>", "the custodian's answer is not the shape jr2 speaks:"},
 		"a body that names neither": {http.StatusOK, map[string]any{},
-			"the adapter's answer named neither a fetch nor a staleness"},
+			"the custodian's answer named neither a fetch nor a staleness"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			server, _ := adapter(t, c.status, c.body)
+			server, _ := custodian(t, c.status, c.body)
 			code, stderr, e := run(t, p, []string{ServiceUploadPack, identity, server.URL}, nil, server.Client())
 			if code != 0 || !e.ran {
 				t.Fatalf("exit %d, exec'd %v — freshness degrades, absence does not", code, e.ran)
@@ -259,16 +264,16 @@ func TestEveryOtherAnswerIsAlsoOneWarningAndTheSameExec(t *testing.T) {
 	}
 }
 
-func TestAnAdapterThatCannotBeReachedIsOneWarningAndTheSameExec(t *testing.T) {
+func TestACustodianThatCannotBeReachedIsOneWarningAndTheSameExec(t *testing.T) {
 	p := layout(t)
-	server, _ := adapter(t, http.StatusOK, map[string]any{keyFetched: someTime})
+	server, _ := custodian(t, http.StatusOK, map[string]any{keyFetched: someTime})
 	url := server.URL
 	server.Close() // nothing is listening any more
 
 	code, stderr, e := run(t, p, []string{ServiceUploadPack, identity, url}, nil, http.DefaultClient)
 
 	if code != 0 || !e.ran {
-		t.Fatalf("exit %d, exec'd %v — a dead Adapter must not fail a fetch", code, e.ran)
+		t.Fatalf("exit %d, exec'd %v — a dead Custodian must not fail a fetch", code, e.ran)
 	}
 	if !strings.HasPrefix(stderr, "warning: jr2: remote fetch failed (") ||
 		!strings.HasSuffix(stderr, "serving the cache as of an unknown time\n") ||
@@ -297,7 +302,7 @@ func TestOnlyTheTwoReadsAreServed(t *testing.T) {
 // and the same cache, so the export is of the remote's now.
 func TestAnArchiveAsksTheSameAndExecsUploadArchiveOnTheCache(t *testing.T) {
 	p := layout(t)
-	server, asked := adapter(t, http.StatusOK, map[string]any{keyFetched: someTime})
+	server, asked := custodian(t, http.StatusOK, map[string]any{keyFetched: someTime})
 
 	code, stderr, e := run(t, p, []string{ServiceUploadArchive, identity, server.URL}, nil, server.Client())
 
@@ -318,13 +323,13 @@ func TestTooFewArgumentsPrintsTheUsage(t *testing.T) {
 	if code != 1 || e.ran {
 		t.Fatalf("exit %d, exec'd %v, want 1 and nothing exec'd", code, e.ran)
 	}
-	if stderr != "usage: jr2-upload-pack <service> <identity> [adapter-url]\n" {
+	if stderr != "usage: jr2-upload-pack <service> <identity> [custodian-url]\n" {
 		t.Fatalf("stderr = %q", stderr)
 	}
 }
 
 func TestACheckoutWithNoCacheFailsRatherThanServingSomethingElse(t *testing.T) {
-	server, _ := adapter(t, http.StatusOK, map[string]any{keyFetched: someTime})
+	server, _ := custodian(t, http.StatusOK, map[string]any{keyFetched: someTime})
 	e := &exec1{}
 	var stderr bytes.Buffer
 	code := Run(Options{
@@ -342,7 +347,7 @@ func TestACheckoutWithNoCacheFailsRatherThanServingSomethingElse(t *testing.T) {
 
 func TestUploadPackServesTheCacheAndNotTheCallersOwnRepository(t *testing.T) {
 	p := layout(t)
-	server, _ := adapter(t, http.StatusOK, map[string]any{keyFetched: someTime})
+	server, _ := custodian(t, http.StatusOK, map[string]any{keyFetched: someTime})
 
 	env := []string{
 		"GIT_DIR=" + filepath.Join(p.dflt, ".git", "worktrees", "feature"),
@@ -368,7 +373,7 @@ func TestUploadPackServesTheCacheAndNotTheCallersOwnRepository(t *testing.T) {
 	}
 }
 
-func TestTheAdapterUrlIsTheArgumentThenTheEnvironmentThenLoopback(t *testing.T) {
+func TestTheCustodianUrlIsTheArgumentThenTheEnvironmentThenLoopback(t *testing.T) {
 	cases := []struct {
 		name string
 		args []string
@@ -377,13 +382,13 @@ func TestTheAdapterUrlIsTheArgumentThenTheEnvironmentThenLoopback(t *testing.T) 
 	}{
 		{"the third argument wins", []string{ServiceUploadPack, "id", "http://127.0.0.1:9999"}, someURL, "http://127.0.0.1:9999"},
 		{"then the environment", []string{ServiceUploadPack, "id"}, someURL, someURL},
-		{"then the loopback default", []string{ServiceUploadPack, "id"}, "", DefaultAdapterURL},
+		{"then the loopback default", []string{ServiceUploadPack, "id"}, "", DefaultCustodianURL},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := adapterURL(Options{Args: c.args, Getenv: func(string) string { return c.env }})
+			got := custodianURL(Options{Args: c.args, Getenv: func(string) string { return c.env }})
 			if got != c.want {
-				t.Fatalf("adapterURL = %q, want %q", got, c.want)
+				t.Fatalf("custodianURL = %q, want %q", got, c.want)
 			}
 		})
 	}
@@ -391,7 +396,7 @@ func TestTheAdapterUrlIsTheArgumentThenTheEnvironmentThenLoopback(t *testing.T) 
 
 func TestTheWarningIsAlwaysOneLine(t *testing.T) {
 	p := layout(t)
-	server, _ := adapter(t, http.StatusOK, map[string]any{keyStale: "fatal: bad\nremote: and more\n", keyAsOf: earlier})
+	server, _ := custodian(t, http.StatusOK, map[string]any{keyStale: "fatal: bad\nremote: and more\n", keyAsOf: earlier})
 	_, stderr, _ := run(t, p, []string{ServiceUploadPack, identity, server.URL}, nil, server.Client())
 	if strings.Count(stderr, "\n") != 1 {
 		t.Fatalf("stderr = %q, want exactly one line", stderr)

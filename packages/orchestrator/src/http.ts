@@ -2,15 +2,16 @@
 // carries NO domain logic of its own: every handler delegates to a single `RunHost` method, so the
 // wire shape and the in-process API stay one behavior.
 //
-// TWO dialects, one primitive (ADR-0013). The Orchestrator does not speak MCP — that moved into the
-// Sandbox, where the Adapter serves it to the Agent over localhost. What is left here are two thin
-// adapters over the same registration table:
+// TWO dialects, one primitive (ADR-0013). The Orchestrator does not speak MCP — nothing does: the
+// Harness presents the Menu to its model itself, and reaches these routes through the Custodian in
+// its pod, which holds the Sandbox token. What is left here are two thin adapters over the same
+// registration table:
 //
 //   # human / webhook / CI — the Gate resource of ADR-0011
 //   GET  /runs/:id                     open gates: accepts + schemas + meta      [Instance token]
 //   POST /runs/:id/gates/:gate/events  validate + deliver                        [Instance token]
 //
-//   # the Agent's Adapter, and nothing else
+//   # the Agent's Harness, through its Custodian, and nothing else
 //   GET  /agents/:iid/surface          accepts + schemas + semantics             [Sandbox token]
 //   POST /agents/:iid/events           validate + deliver → the turn receipt      [Sandbox token]
 //   POST /sandboxes/:name/fetch        ask the node cache to fetch one Repo      [Sandbox token]
@@ -180,7 +181,7 @@ async function consoleTsAsset(file: string): Promise<Response> {
 // Content negotiation for the two page addresses (ADR-0032). JSON is the DEFAULT dialect: only a
 // request whose `Accept` prefers `text/html` — a browser's navigation — gets the Console shell.
 // No header, a bare wildcard, `application/json`, `text/event-stream` all fall through to JSON,
-// so the CLI, the Adapter and EventSource never see HTML they did not ask for.
+// so the CLI, the Harness and EventSource never see HTML they did not ask for.
 function prefersHtml(c: Context): boolean {
   return (
     accepts(c, { header: "Accept", supports: ["application/json", "text/html"], default: "application/json" }) ===
@@ -301,8 +302,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
 
   /**
    * Authenticate, AND require the INSTANCE token (ADR-0014). A Sandbox token is a token we minted,
-   * so `authenticated` alone lets it through — which on the run surface is too much: it would let an
-   * Adapter's credential read every run's context (other features' branches, tickets, verdicts) and
+   * so `authenticated` alone lets it through — which on the run surface is too much: it would let a
+   * Custodian's credential read every run's context (other features' branches, tickets, verdicts) and
    * CANCEL any run. Neither is on the Agent's surface. Its scope is delivering to agent
    * registrations recorded against its OWN Sandbox (ADR-0013), and the gate route already says so in
    * the other direction.
@@ -358,8 +359,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // A body failing the machine's declared input schema (ADR-0033) → 400 naming the accepted
   // shape — the same error class, and the same wire mapping, as a gate delivery failing its
   // schema (`POST /runs/:id/gates/:gate/events` below). Instance-band (ADR-0058): starting work is
-  // run control, and a Sandbox token's scope is its own agent surface — no Adapter forwarding this
-  // route is what keeps an Agent from starting runs today, and that is not a control.
+  // run control, and a Sandbox token's scope is its own agent surface — the Custodian's route
+  // allowlist not forwarding this route is a second layer, not the control (ADR-0059).
   app.post("/workflows/:name/runs", instanceOnly, async (c) => {
     const name = c.req.param("name");
     const input = await readJson(c.req.text());
@@ -671,10 +672,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   });
 
   // ---- The Agent's surface (`/agents/:iid/*` — ADR-0013) --------------------------------------
-  // Served to ONE caller: the Adapter in the Agent's Sandbox. It renders `surface` as `tools/list`
-  // and turns a `tools/call` into an `events` POST. The Orchestrator therefore keeps no MCP
-  // dependency, no transport, no session handling — and the Agent keeps no route to this API
-  // except through a process whose credential it cannot read.
+  // Served to ONE caller: the Agent's Harness, through the Custodian in its pod. The Harness renders
+  // `surface` as the Menu and turns a pick into an `events` POST. The Orchestrator therefore keeps
+  // no MCP dependency, no transport, no session handling — and the Agent keeps no route to this
+  // API except through a container whose credential it cannot read. Everything a pick is judged by
+  // is judged HERE: the token's scope, the live registration, the event's name and payload — the
+  // Custodian forwards and never decides (ADR-0059).
   //
   // Both routes are adapters over the SAME registration table the gates ride: lookup, validation
   // and delivery are implemented once, in `registration.ts`.
@@ -696,7 +699,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   };
 
   // This turn's menu: the events the invoking state accepts, their input schemas, their semantics.
-  // A transition swaps the registration, which swaps this — so the Adapter gets a state-scoped
+  // A transition swaps the registration, which swaps this — so the Harness gets a state-scoped
   // toolset for free, and needs no `list_changed` to know it (flue re-lists on every submission).
   app.get("/agents/:instanceId/surface", authenticated, (c) => {
     const { surface, error } = agentRegistration(c);
@@ -704,7 +707,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   });
 
   // The Agent's pick, delivered into the state that invoked it. The receipt describes itself
-  // (ADR-0024): what was delivered, and whether that ended the turn — which the Adapter renders as
+  // (ADR-0024): what was delivered, and whether that ended the turn — which the Harness renders as
   // prose. Its `deliveryId` still makes an outcome addressable after the fact, the room a deferred
   // result will need when it lands.
   app.post("/agents/:instanceId/events", authenticated, async (c) => {
@@ -721,7 +724,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   });
 
   // The pod's one route out (ADR-0053). A `git fetch` inside a Sandbox runs a program on the
-  // runtime volume, which asks the Adapter on localhost, which forwards to this. What lands here
+  // runtime volume, which asks the Custodian on localhost, which forwards to this. What lands here
   // is one identity; what goes back is the landing, or the cache as it stands with git's own words
   // — freshness degrades, absence does not, so this answers 200 either way and the program prints
   // the warning. The caller waits on the ask the way an attach waits on Ready: same status, same

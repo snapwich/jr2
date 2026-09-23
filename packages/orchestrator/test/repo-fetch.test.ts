@@ -1,5 +1,5 @@
 // The ask a pod makes when something inside it fetches (ADR-0053), both halves: the port that
-// marks the Sandbox CR and waits on its status, and the route the Adapter reaches it through.
+// marks the Sandbox CR and waits on its status, and the route the Custodian reaches it through.
 //
 // What matters here is the TIMESTAMP discipline. The mark is a coalescer — however many fetches
 // are in flight before one lands, the remote is fetched once — and the thing that makes a

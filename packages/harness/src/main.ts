@@ -34,10 +34,12 @@ function required(name: string, why: string): string {
 }
 
 const harness = loadHarnessSpec(process.env);
-const adapterUrl = required(
-  "JR2_ADAPTER_URL",
-  "the Agent has no Adapter to reach, so it cannot drive its Machine (ADR-0013)",
-);
+// The Menu's route (ADR-0013, ADR-0059): the Custodian on this pod's loopback, and the Sandbox
+// token's STAND-IN — the Agent reads this env, so the token itself is the Custodian's alone.
+const menu = {
+  url: required("JR2_CUSTODIAN_URL", "the Agent has no Custodian to reach, so it cannot drive its Machine (ADR-0013)"),
+  token: required("JR2_SANDBOX_TOKEN", "the Menu is read with the Sandbox token's Stand-in (ADR-0059)"),
+};
 const models = modelsFor(harness, process.env);
 
 // The wire's gate (ADR-0058): the Orchestrator bears a token derived for THIS placement, and the
@@ -53,7 +55,7 @@ const bearerSha256 = required(
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("base64url");
 
 const app = harnessApp({
-  runSubmissionFor: (seat) => runSubmissionFor({ models, adapterUrl, ...seat }),
+  runSubmissionFor: (seat) => runSubmissionFor({ models, menu, ...seat }),
   checkAdmission: (resolved) => admissionFault(models, resolved),
   // Set on the Instance Harness Deployment alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code

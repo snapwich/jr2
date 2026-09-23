@@ -16,6 +16,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { EMPTY_HELD, leafStem, standIn, type HeldManifest } from "../src/held-secrets.ts";
 import { imageContextDigest } from "../src/images.ts";
 import { repoKey } from "../src/repo-identity.ts";
 import { attachScript, kubectlSandbox, rootImageFault } from "../src/sandbox-kubectl.ts";
@@ -47,7 +48,7 @@ function fakeExec(handlers: Record<string, (call: Call) => string>) {
   return { exec, calls };
 }
 
-/** Every provision now applies a token Secret first (the Adapter is unconditional — ADR-0013), so
+/** Every provision applies a token Secret first (the Custodian is unconditional — ADR-0013), so
  * "the CR" is the apply whose body is a Sandbox, never simply the first call. */
 const crOf = (calls: Call[]): any =>
   JSON.parse(calls.find((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))!.input!);
@@ -77,7 +78,7 @@ const GOLANG = await mkContext("golang:1.23");
 
 const REFS = {
   harness: "jr2-harness:h00",
-  adapter: "jr2-adapter:a00",
+  custodian: "envoy:c00",
   sandbox: { default: "jr2-sandbox-inst-default:d00", [RUST.key]: "jr2-sandbox-inst-rust:r00" },
 };
 
@@ -101,12 +102,22 @@ function fakeRepos() {
   return { port, ensured };
 }
 
-/** Everything a provision needs beyond the images map: the Adapter is always injected now, so its
- * token Secret (and therefore a signing key and a route home) is no longer optional — and every
+/** The mounted `jr2-held` manifest (ADR-0059) as a real file — the port reads it per provision. */
+async function mkHeld(manifest: HeldManifest): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-held-"));
+  const path = join(dir, "held.json");
+  await writeFile(path, JSON.stringify(manifest));
+  return path;
+}
+
+const NOTHING_HELD = await mkHeld(EMPTY_HELD);
+
+/** Everything a provision needs beyond the images map: the Custodian is always composed, so its
+ * token Secret (and therefore a signing key) and its manifest are not optional — and every
  * provision names Repos whose resources it must ensure, so neither is the Repo-resource port. */
 const provisionable = {
   signingKey: Buffer.from("k"),
-  orchestratorUrl: "http://host:1234",
+  heldPath: NOTHING_HELD,
   pollMs: 1,
   repos: fakeRepos().port,
 };
@@ -175,7 +186,13 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     // jr2's runtime, read-only in the container where the Agent has code execution.
     { name: "runtime", mountPath: "/opt/jr2", readOnly: true },
   ]);
-  assert.deepEqual(applied.spec.volumes, [
+  // Then the Custodian's own two (ADR-0059): what it holds and how it is told to hold it. With
+  // nothing held and no CA bundle, the Harness container mounts neither.
+  assert.deepEqual(
+    applied.spec.volumes.map((v: { name: string }) => v.name),
+    ["work", "runtime", "custodian-values", "custodian-config"],
+  );
+  assert.deepEqual(applied.spec.volumes.slice(0, 2), [
     { name: "work", emptyDir: {} },
     { name: "runtime", emptyDir: {} },
   ]);
@@ -311,7 +328,7 @@ test("the User Container is the zero-contract seat: own entrypoint, /work, and N
   });
   assert.deepEqual(
     crOf(c2).spec.sidecars.map((s: { name: string }) => s.name),
-    ["adapter"],
+    ["custodian"],
     "no default User Container — the seat's identity is what jr2 does not own",
   );
 });
@@ -400,7 +417,7 @@ test("the Sandbox Image chain: the wrapper's context → images/default → the 
   // The last leg comes out of the MAP, not a `jr2-harness:<kitversion>` literal: in a kit checkout
   // the Harness is a content-addressed tag (ADR-0038) and a literal would name nothing built.
   assert.equal(
-    await provisionWith({ harness: "jr2-harness:h00", adapter: "jr2-adapter:a00", sandbox: {} }),
+    await provisionWith({ harness: "jr2-harness:h00", custodian: "envoy:c00", sandbox: {} }),
     "jr2-harness:h00",
     "no images/default → the stock Harness",
   );
@@ -585,16 +602,29 @@ test("an absent or malformed image map fails the provision pointing at `jr2 up`,
     },
   );
 
-  // A map with no `adapter` is loud, not a pod with no route home: an Agent whose Adapter is
-  // missing parks its Machine forever on a tool call it cannot make (ADR-0013).
-  const noAdapter = kubectlSandbox({
+  // A map with no `custodian` is loud, not a pod with no route home: an Agent whose pod has no
+  // Custodian parks its Machine forever on a Menu it cannot read (ADR-0013).
+  const noCustodian = kubectlSandbox({
     imagesPath: await mkImages({ harness: "jr2-harness:h00", sandbox: {} }),
     ...provisionable,
     exec,
   });
   await assert.rejects(
-    () => noAdapter.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
-    /no `adapter` ref/,
+    () => noCustodian.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
+    /no `custodian` ref/,
+  );
+
+  // And so is an absent held-secret manifest: composing a Custodian on a guess would hold what the
+  // converge did not, or leave out what it did (ADR-0059).
+  const noHeld = kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    heldPath: "/nonexistent/jr2/held.json",
+    exec,
+  });
+  await assert.rejects(
+    () => noHeld.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
+    /\/nonexistent\/jr2\/held\.json.*jr2 up/s,
   );
 });
 
@@ -612,7 +642,7 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
   const applied = crOf(calls);
   assert.deepEqual(
     applied.spec.env.map((e: { name: string }) => e.name),
-    ["FLUE_LOG", "JR2_ADAPTER_URL", "JR2_HARNESS_TOKEN_SHA256"],
+    ["FLUE_LOG", "JR2_CUSTODIAN_URL", "JR2_SANDBOX_TOKEN", "JR2_HARNESS_TOKEN_SHA256"],
   );
   assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "anthropic" } }]);
 });
@@ -643,7 +673,7 @@ test("each Sandbox's Harness gets the DIGEST of its own placement's bearer, last
   }
 });
 
-test("the Adapter is UNCONDITIONAL and is the pod's only credential holder", async () => {
+test("the Custodian is UNCONDITIONAL and is the pod's only credential holder (ADR-0013, ADR-0059)", async () => {
   const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
   const port = kubectlSandbox({
     imagesPath: await mkImages(REFS),
@@ -654,19 +684,135 @@ test("the Adapter is UNCONDITIONAL and is the pod's only credential holder", asy
   await port.provision({ name: "sb-env2", runId: "r", workflow: "w", ...withApp });
 
   const applied = crOf(calls);
-  // With the ref in the map there is no "no adapter configured" state left to branch on, and no
-  // User Container was named — so this list is exactly the Adapter.
+  // No User Container was named — so this list is exactly the Custodian.
   assert.deepEqual(
     applied.spec.sidecars.map((s: { name: string; image: string }) => [s.name, s.image]),
-    [["adapter", "jr2-adapter:a00"]],
+    [["custodian", "envoy:c00"]],
   );
-  // The Adapter's envFrom stays exactly its token Secret (ADR-0013 asymmetry).
-  assert.deepEqual(applied.spec.sidecars[0].envFrom, [{ secretRef: { name: "sb-env2-token" } }]);
+  const custodian = applied.spec.sidecars[0];
+  // The token is a FILE in the Custodian, and nothing of it is in any env (ADR-0013 asymmetry):
+  // the Custodian's env is its Sandbox's name and nothing else.
+  assert.equal(custodian.envFrom, undefined);
+  assert.deepEqual(custodian.env, [{ name: "JR2_SANDBOX", value: "sb-env2" }]);
+  const values = applied.spec.volumes.find((v: { name: string }) => v.name === "custodian-values");
+  assert.deepEqual(values.projected.sources, [
+    { secret: { name: "sb-env2-token", items: [{ key: "JR2_SANDBOX_TOKEN", path: "JR2_SANDBOX_TOKEN" }] } },
+  ]);
+  // The Harness holds the token's Stand-in, never the token.
+  assert.ok(
+    applied.spec.env.some(
+      (e: { name: string; value?: string }) =>
+        e.name === "JR2_SANDBOX_TOKEN" && e.value === standIn("JR2_SANDBOX_TOKEN"),
+    ),
+  );
+  assert.ok(
+    !applied.spec.volumeMounts.some((m: { name: string }) => m.name.startsWith("custodian-")),
+    "the Harness container mounts nothing of the Custodian's",
+  );
   const secret = JSON.parse(calls.find((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Secret"'))!.input!);
   assert.equal(secret.metadata.name, "sb-env2-token");
 });
 
-test("caBundle: the jr2-ca ConfigMap mounts into the HARNESS container with NODE_EXTRA_CA_CERTS; absent → nothing", async () => {
+test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alone mounts values and leaves (ADR-0059)", async () => {
+  const manifest: HeldManifest = {
+    version: 1,
+    secrets: [
+      {
+        name: "ANTHROPIC_API_KEY",
+        source: { kind: "literal" },
+        hosts: [{ host: "litellm.corp.example", port: 443, leaf: leafStem("litellm.corp.example", 443) }],
+        headers: ["x-api-key"],
+      },
+      {
+        name: "OPENAI_API_KEY",
+        source: { kind: "secret", secret: "team-keys", key: "openai" },
+        hosts: [{ host: "api.openai.com", port: 443, leaf: leafStem("api.openai.com", 443) }],
+        headers: ["authorization"],
+      },
+    ],
+  };
+  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  await kubectlSandbox({
+    imagesPath: await mkImages(REFS),
+    ...provisionable,
+    heldPath: await mkHeld(manifest),
+    exec,
+    caBundle: true,
+    env: [{ name: "FLUE_LOG", value: "debug" }],
+    // A same-named key in an envFrom Secret loses to the Stand-in: `env` wins over `envFrom`.
+    envFrom: [{ secretRef: { name: "stale-keys" } }],
+  }).provision({ name: "sb-held", runId: "r", workflow: "w", user: "ghcr.io/acme/sshd:1", ...withApp });
+  const applied = crOf(calls);
+
+  assert.deepEqual(
+    applied.spec.env.map((e: { name: string; value?: string }) => [e.name, e.value]),
+    [
+      ["FLUE_LOG", "debug"],
+      ["JR2_CUSTODIAN_URL", "http://127.0.0.1:8081"],
+      ["JR2_SANDBOX_TOKEN", "jr2-held-JR2_SANDBOX_TOKEN"],
+      ["ANTHROPIC_API_KEY", "jr2-held-ANTHROPIC_API_KEY"],
+      ["OPENAI_API_KEY", "jr2-held-OPENAI_API_KEY"],
+      ["HTTPS_PROXY", "http://127.0.0.1:15001"],
+      ["https_proxy", "http://127.0.0.1:15001"],
+      ["NO_PROXY", "localhost,127.0.0.1,::1"],
+      ["no_proxy", "localhost,127.0.0.1,::1"],
+      ["NODE_USE_ENV_PROXY", "1"],
+      ["NODE_EXTRA_CA_CERTS", "/etc/jr2/ca/extra.crt"],
+      ["SSL_CERT_FILE", "/etc/jr2/ca/bundle.crt"],
+      ["REQUESTS_CA_BUNDLE", "/etc/jr2/ca/bundle.crt"],
+      ["GIT_SSL_CAINFO", "/etc/jr2/ca/bundle.crt"],
+      ["JR2_HARNESS_TOKEN_SHA256", harnessTokenDigest(provisionable.signingKey, "sb-held")],
+    ],
+  );
+  assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "stale-keys" } }]);
+
+  const custodian = applied.spec.sidecars.find((c: { name: string }) => c.name === "custodian");
+  assert.deepEqual(
+    custodian.volumeMounts.map((m: { name: string; mountPath: string }) => [m.name, m.mountPath]),
+    [
+      ["custodian-values", "/etc/jr2/custodian/values"],
+      ["custodian-config", "/etc/jr2/custodian/config"],
+      ["custodian-tls", "/etc/jr2/custodian/tls"],
+      ["custodian-trust", "/etc/jr2/ca"],
+    ],
+  );
+  const values = applied.spec.volumes.find((v: { name: string }) => v.name === "custodian-values");
+  assert.equal(values.projected.defaultMode, 0o440);
+  assert.deepEqual(values.projected.sources.slice(1), [
+    { secret: { name: "jr2-held-secrets", items: [{ key: "ANTHROPIC_API_KEY", path: "ANTHROPIC_API_KEY" }] } },
+    { secret: { name: "team-keys", items: [{ key: "openai", path: "OPENAI_API_KEY" }] } },
+  ]);
+  assert.deepEqual(
+    applied.spec.volumes.find((v: { name: string }) => v.name === "custodian-trust"),
+    {
+      name: "custodian-trust",
+      configMap: { name: "jr2-ca", items: [{ key: "upstream.crt", path: "upstream.crt" }] },
+    },
+  );
+
+  // The asymmetry, whole: no container but the Custodian references what it holds — not the
+  // Harness (the CR's own mounts), not the User Container.
+  const held = new Set(["custodian-values", "custodian-tls", "custodian-config", "custodian-trust"]);
+  for (const container of [{ name: "harness", volumeMounts: applied.spec.volumeMounts }, ...applied.spec.sidecars]) {
+    if (container.name === "custodian") continue;
+    for (const m of container.volumeMounts ?? []) assert.ok(!held.has(m.name), `${container.name} mounts ${m.name}`);
+    assert.ok(
+      !JSON.stringify(container).includes("jr2-held-secrets") && !JSON.stringify(container).includes("team-keys"),
+    );
+  }
+  assert.ok(!JSON.stringify(applied).includes("jr2-held-ca"), "no pod names the CA's Secret");
+  assert.ok(!("shareProcessNamespace" in applied.spec), "the Agent cannot read another container's /proc");
+  assert.deepEqual(custodian.securityContext, {
+    runAsNonRoot: true,
+    readOnlyRootFilesystem: true,
+    allowPrivilegeEscalation: false,
+    capabilities: { drop: ["ALL"] },
+    seccompProfile: { type: "RuntimeDefault" },
+  });
+  assert.deepEqual(custodian.readinessProbe.httpGet, { path: "/healthz", port: 15021 });
+});
+
+test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS container with NODE_EXTRA_CA_CERTS; absent → nothing", async () => {
   const imagesPath = await mkImages(REFS);
   const withCa = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
   await kubectlSandbox({ imagesPath, ...provisionable, exec: withCa.exec, caBundle: true }).provision({
@@ -677,14 +823,17 @@ test("caBundle: the jr2-ca ConfigMap mounts into the HARNESS container with NODE
   });
   const applied = crOf(withCa.calls);
   assert.deepEqual(applied.spec.env, [
-    { name: "JR2_ADAPTER_URL", value: "http://127.0.0.1:8081" },
+    { name: "JR2_CUSTODIAN_URL", value: "http://127.0.0.1:8081" },
+    { name: "JR2_SANDBOX_TOKEN", value: "jr2-held-JR2_SANDBOX_TOKEN" },
     { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/ca.crt" },
     { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(provisionable.signingKey, "sb-ca") },
   ]);
   assert.deepEqual(applied.spec.volumes.at(-1), { name: "ca", configMap: { name: "jr2-ca" } });
-  // CR-level volumeMounts land on the HARNESS container only (operator contract) — the ADR-0020
-  // asymmetry: the Adapter never inherits the trust path.
+  // CR-level volumeMounts land on the HARNESS container only (operator contract). With nothing
+  // held, the Custodian verifies no upstream, so it mounts no trust at all.
   assert.deepEqual(applied.spec.volumeMounts.at(-1), { name: "ca", mountPath: "/etc/jr2/ca", readOnly: true });
+  const custodian = applied.spec.sidecars.find((c: { name: string }) => c.name === "custodian");
+  assert.ok(!custodian.volumeMounts.some((m: { name: string }) => m.name === "ca" || m.name === "custodian-trust"));
 
   const without = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
   await kubectlSandbox({ imagesPath, ...provisionable, exec: without.exec }).provision({
@@ -1170,8 +1319,8 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
     script,
     /git -C '\/work\/infra\/default' remote set-url origin -- 'ext::\/opt\/jr2\/bin\/jr2-upload-pack %S example\.test\/infra'\n/,
   );
-  // At the Adapter's default port the url names no address — the program falls back to the same
-  // one, so spelling it would put a number in every `git remote -v` that says nothing.
+  // The url names no address — the program's default is the Custodian's, so spelling it would put
+  // a number in every `git remote -v` that says nothing.
   assert.doesNotMatch(script, /jr2-upload-pack %S [^ ']+ /);
   // And the policy that lets git run it at all. `ext` is on git's own "known scary" list, so its
   // built-in default is `never` and the url above would die with `fatal: transport 'ext' not
@@ -1217,28 +1366,17 @@ test("attach execs the idempotent ADR-0004 script in the harness container, per 
 
 const PATHS = { reposMount: "/repos", workRoot: "/work" };
 
-test("the fetch url names the Adapter only when the composition moved it off 8081", async () => {
-  // The program defaults to `http://127.0.0.1:8081` and reads `$JR2_ADAPTER_URL` before that, so a
-  // pod at the default port gets a url that says nothing about it (ADR-0053). A pod whose Adapter
-  // was moved must say so: the User Container gets no env, so the url is the only place it can.
+test("the fetch url names no address: every pod's Custodian answers the ask at the one loopback address", async () => {
+  // The program defaults to `http://127.0.0.1:8081`, where every Harness pod's Custodian listens
+  // (ADR-0053, ADR-0059); the User Container gets no env, so an address that moved would have had to
+  // ride the url — and none moves.
   const { exec, calls } = fakeExec({ exec: () => "" });
-  await kubectlSandbox({ exec, adapterPort: 9090 }).attach({
-    name: "sb-port",
-    spec: { branch: "b" },
-    repos: [{ slot: "app", url: APP_URL }],
-  });
-  assert.match(
-    calls[0]!.args.at(-1)!,
-    /remote set-url origin -- 'ext::\/opt\/jr2\/bin\/jr2-upload-pack %S example\.test\/app http:\/\/127\.0\.0\.1:9090'/,
-  );
-  // The default is the same url minus that argument, whether the port was left unset or spelled.
-  const { exec: e2, calls: c2 } = fakeExec({ exec: () => "" });
-  await kubectlSandbox({ exec: e2, adapterPort: 8081 }).attach({
+  await kubectlSandbox({ exec }).attach({
     name: "sb-default",
     spec: { branch: "b" },
     repos: [{ slot: "app", url: APP_URL }],
   });
-  assert.match(c2[0]!.args.at(-1)!, /jr2-upload-pack %S example\.test\/app'/);
+  assert.match(calls[0]!.args.at(-1)!, /jr2-upload-pack %S example\.test\/app'/);
 });
 
 test("the fetch url escapes what git's ext:: transport would read as syntax", () => {
@@ -1246,7 +1384,7 @@ test("the fetch url escapes what git's ext:: transport would read as syntax", ()
   // carrying either is syntax unless it is escaped: a percent-encoded forge path
   // (`My%20Project`, Azure DevOps) dies with `fatal: Bad remote-ext placeholder '%2'` before the
   // program runs — every fetch in the pod, not a degraded one — and a literal space splits the
-  // identity in two, handing the program half an identity and the other half as an adapter url.
+  // identity in two, handing the program half an identity and a stray argument.
   // Git's own spellings are `%%` and `% `, and the program receives the identity back exactly as
   // written, which is what the Orchestrator derives the cache key from.
   const { script } = attachScript(

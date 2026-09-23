@@ -163,7 +163,7 @@ test("a kit ref lives while any instance's map names it, and collects when the l
   const named = mkBuild({ host: kit() });
   const stillHere = mkKube({
     namespaces: ["other"],
-    maps: { other: { harness: "jr2-harness:0f1e2d3c4b5a", adapter: "jr2-adapter:5a4b", sandbox: {} } },
+    maps: { other: { harness: "jr2-harness:0f1e2d3c4b5a", operator: "jr2-operator:5a4b", sandbox: {} } },
   });
   assert.equal(await gc([], mkIo(stillHere, named).io), 0);
   assert.deepEqual(named.removed, []);

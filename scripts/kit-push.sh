@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# `just kit-push <registry> [platforms]` (ADR-0044): the three Kit images, built from THIS checkout
+# `just kit-push <registry> [platforms]` (ADR-0044): the Kit images, built from THIS checkout
 # and pushed at their PUBLISHED names — `<registry>/jr2-<x>:<kitversion>`.
 #
 #   kit-push.sh ghcr.io/snapwich              the canonical home, at release
@@ -9,9 +9,12 @@
 #
 # The CHECKOUT arm of ADR-0044's split, and the only arm that can build anything: `jr2 kit push` — the
 # arm an installed self-hoster holds — is a registry-to-registry mirror, because the npm packages
-# carry no Harness or Adapter source and a binary that could build them would be exactly the
+# carry no Harness source and a binary that could build them would be exactly the
 # patched-Harness eject hatch ADR-0027/ADR-0038 welded shut. This script has the source, so it is
 # what fills a registry the home has never held: the release train's push, and the dev loop's.
+#
+# It builds, so it does not touch the Custodian's image: that one is upstream Envoy, pinned by
+# digest, and jr2 never builds it (ADR-0038, ADR-0059). `jr2 kit push` mirrors it.
 #
 # MULTI-ARCH by default, and that is a decision rather than a nicety: the mirror copies whatever
 # manifest it finds, so a single-arch push here is faithfully copied into every self-host, and an
@@ -56,14 +59,13 @@ version="$(node -p "require('$root/packages/cli/package.json').version")"
   exit 1
 }
 
-# The three Kit images: repo, Dockerfile, build context (contexts are relative to the kit root).
+# The Kit images: repo, Dockerfile, build context (contexts are relative to the kit root).
 #
 # MIRRORS `KIT_IMAGES` in packages/cli/src/build.ts, which is what a CHECKOUT `jr2 up` builds from
 # the same sources at content-addressed tags. Two lists, one truth — packages/cli/test/kit-push.test.ts
 # reads this block and fails the unit gate if the two ever disagree, so the drift cannot be silent.
 images=(
   "jr2-harness|deploy/harness/Dockerfile|."
-  "jr2-adapter|deploy/adapter/Dockerfile|."
   "jr2-operator|operator/Dockerfile|operator"
 )
 
@@ -119,4 +121,4 @@ for row in "${images[@]}"; do
     "$root/$context"
 done
 
-echo "kit-push: pushed jr2-harness, jr2-adapter, jr2-operator at v$version to $registry" >&2
+echo "kit-push: pushed jr2-harness, jr2-operator at v$version to $registry" >&2

@@ -1,5 +1,5 @@
 // Conformance (ADR-0027): the claims the socket-free tiers cannot see, driven through the REAL
-// turn loop — pi at the exact pin, the real `@jr2/adapter` over a real socket, a scripted
+// turn loop — pi at the exact pin, the Menu over a real socket to the Custodian's address, a scripted
 // OpenAI-compatible provider choosing each turn's shape. The flue-contract tier's role, re-owned:
 // its claims are jr2 requirements now, with the pinned-defect assertion INVERTED — an abort
 // mid-stream must NOT erase the assistant message (the only witness is the message array the
@@ -13,15 +13,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
-import type { Surface } from "@jr2/adapter";
+import type { Surface } from "../src/menu.ts";
 import { harnessApp } from "../src/app.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
 import { runSubmissionFor } from "../src/turn.ts";
 import type { HistoryView, Settlement, StreamEvent } from "../src/wire.ts";
 import {
+  SANDBOX_STAND_IN,
   severKeepAliveSockets,
-  startAdapterOverFakeOrchestrator,
+  startFakeCustodian,
   startFakeProvider,
   until,
   type FakeProvider,
@@ -97,7 +98,7 @@ const onRejection = (reason: unknown) => rejections.push(reason);
 
 before(async () => {
   provider = await startFakeProvider();
-  sandbox = await startAdapterOverFakeOrchestrator(surfaceWith("review_verdict"));
+  sandbox = await startFakeCustodian(surfaceWith("review_verdict"));
   const harness: HarnessSpec = {
     provider: {
       id: "fake",
@@ -122,7 +123,7 @@ before(async () => {
       runSubmissionFor: (seat) =>
         runSubmissionFor({
           models,
-          adapterUrl: sandbox.url,
+          menu: { url: sandbox.url, token: SANDBOX_STAND_IN, retryWindowMs: 50, retryInitialMs: 1 },
           // No provider-stream retries: a scripted failure must settle on the first attempt.
           maxRetries: 0,
           printerOut: {
@@ -150,8 +151,8 @@ before(async () => {
 after(async () => {
   process.off("unhandledRejection", onRejection);
   restoreStderr();
-  // Client sockets first: each conversation's last Menu connection is open by design, and the
-  // Adapter's close would otherwise wait out a keep-alive on sockets nothing will reuse.
+  // Client sockets first: the fake's close would otherwise wait out a keep-alive on sockets
+  // nothing will reuse.
   await severKeepAliveSockets();
   await sandbox.close();
   await provider.close();
@@ -248,11 +249,11 @@ test("the Menu is listed fresh per Submission: a surface change lands on the nex
   }
 });
 
-test("a Menu read the Adapter cannot answer fails the turn before the model is ever asked", async () => {
+test("a Menu read the Orchestrator cannot answer fails the turn before the model is ever asked", async () => {
   provider.reset([{ text: "never reached" }]);
   sandbox.reset(surfaceWith("review_verdict"));
   // Not a 404 (that is ADR-0026's empty menu, and a turn still runs): the Orchestrator answered
-  // the Adapter with a fault, which is what a blip on the pod→Orchestrator hop looks like.
+  // the Menu read with a fault.
   sandbox.faultSurface();
   const iid = "conf/menu-fault";
 
@@ -292,6 +293,8 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
   }
   // …and the pick alone is what settled the turn: it reached the Orchestrator as a delivery.
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
+  // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
+  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
 });
 
 test("the Frame's cwd is re-read per Submission: two turns of one conversation work in different directories (ADR-0057)", async () => {
@@ -380,6 +383,8 @@ test("a Menu pick reaches the Orchestrator and its receipt reaches the model; th
   assert.equal((await settled(iid, admission)).outcome, "completed");
 
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
+  // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
+  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
   const followUp = provider.calls[1]?.messages ?? [];
   const receipt = followUp.find((m) => m.role === "tool");
   assert.ok(
@@ -640,6 +645,8 @@ test("a turn compacts MID-flight: the cut lands between two steps of ONE Submiss
   assert.ok(carriesSummary(provider.calls[5]), "the NEXT step rebuilt from the cut Session too");
   // The turn went on to its pick: a compacted turn still concludes (ADR-0006).
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
+  // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
+  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
   // One Submission, one settlement — the cut settles nothing, and it leaves no history entry: jr2
   // records what was SAID, and Compaction changes only what the model sees (ADR-0036).
   const view = await history(iid, compactApp);
@@ -911,4 +918,6 @@ test("a healthy turn is untouched: varied calls, a sub-K repeat, then the pick (
   assert.equal(settlement.outcome, "completed");
   assert.equal(settlement.error, undefined);
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
+  // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
+  assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
 });

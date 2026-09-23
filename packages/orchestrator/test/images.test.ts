@@ -29,7 +29,7 @@ async function mkMap(body: string): Promise<string> {
 
 const refs = (over: Partial<ImageRefs> = {}): ImageRefs => ({
   harness: "jr2-harness:h00",
-  adapter: "jr2-adapter:a00",
+  custodian: "envoy:c00",
   sandbox: {},
   ...over,
 });
@@ -41,7 +41,7 @@ test("the map is nested, so a user image named `harness` cannot collide with the
   const path = await mkMap(
     JSON.stringify({
       harness: "jr2-harness:h00",
-      adapter: "jr2-adapter:a00",
+      custodian: "envoy:c00",
       sandbox: { harness: "jr2-sandbox-inst-harness:u00", default: "jr2-sandbox-inst-default:d00" },
     }),
   );
@@ -71,17 +71,17 @@ test("readImageRefs: unparseable or malformed content is loud, never a partial m
   };
   await rejects("not json at all", /is not JSON/);
   await rejects(["a"], /expected a JSON object/);
-  await rejects({ adapter: "a", sandbox: {} }, /no `harness` ref/);
-  // An Agent with no Adapter has no route to its Machine at all (ADR-0013), so this is required.
-  await rejects({ harness: "h", sandbox: {} }, /no `adapter` ref/);
-  await rejects({ harness: "h", adapter: "a", sandbox: { x: 7 } }, /`sandbox\.x` is not a ref/);
-  await rejects({ harness: "h", adapter: "a", sandboxUser: { x: 7 } }, /`sandboxUser\.x` is not a USER/);
+  await rejects({ custodian: "envoy:c00", sandbox: {} }, /no `harness` ref/);
+  // An Agent whose pod has no Custodian has no route to its Machine at all (ADR-0013), so this is required.
+  await rejects({ harness: "h", sandbox: {} }, /no `custodian` ref/);
+  await rejects({ harness: "h", custodian: "envoy:c00", sandbox: { x: 7 } }, /`sandbox\.x` is not a ref/);
+  await rejects({ harness: "h", custodian: "envoy:c00", sandboxUser: { x: 7 } }, /`sandboxUser\.x` is not a USER/);
 });
 
 test("readImageRefs: a map with no Sandbox Images reads as an empty set, not an error", async () => {
   // The scaffolded, workspace-less instance: `jr2 up` builds no Sandbox Image when `repos` is empty.
-  const map = await readImageRefs(await mkMap(JSON.stringify({ harness: "h", adapter: "a" })));
-  assert.deepEqual(map, { harness: "h", adapter: "a", sandbox: {}, sandboxUser: {} });
+  const map = await readImageRefs(await mkMap(JSON.stringify({ harness: "h", custodian: "envoy:c00" })));
+  assert.deepEqual(map, { harness: "h", custodian: "envoy:c00", sandbox: {}, sandboxUser: {} });
 });
 
 /** A build context on disk: a directory whose FULL content is the image's address. */

@@ -1,10 +1,11 @@
-// The authorization boundary (ADR-0013). This is the file that says what the Adapter is FOR.
+// The authorization boundary (ADR-0013). This is the file that says what the Custodian holds FOR.
 //
 // The setting: an Agent has code execution in its Harness container (that is what `local()` tools
-// are), and that container shares the pod's network namespace with the Adapter. So the Agent can
-// reach the Orchestrator's HTTP surface — no NetworkPolicy can tell its packets from the Adapter's.
-// The ONLY thing standing between it and the delivery API is the token, which is why the token is
-// delivered into the Adapter container alone, and why these tests exist:
+// are), and that container shares the pod's network namespace with the Custodian. So the Agent can
+// reach the Orchestrator's HTTP surface — no NetworkPolicy can tell its packets from the
+// Custodian's. The ONLY thing standing between it and the delivery API is the token, which is why
+// the token is mounted into the Custodian container alone — the Harness holds its Stand-in
+// (ADR-0059) — and why these tests exist:
 //
 //   - a caller with no token drives nothing;
 //   - a Sandbox token may deliver to ITS OWN agent surface, and to no other;
@@ -20,6 +21,7 @@ import assert from "node:assert/strict";
 import { RunHost } from "../src/run-host.ts";
 import { createApp } from "../src/http.ts";
 import { createAuthenticator, mintInstanceToken, sandboxToken } from "../src/tokens.ts";
+import { standIn } from "../src/held-secrets.ts";
 import { admittedIid, codingDef, gatedDef, mkStore, MockFlueClient } from "./_fixtures.ts";
 
 const KEY = Buffer.alloc(32, 7);
@@ -32,7 +34,7 @@ async function mkApp() {
   host.register(codingDef(clients));
   host.register(gatedDef());
   const app = createApp(host, createAuthenticator({ instanceToken: INSTANCE_TOKEN, signingKey: KEY }));
-  /** The live Turn's address, as the Adapter holds it: jr2 mints every iid (ADR-0057), so the
+  /** The live Turn's address, as the Harness reads it: jr2 mints every iid (ADR-0057), so the
    * test reads it off the admission and encodes it — a minted id carries path separators. */
   const agentPath = async (run: { instanceId: string }, suffix: string) =>
     `/agents/${encodeURIComponent(await admittedIid(clients.get(run.instanceId)!))}/${suffix}`;
@@ -194,7 +196,7 @@ test("a Sandbox token cannot claim a workspace-less agent (no pod owns it)", asy
 test("the Instance Harness's token speaks for the Turns placed there, and for no Workspace's (ADR-0031)", async () => {
   const { host, app, agentPath } = await mkApp();
   // A Menu-only registration records the placement's name as its scope (actor.ts); the Instance
-  // Harness Adapter bears a token signed for exactly that name (up.ts/deploy.ts) — the same
+  // Harness's Custodian holds a token signed for exactly that name (up.ts/deploy.ts) — the same
   // signed-name doctrine that keeps one feature's coder out of another's reviewer, extended to
   // the second placement. It is NOT the Instance token: an in-cluster caller that suborned a
   // Menu-only Turn must not reach a Workspace run's live surface.
@@ -241,8 +243,8 @@ test("the Repo report is Instance-band: a Repo's url plus git's error is state, 
 test("starting a run is Instance-band: a Sandbox token starts nothing", async () => {
   // A Sandbox token's whole scope is delivering to its OWN agent surface (ADR-0013). Starting a
   // run is not on that surface: an Agent that could start `deploy` — or itself, in a loop — would
-  // spend Sandboxes and model calls nobody asked for. No Adapter forwards this route today, and
-  // that is not what refuses it: the principal is.
+  // spend Sandboxes and model calls nobody asked for. The Custodian's route allowlist does not
+  // forward this route, and that is not what refuses it: the principal is.
   const { app } = await mkApp();
   assert.equal((await app.request("/workflows/coding/runs", post({ sandbox: "ws-x" }))).status, 401);
   assert.equal(
@@ -250,4 +252,28 @@ test("starting a run is Instance-band: a Sandbox token starts nothing", async ()
     403,
   );
   assert.equal((await app.request("/workflows/coding/runs", post({ sandbox: "ws-x" }, INSTANCE_TOKEN))).status, 201);
+});
+
+test("the Stand-in the Harness holds opens nothing: every route refuses it, and nothing moves (ADR-0059)", async () => {
+  // What the Agent gains by skipping the Custodian and calling the Orchestrator itself, with the
+  // one bearer its env holds: nothing. The Custodian swaps the Stand-in on three routes toward
+  // this Service; sent straight here, it is a string no key signed.
+  const { host, app, agentPath } = await mkApp();
+  const run = await host.start("coding", { sandbox: "ws-1" });
+  const gated = await host.start("gated");
+  const held = standIn("JR2_SANDBOX_TOKEN");
+  const refused = [
+    await app.request(await agentPath(run, "surface"), get(held)),
+    await app.request(await agentPath(run, "events"), post({ type: "request_review", summary: "self" }, held)),
+    await app.request("/sandboxes/ws-1/fetch", post({ identity: "example.test/app" }, held)),
+    await app.request(`/runs/${gated.runId}/gates/F-1/events`, post({ type: "approve" }, held)),
+    await app.request("/runs", get(held)),
+    await app.request("/workflows/coding/runs", post({}, held)),
+  ];
+  assert.deepEqual(
+    refused.map((r) => r.status),
+    [401, 401, 401, 401, 401, 401],
+  );
+  assert.equal(host.status(run.runId)?.status, "active", "the Agent's own run did not move");
+  assert.equal(host.status(gated.runId)?.value, "review", "and no gate moved");
 });

@@ -206,7 +206,7 @@ test('workspace "none" → the Instance Harness, and the registration records th
   const reg = table.lookup(agentAddress("inst-42"));
   assert.ok(reg, "the surface registered");
   // ADR-0013's doctrine on the second placement: only a token signed for the Instance Harness's
-  // own name (its Adapter's — deploy.ts) or the Instance token may deliver this surface's picks.
+  // own name (its Custodian's — deploy.ts) or the Instance token may deliver this surface's picks.
   assert.equal(reg.sandbox, "jr2-instance-harness");
 });
 
@@ -515,8 +515,8 @@ test("runaway: a FRESH turn is rerolled ONCE — fresh conversation, IDENTICAL p
   // and re-addresses the live conversation…
   assert.deepEqual(ledger["inst-42"], { ...mock.minted, instanceId: "inst-42-r1" });
   assert.equal(ledger["inst-42-r1"], undefined);
-  // …and the reroll's surface is live at the DERIVED address: its conversation's menu dials
-  // /mcp/inst-42-r1 (the Adapter resolves surfaces by iid, end to end).
+  // …and the reroll's surface is live at the DERIVED address: its conversation's Menu reads
+  // /agents/inst-42-r1/surface (surfaces resolve by iid, end to end).
   assert.ok(table.lookup(agentAddress("inst-42-r1")), "the reroll surface registered before the admit");
   assert.equal(telemetry.length, 1);
   assert.equal(telemetry[0]!.kind, "retry");

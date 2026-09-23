@@ -1,7 +1,7 @@
 // End-to-end Machine-host tests: prove the three slice-1 modules cohere under RunHost.
 //
 // The Agent's up-channel is driven the REAL way — `sendToAgent`, the same registration-table path
-// `POST /agents/:iid/events` takes when a Sandbox's Adapter forwards a tool call (ADR-0013) — so
+// `POST /agents/:iid/events` takes when a Sandbox's Harness delivers a pick (ADR-0013) — so
 // resolve → validate → deliver-into-the-invoking-state is exercised, not bypassed. The flue side is
 // a mock FlueClient: it records admissions and settles (so the ledger and restore can be checked).
 
@@ -30,7 +30,7 @@ test("an Agent's delivery routes into the owning run's Machine", async () => {
   host.register(codingDef(clients));
   const { runId, instanceId } = await host.start("coding");
   // jr2 mints the conversation (ADR-0057), so the address is discovered off the admission —
-  // exactly as an Adapter learns the iid it was started with.
+  // exactly as a Harness learns the iid it was admitted with.
   const iid = await admittedIid(clients.get(instanceId)!);
 
   const receipt = host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
@@ -109,7 +109,7 @@ test("the surface stops offering what the current state cannot accept (ADR-0029)
   await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
 
   // Same turn, same registration, same vocabulary — a narrower menu, because `review` handles only
-  // `done`. The Adapter re-lists per Submission, so this is what the next Submission sees.
+  // `done`. The Harness reads the Menu afresh per Submission, so this is what the next one sees.
   assert.deepEqual(
     host.agentSurface(iid)?.accepts.map((a) => a.name),
     ["done"],
@@ -202,7 +202,7 @@ test("the agent surface IS the invoking state's registration, and dies with it",
   const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
   const iid = await admittedIid(clients.get(instanceId)!);
 
-  // What the Adapter renders as `tools/list`: this turn's events, their schemas, their semantics.
+  // What the Harness presents as the Menu: this turn's events, their schemas, their semantics.
   const surface = host.agentSurface(iid);
   assert.equal(surface?.runId, runId);
   assert.equal(surface?.sandbox, "ws-1", "the surface records its Sandbox — what scopes its token");
@@ -216,8 +216,8 @@ test("the agent surface IS the invoking state's registration, and dies with it",
     ["done", "request_review"].map(() => "ack"),
   );
 
-  // The state exits → the registration goes with it → there is no surface to serve. The Adapter
-  // needs no `list_changed` to learn this: it re-lists per turn, and a dead turn has no menu.
+  // The state exits → the registration goes with it → there is no surface to serve. The Harness
+  // needs no `list_changed` to learn this: it reads per turn, and a dead turn has no menu.
   host.sendToAgent(iid, { type: "done" });
   await waitFor(() => host.status(runId) === undefined);
   assert.equal(host.agentSurface(iid), undefined);

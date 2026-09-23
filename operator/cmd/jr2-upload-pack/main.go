@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 
 // Command jr2-upload-pack is `origin`'s fetch url inside a Sandbox (ADR-0053):
 //
-//	jr2-upload-pack <service> <identity> [adapter-url]
+//	jr2-upload-pack <service> <identity> [custodian-url]
 //
 // Git runs it through its built-in `ext::` transport and substitutes `%S` for
 // the service, so nothing here is typed by a human. It lives on the runtime

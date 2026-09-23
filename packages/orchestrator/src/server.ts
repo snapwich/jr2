@@ -11,7 +11,7 @@
 //   JR2_SIGNING_KEY     base64 key Sandbox tokens are signed with; from the Secret so live Sandboxes
 //                      survive a pod restart. Absent → minted into `<dir>/.jr2/secret` (dev-grade).
 //   JR2_NAMESPACE       the pod's own namespace (Deployment fieldRef) — presence = "deployed":
-//                      Sandboxes are driven in it, and the Adapters' route home is Service DNS.
+//                      Sandboxes are driven in it, and the Custodians' route home is Service DNS.
 //   <git.credentials[].token>
 //                      each token env var the config names rides the instance Secret (ADR-0051):
 //                      the Orchestrator materializes it into the Repo's credential Secret.
@@ -36,7 +36,6 @@ import {
   IMAGES_MOUNT,
   INSTANCE_HARNESS_PORT,
   INSTANCE_HARNESS_SERVICE,
-  ORCHESTRATOR_SERVICE,
 } from "./names.ts";
 import { partsOf, type CarriedRepo } from "./parts.ts";
 import { kubectlRepoFetches, type RepoFetches } from "./repo-fetch.ts";
@@ -65,8 +64,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   const signingKey =
     env.JR2_SIGNING_KEY !== undefined ? Buffer.from(env.JR2_SIGNING_KEY, "base64") : await loadSigningKey(opts.dir);
 
-  // Deployed (JR2_NAMESPACE set): Adapters dial the orchestrator at its own Service DNS — stable
-  // by nature, which is what lets live Sandboxes outlive orchestrator restarts (ADR-0013).
+  // Deployed (JR2_NAMESPACE set): Custodians dial the orchestrator at its own Service DNS — stable
+  // by nature, which is what lets live Sandboxes outlive orchestrator restarts (ADR-0013). `jr2 up`
+  // writes that address into the Custodian's bootstrap; nothing here passes it on.
   const namespace = env.JR2_NAMESPACE;
 
   // From the instance Secret when deployed; per-boot for a host-booted fixture.
@@ -128,7 +128,6 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
         caBundle: config?.harness?.caBundle !== undefined,
         // Which nodes are Sandbox nodes (ADR-0052) — the CR carries it, the operator reads no config.
         ...(config?.sandbox ? { placement: config.sandbox } : {}),
-        orchestratorUrl: `http://${ORCHESTRATOR_SERVICE}.${namespace}.svc:${port}`,
         signingKey,
         namespace,
         ...(opts.exec ? { exec: opts.exec } : {}),

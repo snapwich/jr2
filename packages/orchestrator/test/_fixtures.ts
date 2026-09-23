@@ -2,8 +2,8 @@
 // ONE mock FlueClient, so every suite drives the same wiring.
 //
 // The Agent's up-channel is exercised the real way — through the registration table, via the same
-// `sendToAgent` / `POST /agents/:iid/events` path the Adapter uses (ADR-0013). There is no MCP here
-// because there is no MCP in the Orchestrator: that surface lives in the Sandbox now.
+// `sendToAgent` / `POST /agents/:iid/events` path a Harness's pick takes (ADR-0013). There is no MCP
+// here because there is none in jr2: the Harness presents the Menu to its model itself.
 
 import { assign, createMachine, spawnChild } from "xstate";
 import { z } from "zod";

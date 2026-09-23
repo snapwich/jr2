@@ -112,7 +112,6 @@ async function mkTree(files: Record<string, string>, prefix = "jr2-tree-"): Prom
 function kitFiles(harnessSrc: string): Record<string, string> {
   return {
     "deploy/harness/Dockerfile": "FROM node:24-slim\n",
-    "deploy/adapter/Dockerfile": "FROM node:24-alpine\n",
     "operator/Dockerfile": "FROM golang:1.23\n",
     "operator/main.go": "package main\n",
     // The Harness image builds `jr2-upload-pack` out of the operator module too (ADR-0053), so its
@@ -123,8 +122,6 @@ function kitFiles(harnessSrc: string): Record<string, string> {
     "operator/internal/uploadpack/uploadpack.go": "package uploadpack\n",
     "packages/harness/package.json": `{"name":"@jr2/harness"}`,
     "packages/harness/src/main.ts": harnessSrc,
-    "packages/adapter/package.json": `{"name":"@jr2/adapter"}`,
-    "packages/adapter/src/main.ts": "export const a = 1;\n",
   };
 }
 
@@ -296,25 +293,23 @@ test("the bundle hash tracks the kit — a dependency's sources are image conten
   assert.equal(await hashOf(kit("export const renew = () => 1;\n")), before);
 });
 
-test("installed from npm, the kit three resolve to the published <kitversion> tags at the canonical home", () => {
+test("installed from npm, the Kit images resolve to the published <kitversion> tags at the canonical home", () => {
   // These were `jr2.config.ts`'s `images` defaults; the block is gone (ADR-0038), so they live here
   // as the not-a-kit-checkout branch — and as the last leg of ADR-0037's Sandbox Image chain. The
   // home is BAKED (ADR-0044): a bare `jr2-harness:0.0.0` resolves to `docker.io/library/`, where
   // nothing is, so the zero-plumbing `npm i -g @jr2/cli && jr2 init && jr2 up` needs a real host here.
   assert.deepEqual(publishedKitRefs(), {
     harness: `${KIT_IMAGE_HOME}/jr2-harness:${KIT_VERSION}`,
-    adapter: `${KIT_IMAGE_HOME}/jr2-adapter:${KIT_VERSION}`,
     operator: `${KIT_IMAGE_HOME}/jr2-operator:${KIT_VERSION}`,
   });
   assert.equal(KIT_IMAGE_HOME, "ghcr.io/snapwich");
 });
 
 test("kitRegistry re-homes the published refs — the same tags, a self-hosted mirror (ADR-0044)", () => {
-  // REPLACES the home rather than nesting under it: a mirror holds the same three tags under its
+  // REPLACES the home rather than nesting under it: a mirror holds the same tags under its
   // own name, seeded deliberately by `jr2 kit push`, never by a converge.
   assert.deepEqual(publishedKitRefs("zot.example.test"), {
     harness: `zot.example.test/jr2-harness:${KIT_VERSION}`,
-    adapter: `zot.example.test/jr2-adapter:${KIT_VERSION}`,
     operator: `zot.example.test/jr2-operator:${KIT_VERSION}`,
   });
   // The version is the CLI's own either way: re-homing says where the tags live, not which ones.
@@ -371,7 +366,7 @@ test("each kit image addresses its own sources and platform set; the registry pr
   const pushed = await kitImageRefs(kit, { platforms: AMD64, registry: "reg.example.com/jr2" });
   assert.equal(pushed.harness, `reg.example.com/jr2/${refs.harness}`);
 
-  // The build is the committed Dockerfile against its own context — the harness/adapter build from
+  // The build is the committed Dockerfile against its own context — the harness builds from
   // the kit ROOT (the packages ship as source), the operator from `operator/`.
   assert.deepEqual(kitImageBuild(kit, "harness", refs.harness, AMD64), {
     tag: refs.harness,
@@ -422,7 +417,7 @@ test("a packages/harness edit moves the harness ref and NO Sandbox Image ref", a
   const before = await kitImageRefs(await mkTree(kitFiles("export const x = 1;\n")), { platforms: AMD64 });
   const after = await kitImageRefs(await mkTree(kitFiles("export const x = 2;\n")), { platforms: AMD64 });
   assert.notEqual(after.harness, before.harness, "the harness ref moves with its sources");
-  assert.equal(after.adapter, before.adapter, "…and only its own — the Adapter is untouched");
+  assert.equal(after.operator, before.operator, "…and only its own — the operator is untouched");
 
   const image = await mkTree({ Dockerfile: "FROM node:24-slim\nRUN apt-get install -y cargo\n" }, "jr2-image-");
   assert.equal(
@@ -843,14 +838,14 @@ test("a re-list that cannot answer leaves the removals unverified, and unverifie
 });
 
 test("one image swept on both stores is one image, however each store spells it", async () => {
-  // The host says `jr2-adapter:33a4`, containerd says `docker.io/library/jr2-adapter:33a4`. Merging
+  // The host says `jr2-harness:33a4`, containerd says `docker.io/library/jr2-harness:33a4`. Merging
   // raw strings reports one image twice; the bytes stay summed, because the two copies are two
   // lots of the user's disk (the same rule as two nodes holding one ref).
   const merged = mergeSweeps(
-    { removed: ["jr2-adapter:33a4"], kept: [], failed: [], bytes: 217_000_000 },
-    { removed: ["docker.io/library/jr2-adapter:33a4"], kept: [], failed: [], bytes: 224_000_000 },
+    { removed: ["jr2-harness:33a4"], kept: [], failed: [], bytes: 217_000_000 },
+    { removed: ["docker.io/library/jr2-harness:33a4"], kept: [], failed: [], bytes: 224_000_000 },
   );
-  assert.deepEqual(merged.removed, ["jr2-adapter:33a4"], "one image, once, in the spelling a root would use");
+  assert.deepEqual(merged.removed, ["jr2-harness:33a4"], "one image, once, in the spelling a root would use");
   assert.equal(merged.bytes, 441_000_000);
 });
 

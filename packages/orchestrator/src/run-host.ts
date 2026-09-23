@@ -7,7 +7,7 @@
 //     closures over their own `sendBack` — so delivery lands on the invoking state at any
 //     nesting depth and the host routes nothing.
 //   - Two thin surfaces sit on that table, and NEITHER is MCP (ADR-0013 — the Orchestrator does
-//     not speak it): `agentSurface` / `sendToAgent` serve the Agent's Adapter (`/agents/:iid/*`),
+//     not speak it): `agentSurface` / `sendToAgent` serve the Agent's Harness (`/agents/:iid/*`),
 //     `gates` / `sendToGate` serve humans, webhooks and CI (`/runs/:id/gates/*`). Lookup,
 //     validation, delivery and lifecycle stay implemented once, in the table.
 //   - The run's Agent children report their durable admissions through the run binding into
@@ -169,13 +169,14 @@ export type GateView = {
 };
 
 /**
- * One live agent surface, as its Adapter reads it (`GET /agents/:iid/surface` — ADR-0013). The
- * Adapter renders this as `tools/list`: each accepted event becomes a tool, its `input` schema the
- * tool's input schema. `semantics` rides along so the Adapter can tell an awaiting tool from a
- * fire-and-forget one — the room ADR-0006's deferred results will land in, unbuilt today.
+ * One live agent surface, as the Harness reads it through its Custodian (`GET /agents/:iid/surface`
+ * — ADR-0013). The Harness presents it to its model as the Menu: each accepted event becomes a
+ * tool, its `input` schema the tool's parameters. `semantics` rides along so the Harness can tell
+ * an awaiting tool from a fire-and-forget one — the room ADR-0006's deferred results will land in,
+ * unbuilt today.
  *
- * `sandbox` is the Sandbox that may deliver here. It is not a secret from the Adapter (that pod IS
- * the sandbox), and serving it lets the Adapter fail loudly on a surface that is not its own.
+ * `sandbox` is the Sandbox that may deliver here. It is not a secret from that pod (the pod IS the
+ * sandbox), and serving it lets a caller fail loudly on a surface that is not its own.
  */
 export type AgentSurfaceView = {
   instanceId: string;
@@ -186,7 +187,7 @@ export type AgentSurfaceView = {
 
 /**
  * The answer to one Agent delivery (`POST /agents/:iid/events`) — a receipt that DESCRIBES ITSELF
- * (ADR-0024). The Adapter renders it as prose, because a bare `deliveryId` told the Agent nothing
+ * (ADR-0024). The Harness renders it as prose, because a bare `deliveryId` told the Agent nothing
  * about whether it was finished, and the model answered that silence by calling again.
  *
  * `turnComplete` is the HINT, never the guarantee (the abort on invocation end is): it is read off
@@ -579,15 +580,14 @@ export class RunHost {
   /**
    * An agent instance's LIVE surface (`GET /agents/:iid/surface` — ADR-0013): what the state that
    * invoked this Agent accepts, right now. Undefined once nothing is registered (the state exited,
-   * the run settled, the iid is unknown) — the one catch point, and the reason the Adapter never
+   * the run settled, the iid is unknown) — the one catch point, and the reason the Harness never
    * has to learn which turn is live: it asks, per turn, and the answer IS the turn.
    *
    * "Right now" is load-bearing (ADR-0029): the registered defs are the state's VOCABULARY, derived
    * statically from its transitions, and the guards on those transitions are asked here — so an
    * event the Machine cannot currently accept is not offered. The pick has not happened yet, so the
    * question is `mayMove`, not `wouldMove`: a guard that would have judged the Agent's arguments is
-   * left on the menu and settled at delivery. The Adapter rebuilds this per MCP connection and the
-   * Harness re-lists per Submission, so the filter lands at turn boundaries and never moves under
+   * left on the menu and settled at delivery. The Harness reads this afresh per Submission, so the filter lands at turn boundaries and never moves under
    * an Agent mid-turn.
    */
   agentSurface(instanceId: string): AgentSurfaceView | undefined {
@@ -609,8 +609,10 @@ export class RunHost {
   }
 
   /**
-   * Deliver one event from an Agent's Adapter (`POST /agents/:iid/events` — ADR-0013). Validation
-   * and delivery are the table's; this only agent-scopes the address and mints the receipt.
+   * Deliver one event from an Agent's Harness (`POST /agents/:iid/events` — ADR-0013). Validation
+   * and delivery are the table's; this only agent-scopes the address and mints the receipt. (A
+   * `deferred` event never reaches here: `jr2Setup` refuses to build a Machine that declares one —
+   * ADR-0013.)
    */
   sendToAgent(instanceId: string, event: { type?: unknown } & Record<string, unknown>): AgentDeliveryReceipt {
     const { type, ...payload } = event;

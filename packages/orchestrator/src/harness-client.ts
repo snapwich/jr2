@@ -10,7 +10,7 @@
 // socket-free through an injected `fetch`.
 //
 // Channel split (ADR-0002, refined by ADR-0016): the Harness wire carries **lifecycle only** —
-// domain events go up the MCP channel via the Adapter. The client's `send`/`wait` pair is exactly
+// domain events go up the Menu, through the pod's Custodian. The client's `send`/`wait` pair is exactly
 // that lifecycle surface: `send` answers with a serializable Admission
 // (`{ streamUrl, offset, submissionId }` — jr2's durable re-attach handle, stored in the host
 // ledger), and `wait(admission)` follows the durable stream from the admission offset to the
@@ -477,7 +477,7 @@ async function errorDetail(res: Response): Promise<string> {
 
 /**
  * The marker the `@kind` tier greps for, and therefore a CONTRACT — duplicated verbatim in
- * `@jr2/adapter` (the two packages share no runtime dependency) and matched in
+ * `@jr2/harness`'s Menu (the two packages share no runtime dependency) and matched in
  * `features/steps/kind.steps.ts`. Renaming it on one side does not break a build; it silently turns
  * the tier's routability budget into a check that passes because it matches nothing.
  */

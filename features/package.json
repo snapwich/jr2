@@ -18,7 +18,6 @@
     "@jr2/agent-protocol": "workspace:*",
     "@jr2/cli": "workspace:*",
     "@jr2/orchestrator": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^26.0.1",
     "playwright": "^1.62.1",
     "xstate": "^5.18.0",
