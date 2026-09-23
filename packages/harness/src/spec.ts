@@ -7,7 +7,7 @@
 //     roster could not hold two Machines' `coder`s, and the pod would need a restart to learn a
 //     definition the Orchestrator already knows.
 //   - The harness CONFIG (`JR2_HARNESS_JSON`) is what this instance can REACH — the custom model
-//     provider, and nothing else (ADR-0018). Deployment fact, not a Machine's, so it stays
+//     provider, and where pi's catalog providers send their calls (ADR-0018, ADR-0059). Deployment fact, not a Machine's, so it stays
 //     mounted config (ADR-0050) and is read once at boot.
 //
 // Validation of a definition is per ADMISSION and LOUD: a definition that cannot run is a 400
@@ -50,8 +50,9 @@ export type AgentDefinition = {
 /** Token limits for one model — properties of the MODEL, not the endpoint. */
 export type ProviderModelLimits = { contextWindow?: number; maxTokens?: number };
 
-/** A custom model provider (ADR-0018), as `jr2 up` publishes it — `apiKey` is deliberately absent
- * (it rides the instance Secret as `JR2_PROVIDER_API_KEY` env, never the ConfigMap). */
+/** A custom model provider (ADR-0018), as `jr2 up` publishes it — `apiKey` is deliberately absent:
+ * it is a held secret, so this container's env carries `JR2_PROVIDER_API_KEY` as a Stand-in and
+ * the Custodian puts the key on the wire (ADR-0059). */
 export type ProviderSpec = {
   /** The provider id model specifiers use (`<id>/<model>`), e.g. `vllm`. */
   id: string;
@@ -66,11 +67,17 @@ export type ProviderSpec = {
   models?: Record<string, ProviderModelLimits>;
 };
 
+/** Where one of pi's catalog providers sends its calls (ADR-0059): a gateway that serves the
+ * provider's own API. The catalog keeps every model fact; this is the endpoint alone. */
+export type CatalogReachSpec = { baseUrl: string };
+
 /** The harness section: what this instance can REACH. Deliberately no model default — the config
  * declares providers, the definition makes the choice (ADR-0018) — and no Agents at all: they
  * ride the Turn (ADR-0049). */
 export type HarnessSpec = {
   provider?: ProviderSpec;
+  /** Catalog provider id → its gateway (`anthropic` → LiteLLM, ADR-0059). */
+  catalog?: Record<string, CatalogReachSpec>;
 };
 
 /** What this Turn is ABOUT and WHERE it works — the Frame (ADR-0057). Neither identity nor a
@@ -203,6 +210,15 @@ export function loadHarnessSpec(env: Record<string, string | undefined>): Harnes
     throw new Error(
       `JR2_HARNESS_JSON's provider needs { id, api, baseUrl } — got ${JSON.stringify(provider)} (ADR-0018)`,
     );
+  }
+  // The catalog's SHAPE here; whether each id is one pi's catalog has is `modelsFor`'s, which holds
+  // the registry — both at boot, both loud into the pod log.
+  for (const [id, reach] of Object.entries(spec.catalog ?? {})) {
+    if (typeof reach?.baseUrl !== "string" || !/^https:\/\//.test(reach.baseUrl)) {
+      throw new Error(
+        `JR2_HARNESS_JSON's catalog.${id} needs { baseUrl: "https://…" } — got ${JSON.stringify(reach)} (ADR-0059)`,
+      );
+    }
   }
   return spec;
 }

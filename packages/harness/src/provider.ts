@@ -1,5 +1,6 @@
 // The model registry (ADR-0018/0027): pi-ai's built-in catalog plus the instance's custom
-// provider (`harness.provider` — the vLLM/Ollama path). `modelsFor` assembles the registry once
+// provider (`harness.provider` — the vLLM/Ollama path), with any catalog provider moved to a
+// gateway (`harness.catalog`, ADR-0059). `modelsFor` assembles the registry once
 // at boot; `resolveModel` is the per-Submission read of a `<provider>/<modelId>` specifier;
 // `mapThinkingLevel` is the loud gate between jr2's effort scale and pi's.
 //
@@ -20,7 +21,7 @@ import {
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { ThinkingLevel as PiThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ProviderSpec, HarnessSpec, ResolvedDefinition, ThinkingLevel } from "./spec.ts";
+import type { CatalogReachSpec, ProviderSpec, HarnessSpec, ResolvedDefinition, ThinkingLevel } from "./spec.ts";
 
 /** The wire protocols a custom provider may name. One entry today: the OpenAI-compatible path is
  * what `harness.provider` documents (vLLM/Ollama); an unlisted `api` throws at boot, never a
@@ -33,6 +34,9 @@ const CUSTOM_APIS: Record<string, () => ProviderStreams> = {
  * `provider.models` lists only the ids with limits) — so `resolveModel` synthesizes unlisted ids
  * on demand, off the spec remembered here per registry. */
 const customSpecs = new WeakMap<Models, ProviderSpec>();
+
+/** The catalog providers this registry sends somewhere else (ADR-0059), remembered per registry. */
+const catalogReach = new WeakMap<Models, Record<string, CatalogReachSpec>>();
 
 /**
  * The registry an instance's model specifiers resolve against: pi-ai's built-in catalog
@@ -59,6 +63,21 @@ export function modelsFor(harness: HarnessSpec | undefined, env: Record<string, 
     );
     customSpecs.set(models, spec);
   }
+  // A gateway for a catalog provider (ADR-0059): refused at boot, loud, for an id pi's catalog does
+  // not have — a typo would otherwise send every turn to the provider's own host with a Stand-in —
+  // and for the custom provider's id, which owns its own `baseUrl`.
+  const catalog = harness?.catalog ?? {};
+  for (const id of Object.keys(catalog)) {
+    if (spec && spec.id === id) {
+      throw new Error(
+        `catalog."${id}" is also the custom provider's id — a custom provider owns its own baseUrl (ADR-0059)`,
+      );
+    }
+    if (models.getModels(id).length === 0) {
+      throw new Error(`catalog."${id}" is not a provider in pi's catalog — nothing would route through it (ADR-0059)`);
+    }
+  }
+  if (Object.keys(catalog).length > 0) catalogReach.set(models, catalog);
   return models;
 }
 
@@ -66,6 +85,12 @@ export function modelsFor(harness: HarnessSpec | undefined, env: Record<string, 
  * The pi Model for a `<provider>/<modelId>` specifier — split at the FIRST slash, so custom model
  * ids keep theirs (`vllm/Qwen/Qwen3-32B` → id `Qwen/Qwen3-32B`). Catalog first; an id the custom
  * provider did not list synthesizes with provider-level limits; anything else throws.
+ *
+ * A catalog model whose provider `harness.catalog` moves comes back as a COPY with only `baseUrl`
+ * replaced (ADR-0059): pi has no env var that moves a catalog provider, and hands the provider the
+ * model it is given, so this one place is where the gateway takes effect — while every model fact
+ * the catalog holds (limits, cost, thinking levels) rides along unchanged. The id sent upstream is
+ * the catalog's, so the gateway must serve that name.
  */
 export function resolveModel(models: Models, specifier: string): Model<Api> {
   const slash = specifier.indexOf("/");
@@ -75,6 +100,8 @@ export function resolveModel(models: Models, specifier: string): Model<Api> {
   const provider = specifier.slice(0, slash);
   const id = specifier.slice(slash + 1);
   const model = models.getModel(provider, id);
+  const reach = catalogReach.get(models)?.[provider];
+  if (model && reach) return { ...model, baseUrl: reach.baseUrl };
   if (model) return model;
   const custom = customSpecs.get(models);
   if (custom && custom.id === provider) return customModel(custom, id);
@@ -123,8 +150,9 @@ const PI_LEVELS: Record<ThinkingLevel, PiThinkingLevel> = {
 };
 
 /** pi refuses a keyless HTTP provider outright (`Provider is not configured`), so resolution
- * always answers: the Secret-fed key when `jr2 up` materialized one, else a placeholder the
- * keyless endpoints (vLLM/Ollama) ignore — jr2's `apiKey` stays genuinely optional (ADR-0018). */
+ * always answers: `JR2_PROVIDER_API_KEY` when set — a Stand-in, which the Custodian swaps for the
+ * key toward the endpoint's host (ADR-0059) — else a value the keyless endpoints (vLLM/Ollama)
+ * ignore. jr2's `apiKey` stays genuinely optional (ADR-0018). */
 function keylessAuth(env: Record<string, string | undefined>): ProviderAuth {
   return {
     apiKey: {
