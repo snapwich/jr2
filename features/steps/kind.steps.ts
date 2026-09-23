@@ -462,12 +462,15 @@ Then(
   async function (this: E2EWorld, name: string): Promise<void> {
     const pod = (await waitForReadySandbox(this)).metadata.name;
     let log = "";
-    // The access log flushes on an interval (twice a second), so the line is waited for.
+    // The start-up line names every secret the Custodian holds; an intercepted request names the
+    // one it swapped once it COMPLETES (a parked turn request logs when it ends). The access log
+    // flushes twice a second, so the line is waited for.
+    const names = new RegExp(`jr2\\.custodian .*secrets?=\\S*\\b${name}\\b`);
     for (const deadline = Date.now() + 30_000; Date.now() < deadline; await sleep(500)) {
       log = await kubectl(this, ["logs", `pod/${pod}`, "-c", "custodian"]);
-      if (log.includes(`secret=${name}`)) break;
+      if (names.test(log)) break;
     }
-    assert.match(log, new RegExp(`jr2\\.custodian action=intercept .*secret=${name}\\b`));
+    assert.match(log, names);
     assert.ok(this.providerKey && !log.includes(this.providerKey), "the key is not in the Custodian's log");
   },
 );
@@ -523,13 +526,16 @@ Then(
   async function (this: E2EWorld): Promise<void> {
     assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
     // The request the aborted turn was parked on — the one that followed the `finish` pick, still
-    // offered `finish` — closed from the pod's side, through the Custodian, within the window.
-    const parked = this.provider.calls.filter((c) => c.stream && c.tools.includes("mcp__jr2__finish"));
+    // offered `finish`, and never answered — closed from the pod's side, through the Custodian. A
+    // released request closes too, when its answer ends, so those are not the evidence.
+    const provider = this.provider;
+    const aborted = () =>
+      provider.calls.filter((c) => c.stream && c.tools.includes("mcp__jr2__finish") && c.releasedAt === undefined);
     const deadline = Date.now() + 20_000;
-    while (!parked.some((c) => c.closedAt !== undefined) && Date.now() < deadline) await sleep(200);
+    while (!aborted().some((c) => c.closedAt !== undefined) && Date.now() < deadline) await sleep(200);
     assert.ok(
-      parked.some((c) => c.closedAt !== undefined),
-      `a request of the aborted turn closed (${parked.length} parked request(s) offered finish)`,
+      aborted().some((c) => c.closedAt !== undefined),
+      `an unanswered request of the aborted turn closed (${aborted().length} such request(s))`,
     );
   },
 );
