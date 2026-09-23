@@ -25,4 +25,5 @@ export const machine = customize(task, {
   agents: {
     coder: { model: "local/qwen3.6-35b-a3b" },
   },
+  user: "ghcr.io/snapwich/dev:k8s-arm64",
 });
