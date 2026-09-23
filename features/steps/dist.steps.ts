@@ -110,7 +110,7 @@ When("I install its dependencies with {string}", async function (this: E2EWorld,
  */
 const CACHE_SETTING: Record<string, string> = { npm: "npm_config_cache", pnpm: "npm_config_cache_dir" };
 
-// The converge, in installed mode: no kit sources resolve, so the Harness, Adapter, and operator
+// The converge, in installed mode: no kit sources resolve, so the Harness and operator
 // come from the published `<kitRegistry>/jr2-<x>:<kitversion>` tags the suite fixture PUSHED, pulled
 // by the nodes themselves (ADR-0038/0044), and the instance image is bundled from the lockfile
 // above — built here, and still delivered by `kind load`, because this converge is the one that
@@ -191,7 +191,7 @@ Then("the instance's namespace is gone", async function (this: E2EWorld): Promis
  * The claim ADR-0044 adds to this tier: the Kit images this cluster runs came out of a REGISTRY.
  *
  * Two halves, because one of them alone would prove less than it looks. The refs say the CLI
- * re-homed the published tags onto `kitRegistry` (the Harness and the Adapter have no pod in a
+ * re-homed the published tags onto `kitRegistry` (the Harness and the Custodian have no pod in a
  * `ping` scenario — the instance's own image map is where they are nameable at all); the RUNNING
  * operator pod says a node resolved that address, pulled the bytes and unpacked them, which is the
  * exact leg `kind load` at the published names used to skip.
@@ -208,13 +208,19 @@ Then("the cluster pulled its Kit images from the local registry", async function
   const map = await kubectlOut(["--namespace", this.namespace, "get", "configmap", IMAGES_CONFIGMAP, "-o", "json"]);
   const raw = (JSON.parse(map) as { data?: Record<string, string> }).data?.[IMAGES_KEY];
   assert.ok(raw, `the ${IMAGES_CONFIGMAP} ConfigMap carries ${IMAGES_KEY} (ADR-0038)`);
-  const refs = JSON.parse(raw) as { harness?: string; adapter?: string };
-  for (const [which, ref] of Object.entries({ harness: refs.harness, adapter: refs.adapter })) {
-    assert.ok(
-      ref?.startsWith(`${kitRegistry}/jr2-${which}:`),
-      `the ${which} ref is ${ref} — an installed kit pointed at a mirror deploys ${kitRegistry}/jr2-${which}:<ver>`,
-    );
-  }
+  const refs = JSON.parse(raw) as { harness?: string; custodian?: string };
+  assert.ok(
+    refs.harness?.startsWith(`${kitRegistry}/jr2-harness:`),
+    `the harness ref is ${refs.harness} — an installed kit pointed at a mirror deploys ${kitRegistry}/jr2-harness:<ver>`,
+  );
+  // The Custodian's pinned Envoy is re-homed the same way (ADR-0044, ADR-0059): the tag and the
+  // digest it was pinned by, under the mirror — which `jr2 kit push` fills and `just kit-push` does
+  // not (it builds, and jr2 builds no Envoy). No pod pulls it in a `ping` scenario.
+  assert.match(
+    refs.custodian ?? "",
+    new RegExp(`^${kitRegistry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/envoy:[^@]+@sha256:[0-9a-f]{64}$`),
+    `the custodian ref is ${refs.custodian} — a mirror re-homes it as ${kitRegistry}/envoy:<tag>@<digest>`,
+  );
 
   // The operator's declared image first: a pod could otherwise be a survivor of some earlier
   // converge, and "something running out of the mirror" is not the claim.

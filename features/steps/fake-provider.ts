@@ -1,9 +1,16 @@
 // The @kind tier's scripted MODEL (ADR-0038). The pod runs the STOCK Harness now — the dev Harness
-// image and its hand-rolled MCP client are gone — so the only thing this tier still fakes is the
-// LLM. Substitution moved from the image to the provider: `harness.provider` already accepts any
-// OpenAI-compatible `baseUrl`, so pointing the instance at this endpoint runs the real `@jr2/harness`
-// with pi, the real Menu over MCP, and the real Working tools, while the test still chooses every
-// turn's shape. That is what makes this tier a SECOND pi canary beside the conformance suite.
+// image is gone — so the only thing this tier still fakes is the LLM. Substitution moved from the
+// image to the provider: `harness.provider` already accepts any OpenAI-compatible `baseUrl`, so
+// pointing the instance at this endpoint runs the real `@jr2/harness` with pi, the real Menu, and
+// the real Working tools, while the test still chooses every turn's shape. That is what makes this
+// tier a SECOND pi canary beside the conformance suite.
+//
+// And it is a provider that wants a KEY (ADR-0059): HTTPS, under a CA the instance names as its
+// `caBundle`, and every request without `Authorization: Bearer <key>` is refused 401 and counted.
+// The key is `harness.provider.apiKey` — a held secret — so the only way a turn request carries it is
+// the Custodian's swap. Beside it, on another port, the UNBOUND ECHO: an HTTPS listener the key is
+// not bound to, which records what it received, so a Stand-in sent there can be seen arriving as it
+// left.
 //
 // Ported from `packages/harness/test/support/rig.ts`'s `startFakeProvider`, with four deltas the
 // @kind placement forces:
@@ -18,7 +25,8 @@
 //     request with a tool call. It must never be a plain-text answer — a turn that settles
 //     `completed` with no pick burns the no-signal nudge budget and then faults (ADR-0016).
 //  3. Binds 0.0.0.0 and reports its PORT, so the World can publish a pod-reachable base URL
-//     (localhost never works from a pod — ADR-0019 says so in `HarnessProvider.baseUrl`).
+//     (localhost never works from a pod — ADR-0019 says so in `HarnessProvider.baseUrl`). Its
+//     certificate names that address as an IP SAN, which is what the Custodian verifies.
 //  4. Holds the request that FOLLOWS a tool result too. After a pick the Harness asks the model
 //     again; if that answered, the submission could settle `completed` before the state-exit abort
 //     landed, making `completed` vs `aborted` a coin flip in the ADR-0024 scenarios. Held, the
@@ -29,7 +37,8 @@
 // fresh one. A model can only answer with a tool it was offered, so "the request offering `ship`"
 // names the turn `shipping` asked for and nothing else.
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import type { IncomingMessage, IncomingHttpHeaders, Server, ServerResponse } from "node:http";
+import { createServer } from "node:https";
 import type { AddressInfo, Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -47,13 +56,20 @@ export type RecordedCall = {
   raw: string;
   /** Arrival order from 1, across preflight and turn requests alike. */
   seq: number;
+  /** When the request's connection closed, if it has — an abort crossing the Custodian lands here. */
+  closedAt?: number;
 };
 
 export type FakeProvider = {
   /** The listening port — the World composes the pod-reachable base URL from it. */
   port: number;
-  /** Every request body received, in order. */
+  /** Every request body received WITH the key, in order. */
   calls: RecordedCall[];
+  /** Requests refused 401 for not carrying the key — a turn request among them is a key that never
+   * reached the wire. */
+  unauthorized: Array<{ url: string; headers: IncomingHttpHeaders }>;
+  /** The unbound echo's port, and every request it received. */
+  echo: { port: number; seen: Array<{ url: string; headers: IncomingHttpHeaders }> };
   /**
    * Answer the parked turn request that was offered `tool` with a call to it, then let the stream
    * finish. `tool` is the bare name (`finish`, or a Working tool like `bash`); the Menu's
@@ -76,16 +92,30 @@ type Held = {
  * resolve to 0 and leave Compaction no budget (ADR-0036). */
 const MODEL_ID = "model-x";
 
-export async function startFakeProvider(): Promise<FakeProvider> {
+export async function startFakeProvider(opts: {
+  /** The leaf this endpoint serves — an IP SAN for the pod-reachable address. */
+  tls: { cert: string; key: string };
+  /** The key every request must carry as `Authorization: Bearer <key>`. */
+  apiKey: string;
+}): Promise<FakeProvider> {
   const calls: RecordedCall[] = [];
+  const unauthorized: FakeProvider["unauthorized"] = [];
   const held: Held[] = [];
   const sockets = new Set<Socket>();
   let seq = 0;
 
-  const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
+  const server: Server = createServer(opts.tls, (req: IncomingMessage, res: ServerResponse) => {
     let raw = "";
     req.on("data", (chunk: Buffer) => (raw += chunk));
     req.on("end", () => {
+      // The key or nothing (ADR-0059). The preflight pod sends it directly; a Harness pod's
+      // request carries it only if its Custodian swapped the Stand-in for it.
+      if (req.headers.authorization !== `Bearer ${opts.apiKey}`) {
+        unauthorized.push({ url: req.url ?? "", headers: req.headers });
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { message: "no valid key" } }));
+        return;
+      }
       // Anything that is not a completion is the model LIST (`GET /models`, the first half of the
       // converge preflight). Answered unconditionally: this fake serves exactly one model.
       if (!req.url?.includes("chat/completions")) {
@@ -133,7 +163,10 @@ export async function startFakeProvider(): Promise<FakeProvider> {
         done: false,
       };
       held.push(entry);
-      res.on("close", () => finish(entry));
+      res.on("close", () => {
+        call.closedAt ??= Date.now();
+        finish(entry);
+      });
     });
   });
 
@@ -146,9 +179,28 @@ export async function startFakeProvider(): Promise<FakeProvider> {
     server.listen(0, "0.0.0.0", () => resolve((server.address() as AddressInfo).port));
   });
 
+  // The unbound echo: same certificate, another port — a target no held secret is bound to, so the
+  // Custodian tunnels to it untouched and whatever the Harness sent is what arrives.
+  const echoSeen: FakeProvider["echo"]["seen"] = [];
+  const echo: Server = createServer(opts.tls, (req, res) => {
+    echoSeen.push({ url: req.url ?? "", headers: req.headers });
+    req.resume();
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end("echo\n");
+  });
+  echo.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+  const echoPort = await new Promise<number>((resolve) => {
+    echo.listen(0, "0.0.0.0", () => resolve((echo.address() as AddressInfo).port));
+  });
+
   return {
     port,
     calls,
+    unauthorized,
+    echo: { port: echoPort, seen: echoSeen },
     release: async (tool, args) => {
       const wanted = [`mcp__jr2__${tool}`, tool];
       const entry = await until(
@@ -171,6 +223,7 @@ export async function startFakeProvider(): Promise<FakeProvider> {
       for (const entry of held) finish(entry);
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      await new Promise<void>((resolve, reject) => echo.close((err) => (err ? reject(err) : resolve())));
     },
   };
 }

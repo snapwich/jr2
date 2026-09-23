@@ -1,12 +1,11 @@
 // Steps for the ADR-0011 mechanics tier: drive the two delivery surfaces the Orchestrator serves —
-// `/agents/<iid>/*` (the AGENT's, as its Adapter speaks it) and `/runs/:id/gates/*` (the HUMAN's).
+// `/agents/<iid>/*` (the AGENT's, as its Harness reads it) and `/runs/:id/gates/*` (the HUMAN's).
 // The run itself is observed black-box via `jr2 status`.
 //
-// These steps used to open an MCP client to `/mcp/<iid>`. That surface is gone from the Orchestrator
-// (ADR-0013): MCP now lives in the Adapter, inside the Sandbox. So what these steps play is the
-// ADAPTER, not an Agent — which is what they were always really doing, since there was never a pod
-// here (this tier is workspace-less: the Agent admits against the host's stub Harness). The tier
-// that makes a real Agent originate a real MCP call is `@kind`, where there is a real pod to do it.
+// What these steps play is the Harness's Menu (ADR-0013): the two routes it reads and picks on,
+// which in a pod it reaches through the Custodian (ADR-0059). There is no pod here (this tier is
+// workspace-less: the Agent admits against the host's stub Harness). The tier that makes a real
+// Agent originate a real pick is `@kind`, where there is a real pod to do it.
 //
 // They carry the INSTANCE token, not a Sandbox token: these registrations belong to no Sandbox, and
 // a Sandbox token is scoped to one. The credential is the fixture server's Instance token.
@@ -61,7 +60,7 @@ async function gates(world: E2EWorld): Promise<Gate[]> {
   return ((await res.json()) as { gates?: Gate[] }).gates ?? [];
 }
 
-/** `GET /agents/:iid/surface` — what the Adapter would render as this turn's `tools/list`. */
+/** `GET /agents/:iid/surface` — what the Harness would present as this turn's Menu. */
 async function agentSurface(world: E2EWorld): Promise<Response> {
   return fetch(`${world.server?.url}/agents/${encodeURIComponent(coderIid(world))}/surface`, {
     headers: world.authHeaders(),
@@ -94,8 +93,7 @@ Given(
   },
 );
 
-// What a `tools/call` becomes once the Adapter has translated it: one delivery, into the state that
-// invoked the Agent.
+// What a Menu pick is on the wire: one delivery, into the state that invoked the Agent.
 When(
   "the agent calls {string} with summary {string}",
   async function (this: E2EWorld, tool: string, summary: string): Promise<void> {
@@ -176,7 +174,7 @@ Then("the agent's surface offers exactly {string}", async function (this: E2EWor
 
 Then("the agent's surface is gone", async function (this: E2EWorld): Promise<void> {
   // The invoking state exited, so the registration — and with it the whole surface — is gone. This
-  // is what the Adapter sees when a turn is over: not an empty menu, but no menu.
+  // is what the Harness reads when a turn is over — which it presents as an empty Menu (ADR-0026).
   assert.equal((await agentSurface(this)).status, 404);
 });
 
