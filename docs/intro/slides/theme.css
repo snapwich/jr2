@@ -271,6 +271,46 @@
   color: var(--text-dim);
 }
 
+/* --- a figure beside the argument ------------------------------------------------------------- */
+
+.reveal .slides > section.split {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  grid-template-rows: auto auto auto 1fr;
+  column-gap: 56px;
+  align-content: start;
+}
+.reveal .slides > section.split::before,
+.reveal .slides > section.split > h2 {
+  grid-column: 1 / -1;
+}
+.reveal .slides > section.split > .diagram {
+  grid-column: 2;
+  grid-row: 3 / span 2;
+}
+.reveal .slides > section.split > p {
+  grid-column: 1;
+  align-self: start;
+}
+
+.reveal figure.diagram {
+  margin: 0;
+  padding: 18px 20px 14px;
+  background: rgba(14, 21, 36, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  align-self: start;
+}
+
+.reveal figure.diagram figcaption {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 0.4em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 /* `!important` earns itself here: reveal writes `display: block` INLINE on the present slide, so a
    stylesheet cannot make it a flex container any other way. */
 .reveal .slides section.center {
@@ -559,4 +599,20 @@
 body.stage-live .stage-badge {
   display: block;
   pointer-events: auto;
+}
+
+/* --- diagrams (mermaid) ------------------------------------------------------------------------ */
+
+/* Not a command block: undo the `pre` panel so the drawn SVG sits on the slide itself. */
+.reveal pre.mermaid {
+  font-size: 1em;
+  background: none;
+  border: 0;
+  margin: 0;
+}
+
+.reveal pre.mermaid svg {
+  display: block;
+  margin: 0 auto;
+  max-height: 400px;
 }

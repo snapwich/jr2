@@ -41,6 +41,33 @@
         </section>
 
         <!-- ========================================================================== before -->
+        <!-- Where jr2 comes from: jr already drew a graph, but in bash. It worked; it did not scale. -->
+        <section class="todo split" data-kicker="origin · jr, 2026">
+          <h2>jr: the graph was already there, <em>in bash</em></h2>
+          <p class="dim">
+            <a href="https://www.richsnapp.com/article/2026/03-30-automating-your-agents"
+              >richsnapp.com — Automating agents with the next iteration of Ralph</a
+            >
+          </p>
+          <!-- The architect review, verbatim from the article: the agentic loop, not the bash orchestrator around it. -->
+          <figure class="diagram">
+            <pre class="mermaid">
+flowchart TD
+  A[Tasks done] --> B[Architect]
+  B -->|issues| C[Rework]
+  C --> A
+  B -->|approved| D[Human]
+  D -->|approved| E[Closed]
+  D -->|changes| C
+            </pre>
+            <figcaption>fig. 1 — a segment of jr's control flow</figcaption>
+          </figure>
+          <p class="dim">
+            a deterministic loop on purpose; it worked, but it lived as many lines of bash and was hard to visualize and
+            change
+          </p>
+        </section>
+
         <!-- Two claims, in the order the demo proves them: A — control flow belongs in code, not
              markdown (ping, triage); B — agent work belongs off your laptop (task, its Sandbox). -->
         <section class="todo" data-kicker="claim A · control flow belongs in code">
@@ -241,6 +268,35 @@ jr2 up</code></pre>
 
     <script type="module">
       import Reveal from "./node_modules/reveal.js/dist/reveal.esm.js";
+      import mermaid from "./node_modules/mermaid/dist/mermaid.esm.min.mjs";
+
+      // --- diagrams: drawn before reveal lays out ------------------------------------------------
+      // Served from node_modules like reveal, so the deck needs no network. Rendered BEFORE
+      // `initialize`, so the SVGs are in place when reveal sizes the slides.
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: "base",
+        fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--mono"),
+        themeVariables: {
+          background: "#0a0f1a",
+          primaryColor: "#0e1524",
+          primaryBorderColor: "#4ef0a7",
+          primaryTextColor: "#c8d6e8",
+          lineColor: "#5f7189",
+          edgeLabelBackground: "#0a0f1a",
+          tertiaryTextColor: "#c8d6e8",
+        },
+      });
+      // `mermaid.run` measures in place, and reveal.css already hides every slide at this point.
+      // `render` draws in its own scratch node on <body>, so each diagram is measured visible.
+      // mermaid sizes each box from the text it measures, so the font must be in first — and a
+      // face nothing has used yet is not loaded, so ask for it by name.
+      await document.fonts.load('16px "Fragment Mono"');
+      let n = 0;
+      for (const pre of document.querySelectorAll("pre.mermaid")) {
+        const { svg } = await mermaid.render(`diagram-${n++}`, pre.textContent);
+        pre.innerHTML = svg;
+      }
 
       const deck = new Reveal({
         hash: true,
