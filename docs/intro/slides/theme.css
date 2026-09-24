@@ -2041,14 +2041,14 @@ body.stage-live .stage-badge {
   grid-template-columns: minmax(0, 0.85fr) auto minmax(0, 1.15fr);
   gap: 22px;
   align-items: start;
-  margin-bottom: 1em;
+  margin-bottom: 1.6em;
   font-family: var(--mono);
-  font-size: 0.5em;
+  font-size: 0.46em;
 }
 .reveal .grows .pod {
   display: flex;
   flex-direction: column;
-  gap: 0.8em;
+  gap: 0.6em;
   padding: 0.9em 1em 1em;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -2145,6 +2145,15 @@ body.stage-live .stage-badge {
   margin: 0;
   font-size: 0.85em;
   color: var(--text-dim);
+}
+.reveal .slides > section:not(#demo) .grows p.from {
+  max-width: none;
+  margin: 0;
+  padding-left: 0.8em;
+  font-size: 0.85em;
+  line-height: 1.45;
+  color: var(--text);
+  border-left: 2px solid var(--blue);
 }
 .reveal .grows p.undecided span {
   color: var(--amber);

@@ -1036,9 +1036,11 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
              in a response hands it over. "What it unlocks" is the speaker's intent, not in ADR-0059: a shared Machine
              names the tools it needs, and each user's Adapter holds that user's keys; an always-on assistant
              (OpenClaw, Hermes Agent) would be a long-lived run fed by a Source, with its mail and chat keys held
-             outside the Harness. -->
+             outside the Harness. "Not a vault": a key reaches jr2 as a Kubernetes valueFrom reference, passed through
+             verbatim (config.ts harness.env; the branch's heldSecrets[] takes the same value/valueFrom), so any tool
+             that fills a Secret supplies it. The Adapter holds the key only in memory while the pod lives. -->
         <section data-kicker="next">
-          <h2>the Adapter holds <em>every</em> key</h2>
+          <h2>the Adapter injects <em>every</em> key</h2>
           <div class="grows">
             <div class="side">
               <div class="pod">
@@ -1073,13 +1075,17 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
                 <ul>
                   <li>holds the Orchestrator credential</li>
                   <li>serves the Menu</li>
-                  <li class="new">holds external credentials: model keys, tool tokens</li>
-                  <li class="new">a proxy for outbound calls: adds a key only toward its own host</li>
+                  <li class="new">holds external keys at runtime: model, tools</li>
+                  <li class="new">a proxy for outbound calls: a key goes only to its host</li>
                 </ul>
               </div>
               <div class="out">
                 <span>model provider</span><span>GitHub</span><span>Slack</span><span>your APIs</span>
               </div>
+              <p class="from">
+                not a vault: it reads Kubernetes Secrets, so fill them from Vault with External Secrets Operator, or any
+                store
+              </p>
               <p class="undecided">undecided: jr2's own proxy, or <span>Envoy</span>'s new credential injector</p>
             </div>
           </div>
