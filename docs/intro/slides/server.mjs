@@ -37,7 +37,7 @@ const TYPES = {
   ".map": "application/json; charset=utf-8",
 };
 
-/** What the pane is running right now. A plain shell name means it is idle at a prompt. */
+/** The shells a pane idles in. */
 const SHELLS = new Set(["zsh", "bash", "sh", "fish"]);
 
 /**
@@ -59,9 +59,22 @@ async function resolvePane() {
   return pane;
 }
 
-async function paneCommand(pane) {
-  const { stdout } = await exec("tmux", ["display-message", "-p", "-t", pane, "#{pane_current_command}"]);
-  return stdout.trim();
+/**
+ * What the pane is busy with, or null when it sits idle at a prompt. The foreground command's name
+ * is not enough: `RUN=$(jr2 run …)` runs jr2 in a FORKED shell, so tmux reports `zsh` while it
+ * runs, and keys sent then land in jr2's terminal, not at the prompt (the next command lost its
+ * first character). An idle shell has no child processes, so a child means busy.
+ */
+async function paneBusy(pane) {
+  const { stdout } = await exec("tmux", ["display-message", "-p", "-t", pane, "#{pane_current_command} #{pane_pid}"]);
+  const [command, pid] = stdout.trim().split(" ");
+  if (!SHELLS.has(command)) return command;
+  try {
+    const { stdout: children } = await exec("pgrep", ["-lP", pid]);
+    return children.trim().split("\n")[0].split(" ").slice(1).join(" ") || "a child process";
+  } catch {
+    return null; // pgrep exits 1 when there is no child
+  }
 }
 
 async function sendKeys(pane, text) {
@@ -137,11 +150,11 @@ async function fire(id) {
   let pane, running;
   try {
     pane = await resolvePane();
-    running = await paneCommand(pane);
+    running = await paneBusy(pane);
   } catch {
     return { status: 503, body: { error: `no tmux session "${SESSION}" — run \`npm start\`` } };
   }
-  const busy = !SHELLS.has(running);
+  const busy = running !== null;
   if (busy && step.interrupt !== true) {
     return { status: 409, body: { error: `pane busy (${running}) — it is running something, or you are typing` } };
   }
