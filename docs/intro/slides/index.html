@@ -238,9 +238,70 @@ stateDiagram-v2
             <p><s>agent and user share credentials</s>credential kept in the Adapter</p>
           </div>
         </section>
-        <section class="todo" data-kicker="agent work belongs off your laptop">
+        <section data-kicker="agent work belongs off your laptop">
           <h2>one host is one host</h2>
-          <p class="dim">claim B: more than one machine, headless, reachable from other systems</p>
+          <!-- Placement only: a Sandbox lands where an ordinary pod lands (ADR-0052). No claim of
+               per-pod CPU or memory limits — jr2 sets none yet, so one pod can still crowd its node. -->
+          <div class="versus">
+            <div class="host">
+              <p class="label">one laptop · jr</p>
+              <div class="lanes">
+                <div class="lane quiet"><span class="agent">agent</span></div>
+                <div class="lane hot"><span class="agent">build</span></div>
+                <div class="lane quiet"><span class="agent">agent</span></div>
+              </div>
+              <div class="meter"><span>cpu</span><i></i><span>100%</span></div>
+              <p class="foot">one build starves the rest</p>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="cluster">
+              <p class="label">a cluster · jr2</p>
+              <div class="callers"><span>jr2</span><span>Console</span><span>your app</span></div>
+              <div class="nodes">
+                <div class="node">
+                  <p>node-1</p>
+                  <span class="orch">Orchestrator</span><span class="sbx">pod</span>
+                </div>
+                <div class="node">
+                  <p>node-2</p>
+                  <span class="sbx">pod</span><span class="sbx">pod</span>
+                </div>
+                <div class="node">
+                  <p>node-3</p>
+                  <span class="sbx">pod</span>
+                </div>
+              </div>
+              <p class="foot">a Sandbox lands wherever an ordinary pod can</p>
+            </div>
+          </div>
+          <div class="fixes">
+            <p><s>one agent starves the rest</s>more nodes, more room</p>
+            <p><s>stops when the lid closes</s>keeps running with it closed</p>
+            <p><s>reachable from this laptop</s>one address for every caller</p>
+          </div>
+        </section>
+
+        <section data-kicker="agent work belongs off your laptop">
+          <h2>headless: every UI can be a client</h2>
+          <!-- The routes are the Orchestrator's own (packages/orchestrator/src/http.ts). jr2 and the
+               Console ship; GitHub and your app are what the same API admits, not features. A Gate
+               takes its answer from any caller — a person, CI, or a webhook translator. -->
+          <div class="hub">
+            <div class="clients">
+              <div class="client ships"><b>jr2</b><span>run, send, status</span><em>ships</em></div>
+              <div class="client ships"><b>Console</b><span>the graph, runs, open Gates</span><em>ships</em></div>
+              <div class="client"><b>GitHub</b><span>a PR review answers a Gate</span><em>build it</em></div>
+              <div class="client"><b>your app</b><span>a bespoke UI, a bot, a CI step</span><em>build it</em></div>
+            </div>
+            <div class="api">
+              <p class="label">Orchestrator · HTTP</p>
+              <code><i>POST</i> /workflows/:name/runs</code>
+              <code><i>GET</i> /runs/:id/events</code>
+              <code><i>POST</i> /runs/:id/gates/:gate/events</code>
+              <code><i>GET</i> /workflows/:name/machine</code>
+            </div>
+          </div>
+          <p class="punch">jr2 is infrastructure. The UI is <em>whatever calls it</em>.</p>
         </section>
         <section class="todo" data-kicker="jr2">
           <h2>jr2: Machines on a cluster, Agents in pods</h2>

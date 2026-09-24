@@ -611,6 +611,90 @@
   color: var(--amber);
 }
 
+/* One lane runs hot; the meter says why the others wait. */
+.reveal .versus .lane.hot .agent {
+  border-color: rgba(240, 106, 95, 0.7);
+  color: var(--red);
+}
+.reveal .versus .lane.quiet .agent {
+  opacity: 0.45;
+}
+
+.reveal .versus .meter {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.8em;
+  align-items: center;
+  padding: 0.6em 0.8em;
+  border: 1px solid rgba(240, 106, 95, 0.55);
+  border-radius: 4px;
+  background: rgba(240, 106, 95, 0.07);
+  color: var(--red);
+}
+.reveal .versus .meter i {
+  height: 0.55em;
+  border-radius: 2px;
+  background: repeating-linear-gradient(90deg, var(--red) 0 6px, transparent 6px 9px);
+}
+
+/* The cluster: callers above one address, nodes below it, pods spread across them. */
+.reveal .versus .cluster {
+  display: flex;
+  flex-direction: column;
+}
+
+.reveal .versus .callers {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.reveal .versus .callers span {
+  padding: 0.25em 0.7em;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  color: var(--text-dim);
+}
+
+.reveal .versus .nodes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.reveal .versus .node {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 7.5em;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(14, 21, 36, 0.6);
+}
+.reveal .slides > section:not(#demo) .versus .node p {
+  margin: 0 0 2px;
+  font-size: 0.85em;
+  color: var(--text-dim);
+}
+
+.reveal .versus .node span {
+  padding: 0.3em 0.5em;
+  font-size: 0.85em;
+  white-space: nowrap;
+  border-radius: 4px;
+  text-align: center;
+}
+.reveal .versus .node .sbx {
+  border: 1px solid var(--phosphor);
+  color: var(--phosphor);
+  background: var(--phosphor-soft);
+}
+.reveal .versus .node .orch {
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--ink-2);
+}
+
 /* Each problem struck through, its answer beside it: the slide's argument in three lines. */
 .reveal .fixes {
   display: grid;
@@ -635,6 +719,107 @@
   text-decoration: line-through;
   text-decoration-thickness: 1px;
   text-decoration-color: rgba(240, 106, 95, 0.7);
+}
+
+/* --- one API, many clients ------------------------------------------------------------------ */
+
+.reveal .hub {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 48px;
+  align-items: center;
+  margin: 0.5em 0 1.4em;
+  font-family: var(--mono);
+  font-size: 0.62em;
+}
+
+.reveal .hub .clients {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* A client: its name, what it does with the API, and whether the kit ships it. */
+.reveal .hub .client {
+  position: relative;
+  display: grid;
+  grid-template-columns: 5.6em 1fr auto;
+  gap: 1em;
+  align-items: baseline;
+  padding: 0.8em 1em;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: rgba(14, 21, 36, 0.6);
+}
+.reveal .hub .client.ships {
+  border-style: solid;
+  border-color: rgba(78, 240, 167, 0.5);
+}
+.reveal .hub .client b {
+  font-weight: 400;
+  color: var(--text);
+}
+.reveal .hub .client span {
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.reveal .hub .client em {
+  white-space: nowrap;
+  font-style: normal;
+  font-size: 0.8em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.reveal .hub .client.ships em {
+  color: var(--phosphor);
+}
+
+/* A wire from each client to the API. */
+.reveal .hub .client::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  width: 48px;
+  height: 1px;
+  background: var(--line);
+}
+.reveal .hub .client.ships::after {
+  background: var(--phosphor);
+}
+
+.reveal .hub .api {
+  align-self: stretch;
+  justify-content: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+  padding: 1.1em 1.3em;
+  border: 1px solid var(--phosphor);
+  border-radius: 6px;
+  background: var(--ink-2);
+  box-shadow: 0 0 0 6px rgba(78, 240, 167, 0.05);
+}
+.reveal .slides > section:not(#demo) .hub .api .label {
+  margin: 0 0 0.3em;
+  font-size: 0.85em;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--phosphor);
+}
+.reveal .hub .api code {
+  font-size: 0.92em;
+  padding: 0;
+  background: none;
+  color: var(--text);
+  white-space: nowrap;
+}
+.reveal .hub .api code i {
+  display: inline-block;
+  width: 3.4em;
+  font-style: normal;
+  color: var(--text-dim);
 }
 
 /* --- a quoted post ---------------------------------------------------------------------------- */
