@@ -1766,3 +1766,101 @@ body.stage-live .stage-badge {
   background: none;
   color: var(--text);
 }
+
+/* --- where a model is chosen ----------------------------------------------------------------- */
+
+.reveal .models {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 40px;
+  align-items: center;
+  margin-bottom: 0.9em;
+}
+
+.reveal .models figure.code {
+  margin: 0;
+}
+.reveal .models figure.code pre {
+  margin: 0;
+  font-size: 0.37em;
+  font-variant-ligatures: none;
+}
+.reveal .models figure.code pre code {
+  max-height: none;
+  color: var(--text);
+  border-top-left-radius: 0;
+}
+.reveal .models b {
+  font-weight: 400;
+  color: var(--phosphor);
+}
+.reveal .models s {
+  text-decoration: none;
+  color: var(--text-dim);
+}
+
+/* Widest to narrowest: each row overrides the one above it. */
+.reveal .models ol.choose {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 0.46em;
+}
+.reveal .models ol.choose li {
+  position: relative;
+  margin: 0 0 1.2em;
+  padding: 0 0 1.2em 1.2em;
+  border-left: 2px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
+}
+.reveal .models ol.choose li:last-child {
+  margin-bottom: 0;
+  border-bottom: 0;
+  border-left-color: var(--phosphor);
+}
+.reveal .models ol.choose strong {
+  display: block;
+  margin-bottom: 0.45em;
+  font-weight: 400;
+  font-size: 1.15em;
+  color: var(--text);
+}
+.reveal .models ol.choose code {
+  display: block;
+  padding: 0.55em 0.8em;
+  font-size: 0.92em;
+  font-variant-ligatures: none;
+  color: var(--text);
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reveal .models ol.choose span {
+  display: block;
+  margin-top: 0.5em;
+  color: var(--text-dim);
+}
+.reveal .models ol.choose span code.i {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+}
+.reveal .models sup {
+  font-size: 0.7em;
+  vertical-align: 0.5em;
+  color: var(--amber);
+}
+.reveal .slides > section:not(#demo) .models p.foot {
+  max-width: none;
+  margin: 1em 0 0;
+  font-family: var(--mono);
+  font-size: 0.36em;
+  line-height: 1.5;
+  color: var(--text-dim);
+}

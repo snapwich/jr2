@@ -884,6 +884,57 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
           </div>
           <p class="punch">A Machine is an import: <em>bind it, nest it, fan it out.</em></p>
         </section>
+
+        <section data-kicker="in the box">
+          <h2>any model, chosen per Agent</h2>
+          <!-- Sources: ADR-0018 (harness declares reach, the definition makes the choice; one custom
+               OpenAI-compatible provider), packages/harness/src/provider.ts (pi-ai's built-in catalog plus the custom
+               provider, one registry; `<provider>/<modelId>` split at the first slash), config.ts HarnessEnvVar and
+               up.ts:635 (harness.env values land in the Instance's Secret), ADR-0057 (Dials: model, thinkingLevel per
+               Turn), ADR-0054 (task's door overrides the Dials per run; the coder's model ships Open).
+               Checked in code, not run live with a catalog key. -->
+          <div class="models">
+            <figure class="code">
+              <div class="tabs"><span class="on">jr2.config.ts</span><span>reach</span></div>
+              <pre><code>harness: {
+  <s>// one OpenAI-compatible endpoint:</s>
+  <s>// llama.cpp, vLLM, Ollama, …</s>
+  provider: {
+    id: "<b>local</b>",
+    api: "openai-completions",
+    baseUrl: process.env.JR2_PROVIDER_URL,
+  },
+  <s>// keys for the built-in catalog:</s>
+  <s>// anthropic, openai, google, …</s>
+  env: [{
+    name: "ANTHROPIC_API_KEY",
+    value: process.env.ANTHROPIC_API_KEY,
+  }],
+},</code></pre>
+            </figure>
+            <div>
+              <ol class="choose">
+                <li>
+                  <strong>per Agent</strong>
+                  <code>agent({ model: "<b>anthropic</b>/claude-sonnet-4-6" })</code>
+                  <span>the definition: who the Agent is</span>
+                </li>
+                <li>
+                  <strong>per Turn<sup>*</sup></strong>
+                  <code>input: { prompt, model: "<b>local</b>/qwen3.6-35b-a3b" }</code>
+                  <span>a state turns the dial: a cheap model for a small step</span>
+                </li>
+                <li>
+                  <strong>per run</strong>
+                  <code>jr2 run task --input '{ "prompt": "…", "model": "…" }'</code>
+                  <span>when the Machine takes it as input: <code class="i">task</code> does</span>
+                </li>
+              </ol>
+              <p class="foot"><sup>*</sup> a switch mid-conversation starts cold: the new model has no prompt cache</p>
+            </div>
+          </div>
+          <p class="punch">The kit never picks a vendor. <em>You pick the model.</em></p>
+        </section>
         <section class="todo" data-kicker="next">
           <h2>next: agents that write Machines at runtime</h2>
           <p class="dim">today Claude writes them at design time</p>
