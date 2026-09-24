@@ -931,7 +931,7 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
               <figcaption>ends drained, deadlocked, or waiting on a Gate</figcaption>
             </figure>
           </div>
-          <p class="punch">A Machine is an import: <em>bind it, nest it, fan it out.</em></p>
+          <p class="punch">Loop engineering? How about <em>state machine</em> engineering?</p>
         </section>
 
         <section data-kicker="in the box">
@@ -1033,22 +1033,32 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
              Adapter seat, which swaps in a key only toward a host that key is bound to, and tunnels every other host
              untouched. Limits (ADR-0059 Consequences): the Agent can still spend a key toward its bound host while
              its pod lives; a key with admin rights can mint one the Agent could take; an upstream that echoes the key
-             in a response hands it over. -->
+             in a response hands it over. "What it unlocks" is the speaker's intent, not in ADR-0059: a shared Machine
+             names the tools it needs, and each user's Adapter holds that user's keys; an always-on assistant
+             (OpenClaw, Hermes Agent) would be a long-lived run fed by a Source, with its mail and chat keys held
+             outside the Harness. -->
         <section data-kicker="next">
           <h2>the Adapter holds <em>every</em> key</h2>
           <div class="grows">
-            <div class="pod">
-              <span class="label">today</span>
-              <div class="ctr">
-                <strong>Harness</strong>
-                <span class="leak">the model key is here, where the Agent's code runs</span>
+            <div class="side">
+              <div class="pod">
+                <span class="label">today</span>
+                <div class="ctr">
+                  <strong>Harness</strong>
+                  <span class="leak">the model key is here, where the Agent's code runs</span>
+                </div>
+                <div class="ctr adapter">
+                  <strong>Adapter</strong>
+                  <ul>
+                    <li>holds the Orchestrator credential</li>
+                    <li>serves the Menu</li>
+                  </ul>
+                </div>
               </div>
-              <div class="ctr adapter">
-                <strong>Adapter</strong>
-                <ul>
-                  <li>holds the Orchestrator credential</li>
-                  <li>serves the Menu</li>
-                </ul>
+              <div class="unlocks">
+                <span class="label">what it unlocks</span>
+                <p><s>share a Machine</s>its tools come along; your keys stay home</p>
+                <p><s>always-on agents</s>OpenClaw- or Hermes-style, keys out of reach</p>
               </div>
             </div>
             <div class="arrow">→</div>

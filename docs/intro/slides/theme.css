@@ -2099,6 +2099,30 @@ body.stage-live .stage-badge {
   content: "+ ";
   color: var(--phosphor);
 }
+.reveal .grows .side {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9em;
+}
+.reveal .grows .unlocks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+}
+.reveal .slides > section:not(#demo) .grows .unlocks p {
+  max-width: none;
+  margin: 0;
+  padding: 0.1em 0 0.1em 0.9em;
+  font-size: 1em;
+  line-height: 1.45;
+  color: var(--text-dim);
+  border-left: 2px solid var(--phosphor);
+}
+.reveal .grows .unlocks s {
+  display: block;
+  text-decoration: none;
+  color: var(--phosphor);
+}
 .reveal .grows .arrow {
   align-self: center;
   font-size: 1.8em;
