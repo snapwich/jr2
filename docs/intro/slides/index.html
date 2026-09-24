@@ -704,9 +704,112 @@ stateDiagram-v2
         </section>
 
         <!-- =========================================================================== after -->
-        <section class="todo" data-kicker="after">
-          <h2>what else is in the box</h2>
-          <p class="dim">model agnostic · typed Instances · composable Machines</p>
+        <section data-kicker="in the box">
+          <h2>one pod, three containers</h2>
+          <!-- Sources: CONTEXT.md (Harness, Adapter, User Container, Sandbox Image), ADR-0005 (pod composition),
+               ADR-0013 (the Adapter hosts the MCP surface; the Harness connects to $JR2_ADAPTER_URL/mcp/<iid> each
+               Submission), ADR-0037 (the Harness runtime mounts at /opt/jr2 into the Sandbox Image), ADR-0058 (the
+               Orchestrator alone may drive a Harness), ADR-0031 (Instance Harness). The Workspace: ADR-0051 (the
+               node cache clones with the Repo CR's secretRef; the Orchestrator's attach is `git clone --shared` off
+               the read-only mount, worktree beside it), ADR-0053 (fetch: ext:: → Adapter → Orchestrator → cache;
+               the push url is the caller's own spelling, no credential in the pod).
+               Honesty: the model key IS in the Harness container (ADR-0058). Claim only that the Orchestrator
+               credential is out of the Agent's reach. -->
+          <div class="seats">
+            <div class="orch"><strong>Orchestrator</strong> runs the Machine</div>
+            <div class="w down"><span>① admits a Turn</span></div>
+            <div class="w up"><span>③ the pick, as a Gate event</span></div>
+            <div class="pod">
+              <span class="label">Sandbox pod</span>
+              <div class="ctr">
+                <h3>Harness</h3>
+                <p class="img">your Sandbox Image + <code>/opt/jr2</code></p>
+                <p>the conversation, the model calls, the Working tools: read, write, bash</p>
+                <p class="why">the Agent's code runs here</p>
+              </div>
+              <div class="mcp"><span>② MCP · localhost</span><span>the Menu</span></div>
+              <div class="ctr">
+                <h3>Adapter</h3>
+                <p class="img">jr2-adapter</p>
+                <p>an MCP server with this Turn's Menu; sends the pick to the Orchestrator</p>
+                <p class="why">holds the Orchestrator credential, where the Agent cannot read it</p>
+              </div>
+              <div class="ctr opt">
+                <h3>User Container <em>optional</em></h3>
+                <p class="img">your image, your entrypoint</p>
+                <p>e.g. an sshd, a forwarded ssh agent</p>
+                <p class="why">jr2 never builds, probes, or commands it</p>
+              </div>
+              <div class="vol">
+                <strong>/work</strong>
+                <p>
+                  the Workspace, set up by the Orchestrator: a clone off the node's repo cache, then a branch worktree.
+                  <span>No git credential in the pod: a fetch asks the cache, and a push has none.</span>
+                </p>
+              </div>
+            </div>
+          </div>
+          <p class="punch">The Agent writes the code. <em>It never holds the keys</em> to git or the Orchestrator.</p>
+        </section>
+
+        <section data-kicker="in the box">
+          <h2>what a Machine is made of</h2>
+          <!-- The demo's triage workflow, abridged: docs/intro/instance/workflows/triage.ts. The real file
+               assigns context on each transition; the parts are the same.
+               ① ADR-0033 (the door; the Console's start form) · ② ADR-0011 (Vocabulary, audience)
+               ③ ADR-0049 (the Agent rides the Machine), ADR-0028 (workspace access)
+               ④ ADR-0015 (Menu = the state's transitions, served by the Adapter over MCP), ADR-0029 (a pick outside it moves nothing) -->
+          <div class="anatomy">
+            <figure class="code">
+              <div class="tabs"><span class="on">triage.ts</span><span>abridged</span></div>
+              <pre><code>const needsInfo = defineEvent({ <i>2</i>
+  name: "needs_info", audience: "agent",
+  input: z.object({ question: z.string() }),
+});
+jr2Setup({
+  events: [accept, needsInfo, reject, answer],
+  actors: {
+    triager: agent({ <i>3</i>
+      model: "local/qwen3.6-35b-a3b",
+      workspace: "none",
+      instructions: "You triage feature requests…",
+    }),
+  },
+}).createMachine({
+  input: z.object({ request: z.string() }), <i>1</i>
+  states: {
+    <b>triaging</b>: { <i>4</i>
+      invoke: { src: "triager" },
+      on: { accept: "accepted", needs_info: "clarify", reject: "rejected" },
+    },
+    <b>clarify</b>: { invoke: { src: "gate" }, on: { answer: "triaging" } },
+    accepted: { type: "final" }, rejected: { type: "final" },
+  },
+});</code></pre>
+            </figure>
+            <ol class="parts">
+              <li>
+                <strong>input</strong>
+                a schema for what starts a run. The Console draws its start form from it.
+              </li>
+              <li>
+                <strong>events</strong>
+                typed, with an audience: an Agent's picks and a human's answers never mix.
+              </li>
+              <li>
+                <strong>agents</strong>
+                model, instructions, workspace access. <code>"none"</code> can read and pick, nothing else.
+              </li>
+              <li>
+                <strong>states</strong>
+                invoke an Agent: the state's <code>on</code> becomes its Menu, served as MCP tools. invoke a
+                <code>gate</code>: the run waits for a human.
+              </li>
+            </ol>
+          </div>
+          <p class="punch">
+            Choose your own adventure: the Agent picks where it goes next, <em>from defined states</em>.
+          </p>
         </section>
         <section class="todo" data-kicker="next">
           <h2>next: agents that write Machines at runtime</h2>

@@ -1409,3 +1409,303 @@ body.stage-live .stage-badge {
   content: "·";
   color: var(--amber);
 }
+
+/* --- a Machine, part by part ----------------------------------------------------------------- */
+
+.reveal .anatomy {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 40px;
+  align-items: center;
+  margin-bottom: 0.9em;
+}
+
+.reveal .anatomy figure.code {
+  margin: 0;
+}
+
+.reveal .anatomy figure.code pre {
+  margin: 0;
+  font-size: 0.34em;
+}
+
+.reveal .anatomy figure.code pre code {
+  color: var(--text);
+  border-top-left-radius: 0;
+  max-height: none;
+}
+
+.reveal .anatomy figure.code b {
+  font-weight: 400;
+  color: var(--phosphor);
+}
+
+/* A numbered marker in the code, and the same number on the part it names. */
+.reveal .anatomy i,
+.reveal .anatomy ol.parts li::before {
+  display: inline-grid;
+  place-items: center;
+  width: 1.5em;
+  height: 1.5em;
+  font-style: normal;
+  font-family: var(--mono);
+  color: var(--ink);
+  background: var(--amber);
+  border-radius: 50%;
+}
+
+.reveal .anatomy i {
+  margin-left: 0.6em;
+  font-size: 0.85em;
+  vertical-align: 0.05em;
+}
+
+.reveal .anatomy ol.parts {
+  list-style: none;
+  counter-reset: part;
+  margin: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 0.5em;
+  line-height: 1.45;
+}
+
+.reveal .anatomy ol.parts li {
+  counter-increment: part;
+  position: relative;
+  margin: 0 0 1.1em;
+  padding: 0 0 1.1em 2.4em;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--line-soft);
+}
+.reveal .anatomy ol.parts li:last-child {
+  margin-bottom: 0;
+  border-bottom: 0;
+}
+
+.reveal .anatomy ol.parts li::before {
+  content: counter(part);
+  position: absolute;
+  left: 0;
+  top: 0.05em;
+  font-size: 0.9em;
+}
+
+.reveal .anatomy ol.parts strong {
+  display: block;
+  font-weight: 400;
+  font-size: 1.15em;
+  color: var(--text);
+}
+
+.reveal .anatomy ol.parts code {
+  padding: 0;
+  color: var(--phosphor);
+  background: none;
+}
+
+/* --- the Sandbox pod, container by container ------------------------------------------------- */
+
+.reveal .seats {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 10.5em minmax(0, 1fr) minmax(0, 0.85fr);
+  grid-template-rows: auto 2.8em auto;
+  margin: 0 0 0.6em;
+  font-family: var(--mono);
+  font-size: 0.5em;
+}
+
+.reveal .seats .orch {
+  grid-column: 1 / -1;
+  padding: 0.7em 1.1em;
+  color: var(--text-dim);
+  background: var(--phosphor-soft);
+  border: 1px solid var(--phosphor);
+  border-radius: 6px;
+}
+.reveal .seats .orch strong {
+  margin-right: 0.8em;
+  font-weight: 400;
+  color: var(--phosphor);
+}
+
+/* A wire between the Orchestrator and one container: a dashed drop, its arrowhead, its label. */
+.reveal .seats .w {
+  grid-row: 2;
+  position: relative;
+  margin-left: 2.2em;
+  border-left: 1px dashed var(--phosphor);
+}
+.reveal .seats .w.down {
+  grid-column: 1;
+}
+.reveal .seats .w.up {
+  grid-column: 3;
+}
+.reveal .seats .w::after {
+  content: "";
+  position: absolute;
+  left: -5px;
+  border: 5px solid transparent;
+}
+.reveal .seats .w.down::after {
+  bottom: -2px;
+  border-top: 7px solid var(--phosphor);
+  border-bottom: 0;
+}
+.reveal .seats .w.up::after {
+  top: -2px;
+  border-bottom: 7px solid var(--phosphor);
+  border-top: 0;
+}
+.reveal .seats .w span {
+  position: absolute;
+  top: 50%;
+  left: 0.9em;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.reveal .seats .pod {
+  grid-row: 3;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  position: relative;
+  padding: 1.6em 1em 1em;
+  margin: 0 -1em;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(14, 21, 36, 0.72);
+}
+.reveal .seats .pod .label {
+  position: absolute;
+  top: 0.5em;
+  left: 1em;
+  font-size: 0.8em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.reveal .seats .ctr {
+  padding: 0.75em 1em;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink-2);
+}
+.reveal .seats .ctr.opt {
+  margin-left: 1.4em;
+  border-style: dashed;
+  background: transparent;
+}
+
+.reveal .slides > section:not(#demo) .seats h3 {
+  margin: 0 0 0.5em;
+  font-family: var(--mono);
+  font-size: 1.2em;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+.reveal .seats h3 em {
+  display: block;
+  margin-top: 0.3em;
+  font-size: 0.65em;
+  font-style: normal;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.reveal .slides > section:not(#demo) .seats .ctr p {
+  margin: 0 0 0.6em;
+  font-size: 1em;
+  line-height: 1.4;
+  color: var(--text);
+}
+.reveal .slides > section:not(#demo) .seats .ctr p.img {
+  color: var(--text-dim);
+}
+.reveal .slides > section:not(#demo) .seats .ctr p.why {
+  margin: 0;
+  padding-top: 0.6em;
+  border-top: 1px solid var(--line-soft);
+  color: var(--amber);
+}
+.reveal .seats code {
+  padding: 0;
+  background: none;
+  color: inherit;
+}
+
+/* The Menu: the Harness dials the Adapter on localhost, every Submission. */
+.reveal .seats .mcp {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 0.3em;
+  position: relative;
+  text-align: center;
+  margin: 0 0.4em;
+  font-size: 0.9em;
+  color: var(--phosphor);
+}
+.reveal .seats .mcp::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 6px;
+  top: 50%;
+  border-top: 1px dashed var(--phosphor);
+}
+.reveal .seats .mcp::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: calc(50% - 5px);
+  border: 5px solid transparent;
+  border-left: 7px solid var(--phosphor);
+  border-right: 0;
+}
+.reveal .seats .mcp span {
+  white-space: nowrap;
+  position: relative;
+  z-index: 1;
+  padding: 0 0.3em;
+  background: rgba(14, 21, 36, 1);
+}
+.reveal .seats .mcp span + span {
+  color: var(--text);
+}
+
+/* The Workspace: one volume under the containers, set up before the Agent's first Turn. */
+.reveal .seats .vol {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 1.2em;
+  align-items: baseline;
+  margin-top: 0.8em;
+  padding: 0.7em 1em;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--blue);
+  border-radius: 6px;
+  background: rgba(106, 167, 240, 0.06);
+}
+.reveal .seats .vol strong {
+  font-weight: 400;
+  color: var(--blue);
+}
+.reveal .slides > section:not(#demo) .seats .vol p {
+  max-width: none;
+  margin: 0;
+  line-height: 1.4;
+  color: var(--text);
+}
+.reveal .seats .vol span {
+  display: block;
+  color: var(--amber);
+}
