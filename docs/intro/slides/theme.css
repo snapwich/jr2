@@ -1709,3 +1709,60 @@ body.stage-live .stage-badge {
   display: block;
   color: var(--amber);
 }
+
+/* --- Machines inside Machines: three uses of one import ------------------------------------- */
+
+.reveal .uses {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 0.95fr);
+  gap: 22px;
+  margin-bottom: 0.9em;
+}
+
+.reveal .uses figure.code {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+
+.reveal .uses figcaption.head {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: 0.85em;
+  color: var(--text);
+}
+
+.reveal .uses pre {
+  flex: 1;
+  display: flex;
+  margin: 0;
+  font-size: 0.37em;
+  font-variant-ligatures: none;
+}
+.reveal .uses pre code {
+  flex: 1;
+  max-height: none;
+  color: var(--text);
+}
+.reveal .uses b {
+  font-weight: 400;
+  color: var(--phosphor);
+}
+.reveal .uses s {
+  text-decoration: none;
+  color: var(--text-dim);
+}
+
+.reveal .uses figcaption:not(.head) {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 0.36em;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+.reveal .uses figcaption code {
+  padding: 0;
+  background: none;
+  color: var(--text);
+}

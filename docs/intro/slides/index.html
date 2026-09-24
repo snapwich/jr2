@@ -811,6 +811,79 @@ jr2Setup({
             Choose your own adventure: the Agent picks where it goes next, <em>from defined states</em>.
           </p>
         </section>
+
+        <section data-kicker="in the box">
+          <h2>Machines compose</h2>
+          <!-- Sources: ADR-0049 (a package exports a Machine; composition is invoke; one run, one snapshot, one
+               run id; customize), ADR-0054 (@jr2/machines ships `task` with Open parts; jr2 up refuses an unbound
+               one and prints the customize line), ADR-0012 (workspace()), ADR-0017 + packages/orchestrator/src/pool.ts
+               (pool(worker, spec): source, itemId, cap). The first block is the demo's own task.ts.
+               A `task` nested under a parent gets no run id to name its branch after, so the parent passes `branch`
+               in its input (branchOf in packages/machines/src/task.ts); pool's `itemInput` does the same per item.
+               customize() is transparent through pool's worker and workspace()'s body (customize.ts), so an open
+               task under a pool is bound from outside.
+               `repos`, `agents`, `triager`, and `tracker` (any ticket client, illustrative) are defined elsewhere. A
+               Source is { next, wake?, pollEvery? }; `next` gets `input.active`, the ids already being worked, to skip. -->
+          <div class="uses">
+            <figure class="code">
+              <figcaption class="head">bind it</figcaption>
+              <pre><code>import { task } from "@jr2/machines";
+
+export const machine = <b>customize</b>(task, {
+  repos: {
+    target: { url: "http://seed…/greet.git" },
+  },
+  agents: {
+    coder: { model: "local/qwen3.6-35b-a3b" },
+  },
+});</code></pre>
+              <figcaption>an open part: <code>jr2 up</code> refuses and prints this line</figcaption>
+            </figure>
+            <figure class="code">
+              <figcaption class="head">nest it</figcaption>
+              <pre><code>const coding = customize(task, {
+  repos, agents,
+});
+
+jr2Setup({ actors: { triager, <b>coding</b> } })
+  .createMachine({
+    states: {
+      building: {
+        invoke: {
+          src: "<b>coding</b>",
+          input: ({ context }) => ({
+            prompt: context.summary,
+            branch: `feat/${context.slug}`,
+          }),
+        },
+      },
+    },
+  });</code></pre>
+              <figcaption>one run: its Gate lists under the parent</figcaption>
+            </figure>
+            <figure class="code">
+              <figcaption class="head">fan it out</figcaption>
+              <pre><code>export const machine = customize(
+  <b>pool</b>(task, {
+    source: source({
+      <s>// the next ready ticket, or null</s>
+      next: fromPromise(({ input }) =>
+        tracker.next(input.active)),
+    }),
+    itemId: (t) => t.id,
+    cap: 3,
+    itemInput: (t) => ({
+      prompt: t.body,
+      branch: `ticket/${t.id}`,
+    }),
+  }),
+  { repos, agents },
+);</code></pre>
+              <figcaption>ends drained, deadlocked, or waiting on a Gate</figcaption>
+            </figure>
+          </div>
+          <p class="punch">A Machine is an import: <em>bind it, nest it, fan it out.</em></p>
+        </section>
         <section class="todo" data-kicker="next">
           <h2>next: agents that write Machines at runtime</h2>
           <p class="dim">today Claude writes them at design time</p>
