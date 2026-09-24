@@ -1967,3 +1967,69 @@ body.stage-live .stage-badge {
   background: none;
   color: var(--phosphor);
 }
+
+/* --- next: Machines an Agent writes ---------------------------------------------------------- */
+
+.reveal .gen {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+  margin-bottom: 0.8em;
+}
+.reveal .gen figure.code {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+.reveal .gen figcaption.head {
+  margin: 0 0 8px;
+  font-family: var(--serif);
+  font-size: 0.8em;
+  color: var(--text);
+}
+.reveal .gen pre {
+  flex: 1;
+  display: flex;
+  margin: 0;
+  font-size: 0.38em;
+  font-variant-ligatures: none;
+}
+.reveal .gen pre code {
+  flex: 1;
+  max-height: none;
+  color: var(--text);
+}
+.reveal .gen figcaption:not(.head) {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 0.38em;
+  color: var(--text-dim);
+}
+
+.reveal .ideas {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+  margin-bottom: 1.6em;
+  font-family: var(--mono);
+  font-size: 0.48em;
+}
+.reveal .slides > section:not(#demo) .ideas p {
+  margin: 0;
+  max-width: none;
+  padding: 0.8em 1em;
+  font-size: 1em;
+  line-height: 1.45;
+  color: var(--text);
+  border: 1px dashed var(--amber);
+  border-radius: 6px;
+}
+.reveal .ideas s {
+  display: block;
+  margin-bottom: 0.3em;
+  font-size: 0.8em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+  color: var(--amber);
+}

@@ -976,9 +976,40 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
           <p class="punch">Kill the Orchestrator mid-Turn. <em>The run picks up where it was.</em></p>
         </section>
 
-        <section class="todo" data-kicker="next">
-          <h2>next: agents that write Machines at runtime</h2>
-          <p class="dim">today Claude writes them at design time</p>
+        <!-- Future work, stated as concepts only: no mechanism is decided. Open questions, not for the slide:
+             workflows are baked into the image at jr2 up (ADR-0008/0019); composition is by import, not by name
+             (ADR-0049); a generated Machine's code would run in the Orchestrator; a snapshot names its Machine's
+             shape (ADR-0030). Both code panels are illustrative. -->
+        <section data-kicker="the future?">
+          <h2>Agents that write <em>Machines</em></h2>
+          <div class="gen">
+            <figure class="code">
+              <figcaption class="head">a dynamic workflow</figcaption>
+              <pre><code>const plan = await agent("plan it");
+for (const step of plan.steps) {
+  const r = await agent(`do ${step}`);
+  if (!r.ok) break;
+}</code></pre>
+              <figcaption>a script: the flow is only visible when it runs</figcaption>
+            </figure>
+            <figure class="code">
+              <figcaption class="head">a Machine</figcaption>
+              <pre><code>planning: {
+  invoke: { src: "planner" },
+  on: { planned: "working" },
+},
+working: {
+  invoke: { src: "coder" },
+  on: { done: "review", blocked: "escalated" },
+},</code></pre>
+              <figcaption>more structure: typed, drawn as a graph, durable</figcaption>
+            </figure>
+          </div>
+          <div class="ideas">
+            <p><s>maybe</s>a Machine fills part of its body with a Machine an Agent wrote at runtime</p>
+            <p><s>maybe</s>a prompt becomes a workflow: an Agent writes the Machine, then jr2 runs it</p>
+          </div>
+          <p class="punch">Agents are good at writing Machines. <em>The types catch mistakes before the run.</em></p>
         </section>
         <section class="todo" data-kicker="next">
           <h2>next: held secrets</h2>
