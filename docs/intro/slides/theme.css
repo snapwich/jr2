@@ -383,6 +383,55 @@
   color: var(--amber);
 }
 
+/* --- three shapes side by side --------------------------------------------------------------- */
+
+.reveal .triptych {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 28px;
+  margin-bottom: 1em;
+}
+
+.reveal .triptych figure.diagram {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+}
+
+.reveal .triptych pre.mermaid {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+/* The deck script gives every diagram in a set one shared scale; the column only caps the width. */
+.reveal .triptych pre.mermaid svg {
+  max-width: 100% !important;
+}
+
+.reveal figure.diagram figcaption.head {
+  margin: 0 0 10px;
+  font-family: var(--serif);
+  font-size: 0.85em;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+/* The line the slide lands on: the serif voice, one size down from the heading. */
+.reveal .slides > section:not(#demo) p.punch {
+  font-family: var(--serif);
+  font-size: 1.15em;
+  line-height: 1.2;
+  max-width: none;
+  color: var(--text);
+}
+.reveal p.punch em {
+  font-style: italic;
+  color: var(--phosphor);
+}
+
 /* --- a quoted post ---------------------------------------------------------------------------- */
 
 /* Pinned to the page as an exhibit: a hair off square, lifted off the grid, with its source under

@@ -105,9 +105,52 @@ flowchart TD
             </figure>
           </div>
         </section>
-        <section class="todo" data-kicker="control flow belongs in code">
+        <section data-kicker="control flow belongs in code">
           <h2>different problems, different workflows</h2>
-          <p class="dim">claim A: no one prompt covers them all</p>
+          <!-- Three jobs in a row, each a different shape. jr drew only the first. -->
+          <div class="triptych">
+            <figure class="diagram">
+              <figcaption class="head">a defined feature</figcaption>
+              <pre class="mermaid">
+%%{init: {"flowchart": {"rankSpacing": 32, "nodeSpacing": 30}}}%%
+flowchart TD
+  P[Plan] --> T[Next task]
+  T -->|none left| H([Human])
+  T --> C[Coder]
+  C --> R[Reviewer]
+  R -->|changes| C
+  R -->|approved| T
+              </pre>
+              <figcaption>break down, build up</figcaption>
+            </figure>
+            <figure class="diagram">
+              <figcaption class="head">an open idea</figcaption>
+              <pre class="mermaid">
+%%{init: {"flowchart": {"rankSpacing": 32, "nodeSpacing": 30}}}%%
+flowchart TD
+  I[Idea] --> P[Prototype]
+  P --> H([Human])
+  H -->|iterate| P
+  H -->|keep| S[Spec]
+  S --> B[Agents build]
+              </pre>
+              <figcaption>prototype, then build</figcaption>
+            </figure>
+            <figure class="diagram">
+              <figcaption class="head">a big refactor</figcaption>
+              <pre class="mermaid">
+%%{init: {"flowchart": {"rankSpacing": 32, "nodeSpacing": 30}}}%%
+flowchart TD
+  O[Do one] --> H([Human])
+  H -->|redo| O
+  H -->|approved| F[Fan out]
+  F --> A[Agent] & B[Agent] & C[Agent]
+  A & B & C --> J[Review]
+              </pre>
+              <figcaption>once, then everywhere</figcaption>
+            </figure>
+          </div>
+          <p class="punch">jr drew one of these. I did not want to create more <em>bash loops</em>.</p>
         </section>
         <section class="todo" data-kicker="control flow belongs in code">
           <h2>a workflow you can read</h2>
@@ -326,6 +369,16 @@ jr2 up</code></pre>
       for (const pre of document.querySelectorAll("pre.mermaid")) {
         const { svg } = await mermaid.render(`diagram-${n++}`, pre.textContent);
         pre.innerHTML = svg;
+      }
+      // A set of diagrams shares ONE scale — the one the tallest needs to fit — so a node reads at
+      // the same size in all of them. Scaling each to fit alone makes the smallest graph shout.
+      for (const set of document.querySelectorAll(".triptych")) {
+        const svgs = [...set.querySelectorAll("pre.mermaid svg")];
+        const k = Math.min(...svgs.map((svg) => 300 / svg.viewBox.baseVal.height));
+        for (const svg of svgs) {
+          svg.style.width = `${svg.viewBox.baseVal.width * k}px`;
+          svg.style.height = `${svg.viewBox.baseVal.height * k}px`;
+        }
       }
 
       const deck = new Reveal({
