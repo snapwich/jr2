@@ -330,6 +330,59 @@ stateDiagram-v2
           </div>
           <p class="punch">jr2 is infrastructure. The UI is <em>whatever calls it</em>.</p>
         </section>
+        <!-- The cluster: bring your own, or use kind. jr2 handles the hard parts of converging into it and
+             nothing before it. Sources: ADR-0019 (one converging command, the current kube context, "if a runbook
+             is needed to use jr2, the interface has failed"), ADR-0038 (up builds every image it deploys; kind
+             load with no registry, push with one), ADR-0050 (up typechecks first; config holds only reach and
+             credentials), templates/default/jr2.config.ts (the scaffold) plus the two keys every real Instance adds: `registry` and a model credential (config.ts HarnessConfig.env), init.ts ("install
+             dependencies, then jr2 up and jr2 run ping"), instance/README.md (the dependencies). -->
+        <section class="byoc" data-kicker="agent work belongs off your laptop">
+          <h2>bring your own cluster, <em>or use kind</em></h2>
+          <div class="cols">
+            <div>
+              <figure class="markdown">
+                <div class="tabs"><span class="on">terminal</span></div>
+                <pre><code><i>$</i> kind create cluster          <s># or any kube context</s>
+<i>$</i> jr2 init agents &amp;&amp; cd agents &amp;&amp; npm i
+<i>$</i> jr2 up
+<i>$</i> jr2 run ping</code></pre>
+              </figure>
+              <figure class="markdown">
+                <div class="tabs"><span class="on">jr2.config.ts</span><span>a typical instance</span></div>
+                <pre><code>export default defineConfig({
+  registry: process.env.JR2_REGISTRY,   <s>// unset on kind</s>
+  harness: {
+    env: [{ name: "ANTHROPIC_API_KEY",
+            value: process.env.ANTHROPIC_API_KEY }],
+  },
+  git: { credentials: [{ match: "*", token: "JR2_GIT_TOKEN" }] },
+});</code></pre>
+              </figure>
+            </div>
+            <div class="duties">
+              <div class="duty jr2">
+                <p class="label">jr2 up converges <em>safe to re-run</em></p>
+                <ul>
+                  <li>typechecks the Instance before it builds</li>
+                  <li>installs the operator and its CRDs</li>
+                  <li>builds every image, then kind loads or pushes it</li>
+                  <li>deploys the Orchestrator and its Secrets</li>
+                  <li>probes a custom model endpoint in-cluster</li>
+                </ul>
+              </div>
+              <div class="duty you">
+                <p class="label">you bring <em>jr2 won't help here</em></p>
+                <ul>
+                  <li>a cluster; off kind, a container registry</li>
+                  <li>Node 24, Docker, kubectl</li>
+                  <li>a model: an API key or your own endpoint</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+          <p class="punch">Convention over configuration. <em>One command, no runbook.</em></p>
+        </section>
+
         <!-- Before the demo: Mitchell Hashimoto's bar for responsible AI use, and jr2's answer to it —
              every decision has an ADR. The ledger is generated from docs/adr/ (the # heading of each);
              regenerate it when an ADR lands. Phosphor rows are the ones the demo shows on screen. -->

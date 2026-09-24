@@ -1330,3 +1330,82 @@ body.stage-live .stage-badge {
 .reveal figure.ledger li.on i {
   color: var(--phosphor);
 }
+
+/* --- bring your own cluster ------------------------------------------------------------------- */
+
+.reveal .byoc .cols {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  column-gap: 40px;
+  margin-bottom: 0.7em;
+}
+.reveal .slides > section.byoc:not(#demo) h2 {
+  margin-bottom: 0.4em;
+}
+.reveal .byoc figure.markdown + figure.markdown {
+  margin-top: 18px;
+}
+.reveal .byoc figure.markdown pre {
+  font-size: 0.42em;
+}
+.reveal .byoc figure.markdown i {
+  font-style: normal;
+  color: var(--phosphor);
+}
+.reveal .byoc figure.markdown s {
+  text-decoration: none;
+  color: var(--text-dim);
+}
+
+/* What jr2 does, and what it leaves to you: solid where the kit owns it, dashed where it does not. */
+.reveal .byoc .duties {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.reveal .byoc .duty {
+  padding: 0.9em 1.1em;
+  border-radius: 6px;
+  background: rgba(14, 21, 36, 0.6);
+  font-family: var(--mono);
+}
+.reveal .byoc .duty.jr2 {
+  border: 1px solid rgba(78, 240, 167, 0.5);
+}
+.reveal .byoc .duty.you {
+  border: 1px dashed var(--line);
+}
+.reveal .slides > section.byoc:not(#demo) .duty p.label {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 0.8em;
+  max-width: none;
+  font-size: 0.4em;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.reveal .byoc .duty p.label em {
+  color: var(--phosphor);
+}
+.reveal .byoc .duty.you p.label em {
+  color: var(--amber);
+}
+.reveal .byoc .duty ul {
+  list-style: none;
+  display: block;
+  margin: 0;
+  font-size: 0.46em;
+  line-height: 1.75;
+}
+.reveal .byoc .duty li {
+  color: var(--text-dim);
+}
+.reveal .byoc .duty li::before {
+  content: "✓";
+  margin-right: 0.8em;
+  color: var(--phosphor);
+}
+.reveal .byoc .duty.you li::before {
+  content: "·";
+  color: var(--amber);
+}
