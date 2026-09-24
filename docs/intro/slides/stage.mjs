@@ -194,6 +194,8 @@ function start(name, cmd, args) {
 // watch, so the terminal in the stage is a real one. Loopback-bound, because ttyd's default is every
 // interface — which on conference wifi is a shell on the LAN, and this one accepts input. It
 // attaches to the demo session itself, so whatever window you select is the window the room sees.
+// `disableLeaveAlert`, here and on k9s: reveal unloads the stage when the deck moves far enough
+// from the demo, and ttyd's own leave alert would then stop the talk with Chrome's "Leave site?".
 start("ttyd", "ttyd", [
   "-W",
   "-p",
@@ -202,6 +204,8 @@ start("ttyd", "ttyd", [
   "127.0.0.1",
   "-t",
   "fontSize=18",
+  "-t",
+  "disableLeaveAlert=true",
   "-t",
   'theme={"background":"#0a0f1a","foreground":"#c8d6e8","cursor":"#4ef0a7"}',
   "tmux",
@@ -221,6 +225,8 @@ start("k9s", "ttyd", [
   "127.0.0.1",
   "-t",
   "fontSize=14",
+  "-t",
+  "disableLeaveAlert=true",
   "-t",
   'theme={"background":"#0a0f1a","foreground":"#c8d6e8","cursor":"#4ef0a7"}',
   "tmux",

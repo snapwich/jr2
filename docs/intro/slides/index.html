@@ -577,8 +577,17 @@ stateDiagram-v2
         <!-- ONE stack, one background, one load: `stage.html` holds the Console and the tmux
              session, and moving DOWN through these children never reloads it (verified: reveal
              loads a stack's background iframe once, and only when preloadIframes is on). So the
-             `task` run fires near the top and is still the same live page eight slides later. -->
-        <section id="demo" data-background-iframe="stage.html" data-background-transition="none" data-preload>
+             `task` run fires near the top and is still the same live page eight slides later.
+             `data-start-indexv="0"`: moving FORWARD into the stack always lands on its first child.
+             Without it reveal resumes at the child last shown, so a step back and forward again
+             skips slides. -->
+        <section
+          id="demo"
+          data-background-iframe="stage.html"
+          data-background-transition="none"
+          data-preload
+          data-start-indexv="0"
+        >
           <section class="over">
             <div class="card">
               <h2>the instance, on disk</h2>
@@ -1246,6 +1255,10 @@ jr2 up</code></pre>
         progress: true,
         transition: "fade",
         backgroundTransition: "none",
+        // Left and right step through EVERY slide, the demo stack's children too. In the default
+        // mode, right on a stack child leaves the whole stack, and left from inside it jumps back
+        // over the slides above.
+        navigationMode: "linear",
         // Without this, reveal never sets the src of a STACK's background iframe at all — the
         // element exists and stays empty. With it, the stage loads once at init and survives every
         // move inside the demo section. Verified against reveal 5 with a load counter.
