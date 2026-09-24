@@ -976,6 +976,57 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
           <p class="punch">Kill the Orchestrator mid-Turn. <em>The run picks up where it was.</em></p>
         </section>
 
+        <!-- In flight, not merged: ADR-0059 on branch held-secrets/node. The API is undecided, so the slide shows
+             only the architecture. The branch puts the key-holding role in a second container of the Adapter image
+             (the Custodian), separate from the Adapter process that holds the Orchestrator credential; the slide
+             speaks of "the Adapter" as that seat. The engine is open: the held-secrets/node branch (jr2's own Node
+             proxy) or the Envoy branches (credential_injector filter, alpha upstream). The Harness env holds Stand-ins; outbound HTTPS goes through the
+             Adapter seat, which swaps in a key only toward a host that key is bound to, and tunnels every other host
+             untouched. Limits (ADR-0059 Consequences): the Agent can still spend a key toward its bound host while
+             its pod lives; a key with admin rights can mint one the Agent could take; an upstream that echoes the key
+             in a response hands it over. -->
+        <section data-kicker="next">
+          <h2>the Adapter holds <em>every</em> key</h2>
+          <div class="grows">
+            <div class="pod">
+              <span class="label">today</span>
+              <div class="ctr">
+                <strong>Harness</strong>
+                <span class="leak">the model key is here, where the Agent's code runs</span>
+              </div>
+              <div class="ctr adapter">
+                <strong>Adapter</strong>
+                <ul>
+                  <li>holds the Orchestrator credential</li>
+                  <li>serves the Menu</li>
+                </ul>
+              </div>
+            </div>
+            <div class="arrow">→</div>
+            <div class="pod">
+              <span class="label">next</span>
+              <div class="ctr">
+                <strong>Harness</strong>
+                <span>only stand-ins: worthless outside the pod</span>
+              </div>
+              <div class="ctr adapter">
+                <strong>Adapter</strong>
+                <ul>
+                  <li>holds the Orchestrator credential</li>
+                  <li>serves the Menu</li>
+                  <li class="new">holds external credentials: model keys, tool tokens</li>
+                  <li class="new">a proxy for outbound calls: adds a key only toward its own host</li>
+                </ul>
+              </div>
+              <div class="out">
+                <span>model provider</span><span>GitHub</span><span>Slack</span><span>your APIs</span>
+              </div>
+              <p class="undecided">undecided: jr2's own proxy, or <span>Envoy</span>'s new credential injector</p>
+            </div>
+          </div>
+          <p class="punch">Add external tools, <em>and the Agent never holds a key.</em></p>
+        </section>
+
         <!-- Future work, stated as concepts only: no mechanism is decided. Open questions, not for the slide:
              workflows are baked into the image at jr2 up (ADR-0008/0019); composition is by import, not by name
              (ADR-0049); a generated Machine's code would run in the Orchestrator; a snapshot names its Machine's
@@ -1010,10 +1061,6 @@ working: {
             <p><s>maybe</s>a prompt becomes a workflow: an Agent writes the Machine, then jr2 runs it</p>
           </div>
           <p class="punch">Agents are good at writing Machines. <em>The types catch mistakes before the run.</em></p>
-        </section>
-        <section class="todo" data-kicker="next">
-          <h2>next: held secrets</h2>
-          <p class="dim">tools that reach outside (Slack, SMS), with credentials the Agent never holds — ADR-0058</p>
         </section>
         <section class="todo" data-kicker="q &amp; a">
           <h2>questions</h2>

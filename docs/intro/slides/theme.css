@@ -2033,3 +2033,95 @@ body.stage-live .stage-badge {
   text-decoration: none;
   color: var(--amber);
 }
+
+/* --- held secrets: the Adapter grows ------------------------------------------------------- */
+
+.reveal .grows {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) auto minmax(0, 1.15fr);
+  gap: 22px;
+  align-items: start;
+  margin-bottom: 1em;
+  font-family: var(--mono);
+  font-size: 0.5em;
+}
+.reveal .grows .pod {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8em;
+  padding: 0.9em 1em 1em;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(14, 21, 36, 0.72);
+}
+.reveal .grows .label {
+  font-size: 0.8em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.reveal .grows .ctr {
+  padding: 0.7em 0.9em;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink-2);
+  color: var(--text-dim);
+}
+.reveal .grows .ctr strong {
+  display: block;
+  margin-bottom: 0.35em;
+  font-weight: 400;
+  font-size: 1.1em;
+  color: var(--text);
+}
+.reveal .grows .ctr .leak {
+  color: var(--red);
+}
+
+.reveal .grows ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.reveal .grows li {
+  margin: 0 0 0.3em;
+  padding-left: 1.1em;
+  text-indent: -1.1em;
+}
+.reveal .grows li::before {
+  content: "· ";
+  color: var(--text-dim);
+}
+.reveal .grows li.new {
+  color: var(--phosphor);
+}
+.reveal .grows li.new::before {
+  content: "+ ";
+  color: var(--phosphor);
+}
+.reveal .grows .arrow {
+  align-self: center;
+  font-size: 1.8em;
+  color: var(--phosphor);
+}
+.reveal .grows .out {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+}
+.reveal .grows .out span {
+  padding: 0.3em 0.7em;
+  font-size: 0.9em;
+  color: var(--text);
+  border: 1px dashed var(--phosphor);
+  border-radius: 999px;
+}
+.reveal .slides > section:not(#demo) .grows p.undecided {
+  max-width: none;
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--text-dim);
+}
+.reveal .grows p.undecided span {
+  color: var(--amber);
+}
