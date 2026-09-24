@@ -753,6 +753,55 @@ stateDiagram-v2
         </section>
 
         <section data-kicker="in the box">
+          <h2>your image, <em>byte for byte</em></h2>
+          <!-- Sources: ADR-0037 (a Sandbox Image is built or brought; the Harness arrives by an /opt/jr2 volume and
+               a command override, never by build; PATH appended, so the image's toolchain wins; the floor is glibc
+               + git; musl is out), ADR-0038 (jr2 up builds every image it deploys, content-tagged), ADR-0049
+               (image is a workspace() option: a file: URL to a context beside the Machine, or a registry ref),
+               customize.ts (image and user are customizable parts). The Harness is built on pi
+               (@earendil-works/pi-ai and pi-agent-core; @jr2/harness owns the pin, ADR-0027). The Dockerfile is the intro instance's own,
+               abridged: docs/intro/instance/images/default/Dockerfile. The ref example is illustrative. A brought ref
+               must declare a numeric non-root USER (never inspected); a built image with none runs as uid 1000. The
+               User Container's image (`user:`) takes the same two shapes. -->
+          <div class="images">
+            <figure class="code">
+              <div class="tabs"><span class="on">images/default/Dockerfile</span></div>
+              <pre><code>FROM node:24-slim
+
+<s># the floor: glibc and git</s>
+RUN apt-get update \
+  &amp;&amp; apt-get install -y git ca-certificates
+
+<s># your agents' toolchain: compilers, CLIs,</s>
+<s># language servers, dotfiles</s>
+RUN …</code></pre>
+            </figure>
+            <ol class="origins">
+              <li>
+                <strong>the default</strong>
+                <code>images/default/Dockerfile</code>
+                <span><code class="i">jr2 up</code> builds it and tags it by content</span>
+              </li>
+              <li>
+                <strong>beside a Machine</strong>
+                <code>workspace(body, { image: import.meta.resolve("./image") })</code>
+                <span>a package ships its image with its Machine</span>
+              </li>
+              <li>
+                <strong>brought</strong>
+                <code>customize(task, { image: "ghcr.io/you/toolchain:1.4" })</code>
+                <span>an image you bake and host; jr2 never builds it</span>
+              </li>
+            </ol>
+          </div>
+          <p class="inject">
+            At pod start jr2 mounts its runtime at <code>/opt/jr2</code>: the Harness, built on the <b>pi</b> agent
+            toolkit. It adds no layer to your image, and your tools win on <code>PATH</code>.
+          </p>
+          <p class="punch">You own the toolchain. <em>jr2 brings the Harness.</em></p>
+        </section>
+
+        <section data-kicker="in the box">
           <h2>what a Machine is made of</h2>
           <!-- The demo's triage workflow, abridged: docs/intro/instance/workflows/triage.ts. The real file
                assigns context on each transition; the parts are the same.

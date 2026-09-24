@@ -2125,3 +2125,101 @@ body.stage-live .stage-badge {
 .reveal .grows p.undecided span {
   color: var(--amber);
 }
+
+/* --- the Sandbox Image: built, beside a Machine, or brought ---------------------------------- */
+
+.reveal .images {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: 40px;
+  align-items: center;
+  margin-bottom: 0.7em;
+}
+.reveal .images figure.code {
+  margin: 0;
+}
+.reveal .images figure.code pre {
+  margin: 0;
+  font-size: 0.4em;
+  font-variant-ligatures: none;
+}
+.reveal .images figure.code pre code {
+  max-height: none;
+  color: var(--text);
+  border-top-left-radius: 0;
+}
+.reveal .images figure.code s {
+  text-decoration: none;
+  color: var(--text-dim);
+}
+
+.reveal .images ol.origins {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 0.44em;
+}
+.reveal .images ol.origins li {
+  margin: 0 0 1em;
+  padding: 0 0 1em 1.1em;
+  border-left: 2px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
+}
+.reveal .images ol.origins li:last-child {
+  margin-bottom: 0;
+  border-bottom: 0;
+}
+.reveal .images ol.origins strong {
+  display: block;
+  margin-bottom: 0.4em;
+  font-weight: 400;
+  font-size: 1.15em;
+  color: var(--text);
+}
+.reveal .images ol.origins code {
+  display: block;
+  padding: 0.5em 0.8em;
+  font-size: 0.92em;
+  font-variant-ligatures: none;
+  color: var(--phosphor);
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reveal .images ol.origins span {
+  display: block;
+  margin-top: 0.45em;
+  color: var(--text-dim);
+}
+.reveal .images ol.origins span code.i {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+}
+
+.reveal .slides > section:not(#demo) p.inject {
+  max-width: none;
+  margin: 0 0 1.3em;
+  padding: 0.6em 0.9em;
+  font-family: var(--mono);
+  font-size: 0.42em;
+  line-height: 1.5;
+  color: var(--text);
+  border-left: 3px solid var(--blue);
+  background: rgba(106, 167, 240, 0.06);
+}
+.reveal p.inject b {
+  font-weight: 400;
+  color: var(--phosphor);
+}
+.reveal p.inject code {
+  padding: 0;
+  background: none;
+  color: var(--blue);
+}
