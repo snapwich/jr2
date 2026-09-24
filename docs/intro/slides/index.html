@@ -42,7 +42,7 @@
 
         <!-- ========================================================================== before -->
         <!-- Where jr2 comes from: jr already drew a graph, but in bash. It worked; it did not scale. -->
-        <section class="todo split" data-kicker="origin · jr, 2026">
+        <section class="split" data-kicker="origin · jr, 2026">
           <h2>jr: the graph was already there, <em>in bash</em></h2>
           <p class="dim">
             <a href="https://www.richsnapp.com/article/2026/03-30-automating-your-agents"
@@ -70,24 +70,54 @@ flowchart TD
 
         <!-- Two claims, in the order the demo proves them: A — control flow belongs in code, not
              markdown (ping, triage); B — agent work belongs off your laptop (task, its Sandbox). -->
-        <section class="todo" data-kicker="claim A · control flow belongs in code">
+        <section data-kicker="control flow belongs in code">
           <h2>control flow in markdown</h2>
-          <p class="dim">[screenshot: @DavidKPiano — "control flow in markdown for agents … will look really silly"]</p>
-          <p class="dim">claim A: the problem</p>
+          <div class="cols">
+            <div>
+              <!-- A screenshot, not an embed: the talk runs offline. -->
+              <figure class="tweet">
+                <img
+                  src="img/davidkpiano-control-flow.png"
+                  alt="@DavidKPiano: Calling it now: the trend of putting control flow in markdown for agents (skills, prompts, etc) is going to look *really* silly in a couple months"
+                />
+                <figcaption>x.com/DavidKPiano · 2026-09-20</figcaption>
+              </figure>
+              <ul class="verdicts">
+                <li><strong>hard to follow</strong> the graph is prose, spread across files</li>
+                <li><strong>hard to test</strong> nothing to run but the agent itself</li>
+                <li><strong>still non-deterministic</strong> MUST and NEVER are requests, not edges</li>
+              </ul>
+            </div>
+            <!-- An illustration, not a quote: the shape every command, skill and MCP resource takes
+                 once it starts to carry a workflow. The amber words are the begging. -->
+            <figure class="markdown">
+              <div class="tabs"><span>/command</span><span class="on">SKILL.md</span><span>mcp resource</span></div>
+              <pre><code>## Workflow
+
+1. Run the tests. If they fail, go to step 4.
+2. <b>IMPORTANT:</b> ask the reviewer for a review.
+3. If it asks for changes, go back to step 1.
+   You <b>MUST</b> loop until it approves.
+4. Fix the failures, then return to step 1.
+
+<b>NEVER</b> commit before the review passes.
+<b>ALWAYS</b> follow these steps in order.</code></pre>
+            </figure>
+          </div>
         </section>
-        <section class="todo" data-kicker="claim A">
+        <section class="todo" data-kicker="control flow belongs in code">
           <h2>different problems, different workflows</h2>
           <p class="dim">claim A: no one prompt covers them all</p>
         </section>
-        <section class="todo" data-kicker="claim A">
+        <section class="todo" data-kicker="control flow belongs in code">
           <h2>a workflow you can read</h2>
           <p class="dim">claim A: Claude wrote every Machine in this repo; review the graph, not the transcript</p>
         </section>
-        <section class="todo" data-kicker="claim B · agent work belongs off your laptop">
+        <section class="todo" data-kicker="agent work belongs off your laptop">
           <h2>a filesystem sandbox is not isolation</h2>
           <p class="dim">claim B: leaked resources, locking on a shared host, harness and user share credentials</p>
         </section>
-        <section class="todo" data-kicker="claim B">
+        <section class="todo" data-kicker="agent work belongs off your laptop">
           <h2>one host is one host</h2>
           <p class="dim">claim B: more than one machine, headless, reachable from other systems</p>
         </section>
