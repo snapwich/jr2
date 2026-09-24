@@ -1086,12 +1086,54 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
           <p class="punch">Add external tools, <em>and the Agent never holds a key.</em></p>
         </section>
 
+        <!-- Future work, stated as concepts only: no mechanism is decided. Sources: the speaker's notes (jr2 project
+             note: "memory (review, store to knowledge base, inject)"; "agent workflow calling another workflow.
+             another mcp menu item?"; "agents are really only good at doing one thing ... an aspect-oriented approach
+             to workflows allows agents to be focused on a single task"). Today's facts behind the cards: nothing lets
+             a run start another run; the agent actor is an xstate fromCallback actor whose only inbound event is CANCEL
+             (actor.ts AgentRunReceiveEvent, receive). ADR-0002 keeps that down-channel to interrupts, so a steering
+             message is a design change, not only an API. The re-prompt path exists (the no-signal nudge re-admits on
+             the same conversation, actor.ts nudgePrompt), but it is internal: no xstate event drives it. -->
+        <section data-kicker="the future?">
+          <h2>memory, messaging, <em>and more</em></h2>
+          <div class="focus">
+            <div class="memory">
+              <span class="label">memory, as an aspect</span>
+              <div class="flow">
+                <div class="step scribe">
+                  <strong>recall</strong>a scribe Agent finds what applies and adds it to the prompt
+                </div>
+                <div class="to">→</div>
+                <div class="step task">
+                  <strong>the task</strong>an Agent does one job and knows nothing of memory but what it was given
+                </div>
+                <div class="to">→</div>
+                <div class="step scribe"><strong>record</strong>a scribe Agent saves what is worth keeping</div>
+                <div class="rw">↑ read</div>
+                <div class="rw"></div>
+                <div class="rw">↓ write</div>
+              </div>
+              <div class="kb">knowledge base</div>
+              <p class="note">one reusable Machine that wraps any Agent's work</p>
+            </div>
+            <div class="ideas">
+              <p>
+                <s>actors messaging actors</s>xstate actors can send each other events; jr2 would adopt that for Agent
+                to Agent, or for a human who steers an Agent gone astray. The agent actor already takes xstate events
+                (today only CANCEL), so a message between Turns fits.
+              </p>
+              <p><s>workflows start workflows</s>a Menu item that asks the Orchestrator to start another run</p>
+            </div>
+          </div>
+          <p class="punch">Agents are good at one small thing. <em>Let the Machine do the rest.</em></p>
+        </section>
+
         <!-- Future work, stated as concepts only: no mechanism is decided. Open questions, not for the slide:
              workflows are baked into the image at jr2 up (ADR-0008/0019); composition is by import, not by name
              (ADR-0049); a generated Machine's code would run in the Orchestrator; a snapshot names its Machine's
              shape (ADR-0030). Both code panels are illustrative. -->
         <section data-kicker="the future?">
-          <h2>Agents that write <em>Machines</em></h2>
+          <h2>Agents that write <em>runtime</em> Machines</h2>
           <div class="gen">
             <figure class="code">
               <figcaption class="head">a dynamic workflow</figcaption>

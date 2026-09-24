@@ -2247,3 +2247,98 @@ body.stage-live .stage-badge {
   background: none;
   color: var(--blue);
 }
+
+/* --- the future?: focused Agents, memory as an aspect ---------------------------------------- */
+
+.reveal .focus {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+  margin-bottom: 1em;
+  font-family: var(--mono);
+  font-size: 0.48em;
+}
+.reveal .focus .memory {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7em;
+  padding: 0.9em 1em 1em;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(14, 21, 36, 0.72);
+}
+.reveal .focus .label {
+  font-size: 0.8em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.reveal .focus .flow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  column-gap: 0.6em;
+  row-gap: 0.4em;
+  align-items: stretch;
+}
+.reveal .focus .step {
+  padding: 0.6em 0.8em;
+  line-height: 1.4;
+  color: var(--text-dim);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--ink-2);
+}
+.reveal .focus .step strong {
+  display: block;
+  margin-bottom: 0.3em;
+  font-weight: 400;
+  font-size: 1.1em;
+  color: var(--text);
+}
+.reveal .focus .step.scribe {
+  border: 1px dashed var(--amber);
+}
+.reveal .focus .step.scribe strong {
+  color: var(--amber);
+}
+.reveal .focus .step.task {
+  border-color: var(--phosphor);
+}
+.reveal .focus .to {
+  align-self: center;
+  color: var(--phosphor);
+}
+.reveal .focus .rw {
+  text-align: center;
+  font-size: 0.85em;
+  color: var(--amber);
+}
+.reveal .focus .rw:nth-child(6) {
+  grid-column: 1;
+}
+.reveal .focus .rw:nth-child(7) {
+  grid-column: 3;
+}
+.reveal .focus .rw:nth-child(8) {
+  grid-column: 5;
+}
+.reveal .focus .kb {
+  padding: 0.5em;
+  text-align: center;
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: 6px;
+}
+.reveal .slides > section:not(#demo) .focus p.note {
+  max-width: none;
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--text-dim);
+}
+.reveal .focus .ideas {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  margin: 0;
+  font-size: 1em;
+}
