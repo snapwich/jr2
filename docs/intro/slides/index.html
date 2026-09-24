@@ -185,7 +185,7 @@ flowchart TD
                The graph is its feature body, state for state; the code is one of those states. -->
           <div class="reads">
             <figure class="code">
-              <div class="tabs"><span class="on">jr.ts</span></div>
+              <div class="tabs"><span class="on">jr.ts</span><span>xstate v5</span></div>
               <pre><code><b>reviewing</b>: {
   invoke: { src: "reviewer", input: reviewerPrompt },
   on: {
@@ -197,7 +197,7 @@ flowchart TD
     report_blocked: { target: "#body.escalated" },
   },
 },</code></pre>
-              <figcaption>one state, abridged</figcaption>
+              <figcaption>authored in xstate — one state, abridged</figcaption>
             </figure>
             <figure class="diagram">
               <pre class="mermaid">
