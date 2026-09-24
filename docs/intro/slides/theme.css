@@ -1864,3 +1864,106 @@ body.stage-live .stage-badge {
   line-height: 1.5;
   color: var(--text-dim);
 }
+
+/* --- a run across a restart ------------------------------------------------------------------ */
+
+.reveal .durable {
+  margin: 0.4em 0 1.4em;
+  font-family: var(--mono);
+  font-size: 0.56em;
+}
+
+/* Three moments on one line; the middle one is the crash. */
+.reveal .durable .line {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  position: relative;
+  margin-bottom: 1.4em;
+}
+.reveal .durable .line::before {
+  content: "";
+  position: absolute;
+  left: 0.5em;
+  right: 0;
+  top: 0.5em;
+  border-top: 1px dashed var(--phosphor);
+}
+.reveal .durable .ev {
+  position: relative;
+  padding: 1.5em 1.5em 0 0;
+  color: var(--text-dim);
+}
+.reveal .durable .ev::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1em;
+  height: 1em;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 2px solid var(--phosphor);
+  box-sizing: border-box;
+}
+.reveal .durable .ev strong {
+  display: block;
+  margin-bottom: 0.3em;
+  font-weight: 400;
+  font-size: 1.15em;
+  color: var(--text);
+}
+.reveal .durable .ev.kill::before {
+  content: "×";
+  display: grid;
+  place-items: center;
+  width: 1.3em;
+  height: 1.3em;
+  top: -0.15em;
+  left: -0.15em;
+  border-color: var(--red);
+  color: var(--red);
+  font-size: 1em;
+  line-height: 1;
+}
+.reveal .durable .ev.kill strong {
+  color: var(--red);
+}
+
+/* What restore finds, and what it does about it. */
+.reveal .durable .label {
+  display: block;
+  margin-bottom: 0.8em;
+  font-size: 0.8em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.reveal .durable .cases {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+}
+.reveal .slides > section:not(#demo) .durable .cases p {
+  margin: 0;
+  padding: 0.8em 0.9em;
+  max-width: none;
+  font-size: 1em;
+  line-height: 1.45;
+  color: var(--text);
+  background: rgba(14, 21, 36, 0.72);
+  border: 1px solid var(--line);
+  border-top: 2px solid var(--amber);
+  border-radius: 4px;
+}
+.reveal .durable .cases s {
+  display: block;
+  margin-bottom: 0.5em;
+  text-decoration: none;
+  color: var(--amber);
+}
+.reveal .durable code {
+  padding: 0;
+  background: none;
+  color: var(--phosphor);
+}

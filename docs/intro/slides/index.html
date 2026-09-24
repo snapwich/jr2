@@ -935,6 +935,47 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
           </div>
           <p class="punch">The kit never picks a vendor. <em>You pick the model.</em></p>
         </section>
+        <section data-kicker="in the box">
+          <h2>a run outlives its Orchestrator</h2>
+          <!-- Sources: ADR-0007 (serializable context; restore reconciles against the live world: a present
+               Sandbox CR re-attaches, an absent one is workspace.lost, never a silent re-provision), ADR-0016 (the
+               iid → admission ledger, saved with the snapshot), run-host.ts spawn() (every snapshot change,
+               nested bodies too, is persisted), ADR-0030 (a snapshot names its Machine's shape; a mismatch is
+               refused, kept, announced), ADR-0023/0031 (conversations are live-only: a restarted Harness has no
+               history), ADR-0016/0027 (a dead Harness surfaces as agent.fault), task.ts (routes it to the review Gate
+               and re-briefs with turns: 0).
+               Tested: features/kind.feature "a live Sandbox survives an orchestrator restart";
+               features/agent-and-gates.feature "a run is not resumed into a Machine that changed shape".
+               Caveat, not on the slide: a kill in the instant between admit and persist is at-most-once (ADR-0007). -->
+          <div class="durable">
+            <div class="line">
+              <div class="ev"><strong>every step</strong>the snapshot and the Turn ledger are saved</div>
+              <div class="ev kill"><strong>kill -9</strong>the Orchestrator dies mid-Turn</div>
+              <div class="ev"><strong>restore</strong>read the snapshot, then check the world</div>
+            </div>
+            <span class="label">what restore finds</span>
+            <div class="cases">
+              <p>
+                <s>the Sandbox is alive</s>
+                re-attach: the same pod, and the Turn resumes its stream
+              </p>
+              <p>
+                <s>the Sandbox is gone</s>
+                <code>workspace.lost</code> goes to the Machine; nothing is silently rebuilt
+              </p>
+              <p>
+                <s>the Machine was edited</s>
+                refused, kept, and announced: the snapshot names its Machine
+              </p>
+              <p>
+                <s>the Harness died</s>
+                <code>agent.fault</code> goes to the Machine; <code>task</code> parks at its Gate
+              </p>
+            </div>
+          </div>
+          <p class="punch">Kill the Orchestrator mid-Turn. <em>The run picks up where it was.</em></p>
+        </section>
+
         <section class="todo" data-kicker="next">
           <h2>next: agents that write Machines at runtime</h2>
           <p class="dim">today Claude writes them at design time</p>
