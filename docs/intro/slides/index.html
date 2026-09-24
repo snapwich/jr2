@@ -204,9 +204,39 @@ stateDiagram-v2
           </div>
           <p class="punch">Claude wrote it. I review <em>the graph</em>, not the transcript.</p>
         </section>
-        <section class="todo" data-kicker="agent work belongs off your laptop">
+        <section data-kicker="agent work belongs off your laptop">
           <h2>a filesystem sandbox is not isolation</h2>
-          <p class="dim">claim B: leaked resources, locking on a shared host, harness and user share credentials</p>
+          <!-- The same three agents, twice: sharing one host (jr), then each in its own pod (jr2).
+               The pod is the one the demo opens later (containers, netpol). No egress claim: that
+               is the cluster owner's call. No "holds no secrets" claim: the model key still sits
+               in the Harness container (ADR-0058) — only the Orchestrator credential is fenced. -->
+          <div class="versus">
+            <div class="host">
+              <p class="label">one laptop · jr</p>
+              <div class="lanes">
+                <div class="lane"><span class="wt">wt-a</span><span class="agent">agent</span></div>
+                <div class="lane"><span class="wt">wt-b</span><span class="agent">agent</span></div>
+                <div class="lane"><span class="wt">wt-c</span><span class="agent">agent</span></div>
+              </div>
+              <div class="shared"><span>:3000</span><span>flock</span><span>~/.config</span><span>pids</span></div>
+              <p class="foot">one filesystem, one set of ports, one set of credentials</p>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="pods">
+              <p class="label">one pod per Workspace · jr2</p>
+              <div class="pod">
+                <div class="ctr"><b>Harness</b><span>the Agent and its tools</span></div>
+                <div class="ctr fenced"><b>Adapter</b><span>the Orchestrator credential</span></div>
+                <div class="ctr"><b>User Container</b><span>your image, your dev env</span></div>
+              </div>
+              <p class="foot">× N — one per feature, gone when the Workspace ends</p>
+            </div>
+          </div>
+          <div class="fixes">
+            <p><s>leaked servers and ports</s>the pod ends with its Workspace</p>
+            <p><s>locks on a shared host</s>own ports, filesystem, processes</p>
+            <p><s>agent and user share credentials</s>credential kept in the Adapter</p>
+          </div>
         </section>
         <section class="todo" data-kicker="agent work belongs off your laptop">
           <h2>one host is one host</h2>
