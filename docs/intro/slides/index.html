@@ -6,47 +6,69 @@
     <title>jr2 — agentic workflows as state machines, off your laptop</title>
     <link rel="stylesheet" href="node_modules/reveal.js/dist/reset.css" />
     <link rel="stylesheet" href="node_modules/reveal.js/dist/reveal.css" />
+    <!-- Fonts from node_modules, not a CDN: the talk runs with the network off. -->
+    <link rel="stylesheet" href="node_modules/@fontsource/instrument-serif/latin-400.css" />
+    <link rel="stylesheet" href="node_modules/@fontsource/instrument-serif/latin-400-italic.css" />
+    <link rel="stylesheet" href="node_modules/@fontsource/fragment-mono/latin-400.css" />
     <link rel="stylesheet" href="theme.css" />
   </head>
   <body>
     <div class="reveal">
       <div class="slides">
         <!-- ============================================================================ title -->
-        <section class="center">
-          <h1>jr2</h1>
-          <p>Agentic workflows as state machines, off your laptop.</p>
-          <p class="dim">Rich Snapp · technical meetup · 45 min</p>
+        <section class="title" data-kicker="jr2 · junior 2">
+          <h1>Agentic workflows as <em>state machines</em>, off your laptop.</h1>
+          <!-- A pipeline of Machines, drawn as the thing it is: sort the work, do it, check it. -->
+          <svg class="ladder" viewBox="0 0 640 90" aria-hidden="true">
+            <g class="edge">
+              <path d="M150 45 H250" />
+              <path d="M390 45 H490" />
+            </g>
+            <g class="node">
+              <rect x="10" y="20" width="140" height="50" rx="25" />
+              <text x="80" y="51">triage</text>
+            </g>
+            <g class="node">
+              <rect x="250" y="20" width="140" height="50" rx="25" />
+              <text x="320" y="51">task</text>
+            </g>
+            <g class="node final">
+              <rect x="490" y="20" width="140" height="50" rx="25" />
+              <text x="560" y="51">review</text>
+            </g>
+          </svg>
+          <p class="byline">Rich Snapp</p>
         </section>
 
         <!-- ========================================================================== before -->
         <!-- Two claims, in the order the demo proves them: A — control flow belongs in code, not
              markdown (ping, triage); B — agent work belongs off your laptop (task, its Sandbox). -->
-        <section class="todo">
+        <section class="todo" data-kicker="claim A · control flow belongs in code">
           <h2>control flow in markdown</h2>
           <p class="dim">[screenshot: @DavidKPiano — "control flow in markdown for agents … will look really silly"]</p>
           <p class="dim">claim A: the problem</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="claim A">
           <h2>different problems, different workflows</h2>
           <p class="dim">claim A: no one prompt covers them all</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="claim A">
           <h2>a workflow you can read</h2>
           <p class="dim">claim A: Claude wrote every Machine in this repo; review the graph, not the transcript</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="claim B · agent work belongs off your laptop">
           <h2>a filesystem sandbox is not isolation</h2>
           <p class="dim">claim B: leaked resources, locking on a shared host, harness and user share credentials</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="claim B">
           <h2>one host is one host</h2>
           <p class="dim">claim B: more than one machine, headless, reachable from other systems</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="jr2">
           <h2>jr2: Machines on a cluster, Agents in pods</h2>
           <p class="dim">bridge into the demo</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="before the demo">
           <h2>the whiteboard defense</h2>
           <p class="dim">[screenshot: @mitchellh — "the whiteboard defense"]</p>
           <p class="dim">talk is cheap: a live run, and every part explained as it moves</p>
@@ -183,31 +205,31 @@
         </section>
 
         <!-- =========================================================================== after -->
-        <section class="todo">
+        <section class="todo" data-kicker="after · the rules">
           <h2>what jr2 refuses to do</h2>
           <p class="dim">
             the model never picks the control flow · the Machine never pushes · the Agent never holds the Orchestrator
             credential
           </p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="after">
           <h2>what else is in the box</h2>
           <p class="dim">model agnostic · typed Instances · composable Machines</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="next">
           <h2>next: agents that write Machines at runtime</h2>
           <p class="dim">today Claude writes them at design time</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="next">
           <h2>next: held secrets</h2>
           <p class="dim">tools that reach outside (Slack, SMS), with credentials the Agent never holds — ADR-0058</p>
         </section>
-        <section class="todo">
+        <section class="todo" data-kicker="q &amp; a">
           <h2>questions</h2>
         </section>
 
         <!-- ============================================================================ close -->
-        <section class="center">
+        <section class="center close" data-kicker="close">
           <h2>try it</h2>
           <pre><code>npm i -g @jr2/cli
 jr2 init my-agents

@@ -15,11 +15,33 @@
   --amber: #f0c04e;
   --red: #f06a5f;
   --blue: #6aa7f0;
-  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --mono: "Fragment Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* The one voice that is not the Console's: prose slides speak in a serif, so the talk reads as an
+     argument and the instrument reads as an instrument. */
+  --serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
+/* Plotting paper under the prose slides: a fine grid that fades out toward the edges, and one low
+   phosphor glow in the corner the headings sit in. The demo's stage iframe covers all of it. */
 .reveal-viewport {
-  background: var(--ink);
+  background-color: var(--ink);
+  background-image:
+    radial-gradient(ellipse 60% 55% at 12% 18%, rgba(78, 240, 167, 0.07), transparent 70%),
+    radial-gradient(ellipse 50% 60% at 95% 100%, rgba(106, 167, 240, 0.05), transparent 70%),
+    linear-gradient(var(--ink), var(--ink));
+}
+
+.reveal-viewport::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(34, 48, 72, 0.32) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 48, 72, 0.32) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 85% 80% at 40% 45%, #000 30%, transparent 85%);
 }
 
 /* reveal ships `reset.css` (line-height 1, every margin stripped) and expects a THEME to put the
@@ -88,6 +110,167 @@
   padding: 1.2em 0 0;
 }
 
+/* --- the prose slides ------------------------------------------------------------------------- */
+
+/* Every top-level slide except the demo stack. Written out once so no rule below can leak onto the
+   cards that sit over the live stage. */
+.reveal .slides > section:not(#demo) {
+  box-sizing: border-box;
+  height: 100%;
+  padding: 72px 96px 64px;
+}
+
+.reveal .slides > section:not(#demo) h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 2.35em;
+  line-height: 1.02;
+  letter-spacing: -0.012em;
+  color: var(--text);
+  max-width: 17em;
+  margin-bottom: 0.5em;
+}
+
+.reveal .slides > section:not(#demo) h2 em,
+.reveal .slides > section:not(#demo) h1 em {
+  font-style: italic;
+  color: var(--phosphor);
+}
+
+/* The kicker: where this slide sits in the argument, in the Console's instrumentation voice, with
+   a short trace leading into it. */
+.reveal .slides > section[data-kicker]::before {
+  content: attr(data-kicker);
+  display: block;
+  margin-bottom: 1.4em;
+  padding-left: 2.6em;
+  font-family: var(--mono);
+  font-size: 0.42em;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--phosphor);
+  background: linear-gradient(var(--phosphor), var(--phosphor)) left center / 1.9em 1px no-repeat;
+}
+
+/* Registration marks at the four corners of the page: a frame drawn, not a box around it. */
+.reveal .slides > section:not(#demo)::after {
+  content: "";
+  position: absolute;
+  inset: 28px 36px;
+  pointer-events: none;
+  --m: 14px;
+  background:
+    linear-gradient(var(--line), var(--line)) top left / var(--m) 1px,
+    linear-gradient(var(--line), var(--line)) top left / 1px var(--m),
+    linear-gradient(var(--line), var(--line)) top right / var(--m) 1px,
+    linear-gradient(var(--line), var(--line)) top right / 1px var(--m),
+    linear-gradient(var(--line), var(--line)) bottom left / var(--m) 1px,
+    linear-gradient(var(--line), var(--line)) bottom left / 1px var(--m),
+    linear-gradient(var(--line), var(--line)) bottom right / var(--m) 1px,
+    linear-gradient(var(--line), var(--line)) bottom right / 1px var(--m);
+  background-repeat: no-repeat;
+}
+
+.reveal .slides > section:not(#demo) p {
+  max-width: 34em;
+}
+
+/* Arrival: the slide's parts come up in reading order. Short, and only on the present slide, so
+   paging back and forth never waits on it. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+
+.reveal .slides > section.present:not(#demo) > *,
+.reveal .slides > section.present:not(#demo)::before {
+  animation: rise 0.7s var(--ease) both;
+}
+.reveal .slides > section.present:not(#demo) > :nth-child(1) {
+  animation-delay: 0.08s;
+}
+.reveal .slides > section.present:not(#demo) > :nth-child(2) {
+  animation-delay: 0.16s;
+}
+.reveal .slides > section.present:not(#demo) > :nth-child(3) {
+  animation-delay: 0.24s;
+}
+.reveal .slides > section.present:not(#demo) > :nth-child(n + 4) {
+  animation-delay: 0.32s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal .slides section *,
+  .reveal .slides section::before {
+    animation: none !important;
+  }
+}
+
+/* --- the title -------------------------------------------------------------------------------- */
+
+.reveal .slides > section.title {
+  display: flex !important;
+  flex-direction: column;
+  justify-content: center;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.reveal .slides > section.title h1 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 3.4em;
+  line-height: 0.98;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  max-width: 12em;
+  margin-bottom: 0.55em;
+}
+
+.reveal .ladder {
+  width: 560px;
+  margin: 0 0 1.4em;
+  overflow: visible;
+}
+.reveal .ladder rect {
+  fill: var(--ink-2);
+  stroke: var(--line);
+  stroke-width: 1.5;
+}
+.reveal .ladder .final rect {
+  stroke: var(--phosphor);
+}
+.reveal .ladder text {
+  fill: var(--text);
+  font-family: var(--mono);
+  font-size: 17px;
+  text-anchor: middle;
+}
+.reveal .ladder .final text {
+  fill: var(--phosphor);
+}
+.reveal .ladder .edge path {
+  stroke: var(--text-dim);
+  stroke-width: 1.5;
+  fill: none;
+  stroke-dasharray: 4 5;
+  animation: flow 1.2s linear infinite;
+}
+@keyframes flow {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+.reveal .slides > section.title .byline {
+  font-family: var(--mono);
+  font-size: 0.55em;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
 /* `!important` earns itself here: reveal writes `display: block` INLINE on the present slide, so a
    stylesheet cannot make it a flex container any other way. */
 .reveal .slides section.center {
@@ -98,6 +281,29 @@
   justify-content: center;
   align-items: center;
   text-align: center;
+}
+
+/* The close is centered, so it keeps its kicker's trace on the left of a centered line. */
+.reveal .slides > section.close::before {
+  padding-left: 0;
+  background: none;
+}
+.reveal .slides > section.close:not(#demo) h2 {
+  font-size: 3.2em;
+  font-style: italic;
+  color: var(--phosphor);
+}
+.reveal .slides > section.close:not(#demo) p {
+  font-size: 0.55em;
+  max-width: none;
+}
+.reveal .slides > section.close pre {
+  font-size: 0.72em;
+  margin: 0.4em auto 1.2em;
+}
+.reveal .slides > section.close pre code {
+  padding: 1em 1.4em;
+  border-left: 3px solid var(--phosphor);
 }
 
 /* A command block is read left to right even on a centered slide. */
@@ -189,10 +395,24 @@
   font-size: 0.6em;
   line-height: 1.4;
   padding: 0.8em 0.95em;
-  background: rgba(10, 15, 26, 0.86);
+  background: rgba(10, 15, 26, 0.84);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   border: 1px solid var(--line);
   border-left: 3px solid var(--phosphor);
   border-radius: 4px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+/* The card slides in from its own corner, so the eye goes to it and then back to the stage. */
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+}
+.reveal .slides section.over.present .card {
+  animation: card-in 0.5s var(--ease) both;
 }
 
 /* Prose over the Console wants more room than a command does — still a card, still a corner. */
@@ -201,8 +421,12 @@
 }
 
 .reveal .card h2 {
-  font-size: 1.25em;
-  margin: 0 0 0.45em;
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 1.75em;
+  line-height: 1.05;
+  color: var(--text);
+  margin: 0 0 0.4em;
 }
 
 .reveal .card p {
@@ -264,9 +488,10 @@
 
 /* --- placeholders for the slides that are not written yet ------------------------------------- */
 
-.reveal section.todo {
-  border-left: 3px solid var(--amber);
-  padding-left: 0.8em;
+.reveal .slides > section.todo[data-kicker]::before {
+  content: attr(data-kicker) "  ·  draft";
+  color: var(--amber);
+  background-image: linear-gradient(var(--amber), var(--amber));
 }
 /* An overlay slide fills the stage, so its own border would run over the terminal — mark the card. */
 .reveal .slides section.over.todo {
@@ -276,11 +501,14 @@
 .reveal section.over.todo .card {
   border-left: 3px solid var(--amber);
 }
-.reveal section.todo h2 {
-  color: var(--amber);
-}
 .reveal section.todo li {
   color: var(--text-dim);
+}
+/* A draft's notes are notes to the speaker: set them as marginalia, not as the slide's copy. */
+.reveal .slides > section.todo:not(#demo) > p.dim {
+  font-size: 0.72em;
+  padding-left: 1em;
+  border-left: 1px dashed rgba(240, 192, 78, 0.45);
 }
 
 /* --- reaching the stage (the `i` key) ---------------------------------------------------------
