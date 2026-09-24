@@ -348,14 +348,14 @@
 .reveal figure.markdown {
   margin: 0;
 }
-.reveal figure.markdown .tabs {
+.reveal figure .tabs {
   display: flex;
   gap: 2px;
   font-family: var(--mono);
   font-size: 0.4em;
   letter-spacing: 0.06em;
 }
-.reveal figure.markdown .tabs span {
+.reveal figure .tabs span {
   padding: 0.5em 1em;
   color: var(--text-dim);
   background: rgba(14, 21, 36, 0.5);
@@ -363,7 +363,7 @@
   border-bottom: 0;
   border-radius: 4px 4px 0 0;
 }
-.reveal figure.markdown .tabs span.on {
+.reveal figure .tabs span.on {
   color: var(--text);
   background: var(--ink-2);
   border-color: var(--line);
@@ -430,6 +430,61 @@
 .reveal p.punch em {
   font-style: italic;
   color: var(--phosphor);
+}
+
+/* --- the code beside its graph --------------------------------------------------------------- */
+
+.reveal .reads {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  gap: 28px;
+  align-items: stretch;
+  margin-bottom: 0.9em;
+}
+
+.reveal .reads figure {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.reveal .reads figure.diagram pre.mermaid {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.reveal .reads pre.mermaid svg {
+  max-height: 340px;
+}
+
+.reveal .reads figure.code {
+  align-self: center;
+}
+
+.reveal .reads figure.code pre {
+  margin: 0;
+  font-size: 0.38em;
+}
+
+.reveal .reads figure.code pre code {
+  color: var(--text);
+  border-top-left-radius: 0;
+}
+
+/* The state the graph highlights, named in the same color here. */
+.reveal .reads figure.code b {
+  font-weight: 400;
+  color: var(--phosphor);
+}
+
+.reveal .reads figure.code figcaption {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 0.4em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
 
 /* --- a quoted post ---------------------------------------------------------------------------- */

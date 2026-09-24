@@ -152,9 +152,57 @@ flowchart TD
           </div>
           <p class="punch">jr drew one of these. I did not want to create more <em>bash loops</em>.</p>
         </section>
-        <section class="todo" data-kicker="control flow belongs in code">
+        <section data-kicker="control flow belongs in code">
           <h2>a workflow you can read</h2>
-          <p class="dim">claim A: Claude wrote every Machine in this repo; review the graph, not the transcript</p>
+          <!-- jr, rebuilt as a jr2 Machine: examples/coding/workflows/jr.ts, deleted in 7f5a5ab.
+               The graph is its feature body, state for state; the code is one of those states. -->
+          <div class="reads">
+            <figure class="code">
+              <div class="tabs"><span class="on">jr.ts</span></div>
+              <pre><code><b>reviewing</b>: {
+  invoke: { src: "reviewer", input: reviewerPrompt },
+  on: {
+    review_verdict: [
+      { guard: approved, target: "closingTask" },
+      { guard: "underReviewCap", target: "coding" },
+      { target: "#body.escalated" },
+    ],
+    report_blocked: { target: "#body.escalated" },
+  },
+},</code></pre>
+              <figcaption>one state, abridged</figcaption>
+            </figure>
+            <figure class="diagram">
+              <pre class="mermaid">
+%%{init: {"themeVariables": {"fontSize": "22px"}}}%%
+stateDiagram-v2
+  state working {
+    direction LR
+    claimTask --> coding
+    coding --> reviewing: request_review
+    reviewing --> coding: changes
+    reviewing --> closingTask: approved
+    closingTask --> claimTask
+  }
+  [*] --> working
+  working --> architectReview: chain done
+  architectReview --> working: changes
+  architectReview --> openingPr: approved
+  openingPr --> humanReview
+  humanReview --> architectReview: request_changes
+  humanReview --> settled: approve
+  working --> escalated: blocked · review limit
+  architectReview --> escalated: review limit
+  escalated --> working: resume
+  escalated --> settled: dismiss
+  settled --> [*]
+  classDef here fill:#123326,stroke:#4ef0a7,stroke-width:2px,color:#4ef0a7
+  class reviewing here
+              </pre>
+              <figcaption>fig. 2 — jr as a Machine: the whole feature</figcaption>
+            </figure>
+          </div>
+          <p class="punch">Claude wrote it. I review <em>the graph</em>, not the transcript.</p>
         </section>
         <section class="todo" data-kicker="agent work belongs off your laptop">
           <h2>a filesystem sandbox is not isolation</h2>
@@ -358,6 +406,13 @@ jr2 up</code></pre>
           lineColor: "#5f7189",
           edgeLabelBackground: "#0a0f1a",
           tertiaryTextColor: "#c8d6e8",
+          // stateDiagram: a composite state is a darker well with its name on a band.
+          compositeBackground: "#0a0f1a",
+          compositeTitleBackground: "#182338",
+          compositeBorder: "#223048",
+          innerEndBackground: "#4ef0a7",
+          specialStateColor: "#4ef0a7",
+          labelBackgroundColor: "#0a0f1a",
         },
       });
       // `mermaid.run` measures in place, and reveal.css already hides every slide at this point.
