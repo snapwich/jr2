@@ -330,14 +330,194 @@ stateDiagram-v2
           </div>
           <p class="punch">jr2 is infrastructure. The UI is <em>whatever calls it</em>.</p>
         </section>
-        <section class="todo" data-kicker="jr2">
-          <h2>jr2: Machines on a cluster, Agents in pods</h2>
-          <p class="dim">bridge into the demo</p>
-        </section>
-        <section class="todo" data-kicker="before the demo">
-          <h2>the whiteboard defense</h2>
-          <p class="dim">[screenshot: @mitchellh — "the whiteboard defense"]</p>
-          <p class="dim">talk is cheap: a live run, and every part explained as it moves</p>
+        <!-- Before the demo: Mitchell Hashimoto's bar for responsible AI use, and jr2's answer to it —
+             every decision has an ADR. The ledger is generated from docs/adr/ (the # heading of each);
+             regenerate it when an ADR lands. Phosphor rows are the ones the demo shows on screen. -->
+        <section class="defense" data-kicker="before the demo">
+          <h2>the whiteboard <em>defense</em></h2>
+          <div class="cols">
+            <div>
+              <!-- A screenshot, not an embed: the talk runs offline. -->
+              <figure class="tweet">
+                <img
+                  src="img/mitchellh-whiteboard-defense.png"
+                  alt='@mitchellh: The "whiteboard defense:" I should be able to pull you aside at any moment and ask you to explain any customer-facing system you&apos;ve shipped. You should be able to clearly explain how it works and defend the decisions you made. This is my benchmark for responsible AI usage.'
+                />
+                <figcaption>x.com/mitchellh · 2026-09-16</figcaption>
+              </figure>
+              <p class="dim">every decision in jr2 is written down: the context, the choice, and what it costs</p>
+            </div>
+            <figure class="ledger">
+              <figcaption><span>docs/adr/</span><b>56 decisions</b></figcaption>
+              <div class="scroll">
+                <ol>
+                  <li><i>0001</i> Sandboxes are provisioned by a Kubernetes operator via a generic CRD</li>
+                  <li><i>0002</i> The agent actor is a duplex channel; its control plane is MCP tool calls</li>
+                  <li>
+                    <i>0004</i> A Sandbox's workspace is a private local clone of a read-only cache, not a shared
+                    worktree
+                  </li>
+                  <li class="on">
+                    <i>0005</i> The Sandbox pod's containers: Harness, Adapter, and an optional User Container
+                  </li>
+                  <li class="on">
+                    <i>0006</i> The agent picks from a Machine-defined, schema-backed menu; it does not drive the
+                    workflow
+                  </li>
+                  <li><i>0007</i> Durable Machine state: serializable context, live things constructed from input</li>
+                  <li><i>0008</i> jr2 is a library + CLI; an Orchestrator instance hosts many workflows</li>
+                  <li><i>0009</i> The <code>jr2</code> CLI and instance interface</li>
+                  <li><i>0010</i> BDD acceptance tests via Cucumber.js (black-box, scenario-isolated)</li>
+                  <li><i>0011</i> Control events are workflow-defined and delivered by closure, not routed</li>
+                  <li><i>0012</i> <code>workspace()</code> wraps a body Machine and owns only Sandbox lifecycle</li>
+                  <li><i>0013</i> The Agent's MCP surface lives in the Sandbox, not the Orchestrator</li>
+                  <li><i>0014</i> Observation is open; run state and control need the Instance token</li>
+                  <li>
+                    <i>0015</i> Workflows are authored through <code>jr2Setup</code>; vocabulary and agent menus derive
+                    from the machine
+                  </li>
+                  <li>
+                    <i>0016</i> Agent-turn mechanics are jr2-internal: ambient coordinates, host-side offsets, absorbed
+                    retries, fresh sessions
+                  </li>
+                  <li><i>0017</i> The run loop is a jr2 <code>pool</code> over a generalized source port</li>
+                  <li><i>0018</i> The instance authors Agent definitions; jr2 assembles the Harness</li>
+                  <li>
+                    <i>0019</i> The operational surface is one converging command against the current kube context
+                  </li>
+                  <li><i>0020</i> Private-CA trust is a named concept, not volume plumbing</li>
+                  <li><i>0021</i> Workspace continuity is a lease that answers back</li>
+                  <li><i>0022</i> Observation is a level-triggered feed, and an API before it is a page</li>
+                  <li><i>0023</i> The Harness prints the conversation, and the reasoning is the part that prints</li>
+                  <li><i>0024</i> An Agent's turn ends with the state that asked for it</li>
+                  <li><i>0025</i> CANCEL ends a run; stopping one parks it</li>
+                  <li><i>0026</i> A turn that is over has an empty menu, not an error</li>
+                  <li><i>0027</i> The Harness is jr2's own server: flue retires, the wire stays</li>
+                  <li><i>0028</i> What an Agent may do to the Workspace is part of its definition</li>
+                  <li class="on">
+                    <i>0029</i> A menu offers what the Machine will accept, and a pick that moves nothing says so
+                  </li>
+                  <li><i>0030</i> A snapshot names the Machine it was written under</li>
+                  <li class="on"><i>0031</i> Menu-only Agents run on the Instance Harness</li>
+                  <li><i>0032</i> The Console unlocks with the Instance token, and the bands do not move</li>
+                  <li><i>0033</i> A Machine declares the input that starts it</li>
+                  <li><i>0034</i> The Console renders with Preact, and the server erases the types</li>
+                  <li><i>0035</i> A runaway turn is ended by the Harness, rerolled once, then a fault</li>
+                  <li><i>0036</i> A turn compacts its own context mid-flight</li>
+                  <li><i>0037</i> A Sandbox Image is built or brought; jr2 injects the Harness at pod time</li>
+                  <li><i>0038</i> <code>jr2 up</code> builds every image it deploys</li>
+                  <li><i>0039</i> Image garbage collects by reachability</li>
+                  <li><i>0041</i> A build the host already holds is not spent again</li>
+                  <li>
+                    <i>0042</i> Ready is not routable: the two calls a turn starts with re-ask a Service that has not
+                    answered
+                  </li>
+                  <li><i>0043</i> The kit is tested as installed: a local registry stands in for npm</li>
+                  <li><i>0044</i> Kit images live at a canonical home; a self-host mirrors it</li>
+                  <li><i>0045</i> The platform joins the image address, and the cluster chooses it</li>
+                  <li><i>0046</i> A converge failure carries its diagnosis</li>
+                  <li><i>0047</i> The git ssh key source is the user's choice</li>
+                  <li><i>0048</i> The Orchestrator boots without its repos</li>
+                  <li><i>0049</i> A Machine carries its parts and composes by invoke</li>
+                  <li><i>0050</i> What code names, config declares; what the CLI names, discovery finds</li>
+                  <li><i>0051</i> A Repo is a slot on the <code>workspace()</code> and a cache on the node</li>
+                  <li><i>0052</i> A Sandbox lands where an ordinary pod lands, and the cache follows it</li>
+                  <li><i>0053</i> A fetch inside the pod asks the node cache, and the cache asks the remote</li>
+                  <li><i>0054</i> The kit ships Machines, and a shipped Machine leaves its parts Open</li>
+                  <li><i>0055</i> A release is a pushed tag, and the publish guard is the credential</li>
+                  <li>
+                    <i>0056</i> A global <code>jr2</code> hands off to the Instance's own, and an Instance has one Kit
+                    version
+                  </li>
+                  <li><i>0057</i> A Turn is its Frame, its Dials, and whether it continues</li>
+                  <li class="on"><i>0058</i> A Harness answers the Orchestrator alone</li>
+                </ol>
+                <ol aria-hidden="true">
+                  <li><i>0001</i> Sandboxes are provisioned by a Kubernetes operator via a generic CRD</li>
+                  <li><i>0002</i> The agent actor is a duplex channel; its control plane is MCP tool calls</li>
+                  <li>
+                    <i>0004</i> A Sandbox's workspace is a private local clone of a read-only cache, not a shared
+                    worktree
+                  </li>
+                  <li class="on">
+                    <i>0005</i> The Sandbox pod's containers: Harness, Adapter, and an optional User Container
+                  </li>
+                  <li class="on">
+                    <i>0006</i> The agent picks from a Machine-defined, schema-backed menu; it does not drive the
+                    workflow
+                  </li>
+                  <li><i>0007</i> Durable Machine state: serializable context, live things constructed from input</li>
+                  <li><i>0008</i> jr2 is a library + CLI; an Orchestrator instance hosts many workflows</li>
+                  <li><i>0009</i> The <code>jr2</code> CLI and instance interface</li>
+                  <li><i>0010</i> BDD acceptance tests via Cucumber.js (black-box, scenario-isolated)</li>
+                  <li><i>0011</i> Control events are workflow-defined and delivered by closure, not routed</li>
+                  <li><i>0012</i> <code>workspace()</code> wraps a body Machine and owns only Sandbox lifecycle</li>
+                  <li><i>0013</i> The Agent's MCP surface lives in the Sandbox, not the Orchestrator</li>
+                  <li><i>0014</i> Observation is open; run state and control need the Instance token</li>
+                  <li>
+                    <i>0015</i> Workflows are authored through <code>jr2Setup</code>; vocabulary and agent menus derive
+                    from the machine
+                  </li>
+                  <li>
+                    <i>0016</i> Agent-turn mechanics are jr2-internal: ambient coordinates, host-side offsets, absorbed
+                    retries, fresh sessions
+                  </li>
+                  <li><i>0017</i> The run loop is a jr2 <code>pool</code> over a generalized source port</li>
+                  <li><i>0018</i> The instance authors Agent definitions; jr2 assembles the Harness</li>
+                  <li>
+                    <i>0019</i> The operational surface is one converging command against the current kube context
+                  </li>
+                  <li><i>0020</i> Private-CA trust is a named concept, not volume plumbing</li>
+                  <li><i>0021</i> Workspace continuity is a lease that answers back</li>
+                  <li><i>0022</i> Observation is a level-triggered feed, and an API before it is a page</li>
+                  <li><i>0023</i> The Harness prints the conversation, and the reasoning is the part that prints</li>
+                  <li><i>0024</i> An Agent's turn ends with the state that asked for it</li>
+                  <li><i>0025</i> CANCEL ends a run; stopping one parks it</li>
+                  <li><i>0026</i> A turn that is over has an empty menu, not an error</li>
+                  <li><i>0027</i> The Harness is jr2's own server: flue retires, the wire stays</li>
+                  <li><i>0028</i> What an Agent may do to the Workspace is part of its definition</li>
+                  <li class="on">
+                    <i>0029</i> A menu offers what the Machine will accept, and a pick that moves nothing says so
+                  </li>
+                  <li><i>0030</i> A snapshot names the Machine it was written under</li>
+                  <li class="on"><i>0031</i> Menu-only Agents run on the Instance Harness</li>
+                  <li><i>0032</i> The Console unlocks with the Instance token, and the bands do not move</li>
+                  <li><i>0033</i> A Machine declares the input that starts it</li>
+                  <li><i>0034</i> The Console renders with Preact, and the server erases the types</li>
+                  <li><i>0035</i> A runaway turn is ended by the Harness, rerolled once, then a fault</li>
+                  <li><i>0036</i> A turn compacts its own context mid-flight</li>
+                  <li><i>0037</i> A Sandbox Image is built or brought; jr2 injects the Harness at pod time</li>
+                  <li><i>0038</i> <code>jr2 up</code> builds every image it deploys</li>
+                  <li><i>0039</i> Image garbage collects by reachability</li>
+                  <li><i>0041</i> A build the host already holds is not spent again</li>
+                  <li>
+                    <i>0042</i> Ready is not routable: the two calls a turn starts with re-ask a Service that has not
+                    answered
+                  </li>
+                  <li><i>0043</i> The kit is tested as installed: a local registry stands in for npm</li>
+                  <li><i>0044</i> Kit images live at a canonical home; a self-host mirrors it</li>
+                  <li><i>0045</i> The platform joins the image address, and the cluster chooses it</li>
+                  <li><i>0046</i> A converge failure carries its diagnosis</li>
+                  <li><i>0047</i> The git ssh key source is the user's choice</li>
+                  <li><i>0048</i> The Orchestrator boots without its repos</li>
+                  <li><i>0049</i> A Machine carries its parts and composes by invoke</li>
+                  <li><i>0050</i> What code names, config declares; what the CLI names, discovery finds</li>
+                  <li><i>0051</i> A Repo is a slot on the <code>workspace()</code> and a cache on the node</li>
+                  <li><i>0052</i> A Sandbox lands where an ordinary pod lands, and the cache follows it</li>
+                  <li><i>0053</i> A fetch inside the pod asks the node cache, and the cache asks the remote</li>
+                  <li><i>0054</i> The kit ships Machines, and a shipped Machine leaves its parts Open</li>
+                  <li><i>0055</i> A release is a pushed tag, and the publish guard is the credential</li>
+                  <li>
+                    <i>0056</i> A global <code>jr2</code> hands off to the Instance's own, and an Instance has one Kit
+                    version
+                  </li>
+                  <li><i>0057</i> A Turn is its Frame, its Dials, and whether it continues</li>
+                  <li class="on"><i>0058</i> A Harness answers the Orchestrator alone</li>
+                </ol>
+              </div>
+            </figure>
+          </div>
+          <p class="punch">Watch it run, <em>then ask why.</em></p>
         </section>
 
         <!-- ======================================================================== the demo -->

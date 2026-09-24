@@ -1248,3 +1248,85 @@ body.stage-live .stage-badge {
   margin: 0;
   color: var(--phosphor);
 }
+
+/* --- the whiteboard defense ------------------------------------------------------------------- */
+
+.reveal .defense .cols {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  margin-bottom: 0.6em;
+}
+.reveal .slides > section.defense:not(#demo) p.dim {
+  margin-top: 0.4em;
+  font-size: 0.55em;
+}
+.reveal .slides > section.defense:not(#demo) h2 {
+  margin-bottom: 0.35em;
+}
+
+/* The ledger: every ADR, by number and heading, rolling past like a log tail. Two copies of the
+   list so the roll loops with no seam. */
+.reveal figure.ledger {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(14, 21, 36, 0.72);
+  font-family: var(--mono);
+}
+.reveal figure.ledger figcaption {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.7em 1em;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.4em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.reveal figure.ledger figcaption b {
+  font-weight: 400;
+  color: var(--phosphor);
+}
+.reveal figure.ledger .scroll {
+  height: 300px;
+  overflow: hidden;
+  mask-image: linear-gradient(transparent, #000 14%, #000 86%, transparent);
+}
+.reveal figure.ledger ol {
+  list-style: none;
+  margin: 0;
+  padding: 0.2em 1em;
+  font-size: 0.4em;
+  line-height: 1.9;
+}
+.reveal .slides > section.present figure.ledger ol {
+  animation: roll 90s linear infinite;
+}
+@keyframes roll {
+  to {
+    transform: translateY(-100%);
+  }
+}
+.reveal figure.ledger li {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+.reveal figure.ledger li i {
+  font-style: normal;
+  margin-right: 0.8em;
+  color: var(--line);
+}
+.reveal figure.ledger li code {
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0;
+  background: none;
+  color: inherit;
+}
+.reveal figure.ledger li.on {
+  color: var(--text);
+}
+.reveal figure.ledger li.on i {
+  color: var(--phosphor);
+}
