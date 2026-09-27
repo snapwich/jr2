@@ -235,8 +235,8 @@ stateDiagram-v2
           <h2>a filesystem sandbox is not isolation</h2>
           <!-- The same three agents, twice: sharing one host (jr), then each in its own pod (jr2).
                The pod is the one the demo opens later (containers, netpol). No egress claim: that
-               is the cluster owner's call. No "holds no secrets" claim: the model key still sits
-               in the Harness container (ADR-0058) — only the Orchestrator credential is fenced. -->
+               is the cluster owner's call. The Custodian holds the Sandbox token and every held secret
+               (ADR-0059); the Harness container holds only Stand-ins. -->
           <div class="versus">
             <div class="host">
               <p class="label">one laptop · jr</p>
@@ -253,7 +253,7 @@ stateDiagram-v2
               <p class="label">one pod per Workspace · jr2</p>
               <div class="pod">
                 <div class="ctr"><b>Harness</b><span>the Agent and its tools</span></div>
-                <div class="ctr fenced"><b>Adapter</b><span>the Orchestrator credential</span></div>
+                <div class="ctr fenced"><b>Custodian</b><span>every credential the Agent uses</span></div>
                 <div class="ctr"><b>User Container</b><span>your image, your dev env</span></div>
               </div>
               <p class="foot">× N — one per feature, gone when the Workspace ends</p>
@@ -262,7 +262,7 @@ stateDiagram-v2
           <div class="fixes">
             <p><s>leaked servers and ports</s>the pod ends with its Workspace</p>
             <p><s>locks on a shared host</s>own ports, filesystem, processes</p>
-            <p><s>agent and user share credentials</s>credential kept in the Adapter</p>
+            <p><s>agent and user share credentials</s>credentials kept in the Custodian</p>
           </div>
         </section>
         <section data-kicker="agent work belongs off your laptop">
@@ -334,7 +334,7 @@ stateDiagram-v2
              nothing before it. Sources: ADR-0019 (one converging command, the current kube context, "if a runbook
              is needed to use jr2, the interface has failed"), ADR-0038 (up builds every image it deploys; kind
              load with no registry, push with one), ADR-0050 (up typechecks first; config holds only reach and
-             credentials), templates/default/jr2.config.ts (the scaffold) plus the two keys every real Instance adds: `registry` and a model credential (config.ts HarnessConfig.env), init.ts ("install
+             credentials), templates/default/jr2.config.ts (the scaffold) plus the two keys every real Instance adds: `registry` and a model credential, held by the Custodian (config.ts HarnessConfig.heldSecrets, ADR-0059), init.ts ("install
              dependencies, then jr2 up and jr2 run ping"), instance/README.md (the dependencies). -->
         <section class="byoc" data-kicker="agent work belongs off your laptop">
           <h2>bring your own cluster, <em>or use kind</em></h2>
@@ -352,8 +352,8 @@ stateDiagram-v2
                 <pre><code>export default defineConfig({
   registry: process.env.JR2_REGISTRY,   <s>// unset on kind</s>
   harness: {
-    env: [{ name: "ANTHROPIC_API_KEY",
-            value: process.env.ANTHROPIC_API_KEY }],
+    heldSecrets: [{ name: "ANTHROPIC_API_KEY",
+                    value: process.env.ANTHROPIC_API_KEY }],
   },
   git: { credentials: [{ match: "*", token: "JR2_GIT_TOKEN" }] },
 });</code></pre>
@@ -401,17 +401,17 @@ stateDiagram-v2
               <p class="dim">every decision in jr2 is written down: the context, the choice, and what it costs</p>
             </div>
             <figure class="ledger">
-              <figcaption><span>docs/adr/</span><b>56 decisions</b></figcaption>
+              <figcaption><span>docs/adr/</span><b>57 decisions</b></figcaption>
               <div class="scroll">
                 <ol>
                   <li><i>0001</i> Sandboxes are provisioned by a Kubernetes operator via a generic CRD</li>
-                  <li><i>0002</i> The agent actor is a duplex channel; its control plane is MCP tool calls</li>
+                  <li><i>0002</i> The agent actor is a duplex channel; its control plane is Menu tool calls</li>
                   <li>
                     <i>0004</i> A Sandbox's workspace is a private local clone of a read-only cache, not a shared
                     worktree
                   </li>
                   <li class="on">
-                    <i>0005</i> The Sandbox pod's containers: Harness, Adapter, and an optional User Container
+                    <i>0005</i> The Sandbox pod's containers: Harness, Custodian, and an optional User Container
                   </li>
                   <li class="on">
                     <i>0006</i> The agent picks from a Machine-defined, schema-backed menu; it does not drive the
@@ -423,7 +423,7 @@ stateDiagram-v2
                   <li><i>0010</i> BDD acceptance tests via Cucumber.js (black-box, scenario-isolated)</li>
                   <li><i>0011</i> Control events are workflow-defined and delivered by closure, not routed</li>
                   <li><i>0012</i> <code>workspace()</code> wraps a body Machine and owns only Sandbox lifecycle</li>
-                  <li><i>0013</i> The Agent's MCP surface lives in the Sandbox, not the Orchestrator</li>
+                  <li class="on"><i>0013</i> The Agent reaches its Machine through a container it cannot read</li>
                   <li><i>0014</i> Observation is open; run state and control need the Instance token</li>
                   <li>
                     <i>0015</i> Workflows are authored through <code>jr2Setup</code>; vocabulary and agent menus derive
@@ -458,7 +458,7 @@ stateDiagram-v2
                   <li><i>0035</i> A runaway turn is ended by the Harness, rerolled once, then a fault</li>
                   <li><i>0036</i> A turn compacts its own context mid-flight</li>
                   <li><i>0037</i> A Sandbox Image is built or brought; jr2 injects the Harness at pod time</li>
-                  <li><i>0038</i> <code>jr2 up</code> builds every image it deploys</li>
+                  <li><i>0038</i> <code>jr2 up</code> builds every image it deploys, except a pinned one</li>
                   <li><i>0039</i> Image garbage collects by reachability</li>
                   <li><i>0041</i> A build the host already holds is not spent again</li>
                   <li>
@@ -484,16 +484,17 @@ stateDiagram-v2
                   </li>
                   <li><i>0057</i> A Turn is its Frame, its Dials, and whether it continues</li>
                   <li class="on"><i>0058</i> A Harness answers the Orchestrator alone</li>
+                  <li class="on"><i>0059</i> A Harness holds stand-ins; the Custodian holds the keys</li>
                 </ol>
                 <ol aria-hidden="true">
                   <li><i>0001</i> Sandboxes are provisioned by a Kubernetes operator via a generic CRD</li>
-                  <li><i>0002</i> The agent actor is a duplex channel; its control plane is MCP tool calls</li>
+                  <li><i>0002</i> The agent actor is a duplex channel; its control plane is Menu tool calls</li>
                   <li>
                     <i>0004</i> A Sandbox's workspace is a private local clone of a read-only cache, not a shared
                     worktree
                   </li>
                   <li class="on">
-                    <i>0005</i> The Sandbox pod's containers: Harness, Adapter, and an optional User Container
+                    <i>0005</i> The Sandbox pod's containers: Harness, Custodian, and an optional User Container
                   </li>
                   <li class="on">
                     <i>0006</i> The agent picks from a Machine-defined, schema-backed menu; it does not drive the
@@ -505,7 +506,7 @@ stateDiagram-v2
                   <li><i>0010</i> BDD acceptance tests via Cucumber.js (black-box, scenario-isolated)</li>
                   <li><i>0011</i> Control events are workflow-defined and delivered by closure, not routed</li>
                   <li><i>0012</i> <code>workspace()</code> wraps a body Machine and owns only Sandbox lifecycle</li>
-                  <li><i>0013</i> The Agent's MCP surface lives in the Sandbox, not the Orchestrator</li>
+                  <li class="on"><i>0013</i> The Agent reaches its Machine through a container it cannot read</li>
                   <li><i>0014</i> Observation is open; run state and control need the Instance token</li>
                   <li>
                     <i>0015</i> Workflows are authored through <code>jr2Setup</code>; vocabulary and agent menus derive
@@ -540,7 +541,7 @@ stateDiagram-v2
                   <li><i>0035</i> A runaway turn is ended by the Harness, rerolled once, then a fault</li>
                   <li><i>0036</i> A turn compacts its own context mid-flight</li>
                   <li><i>0037</i> A Sandbox Image is built or brought; jr2 injects the Harness at pod time</li>
-                  <li><i>0038</i> <code>jr2 up</code> builds every image it deploys</li>
+                  <li><i>0038</i> <code>jr2 up</code> builds every image it deploys, except a pinned one</li>
                   <li><i>0039</i> Image garbage collects by reachability</li>
                   <li><i>0041</i> A build the host already holds is not spent again</li>
                   <li>
@@ -566,6 +567,7 @@ stateDiagram-v2
                   </li>
                   <li><i>0057</i> A Turn is its Frame, its Dials, and whether it continues</li>
                   <li class="on"><i>0058</i> A Harness answers the Orchestrator alone</li>
+                  <li class="on"><i>0059</i> A Harness holds stand-ins; the Custodian holds the keys</li>
                 </ol>
               </div>
             </figure>
@@ -667,7 +669,7 @@ stateDiagram-v2
           <section class="over todo" data-pane="terminal" data-step="containers">
             <div class="card">
               <h2>the pod that just appeared</h2>
-              <p class="dim">Harness, Adapter, User Container</p>
+              <p class="dim">Harness, Custodian, User Container</p>
               <p class="adr">ADR-0005</p>
             </div>
           </section>
@@ -715,15 +717,17 @@ stateDiagram-v2
         <!-- =========================================================================== after -->
         <section data-kicker="in the box">
           <h2>one pod, three containers</h2>
-          <!-- Sources: CONTEXT.md (Harness, Adapter, User Container, Sandbox Image), ADR-0005 (pod composition),
-               ADR-0013 (the Adapter hosts the MCP surface; the Harness connects to $JR2_ADAPTER_URL/mcp/<iid> each
-               Submission), ADR-0037 (the Harness runtime mounts at /opt/jr2 into the Sandbox Image), ADR-0058 (the
+          <!-- Sources: CONTEXT.md (Harness, Custodian, User Container, Sandbox Image), ADR-0005 (pod composition),
+               ADR-0013 and ADR-0059 (the Harness reads its Menu and sends its pick as plain HTTP to the Custodian on
+               127.0.0.1:8081; the Custodian swaps the Stand-in for the Sandbox token and forwards three routes, no
+               other), ADR-0037 (the Harness runtime mounts at /opt/jr2 into the Sandbox Image), ADR-0058 (the
                Orchestrator alone may drive a Harness), ADR-0031 (Instance Harness). The Workspace: ADR-0051 (the
                node cache clones with the Repo CR's secretRef; the Orchestrator's attach is `git clone --shared` off
-               the read-only mount, worktree beside it), ADR-0053 (fetch: ext:: → Adapter → Orchestrator → cache;
+               the read-only mount, worktree beside it), ADR-0053 (fetch: ext:: → Custodian → Orchestrator → cache;
                the push url is the caller's own spelling, no credential in the pod).
-               Honesty: the model key IS in the Harness container (ADR-0058). Claim only that the Orchestrator
-               credential is out of the Agent's reach. -->
+               ADR-0059: the model key is a held secret; the Harness container holds its Stand-in, and the Custodian
+               (upstream Envoy, pinned by digest) swaps in the value toward the key's host only. Limit: the Agent can
+               still SPEND a key through the Custodian while its pod lives. -->
           <div class="seats">
             <div class="orch"><strong>Orchestrator</strong> runs the Machine</div>
             <div class="w down"><span>① admits a Turn</span></div>
@@ -733,15 +737,15 @@ stateDiagram-v2
               <div class="ctr">
                 <h3>Harness</h3>
                 <p class="img">your Sandbox Image + <code>/opt/jr2</code></p>
-                <p>the conversation, the model calls, the Working tools: read, write, bash</p>
+                <p>the conversation, the model calls, the Menu, the Working tools</p>
                 <p class="why">the Agent's code runs here</p>
               </div>
-              <div class="mcp"><span>② MCP · localhost</span><span>the Menu</span></div>
+              <div class="menu"><span>② localhost</span><span>the Menu</span></div>
               <div class="ctr">
-                <h3>Adapter</h3>
-                <p class="img">jr2-adapter</p>
-                <p>an MCP server with this Turn's Menu; sends the pick to the Orchestrator</p>
-                <p class="why">holds the Orchestrator credential, where the Agent cannot read it</p>
+                <h3>Custodian</h3>
+                <p class="img">envoy, pinned</p>
+                <p>forwards the Harness's Menu read and pick; adds the model key toward its host</p>
+                <p class="why">holds every credential, where the Agent cannot read it</p>
               </div>
               <div class="ctr opt">
                 <h3>User Container <em>optional</em></h3>
@@ -758,7 +762,7 @@ stateDiagram-v2
               </div>
             </div>
           </div>
-          <p class="punch">The Agent writes the code. <em>It never holds the keys</em> to git or the Orchestrator.</p>
+          <p class="punch">The Agent writes the code. <em>It never holds a key.</em></p>
         </section>
 
         <section data-kicker="in the box">
@@ -816,7 +820,7 @@ RUN …</code></pre>
                assigns context on each transition; the parts are the same.
                ① ADR-0033 (the door; the Console's start form) · ② ADR-0011 (Vocabulary, audience)
                ③ ADR-0049 (the Agent rides the Machine), ADR-0028 (workspace access)
-               ④ ADR-0015 (Menu = the state's transitions, served by the Adapter over MCP), ADR-0029 (a pick outside it moves nothing) -->
+               ④ ADR-0015 (Menu = the state's transitions, read by the Harness through the Custodian and offered to the model as tools), ADR-0029 (a pick outside it moves nothing) -->
           <div class="anatomy">
             <figure class="code">
               <div class="tabs"><span class="on">triage.ts</span><span>abridged</span></div>
@@ -860,7 +864,7 @@ jr2Setup({
               </li>
               <li>
                 <strong>states</strong>
-                invoke an Agent: the state's <code>on</code> becomes its Menu, served as MCP tools. invoke a
+                invoke an Agent: the state's <code>on</code> becomes its Menu, offered as tools. invoke a
                 <code>gate</code>: the run waits for a human.
               </li>
             </ol>
@@ -947,8 +951,9 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
           <h2>any model, chosen per Agent</h2>
           <!-- Sources: ADR-0018 (harness declares reach, the definition makes the choice; one custom
                OpenAI-compatible provider), packages/harness/src/provider.ts (pi-ai's built-in catalog plus the custom
-               provider, one registry; `<provider>/<modelId>` split at the first slash), config.ts HarnessEnvVar and
-               up.ts:635 (harness.env values land in the Instance's Secret), ADR-0057 (Dials: model, thinkingLevel per
+               provider, one registry; `<provider>/<modelId>` split at the first slash), config.ts HeldSecret and
+               ADR-0059 (a held secret goes to the Custodian alone; a known model key with no `hosts` is bound to the
+               host pi's catalog sends its calls to; a model key in harness.env is refused, R1), ADR-0057 (Dials: model, thinkingLevel per
                Turn), ADR-0054 (task's door overrides the Dials per run; the coder's model ships Open).
                Checked in code, not run live with a catalog key. -->
           <div class="models">
@@ -962,9 +967,9 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
     api: "openai-completions",
     baseUrl: process.env.JR2_PROVIDER_URL,
   },
-  <s>// keys for the built-in catalog:</s>
-  <s>// anthropic, openai, google, …</s>
-  env: [{
+  <s>// keys for the built-in catalog, held</s>
+  <s>// by the Custodian: anthropic, openai, …</s>
+  heldSecrets: [{
     name: "ANTHROPIC_API_KEY",
     value: process.env.ANTHROPIC_API_KEY,
   }],
@@ -1034,35 +1039,33 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
           <p class="punch">Kill the Orchestrator mid-Turn. <em>The run picks up where it was.</em></p>
         </section>
 
-        <!-- In flight, not merged: ADR-0059 on branch held-secrets/node. The API is undecided, so the slide shows
-             only the architecture. The branch puts the key-holding role in a second container of the Adapter image
-             (the Custodian), separate from the Adapter process that holds the Orchestrator credential; the slide
-             speaks of "the Adapter" as that seat. The engine is open: the held-secrets/node branch (jr2's own Node
-             proxy) or the Envoy branches (credential_injector filter, alpha upstream). The Harness env holds Stand-ins; outbound HTTPS goes through the
-             Adapter seat, which swaps in a key only toward a host that key is bound to, and tunnels every other host
-             untouched. Limits (ADR-0059 Consequences): the Agent can still spend a key toward its bound host while
-             its pod lives; a key with admin rights can mint one the Agent could take; an upstream that echoes the key
-             in a response hands it over. "What it unlocks" is the speaker's intent, not in ADR-0059: a shared Machine
-             names the tools it needs, and each user's Adapter holds that user's keys; an always-on assistant
-             (OpenClaw, Hermes Agent) would be a long-lived run fed by a Source, with its mail and chat keys held
-             outside the Harness. "Not a vault": a key reaches jr2 as a Kubernetes valueFrom reference, passed through
-             verbatim (config.ts harness.env; the branch's heldSecrets[] takes the same value/valueFrom), so any tool
-             that fills a Secret supplies it. The Adapter holds the key only in memory while the pod lives. -->
-        <section data-kicker="next">
-          <h2>the Adapter injects <em>every</em> key</h2>
+        <!-- Sources: ADR-0059 (held secrets, the Stand-in, the Custodian replaces the Adapter), ADR-0058 (the model
+             key used to sit in the Harness container). The Harness env holds Stand-ins (jr2-held-<NAME>); outbound
+             HTTPS goes through the Custodian (HTTPS_PROXY), which swaps in a key only toward a host that key is bound
+             to and tunnels every other host untouched. The engine is upstream Envoy, pinned by digest, with a Lua
+             filter jr2 writes; jr2 up writes its whole configuration, with no admin listener. Limits (ADR-0059
+             Consequences): the Agent can still spend a key toward its bound host while its pod lives; a key with
+             admin rights can mint one the Agent could take; an upstream that echoes the key in a response hands it
+             over; a signing credential (SigV4, ADC) cannot be held. "What it unlocks" is the speaker's intent, not in
+             ADR-0059: a shared Machine names the tools it needs, and each user's Custodian holds that user's keys; an
+             always-on assistant (OpenClaw, Hermes Agent) would be a long-lived run fed by a Source, with its mail and
+             chat keys held outside the Harness. "Not a vault": a held secret takes a value or a Kubernetes
+             valueFrom.secretKeyRef (config.ts HeldSecret), so any tool that fills a Secret supplies it. -->
+        <section data-kicker="in the box">
+          <h2>the Custodian holds <em>every</em> key</h2>
           <div class="grows">
             <div class="side">
               <div class="pod">
-                <span class="label">today</span>
+                <span class="label">before</span>
                 <div class="ctr">
                   <strong>Harness</strong>
-                  <span class="leak">the model key is here, where the Agent's code runs</span>
+                  <span class="leak">the model key was here, where the Agent's code runs</span>
                 </div>
-                <div class="ctr adapter">
+                <div class="ctr">
                   <strong>Adapter</strong>
                   <ul>
-                    <li>holds the Orchestrator credential</li>
-                    <li>serves the Menu</li>
+                    <li>held the Orchestrator credential</li>
+                    <li>served the Menu over MCP</li>
                   </ul>
                 </div>
               </div>
@@ -1074,17 +1077,17 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
             </div>
             <div class="arrow">→</div>
             <div class="pod">
-              <span class="label">next</span>
+              <span class="label">now</span>
               <div class="ctr">
                 <strong>Harness</strong>
                 <span>only stand-ins: worthless outside the pod</span>
               </div>
-              <div class="ctr adapter">
-                <strong>Adapter</strong>
+              <div class="ctr">
+                <strong>Custodian</strong>
                 <ul>
                   <li>holds the Orchestrator credential</li>
-                  <li>serves the Menu</li>
-                  <li class="new">holds external keys at runtime: model, tools</li>
+                  <li>forwards the Menu read and the pick</li>
+                  <li class="new">holds external keys: model, tools</li>
                   <li class="new">a proxy for outbound calls: a key goes only to its host</li>
                 </ul>
               </div>
@@ -1095,7 +1098,7 @@ jr2Setup({ actors: { triager, <b>coding</b> } })
                 not a vault: it reads Kubernetes Secrets, so fill them from Vault with External Secrets Operator, or any
                 store
               </p>
-              <p class="undecided">undecided: jr2's own proxy, or <span>Envoy</span>'s new credential injector</p>
+              <p class="engine">the engine: upstream <span>Envoy</span>, pinned; jr2 writes only its config</p>
             </div>
           </div>
           <p class="punch">Add external tools, <em>and the Agent never holds a key.</em></p>

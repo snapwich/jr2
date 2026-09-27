@@ -32,12 +32,14 @@ cd instance && npm run seed        # serves repo/ in-cluster at http://seed.intr
 cd instance && npm run preload     # puts the images jr2 up does not build onto the node
 ```
 
-`npm run preload` loads the User Container image, `node:24-slim` (the image of `jr2 up`'s provider probe), and the
-seed's two images. It also names any image `jr2 up` delivered that the node no longer holds. `npm start` checks the same
-list and the seed, and stops on anything missing.
+`npm run preload` loads the User Container image, `node:24-slim` (the image of `jr2 up`'s provider probe), the seed's
+two images, and the Custodian's Envoy (a Pinned image: `jr2 up` names it by digest and never delivers it). It also names
+any image `jr2 up` delivered that the node no longer holds. `npm start` checks the same list and the seed, and stops on
+anything missing.
 
-Then start the model with `LLAMA_ARG_OFFLINE=1 npm run llama`. Without it, `-hf` asks Hugging Face for the manifest
-first.
+Then start the model with `LLAMA_ARG_OFFLINE=1 npm run llama`. Without `LLAMA_ARG_OFFLINE=1`, `-hf` asks Hugging Face
+for the manifest first. The model serves HTTPS with the certificate `npm run certs` made (once per machine, see
+[instance/README.md](./instance/README.md)), because the Custodian sends the key over TLS only.
 
 To rehearse offline, turn off Wi-Fi and run every step in `slides/demo.json`. The pods reach the model at `192.168.5.2`,
 Colima's address for the host. That path goes through the VM, not Wi-Fi, but the Wi-Fi-off rehearsal is what proves it.
