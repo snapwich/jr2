@@ -66,6 +66,8 @@ export type MenuOptions = {
   retryInitialMs?: number;
   retryMaxMs?: number;
   retryWindowMs?: number;
+  /** How long one surface read may wait for its answer before it is retried. Default 10s. */
+  attemptTimeoutMs?: number;
   /** Where the routability line goes when a surface read had to retry. Default `console.warn`. */
   log?: (line: string) => void;
 };
@@ -129,7 +131,8 @@ export async function readMenu(opts: MenuOptions, instanceId: string, signal?: A
         const receipt = await deliver(
           opts,
           instanceId,
-          { type: event.name, ...((params ?? {}) as object) },
+          // The name last: an argument called `type` cannot make this pick another event.
+          { ...((params ?? {}) as object), type: event.name },
           toolSignal,
         );
         return { content: [{ type: "text", text: receiptProse(receipt) }], details: undefined };
@@ -191,31 +194,43 @@ async function readSurface(opts: MenuOptions, instanceId: string, signal?: Abort
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   const log = opts.log ?? ((line: string) => console.warn(line));
   const retryMaxMs = opts.retryMaxMs ?? 5_000;
-  const startedAt = Date.now();
+  const attemptMs = opts.attemptTimeoutMs ?? 10_000;
+  // A monotonic clock: the window and the logged cost do not move with the wall clock.
+  const startedAt = performance.now();
   const deadline = startedAt + (opts.retryWindowMs ?? 90_000);
   let backoffMs = opts.retryInitialMs ?? 250;
   let attempts = 0;
   let lastCode = "?";
   for (;;) {
     attempts += 1;
+    // An answer that never comes is retried like one that could not be sent: a read is idempotent.
+    const attempt = AbortSignal.timeout(attemptMs);
     try {
-      const res = await fetchImpl(url, { headers: authorization(opts), ...(signal ? { signal } : {}) });
+      const res = await fetchImpl(url, {
+        headers: authorization(opts),
+        signal: signal ? AbortSignal.any([signal, attempt]) : attempt,
+      });
       await unreachable(res);
       // Before the status is read: the measurement is about CONNECTING, and a 404 that took four
       // attempts to reach is the same routability cost as a 200 that did.
       if (attempts > 1) {
         log(
-          `${ROUTABILITY_MARKER} seat=surface attempts=${attempts} ms=${Date.now() - startedAt} last=${lastCode} url=${url}`,
+          `${ROUTABILITY_MARKER} seat=surface attempts=${attempts} ms=${Math.round(performance.now() - startedAt)} last=${lastCode} url=${url}`,
         );
       }
       if (res.status === 404) return undefined;
       return (await answered(res)) as Surface;
     } catch (err) {
       if (signal?.aborted) throw err;
-      if (!(err instanceof UnreachableError) && !isTransportFailure(err)) throw err;
-      lastCode = err instanceof UnreachableError ? err.code : transportCode(err);
-      if (Date.now() >= deadline) {
-        const detail = err instanceof UnreachableError ? err.message : transportDetail(err);
+      const timedOut = attempt.aborted;
+      if (!timedOut && !(err instanceof UnreachableError) && !isTransportFailure(err)) throw err;
+      lastCode = timedOut ? "timeout" : err instanceof UnreachableError ? err.code : transportCode(err);
+      if (performance.now() >= deadline) {
+        const detail = timedOut
+          ? `no answer within ${attemptMs} ms`
+          : err instanceof UnreachableError
+            ? err.message
+            : transportDetail(err);
         throw new Error(`the Orchestrator never answered ${url}: ${detail}`, { cause: err });
       }
       await sleep((backoffMs * (1 + Math.random())) / 2, signal);

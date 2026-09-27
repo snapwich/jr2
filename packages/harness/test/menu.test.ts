@@ -100,6 +100,17 @@ test("a pick is one delivery with the Stand-in, and the receipt comes back as pr
   assert.match(receiptProse(receipt), /your turn is over/);
 });
 
+test("an argument named `type` cannot make a pick another event", async () => {
+  const { fetch, calls } = fakeFetch((call) =>
+    Response.json(
+      call.method === "GET" ? SURFACE : { delivered: true, event: "note.add", turnComplete: false, deliveryId: "d" },
+    ),
+  );
+  const menu = await readMenu(opts(fetch), "run-1/reviewer");
+  await menu.tools[1]!.execute("call-1", { type: "review_verdict", verdict: "approved" } as never, undefined as never);
+  assert.equal(JSON.parse(calls[1]!.body!).type, "note.add");
+});
+
 test("the receipt says a rejected pick was rejected, and reads an absent `moved` fail-open (ADR-0029)", () => {
   const base = { delivered: true, event: "review_verdict", turnComplete: false, deliveryId: "d-2" };
   assert.match(receiptProse({ ...base, moved: false }), /did NOT act on it.*Do not repeat this call unchanged/s);
@@ -163,6 +174,37 @@ test("a surface read that never got an answer is retried, and what it cost is lo
   lines.length = 0;
   await readMenu({ ...opts(fakeFetch(() => Response.json(SURFACE)).fetch), log: (l) => lines.push(l) }, "x");
   assert.deepEqual(lines, []);
+});
+
+test("a surface read with no answer is ended and retried; a window that closes on one says so", async () => {
+  let n = 0;
+  const lines: string[] = [];
+  const { fetch } = fakeFetch(() => {
+    n += 1;
+    // Accepted, and never answered: a hung Custodian or Orchestrator.
+    if (n === 1) return new Promise<Response>(() => {});
+    return Response.json(SURFACE);
+  });
+  const hanging = (f: typeof fetch): typeof fetch =>
+    ((input: string | URL | Request, init?: RequestInit) =>
+      Promise.race([
+        f(input, init),
+        new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(init.signal!.reason as Error), { once: true }),
+        ),
+      ])) as typeof fetch;
+  const menu = await readMenu(
+    { ...opts(hanging(fetch)), attemptTimeoutMs: 20, retryInitialMs: 1, retryMaxMs: 1, log: (l) => lines.push(l) },
+    "run-1/reviewer",
+  );
+  assert.equal(menu.tools.length, 2);
+  assert.match(lines[0]!, /attempts=2 ms=\d+ last=timeout /);
+
+  const never = hanging((() => new Promise<Response>(() => {})) as typeof fetch);
+  await assert.rejects(
+    () => readMenu({ ...opts(never), attemptTimeoutMs: 5, retryInitialMs: 1, retryMaxMs: 1, retryWindowMs: 5 }, "x"),
+    /the Orchestrator never answered .*: no answer within 5 ms/,
+  );
 });
 
 test("a surface read whose window closes names the address and the reason, not `fetch failed`", async () => {

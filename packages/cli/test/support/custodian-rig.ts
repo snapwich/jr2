@@ -316,10 +316,19 @@ export async function controlRequest(
 export async function startFakeOrchestrator(): Promise<{
   port: number;
   seen: Array<{ method: string; url: string; headers: IncomingMessage["headers"]; body: string }>;
+  /** The next `n` requests get their connection closed and no answer: a pooled connection the
+   * Orchestrator closed as the request arrived. */
+  drop: (n: number) => void;
   close: () => Promise<void>;
 }> {
   const seen: Array<{ method: string; url: string; headers: IncomingMessage["headers"]; body: string }> = [];
+  let dropping = 0;
   const server = createHttpServer((req, res) => {
+    if (dropping > 0) {
+      dropping -= 1;
+      req.socket.destroy();
+      return;
+    }
     let body = "";
     req.on("data", (b: Buffer) => (body += b.toString()));
     req.on("end", () => {
@@ -332,6 +341,9 @@ export async function startFakeOrchestrator(): Promise<{
   return {
     port: (server.address() as AddressInfo).port,
     seen,
+    drop: (n) => {
+      dropping = n;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

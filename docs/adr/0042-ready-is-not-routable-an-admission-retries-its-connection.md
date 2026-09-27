@@ -69,8 +69,10 @@ windows more often. That is why the flake was degree-independent and serial runs
   `getaddrinfo ENOTFOUND …`) is the whole answer. Both the admission fault and the echo's log line now carry it.
 - **The Harness re-asks an unanswered surface read, on ANY transport failure.** An unanswered read is the Harness's own
   transport failure, or the Custodian's word that the Orchestrator never answered it (a 502 it marks as its own,
-  [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)); the Custodian itself retries nothing.
-  A GET is idempotent, so the narrow never-delivered test the admission needs buys nothing here — there is no second
+  [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), or no answer within 10 seconds. The
+  Custodian itself retries only a connection reset: any reset under the read, and under a pick or an ask only one before
+  the request was sent. It also drops a pooled connection after 4 seconds idle, before Node's 5-second keep-alive closes
+  it. A GET is idempotent, so the narrow never-delivered test the admission needs buys nothing here — there is no second
   turn to accidentally start, so the rule is simply "an answered request is an answer". A 404 stays ADR-0026's
   turn-is-over and a 403 stays a scope refusal: both are answers, and neither is re-asked.
 - **`deliver` does not retry, and that is not an oversight.** A failed pick reaches the model as a tool error it can act

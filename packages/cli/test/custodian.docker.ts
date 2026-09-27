@@ -379,6 +379,22 @@ describe("toward the Orchestrator (the control listener)", () => {
     assert.equal(orchestrator.seen.at(-1)?.body, '{"type":"done"}');
   });
 
+  test("a connection the Orchestrator closes under a read is retried; under a pick, it says unreachable", async () => {
+    orchestrator.drop(1);
+    let r = await controlRequest(custodian.ports.control, "/agents/run-1/surface", { headers: bearer });
+    assert.equal(r.status, 200, r.body);
+    const before = orchestrator.seen.length;
+    orchestrator.drop(1);
+    r = await controlRequest(custodian.ports.control, "/agents/run-1/events", {
+      method: "POST",
+      headers: { ...bearer, "content-type": "application/json" },
+      body: '{"type":"done"}',
+    });
+    assert.equal(r.status, 502, "a pick the Orchestrator may have read is not sent twice");
+    assert.equal(r.headers["x-jr2-custodian"], "unreachable");
+    assert.equal(orchestrator.seen.length, before);
+  });
+
   test("the ask is addressed to THIS pod's Sandbox, whatever the caller writes", async () => {
     const r: Awaited<ReturnType<typeof controlRequest>> = await controlRequest(custodian.ports.control, "/fetch", {
       method: "POST",

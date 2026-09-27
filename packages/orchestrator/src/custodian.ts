@@ -212,7 +212,7 @@ function unreachable(target: string): Json {
   return {
     mappers: [
       {
-        filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "DF", "DPE", "UMSDR"] } },
+        filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR"] } },
         status_code: 502,
         body_format_override: {
           text_format_source: {
@@ -229,7 +229,7 @@ function unreachable(target: string): Json {
 const ORCHESTRATOR_UNREACHABLE: Json = {
   mappers: [
     {
-      filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "DF", "DPE", "UMSDR"] } },
+      filter: { response_flag_filter: { flags: ["UF", "URX", "UH", "UC", "DF", "DPE", "UMSDR"] } },
       status_code: 502,
       headers_to_add: [
         { header: { key: "x-jr2-custodian", value: "unreachable" }, append_action: "OVERWRITE_IF_EXISTS_OR_ADD" },
@@ -393,9 +393,17 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
                     name: "orchestrator",
                     domains: ["*"],
                     routes: [
-                      route("surface", "GET", "/agents/[^/]+/surface"),
-                      route("events", "POST", "/agents/[^/]+/events"),
-                      route("fetch", "POST", "/fetch"),
+                      // A read retries any reset. A pick or an ask retries only a reset before
+                      // it was sent: one the Orchestrator may have read is not sent twice.
+                      route("surface", "GET", "/agents/[^/]+/surface", {
+                        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
+                      }),
+                      route("events", "POST", "/agents/[^/]+/events", {
+                        retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
+                      }),
+                      route("fetch", "POST", "/fetch", {
+                        retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
+                      }),
                       {
                         name: "deny",
                         match: { prefix: "/" },
@@ -463,6 +471,15 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
       type: "LOGICAL_DNS",
       dns_lookup_family: "V4_PREFERRED",
       connect_timeout: "5s",
+      // Node closes a keep-alive connection idle for 5 s (the Orchestrator's default). A pooled
+      // connection is dropped first, so a request is not written onto one Node is closing.
+      typed_extension_protocol_options: {
+        "envoy.extensions.upstreams.http.v3.HttpProtocolOptions": {
+          "@type": "type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
+          common_http_protocol_options: { idle_timeout: "4s" },
+          explicit_http_config: { http_protocol_options: {} },
+        },
+      },
       load_assignment: {
         cluster_name: "orchestrator",
         endpoints: [
