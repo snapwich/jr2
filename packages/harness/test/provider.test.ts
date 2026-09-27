@@ -81,9 +81,9 @@ test("keyless fallback: no JR2_PROVIDER_API_KEY resolves the placeholder, never 
   assert.equal(auth?.auth.apiKey, "unused");
 });
 
-test("keyless fallback: a Secret-fed key wins over the placeholder", async () => {
-  const auth = await modelsFor(vllm, { JR2_PROVIDER_API_KEY: "sk-real" }).getAuth("vllm");
-  assert.equal(auth?.auth.apiKey, "sk-real");
+test("keyless fallback: the env's JR2_PROVIDER_API_KEY — a Stand-in, which the Custodian swaps (ADR-0059) — wins", async () => {
+  const auth = await modelsFor(vllm, { JR2_PROVIDER_API_KEY: "jr2-held-JR2_PROVIDER_API_KEY" }).getAuth("vllm");
+  assert.equal(auth?.auth.apiKey, "jr2-held-JR2_PROVIDER_API_KEY");
 });
 
 test("mapThinkingLevel: every jr2 level passes through to pi unmapped", () => {
@@ -118,4 +118,32 @@ test("admissionFault: a Turn's dial is checked in the same place as the definiti
   assert.equal(admissionFault(models, resolveDefinition(definition, { model: "vllm/other" })), undefined);
   // The dial WON the resolution, so it is the dial that is checked (ADR-0018).
   assert.match(admissionFault(models, resolveDefinition(definition, { model: "ghost/x" })) ?? "", /ghost/);
+});
+
+test("catalog: a moved provider's models keep every catalog fact and change only baseUrl (ADR-0059)", () => {
+  const gateway = "https://litellm.corp.example";
+  const models = modelsFor({ catalog: { anthropic: { baseUrl: gateway } } }, {});
+  const builtin = models.getModels("anthropic")[0]!;
+  const moved = resolveModel(models, `anthropic/${builtin.id}`);
+  assert.equal(moved.baseUrl, gateway);
+  assert.deepEqual({ ...moved, baseUrl: builtin.baseUrl }, builtin, "limits, cost and thinking map ride along");
+  assert.equal(
+    models.getModel("anthropic", builtin.id)?.baseUrl,
+    "https://api.anthropic.com",
+    "the catalog itself is untouched",
+  );
+  // Another provider stays where the catalog says.
+  const openai = models.getModels("openai")[0]!;
+  assert.equal(resolveModel(models, `openai/${openai.id}`).baseUrl, openai.baseUrl);
+});
+
+test("catalog: an id pi's catalog does not have, or the custom provider's own, is refused at boot", () => {
+  assert.throws(
+    () => modelsFor({ catalog: { anthropik: { baseUrl: "https://x.example" } } }, {}),
+    /not a provider in pi's catalog/,
+  );
+  assert.throws(
+    () => modelsFor({ ...vllm, catalog: { vllm: { baseUrl: "https://x.example" } } }, {}),
+    /also the custom provider's id/,
+  );
 });

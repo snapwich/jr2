@@ -40,7 +40,7 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   operator's Sandbox CR, a pod, the node's read-only Repo cache, an in-pod git worktree, and the Harness endpoint —
   faking only the LLM. (Originally the Sandbox ran a **dev Harness image**, a wire-compatible stub in a container with
   `git`; [ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md) retired it. The pod runs the STOCK Harness now — real
-  pi, the real Menu over MCP, real Working tools — and the substitution moved to the provider: a scripted
+  pi, the real Menu through the Custodian, real Working tools — and the substitution moved to the provider: a scripted
   OpenAI-compatible endpoint the World serves from the host. Which is what makes this tier a second pi canary.) They are
   tagged `@kind` and **excluded from the default profile**, so the everyday suite needs no docker. Bring-up is the
   product's own path (ADR-0019): one shared VANILLA kind cluster and nothing else, then **`jr2 up` per scenario into a
@@ -64,14 +64,14 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   [ADR-0041](0041-a-build-the-host-already-holds-is-not-spent-again.md) makes a warm scenario's converge build nothing
   (~13s fresh-namespace converge, every build disk-skipped); and connection retries at the two seats that dial a Sandbox
   before anything else ever has — [ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md) has the
-  diagnosis (a Sandbox CR at `phase: Ready` is not yet ROUTABLE, so an unretried first dial is a lost turn; the
-  Adapter's Menu read was a second instance of the same defect). Parallelism does not create those windows, it only
-  samples them more often — which is why any tier flake that vanishes at `--parallel 1` should be read as a
-  routability-class defect first, not as an isolation bug. Measured: **degree 4 → 8 consecutive runs, 88/88 scenarios,
-  1m30–1m43s each** on a sealed tree (serial: ~5m). **The wired default is now `--parallel 4`** (in the `kind` profile,
-  so a direct `npx cucumber-js --profile kind` gets it too); pass `--parallel 1` to bisect a suspected isolation bug.
-  Three tier changes came out of the hunt and stay. A FAILED `@kind` scenario dumps its evidence (the provider's request
-  count, `jr2 status`, the Harness's `?view=history`, every pod log with timestamps, events, EndpointSlices) to
+  diagnosis (a Sandbox CR at `phase: Ready` is not yet ROUTABLE, so an unretried first dial is a lost turn; the Menu
+  read was a second instance of the same defect). Parallelism does not create those windows, it only samples them more
+  often — which is why any tier flake that vanishes at `--parallel 1` should be read as a routability-class defect
+  first, not as an isolation bug. Measured: **degree 4 → 8 consecutive runs, 88/88 scenarios, 1m30–1m43s each** on a
+  sealed tree (serial: ~5m). **The wired default is now `--parallel 4`** (in the `kind` profile, so a direct
+  `npx cucumber-js --profile kind` gets it too); pass `--parallel 1` to bisect a suspected isolation bug. Three tier
+  changes came out of the hunt and stay. A FAILED `@kind` scenario dumps its evidence (the provider's request count,
+  `jr2 status`, the Harness's `?view=history`, every pod log with timestamps, events, EndpointSlices) to
   `features/.tmp/kind-failures/` before its namespace is deleted. The tier's own workflow ROUTES `agent.fault` instead
   of ignoring it — an ignored terminal fault is an invisible one, and a tier that hangs where it could name the reason
   is a tier that costs a session per defect. And **every** scenario, passing or not, is now scraped for what ADR-0042's
@@ -95,11 +95,20 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   can report a turn settled `aborted` without ever having had a turn to settle. That is the right fixture for testing
   jr2, and it is blind by construction to what the real runtime keeps, drops, or sends onward. Those claims are covered
   by the conformance suite in `packages/harness/test/`, driven through the real turn loop — pi at the exact pin, the
-  real `@jr2/adapter` over a real socket, a **scripted provider** — so a turn's shape (where it stalls, what it
-  half-emits) is chosen by the test rather than by a model. The witness is the message array the provider receives on
+  Menu over a real socket to the Custodian's address, a **scripted provider** — so a turn's shape (where it stalls, what
+  it half-emits) is chosen by the test rather than by a model. The witness is the message array the provider receives on
   the _next_ turn, which is the only place these claims are visible. Not a separate tier: it runs as part of
   `pnpm -r test` (no docker, no cluster), and it is the canary for pi bumps — **run it before bumping the pin**. (A
   predecessor tier that ran the retired foreign harness runtime at its pin dissolved into this suite — ADR-0027.)
+- **The Custodian suite, opt-in, against the real engine**
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The Custodian's claims — the swap on
+  the wire, the strip, the refusals, the dial guard, TLS verification upstream, SSE timing, abort, and a real SDK
+  through `HTTPS_PROXY` — are Envoy's behaviour under jr2's configuration, so only the pinned Envoy image can prove
+  them. `just custodian-test` runs `node --test` (`packages/cli/test/custodian.docker.ts`) against it under docker, on
+  the host network with free ports, with local HTTPS upstreams under their own CA; about 23 seconds. Opt-in for the
+  `@kind` reason — it needs docker — and NOT part of `pnpm -r test`. What the default gate keeps is the rendering:
+  `custodian.test.ts` pins the bootstrap and script `jr2 up` writes, socket-free. The `@kind` tier then proves the
+  Custodian in a real pod, in both placements, against a model provider that refuses any request without the key.
 - **Shared cluster state is the one thing a scenario cannot own, and the pool is PROCESSES.** `--parallel` runs cucumber
   workers as separate processes, so a fixture memoized "once per process" runs once per WORKER — four times,
   concurrently, against one cluster. The tier has exactly one such fixture: the git seed (`steps/seed.ts`) it serves

@@ -43,22 +43,29 @@ kind-down:
 # deploys, at content-addressed tags, and delivers them itself; the `:local` tags below exist only
 # for poking at an image by hand, and nothing resolves them.
 
-adapter_image := "jr2-adapter:local"
-
-# build the Adapter image: the Agent's MCP surface, hosted in the Sandbox (ADR-0013)
-adapter-image:
-    docker build -f deploy/adapter/Dockerfile -t {{ adapter_image }} .
-
 # ADR-0018: definitions are injected at pod start, so no per-instance Harness image exists.
 # build the STOCK Harness image (what a real instance runs) and load it into kind
 harness-image:
     docker build -f deploy/harness/Dockerfile -t jr2-harness:local .
     kind load docker-image jr2-harness:local --name {{ cluster }}
 
+# --- the Custodian suite (ADR-0059; requires docker) ---
+#
+# The Custodian's claims that only real sockets can check, against the REAL engine: the pinned Envoy
+# image running the bootstrap and script `jr2 up` renders, local upstreams standing in for model
+# providers and the Orchestrator. Opt-in, like @kind: the default gate needs no docker (ADR-0010).
+# The container runs on the host network, on free ports, so it can share the host with anything.
+
+# run the Custodian suite against the pinned Envoy image
+custodian-test:
+    pnpm --filter @jr2/cli test:custodian
+
 # --- kind e2e tier (ADR-0010; requires docker + kind) ---
 
 # A VANILLA cluster, and nothing else (ADR-0038): `jr2 up` from this checkout builds and `kind load`s
-# every image it deploys — Harness, Adapter, operator, instance, and the instance's Sandbox Images.
+# every image it deploys — Harness, operator, instance, and the instance's Sandbox Images. The one
+# image it deploys and never builds — the Custodian's pinned Envoy (ADR-0059) — a kind node pulls
+# from its registry itself, so the cluster needs network to docker.io (or a `kitRegistry` mirror).
 # Pre-loading a `:local` tag here would be exactly the invisible-stale-image bug that deletes.
 # Nothing is instance-bound to the cluster (ADR-0019): each @kind scenario `jr2 up`s into a fresh
 # namespace, operator included.
@@ -75,7 +82,7 @@ e2e-kind:
     KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:kind
 
 # A COLD host builds every image the tier deploys four times over: the tier runs four workers, and
-# the first scenario of each converges its own namespace from nothing — Harness, Adapter, operator,
+# the first scenario of each converges its own namespace from nothing — Harness, operator,
 # instance, Sandbox Image — with no cross-process lock on a build, so four identical cold builds
 # contend for the same cores and the first step of all four scenarios can pass its 10 minute bound
 # (measured on a 4-core hosted runner: every worker's first scenario timed out, everything after

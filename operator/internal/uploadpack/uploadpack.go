@@ -14,7 +14,7 @@ SPDX-License-Identifier: MIT
 // `git pull`, `git ls-remote origin`, `git fetch --dry-run`, and
 // `git archive --remote=origin`. It owes no remote-helper protocol, because git
 // bridges stdio and speaks its ordinary protocol to whatever is on the other
-// end. The program asks the Adapter on `localhost` for a fetch of this Repo,
+// end. The program asks the Custodian on `localhost` for a fetch of this Repo,
 // waits for the landing, then execs the git server subcommand the service
 // names (`upload-pack`, or `upload-archive`) against the cache and gets out of
 // the way: refs update once, at the end, and what the caller sees is a fetch on
@@ -57,10 +57,17 @@ const (
 	// the remote is asked for first, as it is for a fetch, so an archive is
 	// taken of the remote's now.
 	ServiceUploadArchive = "git-upload-archive"
-	// DefaultAdapterURL is the Adapter on the pod's loopback — the pod's only
-	// route out (ADR-0013). A composition that moved the Adapter's port passes
-	// its own url as the third argument.
-	DefaultAdapterURL = "http://127.0.0.1:8081"
+	// DefaultCustodianURL is the Custodian on the pod's loopback — the pod's
+	// only route to the Orchestrator (ADR-0013, ADR-0059), at the same address
+	// in every Harness pod.
+	DefaultCustodianURL = "http://127.0.0.1:8081"
+	// SandboxTokenStandIn is what the program presents as its bearer: the
+	// Sandbox token's Stand-in (ADR-0059), deterministic and public, and the
+	// one bearer the Custodian swaps for the token on the ask. The program
+	// carries it rather than reading it, because the User Container gets no
+	// env (ADR-0005) and must ask like every other seat. It is worth nothing
+	// anywhere else: the Orchestrator refuses it.
+	SandboxTokenStandIn = "jr2-held-JR2_SANDBOX_TOKEN"
 	// askTimeout bounds the whole ask. The budget belongs to the cache agent
 	// and the Orchestrator's wait (ADR-0053); this is the outermost backstop,
 	// slack past theirs, so that a hung answer degrades to the cache instead
@@ -70,7 +77,7 @@ const (
 	// cache the answer could not date — because nothing has ever fetched it,
 	// or because nothing answered.
 	unknownTime = "an unknown time"
-	// maxBodyBytes caps what is read from the Adapter's answer. The answer is
+	// maxBodyBytes caps what is read from the Custodian's answer. The answer is
 	// two fields; anything larger is a misconfiguration, and the reason text
 	// lands in a human's terminal.
 	maxBodyBytes = 64 << 10
@@ -124,7 +131,7 @@ type ExecFunc func(path string, argv []string, env []string) error
 // Options is everything the program reads from the world. Every field has a
 // default, so main passes only the arguments.
 type Options struct {
-	// Args is argv[1:]: `<service> <identity> [adapter-url]`.
+	// Args is argv[1:]: `<service> <identity> [custodian-url]`.
 	Args []string
 	// Dir is the working directory git ran the program in — the worktree
 	// whose cache is being served. Defaults to the process's own.
@@ -132,13 +139,13 @@ type Options struct {
 	// Env is the environment to hand the git server subcommand. Defaults to
 	// the process's own.
 	Env []string
-	// Getenv reads the fallback adapter url (`JR2_ADAPTER_URL`). Defaults to
-	// os.Getenv.
+	// Getenv reads the fallback custodian url (`JR2_CUSTODIAN_URL`). Defaults
+	// to os.Getenv.
 	Getenv func(string) string
 	// Stderr carries the one warning line git passes through. Defaults to
 	// os.Stderr.
 	Stderr io.Writer
-	// Client asks the Adapter. Defaults to one bounded by askTimeout.
+	// Client asks the Custodian. Defaults to one bounded by askTimeout.
 	Client *http.Client
 	// Exec is the last thing the program does. Defaults to syscall.Exec.
 	Exec ExecFunc
@@ -150,7 +157,7 @@ func Run(o Options) int {
 	fill(&o)
 
 	if len(o.Args) < 2 {
-		say(o, "usage: jr2-upload-pack <service> <identity> [adapter-url]\n")
+		say(o, "usage: jr2-upload-pack <service> <identity> [custodian-url]\n")
 		return 1
 	}
 	service, identity := o.Args[0], o.Args[1]
@@ -195,7 +202,8 @@ func say(o Options, format string, args ...any) {
 	_, _ = fmt.Fprintf(o.Stderr, format, args...)
 }
 
-// ask POSTs the Adapter's `/fetch` and waits for the landing. It returns the
+// ask POSTs the Custodian's `/fetch` and waits for the landing — the Custodian
+// addresses it to this pod's Sandbox and puts the token on it (ADR-0059). It returns the
 // empty string when the remote was fetched; otherwise the reason to warn with
 // and the time the cache is as of. Every failure — transport, status, timeout,
 // a stale answer — is a reason, never an error: the ask cannot fail a fetch.
@@ -209,12 +217,13 @@ func ask(o Options, identity string) (reason, asOf string) {
 	ctx, cancel := context.WithTimeout(context.Background(), askTimeout)
 	defer cancel()
 
-	endpoint := strings.TrimSuffix(adapterURL(o), "/") + "/fetch"
+	endpoint := strings.TrimSuffix(custodianURL(o), "/") + "/fetch"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err.Error(), unknownTime
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+SandboxTokenStandIn)
 
 	resp, err := o.Client.Do(req)
 	if err != nil {
@@ -223,14 +232,14 @@ func ask(o Options, identity string) (reason, asOf string) {
 	defer func() { _ = resp.Body.Close() }()
 	read, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
-		return fmt.Sprintf("the adapter's answer could not be read: %v", err), unknownTime
+		return fmt.Sprintf("the custodian's answer could not be read: %v", err), unknownTime
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("the adapter answered %s: %s", resp.Status, strings.TrimSpace(string(read))), unknownTime
+		return fmt.Sprintf("the custodian answered %s: %s", resp.Status, strings.TrimSpace(string(read))), unknownTime
 	}
 	var a answer
 	if err := json.Unmarshal(read, &a); err != nil {
-		return fmt.Sprintf("the adapter's answer is not the shape jr2 speaks: %v", err), unknownTime
+		return fmt.Sprintf("the custodian's answer is not the shape jr2 speaks: %v", err), unknownTime
 	}
 	switch {
 	case a.Fetched != "":
@@ -238,11 +247,11 @@ func ask(o Options, identity string) (reason, asOf string) {
 	case a.Stale != "":
 		return a.Stale, timeOrUnknown(a.AsOf)
 	default:
-		return "the adapter's answer named neither a fetch nor a staleness", timeOrUnknown(a.AsOf)
+		return "the custodian's answer named neither a fetch nor a staleness", timeOrUnknown(a.AsOf)
 	}
 }
 
-// answer is what the Adapter relays from the Orchestrator: one of `fetched` or
+// answer is what the Custodian relays from the Orchestrator: one of `fetched` or
 // `stale`, and for a stale one the time the cache is as of — null when nothing
 // has ever fetched it.
 type answer struct {
@@ -258,17 +267,17 @@ func timeOrUnknown(ts *string) string {
 	return *ts
 }
 
-// adapterURL: the third argument if git was given one, else `JR2_ADAPTER_URL`,
-// else the loopback default. The attach passes the argument only when the
-// composition moved the Adapter's port, so the ordinary url stays short.
-func adapterURL(o Options) string {
+// custodianURL: the third argument if git was given one, else
+// `JR2_CUSTODIAN_URL`, else the loopback default — which is where every
+// Harness pod's Custodian is, so the attach never passes the argument.
+func custodianURL(o Options) string {
 	if len(o.Args) > 2 && strings.TrimSpace(o.Args[2]) != "" {
 		return strings.TrimSpace(o.Args[2])
 	}
-	if v := strings.TrimSpace(o.Getenv("JR2_ADAPTER_URL")); v != "" {
+	if v := strings.TrimSpace(o.Getenv("JR2_CUSTODIAN_URL")); v != "" {
 		return v
 	}
-	return DefaultAdapterURL
+	return DefaultCustodianURL
 }
 
 // CacheDir is `/repos/<key>` for the checkout at `dir`: the common git dir's

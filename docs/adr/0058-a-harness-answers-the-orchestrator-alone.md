@@ -18,8 +18,8 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   `harnessToken(key, placement) = HMAC(signing key, "harness:" + placement)` on every Harness wire call: admit, each
   long-poll, abort, and echo. `placement` is the name of the pod that hosts the Turn: the Sandbox's name, or
   `jr2-instance-harness`. This is the same name the registration records as its delivery scope
-  ([ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)), so one name scopes both directions. The Adapter there may
-  speak for the Turn's picks, and only this bearer may drive the conversation there.
+  ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)), so one name scopes both
+  directions. The Custodian there may speak for the Turn's picks, and only this bearer may drive the conversation there.
 - **The Harness holds only the digest.** Its env carries `JR2_HARNESS_TOKEN_SHA256 = sha256(bearer)`. The Agent can read
   that env, and a digest inverts to nothing. So a Harness can verify its own bearer, and it can mint none, for itself or
   for another pod. The HMAC key never leaves the Orchestrator's Secret.
@@ -40,8 +40,8 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   Orchestrator pods (`app: jr2-orchestrator`, `jr2.dev/instance: <name>`). They are converged unconditionally, so a
   Harness pod is never created before its policy exists.
 - **Starting a run needs the Instance token.** `POST /workflows/:name/runs` moves from `authenticated` to
-  `instanceOnly`. The scope of a Sandbox token is its own agent surface. No Adapter forwarded this route, but that was
-  not a control.
+  `instanceOnly`. The scope of a Sandbox token is its own agent surface. The Custodian's route allowlist does not
+  forward this route, but that is not a control.
 
 ## Considered options
 
@@ -56,7 +56,7 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   Harness process on every call. A per-placement bearer that leaks from one pod opens only that pod, which the Agent
   there already controls.
 - **NetworkPolicy alone.** Rejected, for the reason ADR-0013 gives: a policy bounds where a pod may talk, and only a
-  token bounds what it may do. The policy cannot separate the Harness from the Adapter in one pod, and a cluster whose
+  token bounds what it may do. The policy cannot separate the Harness from the Custodian in one pod, and a cluster whose
   CNI does not enforce policy gets nothing from it.
 
 ## Consequences
@@ -75,18 +75,16 @@ and we add an ingress NetworkPolicy that admits only the Orchestrator to a Harne
   If routable access to the User Container is added later (ADR-0005 leaves it open), it must add its own ingress rule.
 - **The `@kind` history reads present the bearer.** The steps derive it from the instance Secret's signing key, as the
   CLI reads the Instance token: over the kube API, with RBAC as the gate. A human reading a conversation does the same.
+- **Model keys are not in the Harness container.** `JR2_PROVIDER_API_KEY` and every other held secret live in the
+  Custodian, and the Harness container's env holds their Stand-ins (ADR-0059). `jr2 up` refuses a known model key in
+  `harness.env` or in an `envFrom` Secret.
 - **Open gaps, recorded here and not fixed:**
-  - **Sandbox egress.** An Agent with bash can reach the internet and send out anything it can read. A default-deny
-    egress policy needs an allowlist: DNS, the Orchestrator, the model provider, and whatever the work needs (package
-    registries, for example). That needs a config surface and cluster CIDRs, so it is a separate decision.
-  - **The model API key is in the Harness container.** `JR2_PROVIDER_API_KEY` and literal `harness.env` values come from
-    `jr2-harness-env`, and Working-tool children inherit them, so the Agent can read the key and exfiltrate it. The
-    chosen direction: **the Adapter relays model calls.** The Adapter already exists in both placements. It is already
-    the container that holds a credential the Agent can reach but cannot read, and it already relays more than MCP
-    ([ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)). The key would move
-    to the Adapter's env, and the Harness's provider `baseUrl` would point at the Adapter. The Agent could still spend
-    tokens through the relay while its Sandbox lives, but it could not take the key away. This changes the Adapter's
-    glossary entry and ADR-0018's provider path, so it needs its own ADR.
+  - **Sandbox egress.** An Agent with bash can reach the internet and send out anything it can read — which no longer
+    includes a held key: a client that goes around the Custodian carries only Stand-ins. A default-deny egress policy
+    needs an allowlist: DNS, the Orchestrator, the model provider, and whatever the work needs (package registries, for
+    example). That needs a config surface and cluster CIDRs, so it is a separate decision.
+  - **A held key can be spent.** The Agent can use a key through the Custodian while its pod lives, and a SigV4 or ADC
+    credential cannot be held at all ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)).
   - **The Orchestrator's RBAC is namespace-wide.** Its Role can get, list, create and patch every Secret, and can
     `pods/exec` into every pod. `resourceNames` can pin only the fixed names; `create`, `list` and the per-Sandbox names
     cannot be narrowed that way. An attacker with code execution in the Orchestrator also has the signing key, so the

@@ -45,11 +45,11 @@ says so. A wrong `false` tells an Agent its work was rejected when the workflow 
 recovers from that.
 
 **The receipt gains `moved`.** A third claim beside `delivered` and `turnComplete`, and independent of both: a pick can
-move the Machine within the invoking state (`moved: true, turnComplete: false`). The Adapter renders `moved: false`
+move the Machine within the invoking state (`moved: true, turnComplete: false`). The Harness renders `moved: false`
 first, ahead of the turn-status prose, because it is the thing the Agent can act on — and tells it explicitly not to
 repeat the call unchanged.
 
-**Absent `moved` is not `false`.** The Adapter ships as a stock image and the Orchestrator as the instance image
+**Absent `moved` is not `false`.** The Harness ships as a stock image and the Orchestrator as the instance image
 (ADR-0027), so the two can skew. Read strictly, an Orchestrator too old to send the field would make every receipt on
 the happy path read as a rejection — the cry-wolf failure [ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)
 already paid for once.
@@ -74,9 +74,9 @@ why an option did nothing, which is precisely what an Agent cannot do.
 - **Refuse the delivery outright when `moved` is false** rather than delivering and reporting. Rejected: `deliver` is
   the single validation path behind both dialects, and short-circuiting it would move validation ordering for the sake
   of a distinction the receipt already carries.
-- **Filter mid-turn and push `list_changed`.** Rejected: the Adapter rebuilds the surface per MCP connection and the
-  Harness re-lists per Submission, so the filter lands at turn boundaries for free — and a menu that moves under an
-  Agent that already read it invites the same retry loop from the other direction.
+- **Filter mid-turn and push `list_changed`.** Rejected: the Harness re-reads the surface per Submission, so the filter
+  lands at turn boundaries for free — and a menu that moves under an Agent that already read it invites the same retry
+  loop from the other direction.
 
 ## Consequences
 
@@ -88,5 +88,5 @@ why an option did nothing, which is precisely what an Agent cannot do.
   neither targets nor acts is not a handler. No such handler exists in the repo today; the behavior is pinned by a test.
 - **The menu is now a function of context**, so two turns of one conversation (`continue: true`) can legitimately see
   different menus. That was already true across states; it is now true within one.
-- **Two receipt declarations stay hand-synchronized** across `run-host.ts` and `adapter.ts`. Unchanged by this ADR, and
-  now carrying one more field — the cost of the packages not importing each other.
+- **Two receipt declarations stay hand-synchronized** across `run-host.ts` and the Harness's `menu.ts`. Unchanged by
+  this ADR, and now carrying one more field — the cost of the packages not importing each other.

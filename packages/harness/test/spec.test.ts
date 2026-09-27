@@ -122,3 +122,12 @@ test("loadHarnessSpec: malformed fails loudly, naming the env var", () => {
   assert.throws(() => loadHarnessSpec({ JR2_HARNESS_JSON: "{nope" }), /JR2_HARNESS_JSON is not JSON/);
   assert.throws(() => loadHarnessSpec({ JR2_HARNESS_JSON: JSON.stringify({ provider: { id: "vllm" } }) }), /baseUrl/);
 });
+
+test("loadHarnessSpec: the catalog round-trips, and an entry that is not an https baseUrl fails at boot (ADR-0059)", () => {
+  const catalog = { anthropic: { baseUrl: "https://litellm.corp.example" } };
+  assert.deepEqual(loadHarnessSpec({ JR2_HARNESS_JSON: JSON.stringify({ catalog }) }).catalog, catalog);
+  assert.throws(
+    () => loadHarnessSpec({ JR2_HARNESS_JSON: JSON.stringify({ catalog: { anthropic: { baseUrl: "http://x" } } }) }),
+    /catalog\.anthropic needs \{ baseUrl: "https:\/\/…" \}/,
+  );
+});

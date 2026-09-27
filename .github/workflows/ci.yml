@@ -44,8 +44,8 @@ jobs:
       - name: Format
         run: pnpm format:check
 
-      # `pnpm -r test` includes the harness conformance suite (ADR-0027): pi at its pin, the real
-      # adapter over a real socket, a scripted provider — no infra.
+      # `pnpm -r test` includes the harness conformance suite (ADR-0027): pi at its pin, the Menu
+      # over a real socket, a scripted provider — no infra.
       - name: Unit + conformance
         run: pnpm -r --if-present test
 

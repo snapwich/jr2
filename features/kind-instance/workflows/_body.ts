@@ -48,7 +48,7 @@ export const body = jr2Setup({
         // A Turn's input is its FRAME, its DIALS and whether it CONTINUES, and nothing else
         // (ADR-0057). No endpoint and no sandbox: both resolve AMBIENTLY from the enclosing
         // workspace() (ADR-0016) — and the registration records that Sandbox as its ADR-0013 token
-        // scope, so only this pod's Adapter can deliver into this turn. No Menu either: it derives
+        // scope, so only this pod's Custodian can deliver into this turn. No Menu either: it derives
         // from this state's own transitions (ADR-0015), which are the `finish` below.
         input: () => ({
           // A plain prompt. The pod runs the STOCK Harness (ADR-0038), so what parks the Machine

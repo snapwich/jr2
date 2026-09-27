@@ -15,11 +15,14 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, copyFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, copyFile, link, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setWorldConstructor } from "@cucumber/cucumber";
+import { issueCa, issueLeaf, type Pem } from "@jr2/cli";
 import { startStubHarness, type Admission, type RunningStubHarness } from "@jr2/orchestrator";
 import type { Browser, Page } from "playwright";
 import { startFakeProvider, type FakeProvider } from "./fake-provider.ts";
@@ -117,6 +120,13 @@ export class E2EWorld {
   /** @kind: the scripted MODEL this scenario's pods talk to (ADR-0038). The pod runs the stock
    * Harness, so this is the only fake left in the tier — see `fake-provider.ts`. */
   provider?: FakeProvider;
+  /** The key the scripted model wants (ADR-0059) — this scenario's `harness.provider.apiKey`, which
+   * the Custodian holds and the Harness container must not. */
+  providerKey?: string;
+  /** The unbound echo's url, as a pod reaches it. */
+  echoUrl?: string;
+  /** The scripted model's base url, as a pod reaches it. */
+  providerUrl?: string;
   /** Extra env for the `jr2` binary — @kind publishes the fake provider's address here, because a
    * deployment-varying endpoint rides env and never a committed literal (ADR-0019). */
   private extraEnv: Record<string, string> = {};
@@ -142,8 +152,20 @@ export class E2EWorld {
   async setupKind(): Promise<void> {
     this.namespace = `jr2e2e-${randomBytes(3).toString("hex")}`;
     this.dir = KIND_DIR;
-    this.provider = await startFakeProvider();
-    this.extraEnv.JR2_FAKE_PROVIDER_URL = `http://${await kindHostAddress(this.provider.port)}:${this.provider.port}/v1`;
+    // HTTPS under the tier's own CA (the instance's `caBundle`), and a key per scenario (ADR-0059):
+    // `harness.provider.apiKey` is a held secret, so the only way a turn reaches this model is
+    // through the pod's Custodian. The leaf names the pod-reachable address as an IP SAN — what the
+    // Custodian verifies against, since the target is that IP.
+    const address = await kindHostAddress();
+    this.providerKey = randomBytes(16).toString("hex");
+    this.provider = await startFakeProvider({
+      tls: issueLeaf(await fakeProviderCa(), address),
+      apiKey: this.providerKey,
+    });
+    this.providerUrl = `https://${address}:${this.provider.port}/v1`;
+    this.extraEnv.JR2_FAKE_PROVIDER_URL = this.providerUrl;
+    this.extraEnv.JR2_FAKE_PROVIDER_KEY = this.providerKey;
+    this.echoUrl = `https://${address}:${this.provider.echo.port}/`;
   }
 
   /**
@@ -382,12 +404,59 @@ export class E2EWorld {
  */
 let hostAddress: Promise<string> | undefined;
 
-function kindHostAddress(port: number): Promise<string> {
-  hostAddress ??= resolveHostAddress(port).catch((err: unknown) => {
+/** Resolved against a plain-HTTP listener of its own: the model provider serves HTTPS under a leaf
+ * that must NAME the address, so the address is known before the provider starts. */
+function kindHostAddress(): Promise<string> {
+  hostAddress ??= (async () => {
+    const probe = createHttpServer((_req, res) => res.end("ok"));
+    await new Promise<void>((resolve) => probe.listen(0, "0.0.0.0", resolve));
+    try {
+      return await resolveHostAddress((probe.address() as AddressInfo).port);
+    } finally {
+      probe.closeAllConnections();
+      await new Promise((resolve) => probe.close(resolve));
+    }
+  })().catch((err: unknown) => {
     hostAddress = undefined;
     throw err;
   });
   return hostAddress;
+}
+
+/** Where the tier's provider CA lives: gitignored, beside the scenario temp folders. The instance
+ * names the `.crt` as its `caBundle` by a path relative to itself (`kind-instance/jr2.config.ts`). */
+const FAKE_CA_JSON = fileURLToPath(new URL("../.tmp/fake-provider-ca.json", import.meta.url));
+const FAKE_CA_CRT = fileURLToPath(new URL("../.tmp/fake-provider-ca.crt", import.meta.url));
+
+/**
+ * The tier's provider CA, issued with the kit's own held-secret PKI (ADR-0059) on first need and kept:
+ * four parallel workers share it, so the first to LINK its file into place wins, and every other
+ * worker reads that one. Only its certificate reaches the cluster (as `caBundle`); its key signs
+ * each worker's provider leaf and never leaves this host.
+ *
+ * Cucumber's workers are THREADS of one process, so a temp name carries random bytes, not the pid:
+ * with the pid, two workers wrote one file and the second link found it already removed. The
+ * `.crt` another worker's `jr2 up` may be reading is replaced by a rename, never rewritten in place.
+ */
+async function fakeProviderCa(): Promise<Pem> {
+  await mkdir(dirname(FAKE_CA_JSON), { recursive: true });
+  const read = async (): Promise<Pem | undefined> =>
+    JSON.parse(await readFile(FAKE_CA_JSON, "utf8").catch(() => "null")) as Pem | undefined;
+  const mine = (path: string) => `${path}.${randomBytes(6).toString("hex")}`;
+  let ca = await read();
+  if (!ca) {
+    const json = mine(FAKE_CA_JSON);
+    await writeFile(json, JSON.stringify(issueCa("jr2-e2e-fake-provider")));
+    await link(json, FAKE_CA_JSON).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== "EEXIST") throw err;
+    });
+    await rm(json, { force: true });
+    ca = (await read())!;
+  }
+  const crt = mine(FAKE_CA_CRT);
+  await writeFile(crt, ca.cert);
+  await rename(crt, FAKE_CA_CRT);
+  return ca;
 }
 
 async function resolveHostAddress(port: number): Promise<string> {

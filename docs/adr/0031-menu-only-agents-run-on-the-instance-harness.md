@@ -33,19 +33,22 @@ built.
   the backfilled preamble). Instance Harness log = every `"none"` conversation, instance-wide, interleaved (the less
   useful top-to-bottom read, accepted); Workspace log = everything that ran there plus the narrative of the run that
   owns it.
-- **The Instance Harness pod is Harness + Adapter — the one Harness shape, minus the Workspace.** No user container, no
-  `/work` volume, no attach step. The Adapter stays although `"none"` Agents cannot execute code (the
-  [ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md) rationale technically lapses): the Harness has exactly one
-  menu-delivery path — an Adapter on `localhost` — and forking that path for one pod buys a divergence in the component
-  this ADR keeps deliberately uniform. Defense-in-depth is the bonus, not the reason.
+- **The Instance Harness pod is Harness + Custodian — the one Harness shape, minus the Workspace.** No user container,
+  no `/work` volume, no attach step. The Custodian stays although `"none"` Agents cannot execute code (the
+  [ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) rationale technically lapses):
+  the Harness has exactly one route to its Menu — the Custodian on `localhost` — and forking that path for one pod buys
+  a divergence in the component this ADR keeps deliberately uniform. The pod is composed by the same function a
+  Sandbox's is ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), so its Custodian holds
+  the same held secrets and carries the Instance Harness's model calls the same way. Defense-in-depth is the bonus, not
+  the reason.
 - **No image config at all.** The Harness image was once configured as `sandbox.image` because the Sandbox pod was the
   only place a Harness ran — a misnomer once the Instance Harness exists, and config is the wrong seat regardless:
   `jr2 up` builds and resolves every image it deploys ([ADR-0038](0038-jr2-up-builds-every-image-it-deploys.md)), and
   the per-Workspace images (Sandbox Image, User Container) are static `workspace()` options carried by the Machine
   itself ([ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md),
   [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md),
-  [ADR-0005](0005-sandbox-pod-composition.md)). `sandbox.image`, `sandbox.adapterImage`, and `operator.image` dissolve;
-  the `sandbox` config section disappears until something genuinely pod-shaped and user-tunable exists.
+  [ADR-0005](0005-sandbox-pod-composition.md)). `sandbox.image`, the per-component image keys, and `operator.image`
+  dissolve; the `sandbox` config section disappears until something genuinely pod-shaped and user-tunable exists.
 
 ## Considered options
 

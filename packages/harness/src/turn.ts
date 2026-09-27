@@ -2,11 +2,10 @@
 // Per Submission the definition is read off the ADMISSION that queued it (ADR-0049: the Agent
 // definition rides the Turn; model, instructions and thinkingLevel resolve when the turn starts,
 // with the Frame's cwd beside them — ADR-0057 — so a later Submission on the same conversation may
-// carry a retuned one and a different worktree), a FRESH MCP client fetches the Menu from the
-// Adapter (the previous turn's connection closes deterministically — the leak is bounded to
-// one), and the same pi session carries the conversation: a later Submission is the next
+// carry a retuned one and a different worktree), the Menu is read afresh through the Custodian
+// (menu.ts), and the same pi session carries the conversation: a later Submission is the next
 // `prompt()` on the same AgentHarness. Settlement mapping: a throw settles `failed` (the Menu
-// connect/list, or a provider failure after pi's retries — pi RESOLVES `prompt()` even then,
+// read, or a provider failure after pi's retries — pi RESOLVES `prompt()` even then,
 // with the outcome on the message's `stopReason`, so this module inspects and throws); the
 // signal aborts pi's run, and the prompt winding down rejects promptly so the pump can promote.
 
@@ -22,7 +21,8 @@ import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { Api, AssistantMessage, Model, Models, UserMessage } from "@earendil-works/pi-ai";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { RunawayError, type RunSubmission } from "./conversation.ts";
-import { connectMenu, type Menu } from "./menu.ts";
+import { readMenu, type MenuOptions } from "./menu.ts";
+import { menuTools } from "./menu-tools.ts";
 import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
 import { mapThinkingLevel, resolveModel } from "./provider.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
@@ -34,8 +34,9 @@ import { workingToolsFor } from "./working-tools.ts";
 export type TurnDeps = {
   /** The model registry (`provider.ts` — pi's catalog + the instance's custom provider). */
   models: Models;
-  /** The Adapter on `localhost` — `$JR2_ADAPTER_URL`; the Menu lives at `/mcp/<iid>` (ADR-0013). */
-  adapterUrl: string;
+  /** Where the Menu is read and picks go: the Custodian on `localhost` (`$JR2_CUSTODIAN_URL`), with
+   * the Sandbox token's Stand-in (`$JR2_SANDBOX_TOKEN`) — ADR-0013, ADR-0059. */
+  menu: MenuOptions;
   agentName: string;
   instanceId: string;
   appendMessage: (message: HistoryMessage) => void;
@@ -90,9 +91,6 @@ type Assembled = {
 export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   const repo = new InMemorySessionRepo();
   let assembled: Assembled | undefined;
-  /** The previous turn's Menu connection — closed when the next turn assembles, whatever state
-   * that turn ended in. */
-  let menu: Menu | undefined;
   const stepBudget = deps.stepBudget ?? STEP_BUDGET;
   const identicalCallLimit = deps.identicalCallLimit ?? IDENTICAL_CALL_LIMIT;
   /** The `context` hook writes the Compaction line itself (there is no pi event to subscribe to),
@@ -121,12 +119,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     const model = resolveModel(deps.models, definition.model);
     const thinkingLevel = definition.thinkingLevel ? mapThinkingLevel(definition.thinkingLevel) : "off";
 
-    await menu?.close();
-    menu = undefined;
     // A turn that cannot see its Menu settles `failed` — the throw propagates to the pump. The
-    // signal rides along so an abort landing mid connect/list cancels it: promotion of the next
-    // admission (the ADR-0024 hot path) must not park behind the MCP SDK's request timeout.
-    menu = await connectMenu(deps.adapterUrl, deps.instanceId, signal);
+    // signal rides along so an abort landing mid read cancels it: promotion of the next admission
+    // (the ADR-0024 hot path) must not park behind a retry ladder.
+    const menu = await readMenu(deps.menu, deps.instanceId, signal);
 
     if (!assembled) {
       const current = { definition, model, thinkingLevel, signal };
@@ -247,7 +243,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     }
 
     const harness = assembled.harness;
-    const tools = [...workingToolsFor(definition, definition.cwd), ...menu.tools];
+    const tools = [...workingToolsFor(definition, definition.cwd), ...menuTools(menu)];
     // The active names go explicitly: without them setTools KEEPS the previous active set, which
     // is empty on a harness constructed with no tools — every tool would ride to pi inactive.
     await harness.setTools(

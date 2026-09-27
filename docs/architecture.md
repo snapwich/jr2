@@ -53,12 +53,12 @@ flowchart LR
 
       subgraph ih["Instance Harness pod — Menu-only Agents"]
         ihh["Harness"]
-        iha["Adapter"]
+        iha["Custodian"]
       end
 
       subgraph sb["Sandbox pod — one per Workspace"]
         harness["Harness<br/>the Agent + its Working tools"]
-        adapter["Adapter"]
+        custodian["Custodian<br/>the pod's credentials"]
         user["User Container<br/>optional, zero-contract"]
         work[("/work<br/>default/ clone + Worktree")]
       end
@@ -72,12 +72,13 @@ flowchart LR
   operator -->|"reconciles the CR into this pod;<br/>reaps it when the Lease lapses"| sb
   host -->|"Harness wire · placement bearer"| harness
   host -->|"Harness wire · placement bearer"| ihh
-  harness -->|"MCP: the Menu, on localhost"| adapter
-  adapter -->|"Gate delivery · Sandbox token"| api
-  ihh -->|"MCP, on localhost"| iha
+  harness -->|"the Menu and picks · a Stand-in, on localhost"| custodian
+  custodian -->|"Gate delivery · Sandbox token"| api
+  ihh -->|"the Menu and picks, on localhost"| iha
   iha -->|"Gate delivery · Instance Harness token"| api
-  harness -->|"completions"| provider
-  ihh -->|"completions"| provider
+  harness -->|"completions · HTTPS_PROXY"| custodian
+  custodian -->|"completions · the held key"| provider
+  iha -->|"completions · the held key"| provider
   host --- state
   host -->|"Repo CR, via the Kubernetes API"| repocr
   operator -->|"reconciles onto the nodes that need it"| repocr
@@ -90,33 +91,38 @@ flowchart LR
   user -->|"push · the user's ssh"| remote
 
   classDef credential fill:#fde68a,stroke:#b45309,color:#111
-  class adapter,iha credential
+  class custodian,iha credential
 ```
 
-The Agent's only control-plane peer is the Adapter on the pod's loopback (ADR-0013). The Harness container gets the
-Adapter's URL and nothing else: no Orchestrator URL, no token. So the container that executes code cannot reach the
-control plane, and the container that can reach it executes nothing. The Instance token, which unlocks control in the
-CLI and Console, never enters any pod (ADR-0032). The wire runs the other way authenticated too: the Orchestrator bears
-a token derived for each Harness pod, the Harness holds only its digest, and an ingress NetworkPolicy admits no other
-pod (ADR-0058). Nothing in the cluster represents a run; a Workspace's liveness is a Lease the Actor renews, and the
-operator reaps a Sandbox whose Lease lapsed (ADR-0001, ADR-0021). The Instance Harness is the same two containers
-without a Worktree, and hosts every Menu-only Agent's Turn (ADR-0031).
+The Agent's only control-plane peer is the Custodian on the pod's loopback (ADR-0013). The Harness container gets the
+Custodian's URL and a Stand-in for every credential: no token, no model key. The Custodian holds them, and puts each on
+the wire only where it is bound — the Sandbox token on three routes to the Orchestrator, a model key toward its
+provider's host (ADR-0059). So the container that executes code holds nothing worth taking, and the container that holds
+the credentials executes nothing the Agent wrote. The Instance token, which unlocks control in the CLI and Console,
+never enters any pod (ADR-0032). The wire runs the other way authenticated too: the Orchestrator bears a token derived
+for each Harness pod, the Harness holds only its digest, and an ingress NetworkPolicy admits no other pod (ADR-0058).
+Nothing in the cluster represents a run; a Workspace's liveness is a Lease the Actor renews, and the operator reaps a
+Sandbox whose Lease lapsed (ADR-0001, ADR-0021). The Instance Harness is the same two containers without a Worktree, and
+hosts every Menu-only Agent's Turn (ADR-0031).
 
 **Answers**
 
-- **Isolation** — the Sandbox pod: its own network and process space, `/work` shared only inside the pod; the Adapter
-  and Harness split; a Harness that answers the Orchestrator alone; the operator's reap on a lapsed Lease.
+- **Isolation** — the Sandbox pod: its own network and process space, `/work` shared only inside the pod; the Custodian
+  and Harness split, so the Agent holds Stand-ins and never a key; a Harness that answers the Orchestrator alone; the
+  operator's reap on a lapsed Lease.
 - **Distribution** — the Run host holds Actors and the ledger; the Harness wire is the only thing between an Actor and
   its Agent, so the Sandbox lands on any node.
-- **Model agnostic** — the Harness is the sole box that talks to a provider.
+- **Model agnostic** — the Harness is the sole box that talks to a provider, through its Custodian; pi's catalog
+  providers can be moved to a gateway (ADR-0059).
 - **Headless** — CLI, Browser, and Webhook all enter through one HTTP API.
 - **Local to shared** — the cluster box is kind or shared; nothing inside it changes.
 
 ## 2. One Turn
 
 How a Machine state drives one Agent. The boxes are where each lane runs: the Orchestrator is one process; the Harness
-and the Adapter are two containers of one Sandbox pod, and only the Adapter holds a credential. The highlighted stretch
-is the Menu round trip: the Agent learns what it may say by asking, and what it says lands on the state that asked.
+and the Custodian are two containers of one Sandbox pod, and only the Custodian holds a credential. The highlighted
+stretch is the Menu round trip: the Agent learns what it may say by asking, and what it says lands on the state that
+asked.
 
 ```mermaid
 sequenceDiagram
@@ -128,8 +134,8 @@ sequenceDiagram
     participant H as Harness
     participant Ag as Agent (the model)
   end
-  box rgb(255, 241, 242) Sandbox pod · Adapter container
-    participant Ad as Adapter
+  box rgb(255, 241, 242) Sandbox pod · Custodian container
+    participant C as Custodian
   end
 
   S->>A: invoke src: "coder" { prompt, Dials }
@@ -142,15 +148,18 @@ sequenceDiagram
   loop the Turn
     Ag->>H: Working tools — read, edit, bash in /work
     rect rgb(253, 230, 138)
-      Ag->>Ad: MCP tools/list, on localhost
-      Ad->>A: GET /agents/:id/surface · Sandbox token
-      A-->>Ad: the Menu — this state's events its guards accept now
-      Ad-->>Ag: tools
-      Ag->>Ad: MCP tools/call ‹event›
-      Ad->>A: POST /agents/:id/events
+      H->>C: GET /agents/:id/surface · the Stand-in, on localhost
+      C->>A: the same · Sandbox token
+      A-->>C: the Menu — this state's events its guards accept now
+      C-->>H: the Menu
+      H-->>Ag: tools, as mcp__jr2__‹event›
+      Ag->>H: a call to ‹event›
+      H->>C: POST /agents/:id/events · the Stand-in
+      C->>A: the same · Sandbox token
       A->>S: deliver — the transition fires
-      A-->>Ad: receipt — consumed, or the turn is over
-      Ad-->>Ag: receipt
+      A-->>C: receipt — consumed, or the turn is over
+      C-->>H: receipt
+      H-->>Ag: the receipt, as prose
     end
   end
 
@@ -161,10 +170,10 @@ sequenceDiagram
 
 A Machine state that invokes an Agent derives its Menu from its own transitions (ADR-0015), narrowed to the events its
 guards would accept right now (ADR-0029). The Actor registers that Menu when the state is entered and removes it when
-the state exits, so the Adapter never learns which Turn is live: it asks per connection. A pick is a Gate delivery,
-validated against the invoking Machine's Vocabulary, and lands on the invoking state at any nesting depth. When the
-state stops waiting, the Turn is over: the Actor aborts the Submission, because an Agent still generating after its
-state moved on is an unaccounted-for writer in the Workspace (ADR-0024). A Runaway is ended by the Harness, rerolled
+the state exits, so nothing in the pod learns which Turn is live: the Harness asks per Submission. A pick is a Gate
+delivery, validated against the invoking Machine's Vocabulary, and lands on the invoking state at any nesting depth.
+When the state stops waiting, the Turn is over: the Actor aborts the Submission, because an Agent still generating after
+its state moved on is an unaccounted-for writer in the Workspace (ADR-0024). A Runaway is ended by the Harness, rerolled
 once, then a fault (ADR-0035).
 
 **Answers**

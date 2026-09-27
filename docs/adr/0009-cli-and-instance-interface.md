@@ -55,11 +55,12 @@ export default defineConfig({
   [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md),
   [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)) and opts into a User Container the same way
   ([ADR-0005](0005-sandbox-pod-composition.md)); `images/default` is the one path convention `jr2 up` still checks.
-  Every Sandbox gets an Adapter — an Agent without one cannot act (ADR-0013) — and that is not configurable.
-  Agent-runtime concerns live in `harness` (ADR-0018).
-- **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`) and the env/creds the Agents
-  need (e.g. an Anthropic key, read from `process.env`/`.env` and materialized as a Secret by `jr2 up`, or `envFrom`
-  refs to Secrets you manage) — never which model to use; each definition names its own (ADR-0018).
+  Every Harness pod gets a Custodian — an Agent without one cannot act (ADR-0013, ADR-0059) — and that is not
+  configurable. Agent-runtime concerns live in `harness` (ADR-0018).
+- **`harness` is the agent-runtime section** (ADR-0018): custom provider (`api`, `baseUrl`), the gateways pi's catalog
+  providers call (`catalog`), the credentials the Agents use (`heldSecrets` — e.g. an Anthropic key, read from
+  `process.env`/`.env`, held by the Custodian and never by the Harness, ADR-0059) and any other env — never which model
+  to use; each definition names its own (ADR-0018).
 - **`registry`** (deployment-varying, resolve from env): absent → images are `kind load`-ed; present → pushed
   (ADR-0019). **`kitRegistry`** (also env) re-homes the published Kit image refs for self-hosted, air-gapped, or
   mirror-only clusters ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)).
@@ -97,7 +98,8 @@ GET  /runs/:runId/events               # SSE: status replay + live deltas       
 POST /runs/:runId/events               # run-level infra interrupt: CANCEL               [instance]
 POST /runs/:runId/gates/:gate/events   # deliver a workflow event to an open gate        [instance]
 GET  /repos                            # per-Repo node-cache sync state (ADR-0048)        [instance]
-GET  /agents/:iid/surface   POST /agents/:iid/events   # the Adapter's surface           [sandbox]
+GET  /agents/:iid/surface   POST /agents/:iid/events   # the Menu, via the Custodian    [sandbox]
+POST /sandboxes/:name/fetch                            # the ask (ADR-0053)             [sandbox]
 GET  /healthz   GET /readyz
 ```
 
@@ -180,7 +182,7 @@ ADR-0056), `kit` (the `@jr2/orchestrator` the Instance resolves + the ADR-0056 c
 kit checkout or installed from which registry — the reader needs the mode to know whether deployed Kit tags are versions
 or content hashes), `node`. The deployed half, best-effort: `orchestrator` (what the pod answers on `/healthz` —
 version + hash, flagging a Deployment label that disagrees as an incomplete rollout), `operator` (its version label —
-never downgraded, so no skew verdict on it), `harness`/`adapter` and any Sandbox Image refs from the `jr2-images`
+never downgraded, so no skew verdict on it), `harness`/`custodian` and any Sandbox Image refs from the `jr2-images`
 ConfigMap pods actually read, and one `skew` verdict comparing the two kit numbers: `same`/`behind`/`ahead`/`unknown`,
 with the `jr2 up` consequence spelled out and, in checkout mode, a reminder that `same` is weak and the hash is the
 address. Nothing is computed that `jr2 up` computes: no bundle staging, no local hash. It is the one Instance verb that
@@ -235,7 +237,7 @@ auto-install — it prints the next step, naming no package manager, since the i
 ## Consequences
 
 - The instance-facing packages (`@jr2/cli`, `@jr2/orchestrator`, `@jr2/agent-protocol`) publish to npm; `@jr2/harness`
-  and `@jr2/adapter` ship inside Kit images, never via npm
+  ships inside a Kit image, never via npm
   ([ADR-0043](0043-the-kit-is-tested-as-installed-a-local-registry-stands-in-for-npm.md)). The CLI ships as the `jr2`
   bin (`npx jr2`).
 - Workspaces are a first-class CLI resource backed by the operator's `Sandbox` CRs, label-linked to their runs.

@@ -9,7 +9,15 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { KIT_VERSION, harnessTokenDigest, sandboxToken } from "@jr2/orchestrator";
+import { X509Certificate } from "node:crypto";
+import {
+  custodianRef,
+  KIT_VERSION,
+  harnessTokenDigest,
+  leafStem,
+  sandboxToken,
+  type HeldManifest,
+} from "@jr2/orchestrator";
 import { linkKit } from "./_kit.ts";
 import { up } from "../src/commands/up.ts";
 import type { KubeAdmin, KubeObject } from "../src/kube.ts";
@@ -38,8 +46,12 @@ class FakeCluster implements KubeAdmin {
   async getJson<T = KubeObject>(opts: { kind: string; name: string; namespace?: string }): Promise<T | undefined> {
     return this.objects.get(`${opts.namespace ?? ""}/${opts.kind.toLowerCase()}/${opts.name}`) as T | undefined;
   }
-  async apply(opts: { manifest: string }): Promise<void> {
+  /** The names of the objects applied server-side (ADR-0059's trust bundles). */
+  serverSide: string[] = [];
+  async apply(opts: { manifest: string; serverSide?: boolean }): Promise<void> {
     this.applied.push(opts.manifest);
+    if (opts.serverSide)
+      this.serverSide.push((JSON.parse(opts.manifest) as { metadata: { name: string } }).metadata.name);
   }
   async label(opts: Record<string, unknown>): Promise<void> {
     this.labeled.push(opts);
@@ -343,7 +355,6 @@ async function mkKit(): Promise<string> {
   const kit = await mkdtemp(join(tmpdir(), "jr2-kit-"));
   const files: Record<string, string> = {
     "deploy/harness/Dockerfile": "FROM node:24-slim\n",
-    "deploy/adapter/Dockerfile": "FROM node:24-alpine\n",
     "operator/Dockerfile": "FROM golang:1.23\n",
     // The Harness image builds `jr2-upload-pack` out of the operator module too (ADR-0053).
     "operator/go.mod": "module github.com/snapwich/jr2/operator\n",
@@ -351,7 +362,6 @@ async function mkKit(): Promise<string> {
     "operator/cmd/jr2-upload-pack/main.go": "package main\n",
     "operator/internal/uploadpack/uploadpack.go": "package uploadpack\n",
     "packages/harness/package.json": `{"name":"@jr2/harness"}`,
-    "packages/adapter/package.json": `{"name":"@jr2/adapter"}`,
   };
   for (const [rel, content] of Object.entries(files)) {
     await mkdir(join(kit, dirname(rel)), { recursive: true });
@@ -573,14 +583,14 @@ test("operator: manage:false skips the layer — and the image build with it", a
 
 // --- kit images (ADR-0038): built from source in a checkout, published when installed -----------
 
-test("a kit checkout builds the Harness, Adapter, and operator; installed from npm builds none", async () => {
+test("a kit checkout builds the Harness and operator; installed from npm builds none; the Custodian is never built", async () => {
   const kit = await mkKit();
   const root = await mkInstance(`export default { name: "myinst" };\n`);
 
   const checkout = mkWorld(root, { kitDir: kit });
   assert.equal(await up(["--yes"], checkout.io), 0);
   assert.match(checkout.err.join("\n"), /kit checkout/, "the mode is narrated once, not inferred");
-  for (const repo of ["jr2-harness", "jr2-adapter", "jr2-operator"]) {
+  for (const repo of ["jr2-harness", "jr2-operator"]) {
     const built = checkout.built.find((b) => b.startsWith(`build ${repo}:`))!;
     assert.ok(built, `${repo} is built (got: ${checkout.built.join(", ")})`);
     const ref = built.slice("build ".length);
@@ -601,14 +611,19 @@ test("a kit checkout builds the Harness, Adapter, and operator; installed from n
   assert.equal(await up(["--yes"], installed.io), 0);
   assert.match(installed.err.join("\n"), /installed kit/);
   assert.ok(
-    !installed.built.some((b) => /^build jr2-(harness|adapter|operator):/.test(b)),
+    !installed.built.some((b) => /^build jr2-(harness|operator):/.test(b)),
     `installed from npm, kit images are pulled, never built (got: ${installed.built.join(", ")})`,
   );
   // The published <kitversion> refs are what the map names, and what the Instance Harness runs —
   // at the canonical home, because a bare tag is `docker.io/library/` and nothing is there
   // (ADR-0044).
   assert.equal(imagesOf(installed).harness, `ghcr.io/snapwich/jr2-harness:${KIT_VERSION}`);
-  assert.equal(imagesOf(installed).adapter, `ghcr.io/snapwich/jr2-adapter:${KIT_VERSION}`);
+  // The Custodian's image is deployed and never built, in either world (ADR-0038, ADR-0059): the
+  // pinned upstream Envoy, by digest.
+  for (const world of [checkout, installed]) {
+    assert.equal(imagesOf(world).custodian, custodianRef());
+    assert.ok(!world.built.some((b) => /envoy/.test(b)), "nothing builds or delivers Envoy");
+  }
 });
 
 test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come from the home (ADR-0044)", async () => {
@@ -620,7 +635,7 @@ test("installed, kitRegistry re-homes every deployed Kit ref; absent, they come 
   assert.equal(await up(["--yes"], w.io), 0);
   const images = imagesOf(w);
   assert.equal(images.harness, `zot.example.test/jr2-harness:${KIT_VERSION}`);
-  assert.equal(images.adapter, `zot.example.test/jr2-adapter:${KIT_VERSION}`);
+  assert.equal(images.custodian, custodianRef("zot.example.test"));
   assert.equal(images.operator, `zot.example.test/jr2-operator:${KIT_VERSION}`);
   assert.match(w.err.join("\n"), /zot\.example\.test/, "the mirror is narrated, never silently used");
   assert.ok(
@@ -651,7 +666,7 @@ test("a registry pushes every layer; a non-kind context without one fails BEFORE
   const pushRoot = await mkInstance(`export default { name: "r", registry: "reg.example.com/jr2" };\n`, "r");
   const w = mkWorld(pushRoot, { kitDir: kit });
   assert.equal(await up(["--yes"], w.io), 0);
-  for (const repo of ["jr2-harness", "jr2-adapter", "jr2-operator", "jr2-instance-r"]) {
+  for (const repo of ["jr2-harness", "jr2-operator", "jr2-instance-r"]) {
     assert.ok(
       w.built.some((b) => b.startsWith(`push reg.example.com/jr2/${repo}:`)),
       `${repo} is pushed (got: ${w.built.join(", ")})`,
@@ -719,7 +734,7 @@ test("the Deployment's image annotation makes a second converge spend zero docke
     },
   });
   assert.equal(await up(["--force"], forced.io), 0);
-  for (const ref of [images.harness, images.adapter, images.operator, images.sandbox.default]) {
+  for (const ref of [images.harness, images.operator, images.sandbox.default]) {
     assert.ok(forced.built.includes(`build ${ref}`), `--force rebuilds ${ref} (got: ${forced.built.join(", ")})`);
   }
 
@@ -752,7 +767,7 @@ test("a silent record consults the host daemon: host-built refs skip their build
   assert.equal(await up(["--yes"], first.io), 0);
   const images = imagesOf(first);
   const instanceTag = first.built.find((b) => b.startsWith("build jr2-instance-myinst:"))!.slice("build ".length);
-  const refs = [images.harness, images.adapter, images.operator, images.sandbox.default, instanceTag] as string[];
+  const refs = [images.harness, images.operator, images.sandbox.default, instanceTag] as string[];
 
   // A fresh namespace: no Deployment, no annotation — the record is silent. But the host daemon
   // still holds every ref this converge resolves, labeled, at the exact content-addressed tags:
@@ -1154,8 +1169,9 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
   assert.ok(!("GL_TOKEN" in instance.stringData), "an unset var materializes nothing");
   assert.ok(!("STRAY" in instance.stringData), "and an env var no entry names never enters the Secret");
   // The Orchestrator neither clones nor holds a key: its one claim is its state, its mounts are
-  // state and the image map, and its env is its namespace and content hash — the credential
-  // rides the Secret above and is read only by the cache agent.
+  // state, the image map and the held-secret manifest (names and hosts, never a value — ADR-0059),
+  // and its env is its namespace and content hash — the credential rides the Secret above and is
+  // read only by the cache agent.
   assert.deepEqual(
     items.filter((i) => i.kind === "PersistentVolumeClaim").map((i) => i.metadata.name),
     ["jr2-state"],
@@ -1164,7 +1180,7 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
   const podSpec = orch.spec.template.spec;
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
-    ["state", "images"],
+    ["state", "images", "held"],
   );
   assert.deepEqual(
     podSpec.containers[0].env.map((e: { name: string }) => e.name),
@@ -1519,7 +1535,7 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   const instance = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-instance")!;
   assert.equal(instance.stringData.JR2_INSTANCE_TOKEN, "tok-old", "an existing token is kept (Sandboxes hold it)");
   assert.ok(instance.stringData.JR2_SIGNING_KEY, "a missing signing key is minted");
-  // The Instance Harness Adapter's credential (ADR-0031): a sandbox-style token signed for the
+  // The Instance Harness Custodian's credential (ADR-0031): a sandbox-style token signed for the
   // placement's name — derived from the kept key, so re-runs converge to the same value.
   assert.equal(
     instance.stringData.JR2_INSTANCE_HARNESS_TOKEN,
@@ -1535,20 +1551,53 @@ test("secret: token + signing key persist across re-runs; harness.env literals m
   assert.equal(harnessEnv.stringData.JR2_INSTANCE_TOKEN, undefined, "the token never rides the harness Secret");
 });
 
-test("provider apiKey rides the Secret (JR2_PROVIDER_API_KEY), never the harness ConfigMap", async () => {
+test("provider apiKey is a held secret: the Custodian's Secret holds it, the Harness's never does (ADR-0059)", async () => {
   const root = await mkInstance(
-    `export default { name: "myinst", harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "http://10.0.0.5:8000/v1", apiKey: "sk-secret", contextWindow: 131072, maxTokens: 32768, models: { "qwen-x": { contextWindow: 40960 } } } } };\n`,
+    `export default { name: "myinst", harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "https://10.0.0.5:8000/v1", apiKey: "sk-secret", contextWindow: 131072, maxTokens: 32768, models: { "qwen-x": { contextWindow: 40960 } } } } };\n`,
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
   const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
   const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const secret = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-harness-env")!;
-  assert.equal(secret.stringData.JR2_PROVIDER_API_KEY, "sk-secret");
+  const harnessEnv = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-harness-env")!;
+  assert.equal(harnessEnv.stringData.JR2_PROVIDER_API_KEY, undefined, "the Agent can read that Secret");
+  const held = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-held-secrets")!;
+  assert.deepEqual(held.stringData, { JR2_PROVIDER_API_KEY: "sk-secret" }, "written as given, no newline added");
+
+  // The binding: the endpoint's own host and port, the default credential headers.
+  const heldCm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+  const manifest = JSON.parse(heldCm.data["held.json"]) as HeldManifest;
+  assert.deepEqual(manifest.secrets, [
+    {
+      name: "JR2_PROVIDER_API_KEY",
+      source: { kind: "literal" },
+      hosts: [{ host: "10.0.0.5", port: 8000, leaf: leafStem("10.0.0.5", 8000) }],
+      headers: ["authorization", "x-api-key", "x-goog-api-key", "api-key"],
+    },
+  ]);
+  // A leaf for that target, from a CA no pod mounts; the CA's key rides only its own Secret.
+  const tls = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-held-tls")!;
+  assert.deepEqual(Object.keys(tls.stringData).sort(), [
+    `${leafStem("10.0.0.5", 8000)}.crt`,
+    `${leafStem("10.0.0.5", 8000)}.key`,
+  ]);
+  const ca = items.find((i) => i.kind === "Secret" && i.metadata.name === "jr2-held-ca")!;
+  assert.ok(
+    new X509Certificate(tls.stringData[`${leafStem("10.0.0.5", 8000)}.crt`]).verify(
+      new X509Certificate(ca.stringData["ca.crt"]).publicKey,
+    ),
+  );
+  assert.match(w.err.join("\n"), /held secret JR2_PROVIDER_API_KEY → 10\.0\.0\.5:8000 \(literal\)/);
+  for (const line of w.err) assert.ok(!line.includes("sk-secret"), "the converge narrates names, never a value");
 
   const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-harness")!;
-  assert.ok(!cm.data["harness.json"].includes("sk-secret"), "the key never lands in a ConfigMap");
+  for (const cmItem of items.filter((i) => i.kind === "ConfigMap")) {
+    assert.ok(
+      !JSON.stringify(cmItem).includes("sk-secret"),
+      `the key never lands in a ConfigMap (${cmItem.metadata.name})`,
+    );
+  }
   assert.match(cm.data["harness.json"], /baseUrl/, "the rest of the provider config does ride the ConfigMap");
   // Token limits are model properties, not credentials — they DO ride the ConfigMap.
   const spec = JSON.parse(cm.data["harness.json"]) as { provider: Record<string, unknown>; agents?: unknown };
@@ -1558,6 +1607,74 @@ test("provider apiKey rides the Secret (JR2_PROVIDER_API_KEY), never the harness
   // What this ConfigMap is NOT any more (ADR-0049): a roster. The definition rides each Turn, so
   // deployment facts are all that is left to mount.
   assert.equal(spec.agents, undefined, "no Agent roster rides the deployment");
+
+  // The trust bundles, server-side: roots + the jr2 CA for the Harness, roots alone upstream.
+  const trust = JSON.parse(w.kube.applied.find((m) => m.includes(`"name":"jr2-ca"`))!);
+  assert.ok(trust.data["extra.crt"].includes(ca.stringData["ca.crt"]));
+  assert.ok(trust.data["bundle.crt"].includes(ca.stringData["ca.crt"]));
+  assert.ok(
+    !trust.data["upstream.crt"].includes(ca.stringData["ca.crt"]),
+    "the Custodian never trusts its own CA upstream",
+  );
+  assert.deepEqual(w.kube.serverSide, ["jr2-ca"]);
+});
+
+test("the CA is kept, a leaf that still fits is reused, and a converge holding nothing drops the Custodian's Secrets", async () => {
+  const config = `export default { name: "myinst", harness: { provider: { id: "vllm", api: "openai-completions", baseUrl: "https://llm.corp.example/v1", apiKey: "sk-1" } } };\n`;
+  const root = await mkInstance(config);
+  const first = mkWorld(root);
+  assert.equal(await up(["--yes"], first.io), 0);
+  const items = (
+    JSON.parse(first.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as { items: Array<Record<string, any>> }
+  ).items;
+  const ca = items.find((i) => i.metadata.name === "jr2-held-ca")!;
+  const tls = items.find((i) => i.metadata.name === "jr2-held-tls")!;
+
+  // The next converge finds both in the cluster: same CA, same leaf.
+  const second = mkWorld(root);
+  const b64 = (data: Record<string, string>) =>
+    Object.fromEntries(Object.entries(data).map(([k, v]) => [k, Buffer.from(v).toString("base64")]));
+  second.kube.set("myinst", "secret", "jr2-held-ca", { data: b64(ca.stringData) } as never);
+  second.kube.set("myinst", "secret", "jr2-held-tls", { data: b64(tls.stringData) } as never);
+  assert.equal(await up(["--yes"], second.io), 0);
+  const again = (
+    JSON.parse(second.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as { items: Array<Record<string, any>> }
+  ).items;
+  assert.deepEqual(again.find((i) => i.metadata.name === "jr2-held-ca")!.stringData, ca.stringData);
+  assert.deepEqual(again.find((i) => i.metadata.name === "jr2-held-tls")!.stringData, tls.stringData);
+
+  // Nothing held: the values and the leaves go; the CA stays for the next time.
+  const none = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
+  assert.equal(await up(["--yes"], none.io), 0);
+  assert.ok(none.kube.deleted.includes("myinst/secret/jr2-held-secrets"));
+  assert.ok(none.kube.deleted.includes("myinst/secret/jr2-held-tls"));
+  assert.ok(!none.kube.deleted.includes("myinst/secret/jr2-held-ca"));
+  const cm = (
+    JSON.parse(none.kube.applied.find((m) => m.includes(`"kind":"List"`))!) as { items: Array<Record<string, any>> }
+  ).items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-held")!;
+  assert.deepEqual(JSON.parse(cm.data["held.json"]), { version: 1, secrets: [] }, "the manifest is applied always");
+});
+
+test("a known model key in harness.env or in an envFrom Secret is refused, naming the line to write (R1)", async () => {
+  const inEnv = mkWorld(
+    await mkInstance(
+      `export default { name: "myinst", harness: { env: [{ name: "ANTHROPIC_API_KEY", value: "sk-x" }] } };\n`,
+    ),
+  );
+  await assert.rejects(
+    () => up(["--yes"], inEnv.io),
+    /harness\.env\[0\] sets ANTHROPIC_API_KEY.*heldSecrets: \[\{ name: "ANTHROPIC_API_KEY", value: process\.env\.ANTHROPIC_API_KEY \}\]/s,
+  );
+
+  const viaSecret = mkWorld(
+    await mkInstance(`export default { name: "myinst", harness: { envFrom: [{ secretRef: { name: "team" } }] } };\n`),
+  );
+  viaSecret.kube.set("myinst", "secret", "team", { data: { OPENAI_API_KEY: "c2stb3BlbmFp", OTHER: "eA==" } } as never);
+  await assert.rejects(
+    () => up(["--yes"], viaSecret.io),
+    /harness\.envFrom\[0\] loads Secret "team", which carries OPENAI_API_KEY/,
+  );
+  assert.ok(!viaSecret.kube.applied.some((m) => m.includes(`"kind":"List"`)), "refused before anything is applied");
 });
 
 test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a missing file fails loudly", async () => {
@@ -1571,11 +1688,16 @@ test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a m
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  // A ConfigMap, not a Secret — CA certs are public data (ADR-0020).
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
-  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  const cm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-ca")!;
+  // A ConfigMap, not a Secret — CA certs are public data (ADR-0020). Its own manifest, applied
+  // server-side and FIRST: with a held secret it carries every root, past client-side apply's limit.
+  const cm = JSON.parse(w.kube.applied[w.kube.applied.findIndex((m) => m.includes(`"name":"jr2-ca"`))]!);
+  assert.equal(cm.kind, "ConfigMap");
   assert.equal(cm.data["ca.crt"], pem);
+  assert.ok(
+    w.kube.applied.findIndex((m) => m.includes(`"name":"jr2-ca"`)) <
+      w.kube.applied.findIndex((m) => m.includes(`"kind":"List"`)),
+    "the trust exists before any pod that mounts it",
+  );
   // The preflight pod trusts the same bundle the Harness will — else it fails where pods succeed.
   assert.deepEqual(w.kube.probeCaPems, [pem]);
 
@@ -1583,13 +1705,11 @@ test("caBundle: the PEM rides a jr2-ca ConfigMap and the provider preflight; a m
   await assert.rejects(() => up(["--yes"], missing.io), /caBundle.*relative to the instance folder/s);
 });
 
-test("no caBundle → no jr2-ca ConfigMap", async () => {
+test("no caBundle and nothing held → no jr2-ca ConfigMap", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
-  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`))!;
-  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
-  assert.ok(!items.some((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-ca"));
+  assert.ok(!w.kube.applied.some((m) => m.includes(`"name":"jr2-ca"`)));
 });
 
 test("a referenced-but-missing Secret fails the converge naming it, with the creation hint", async () => {
@@ -1921,7 +2041,7 @@ function findInstanceHarness(w: World): { deployment?: Record<string, any>; serv
   return {};
 }
 
-test('a workspace: "none" definition converges the Instance Harness — Harness + Adapter, minus the Workspace', async () => {
+test('a workspace: "none" definition converges the Instance Harness — Harness + Custodian, minus the Workspace', async () => {
   const root = await mkInstance(
     `export default { name: "myinst", harness: { env: [{ name: "K", value: "v" }] } };\n`,
     "myinst",
@@ -1939,9 +2059,14 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   const podSpec = deployment.spec.template.spec;
   assert.deepEqual(
     podSpec.containers.map((c: { name: string }) => c.name),
-    ["harness", "adapter"],
+    ["harness", "custodian"],
   );
-  assert.equal(podSpec.volumes, undefined, "no /work — nothing to attach");
+  assert.deepEqual(
+    podSpec.volumes.map((v: { name: string }) => v.name),
+    ["custodian-values", "custodian-config"],
+    "no /work — nothing to attach; the Custodian's own two alone",
+  );
+  assert.equal(podSpec.shareProcessNamespace, undefined, "the Harness cannot read the Custodian's /proc");
 
   // Same wiring a Sandbox's Harness container gets: the harness-config ConfigMap + the env Secret.
   const harness = podSpec.containers[0];
@@ -1965,14 +2090,28 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
     "the Harness is told it is the Instance Harness",
   );
 
-  // The Adapter's credential is the PLACEMENT's own signed token, not the Instance token: it may
-  // deliver only for registrations recording the Instance Harness (tokens.ts, ADR-0013/0031).
-  const adapter = podSpec.containers[1];
+  // The Custodian's credential is the PLACEMENT's own signed token, not the Instance token: it may
+  // deliver only for registrations recording the Instance Harness (tokens.ts, ADR-0013/0031). A
+  // FILE in the Custodian alone — one key of the instance Secret, and no other key of it.
+  const values = podSpec.volumes.find((v: { name: string }) => v.name === "custodian-values");
+  assert.deepEqual(values.projected.sources, [
+    { secret: { name: "jr2-instance", items: [{ key: "JR2_INSTANCE_HARNESS_TOKEN", path: "JR2_SANDBOX_TOKEN" }] } },
+  ]);
   assert.ok(
-    adapter.env.some((e: { name: string; value?: string }) => /jr2-orchestrator\.myinst\.svc/.test(e.value ?? "")),
+    harness.env.some(
+      (e: { name: string; value?: string }) =>
+        e.name === "JR2_SANDBOX_TOKEN" && e.value === "jr2-held-JR2_SANDBOX_TOKEN",
+    ),
+    "the Harness holds the token's Stand-in",
   );
-  const bearer = adapter.env.find((e: { name: string }) => e.name === "JR2_SANDBOX_TOKEN");
-  assert.deepEqual(bearer.valueFrom, { secretKeyRef: { name: "jr2-instance", key: "JR2_INSTANCE_HARNESS_TOKEN" } });
+  assert.equal(podSpec.securityContext.fsGroup, 2000, "the values are readable by the Custodian's uid");
+  // Where the Custodian carries the Menu: this instance's Orchestrator Service, rendered by `jr2 up`.
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-held"`))!;
+  const heldCm = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.metadata.name === "jr2-held",
+  )!;
+  assert.match(heldCm.data["envoy.json"], /jr2-orchestrator\.myinst\.svc/);
+  assert.ok(deployment.spec.template.metadata.annotations["jr2.dev/held-digest"], "a held-secret edit rolls this pod");
 });
 
 test("the Instance Harness checks the bearer derived for ITS placement — a digest, never the Instance token's (ADR-0058)", async () => {
@@ -2029,8 +2168,8 @@ test("ingress to every Harness pod is the Orchestrator's alone — Sandboxes and
   assert.deepEqual(instanceHarness.spec.policyTypes, ["Ingress"]);
   assert.deepEqual(instanceHarness.spec.ingress, fromOrchestrator);
 
-  // The Orchestrator itself is NOT selected: every route there is token-gated (ADR-0013), and an
-  // Adapter in any Harness pod must reach it.
+  // The Orchestrator itself is NOT selected: every route there is token-gated (ADR-0013), and a
+  // Custodian in any Harness pod must reach it.
   for (const policy of Object.values(policies)) {
     assert.notDeepEqual(policy.spec.podSelector, { matchLabels: { app: "jr2-orchestrator" } });
   }
@@ -2102,7 +2241,7 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
   assert.match(images.harness, /^jr2-harness:[0-9a-f]{12}-amd64$/);
   const { deployment } = findInstanceHarness(w);
   assert.equal(deployment!.spec.template.spec.containers[0].image, images.harness);
-  assert.equal(deployment!.spec.template.spec.containers[1].image, images.adapter);
+  assert.equal(deployment!.spec.template.spec.containers[1].image, images.custodian);
 });
 
 // --- the post-converge sweep (ADR-0039) ----------------------------------------------------------
@@ -2129,7 +2268,7 @@ test("every layer jr2 builds is stamped with who owns it", async () => {
       }),
   );
   const kind = (ref: string): unknown => JSON.parse(stamps.get(ref) ?? "null");
-  for (const repo of ["jr2-harness", "jr2-adapter", "jr2-operator"]) {
+  for (const repo of ["jr2-harness", "jr2-operator"]) {
     const ref = [...stamps.keys()].find((r) => r.startsWith(`${repo}:`))!;
     assert.deepEqual(kind(ref), { "jr2.dev/kind": "kit" }, `${repo} is stamped as the kit's`);
   }
@@ -2163,7 +2302,7 @@ test("the node sweep grants the map it replaced one generation of grace; the hos
   // more round a provision can still ask a NODE for a ref the new map no longer names. Nothing is
   // ever provisioned from the host daemon, so its copy goes immediately (ADR-0039).
   const root = await mkInstance(`export default { name: "myinst" };\n`);
-  const previous = { harness: "jr2-harness:0ldharnes", adapter: "jr2-adapter:0.0.0", sandbox: {} };
+  const previous = { harness: "jr2-harness:0ldharnes", operator: "jr2-operator:0.0.0", sandbox: {} };
   const replaced = (id: string) => image({ id, tags: ["jr2-harness:0ldharnes"], bytes: 10 });
   const w = mkWorld(root, { hostImages: [replaced("sha256:host")], nodeImages: [replaced("sha256:node")] });
   w.kube.set("", "namespace", "myinst", { metadata: { name: "myinst", labels: { "jr2.dev/instance": "myinst" } } });
@@ -2216,7 +2355,7 @@ test("another instance's roots protect its images, kit refs included", async () 
       data: {
         "images.json": JSON.stringify({
           harness: "jr2-harness:0f1e2d3c4b5a",
-          adapter: "jr2-adapter:5a4b3c2d1e0f",
+          operator: "jr2-operator:5a4b3c2d1e0f",
           sandbox: { default: "jr2-sandbox-other-default:99aa88bb77cc" },
         }),
       },
@@ -2241,4 +2380,64 @@ test("re-running against the instance's own namespace converges silently (no pro
 
   assert.equal(await up([], w.io), 0);
   assert.equal(w.confirms.length, 0, "it's home — no prompt");
+});
+
+test("the Instance Harness with two held secrets: the Custodian alone mounts what it holds (ADR-0059)", async () => {
+  // The LiteLLM shape (ADR-0059's example): a catalog provider moved to a gateway, its key held
+  // with no hosts (the gateway's host is its default), and a second key referenced from a Secret
+  // the user manages.
+  const root = await mkInstance(
+    `export default { name: "myinst", harness: { catalog: { anthropic: { baseUrl: "https://litellm.corp.example" } }, ` +
+      `heldSecrets: [{ name: "ANTHROPIC_API_KEY", value: "sk-litellm-secret", paths: ["/v1/messages"] }, ` +
+      `{ name: "OPENAI_API_KEY", valueFrom: { secretKeyRef: { name: "team", key: "openai" } }, hosts: ["api.openai.com"] }] } };\n`,
+    "myinst",
+    DECISIONER_AGENTS,
+  );
+  const w = mkWorld(root);
+  w.kube.set("myinst", "secret", "team", { data: { openai: "c2stb3Blbg==" } } as never);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const list = w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-held"`))!;
+  const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+  const manifest = JSON.parse(items.find((i) => i.metadata.name === "jr2-held")!.data["held.json"]) as HeldManifest;
+  assert.deepEqual(
+    manifest.secrets.map((s) => [s.name, s.source.kind, s.hosts.map((h) => h.host)]),
+    [
+      ["ANTHROPIC_API_KEY", "literal", ["litellm.corp.example"]],
+      ["OPENAI_API_KEY", "secret", ["api.openai.com"]],
+    ],
+  );
+  // The catalog rides the Harness's config: the gateway is where pi sends `anthropic/…` turns.
+  const harnessCm = items.find((i) => i.kind === "ConfigMap" && i.metadata.name === "jr2-harness")!;
+  assert.deepEqual(JSON.parse(harnessCm.data["harness.json"]).catalog, {
+    anthropic: { baseUrl: "https://litellm.corp.example" },
+  });
+
+  const pod = findInstanceHarness(w).deployment!.spec.template.spec;
+  const env = pod.containers[0].env as Array<{ name: string; value?: string }>;
+  assert.equal(env.find((e) => e.name === "ANTHROPIC_API_KEY")?.value, "jr2-held-ANTHROPIC_API_KEY");
+  assert.equal(env.find((e) => e.name === "OPENAI_API_KEY")?.value, "jr2-held-OPENAI_API_KEY");
+  assert.equal(env.find((e) => e.name === "HTTPS_PROXY")?.value, "http://127.0.0.1:15001");
+  assert.deepEqual(env.at(-1)?.name, "JR2_HARNESS_TOKEN_SHA256", "the gate still rides last");
+
+  // Only the Custodian references what it holds; no manifest but its own Secret names the CA.
+  const held = ["jr2-held-secrets", "jr2-held-tls", "team"];
+  const harnessRefs = JSON.stringify(pod.containers[0]);
+  for (const name of held) assert.ok(!harnessRefs.includes(`"${name}"`), `the Harness container references ${name}`);
+  const values = pod.volumes.find((v: { name: string }) => v.name === "custodian-values");
+  assert.deepEqual(
+    values.projected.sources.map((s: { secret: { name: string } }) => s.secret.name),
+    ["jr2-instance", "jr2-held-secrets", "team"],
+  );
+  const everything = w.kube.applied.join("\n");
+  const caMentions = everything.split('"jr2-held-ca"').length - 1;
+  assert.equal(caMentions, 1, "jr2-held-ca is named once: by its own Secret, and by no pod");
+  assert.ok(
+    !everything.replace(/"sk-litellm-secret"/, "").includes("sk-litellm-secret"),
+    "the value is in one place alone",
+  );
+  assert.ok(
+    items.find((i) => i.metadata.name === "jr2-held-secrets")!.stringData.ANTHROPIC_API_KEY === "sk-litellm-secret",
+    "…the Custodian's Secret",
+  );
 });

@@ -262,7 +262,7 @@ test("the kube path: not deployed, unreachable, and deployed — each a line, th
           data: {
             "images.json": JSON.stringify({
               harness: "ghcr.io/snapwich/jr2-harness:0.0.1",
-              adapter: "ghcr.io/snapwich/jr2-adapter:0.0.1",
+              custodian: "docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c1",
               sandbox: { default: "jr2-sandbox-proj-default:abc-arm64" },
             }),
           },
@@ -280,7 +280,7 @@ test("the kube path: not deployed, unreachable, and deployed — each a line, th
     );
     assert.match(table, /^operator:\s+0\.0\.2\s+ghcr\.io\/snapwich\/jr2-operator:0\.0\.2$/m);
     assert.match(table, /^harness:\s+ghcr\.io\/snapwich\/jr2-harness:0\.0\.1$/m);
-    assert.match(table, /^adapter:\s+ghcr\.io\/snapwich\/jr2-adapter:0\.0\.1$/m);
+    assert.match(table, /^custodian:\s+docker\.io\/envoyproxy\/envoy:distroless-v1\.39\.1@sha256:eb2c01c1$/m);
     assert.match(table, /^sandbox default:\s+jr2-sandbox-proj-default:abc-arm64$/m);
     assert.match(table, /^skew:\s+deployed 0\.0\.1 predates this kit/m);
   } finally {

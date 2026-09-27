@@ -805,7 +805,7 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
                   endpoint: ctx.endpoint!,
                   // Derived, not remembered: the same function every port operation names the CR
                   // with, so the Sandbox the registrar publishes — and the Agent actor records on its
-                  // registration — is the one the Adapter's token is scoped to, by construction
+                  // registration — is the one the Custodian's token is scoped to, by construction
                   // (ADR-0013).
                   sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),
                   repos: out.repos,

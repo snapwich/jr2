@@ -42,8 +42,8 @@
 #     does not fail loudly without that append: grep silently falls through to plain `grep`
 #     (working-tools.ts).
 #
-# Secrets: NONE are baked. Agent creds arrive at runtime via the Sandbox spec's env/envFrom;
-# the Adapter's token never touches this container (ADR-0013).
+# Secrets: NONE are baked, and none arrive either: this container's env holds Stand-ins, and the
+# Custodian beside it holds the Sandbox token and every model key (ADR-0013, ADR-0059).
 
 # ---------------------------------------------------------------------------------------------
 # Vendor stage — discarded. Assembles /opt/jr2/{bin,lib}: the parts of the runtime that must work
@@ -109,7 +109,7 @@ RUN set -eux; \
 
 # ---------------------------------------------------------------------------------------------
 # jr2-upload-pack stage — discarded. The program behind `origin`'s FETCH url in every Sandbox
-# (ADR-0053): git's built-in `ext::` transport runs it, it asks the Adapter on localhost for a
+# (ADR-0053): git's built-in `ext::` transport runs it, it asks the Custodian on localhost for a
 # fetch of the Repo, waits for the landing, then execs `git upload-pack` on the node cache. Its
 # source is the operator's Go module, because the ask and the cache agent that answers it are one
 # decision; nothing about it is operator-specific at runtime.

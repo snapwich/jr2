@@ -29,7 +29,7 @@ time — no `-dev.N` stamping, no manifest mutation before publish (a loop that 
 ## What publishes, and the guard
 
 `@jr2/cli`, `@jr2/orchestrator`, `@jr2/agent-protocol` flip to `private: false` — the prod-resolution chain an instance
-pulls. `@jr2/harness` and `@jr2/adapter` stay private: they reach users as **Kit images**, never via npm install
+pulls. `@jr2/harness` stays private: it reaches users as a **Kit image**, never via npm install
 ([ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md),
 [ADR-0037](0037-an-instance-builds-its-sandbox-images-jr2-injects-the-harness.md)). This amends ADR-0009's "all
 `packages/*` publish to npm" — that line wrote down a mechanism, not the intent.
@@ -142,7 +142,12 @@ dispatch row plus its tests, no design change.
 
 ## Consequences
 
-- ADR-0009's consequences are amended: the instance-facing packages publish to npm; harness/adapter ship in Kit images.
+- ADR-0009's consequences: the instance-facing packages publish to npm; the Harness ships in a Kit image.
+- **No `@dist` scenario deploys a Custodian.** `ping` runs on no Harness pod, so the tier checks that the image map
+  re-homes the Custodian's Pinned image onto `kitRegistry`
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)) and pulls nothing. The fixture seeds
+  the registry with `just kit-push`, which builds Kit images only; a scenario that ran a Harness pod would need the
+  Envoy image mirrored there too (`jr2 kit push` does it).
 - Scaffolded instances pin exact and bump manually; a `jr2 upgrade` verb can exist later if that ever hurts.
 - The checkout's `pnpm-workspace.yaml` gains `linkWorkspacePackages: true`; `templates/default` trades `workspace:*` for
   the exact version literal.

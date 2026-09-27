@@ -116,7 +116,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // Resolved BEFORE the host, and the signing key with it: the host derives every Harness bearer
   // from the key (ADR-0058) — admission, stream, abort, echo. The key is loaded from (or minted
   // into) the instance folder, NOT generated per process: live Sandboxes outlive a restart, their
-  // Adapters still bear tokens this key signed, and their Harnesses still check bearers it derived.
+  // Custodians still hold tokens this key signed, and their Harnesses still check bearers it derived.
   // The Instance token is per-boot; the key is not. Both are served under in step 4 below.
   const instanceToken = opts.instanceToken ?? mintInstanceToken();
   const signingKey = opts.signingKey ?? (await loadSigningKey(opts.dir));

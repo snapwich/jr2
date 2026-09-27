@@ -4,7 +4,7 @@
 // not folded into sandbox-kubectl.ts, because the CLI needs the type without dragging in the
 // kubectl port.
 //
-// The map is NESTED, never flat. The kit's own `harness`/`adapter` refs sit beside a `sandbox`
+// The map is NESTED, never flat. The kit's own `harness` and the `custodian` sit beside a `sandbox`
 // sub-map, so a user image can never shadow them — and `default` is the one reserved key in that
 // sub-map, because ADR-0037's fallback chain is built on it.
 //
@@ -26,8 +26,9 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Every image ref one converge resolved. `harness`/`adapter` are the kit's own (built from a kit
- * checkout, or the published `<kitversion>` tags); `sandbox` is the instance's own docker-context
+ * Every image ref one converge resolved. `harness` is the kit's own (built from a kit checkout, or
+ * the published `<kitversion>` tag); `custodian` is the pinned Envoy the kit deploys and never
+ * builds (ADR-0038, ADR-0059); `sandbox` is the instance's own docker-context
  * builds — one `docker build` straight to a content tag, carrying no jr2 layers at all, because the
  * Harness arrives at POD time on the `/opt/jr2` volume (ADR-0037).
  *
@@ -38,9 +39,10 @@ import { fileURLToPath } from "node:url";
 export type ImageRefs = {
   /** The stock Harness image — also the last leg of the Sandbox Image fallback chain. */
   harness: string;
-  /** The Adapter image (ADR-0013). An Agent with no Adapter cannot drive its Machine at all, so
+  /** The Custodian's image (ADR-0059) — upstream Envoy, pinned by digest, re-homed onto a
+   * `kitRegistry` when one is set. Every Harness pod runs one (it carries the Menu, ADR-0013), so
    * this is required: a map without it fails the provision rather than shipping a mute pod. */
-  adapter: string;
+  custodian: string;
   /** Built Sandbox Images by their build context's CONTENT DIGEST (ADR-0049), plus the reserved
    * key `default` — the Instance's `images/default`, ADR-0037's middle leg. Empty when the
    * instance ships no context and scaffolded no default. */
@@ -99,10 +101,9 @@ export async function readImageRefs(path: string): Promise<ImageRefs> {
     return value as string;
   };
   const harness = ref("harness");
-  // Required, not optional: with the ref living in the map there is no "no adapter configured"
-  // branch left to gate on, and an Agent whose pod has no Adapter parks forever on a tool call it
-  // cannot make (ADR-0013). Failing the provision is the only honest outcome.
-  const adapter = ref("adapter");
+  // Required, not optional: an Agent whose pod has no Custodian parks forever on a Menu it cannot
+  // read (ADR-0013). Failing the provision is the only honest outcome.
+  const custodian = ref("custodian");
   const sandboxRaw = map["sandbox"];
   if (sandboxRaw !== undefined && (typeof sandboxRaw !== "object" || sandboxRaw === null || Array.isArray(sandboxRaw)))
     bad("`sandbox` must be an object of name → ref");
@@ -121,7 +122,7 @@ export async function readImageRefs(path: string): Promise<ImageRefs> {
     if (typeof value !== "string") bad(`\`sandboxUser.${name}\` is not a USER (got ${JSON.stringify(value)})`);
     sandboxUser[name] = value as string;
   }
-  return { harness, adapter, sandbox, sandboxUser };
+  return { harness, custodian, sandbox, sandboxUser };
 }
 
 /**

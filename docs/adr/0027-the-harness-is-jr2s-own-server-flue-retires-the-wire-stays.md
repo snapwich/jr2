@@ -69,12 +69,12 @@ that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; g
     `wait`'s reconnect-from-offset. A Harness death under an admitted Submission surfaces as 404 → fault → workflow
     policy, the same family as `workspace.lost`. Provider-stream retry moves inside the turn (pi's `maxRetries`) — the
     seat ADR-0016 delegated to flue's `durability{}`.
-  - **[ADR-0013](0013-adapter-hosts-the-agent-mcp-surface.md)'s enabling fact is reproduced as explicit code.** Each
-    Submission connects a fresh MCP client to `$JR2_ADAPTER_URL/mcp/<iid>` and lists tools, so the menu is per-turn and
-    the Adapter still needs no push channel, no turn index, no second port. Menu tools keep the `mcp__jr2__<name>`
-    naming — shipped instructions and the printer's prefix-stripping depend on it. The previous turn's connection is
-    closed deterministically; the retire-the-previous idiom and ADR-0023's 404-chase existed to work around flue API
-    gaps that are gone.
+  - **[ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)'s enabling fact is reproduced
+    as explicit code.** Each Submission reads `$JR2_CUSTODIAN_URL/agents/<iid>/surface` afresh and presents it to pi as
+    the Menu, so the menu is per-turn with no push channel, no turn index, no second port. Menu tools keep the
+    `mcp__jr2__<name>` naming — shipped instructions and the printer's prefix-stripping depend on it — though no MCP
+    carries them ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)). The
+    retire-the-previous idiom and ADR-0023's 404-chase existed to work around flue API gaps that are gone.
 - **The Orchestrator side shrinks.** `harness-client.ts` replaces `flue-client.ts`: a fetch client for the three verbs,
   with `wait` as a long-poll loop from the admitted offset (capped backoff, indefinite reconnect — pod death is
   `workspace.lost`'s job) that raises a typed `SettlementFault` on `failed`/`aborted`/404. `actor.ts` does not change:
@@ -101,15 +101,15 @@ that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; g
   must now be answered, not re-deferred
   ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)).
 - **Kept verbatim**: the wire, the stub as the mechanics fixture, `AgentRunPort` and the admission ledger, ADR-0024's
-  rule, receipt, and ordering, and the Adapter container split — restated in jr2 terms: the Adapter is a separate
-  container _because working tools execute in the Harness container_, so the credential-isolation premise survives while
-  `local()` leaves the vocabulary.
-- **The `flue-contract` tier dissolves into the conformance suite.** Its rig — scripted OpenAI-compatible provider, real
-  Adapter over a killable fake Orchestrator, real server — moves into `packages/harness/test/` and runs in the default
-  `test` gate: the opt-in-ness existed only because the tier owned a foreign pin and build. Its claims become jr2
-  requirements, with the pinned-defect assertion inverted: an abort mid-stream must **not** erase the assistant message.
-  This suite is the only automated exercise of the real turn loop — the `@kind` tier keeps faking the LLM — and it is
-  the canary for pi bumps.
+  rule, receipt, and ordering, and the container split — restated in jr2 terms: the pod's credentials live in a separate
+  container (the Custodian, ADR-0059) _because working tools execute in the Harness container_, so the
+  credential-isolation premise survives while `local()` leaves the vocabulary.
+- **The `flue-contract` tier dissolves into the conformance suite.** Its rig — scripted OpenAI-compatible provider, the
+  Menu over a real socket to a killable fake Orchestrator, real server — moves into `packages/harness/test/` and runs in
+  the default `test` gate: the opt-in-ness existed only because the tier owned a foreign pin and build. Its claims
+  become jr2 requirements, with the pinned-defect assertion inverted: an abort mid-stream must **not** erase the
+  assistant message. This suite is the only automated exercise of the real turn loop — the `@kind` tier keeps faking the
+  LLM — and it is the canary for pi bumps.
 - **The pinning risk moves; it does not vanish.** pi releases ~2.4×/week and breaks across 0.x minors. The pin is exact,
   a bump is a deliberate kit change gated by the conformance suite, and the breaking surface is now a class jr2
   constructs — not a code generator, a CLI build, and a process-global registry.

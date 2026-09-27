@@ -1,5 +1,5 @@
 // Working tools (ADR-0027/0028): the file and shell tools the Harness executes in its own
-// container — what an Agent may DO (the Menu, served by the Adapter, is what it may SAY). pi
+// container — what an Agent may DO (the Menu, read through the Custodian, is what it may SAY). pi
 // ships read/write/edit/bash; grep and glob are jr2-written (`rg` with a plain-`grep` fallback
 // when rg is absent; `find`). `rg` is vendored into the image at /opt/jr2/bin and reached off PATH,
 // never by absolute path, so a user's own rg in a Sandbox Image wins (ADR-0037) and the plain-grep

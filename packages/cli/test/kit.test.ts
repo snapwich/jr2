@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { KIT_VERSION } from "@jr2/orchestrator";
+import { custodianRef, KIT_VERSION } from "@jr2/orchestrator";
 import { main } from "../src/cli.ts";
 import { kit, type RunDocker } from "../src/commands/kit.ts";
 import { publishedKitRefs } from "../src/build.ts";
@@ -43,13 +43,17 @@ function mkDocker(present: string[] = []): { calls: string[][]; docker: RunDocke
 // literals below are the claim that the mirror writes exactly those addresses.
 const sources = publishedKitRefs();
 const targets = publishedKitRefs("reg.example.com");
+// And the Custodian's (ADR-0059): upstream Envoy, pinned by digest, re-homed the same way.
+const envoy = { source: custodianRef(), target: custodianRef("reg.example.com") };
+const envoyTag = envoy.target.replace(/@sha256:[0-9a-f]+$/, "");
 
 test("the mirror's ends are the home and the kitRegistry re-homing of it", () => {
   assert.deepEqual(targets, {
     harness: `reg.example.com/jr2-harness:${KIT_VERSION}`,
-    adapter: `reg.example.com/jr2-adapter:${KIT_VERSION}`,
     operator: `reg.example.com/jr2-operator:${KIT_VERSION}`,
   });
+  assert.match(envoy.source, /^docker\.io\/envoyproxy\/envoy:distroless-v[\d.]+@sha256:[0-9a-f]{64}$/);
+  assert.equal(envoy.target, envoy.source.replace("docker.io/envoyproxy/", "reg.example.com/"));
   assert.ok(
     Object.values(sources).every((ref) => ref.startsWith("ghcr.io/snapwich/")),
     "the source is the canonical home, never a bare name a node would resolve to docker.io",
@@ -60,7 +64,7 @@ test("an absent tag is copied registry-to-registry, never pulled and pushed", as
   // `imagetools create` copies the full manifest list (every platform, exact digests) with no bytes
   // on this host. `docker pull` + `docker push` would flatten the image to the host's platform and
   // ship an amd64-only Harness to an arm64 cluster — so the argv IS the decision, not a detail.
-  const { calls, docker } = mkDocker(Object.values(sources));
+  const { calls, docker } = mkDocker([...Object.values(sources), envoy.source]);
   const { io, out, err } = mkIo();
 
   assert.equal(await kit(["push", "reg.example.com"], io, docker), 0);
@@ -68,10 +72,11 @@ test("an absent tag is copied registry-to-registry, never pulled and pushed", as
     calls.filter((c) => c[2] === "create"),
     [
       ["buildx", "imagetools", "create", "-t", targets.harness, sources.harness],
-      ["buildx", "imagetools", "create", "-t", targets.adapter, sources.adapter],
       ["buildx", "imagetools", "create", "-t", targets.operator, sources.operator],
+      // Pushed by its tag from the digest-pinned source: the copy lands at that same digest.
+      ["buildx", "imagetools", "create", "-t", envoyTag, envoy.source],
     ],
-    "all three kit images, canonical home → target",
+    "both kit images and the Custodian's, each from its home → target",
   );
   assert.ok(
     !calls.some((c) => c[0] === "pull" || c[0] === "push"),
@@ -80,13 +85,17 @@ test("an absent tag is copied registry-to-registry, never pulled and pushed", as
   assert.match(err(), /mirrored 3 image\(s\), 0 already present/);
 
   // The one machine-readable line names what a `kitRegistry` should now be set to.
-  assert.deepEqual(JSON.parse(out()), { registry: "reg.example.com", version: KIT_VERSION, images: targets });
+  assert.deepEqual(JSON.parse(out()), {
+    registry: "reg.example.com",
+    version: KIT_VERSION,
+    images: { ...targets, custodian: envoy.target },
+  });
 });
 
 test("a tag already in the target is skipped — a published version tag never moves", async () => {
   // Present implies current (ADR-0044), so the skip costs one inspect and no transfer. The target is
   // asked FIRST, which is what makes the repeat run cheap.
-  const { calls, docker } = mkDocker([...Object.values(sources), targets.harness, targets.adapter, targets.operator]);
+  const { calls, docker } = mkDocker([...Object.values(sources), targets.harness, targets.operator, envoy.target]);
   const { io, err } = mkIo();
 
   assert.equal(await kit(["push", "reg.example.com"], io, docker), 0);
@@ -94,8 +103,8 @@ test("a tag already in the target is skipped — a published version tag never m
     calls,
     [
       ["buildx", "imagetools", "inspect", targets.harness],
-      ["buildx", "imagetools", "inspect", targets.adapter],
       ["buildx", "imagetools", "inspect", targets.operator],
+      ["buildx", "imagetools", "inspect", envoy.target],
     ],
     "the target is inspected, and nothing else happens",
   );
@@ -104,13 +113,13 @@ test("a tag already in the target is skipped — a published version tag never m
 });
 
 test("a partly-filled registry copies only what is missing", async () => {
-  const { calls, docker } = mkDocker([...Object.values(sources), targets.harness]);
+  const { calls, docker } = mkDocker([...Object.values(sources), envoy.source, targets.harness]);
   const { io, err } = mkIo();
 
   assert.equal(await kit(["push", "reg.example.com"], io, docker), 0);
   assert.deepEqual(
     calls.filter((c) => c[2] === "create").map((c) => c[4]),
-    [targets.adapter, targets.operator],
+    [targets.operator, envoyTag],
   );
   assert.match(err(), /mirrored 2 image\(s\), 1 already present/);
 });
@@ -136,7 +145,7 @@ test("a source the home does not hold fails by name, pointing at the checkout-si
 });
 
 test("a trailing slash on the registry is not a second slash in the ref", async () => {
-  const { calls, docker } = mkDocker(Object.values(sources));
+  const { calls, docker } = mkDocker([...Object.values(sources), envoy.source]);
   assert.equal(await kit(["push", "reg.example.com/"], mkIo().io, docker), 0);
   assert.equal(calls.find((c) => c[2] === "create")?.[4], targets.harness);
 });

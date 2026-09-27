@@ -1,6 +1,6 @@
 // Bearer tokens (ADR-0013), because the Sandbox boundary is otherwise theater. The Harness
 // container shares the pod's network namespace, so an Agent can reach the Orchestrator directly;
-// a per-pod NetworkPolicy cannot distinguish its packets from the Adapter's. Only authentication
+// a per-pod NetworkPolicy cannot distinguish its packets from the Custodian's. Only authentication
 // closes this, and only the token bounds what a caller may DO (as opposed to where it may talk).
 //
 // Two principals, and the asymmetry between them is the whole design:
@@ -10,15 +10,16 @@
 //                   announced once on stdout (fixtures capture it). An Agent never has it — it
 //                   never enters a Sandbox.
 //
-//   Sandbox token   the Adapter's credential. Authorizes exactly: deliver to `kind: "agent"`
+//   Sandbox token   the Custodian's credential. Authorizes exactly: deliver to `kind: "agent"`
 //                   registrations whose Sandbox is THIS one. Never a Gate (a compromised Agent
 //                   must not approve its own review), never another Sandbox (`coding.ts`'s iids
 //                   are derivable and feature ids are readable from the Work Source, so a merely
 //                   run-scoped token would let one feature's coder inject a verdict into another
-//                   feature's reviewer). Delivered as a Secret via the CR's `envFrom` into the
-//                   Adapter container ALONE, which is the one place the Agent cannot read.
+//                   feature's reviewer). Delivered as a Secret mounted into the Custodian
+//                   container ALONE, which the Agent cannot read; the Harness holds its
+//                   Stand-in (ADR-0059).
 //                   The signed name is a POD hosting Turns, not a Sandbox CR per se: the Instance
-//                   Harness's Adapter bears one signed for that placement's Service name
+//                   Harness's Custodian holds one signed for that placement's Service name
 //                   (ADR-0031), scoping it to the Menu-only registrations placed there.
 //
 // And one bearer the other way (ADR-0058), which is no principal here because this server never
@@ -32,7 +33,7 @@
 // verified by recomputing. Three things fall out that a token table would have to work for — the
 // Orchestrator holds no per-Sandbox state, `provision` stays idempotent (re-minting yields the same
 // token, so a re-applied Secret is a no-op), and a token minted before a restart still verifies
-// after one, which is exactly what ADR-0012's re-attach promises the still-running Adapter.
+// after one, which is exactly what ADR-0012's re-attach promises the still-running Custodian.
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -42,7 +43,7 @@ import { join } from "node:path";
 export type Principal =
   /** The instance's own operator: the CLI, a human, a webhook translator holding the token. */
   | { kind: "instance" }
-  /** One Sandbox's Adapter, speaking for the Agent in that pod — and for no one else. */
+  /** One Sandbox's Custodian, speaking for the Agent in that pod — and for no one else. */
   | { kind: "sandbox"; sandbox: string };
 
 /** Resolve a bearer token to a principal; undefined = not a token we minted (→ 401). */
@@ -85,7 +86,7 @@ export function mintInstanceToken(): string {
  * The instance's HMAC signing key, at `<dir>/.jr2/secret` (0600), created on first use.
  *
  * It MUST outlive the process: an Orchestrator restart leaves live Sandboxes running (ADR-0012 re-attach),
- * and their Adapters still hold tokens minted by the process that died. A fresh key would reject
+ * and their Custodians still hold tokens minted by the process that died. A fresh key would reject
  * every one of them — the Agent would silently lose its only route to its Machine.
  */
 export async function loadSigningKey(dir: string): Promise<Buffer> {

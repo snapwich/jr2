@@ -60,7 +60,7 @@ export async function kitImages() {
   return [
     ...deploy.spec.template.spec.containers.map((c) => c.image),
     record.harness,
-    record.adapter,
+    record.custodian,
     record.operator,
     ...Object.values(record.sandbox ?? {}),
     ...Object.values(record.sandboxUser ?? {}),
@@ -78,6 +78,16 @@ export async function missingImages(cluster, refs) {
 
 /** Put `ref` on every node: from the host's docker, pulled first if the host lacks it. */
 export async function loadImage(cluster, ref) {
+  // A ref pinned by digest (the Custodian's Envoy, ADR-0059) names a multi-arch index. `kind load`
+  // carries one platform's image, not that index, so the node would still pull. The node pulls it
+  // here instead, once, while there is network.
+  if (ref.includes("@sha256:")) {
+    for (const node of await nodes(cluster)) {
+      console.log(`  pull ${ref} on ${node}`);
+      await exec("docker", ["exec", node, "crictl", "pull", ref]);
+    }
+    return;
+  }
   const [node] = await nodes(cluster);
   // One platform, the node's: a pulled multi-arch index cannot go through `kind load` whole.
   const arch = (await out("docker", ["exec", node, "uname", "-m"])) === "aarch64" ? "arm64" : "amd64";

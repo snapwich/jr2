@@ -204,7 +204,7 @@ test("down sweeps what this instance's deleted roots stopped naming — and noth
     image({ id: "sha256:3", tags: ["docker.io/library/jr2-instance-other:112233445566"], bytes: 1 }),
     image({ id: "sha256:4", tags: ["docker.io/library/jr2-sandbox-other-default:665544332211"], bytes: 1 }),
     image({ id: "sha256:5", tags: ["docker.io/library/jr2-harness:0f1e2d3c4b5a"], bytes: 1 }),
-    image({ id: "sha256:6", tags: ["docker.io/library/jr2-adapter:5a4b3c2d1e0f"], bytes: 1 }),
+    image({ id: "sha256:6", tags: ["docker.io/library/jr2-operator:5a4b3c2d1e0f"], bytes: 1 }),
     // A registry copy is CACHE and sweeps like everything else (ADR-0039) — the registry's own
     // retention stays the registry's business, but this node's copy is nobody's root.
     image({ id: "sha256:7", tags: ["reg.example.com/jr2-instance-myinst:aa11bb22cc33"], bytes: 1 }),
@@ -219,7 +219,7 @@ test("down sweeps what this instance's deleted roots stopped naming — and noth
       maps: {
         other: {
           harness: "jr2-harness:0f1e2d3c4b5a",
-          adapter: "jr2-adapter:5a4b3c2d1e0f",
+          operator: "jr2-operator:5a4b3c2d1e0f",
           sandbox: { default: "jr2-sandbox-other-default:665544332211" },
         },
       },
@@ -248,7 +248,7 @@ test("down sweeps what this instance's deleted roots stopped naming — and noth
   assert.match(line, /swept 4 image\(s\) \(1\.0 GB\)/, "bytes, because disk is the quantity the user feels");
   // Kit refs live because the surviving instance's map names them — not because kit images are
   // exempt (ADR-0039 dissolves that rule); another instance's own are protected the same way.
-  assert.ok(!/jr2-harness|jr2-adapter/.test(line));
+  assert.ok(!/jr2-harness|jr2-operator/.test(line));
   assert.ok(!/other/.test(line));
   assert.ok(!/jr2-workspace-ancient/.test(line), "an unlabeled image is invisible — not swept, not reported");
 

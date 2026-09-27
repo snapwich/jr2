@@ -10,7 +10,7 @@
 //   2. every Sandbox CR's `spec.image` in those namespaces — a parked Workspace must survive a pod
 //      restart, and `imagePullPolicy: IfNotPresent` cannot re-pull a local tag;
 //   3. every pod's container images in those namespaces plus `jr2-system` — what is actually running
-//      (orchestrator, Instance Harness, Adapter, Sandboxes, operator), mid-roll pods INCLUDED,
+//      (orchestrator, Instance Harness, Custodians, Sandboxes, operator), mid-roll pods INCLUDED,
 //      without naming Deployments one by one.
 // The keep set is their union. "Kit images are never pruned" is not a rule here: a kit ref is kept
 // because some instance's map or pod names it, and collects like anything else when the last
@@ -93,9 +93,9 @@ export async function readRoots(kube: KubeAdmin, ctx: { context?: string } = {})
   }
 
   // 2. what a parked Workspace's pod will be recreated with — the Sandbox Image AND every sidecar's
-  // ref. The CR always carries the Adapter as a sidecar (sandbox-kubectl.ts), and its ref is not
+  // ref. The CR always carries the Custodian as a sidecar (sandbox-kubectl.ts), and its ref is not
   // covered by the other roots: a running Sandbox is deliberately never re-imaged, so an `up` that
-  // rebuilt the Adapter leaves the CR naming the OLD one while the map names the new. If that pod
+  // moved the Custodian's pin leaves the CR naming the OLD one while the map names the new. If that pod
   // is then lost (node restart, eviction, drain), the recreated one pulls the CR's sidecar ref —
   // and `IfNotPresent` cannot re-pull a local tag a sweep took.
   const sandboxes = await listSandboxes(kube, ctx);
@@ -141,8 +141,8 @@ async function listSandboxes(kube: KubeAdmin, ctx: { context?: string }): Promis
   }
 }
 
-/** Every ref one instance's image map names: the kit's own at the top level (`harness`, `adapter`,
- * and the `operator` that rides the same JSON), and each Sandbox Image under `sandbox`. An
+/** Every ref one instance's image map names: the kit's own at the top level (`harness`,
+ * `custodian`, and the `operator` that rides the same JSON), and each Sandbox Image under `sandbox`. An
  * unreadable map is a FAILED root, not an empty one — a hand-edited ConfigMap must not be read as
  * "that instance needs nothing". */
 function imageMapRefs(cm: ConfigMapObject): string[] {

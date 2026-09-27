@@ -8,12 +8,12 @@
 // asserts the promise instead of trusting the naming function.
 //
 // NOTHING HERE PLAYS THE AGENT (ADR-0013), and since ADR-0038 the reason has inverted. The pod
-// runs the REAL `@jr2/harness`: it holds its own MCP connection to the Adapter on localhost, is
-// served this state's Menu, and pi decides. What this file drives is the one thing still faked —
-// the MODEL. "The Agent calls X" RELEASES the provider request this pod's Harness is parked on,
-// answering it with a tool call; everything after that (the MCP call, the delivery, the Machine
-// moving) happens inside the cluster. If this file opened an MCP client, the pod would never
-// originate a connection and the leg under test would not be tested.
+// runs the REAL `@jr2/harness`: it reads this state's Menu through the Custodian on localhost, and
+// pi decides. What this file drives is the one thing still faked — the MODEL. "The Agent calls X"
+// RELEASES the provider request this pod's Harness is parked on, answering it with a tool call;
+// everything after that (the pick, the Custodian, the delivery, the Machine moving) happens inside
+// the cluster. If this file delivered the pick itself, the pod would never originate it and the leg
+// under test would not be tested.
 
 import { After, AfterAll, Given, Then, When, type ITestCaseHookParameter } from "@cucumber/cucumber";
 import assert from "node:assert/strict";
@@ -56,6 +56,21 @@ async function kubectl(world: E2EWorld, args: string[]): Promise<string> {
     maxBuffer: 8 * 1024 * 1024,
   });
   return stdout;
+}
+
+/** kubectl with STDIN — how a secret reaches a probe without appearing in its argv or env. */
+function kubectlInput(world: E2EWorld, args: string[], input: string): Promise<string> {
+  assert.ok(world.namespace, "a @kind scenario has its namespace set in setupKind");
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      "kubectl",
+      ["--namespace", world.namespace!, ...args],
+      { maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout, stderr) =>
+        err ? reject(new Error(`kubectl ${args[0]}: ${stderr || err.message}`)) : resolve(stdout),
+    );
+    child.stdin?.end(input);
+  });
 }
 
 /** Port-forward a pod for the duration of one callback (the host's stand-in for pod-net access). */
@@ -290,8 +305,8 @@ When(
  * submission was admitted by the Machine's own Agent slot, the pod's Harness has been parked on a
  * provider request ever since (which is exactly what "still thinking" looks like from the
  * Machine's side), and this releases it. Everything downstream is real and in-cluster: pi executes
- * `mcp__jr2__<tool>` over its own MCP connection to the Adapter on localhost, the Adapter delivers,
- * the Machine moves. Nothing on this side speaks MCP or the Harness wire.
+ * `mcp__jr2__<tool>` as a delivery through the Custodian on localhost, which puts the Sandbox token
+ * on it, and the Machine moves. Nothing on this side speaks the Menu routes or the Harness wire.
  *
  * The request is matched by the tool it was OFFERED, never by arrival order — see fake-provider.ts:
  * after a pick, the ended turn's post-tool-result request is parked beside the next state's fresh
@@ -322,41 +337,188 @@ When(
 /**
  * The attack ADR-0013 exists to stop, run for real: `local()` tools give the Agent code execution
  * in the HARNESS container, which shares the pod's network namespace — so it can reach the
- * Orchestrator directly, and a NetworkPolicy could not tell it apart from the Adapter. Only the
- * token can. We even hand it the address (read off the Adapter's own env) to make the point that
- * secrecy is not the control: what it cannot get is the credential, which lands in the Adapter
- * container alone.
+ * Orchestrator directly, and a NetworkPolicy could not tell it apart from the Custodian. Only the
+ * token can. The address is no secret (the Service DNS is derivable), and the Agent sends the one
+ * bearer its env holds: the Sandbox token's Stand-in (ADR-0059). That is worth nothing here — the
+ * Custodian swaps it on its own three routes and nowhere else, and the Orchestrator refuses it.
  */
 When(
   "the Harness container posts {string} straight to the Orchestrator",
   async function (this: E2EWorld, tool: string): Promise<void> {
     const pod = (await waitForReadySandbox(this)).metadata.name;
     const iid = continuedIid(this.runId!, "body", "coder");
-    const url = (
-      await kubectl(this, [
-        "get",
-        "pod",
-        pod,
-        "-o",
-        `jsonpath={.spec.containers[?(@.name=="adapter")].env[?(@.name=="JR2_ORCHESTRATOR_URL")].value}`,
-      ])
-    ).trim();
-    assert.ok(url, "the Adapter container carries the Orchestrator's address (the Harness does not)");
+    const url = `http://jr2-orchestrator.${this.namespace}.svc:4000`;
 
     // node, not curl: it is what the image has, and it is what a bash Working tool would use.
     // Resolvable in an `exec` shell because the IMAGE carries it — the Harness's PATH append is a
     // process-level setting (startup.ts) that no exec inherits, and jr2 writes nothing into the
-    // image's env (ADR-0037). The iid is ONE path segment on the wire, encoded as the Adapter
-    // encodes it (adapter.ts): pasted raw, its slashes would miss the route and the 404 would be
+    // image's env (ADR-0037). The iid is ONE path segment on the wire, encoded as the Harness's
+    // Menu encodes it (menu.ts): pasted raw, its slashes would miss the route and the 404 would be
     // the router's, not the refusal under test.
     const probe =
       `fetch(${JSON.stringify(`${url}/agents/${encodeURIComponent(iid)}/events`)},{method:"POST",` +
-      `headers:{"content-type":"application/json"},` +
+      `headers:{"content-type":"application/json",authorization:"Bearer "+process.env.JR2_SANDBOX_TOKEN},` +
       `body:${JSON.stringify(JSON.stringify({ type: tool, summary: "self-approved" }))}})` +
-      `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message))`;
+      `.then(r=>console.log("HTTP",r.status,process.env.JR2_SANDBOX_TOKEN)).catch(e=>console.log("ERR",e.message))`;
     this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "node", "-e", probe]);
   },
 );
+
+// --- held secrets (ADR-0059) -------------------------------------------------------------------
+//
+// The kind instance's `harness.provider.apiKey` is a held secret: a per-scenario key the scripted
+// model demands, bound to the model's own address. What the tier proves is the whole path — the
+// Harness container holds a Stand-in and nothing else, the Custodian swaps it toward that host and
+// nowhere else, and a request that carries no Stand-in never reaches the model. Every probe runs
+// with `/opt/jr2/bin/node` (jr2's own Node, which honours NODE_USE_ENV_PROXY) inside the container,
+// inheriting its env — the Agent's vantage point exactly.
+
+/** The runtime's node, which every Harness container has at the same path (ADR-0037). */
+const RUNTIME_NODE = "/opt/jr2/bin/node";
+
+/**
+ * The scan: every process's environment and every regular file under `/` but the kernel's trees,
+ * for one secret — read from STDIN, so it is in neither the probe's argv nor its env, and the probe
+ * cannot find the thing it looks for in itself.
+ */
+const KEY_SCAN =
+  `const fs=require("fs"),path=require("path");const key=fs.readFileSync(0,"utf8").trim();const hits=[];` +
+  `if(!key){console.log("NO KEY GIVEN");process.exit(0)}` +
+  `for(const pid of fs.readdirSync("/proc")){if(!/^\\d+$/.test(pid))continue;` +
+  `try{if(fs.readFileSync("/proc/"+pid+"/environ").includes(key))hits.push("/proc/"+pid+"/environ")}catch{}}` +
+  `const skip=new Set(["/proc","/sys","/dev"]);` +
+  `const walk=(d)=>{let es;try{es=fs.readdirSync(d,{withFileTypes:true})}catch{return}` +
+  `for(const e of es){const p=path.join(d,e.name);if(skip.has(p))continue;` +
+  `if(e.isDirectory())walk(p);else if(e.isFile()){try{if(fs.statSync(p).size>(64<<20))continue;` +
+  `if(fs.readFileSync(p).includes(key))hits.push(p)}catch{}}}};walk("/");` +
+  `console.log(hits.length?"FOUND "+hits.join(" "):"CLEAN")`;
+
+Then(
+  "the model provider received the provider key on every turn request",
+  { timeout: 120_000 },
+  async function (this: E2EWorld): Promise<void> {
+    assert.ok(this.provider, "the scenario's scripted model is running (World.setupKind)");
+    // The Sandbox's first turn is parked on the model by now, or soon: wait for it, so the claim is
+    // about a request that happened, not a list that is merely empty.
+    const deadline = Date.now() + 90_000;
+    while (!this.provider.calls.some((c) => c.stream) && Date.now() < deadline) await sleep(500);
+    assert.ok(
+      this.provider.calls.some((c) => c.stream),
+      "a turn request reached the model with the key",
+    );
+    const refused = this.provider.unauthorized.filter((u) => u.url.includes("chat/completions"));
+    assert.deepEqual(refused, [], "no turn request arrived without the key");
+  },
+);
+
+Then(
+  "the Harness container's environment holds the stand-in for {string}",
+  async function (this: E2EWorld, name: string): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const seen = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      RUNTIME_NODE,
+      "-e",
+      `console.log(process.env[${JSON.stringify(name)}])`,
+    ]);
+    assert.equal(seen.trim(), `jr2-held-${name}`);
+  },
+);
+
+Then(
+  "the provider key is nowhere in the Harness container's environment or files",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    const out = await kubectlInput(
+      this,
+      ["exec", "-i", `pod/${pod}`, "-c", "harness", "--", RUNTIME_NODE, "-e", KEY_SCAN],
+      this.providerKey ?? "",
+    );
+    assert.equal(out.trim(), "CLEAN", `the key is in the Harness container: ${out.trim()}`);
+  },
+);
+
+Then(
+  "the provider key is nowhere in the Instance Harness's Harness container",
+  { timeout: 300_000 },
+  async function (this: E2EWorld): Promise<void> {
+    const out = await kubectlInput(
+      this,
+      ["exec", "-i", `deploy/${INSTANCE_HARNESS_SERVICE}`, "-c", "harness", "--", RUNTIME_NODE, "-e", KEY_SCAN],
+      this.providerKey ?? "",
+    );
+    assert.equal(out.trim(), "CLEAN", `the key is in the Instance Harness's container: ${out.trim()}`);
+  },
+);
+
+Then(
+  "the Custodian's log names {string} and never the key",
+  { timeout: 60_000 },
+  async function (this: E2EWorld, name: string): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    let log = "";
+    // The start-up line names every secret the Custodian holds; an intercepted request names the
+    // one it swapped once it COMPLETES (a parked turn request logs when it ends). The access log
+    // flushes twice a second, so the line is waited for.
+    const names = new RegExp(`jr2\\.custodian .*secrets?=\\S*\\b${name}\\b`);
+    for (const deadline = Date.now() + 30_000; Date.now() < deadline; await sleep(500)) {
+      log = await kubectl(this, ["logs", `pod/${pod}`, "-c", "custodian"]);
+      if (names.test(log)) break;
+    }
+    assert.match(log, names);
+    assert.ok(this.providerKey && !log.includes(this.providerKey), "the key is not in the Custodian's log");
+  },
+);
+
+When(
+  "the Harness container sends the stand-in for {string} to the unbound echo",
+  async function (this: E2EWorld, name: string): Promise<void> {
+    const pod = (await waitForReadySandbox(this)).metadata.name;
+    assert.ok(this.echoUrl, "the scenario's unbound echo is running (World.setupKind)");
+    // Through the container's own HTTPS_PROXY: the Custodian tunnels a target no secret is bound to,
+    // untouched — and the echo's certificate is trusted because the tier's CA is the `caBundle`.
+    const probe =
+      `fetch(${JSON.stringify(this.echoUrl)},{headers:{authorization:"Bearer "+process.env[${JSON.stringify(name)}]}})` +
+      `.then(r=>console.log("HTTP",r.status)).catch(e=>console.log("ERR",e.message,e.cause?.code??""))`;
+    this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", RUNTIME_NODE, "-e", probe]);
+  },
+);
+
+Then("the unbound echo received the stand-in, and not the key", function (this: E2EWorld): void {
+  assert.match(this.podSays ?? "", /HTTP 200/, `the echo answered (pod said: ${this.podSays?.trim()})`);
+  const seen = this.provider?.echo.seen ?? [];
+  assert.ok(
+    seen.some((r) => r.headers.authorization === "Bearer jr2-held-JR2_PROVIDER_API_KEY"),
+    `the echo received the Stand-in as sent (got: ${JSON.stringify(seen.map((r) => r.headers.authorization))})`,
+  );
+  assert.ok(!JSON.stringify(seen).includes(this.providerKey ?? "\u0000"), "the key never reached the echo");
+});
+
+When("the Harness container calls the model provider with no stand-in", async function (this: E2EWorld): Promise<void> {
+  const pod = (await waitForReadySandbox(this)).metadata.name;
+  assert.ok(this.providerUrl, "the scenario's scripted model is running (World.setupKind)");
+  const probe =
+    `fetch(${JSON.stringify(`${this.providerUrl}/models`)}).then(async r=>console.log("HTTP",r.status,await r.text()))` +
+    `.catch(e=>console.log("ERR",e.message,e.cause?.code??""))`;
+  this.podSays = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", RUNTIME_NODE, "-e", probe]);
+});
+
+Then("the Custodian refuses it as missing the stand-in", function (this: E2EWorld): void {
+  assert.match(
+    this.podSays ?? "",
+    /HTTP 403 jr2 custodian: \S+ needs the stand-in of JR2_PROVIDER_API_KEY/,
+    `the Custodian refused a request carrying no Stand-in (pod said: ${this.podSays?.trim()})`,
+  );
+});
+
+Then("the model provider received no request without the key", function (this: E2EWorld): void {
+  assert.deepEqual(this.provider?.unauthorized ?? [], [], "every request the model received carried the key");
+});
 
 /**
  * The Agent's own Harness, driven the way a bash Working tool would (ADR-0058): `node` in the
@@ -518,7 +680,7 @@ const WORKING_TOOLS = ["read", "write", "edit", "bash", "grep", "glob"];
  * What the Harness OFFERED the model for this turn, asserted off the provider's recorded request —
  * which is free here, and stronger than the retired persona's `listTools()` call: it is the tool
  * set pi actually put on the wire. Two halves in one claim: this state's Menu (ADR-0015/0029,
- * `mcp__jr2__`-prefixed by `menu.ts`) and exactly the Working tools the definition allows
+ * `mcp__jr2__`-prefixed by `menu-tools.ts`) and exactly the Working tools the definition allows
  * (ADR-0028). "Exactly one Menu tool" is the sharp edge — a turn must not see another state's.
  */
 Then(
@@ -751,20 +913,20 @@ Then(
   },
 );
 
-Then("the run's Sandbox runs the Adapter beside the Harness", async function (this: E2EWorld): Promise<void> {
+Then("the run's Sandbox runs the Custodian beside the Harness", async function (this: E2EWorld): Promise<void> {
   const pod = (await waitForReadySandbox(this)).metadata.name;
   const names = (await kubectl(this, ["get", "pod", pod, "-o", "jsonpath={.spec.containers[*].name}"])).split(/\s+/);
-  // ADR-0005's "the pod, not the container, is the isolation unit" now has a third resident — and
-  // the operator scheduled it without understanding it (ADR-0001: sidecars are opaque fragments).
+  // ADR-0005's "the pod, not the container, is the isolation unit" has a second resident — and the
+  // operator scheduled it without understanding it (ADR-0001: sidecars are opaque fragments).
   assert.ok(names.includes("harness"), `the Harness container is there (got: ${names.join(", ")})`);
-  assert.ok(names.includes("adapter"), `the Adapter container is there (got: ${names.join(", ")})`);
+  assert.ok(names.includes("custodian"), `the Custodian container is there (got: ${names.join(", ")})`);
 });
 
 Then("the delivery is refused as unauthorized", function (this: E2EWorld): void {
   assert.match(
     this.podSays ?? "",
-    /HTTP 401/,
-    `the Orchestrator must refuse an Agent bearing no Sandbox token (pod said: ${this.podSays?.trim()})`,
+    /HTTP 401 jr2-held-JR2_SANDBOX_TOKEN/,
+    `the Orchestrator must refuse an Agent bearing only the Stand-in (pod said: ${this.podSays?.trim()})`,
   );
 });
 
@@ -867,8 +1029,11 @@ async function kindNodes(): Promise<string[]> {
     .filter(Boolean);
 }
 
-/** containerd normalizes a local tag; every root spells it the short way (the CLI's `normalizeRef`). */
-const shortRef = (ref: string): string => ref.replace(/^docker\.io\/library\//, "");
+/** containerd normalizes a local tag; every root spells it the short way (the CLI's `normalizeRef`).
+ * A ref pinned by digest (the Custodian's, a Pinned image) is held as `repo@digest`: a pull that
+ * names a digest records no tag, so the tag is dropped on both sides. */
+const shortRef = (ref: string): string =>
+  ref.replace(/^docker\.io\/library\//, "").replace(/:[^/@]+(@sha256:[0-9a-f]{64})$/, "$1");
 
 /**
  * Every ref CONTAINERD holds on a node, verbatim. Containerd's own list, not CRI's, because CRI's
@@ -904,8 +1069,8 @@ async function imageMapRefs(world: E2EWorld): Promise<string[]> {
   const out = await kubectl(world, ["get", "configmap", IMAGES_CONFIGMAP, "-o", "json"]);
   const raw = (JSON.parse(out) as { data?: Record<string, string> }).data?.[IMAGES_KEY];
   assert.ok(raw, `the ${IMAGES_CONFIGMAP} ConfigMap carries ${IMAGES_KEY} (ADR-0038)`);
-  const parsed = JSON.parse(raw) as { harness?: string; adapter?: string; sandbox?: Record<string, string> };
-  return [parsed.harness, parsed.adapter, ...Object.values(parsed.sandbox ?? {})].filter(
+  const parsed = JSON.parse(raw) as { harness?: string; custodian?: string; sandbox?: Record<string, string> };
+  return [parsed.harness, parsed.custodian, ...Object.values(parsed.sandbox ?? {})].filter(
     (n): n is string => typeof n === "string" && n !== "",
   );
 }
@@ -993,7 +1158,7 @@ Then("every node still holds the images this instance's map names", async functi
 // --- the fetch inside the pod (ADR-0053) -----------------------------------------------------------
 //
 // `origin`'s fetch url is a PROGRAM on the runtime volume, not a path: git runs it, it asks the
-// Adapter on localhost, the ask rides the Sandbox CR onto the pod, the node's cache agent fetches
+// Custodian on localhost, the ask rides the Sandbox CR onto the pod, the node's cache agent fetches
 // the remote, and only then does `git upload-pack` serve the cache. Every leg of that exists
 // nowhere else — a static binary on a mounted volume, a loopback route, a CR annotation the
 // operator copies onto the pod, a DaemonSet, and a real remote — so this is the one tier that can
@@ -1929,8 +2094,8 @@ async function allPodLogs(world: E2EWorld): Promise<string> {
 // of the window it is spending. That converts 90s from a number read off two GitHub issues into a
 // measurement of THIS cluster, with a regression test around it.
 
-/** The marker the product emits. A contract: `@jr2/orchestrator`'s wire client and `@jr2/adapter`
- * both format it, and neither import can enforce the agreement — the tests on each side quote this
+/** The marker the product emits. A contract: `@jr2/orchestrator`'s wire client and `@jr2/harness`'s
+ * Menu both format it, and neither import can enforce the agreement — the tests on each side quote this
  * exact shape, and a rename made in only one place checks nothing while still passing. */
 const ROUTABILITY_MARKER = "jr2.routability";
 
@@ -1998,7 +2163,7 @@ function parseRoutability(text: string, scenario: string): RoutabilityRetry[] {
 /** Read this scenario's retries out of the cluster, before the namespace goes. */
 async function collectRoutability(world: E2EWorld, scenario: string): Promise<void> {
   // ONE source, not two: `allPodLogs` already enumerates every pod in the namespace — the
-  // Orchestrator's, which owns the admission seat, and the Sandbox's, whose Adapter container owns
+  // Orchestrator's, which owns the admission seat, and the Sandbox's, whose Harness container owns
   // the surface seat. Adding `deployment/jr2-orchestrator` beside it would count admissions twice.
   routabilityObserved.push(...parseRoutability(await probe(() => allPodLogs(world)), scenario));
 }
@@ -2066,6 +2231,14 @@ After({ tags: "@kind" }, async function (this: E2EWorld, scenario: ITestCaseHook
   // spent while everything still passes. Read-only, and it swallows its own errors — a diagnostic
   // that fails the teardown destroys the evidence it exists to collect.
   await collectRoutability(this, scenario.pickle.name).catch(() => {});
+  // The held key is in no log of the namespace — the Custodians' access logs, the Harnesses'
+  // printed conversations, the Orchestrator's (ADR-0059). Checked in every scenario, not only the
+  // held-secret Rule's: every turn in this tier crosses a Custodian with the key.
+  const key = this.providerKey;
+  if (key) {
+    const logs = await allPodLogs(this).catch(() => "");
+    assert.ok(!logs.includes(key), "the provider key reached a pod log in this namespace");
+  }
   if (scenario.result?.status === "FAILED") {
     await dumpKindDiagnostics(this, scenario.pickle.name).catch((err: unknown) => {
       console.error(`[kind] diagnostics dump failed:`, err);

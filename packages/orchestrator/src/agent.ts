@@ -1,6 +1,6 @@
 // The Agent definition (ADR-0018/0027): the part of an Agent a user genuinely owns — model +
-// instructions + workspace access — as SERIALIZABLE DATA. Everything mechanical (the Adapter
-// leash, the Working-tool assembly, the wire) lives in the stock Harness image (`@jr2/harness`),
+// instructions + workspace access — as SERIALIZABLE DATA. Everything mechanical (the Menu,
+// the Working-tool assembly, the wire) lives in the stock Harness image (`@jr2/harness`),
 // which runs the definition it is handed and re-reads it per Submission.
 //
 // A definition is NOT an Instance roster entry: a Machine CARRIES it as an actor slot —

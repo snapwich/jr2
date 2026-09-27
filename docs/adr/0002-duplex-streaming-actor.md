@@ -1,4 +1,4 @@
-# The agent actor is a duplex channel; its control plane is MCP tool calls
+# The agent actor is a duplex channel; its control plane is Menu tool calls
 
 The `agentRun` actor drives an Agent run as a long-lived duplex channel, not a request/response call: it admits the run
 with `POST /agents/:name/:id`, persists the durable handle host-side, receives the Agent's decisions as events, and can
@@ -6,18 +6,19 @@ feed later turns down to the same conversation. We rejected the simpler `fromPro
 because a synchronous call returns exactly once, at the end — it cannot express human-in-the-loop (mid-run approval,
 steering), and a held hour-long cross-pod connection is lost on any blip or Orchestrator restart.
 
-## Control plane: MCP tool calls, not stream interpretation
+## Control plane: Menu tool calls, not stream interpretation
 
-The Agent emits the domain events the Machine cares about by **calling MCP tools** — its menu, derived from the invoking
-state's transitions (ADR-0015) and served by the Sandbox's Adapter (ADR-0013). Events are Agent-authored and semantic
-rather than inferred from a generic event stream. This was proven end-to-end against a real Harness + vLLM (PoC #5): the
-Agent called its tool, the Machine transitioned, and a gated action observably occurred only post-approval.
+The Agent emits the domain events the Machine cares about by **calling tools** — its Menu, derived from the invoking
+state's transitions (ADR-0015), read by the Harness through the pod's Custodian and presented to the model as tools
+(ADR-0013). Events are Agent-authored and semantic rather than inferred from a generic event stream. This was proven
+end-to-end against a real Harness + vLLM (PoC #5): the Agent called its tool, the Machine transitioned, and a gated
+action observably occurred only post-approval.
 
 The split-channel model:
 
 | Direction | Kind                                                      | Mechanism                                |
 | --------- | --------------------------------------------------------- | ---------------------------------------- |
-| up        | control / decision (the workflow's events, ADR-0011)      | MCP tool call → Adapter → delivery       |
+| up        | control / decision (the workflow's events, ADR-0011)      | Menu tool call → Custodian → delivery    |
 | up        | progress / telemetry (tokens, attempts, "still working")  | Harness stream (lossy, observation-only) |
 | down      | the next turn's prompt (feedback, steering at a boundary) | a new submission on the same iid         |
 | down      | interrupts (deliberate terminal cancel)                   | `abort` on the wire                      |
@@ -38,9 +39,11 @@ first-class terminal outcome, but actor STOP does not call it: a host shutdown s
 stay alive server-side for restore to re-attach. Remote abort is reserved for a deliberate terminal act, not a stop side
 effect.
 
-## A held tool result is bounded by the MCP client's per-request timeout
+## A held tool result is bounded by the client that holds it
 
-The Harness's MCP client uses the MCP SDK default of **60 s**, and an unanswered tool call surfaces to the Agent as a
-tool error at that bound (measured; the Agent did **not** perform the gated action on timeout — the gate held). This is
-the one real constraint on ADR-0013's reserved `deferred` semantics: when a Machine-answered tool result lands, it will
-be poll-with-progress, not a socket held open for minutes.
+A pick is one `POST` from the Harness through the Custodian
+([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)), and an unanswered one surfaces
+to the Agent as a tool error when a client bound runs out — the Harness's HTTP client waits 300 s for response headers.
+When a bound ran out, the Agent did **not** perform the gated action (measured, with a 60 s bound — the gate held). This
+is the one real constraint on ADR-0013's reserved `deferred` semantics: when a Machine-answered tool result lands, it
+will be poll-with-progress, not a socket held open for minutes.

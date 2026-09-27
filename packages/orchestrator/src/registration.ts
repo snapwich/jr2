@@ -1,6 +1,6 @@
 // The internal registration table (ADR-0011): one structure behind both delivery dialects.
 // An Agent slot and `gate` register `address → { accepted event defs, deliver closure, meta }`;
-// the two HTTP surfaces (`/agents/:iid/*` for the Adapter, `/runs/:id/gates/*` for humans and
+// the two HTTP surfaces (`/agents/:iid/*` for the Agent's Harness, `/runs/:id/gates/*` for humans and
 // webhooks) are adapters over it — lookup, schema validation, delivery, discovery, and lifecycle
 // are implemented ONCE. The table is implementation structure, not vocabulary: workflows speak
 // only `defineEvent` / `agent` / `gate`.

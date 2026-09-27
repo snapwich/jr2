@@ -55,13 +55,13 @@ func TestBuildPodHardensIsolation(t *testing.T) {
 		t.Fatalf("pod-level runAsNonRoot must be unset — it would bind the User Container too, got %v", *sc.RunAsNonRoot)
 	}
 	// The credential-visibility boundary, pinned OFF rather than left to omission.
-	// The Adapter holds the pod's only token and `local()` tools give the Agent code
-	// execution in the harness container (ADR-0013); a shared process namespace would
-	// put /proc/<adapter-pid>/environ in the Agent's reach and turn the container
-	// split into decoration. Nothing in the CR can ask for it, and nothing here may
+	// The Custodian holds the pod's credentials and `local()` tools give the Agent
+	// code execution in the harness container (ADR-0013, ADR-0059); a shared process
+	// namespace would put /proc/<custodian-pid>/root in the Agent's reach and turn
+	// the container split into decoration. Nothing in the CR can ask for it, and nothing here may
 	// start setting it as a convenience (exec-into-a-sidecar, a debug shim).
 	if pod.Spec.ShareProcessNamespace != nil {
-		t.Fatalf("shareProcessNamespace must stay off — it exposes the Adapter's token to the Agent, got %v", *pod.Spec.ShareProcessNamespace)
+		t.Fatalf("shareProcessNamespace must stay off — it exposes the Custodian's credentials to the Agent, got %v", *pod.Spec.ShareProcessNamespace)
 	}
 
 	if len(pod.Spec.Containers) != 2 {
@@ -96,7 +96,7 @@ func TestBuildPodExemptsTheUserContainer(t *testing.T) {
 		Image: testHarnessImage,
 		Port:  8080,
 		Sidecars: []corev1.Container{
-			{Name: "adapter", Image: "adapter:latest"},
+			{Name: "custodian", Image: "custodian:latest"},
 			{Name: "user", Image: "sshd:latest"},
 		},
 	}), nil)
@@ -108,7 +108,7 @@ func TestBuildPodExemptsTheUserContainer(t *testing.T) {
 	if sc := byName["user"].SecurityContext; sc != nil {
 		t.Fatalf(`the "user" container must carry NO operator-supplied securityContext, got %+v`, sc)
 	}
-	if sc := byName["adapter"].SecurityContext; sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+	if sc := byName["custodian"].SecurityContext; sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
 		t.Fatalf("a jr2-owned sidecar still gets the hardened default, got %+v", sc)
 	}
 	// The exemption is about hardening only — the seat is still a plain
@@ -254,7 +254,7 @@ func TestBuildPodMountsRepoCaches(t *testing.T) {
 		Port:         8080,
 		Volumes:      []corev1.Volume{{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
 		VolumeMounts: []corev1.VolumeMount{{Name: "work", MountPath: "/work"}},
-		Sidecars:     []corev1.Container{{Name: "adapter", Image: "adapter:latest"}},
+		Sidecars:     []corev1.Container{{Name: "custodian", Image: "custodian:latest"}},
 		Repos: []corev1alpha1.SandboxRepo{
 			{Key: "app-0a1b2c3d", URL: "https://github.com/acme/app.git"},
 			{Key: "docs-4e5f6a7b", URL: "git@github.com:acme/docs.git"},

@@ -3,7 +3,7 @@
 # The release loop's publish (ADR-0043): the kit, delivered the way a user receives it.
 #
 #   1. the four instance-facing packages → the local npm registry
-#   2. the three Kit images at their PUBLISHED tags → the local image registry the nodes pull from
+#   2. the Kit images at their PUBLISHED tags → the local image registry the nodes pull from
 #   3. the `jr2` binary → a throwaway global npm prefix
 #
 # Both registries must already be up (scripts/dist-registry.sh up, scripts/dist-image-registry.sh

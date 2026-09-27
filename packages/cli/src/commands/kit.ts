@@ -2,16 +2,18 @@
 //
 // Kit images live at a canonical public home (`ghcr.io/snapwich`, baked into `publishedKitRefs()`).
 // A cluster that cannot reach it — air-gapped, mirror-only, or simply policy-bound to one registry —
-// needs the three refs at its own address, which is what `kitRegistry` names in the config. This
-// command is how the bytes get there.
+// needs those refs at its own address, which is what `kitRegistry` names in the config. This
+// command is how the bytes get there. It moves one more image the same way: the Custodian's, the
+// pinned upstream Envoy every Harness pod runs (ADR-0059), which jr2 deploys and never builds — a
+// mirror-only cluster needs it just as much, and `kitRegistry` re-homes it the same way.
 //
 // It is deliberately INSTANCE-LESS: no `jr2.config.ts`, no kube context, no namespace. Kit images are
 // shared by every instance on a cluster (and possibly by every instance in an org), so moving them
 // is its own deliberate act rather than a side effect of converging one instance — which is exactly
 // why ADR-0044 keeps this out of `jr2 up`.
 //
-// It is a MIRROR and nothing else. There is no build arm here: the npm packages carry no Harness or
-// Adapter source, and an installed CLI that could build Kit images would be the patched-Harness
+// It is a MIRROR and nothing else. There is no build arm here: the npm packages carry no Harness
+// source, and an installed CLI that could build Kit images would be the patched-Harness
 // eject hatch ADR-0027/ADR-0038 welded shut. The kit developer's arm is `just kit-push`, in the
 // checkout, where the sources actually are.
 //
@@ -23,7 +25,7 @@
 
 import { execFile } from "node:child_process";
 import { parseArgs, promisify } from "node:util";
-import { KIT_VERSION } from "@jr2/orchestrator";
+import { custodianRef, KIT_VERSION } from "@jr2/orchestrator";
 import { KIT_IMAGES, publishedKitRefs, type KitImageName } from "../build.ts";
 import { activity, result, type Io } from "../output.ts";
 
@@ -31,8 +33,9 @@ const exec = promisify(execFile);
 
 const USAGE = `usage: jr2 kit push <registry>
 
-  mirror the v${KIT_VERSION} kit images (harness, adapter, operator) from their canonical
-  home into <registry>, for a cluster whose \`kitRegistry\` names it (ADR-0044)`;
+  mirror the v${KIT_VERSION} kit images (harness, operator) from their canonical home, and the
+  Custodian's pinned Envoy from its own, into <registry>, for a cluster whose \`kitRegistry\`
+  names it (ADR-0044, ADR-0059)`;
 
 /** Run one `docker` invocation, rejecting on a non-zero exit. The seam this command is tested
  * through: the claims are which argv each ref produces and what a failure means, and both are
@@ -45,7 +48,7 @@ const dockerCli: RunDocker = async (args) => {
 };
 
 /** What one image's mirror did — the per-image line, and the machine-readable result's rows. */
-type Mirrored = { image: KitImageName; source: string; target: string; copied: boolean };
+type Mirrored = { image: KitImageName | "custodian"; source: string; target: string; copied: boolean };
 
 export async function kit(args: string[], io: Io, docker: RunDocker = dockerCli): Promise<number> {
   const { positionals } = parseArgs({ args, allowPositionals: true, strict: false, options: {} });
@@ -77,6 +80,9 @@ export async function kit(args: string[], io: Io, docker: RunDocker = dockerCli)
   for (const image of Object.keys(KIT_IMAGES) as KitImageName[]) {
     rows.push(await mirror(io, docker, image, sources[image], targets[image]));
   }
+  // The Custodian's: pinned by digest, and a registry-to-registry copy keeps the digest — so the
+  // ref a converge with this `kitRegistry` deploys (`custodianRef`) resolves in the mirror.
+  rows.push(await mirror(io, docker, "custodian", custodianRef(), custodianRef(target)));
 
   const copied = rows.filter((r) => r.copied).length;
   activity(io, `mirrored ${copied} image(s), ${rows.length - copied} already present`);
@@ -97,7 +103,7 @@ export async function kit(args: string[], io: Io, docker: RunDocker = dockerCli)
 async function mirror(
   io: Io,
   docker: RunDocker,
-  image: KitImageName,
+  image: KitImageName | "custodian",
   source: string,
   target: string,
 ): Promise<Mirrored> {
@@ -106,7 +112,8 @@ async function mirror(
     return { image, source, target, copied: false };
   }
   await requireSource(docker, image, source, target);
-  await docker(["buildx", "imagetools", "create", "-t", target, source]);
+  // A digest-pinned target is pushed by its tag; the copy lands at that same digest.
+  await docker(["buildx", "imagetools", "create", "-t", target.replace(/@sha256:[0-9a-f]+$/, ""), source]);
   activity(io, `${image}: copied ${source} → ${target}`);
   return { image, source, target, copied: true };
 }
@@ -130,12 +137,17 @@ async function resolves(docker: RunDocker, ref: string): Promise<boolean> {
  * it points at is the other arm of ADR-0044: `just kit-push`, in the checkout, is what puts images
  * at a published name in the first place; this command only moves what is already there.
  */
-async function requireSource(docker: RunDocker, image: KitImageName, source: string, target: string): Promise<void> {
+async function requireSource(
+  docker: RunDocker,
+  image: KitImageName | "custodian",
+  source: string,
+  target: string,
+): Promise<void> {
   if (await resolves(docker, source)) return;
   throw new Error(
     `${image}: ${source} is not there, so nothing can be mirrored to ${target}\n` +
       `  a kit image reaches ${target} only by being copied from its published home;\n` +
       `  if v${KIT_VERSION} was never published (a dev version never is), seed a registry from a kit\n` +
-      `  checkout with \`just kit-push <registry>\`, which builds the three images from source`,
+      `  checkout with \`just kit-push <registry>\`, which builds the Kit images from source`,
   );
 }

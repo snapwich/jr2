@@ -1,6 +1,6 @@
 // HTTP-surface tests (ADR-0009/0013): drive `createApp(host)` with `app.request(...)` (no socket)
 // and prove each route delegates to the RunHost. Both delivery surfaces are exercised over the
-// wire — `/agents/:iid/*` (what a Sandbox's Adapter calls) and `/runs/:id/gates/*` (what a human,
+// wire — `/agents/:iid/*` (what a Sandbox's Harness calls, through its Custodian) and `/runs/:id/gates/*` (what a human,
 // a webhook or CI calls) — plus the SSE feed that observes what they do.
 //
 // These apps are built WITHOUT an authenticator, which leaves the surface open: that is the seam
@@ -80,12 +80,12 @@ test("unknown run and unknown workflow are 404", async () => {
 test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, then both are gone", async () => {
   const { host, app, clients } = await mkApp();
   const { runId, instanceId } = await host.start("coding", { sandbox: "ws-1" });
-  // The Adapter is handed its iid; jr2 minted it (ADR-0057), so the test reads it off the
-  // admission rather than inventing one — and addresses it the way the Adapter does, encoded,
+  // The Harness is handed its iid; jr2 minted it (ADR-0057), so the test reads it off the
+  // admission rather than inventing one — and addresses it the way the Harness does, encoded,
   // because a minted id carries the path separators its structure is made of.
   const iid = await admittedIid(clients.get(instanceId)!);
 
-  // What the Adapter reads to build `tools/list`: names, input schemas (JSON Schema), semantics.
+  // What the Harness reads to build its Menu: names, input schemas (JSON Schema), semantics.
   const surface = await app.request(`/agents/${encodeURIComponent(iid)}/surface`);
   assert.equal(surface.status, 200);
   const menu = (await surface.json()) as {
@@ -96,7 +96,7 @@ test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, t
   assert.deepEqual(menu.accepts.map((a) => a.name).sort(), ["done", "request_review"]);
   const review = menu.accepts.find((a) => a.name === "request_review");
   assert.equal(review?.semantics, "ack");
-  assert.ok(review?.input.properties?.summary, "the input schema is what the Adapter renders as the tool's");
+  assert.ok(review?.input.properties?.summary, "the input schema is what the Harness offers as the tool's parameters");
 
   // What a `tools/call` becomes: a delivery, answered with a self-describing receipt (ADR-0024) —
   // addressable, and honest about whether the turn it belonged to is over.

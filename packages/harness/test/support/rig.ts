@@ -4,18 +4,22 @@
 //   the provider  — a scripted OpenAI-compatible fake, so a turn's SHAPE is chosen by the test
 //                   (where it stalls, what it half-emits, when it fails) instead of by a model.
 //                   Records every request body, which is the only place context loss is visible.
-//   the Adapter   — the REAL `@jr2/adapter`, over a real socket, against a fake Orchestrator whose
-//                   surface can be killed or swapped mid-run (what a state exit does to a
-//                   registration) and whose deliveries can be held open (an abort mid-tool-call).
+//   the Custodian — what answers at `$JR2_CUSTODIAN_URL`, over a real socket: the Orchestrator's
+//                   surface and delivery routes as the Custodian relays them, a surface that can
+//                   be killed or swapped mid-run (what a state exit does to a registration), and
+//                   deliveries that can be held open (an abort mid-tool-call). The Custodian's
+//                   own claims are its suite's (ADR-0059); what the Harness owes is here.
 //
-// Both are SHARED across a file's tests (`reset` rearms them per scenario): every conversation
-// leaks exactly one Menu connection by design (turn.ts closes the previous turn's, never the
-// last), so per-scenario servers would each wait out a keep-alive to close.
+// Both are SHARED across a file's tests (`reset` rearms them per scenario), so per-scenario
+// servers do not each wait out a keep-alive to close.
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
-import { OrchestratorClient, startAdapter, type Surface } from "@jr2/adapter";
+import type { Surface } from "../../src/menu.ts";
+
+/** What the Harness container's env holds for the Sandbox token: its Stand-in (ADR-0059). */
+export const SANDBOX_STAND_IN = "jr2-held-JR2_SANDBOX_TOKEN";
 
 // ─── the scripted provider ───────────────────────────────────────────────────
 
@@ -168,7 +172,7 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
   };
 }
 
-// ─── the real Adapter, over a killable fake Orchestrator ─────────────────────
+// ─── the Custodian's address, answering for a killable Orchestrator ──────────
 
 export type FakeSandbox = {
   url: string;
@@ -179,60 +183,58 @@ export type FakeSandbox = {
   reviveSurface: () => void;
   /**
    * What a BLIP does to it, which is a different claim (ADR-0026): a 404 means "this turn is
-   * over", and the Adapter answers it with an empty Menu; anything else means the Adapter could
-   * not reach the Orchestrator at all. The two must not be confused, and only this lever produces
-   * the second — the leg of a turn that runs BEFORE the model is ever asked.
+   * over", and the Harness answers it with an empty Menu; anything else is a Menu it could not
+   * read at all. Only this lever produces the second — the leg of a turn that runs BEFORE the
+   * model is ever asked.
    */
   faultSurface: (status?: number) => void;
   /** Every pick delivered since the last `reset`, in order. */
   delivered: Array<Record<string, unknown>>;
-  /** Park every LATER delivery after recording it — the abort-mid-tool-call lever. The parked
-   * response never resolves; a bare pending promise holds no handle, so nothing leaks. */
+  /** Every bearer the Harness presented, in order — the Stand-in, never a token. */
+  bearers: string[];
+  /** Park every LATER delivery after recording it — the abort-mid-tool-call lever. */
   holdDeliveries: () => void;
   /** Rearm for the next scenario: this surface, live, responding, nothing delivered. */
   reset: (surface: Surface) => void;
   close: () => Promise<void>;
 };
 
-export async function startAdapterOverFakeOrchestrator(initialSurface: Surface): Promise<FakeSandbox> {
+export async function startFakeCustodian(initialSurface: Surface): Promise<FakeSandbox> {
   let surface = initialSurface;
   let live = true;
   let holding = false;
   let surfaceFault: number | undefined;
   const delivered: Array<Record<string, unknown>> = [];
-  const fetchImpl: typeof globalThis.fetch = async (input, init) => {
-    if (!live) return new Response(JSON.stringify({ error: "no live agent surface" }), { status: 404 });
-    if (String(input).endsWith("/surface")) {
-      if (surfaceFault !== undefined) {
-        return new Response(JSON.stringify({ error: "scripted orchestrator failure" }), { status: surfaceFault });
+  const bearers: string[] = [];
+  const server: Server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c: Buffer) => (raw += c));
+    req.on("end", () => {
+      bearers.push(req.headers.authorization ?? "");
+      const json = (status: number, body: unknown) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(body));
+      };
+      if (!live) return json(404, { error: "no live agent surface" });
+      if (req.url?.endsWith("/surface")) {
+        if (surfaceFault !== undefined) return json(surfaceFault, { error: "scripted orchestrator failure" });
+        return json(200, surface);
       }
-      return Response.json(surface);
-    }
-    const event = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    delivered.push(event);
-    if (holding) await new Promise<never>(() => {});
-    return Response.json({
-      delivered: true,
-      event: event.type,
-      turnComplete: true,
-      deliveryId: `d-${delivered.length}`,
+      const event = JSON.parse(raw) as Record<string, unknown>;
+      delivered.push(event);
+      if (holding) return; // parked: the response never comes
+      json(200, { delivered: true, event: event.type, turnComplete: true, deliveryId: `d-${delivered.length}` });
     });
-  };
-  const adapter = await startAdapter({
-    orchestrator: new OrchestratorClient({
-      url: "http://orchestrator.invalid",
-      token: "ws-1.signed",
-      fetch: fetchImpl,
-    }),
-    port: 0,
   });
+  const port = await listen(server);
   return {
-    url: adapter.url,
+    url: `http://127.0.0.1:${port}`,
     setSurface: (next) => (surface = next),
     killSurface: () => (live = false),
     reviveSurface: () => (live = true),
     faultSurface: (status = 500) => (surfaceFault = status),
     delivered,
+    bearers,
     holdDeliveries: () => (holding = true),
     reset: (next) => {
       surface = next;
@@ -240,8 +242,12 @@ export async function startAdapterOverFakeOrchestrator(initialSurface: Surface):
       holding = false;
       surfaceFault = undefined;
       delivered.length = 0;
+      bearers.length = 0;
     },
-    close: adapter.close,
+    close: () => {
+      server.closeAllConnections();
+      return close(server);
+    },
   };
 }
 
@@ -258,9 +264,9 @@ export async function until(predicate: () => boolean | Promise<boolean>, what: s
 }
 
 /**
- * Sever every idle keep-alive socket `fetch`'s global dispatcher holds — the leaked Menu
- * connections and pi's provider sockets. Teardown-only (fetch is dead afterwards): without it the
- * Adapter's `close` waits out the server's keep-alive timeout on sockets nothing will reuse. The
+ * Sever every idle keep-alive socket `fetch`'s global dispatcher holds — the Menu's and pi's
+ * provider sockets. Teardown-only (fetch is dead afterwards): without it a fake's `close` waits out
+ * the server's keep-alive timeout on sockets nothing will reuse. The
  * dispatcher has no public accessor; Node parks it on this well-known symbol.
  */
 export async function severKeepAliveSockets(): Promise<void> {

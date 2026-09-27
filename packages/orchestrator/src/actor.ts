@@ -4,8 +4,8 @@
 //   1. REGISTERS the invocation's event surface: `tools` names are resolved against the
 //      INVOKING MACHINE's vocabulary (per-Machine scoping — an unlisted name fails at invoke time)
 //      and registered in the host's table under the instance's agent address, with a deliver
-//      closure over THIS invocation's `sendBack`. The Agent's domain tool calls arrive from its
-//      Adapter (`/agents/<iid>/events` — ADR-0013), are validated by the table, and land on the
+//      closure over THIS invocation's `sendBack`. The Agent's domain tool calls arrive through its
+//      pod's Custodian (`/agents/<iid>/events` — ADR-0013), are validated by the table, and land on the
 //      state that invoked the agent — at any nesting depth, no routing, no `instanceId` on
 //      domain events (the closure IS the provenance). `/agents/<iid>/surface` serves exactly
 //      this registration, so menus are state-scoped by lifecycle (ADR-0006's dynamic
@@ -150,7 +150,7 @@ export type AgentTurnInput = {
 export type AgentTurnPlacement = {
   /** The Harness base URL this Turn is admitted over. */
   endpoint?: string;
-  /** The Sandbox whose Adapter token may deliver this Turn's picks (ADR-0013). */
+  /** The Sandbox whose token (held by that pod's Custodian) may deliver this Turn's picks (ADR-0013). */
   sandbox?: string;
 };
 
@@ -435,7 +435,7 @@ export function agentActorWith(
       }
       endpoint = binding.instanceHarness;
       // The registration records the PLACEMENT's name as its delivery scope — ADR-0013's
-      // doctrine, extended to the second placement: the Instance Harness Adapter bears a token
+      // doctrine, extended to the second placement: the Instance Harness's Custodian holds a token
       // signed for this name (deploy.ts), so it may speak for the Turns hosted there and for no
       // Workspace's. The Instance token still may (it is the operator, tokens.ts).
       sandbox = INSTANCE_HARNESS_SERVICE;
@@ -507,7 +507,7 @@ export function agentActorWith(
     registerSurface(currentIid);
 
     // The Harness bearer (ADR-0058) is derived from the SAME name the registration records as its
-    // delivery scope: the pod hosting this Turn. One name, both directions — the Adapter there may
+    // delivery scope: the pod hosting this Turn. One name, both directions — the Custodian there may
     // speak for these picks, and only this bearer may drive the conversation there.
     const client = portFactory(endpoint, sandbox === undefined ? undefined : binding.harnessBearer?.(sandbox));
     const controller = new AbortController();

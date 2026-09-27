@@ -74,11 +74,11 @@ test("the keep set is the union of the three roots, across every instance on the
     maps: {
       myinst: {
         harness: "jr2-harness:0f1e",
-        adapter: "jr2-adapter:5a4b",
+        custodian: "envoy:5a4b",
         operator: "jr2-operator:99cc",
         sandbox: { default: "jr2-sandbox-myinst-default:aa11", extra: "jr2-sandbox-myinst-extra:bb22" },
       },
-      other: { harness: "jr2-harness:0f1e", adapter: "jr2-adapter:5a4b", sandbox: {} },
+      other: { harness: "jr2-harness:0f1e", custodian: "envoy:5a4b", sandbox: {} },
     },
     // A PARKED Workspace: no pod may be running, but `IfNotPresent` cannot re-pull a local tag.
     sandboxes: [{ metadata: { name: "ws-1", namespace: "myinst" }, spec: { image: "jr2-sandbox-myinst-old:cc33" } }],
@@ -101,7 +101,7 @@ test("the keep set is the union of the three roots, across every instance on the
   assert.deepEqual(
     [...keep].sort(),
     [
-      "jr2-adapter:5a4b",
+      "envoy:5a4b",
       "jr2-harness:0f1e",
       "jr2-instance-myinst:dd44",
       "jr2-operator:99cc",
@@ -141,7 +141,7 @@ test("a pod's init and ephemeral containers hold images too, and a terminating p
       {
         metadata: { name: "sandbox-1", namespace: "myinst" },
         spec: {
-          containers: [{ image: "jr2-sandbox-myinst-default:aa11" }, { image: "jr2-adapter:5a4b" }],
+          containers: [{ image: "jr2-sandbox-myinst-default:aa11" }, { image: "envoy:5a4b" }],
           initContainers: [{ image: "jr2-instance-myinst:dd44" }],
           ephemeralContainers: [{ image: "busybox:1" }],
         },
@@ -151,7 +151,7 @@ test("a pod's init and ephemeral containers hold images too, and a terminating p
   const { keep } = await readRoots(kube);
   assert.deepEqual([...keep].sort(), [
     "busybox:1",
-    "jr2-adapter:5a4b",
+    "envoy:5a4b",
     "jr2-instance-myinst:dd44",
     "jr2-sandbox-myinst-default:aa11",
   ]);
@@ -169,23 +169,23 @@ test("a roots read that could not see everything THROWS — a partial keep set i
   }
 });
 
-test("a Sandbox's SIDECAR refs are roots too — the Adapter's is on the CR and nowhere else", async () => {
-  // A running Sandbox is deliberately never re-imaged, so after an `up` that rebuilt the Adapter
-  // the map names the new ref while the CR still names the old one. Lose that pod (node restart,
+test("a Sandbox's SIDECAR refs are roots too — the Custodian's is on the CR and nowhere else", async () => {
+  // A running Sandbox is deliberately never re-imaged, so after an `up` that moved the Custodian's
+  // pin the map names the new ref while the CR still names the old one. Lose that pod (node restart,
   // eviction, drain) and the replacement is created from the CR — with `IfNotPresent`, which
   // cannot re-pull a local tag. The map (root 1) names the new one; only the CR names the old.
   const kube = mkKube({
     namespaces: ["myinst"],
-    maps: { myinst: { adapter: "jr2-adapter:new0", sandbox: {} } },
+    maps: { myinst: { custodian: "envoy:new0", sandbox: {} } },
     sandboxes: [
       {
         metadata: { name: "ws-1", namespace: "myinst" },
-        spec: { image: "jr2-sandbox-myinst-default:aa11", sidecars: [{ image: "jr2-adapter:0ld0" }] },
+        spec: { image: "jr2-sandbox-myinst-default:aa11", sidecars: [{ image: "envoy:0ld0" }] },
       },
     ],
   });
   const { keep } = await readRoots(kube);
-  assert.deepEqual([...keep].sort(), ["jr2-adapter:0ld0", "jr2-adapter:new0", "jr2-sandbox-myinst-default:aa11"]);
+  assert.deepEqual([...keep].sort(), ["envoy:0ld0", "envoy:new0", "jr2-sandbox-myinst-default:aa11"]);
 });
 
 test("a cluster with no Sandbox CRD has no Sandboxes — the one read that may answer 'none'", async () => {

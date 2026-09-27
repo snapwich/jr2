@@ -387,7 +387,7 @@ test("a kubectl that never answers is killed, and the wait is bounded", async ()
     // finds `sleep`. Replacing PATH outright leaves the shim unable to run.
     const path = process.env.PATH;
     process.env.PATH = `${dir}:${path ?? ""}`;
-    const started = Date.now();
+    const started = performance.now();
     try {
       await assert.rejects(
         () => kubectlKube.readSecret({ namespace: "ns", name: "jr2-instance", key: "JR2_INSTANCE_TOKEN" }),
@@ -396,7 +396,7 @@ test("a kubectl that never answers is killed, and the wait is bounded", async ()
     } finally {
       process.env.PATH = path;
     }
-    const spent = Date.now() - started;
+    const spent = Math.round(performance.now() - started);
     assert.ok(spent >= REACH_BUDGET_MS, `waited for the budget, not less (${spent}ms)`);
     assert.ok(spent < REACH_BUDGET_MS * 2, `gave up on the budget, not on the child's own clock (${spent}ms)`);
   } finally {

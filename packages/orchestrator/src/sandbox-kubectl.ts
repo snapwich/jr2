@@ -40,21 +40,22 @@
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
 //   container     harness     the Sandbox Image, command overridden, /work + /opt/jr2 mounted
-//   container     adapter     jr2-owned, the pod's only credential holder (below)
+//   container     custodian   jr2-composed, the pod's only credential holder (below)
 //   container     user        optional, the image's own entrypoint, the checkouts (/work, plus
 //                             /repos and /opt/jr2 read-only) and NOTHING else
 //
-// This is also where the ADAPTER is injected (ADR-0013). The operator needs no change to carry it:
-// ADR-0001 made `Sidecars` generic container fragments it schedules WITHOUT understanding, so the
-// Adapter is exactly that — a container with an image, an env, and a Secret. What this module
-// builds is the pod's asymmetry:
+// This is also where the CUSTODIAN is composed (ADR-0013, ADR-0059). The operator needs no change
+// to carry it: ADR-0001 made `Sidecars` generic container fragments it schedules WITHOUT
+// understanding, so the Custodian is exactly that — a container with an image, its mounts, and a
+// readiness probe the pod's Ready waits on. What this module builds is the pod's asymmetry:
 //
-//   harness container   JR2_ADAPTER_URL=http://127.0.0.1:8081     (an address, no credential)
-//   adapter container   JR2_ORCHESTRATOR_URL + JR2_SANDBOX_TOKEN   (the credential, via envFrom)
+//   harness container     JR2_CUSTODIAN_URL + the Stand-in of every credential  (no credential)
+//   custodian container   the Sandbox token and every held secret, as files     (the credentials)
 //
 // The Agent has code execution in the first and none in the second. The token is minted here — a
 // signed Sandbox name (see tokens.ts), so re-provisioning after a restart yields the SAME token and
-// the Secret re-applies as a no-op.
+// the Secret re-applies as a no-op. What else the Custodian holds is `jr2 up`'s resolution, read
+// per provision from the `jr2-held` mount (custodian.ts builds both placements' pods alike).
 
 import { execFile } from "node:child_process";
 import { join } from "node:path";
@@ -65,8 +66,10 @@ import {
   type HarnessEnvVar,
   type SandboxPlacement,
 } from "./config.ts";
+import { custodianComposition, type CustodianComposition } from "./custodian.ts";
+import { readHeldManifest } from "./held-secrets.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
-import { CA_CONFIGMAP, IMAGES_KEY, IMAGES_MOUNT, REPOS_MOUNT } from "./names.ts";
+import { HELD_KEY, HELD_MOUNT, IMAGES_KEY, IMAGES_MOUNT, REPOS_MOUNT } from "./names.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import type { RepoResources } from "./repos.ts";
 import { harnessTokenDigest, sandboxToken } from "./tokens.ts";
@@ -74,9 +77,6 @@ import type { ProvisionedRepo, SandboxPort, WorkspaceSpec } from "./workspace.ts
 
 /** Run one kubectl invocation to completion. `input` is piped to stdin (`apply -f -`). */
 export type KubectlExec = (args: string[], opts?: { input?: string }) => Promise<{ stdout: string; stderr: string }>;
-
-/** Where the Harness container sees the instance's CA bundle (ADR-0020). */
-const CA_MOUNT = "/etc/jr2/ca";
 
 /** Where jr2's runtime lands in every container that gets it (ADR-0037). `/opt/jr2` and not `/app`
  * because a stranger's base may already use `/app`, and one layout must serve both the stock
@@ -96,10 +96,6 @@ const HARNESS_COMMAND = [`${RUNTIME_MOUNT}/bin/node`, `${RUNTIME_MOUNT}/src/main
  * asks the node cache for a fetch and then serves the cache, so every seat that holds the
  * checkouts must hold this volume — which is why the User Container mounts it (ADR-0005). */
 const UPLOAD_PACK = `${RUNTIME_MOUNT}/bin/jr2-upload-pack`;
-
-/** The Adapter's port on the pod's loopback. The program defaults to this address too, so the
- * fetch url names it only when the composition moved it (attachScript). */
-const DEFAULT_ADAPTER_PORT = 8081;
 
 /** ADR-0005's default work group. Convention, not config: the pod's `fsGroup` is granted to every
  * container as a supplemental group, so the Harness writes `/work` whatever the number and no
@@ -263,6 +259,10 @@ export type KubectlSandboxOptions = {
    * off it at invoke time, handed to `provision()` as a string — and resolved against this map at
    * provision. The per-run spec never names one (ADR-0051). */
   imagesPath?: string;
+  /** The held-secret manifest `jr2 up` resolved (ADR-0059) — read per provision like the image map,
+   * so a held-secret edit reaches future Sandboxes without rolling this process. Default: the
+   * `jr2-held` ConfigMap's mount. */
+  heldPath?: string;
   /** Extra env for the HARNESS container (`harness.env`) — merged ahead of the
    * mechanism-owned vars, which win on collision. */
   env?: HarnessEnvVar[];
@@ -273,20 +273,11 @@ export type KubectlSandboxOptions = {
    * `sandbox.tolerations`, written on the CR verbatim and copied onto the pod by the operator, which
    * merges nothing with them. Absent → wherever an ordinary pod lands. */
   placement?: SandboxPlacement;
-  /** The instance ships a private-CA bundle (ADR-0020): mount the `jr2-ca` ConfigMap into the
-   * HARNESS container and point NODE_EXTRA_CA_CERTS at it — never the Adapter, which speaks plain
-   * HTTP to the Orchestrator's Service (the same asymmetry as env/envFrom above). */
+  /** The instance ships a private-CA bundle (ADR-0020): the HARNESS container trusts it, and the
+   * Custodian verifies a bound host with it (custodian.ts). */
   caBundle?: boolean;
-  /**
-   * Where the Adapter reaches the Orchestrator FROM INSIDE THE CLUSTER — the orchestrator's own
-   * Service DNS (derived from JR2_NAMESPACE by the entrypoint). The Agent is never told it.
-   * A thunk is still accepted for callers that resolve their address late.
-   */
-  orchestratorUrl?: string | (() => string | undefined);
   /** The key Sandbox tokens are signed with — from the instance Secret (ADR-0013/0019). */
   signingKey?: Buffer;
-  /** The Adapter's port on the pod's loopback. Default 8081. */
-  adapterPort?: number;
   /** Kube namespace for Sandbox CRs. Default `default`. */
   namespace?: string;
   /** kubectl `--context` override. Default: the current context (ADR-0009). */
@@ -339,6 +330,7 @@ export type KubectlSandboxOptions = {
 export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const ns = opts.namespace ?? "default";
   const imagesPath = opts.imagesPath ?? join(IMAGES_MOUNT, IMAGES_KEY);
+  const heldPath = opts.heldPath ?? join(HELD_MOUNT, HELD_KEY);
   const workRoot = opts.workRoot ?? "/work";
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const repoTimeoutMs = opts.repoTimeoutMs ?? 25 * 60_000;
@@ -346,31 +338,11 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   const exec = opts.exec ?? defaultKubectlExec;
   const credentials = opts.credentials ?? [];
 
-  const adapterPort = opts.adapterPort ?? DEFAULT_ADAPTER_PORT;
   const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
   const base = ["--namespace", ns, ...(opts.context ? ["--context", opts.context] : [])];
 
-  /** The Sandbox's token Secret — read by the Adapter container, and by nothing else in the pod. */
+  /** The Sandbox's token Secret — mounted into the Custodian container, and nothing else in the pod. */
   const secretName = (name: string) => `${name}-token`;
-
-  /** Resolved at provision time (see the option's doc): the Orchestrator's in-cluster address. */
-  const orchestratorUrl = (): string | undefined =>
-    typeof opts.orchestratorUrl === "function" ? opts.orchestratorUrl() : opts.orchestratorUrl;
-
-  /** The Adapter, as the operator sees it: an opaque container fragment (ADR-0001). */
-  const adapterSidecar = (name: string, refs: ImageRefs) => ({
-    name: "adapter",
-    image: refs.adapter,
-    env: [
-      { name: "JR2_ORCHESTRATOR_URL", value: orchestratorUrl() },
-      { name: "JR2_SANDBOX", value: name },
-      { name: "JR2_ADAPTER_PORT", value: String(adapterPort) },
-    ],
-    // The credential, and the reason this is a separate container: `local()` tools give the Agent
-    // code execution in the HARNESS container, so anything mounted there is the Agent's. Here, it
-    // is out of reach — different container, no shared process namespace.
-    envFrom: [{ secretRef: { name: secretName(name) } }],
-  });
 
   /**
    * The User Container (ADR-0005): the opt-in third seat, composed only when the wrapper's static
@@ -395,8 +367,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * Agent, with no credential of their own. Nothing else follows it in: `ext::` names the program
    * by absolute path, so this seat still gets no env, no command, and no probe. The repo volumes
    * are the operator's — it defines `repo-<key>` for every key the CR names — so this seat mounts
-   * them by name. The Adapter is deliberately not given any of the three: it reads no worktree, and it is the
-   * container holding the pod's only credential, so it gets the narrowest mount set that works.
+   * them by name. The Custodian is deliberately not given any of the three: it reads no worktree, and it is the
+   * container holding the pod's credentials, so it gets the narrowest mount set that works.
    * It also carries no `securityContext`, which the operator reads as the exemption — root is
    * ALLOWED here, because hardening a seat whose identity is "what jr2 does not own" is an opinion,
    * and the standard managed-access shape (a root sshd that setuids sessions down) must run
@@ -413,30 +385,28 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   });
 
   /** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim). The
-   * Adapter is ALWAYS here: with its ref in the image map there is no "no adapter configured"
-   * state left to branch on, and a Sandbox without one is a pod that comes up Ready and then parks
-   * its Machine forever on a tool call it cannot make (ADR-0013). A map with no `adapter` fails the
-   * read instead (images.ts). The User Container joins it only when the spec named one. */
-  const sidecarsFor = async (name: string, refs: ImageRefs, keys: string[], user?: string) => [
-    adapterSidecar(name, refs),
+   * Custodian is ALWAYS here: a Sandbox without one is a pod that comes up Ready and then parks its
+   * Machine forever on a Menu it cannot read (ADR-0013). The User Container joins it only when the
+   * spec named one. */
+  const sidecarsFor = async (custodian: CustodianComposition, refs: ImageRefs, keys: string[], user?: string) => [
+    custodian.custodianContainer,
     ...(user !== undefined ? [await userSidecar(refs, user, keys)] : []),
   ];
 
   // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
-  // config) first, then the mechanism-owned vars (the Adapter address, the CA trust path, the
-  // wire's gate), which win on collision. Note the asymmetry stands (ADR-0013): user env/envFrom
-  // land on the HARNESS container only — never on the Adapter, whose env is minted here and
-  // carries the pod's only credential.
+  // config) first, then the mechanism-owned vars (the Custodian's address and every Stand-in, the
+  // proxy and the trust bundles — custodian.ts), which win on collision. Note the asymmetry stands
+  // (ADR-0013): user env/envFrom land on the HARNESS container only — never on the Custodian, whose
+  // mounts are composed here and carry the pod's credentials.
   //
   // The gate rides LAST (ADR-0058): the digest of the bearer the Orchestrator derives for THIS
   // Sandbox. A digest because the Agent reads this env; last because a `harness.env` entry of the
   // same name must not be able to choose the Harness's credential.
-  const harnessEnv = (name: string): HarnessEnvVar[] => {
+  const harnessEnv = (name: string, custodian: CustodianComposition): HarnessEnvVar[] => {
     if (!opts.signingKey) throw new Error("kubectlSandbox: a Harness needs a signingKey to check its bearer");
     return [
       ...(opts.env ?? []),
-      { name: "JR2_ADAPTER_URL", value: `http://127.0.0.1:${adapterPort}` },
-      ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
+      ...custodian.harnessEnv,
       { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(opts.signingKey, name) },
     ];
   };
@@ -531,10 +501,11 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     req: { name: string; runId: string; workflow: string; image?: string; user?: string; workGroup?: number },
     refs: ImageRefs,
     repos: FencedRepo[],
+    custodian: CustodianComposition,
   ) => {
     const seat = await seatFor(refs, req.image);
     const sidecars = await sidecarsFor(
-      req.name,
+      custodian,
       refs,
       repos.map((r) => r.key),
       req.user,
@@ -577,14 +548,13 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         fsGroup: req.workGroup ?? DEFAULT_WORK_GROUP,
         // Ordered, and before any container starts: populate `/opt/jr2`, then prove the image on it.
         initContainers: initContainersFor(refs, seat),
-        // Never empty any more: JR2_ADAPTER_URL is unconditional, so the "omit an empty env" branch
-        // this used to carry was unreachable. The seat's own vars (the fallback `HOME`) come
-        // FIRST, so the instance's `harness.env` can still override them the way it overrides
-        // anything the image set.
-        env: [...seat.env, ...harnessEnv(req.name)],
+        // Never empty: the Custodian's address is unconditional. The seat's own vars (the fallback
+        // `HOME`) come FIRST, so the instance's `harness.env` can still override them the way it
+        // overrides anything the image set.
+        env: [...seat.env, ...harnessEnv(req.name, custodian)],
         ...(opts.envFrom?.length ? { envFrom: opts.envFrom } : {}),
-        // What the AGENT gets: an address on its own loopback, and no credential anywhere. This is
-        // the only thing in the pod that tells it how to reach its Machine (ADR-0013).
+        // What the AGENT gets: an address on its own loopback and a Stand-in for every credential,
+        // and no credential anywhere. The Custodian beside it holds them (ADR-0013, ADR-0059).
         sidecars,
         // The Repos this Sandbox attaches, by cache key (ADR-0051). The operator does the rest: a
         // `repo-<key>` volume per entry — the node's cache, hostPath, read-only in the primary
@@ -607,18 +577,19 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
           { name: "runtime", emptyDir: {} },
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,
-          ...(opts.caBundle ? [{ name: "ca", configMap: { name: CA_CONFIGMAP } }] : []),
+          // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
+          ...custodian.volumes,
         ],
-        // CR-level volumeMounts land on the HARNESS container only (the operator's contract) —
-        // exactly the CA-trust asymmetry ADR-0020 wants: the Adapter never inherits it. The Repo
-        // caches are not listed: the operator mounts each `repo-<key>` into this container itself.
+        // CR-level volumeMounts land on the HARNESS container only (the operator's contract): the
+        // trust bundles, and none of the Custodian's volumes. The Repo caches are not listed: the
+        // operator mounts each `repo-<key>` into this container itself.
         volumeMounts: [
           { name: "work", mountPath: workRoot },
           // Read-only: nothing writes under `/opt/jr2` at runtime, and the Agent has code execution
           // in this container — leaving its own runtime writable would let a turn edit it.
           { name: "runtime", mountPath: RUNTIME_MOUNT, readOnly: true },
           ...seat.homeMount,
-          ...(opts.caBundle ? [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] : []),
+          ...custodian.harnessMounts,
         ],
       },
     };
@@ -676,23 +647,13 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
 
   /**
    * Mint this Sandbox's token into a Secret, BEFORE the CR exists — the operator creates the pod
-   * the moment it sees the CR, and a pod whose `envFrom` names an absent Secret sits in
-   * CreateContainerConfigError. Idempotent by construction: the token is the Sandbox's name, signed
-   * (tokens.ts), so a re-provision after an orchestrator restart re-applies the SAME value, and the
-   * Adapter that has been holding it all along stays valid.
+   * the moment it sees the CR, and a pod whose volume names an absent Secret never starts.
+   * Idempotent by construction: the token is the Sandbox's name, signed (tokens.ts), so a
+   * re-provision after an orchestrator restart re-applies the SAME value, and the Custodian that has
+   * been holding it all along stays valid.
    */
   const applyTokenSecret = async (name: string): Promise<void> => {
-    if (!opts.signingKey) throw new Error("kubectlSandbox: an Adapter needs a signingKey to mint its Sandbox token");
-    // Fail the provision rather than ship an Adapter that cannot reach the Orchestrator. A mute
-    // Adapter is the worst possible outcome: the pod comes up Ready, the Agent is admitted, its
-    // tool call dies on `localhost`, and the Machine simply parks forever — a hang with no error.
-    if (!orchestratorUrl()) {
-      throw new Error(
-        "kubectlSandbox: the Adapter has no route to the Orchestrator (no orchestratorUrl — deployed " +
-          "instances derive Service DNS from JR2_NAMESPACE). An Agent with no Adapter cannot drive its " +
-          "Machine at all (ADR-0013).",
-      );
-    }
+    if (!opts.signingKey) throw new Error("kubectlSandbox: a Custodian needs a signingKey to mint its Sandbox token");
     const secret = {
       apiVersion: "v1",
       kind: "Secret",
@@ -783,7 +744,17 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       // reaches future Sandboxes without rolling the Orchestrator. Reading before the Secret apply
       // also means an unknown image name costs nothing: no Secret, no CR, nothing to clean up.
       const refs = await readImageRefs(imagesPath);
-      const cr = await crFor(req, refs, repos);
+      // The same stance for what the Custodian holds (ADR-0059): `jr2 up` resolved it host-side,
+      // where `.env` exists, and this process reads the result — never its own config, whose
+      // `.env` values are absent in-cluster.
+      const manifest = await readHeldManifest(heldPath);
+      const custodian = custodianComposition(manifest, {
+        image: refs.custodian,
+        token: { secret: secretName(req.name), key: "JR2_SANDBOX_TOKEN" },
+        sandbox: req.name,
+        caBundle: opts.caBundle === true,
+      });
+      const cr = await crFor(req, refs, repos, custodian);
 
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
       // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
@@ -794,7 +765,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       // a Sandbox whose Repo could not be recorded.
       for (const repo of repos) await opts.repos.ensure(repo);
 
-      await applyTokenSecret(req.name); // before the CR: the pod's Adapter mounts it at start
+      await applyTokenSecret(req.name); // before the CR: the pod's Custodian mounts it at start
       await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(cr) });
 
       const applied = Date.now();
@@ -868,12 +839,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     },
 
     async attach(req) {
-      const { script, repos, review } = attachScript(req.spec, req.repos, {
-        reposMount: REPOS_MOUNT,
-        workRoot,
-        // The fetch url names the Adapter only when it is somewhere unexpected (ADR-0053).
-        ...(adapterPort !== DEFAULT_ADAPTER_PORT ? { adapterUrl: `http://127.0.0.1:${adapterPort}` } : {}),
-      });
+      const { script, repos, review } = attachScript(req.spec, req.repos, { reposMount: REPOS_MOUNT, workRoot });
       // `-c harness` is unchanged and still correct after ADR-0037: the primary container runs the
       // Sandbox Image, so `git` here is the git the user chose. Never `-c user` — that seat is
       // zero-contract, may hold no git at all, and jr2 commands nothing in it (ADR-0005).
@@ -1002,7 +968,7 @@ function staleSlots(
 export function attachScript(
   spec: WorkspaceSpec,
   repos: Array<{ slot: string; url: string; ref?: string }>,
-  paths: { reposMount: string; workRoot: string; adapterUrl?: string },
+  paths: { reposMount: string; workRoot: string },
 ): { script: string; repos: Record<string, string>; review?: Record<string, string> } {
   const worktrees: Record<string, string> = {};
   const review: Record<string, string> = {};
@@ -1048,7 +1014,7 @@ export function attachScript(
       // (ADR-0051). Push still succeeds only with a caller-supplied credential (a forwarded agent
       // in the User Container); the pod itself holds none. `--` keeps the url an operand, never an
       // option.
-      `git -C ${sq(dflt)} remote set-url origin -- ${sq(fetchUrl(identity, paths.adapterUrl))}`,
+      `git -C ${sq(dflt)} remote set-url origin -- ${sq(fetchUrl(identity))}`,
       `git -C ${sq(dflt)} remote set-url --push origin -- ${sq(repo.url)}`,
       // `ext` is on git's own "known scary" list, so its built-in default is `never` and the url
       // above would die with `fatal: transport 'ext' not allowed` before the program ever ran.
@@ -1086,13 +1052,11 @@ export function attachScript(
 
 /**
  * `origin`'s fetch url for one Repo (ADR-0053): the `ext::` transport, the program's absolute path
- * on the runtime volume, the service git asks for, and the Repo's identity. The Adapter's address
- * rides as a third argument only when the composition moved the Adapter off its default port —
- * the program reads `$JR2_ADAPTER_URL` and then falls back to that same address, so spelling it out
- * unconditionally would put a number in every `git remote -v` that says nothing.
+ * on the runtime volume, the service git asks for, and the Repo's identity. No address: the
+ * program asks the Custodian at its one loopback address, which every Harness pod has (ADR-0059).
  */
-function fetchUrl(identity: string, adapterUrl?: string): string {
-  return `ext::${UPLOAD_PACK} %S ${extArg(identity)}${adapterUrl !== undefined ? ` ${extArg(adapterUrl)}` : ""}`;
+function fetchUrl(identity: string): string {
+  return `ext::${UPLOAD_PACK} %S ${extArg(identity)}`;
 }
 
 /**

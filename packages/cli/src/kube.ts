@@ -98,8 +98,11 @@ export type KubeAdmin = {
     allNamespaces?: boolean;
     context?: string;
   }): Promise<T[]>;
-  /** `kubectl apply -f -` of a multi-doc YAML or JSON manifest string. */
-  apply(opts: { manifest: string; context?: string }): Promise<void>;
+  /** `kubectl apply -f -` of a multi-doc YAML or JSON manifest string. `serverSide` is for an
+   * object too large for client-side apply's `last-applied-configuration` annotation (256 KiB) —
+   * the trust bundles, which carry every root certificate (ADR-0059); jr2 is its only writer, so it
+   * takes the fields it owns (`--force-conflicts`). */
+  apply(opts: { manifest: string; context?: string; serverSide?: boolean }): Promise<void>;
   /** `kubectl label --overwrite`. */
   label(opts: {
     kind: string;
@@ -238,8 +241,9 @@ export const kubectlAdmin: KubeAdmin = {
     return (JSON.parse(stdout) as { items?: never[] }).items ?? [];
   },
 
-  async apply({ manifest, context }) {
-    await execStdin(["kubectl", ...ctxArgs(context), "apply", "-f", "-"], manifest);
+  async apply({ manifest, context, serverSide }) {
+    const mode = serverSide ? ["--server-side", "--force-conflicts", "--field-manager=jr2"] : [];
+    await execStdin(["kubectl", ...ctxArgs(context), "apply", ...mode, "-f", "-"], manifest);
   },
 
   async label({ kind, name, namespace, labels, context }) {

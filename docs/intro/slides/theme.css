@@ -1641,8 +1641,8 @@ body.stage-live .stage-badge {
   color: inherit;
 }
 
-/* The Menu: the Harness dials the Adapter on localhost, every Submission. */
-.reveal .seats .mcp {
+/* The Menu: the Harness dials the Custodian on localhost, every Submission. */
+.reveal .seats .menu {
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -1654,7 +1654,7 @@ body.stage-live .stage-badge {
   font-size: 0.9em;
   color: var(--phosphor);
 }
-.reveal .seats .mcp::before {
+.reveal .seats .menu::before {
   content: "";
   position: absolute;
   left: 0;
@@ -1662,7 +1662,7 @@ body.stage-live .stage-badge {
   top: 50%;
   border-top: 1px dashed var(--phosphor);
 }
-.reveal .seats .mcp::after {
+.reveal .seats .menu::after {
   content: "";
   position: absolute;
   right: 0;
@@ -1671,14 +1671,14 @@ body.stage-live .stage-badge {
   border-left: 7px solid var(--phosphor);
   border-right: 0;
 }
-.reveal .seats .mcp span {
+.reveal .seats .menu span {
   white-space: nowrap;
   position: relative;
   z-index: 1;
   padding: 0 0.3em;
   background: rgba(14, 21, 36, 1);
 }
-.reveal .seats .mcp span + span {
+.reveal .seats .menu span + span {
   color: var(--text);
 }
 
@@ -2034,7 +2034,7 @@ body.stage-live .stage-badge {
   color: var(--amber);
 }
 
-/* --- held secrets: the Adapter grows ------------------------------------------------------- */
+/* --- held secrets: the Custodian holds them ------------------------------------------------------- */
 
 .reveal .grows {
   display: grid;
@@ -2140,7 +2140,7 @@ body.stage-live .stage-badge {
   border: 1px dashed var(--phosphor);
   border-radius: 999px;
 }
-.reveal .slides > section:not(#demo) .grows p.undecided {
+.reveal .slides > section:not(#demo) .grows p.engine {
   max-width: none;
   margin: 0;
   font-size: 0.85em;
@@ -2155,7 +2155,7 @@ body.stage-live .stage-badge {
   color: var(--text);
   border-left: 2px solid var(--blue);
 }
-.reveal .grows p.undecided span {
+.reveal .grows p.engine span {
   color: var(--amber);
 }
 

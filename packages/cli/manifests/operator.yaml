@@ -6181,7 +6181,7 @@ spec:
                   Repos is the standing report on the caches this Sandbox mounts
                   (ADR-0053), one entry per key in spec.repos, in that order, computed on
                   every reconcile once the Pod has a node. It is what a fetch inside the
-                  pod waits on: the program asks the Adapter, the Orchestrator marks the
+                  pod waits on: the program asks the Custodian, the Orchestrator marks the
                   ask on this CR, and the entry for that key says whether the node fetched
                   since. `Ready` is untouched by it — that stays the gate it was, sticky
                   and taken once per Pod life; this is the standing answer the gate's

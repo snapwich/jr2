@@ -2,8 +2,9 @@
 // delivery surfaces, the duplex Actor over the Harness wire, and durable snapshot persistence
 // (ADR-0002/0006/0007). Builds on the `@jr2/agent-protocol` wire contract.
 //
-// It does NOT speak MCP (ADR-0013): the Agent's MCP surface is hosted by the Adapter, in the
-// Sandbox. What lives here is the registration table and two thin HTTP adapters over it.
+// It does NOT speak MCP (ADR-0013): the Harness presents the Menu to its model itself, and reaches
+// the surface here through the Custodian in its pod. What lives here is the registration table and
+// two thin HTTP adapters over it — plus what composes a Custodian (ADR-0059).
 
 // The wire contract, re-exported: a workflow authors against ONE package (`defineEvent`,
 // `jr2Setup`, `workspace`, … all import from "@jr2/orchestrator" — ADR-0015).
@@ -24,6 +25,9 @@ export * from "./actor.ts";
 export * from "./gate.ts";
 export * from "./workspace.ts";
 export * from "./images.ts";
+export * from "./model-keys.ts";
+export * from "./held-secrets.ts";
+export * from "./custodian.ts";
 export * from "./sandbox-kubectl.ts";
 export * from "./repos.ts";
 export * from "./repo-fetch.ts";

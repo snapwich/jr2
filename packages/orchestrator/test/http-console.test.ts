@@ -35,7 +35,7 @@ async function mkLive() {
   host.register(gatedDef());
   host.register(pipelineDef());
   host.register({ name: "titled", machine: titledTemplate, provide: () => ({}) });
-  /** The live Turn's delivery route, as the Adapter holds it: jr2 mints every iid (ADR-0057), so
+  /** The live Turn's delivery route, as the Harness holds it: jr2 mints every iid (ADR-0057), so
    * the test reads it off the admission and encodes its path separators. */
   const agentEvents = async (seed: string) =>
     `/agents/${encodeURIComponent(await admittedIid(clients.get(seed)!))}/events`;

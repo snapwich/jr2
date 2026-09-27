@@ -105,6 +105,8 @@ export type HarnessEnvVar = {
 /** A whole-Secret/ConfigMap env injection (corev1.EnvFromSource) for the Harness container —
  * e.g. `{ secretRef: { name: "anthropic" } }` to hand a real Harness its model API key. */
 export type HarnessEnvFromSource = {
+  /** Put before every key's name, as corev1 does. */
+  prefix?: string;
   secretRef?: { name: string };
   configMapRef?: { name: string };
 };
@@ -136,8 +138,9 @@ export type HarnessProvider = {
   /** The endpoint — reachable FROM PODS (`localhost` never is; a LAN address works on kind).
    * Deployment-varying → resolve from env (`.env`), never hardcode (ADR-0019). */
   baseUrl: string;
-  /** API key, when the endpoint wants one. May read `process.env` — `jr2 up` materializes config
-   * env values into the instance's Secret; the literal never lands in a manifest (ADR-0019).
+  /** API key, when the endpoint wants one. May read `process.env`. It is a held secret
+   * (ADR-0059): `jr2 up` gives the value to the Custodian alone, bound to `baseUrl`'s host, and the
+   * Harness container holds only its Stand-in. So `baseUrl` must be `https://` when this is set.
    * Genuinely optional: an unauthenticated endpoint needs none (the Harness sends the wire
    * library's placeholder, which vLLM/Ollama ignore). */
   apiKey?: string;
@@ -153,6 +156,41 @@ export type HarnessProvider = {
   models?: Record<string, HarnessProviderModel>;
 };
 
+/** Where one of pi's catalog providers sends its calls (ADR-0059) — reach, not a model choice
+ * (ADR-0018). The catalog keeps every model fact (limits, cost, thinking levels); this changes only
+ * the endpoint, for a gateway that serves the provider's own API (LiteLLM, for example). */
+export type CatalogReach = {
+  /** Replaces `model.baseUrl` for every model of this provider — the WHOLE base the provider's API
+   * appends to (`https://litellm.corp.example` for `anthropic`, which appends `/v1/messages`;
+   * `https://litellm.corp.example/v1` for `openai`). HTTPS only. Deployment-varying → `.env`. */
+  baseUrl: string;
+};
+
+/** A credential the Harness uses and never holds (ADR-0059). The Harness container's env carries
+ * its Stand-in, `jr2-held-<name>`; the Custodian puts the value into requests toward `hosts` alone. */
+export type HeldSecret = {
+  /** The env var the Harness container sees — `[A-Z_][A-Z0-9_]*`. It holds the Stand-in. */
+  name: string;
+  /** The value as a literal, usually read from `process.env`/`.env`. `jr2 up` writes it into the
+   * `jr2-held-secrets` Secret, which only the Custodian mounts. Exactly one of `value`/`valueFrom`. */
+  value?: string;
+  /** Or a key of a Secret you manage (Sealed Secrets, External Secrets). `jr2 up` checks that the
+   * Secret and key exist; the Custodian mounts that one key as a file, and no other container does. */
+  valueFrom?: { secretKeyRef: { name: string; key: string } };
+  /** Where the value may go. Each entry is `host`, `host:port`, or an `https://` URL (its host and
+   * port are taken; the path is ignored). Exact DNS names or IP literals; no wildcards. Port
+   * default 443. Optional ONLY for a known model-key name (`MODEL_KEYS`), where it defaults to the
+   * one host that provider's calls go to. */
+  hosts?: readonly string[];
+  /** Request headers the Stand-in is swapped in, lowercase. Default
+   * `["authorization", "x-api-key", "x-goog-api-key", "api-key"]`. */
+  headers?: readonly string[];
+  /** Optional path prefixes the value may be sent to (`/v1/messages`). Absent → every path. A
+   * gateway key that can reach admin routes (a LiteLLM key that can mint keys) should narrow this:
+   * a key minted through the Custodian is a key the Agent can take away. */
+  paths?: readonly string[];
+};
+
 /** The agent-runtime section (ADR-0018): what the stock Harness image consumes alongside the
  * Agent definition each Turn hands it (ADR-0049). Moved out of `sandbox` deliberately — `sandbox`
  * is pod transport (it still CARRIES this env to the Harness container), but model concerns are
@@ -164,20 +202,29 @@ export type HarnessProvider = {
  * One definition value may still be carried by several Machines, so the variation that matters is
  * per-definition and per-invocation, which one global default serves not at all. */
 export type HarnessConfig = {
-  /** Custom model provider, preflighted from inside the cluster by `jr2 up` (ADR-0019). */
+  /** Custom model provider, preflighted from inside the cluster by `jr2 up` (ADR-0019). Its
+   * `apiKey` is a held secret, `JR2_PROVIDER_API_KEY`, bound to `baseUrl`'s host (ADR-0059). */
   provider?: HarnessProvider;
-  /** Env vars for the Harness container (Agent creds, e.g. ANTHROPIC_API_KEY). Values read from
-   * `process.env`/`.env` are materialized into the instance-owned Secret by `jr2 up`. */
+  /** pi catalog providers whose calls go somewhere else, keyed by the catalog provider id
+   * (`anthropic`, `openai`, ...) — a gateway that serves the provider's own API (ADR-0059). */
+  catalog?: Readonly<Record<string, CatalogReach>>;
+  /** Credentials the Harness uses and never holds (ADR-0059): the Harness container sees a
+   * Stand-in, and the Custodian puts the value into requests toward the bound hosts alone. A model
+   * API key belongs here, never in `env`. */
+  heldSecrets?: readonly HeldSecret[];
+  /** Env vars for the Harness container. Values read from `process.env`/`.env` are materialized
+   * into the instance-owned Secret by `jr2 up`. The Agent can read every one of them, so a known
+   * model key here is refused — it goes in `heldSecrets` (ADR-0059). */
   env?: readonly HarnessEnvVar[];
   /** Whole-Secret/ConfigMap env for the Harness container — `envFrom` refs to Secrets YOU manage
-   * (Sealed Secrets etc.); `jr2 up` preflights that each referenced Secret exists (ADR-0019). */
+   * (Sealed Secrets etc.); `jr2 up` preflights that each referenced Secret exists (ADR-0019), and
+   * refuses one that carries a known model key (ADR-0059). */
   envFrom?: readonly HarnessEnvFromSource[];
   /** Path to a PEM CA bundle, RELATIVE to the instance folder — commit the file (CA certs are
    * public; e.g. an internal CA in front of a LAN vLLM). Only `jr2 up` reads it (host-side): it
    * materializes the `jr2-ca` ConfigMap and runs the provider preflight with the same trust. The
-   * bundle lands on the Harness container and NOWHERE else — never the Adapter, whose Orchestrator
-   * credential has no business behind the same trust store (the `harness.env` asymmetry,
-   * ADR-0013/0020). */
+   * Harness container trusts it, and so does the Custodian when it verifies a bound host
+   * (ADR-0020, ADR-0059). */
   caBundle?: string;
 };
 
@@ -231,7 +278,7 @@ export type JR2Config = {
    *
    * Separate from `registry` on purpose: `registry` addresses images THIS converge builds,
    * `kitRegistry` addresses artifacts the kit already published. One key for both would make every
-   * private-registry user mirror three images they could have pulled from the home. */
+   * private-registry user mirror the Kit images they could have pulled from the home. */
   kitRegistry?: string;
   /** What `jr2 up` builds its images FOR — docker platform strings, e.g. `["linux/arm64"]`
    * (deployment-varying — resolve from env). Absent → derived from the cluster's schedulable nodes
@@ -260,10 +307,13 @@ export function defineConfig(c: JR2Config): JR2Config {
 /**
  * Load an instance's `jr2.config.ts` (default export). Absent file → undefined (an instance
  * can boot configless); a file that fails to IMPORT throws — a broken config must be loud,
- * never silently treated as "no config". The one shape check lives here, on the path the host
- * CLI and the in-cluster Orchestrator share: `git.credentials` is checked at runtime, because an
- * instance is zero-build and nothing typechecks this file before Node strips its types and
- * imports it.
+ * never silently treated as "no config". The shape checks live here, on the path the host CLI
+ * and the in-cluster Orchestrator share: `git.credentials`, `harness.heldSecrets` and
+ * `harness.catalog` are checked at runtime, because an instance is zero-build and nothing
+ * typechecks this file before Node strips its types and imports it. SHAPE only: a held secret's
+ * `value` reads `.env`, which the in-cluster evaluation does not have, so an absent value is not
+ * this function's to refuse — `jr2 up` checks presence and every held-secret rule host-side
+ * (`heldSecretsOf`, ADR-0059).
  */
 export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   const file = join(dir, "jr2.config.ts");
@@ -271,6 +321,7 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   const mod = (await import(pathToFileURL(file).href)) as { default?: JR2Config };
   if (!mod.default) throw new Error(`${file} has no default export (use \`export default defineConfig({…})\`)`);
   if (mod.default.git !== undefined) checkGit(mod.default.git, file);
+  if (mod.default.harness !== undefined) checkHeld(mod.default.harness, file);
   return mod.default;
 }
 
@@ -295,3 +346,57 @@ function checkGit(git: unknown, where: string): void {
 }
 
 const GIT_HINT = "an entry is { match, token?, sshKey? } (ADR-0051)";
+
+const OptionalText = z.string().optional();
+const HeldSecretShape = z
+  .object({
+    name: NonEmpty,
+    // `.env` values are absent in-cluster, so `undefined` must pass here — presence is `jr2 up`'s.
+    value: OptionalText,
+    valueFrom: z
+      .object({ secretKeyRef: z.object({ name: NonEmpty, key: NonEmpty }).strict() })
+      .strict()
+      .optional(),
+    hosts: z.array(z.string()).optional(),
+    headers: z.array(z.string()).optional(),
+    paths: z.array(z.string()).optional(),
+  })
+  .strict();
+const CatalogReachShape = z.object({ baseUrl: z.string() }).strict();
+
+/** `harness.heldSecrets` and `harness.catalog`, SHAPE only (ADR-0059) — by index and field, the
+ * `checkGit` style, so a bad entry names itself (`harness.heldSecrets[1].hosts`). */
+function checkHeld(harness: unknown, where: string): void {
+  if (typeof harness !== "object" || harness === null || Array.isArray(harness)) {
+    throw new Error(`${where} at harness: expected an object`);
+  }
+  const { heldSecrets, catalog } = harness as { heldSecrets?: unknown; catalog?: unknown };
+  if (heldSecrets !== undefined) {
+    if (!Array.isArray(heldSecrets)) {
+      throw new Error(`${where} at harness.heldSecrets: expected an array — ${HELD_HINT}`);
+    }
+    for (const [i, entry] of heldSecrets.entries()) {
+      const parsed = HeldSecretShape.safeParse(entry);
+      if (parsed.success) continue;
+      const issue = parsed.error.issues[0];
+      const at = ["", ...(issue?.path ?? [])].map(String).join(".");
+      throw new Error(`${where} at harness.heldSecrets[${i}]${at}: ${issue?.message ?? "invalid"} — ${HELD_HINT}`);
+    }
+  }
+  if (catalog !== undefined) {
+    if (typeof catalog !== "object" || catalog === null || Array.isArray(catalog)) {
+      throw new Error(`${where} at harness.catalog: expected an object keyed by catalog provider id — ${CATALOG_HINT}`);
+    }
+    for (const [id, reach] of Object.entries(catalog)) {
+      const parsed = CatalogReachShape.safeParse(reach);
+      if (parsed.success) continue;
+      const issue = parsed.error.issues[0];
+      const at = ["", ...(issue?.path ?? [])].map(String).join(".");
+      throw new Error(`${where} at harness.catalog.${id}${at}: ${issue?.message ?? "invalid"} — ${CATALOG_HINT}`);
+    }
+  }
+}
+
+const HELD_HINT =
+  "an entry is { name, value? | valueFrom?: { secretKeyRef: { name, key } }, hosts?, headers?, paths? } (ADR-0059)";
+const CATALOG_HINT = "an entry is <provider id>: { baseUrl } (ADR-0059)";

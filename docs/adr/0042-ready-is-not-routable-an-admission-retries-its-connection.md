@@ -5,7 +5,7 @@ jr2 absorbs. Its **infra** class is stated as already-covered: _"provider-stream
 Harness, and `wait` reconnects indefinitely from the offset ledger; a dead Harness surfaces as a fault"_. That sentence
 walks the turn from its stream backwards and never reaches the two steps in front of it. **Both legs that run BEFORE a
 model is ever asked were single, unretried `fetch`es** — the Orchestrator's admission POST to the Workspace Harness, and
-the Adapter's `GET /agents/:iid/surface` that builds the turn's Menu — and either one rejecting settles the turn, which
+the Harness's `GET /agents/:iid/surface` that builds the turn's Menu — and either one rejecting settles the turn, which
 `actor.ts` reports as the terminal `agent.fault`. One dropped packet, one lost turn.
 
 The gap is not theoretical and not rare, because both of those calls dial a **Service that has only just started
@@ -28,10 +28,9 @@ losing it:
   other thing that dials that Service — logged the same `fetch failed` against the same address. Nothing had reached the
   pod at all.
 - **The surface read**, once the admission was fixed and the tier ran again:
-  `submission settled failed: Streamable HTTP error: Error POSTing to endpoint: {"error":"fetch failed"}` — the
-  Adapter's 500, wrapped by the MCP client, in the scenario that RESTARTS the Orchestrator. Which is the same defect one
-  hop over, and it retired this ADR's first draft, where the Menu leg was written off as "pod-local to a Service that
-  has been serving all along". It is not pod-local: the Adapter's hop leaves the pod.
+  `submission settled failed: … {"error":"fetch failed"}` — the surface read's failure, in the scenario that RESTARTS
+  the Orchestrator. Which is the same defect one hop over: the Menu leg looks pod-local, and it is not — its hop leaves
+  the pod for the Orchestrator's Service.
 
 Parallelism causes neither; it multiplies the number of Services crossing into service at once, so it samples both
 windows more often. That is why the flake was degree-independent and serial runs never saw it.
@@ -60,21 +59,25 @@ windows more often. That is why the flake was degree-independent and serial runs
   already populated. The bound covers both. Its cost is paid only by an address that is genuinely wrong, and that one
   faults with the address in hand either way.
 - **The ladder is jittered, because the callers arrive together.** Sandboxes that converge together cross the same
-  window together, and every Adapter in the cluster dials the same Orchestrator Service — so an un-jittered ladder does
-  not merely fail to help, it organizes the callers into a herd that retries and misses in lockstep. Each sleep is drawn
-  from the TOP HALF of its rung (equal jitter). The random half decorrelates them; the half that stays a floor is the
-  deliberate part, and it is what full jitter would give away — it is what still holds four clients off a Service that
-  is genuinely down.
+  window together, and every Custodian in the cluster dials the same Orchestrator Service — so an un-jittered ladder
+  does not merely fail to help, it organizes the callers into a herd that retries and misses in lockstep. Each sleep is
+  drawn from the TOP HALF of its rung (equal jitter). The random half decorrelates them; the half that stays a floor is
+  the deliberate part, and it is what full jitter would give away — it is what still holds four clients off a Service
+  that is genuinely down.
 - **A transport failure says what it was.** `fetch` reports every one of them as the same three words, and
   `reason: "fetch failed"` on a run is a diagnosis of nothing — the errno one level down (`connect ECONNREFUSED …`,
   `getaddrinfo ENOTFOUND …`) is the whole answer. Both the admission fault and the echo's log line now carry it.
-- **The Adapter re-asks an unanswered surface read, on ANY transport failure.** A GET is idempotent, so the narrow
-  never-delivered test the admission needs buys nothing here — there is no second turn to accidentally start, so the
-  rule is simply "an answered request is an answer". A 404 stays ADR-0026's turn-is-over and a 403 stays a scope
-  refusal: both are answers, and neither is re-asked.
+- **The Harness re-asks an unanswered surface read, on ANY transport failure.** An unanswered read is the Harness's own
+  transport failure, or the Custodian's word that the Orchestrator never answered it (a 502 it marks as its own,
+  [ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md)), or no answer within 10 seconds. The
+  Custodian itself retries only a connection reset: any reset under the read, and under a pick or an ask only one before
+  the request was sent. It also drops a pooled connection after 4 seconds idle, before Node's 5-second keep-alive closes
+  it. A GET is idempotent, so the narrow never-delivered test the admission needs buys nothing here — there is no second
+  turn to accidentally start, so the rule is simply "an answered request is an answer". A 404 stays ADR-0026's
+  turn-is-over and a 403 stays a scope refusal: both are answers, and neither is re-asked.
 - **`deliver` does not retry, and that is not an oversight.** A failed pick reaches the model as a tool error it can act
   on — pick again, or pick differently — so the turn survives one; and a POST that may have been delivered must never be
-  re-sent, because a duplicate pick is a duplicate transition. The asymmetry between the Adapter's two calls is the same
+  re-sent, because a duplicate pick is a duplicate transition. The asymmetry between the Menu's two calls is the same
   one between `send` and `wait`: what may be re-asked is decided by what a second copy would do, never by how transient
   the failure looks.
 - **The fault class is unchanged.** Exhausting either window is still ADR-0016's single terminal `agent.fault`, and

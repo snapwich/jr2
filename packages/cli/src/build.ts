@@ -2,9 +2,10 @@
 // kinds — the instance's own (engine + this instance's workflows baked, ADR-0008), the instance's
 // Sandbox Images (the `file:` docker contexts its Machines carry, ADR-0037/0049), and — only when the
 // CLI is running out of
-// a kit CHECKOUT — the Harness, Adapter, and operator images. Installed from npm those kit sources
-// do not resolve, so a real instance takes the published-`<kitversion>` path and never needs docker
-// for them. The checkout IS the signal: no flag, no config key, no env.
+// a kit CHECKOUT — the Harness and operator images. Installed from npm those kit sources do not
+// resolve, so a real instance takes the published-`<kitversion>` path and never needs docker for
+// them. The checkout IS the signal: no flag, no config key, no env. One image is deployed and never
+// built, in either world: the Custodian's, upstream Envoy pinned by digest (ADR-0038, ADR-0059).
 //
 // Every tag is a content address of its own inputs. That is what makes `imagePullPolicy:
 // IfNotPresent` correct rather than lucky (a unique tag per content means "present" implies
@@ -144,7 +145,7 @@ export type BuildPort = {
  * context and carries no `.dockerignore`, so docker copies `dist/` and `node_modules/` straight in.
  */
 
-/** For walks under `packages/*` (harness, adapter): their context is the KIT ROOT, so the root
+/** For walks under `packages/*` (the Harness): its context is the KIT ROOT, so the root
  * `.dockerignore` governs, and the only entries it drops at any depth are `**\/node_modules` and
  * `**\/dist` (plus `*.log`/`.env` globs `contentHash`'s name-set cannot express — hashing a stray
  * one of those over-hashes, which is allowed). A `packages/harness/bin/` would be context-VISIBLE,
@@ -226,7 +227,7 @@ export const LABEL_IMAGE_KIND = "jr2.dev/kind";
 /** The three kinds ADR-0038 builds, and the whole value domain of {@link LABEL_IMAGE_KIND}. */
 export type ImageKind = "instance" | "sandbox" | "kit";
 
-/** The kit's own images (Harness, Adapter, operator). No instance label: every instance on the
+/** The kit's own images (Harness, operator). No instance label: every instance on the
  * cluster shares one copy, and "kit images are never swept" is not a rule any more — a kit ref is
  * kept because some instance's map or pod names it, and collects with everything else when the
  * last instance leaves (ADR-0039). */
@@ -258,8 +259,8 @@ export function sandboxImageLabels(instance: string): Record<string, string> {
  * script's default and fails the gate when they drift.
  *
  * An arch outside this set is never built for. An instance image for `s390x` is dead weight: no Kit
- * image could sit beside it in the pod, so the Sandbox would fail at the Adapter or the Harness
- * instead of at the image nobody published.
+ * image could sit beside it in the pod, so the Sandbox would fail at the Harness instead of at
+ * the image nobody published.
  */
 export const SUPPORTED_PLATFORMS: readonly string[] = ["linux/amd64", "linux/arm64"];
 
@@ -365,8 +366,8 @@ export async function assertEmulation(port: BuildPort, platforms: readonly strin
 
 // --- the kit images (ADR-0038) --------------------------------------------------------------
 
-/** The three images the KIT owns. An instance deploys them but never authors them. */
-export type KitImageName = "harness" | "adapter" | "operator";
+/** The two images the KIT owns and builds. An instance deploys them but never authors them. */
+export type KitImageName = "harness" | "operator";
 export type KitImageRefs = Record<KitImageName, string>;
 
 type KitImage = {
@@ -415,13 +416,6 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     ],
     exclude: KIT_PACKAGE_EXCLUDE,
   },
-  adapter: {
-    repo: "jr2-adapter",
-    dockerfile: "deploy/adapter/Dockerfile",
-    context: ".",
-    sources: ["packages/adapter", "deploy/adapter/Dockerfile"],
-    exclude: KIT_PACKAGE_EXCLUDE,
-  },
   operator: {
     repo: "jr2-operator",
     dockerfile: "operator/Dockerfile",
@@ -451,14 +445,13 @@ export const KIT_IMAGE_HOME = "ghcr.io/snapwich";
  * home rather than nesting under it: a mirror holds the same tags under its own name, seeded
  * deliberately (`jr2 kit push`) and never by a converge. It is NOT `config.registry`: that key says
  * where images this converge BUILDS go, and prefixing both with one key would make every
- * private-registry user mirror three images they could have pulled from the home. The version is
+ * private-registry user mirror the Kit images they could have pulled from the home. The version is
  * still the CLI's own — re-homing says where the tags live, never which ones.
  */
 export function publishedKitRefs(kitRegistry?: string): KitImageRefs {
   const home = kitRegistry ?? KIT_IMAGE_HOME;
   return {
     harness: `${home}/jr2-harness:${KIT_VERSION}`,
-    adapter: `${home}/jr2-adapter:${KIT_VERSION}`,
     operator: `${home}/jr2-operator:${KIT_VERSION}`,
   };
 }
@@ -743,7 +736,7 @@ const emptySweep = (): SweepResult => ({ removed: [], kept: [], failed: [], byte
  * One report out of several — the host's and every node's, or several converges' (`mergeSweeps` is
  * associative, so a caller can fold as it goes). Refs are de-duplicated AFTER {@link normalizeRef},
  * because that is the only way the promise holds: the two stores spell one image differently
- * (`jr2-adapter:33a4` on the host, `docker.io/library/jr2-adapter:33a4` on a node), so a raw-string
+ * (`jr2-harness:33a4` on the host, `docker.io/library/jr2-harness:33a4` on a node), so a raw-string
  * set reports one image twice. The merged refs are the normalized spelling — the one the roots, and
  * the user, name an image by.
  *

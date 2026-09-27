@@ -8,20 +8,21 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   It is also the only tier where the AGENT is real in the way that matters (ADR-0013): the pod
   originates its own tool calls. Since ADR-0038 the pod runs the STOCK Harness — pi, the real Menu
-  over MCP to the Adapter on localhost, the real Working tools — and the ONLY thing still faked is
-  the model: a scripted OpenAI-compatible endpoint the World serves from the host. "The Agent calls
-  X" means that model now answers with a tool call; the wire, the container boundary, the MCP
-  connection and the tool call are all real. Which makes this tier a SECOND pi canary beside the
-  conformance suite (ADR-0027): a pi bump can break it.
+  read through the Custodian on localhost, the real Working tools — and the ONLY thing still faked
+  is the model: a scripted OpenAI-compatible endpoint the World serves from the host, over HTTPS,
+  behind a key only the Custodian holds (ADR-0059). "The Agent calls X" means that model now
+  answers with a tool call; the wire, the container boundary, the Custodian and the tool call are
+  all real. Which makes this tier a SECOND pi canary beside the conformance suite (ADR-0027): a pi
+  bump can break it.
 
   This tier is opt-in (`@kind`, excluded from the default suite) because it needs infrastructure:
     just e2e-kind-up      # a VANILLA kind cluster; nothing is built or loaded here
     just e2e-kind
   Bring-up is the product's own path (ADR-0010/0019/0038): each scenario runs `jr2 up` into a fresh
-  namespace of the shared cluster, and that converge builds and loads every image it deploys —
-  Harness, Adapter, operator, the instance, and the instance's own images (`images/default`, and
-  `images/user` for the one workflow that seats a human). Nothing is instance-bound to the cluster
-  itself.
+  namespace of the shared cluster, and that converge builds and loads every image it builds —
+  Harness, operator, the instance, and the instance's own images (`images/default`, and
+  `images/user` for the one workflow that seats a human). The one image it deploys and never builds,
+  the Custodian's pinned Envoy, a node pulls itself. Nothing is instance-bound to the cluster itself.
 
   Rule: the wrapper provisions a real Sandbox, attaches the worktree, and destroys it on final
 
@@ -59,7 +60,7 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: a fetch inside the pod reaches the remote's now
     ADR-0053. `origin`'s fetch url is a COMMAND, not a path: git runs the program on the runtime
-    volume, which asks the Adapter on localhost, waits for the landing, and only then execs
+    volume, which asks the Custodian on localhost, waits for the landing, and only then execs
     `git upload-pack` against the node cache. So the ask crosses a loopback route, a Sandbox-token
     route, an annotation on the CR, the operator's copy of it onto the pod, a DaemonSet, and a real
     remote — and every one of those is real only here. What it buys is the case the grill took: a
@@ -123,7 +124,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       # Same CR (never re-provisioned) at the same endpoint: the port-forward is derived from the
       # Sandbox name, so the endpoint persisted in the snapshot is still the one that works.
       Then the run's Sandbox is the same one, at the same endpoint
-      # And the Agent still reaches its Machine: its Adapter's token outlives the process that
+      # And the Agent still reaches its Machine: its Custodian's token outlives the process that
       # minted it, so a turn played after the restart still lands (ADR-0013).
       When the Agent in the Sandbox calls "finish" with summary "ok"
       Then the run's status shows "done"
@@ -143,18 +144,19 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's body settled as "lost"
       And no Sandbox was re-provisioned for the run
 
-  Rule: the Agent's only control-plane peer is the Adapter on localhost
-    ADR-0013. The Agent reaches its Machine through a process it can talk to but whose credential
-    it cannot read. Nothing else in the pod can deliver — which is what makes "the Agent never
-    steers the workflow" enforced rather than advertised.
+  Rule: the Agent's only control-plane peer is the Custodian on localhost
+    ADR-0013, ADR-0059. The Agent reaches its Machine through a container it can talk to but whose
+    credential it cannot read: the Harness holds the Sandbox token's Stand-in, and the Custodian
+    puts the token on three routes and no other. Nothing else in the pod can deliver — which is what
+    makes "the Agent never steers the workflow" enforced rather than advertised.
 
     Scenario: the tool call originates inside the pod and drives the Machine
       Given the kind instance is serving
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
-      And the run's Sandbox runs the Adapter beside the Harness
-      # The pod dialed out and listed its Menu over MCP before the model ever spoke — visible here
-      # as the tool set the Harness put on the provider request (ADR-0015/0028/0029).
+      And the run's Sandbox runs the Custodian beside the Harness
+      # The pod dialed out and read its Menu before the model ever spoke — visible here as the tool
+      # set the Harness put on the provider request (ADR-0015/0028/0029).
       And the model was offered "finish" from the Menu and its Working tools
       # The pod dials out; the host dials nothing. Its Harness was served this state's menu and
       # called from it — and the Machine moved.
@@ -167,11 +169,42 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       # Working tools give the Agent code execution in the Harness container, which shares the
-      # pod's network namespace — so it CAN reach the Orchestrator, address and all. It simply has
-      # no credential: the Sandbox token is delivered into the Adapter container only.
+      # pod's network namespace — so it CAN reach the Orchestrator, address and all, and it sends
+      # the one bearer it holds: the Stand-in. The Sandbox token is the Custodian's alone.
       When the Harness container posts "finish" straight to the Orchestrator
       Then the delivery is refused as unauthorized
       And the run has not settled
+
+  Rule: a Harness holds stand-ins, and only the Custodian puts the key on the wire
+    ADR-0059. The Agent executes code in the Harness container, so a key there is a key it can take
+    away. The Harness's env holds a stand-in; the Custodian, a container the Agent executes nothing
+    in, swaps it for the key toward the provider's host alone. What the Agent can take out of the
+    pod is worth nothing outside it.
+
+    Scenario: the provider receives the key, and the Harness container holds only the stand-in
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      And the model provider received the provider key on every turn request
+      And the Harness container's environment holds the stand-in for "JR2_PROVIDER_API_KEY"
+      And the provider key is nowhere in the Harness container's environment or files
+      And the provider key is nowhere in the Instance Harness's Harness container
+      And the Custodian's log names "JR2_PROVIDER_API_KEY" and never the key
+
+    Scenario: a stand-in sent to a host the secret is not bound to arrives as it left
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      When the Harness container sends the stand-in for "JR2_PROVIDER_API_KEY" to the unbound echo
+      Then the unbound echo received the stand-in, and not the key
+
+    Scenario: a request to the provider without the stand-in never reaches it
+      Given the kind instance is serving
+      When I start the "sandboxed" workflow detached
+      Then the run's Sandbox becomes Ready
+      When the Harness container calls the model provider with no stand-in
+      Then the Custodian refuses it as missing the stand-in
+      And the model provider received no request without the key
 
   Rule: a Harness answers the Orchestrator alone
     ADR-0058. The Harness wire drives conversations — admit a Turn, read its history, abort it — and
@@ -317,7 +350,7 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: a Menu-only Agent's Turn runs on the Instance Harness, and needs no Sandbox
     ADR-0031. An Agent whose definition declares `workspace: "none"` (ADR-0028) has no worktree to
-    run in, so `jr2 up` converges an Instance Harness — a Harness + Adapter pod with no Workspace —
+    run in, so `jr2 up` converges an Instance Harness — a Harness + Custodian pod with no Workspace —
     whenever a registered Machine carries such a definition, and the Turn is admitted THERE. No
     config names or enables it: the kind instance's `advisor` definition is the whole reason the
     Deployment exists in every scenario's namespace. Placement is definition-wins: even invoked

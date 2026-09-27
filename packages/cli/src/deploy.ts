@@ -7,7 +7,16 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   CA_CONFIGMAP,
+  custodianComposition,
+  CUSTODIAN_BOOTSTRAP_KEY,
+  CUSTODIAN_SCRIPT_KEY,
   GIT_SSH_SECRET,
+  HELD_CA_SECRET,
+  HELD_CONFIGMAP,
+  HELD_KEY,
+  HELD_MOUNT,
+  HELD_SECRETS_SECRET,
+  HELD_TLS_SECRET,
   HARNESS_ENV_SECRET,
   IMAGES_CONFIGMAP,
   IMAGES_KEY,
@@ -24,8 +33,10 @@ import {
   REPO_CACHE_HOSTPATH,
   STATE_PVC,
   type HarnessConfig,
+  type HeldManifest,
   type SandboxPlacement,
 } from "@jr2/orchestrator";
+import type { Pem } from "./held-pki.ts";
 
 export {
   GIT_SSH_SECRET,
@@ -47,6 +58,13 @@ export const LABEL_HASH = "jr2.dev/content-hash";
 export const ANNOTATION_IMAGES = "jr2.dev/images";
 
 export const ORCHESTRATOR_SA = "jr2-orchestrator";
+
+/** The HMAC over the held-secret inputs, on the Instance Harness's pod template (ADR-0059). */
+export const ANNOTATION_HELD_DIGEST = "jr2.dev/held-digest";
+
+/** The Instance Harness pod's `fsGroup` — a Sandbox pod's default work group (ADR-0005), for the
+ * same reason: a group every container is granted, which the Custodian's values are readable by. */
+const INSTANCE_HARNESS_FS_GROUP = 2000;
 
 /** The two ingress NetworkPolicies (ADR-0058) — see `harnessIngressPolicies`. */
 export const SANDBOX_INGRESS_POLICY = "jr2-sandbox-ingress";
@@ -81,6 +99,24 @@ export function compareVersions(a: string, b: string): number {
 
 type KubeManifest = Record<string, unknown>;
 
+/**
+ * What `jr2 up` resolved about held secrets (ADR-0059), ready to become objects. Values appear in
+ * two places only: `values` (the literals, for the `jr2-held-secrets` Secret) and the CA's and the
+ * leaves' keys — each lands in a Secret no Harness container mounts.
+ */
+export type HeldObjects = {
+  manifest: HeldManifest;
+  /** The literal values, by name — never in the manifest, never in a ConfigMap. */
+  values: Record<string, string>;
+  /** The per-Instance CA — kept across converges; present whenever a secret is held. */
+  ca?: Pem;
+  /** One leaf per bound target, by file stem (`leafStem`). */
+  leaves: Record<string, Pem>;
+  /** The Custodian's rendered bootstrap (JSON) and script. */
+  bootstrap: string;
+  script: string;
+};
+
 /** Everything `jr2 up` converges inside the instance's namespace, as one apply-able List. */
 export function instanceObjects(opts: {
   name: string;
@@ -89,14 +125,15 @@ export function instanceObjects(opts: {
   hash: string;
   /** Secret data (token, signing key, harness env literals) — written stringData, kube encodes. */
   secretData: Record<string, string>;
-  /** The HARNESS containers' env values (creds, provider key) — a SEPARATE Secret from
-   * `secretData` by doctrine (ADR-0013): Agent code executes where this lands, so the Instance
-   * token and signing key must never share a Secret with it. */
+  /** The HARNESS containers' literal `harness.env` values — a SEPARATE Secret from `secretData` by
+   * doctrine (ADR-0013): Agent code executes where this lands, so the Instance token and signing
+   * key must never share a Secret with it, and no model key rides it either (ADR-0059). */
   harnessEnvData: Record<string, string>;
   harness?: HarnessConfig;
-  /** The private-CA PEM bundle (`harness.caBundle` file contents, read by `up` — ADR-0020). */
-  caBundle?: string;
-  /** Every image ref THIS converge resolved (ADR-0037/0038/0049): `{ harness, adapter, operator?,
+  /** Held secrets (ADR-0059): the Custodian's objects. The `jr2-held` ConfigMap is applied always —
+   * every Harness pod runs a Custodian — and the rest only while a secret is held. */
+  held: HeldObjects;
+  /** Every image ref THIS converge resolved (ADR-0037/0038/0049): `{ harness, custodian, operator?,
    * sandbox: { <key>: ref }, sandboxUser: { <key>: user } }`, where a key is a build context's
    * content digest or the reserved `default`. It lands twice, deliberately as one JSON so the
    * record `up` diffs and the map pods read can never disagree: as the `jr2-images` ConfigMap the
@@ -165,9 +202,8 @@ export function instanceObjects(opts: {
       data: {
         [HARNESS_CONFIG_KEY]: JSON.stringify(
           {
-            // apiKey is deliberately dropped: it materializes into the Secret as
-            // JR2_PROVIDER_API_KEY (`up`), and the Harness reads it from env — a ConfigMap is not
-            // a place for a credential.
+            // apiKey is deliberately dropped: it is a held secret (ADR-0059) — the Custodian holds
+            // it, the Harness's env holds its Stand-in, and a ConfigMap is no place for either.
             provider: opts.harness?.provider
               ? {
                   id: opts.harness.provider.id,
@@ -180,6 +216,8 @@ export function instanceObjects(opts: {
                   models: opts.harness.provider.models,
                 }
               : undefined,
+            // Where pi's catalog providers send their calls (ADR-0059): endpoints, not keys.
+            catalog: opts.harness?.catalog,
           },
           null,
           2,
@@ -197,18 +235,20 @@ export function instanceObjects(opts: {
       metadata: meta(IMAGES_CONFIGMAP),
       data: { [IMAGES_KEY]: imagesJson },
     },
-    // The private-CA bundle (ADR-0020) — a ConfigMap, not a Secret: CA certs are public data.
-    // kubectlSandbox mounts it into the Harness container and points NODE_EXTRA_CA_CERTS at it.
-    ...(opts.caBundle
-      ? [
-          {
-            apiVersion: "v1",
-            kind: "ConfigMap",
-            metadata: meta(CA_CONFIGMAP),
-            data: { "ca.crt": opts.caBundle },
-          },
-        ]
-      : []),
+    // Held secrets (ADR-0059). `held.json` is what every composition reads — the Orchestrator per
+    // provision from the mount below, `jr2 up` for the Instance Harness — beside the Custodian's
+    // bootstrap and script, which Envoy reads at start. Names, hosts, headers: never a value.
+    {
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: meta(HELD_CONFIGMAP),
+      data: {
+        [HELD_KEY]: JSON.stringify(opts.held.manifest, null, 2),
+        [CUSTODIAN_BOOTSTRAP_KEY]: opts.held.bootstrap,
+        [CUSTODIAN_SCRIPT_KEY]: opts.held.script,
+      },
+    },
+    ...heldSecretObjects(opts.held, meta),
     {
       apiVersion: "v1",
       kind: "Secret",
@@ -269,6 +309,9 @@ export function instanceObjects(opts: {
                   // The image map, read per provision (ADR-0038). A mount, so `jr2 up` rewriting
                   // it costs one kubelet propagation window instead of a rollout.
                   { name: "images", mountPath: IMAGES_MOUNT, readOnly: true },
+                  // What the Custodian holds, read per provision the same way (ADR-0059): names
+                  // and hosts, which this process could not derive — its `.env` values are absent.
+                  { name: "held", mountPath: HELD_MOUNT, readOnly: true },
                 ],
                 // The period, not the boot, is what `up`'s rollout wait measures. Measured: the
                 // container answers `/healthz` 1.1s after it starts, and the default 10s period
@@ -293,6 +336,7 @@ export function instanceObjects(opts: {
             volumes: [
               { name: "state", persistentVolumeClaim: { claimName: STATE_PVC } },
               { name: "images", configMap: { name: IMAGES_CONFIGMAP } },
+              { name: "held", configMap: { name: HELD_CONFIGMAP, items: [{ key: HELD_KEY, path: HELD_KEY }] } },
             ],
           },
         },
@@ -329,8 +373,8 @@ const SANDBOX_POD_LABEL = "sandbox.jr2.dev/name";
  * window. The peer is this instance's Orchestrator and no other — a `podSelector` never crosses the
  * namespace, and the instance label pins it within one. What is NOT here, on purpose:
  *
- * - The Orchestrator is not selected. Every route there is token-gated, and an Adapter in any
- *   Harness pod must reach it; a policy could not tell the Adapter's packets from the Agent's.
+ * - The Orchestrator is not selected. Every route there is token-gated, and a Custodian in any
+ *   Harness pod must reach it; a policy could not tell the Custodian's packets from the Agent's.
  * - No egress. What a Sandbox may reach is its own decision (ADR-0058 records it open).
  * - No port. The Orchestrator speaks only the Harness wire to these pods, and a port here would
  *   have to track the CR's `port`; `kubectl port-forward` (the CLI, a human's shell into the User
@@ -469,23 +513,73 @@ function repoCacheObjects(opts: {
   ];
 }
 
-/** Where the Instance Harness's Harness container sees the CA bundle — the same path
- * `kubectlSandbox` mounts it at in a Sandbox pod (ADR-0020). */
-const CA_MOUNT = "/etc/jr2/ca";
+/**
+ * The held-secret Secrets (ADR-0059), present only while a secret is held: the CA (which NO pod
+ * mounts — `jr2 up` alone reads it back), the literal values and the leaves (the Custodian's alone).
+ * `stringData` as written: no trailing newline is added to a value.
+ */
+function heldSecretObjects(held: HeldObjects, meta: (name: string) => KubeManifest): KubeManifest[] {
+  if (held.manifest.secrets.length === 0 || !held.ca) return [];
+  const secret = (name: string, stringData: Record<string, string>): KubeManifest => ({
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: meta(name),
+    type: "Opaque",
+    stringData,
+  });
+  const leaves: Record<string, string> = {};
+  for (const [stem, pem] of Object.entries(held.leaves)) {
+    leaves[`${stem}.crt`] = pem.cert;
+    leaves[`${stem}.key`] = pem.key;
+  }
+  return [
+    secret(HELD_CA_SECRET, { "ca.crt": held.ca.cert, "ca.key": held.ca.key }),
+    ...(Object.keys(held.values).length ? [secret(HELD_SECRETS_SECRET, held.values)] : []),
+    secret(HELD_TLS_SECRET, leaves),
+  ];
+}
 
-/** The Adapter's port on the pod's loopback — the same default the Sandbox pod uses. */
-const ADAPTER_PORT = 8081;
+/**
+ * The trust ConfigMap (ADR-0020, ADR-0059): the user's `caBundle` as `ca.crt`, and while a secret
+ * is held, the three bundles its path needs. Its own manifest, apart from the List, because the
+ * bundles carry every root certificate — past what client-side apply's annotation can hold — so
+ * `jr2 up` applies it server-side. Undefined when there is nothing to trust.
+ */
+export function trustObject(opts: {
+  name: string;
+  namespace: string;
+  caBundle?: string;
+  bundles?: { extra: string; bundle: string; upstream: string };
+}): string | undefined {
+  if (opts.caBundle === undefined && opts.bundles === undefined) return undefined;
+  return JSON.stringify({
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: {
+      name: CA_CONFIGMAP,
+      namespace: opts.namespace,
+      labels: { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" },
+    },
+    data: {
+      ...(opts.caBundle !== undefined ? { "ca.crt": opts.caBundle } : {}),
+      ...(opts.bundles
+        ? { "extra.crt": opts.bundles.extra, "bundle.crt": opts.bundles.bundle, "upstream.crt": opts.bundles.upstream }
+        : {}),
+    },
+  });
+}
 
 /**
  * The Instance Harness (ADR-0031): the per-instance Harness Deployment + Service `jr2 up`
  * converges whenever an Agent a registered Machine CARRIES declares `workspace: "none"`
  * (ADR-0049's walk) — the placement for every Menu-only Agent's Turn, regardless of any enclosing
- * Workspace. The one Harness shape, minus the Workspace: the stock Harness image plus the Adapter
- * sidecar, the same harness-config ConfigMap and env/envFrom/CA wiring a Sandbox's Harness
- * container gets — and NO `/work` volume, no attach step. It runs the STOCK image permanently: `workspace: "none"` withholds the whole
- * Working toolset (ADR-0028), so there are no tools to carry and no Sandbox Image to resolve
- * (ADR-0037). No config key names, sizes, addresses, or enables it: the Machine walk is the
- * entire surface.
+ * Workspace. The one Harness shape, minus the Workspace: the stock Harness image plus the Custodian,
+ * composed by the same function a Sandbox's is (custodian.ts, ADR-0059), the same harness-config
+ * ConfigMap and env/envFrom/trust wiring a Sandbox's Harness container gets — and NO `/work`
+ * volume, no attach step. It runs the STOCK image permanently: `workspace: "none"` withholds the
+ * whole Working toolset (ADR-0028), so there are no tools to carry and no Sandbox Image to resolve
+ * (ADR-0037). No config key names, sizes, addresses, or enables it: the Machine walk is the entire
+ * surface.
  */
 export function instanceHarnessObjects(opts: {
   name: string;
@@ -498,11 +592,18 @@ export function instanceHarnessObjects(opts: {
    * a Sandbox's refs travel through the `jr2-images` ConfigMap. Both are right for what they are —
    * this Deployment is supposed to roll when its image moves; the Orchestrator is not. */
   harnessImage: string;
-  /** The resolved Adapter ref: the Harness's one menu-delivery path, kept even though a `"none"`
+  /** The resolved Custodian ref: the Harness's one route to its Menu, kept even though a `"none"`
    * Agent cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
-  adapterImage: string;
+  custodianImage: string;
+  /** What this converge resolved about held secrets (ADR-0059) — the same manifest the
+   * Orchestrator composes every Sandbox's Custodian from. */
+  held: HeldManifest;
+  /** An HMAC over every held-secret input (`held.json`, the leaves, the literal values, the
+   * Custodian's config), keyed with the signing key so it reveals nothing — on the pod template, so
+   * a change to any of them rolls this pod (ADR-0059). */
+  heldDigest: string;
   harness?: HarnessConfig;
-  /** The instance ships a private-CA bundle (ADR-0020): mount `jr2-ca` into the Harness container. */
+  /** The instance ships a private-CA bundle (ADR-0020). */
   caBundle?: boolean;
   /** The digest of this placement's Harness bearer (ADR-0058; `harnessTokenDigest(key,
    * "jr2-instance-harness")`) — the wire's gate. The digest, never the bearer: the same shape
@@ -526,14 +627,24 @@ export function instanceHarnessObjects(opts: {
     seccompProfile: { type: "RuntimeDefault" },
   });
 
+  // The Custodian (ADR-0013, ADR-0059): the placement's Sandbox token — signed for this
+  // placement's name (`up.ts` mints it into the instance Secret), so it speaks only for the Turns
+  // hosted HERE (tokens.ts) — plus every held secret. Mounted into the Custodian alone; the Instance
+  // token itself never enters this pod.
+  const custodian = custodianComposition(opts.held, {
+    image: opts.custodianImage,
+    token: { secret: INSTANCE_SECRET, key: "JR2_INSTANCE_HARNESS_TOKEN" },
+    caBundle: opts.caBundle === true,
+  });
+
   const harnessContainer = {
     name: "harness",
     image: opts.harnessImage,
     imagePullPolicy: "IfNotPresent",
     ports: [{ containerPort: INSTANCE_HARNESS_PORT }],
-    // The same asymmetry the Sandbox pod builds (ADR-0013/0020): the mounted harness config and
-    // the instance's valueFrom entries ride `env` (literal values live in the jr2-harness-env
-    // Secret), the CA trust lands here and nowhere else, and no credential ever does.
+    // The same asymmetry the Sandbox pod builds (ADR-0013/0020/0059): the mounted harness config
+    // and the instance's valueFrom entries ride `env` (literal values live in the jr2-harness-env
+    // Secret), then the Custodian's address and every Stand-in, and no credential ever does.
     env: [
       {
         name: "JR2_HARNESS_JSON",
@@ -545,13 +656,12 @@ export function instanceHarnessObjects(opts: {
       // rather than asserted. The bearer (below) narrows who may try; this decides what.
       { name: "JR2_MENU_ONLY", value: "1" },
       ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
-      { name: "JR2_ADAPTER_URL", value: `http://127.0.0.1:${ADAPTER_PORT}` },
-      ...(opts.caBundle ? [{ name: "NODE_EXTRA_CA_CERTS", value: `${CA_MOUNT}/ca.crt` }] : []),
+      ...custodian.harnessEnv,
       // The wire's gate (ADR-0058), last — as on a Sandbox — so no `harness.env` entry chooses it.
       { name: "JR2_HARNESS_TOKEN_SHA256", value: opts.bearerSha256 },
     ],
     envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(opts.harness?.envFrom ?? [])],
-    ...(opts.caBundle ? { volumeMounts: [{ name: "ca", mountPath: CA_MOUNT, readOnly: true }] } : {}),
+    ...(custodian.harnessMounts.length ? { volumeMounts: custodian.harnessMounts } : {}),
     // The operator probes a Sandbox's Harness the same way: serving = the socket accepts.
     // Period and threshold as reasoned on the Orchestrator above: the default 10s period is the
     // rollout wait rather than the boot, and the threshold then has to carry the stall tolerance
@@ -563,32 +673,6 @@ export function instanceHarnessObjects(opts: {
       failureThreshold: 15,
     },
     securityContext: hardenedContainerSecurityContext(),
-  };
-
-  const adapterContainer = {
-    name: "adapter",
-    image: opts.adapterImage,
-    imagePullPolicy: "IfNotPresent",
-    securityContext: hardenedContainerSecurityContext(),
-    env: [
-      {
-        name: "JR2_ORCHESTRATOR_URL",
-        value: `http://${ORCHESTRATOR_SERVICE}.${opts.namespace}.svc:${ORCHESTRATOR_PORT}`,
-      },
-      { name: "JR2_ADAPTER_PORT", value: String(ADAPTER_PORT) },
-      // The Adapter's bearer env, carrying a sandbox-style token SIGNED FOR THIS PLACEMENT's
-      // name (`up.ts` mints it into the instance Secret): ADR-0013's delivery doctrine, extended
-      // to the second placement — the token speaks only for registrations that record the
-      // Instance Harness as the pod hosting their Turn (tokens.ts), never a Workspace's, and the
-      // Instance token itself never enters this pod. The credential lives in this container,
-      // where no Agent can read it — and `JR2_MENU_ONLY` above is what keeps that true: only
-      // Menu-only Agents run here, so nothing in this pod executes code (ADR-0031's
-      // defense-in-depth bonus).
-      {
-        name: "JR2_SANDBOX_TOKEN",
-        valueFrom: { secretKeyRef: { name: INSTANCE_SECRET, key: "JR2_INSTANCE_HARNESS_TOKEN" } },
-      },
-    ],
   };
 
   const items: KubeManifest[] = [
@@ -606,18 +690,26 @@ export function instanceHarnessObjects(opts: {
         strategy: { type: "Recreate" },
         selector: { matchLabels: { app: INSTANCE_HARNESS_SERVICE } },
         template: {
-          metadata: { labels: { ...labels, app: INSTANCE_HARNESS_SERVICE } },
+          metadata: {
+            labels: { ...labels, app: INSTANCE_HARNESS_SERVICE },
+            // A held-secret edit rolls this pod; a live Sandbox keeps what its Custodian read at
+            // start (ADR-0059, the ADR-0037 stance).
+            annotations: { [ANNOTATION_HELD_DIGEST]: opts.heldDigest },
+          },
           spec: {
-            containers: [harnessContainer, adapterContainer],
+            containers: [harnessContainer, custodian.custodianContainer],
             // The operator's isolation baseline (sandbox_controller.go), mirrored: same Harness
             // image, same "never reach the Kubernetes API" north star — JR2_MENU_ONLY makes code
-            // execution here unlikely, not unimaginable.
+            // execution here unlikely, not unimaginable. No `shareProcessNamespace`: the Harness
+            // container must not read the Custodian's `/proc`. `fsGroup` makes the Custodian's
+            // group-readable values readable by Envoy's own uid, as a Sandbox pod's does.
             automountServiceAccountToken: false,
             securityContext: {
               runAsNonRoot: true,
               seccompProfile: { type: "RuntimeDefault" },
+              fsGroup: INSTANCE_HARNESS_FS_GROUP,
             },
-            ...(opts.caBundle ? { volumes: [{ name: "ca", configMap: { name: CA_CONFIGMAP } }] } : {}),
+            volumes: custodian.volumes,
           },
         },
       },
