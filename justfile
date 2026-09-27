@@ -118,7 +118,7 @@ operator-image:
 # default because a mirror (`jr2 kit push`) copies whatever it finds, deficiencies included; a caller
 # who knows its target's architecture passes one platform and skips qemu.
 
-# build the three Kit images multi-arch and push them at their published names
+# build the two Kit images multi-arch and push them at their published names
 kit-push registry platforms="linux/amd64,linux/arm64":
     scripts/kit-push.sh {{ registry }} {{ platforms }}
 

@@ -1,6 +1,6 @@
 // The checkout arm of ADR-0044 is a shell script (`just kit-push` → scripts/kit-push.sh), because
 // the build needs the whole repo and the binary's arm is a mirror that builds nothing. That leaves
-// the same three images described in two places: `KIT_IMAGES` here, for what `jr2 up` builds from a
+// the same two images described in two places: `KIT_IMAGES` here, for what `jr2 up` builds from a
 // checkout at content-addressed tags, and the script's own table, for what a release pushes at the
 // published ones.
 //

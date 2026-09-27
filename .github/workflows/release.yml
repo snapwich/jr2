@@ -4,7 +4,7 @@
 #   2. every tier: unit, conformance, default e2e, the Custodian suite, then @kind and @dist on a
 #      runner kind cluster — the installed path proven on the exact tree that ships, not on a
 #      maintainer's box the day before
-#   3. the three Kit images, multi-arch, to their canonical home (ADR-0044)
+#   3. the two Kit images, multi-arch, to their canonical home (ADR-0044)
 #   4. the four packages STAGED on npm, dependencies first — live once the maintainer approves
 #
 # 3 before 4 is the contract: an installed kit pulls `<home>/jr2-<x>:<version>` on its first

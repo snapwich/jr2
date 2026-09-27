@@ -114,8 +114,8 @@ build-it-yourself-first image on top of that.
   already has a designed path for losing its Sandbox (`workspace.lost`, ADR-0021) that the workflow's policy drives —
   not the CLI.
 - **Hashing only the files each Dockerfile copies**, or hashing the whole kit tree via git. The first desynchronizes
-  silently; the second rebuilds all three images on any edit anywhere. Per-image directory hashing sits between them and
-  errs toward rebuilding.
+  silently; the second rebuilds every image on any edit anywhere. Per-image directory hashing sits between them and errs
+  toward rebuilding.
 - **pnpm's hoisted node linker** (`deploy --node-linker=hoisted`), which emits no absolute path at all and so needs no
   seal. Verified to work and to leave the artifact all but identical (60 MB vs 62 MB, 3998 vs 4029 files). Rejected on
   exposure, not on merit: `pnpm deploy` calls itself experimental and jr2 already pins `--legacy`, so a third deviation
