@@ -237,6 +237,88 @@ const ORCHESTRATOR_UNREACHABLE: Json = {
   ],
 };
 
+/**
+ * The addresses a tunnel never reaches (ADR-0059's dial guard): loopback, unspecified, link-local
+ * (the cloud metadata address among it, and AWS's IPv6 one), and the IPv4-mapped spelling of each.
+ * The script refuses a target that SPELLS one; this list refuses a name that RESOLVES to one.
+ */
+export const GUARDED_RANGES: ReadonlyArray<readonly [string, number]> = [
+  ["127.0.0.0", 8],
+  ["0.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["::1", 128],
+  ["::", 128],
+  ["fe80::", 10],
+  ["fd00:ec2::254", 128],
+  ["::ffff:127.0.0.0", 104],
+  ["::ffff:0.0.0.0", 104],
+  ["::ffff:169.254.0.0", 112],
+];
+
+/** The dial guard, by resolved address: an RBAC filter after the dynamic forward proxy, on the
+ * address that filter saved. A bound target never resolves here, so it never matches. */
+function resolvedGuard(): Json {
+  return {
+    name: "envoy.filters.http.rbac",
+    typed_config: {
+      "@type": "type.googleapis.com/envoy.extensions.filters.http.rbac.v3.RBAC",
+      rules: {
+        action: "DENY",
+        policies: {
+          guard: {
+            permissions: GUARDED_RANGES.map(([address_prefix, prefix_len]) => ({
+              matcher: {
+                name: "envoy.rbac.matchers.upstream_ip_port",
+                typed_config: {
+                  "@type":
+                    "type.googleapis.com/envoy.extensions.rbac.matchers.upstream_ip_port.v3.UpstreamIpPortMatcher",
+                  upstream_ip: { address_prefix, prefix_len },
+                },
+              },
+            })),
+            principals: [{ any: true }],
+          },
+        },
+      },
+    },
+  };
+}
+
+/** The egress listener's own replies. The guard's refusal by resolved address is the one 403 of
+ * a request the script let through as a tunnel, so it is said the way the script says a refusal by
+ * spelling; the script's own refusals carry their own bodies and are left alone. */
+function egressReplies(): Json {
+  return {
+    mappers: [
+      {
+        filter: {
+          and_filter: {
+            filters: [
+              {
+                status_code_filter: {
+                  comparison: { op: "EQ", value: { default_value: 403, runtime_key: "jr2.guard" } },
+                },
+              },
+              {
+                metadata_filter: {
+                  matcher: { filter: "jr2", path: [{ key: "action" }], value: { string_match: { exact: "tunnel" } } },
+                },
+              },
+            ],
+          },
+        },
+        body_format_override: {
+          text_format_source: {
+            inline_string:
+              "jr2 custodian: %REQ(:AUTHORITY)% resolves to a loopback, link-local or unspecified address\n",
+          },
+        },
+      },
+      ...(unreachable("%REQ(:AUTHORITY)%").mappers as Json[]),
+    ],
+  };
+}
+
 /** Every bound target, in manifest order, with the secrets bound to it. */
 function targetsOf(
   manifest: HeldManifest,
@@ -389,7 +471,7 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
               idleSeconds: 3600,
               lua: true,
               upgrade: true,
-              local: unreachable("%REQ(:AUTHORITY)%"),
+              local: egressReplies(),
               routes: {
                 virtual_hosts: [
                   ...targets.map((t) => ({
@@ -543,18 +625,26 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
       },
     });
     // The dynamic forward proxy filter resolves the CONNECT target for the tunnel cluster; it sits
-    // after the script so a refused target is never resolved at all.
+    // after the script so a refused target is never resolved at all. It saves the address it
+    // resolved, and the dial guard's second half judges THAT address, so a name that resolves to a
+    // guarded address is refused like the literal (ADR-0059).
     const egress = listeners.find((l) => l.name === "egress") as {
       filter_chains: Array<{ filters: Array<{ typed_config: { http_filters: Json[] } }> }>;
     };
     const filters = egress.filter_chains[0]!.filters[0]!.typed_config.http_filters;
-    filters.splice(filters.length - 1, 0, {
-      name: "envoy.filters.http.dynamic_forward_proxy",
-      typed_config: {
-        "@type": "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
-        dns_cache_config: { name: "tunnel", dns_lookup_family: "V4_PREFERRED" },
+    filters.splice(
+      filters.length - 1,
+      0,
+      {
+        name: "envoy.filters.http.dynamic_forward_proxy",
+        typed_config: {
+          "@type": "type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig",
+          dns_cache_config: { name: "tunnel", dns_lookup_family: "V4_PREFERRED" },
+          save_upstream_address: true,
+        },
       },
-    });
+      resolvedGuard(),
+    );
   }
 
   return {

@@ -117,6 +117,8 @@ export async function startCustodian(opts: {
   upstreamCas: string[];
   orchestrator: { host: string; port: number };
   sandbox?: string;
+  /** Names the container's resolver answers from `/etc/hosts`: the pod's DNS, faked. */
+  names?: Record<string, string>;
   expectFailure?: boolean;
 }): Promise<Custodian> {
   const dir = await mkdtemp(join(tmpdir(), "jr2-custodian-"));
@@ -166,6 +168,7 @@ export async function startCustodian(opts: {
     "-v",
     `${join(dir, "ca")}:/etc/jr2/ca:ro`,
     ...(opts.sandbox ? ["-e", `JR2_SANDBOX=${opts.sandbox}`] : []),
+    ...Object.entries(opts.names ?? {}).flatMap(([n, ip]) => ["--add-host", `${n}:${ip}`]),
     // Readable by Envoy's uid: the pod's fsGroup does this in a cluster.
     "--user",
     `65532:${process.getgid?.() ?? 0}`,

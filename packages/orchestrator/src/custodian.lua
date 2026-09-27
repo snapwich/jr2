@@ -182,10 +182,10 @@ local function ipv6(host)
   return out
 end
 
--- The dial guard: a tunnel never reaches loopback, link-local (the cloud metadata address among
--- it), or an unspecified address — nor an IPv4-mapped spelling of one. By NAME it knows only
--- `localhost`: Envoy's dynamic forward proxy has no filter on the address a name resolves to, so a
--- name that resolves to one of these is the recorded gap (ADR-0059).
+-- The dial guard's first half: a tunnel never reaches loopback, link-local (the cloud metadata
+-- address among it), or an unspecified address — nor an IPv4-mapped spelling of one. By NAME it
+-- knows only `localhost`. The second half is Envoy's: an RBAC filter judges the address the
+-- dynamic forward proxy resolved a name to, and `envoy_on_response` logs its refusal (ADR-0059).
 local function guarded(host)
   if host == "localhost" or host:sub(-10) == ".localhost" then return true end
   local a, b = ipv4(host)
@@ -270,6 +270,17 @@ local function control(handle, headers, route)
 end
 
 local READY = false
+
+-- A refusal by resolved address comes from the RBAC filter after this one: the one 403 a request
+-- this script let through as a tunnel can get. It is logged as a refusal by spelling is.
+function envoy_on_response(handle)
+  if handle:metadata():get("role") ~= "egress" then return end
+  if handle:headers():get(":status") ~= "403" then return end
+  local jr2 = handle:streamInfo():dynamicMetadata():get("jr2")
+  if jr2 == nil or jr2.action ~= "tunnel" then return end
+  tag(handle, "action", "refuse")
+  tag(handle, "reason", "guard")
+end
 
 function envoy_on_request(handle)
   local meta = handle:metadata()

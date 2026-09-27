@@ -102,10 +102,12 @@ decision generalizes that container. It holds every credential the Harness uses,
   `ready secrets=… hosts=N` (at the first probe), `action=intercept target=… secret=… method=… status=…`,
   `action=tunnel target=…`, `action=refuse target=… reason=…`. Never a header value, a body, a path, a query, a value or
   a Stand-in.
-- **The dial guard, as far as Envoy goes.** A tunnel to a loopback, link-local (the cloud metadata address included) or
-  unspecified IP literal, to an IPv4-mapped form of one, or to `localhost` or a `.localhost` name, gets 403. Envoy's
-  dynamic forward proxy has no filter on the address a NAME resolves to, so a name that resolves to one of these
-  addresses is not refused (see Consequences).
+- **The dial guard, in two halves.** A tunnel never reaches a loopback, link-local (the cloud metadata address included,
+  and AWS's `fd00:ec2::254`) or unspecified address, or an IPv4-mapped form of one; it gets 403 and a `reason=guard`
+  line. The script refuses a target that SPELLS one, and `localhost` or a `.localhost` name, before anything is
+  resolved. The dynamic forward proxy filter saves the address it resolved a name to (`save_upstream_address`), and an
+  RBAC filter after it refuses that address when it is in `GUARDED_RANGES` — so a name that resolves to one is refused
+  like the literal. The address judged is the address dialed: both come from the one DNS cache entry.
 - **Health.** `0.0.0.0:15021`, `GET /healthz`. The kubelet cannot reach a loopback listener, and a distroless image has
   no shell for an exec probe. The Custodian's readiness probe is on it. Pod Ready needs every container ready, and the
   operator holds a Sandbox's Ready on pod Ready, so no Turn is admitted before the Custodian serves. The Instance
@@ -216,10 +218,8 @@ decision generalizes that container. It holds every credential the Harness uses,
 - **No proxy chaining.** The Custodian cannot forward to a corporate proxy. R11 says so rather than fail silently.
 - **Two Harness env shapes.** With no held secret, a pod gets the Custodian's address and the token's Stand-in and no
   proxy, and its HTTPS goes direct. The Custodian runs in both shapes, because it carries the Menu.
-- **The dial guard has a gap in this engine.** Envoy's dynamic forward proxy cannot refuse by resolved address, so a
-  name that resolves to loopback or to the metadata address is tunneled. Literal IPs, IPv4-mapped forms and `localhost`
-  names are refused. The guard adds no confinement today in any case: egress is open, and the Agent can dial those
-  addresses itself. It matters when a cluster closes egress to everything but the Custodian.
+- **The dial guard adds no confinement while egress is open.** The Agent can dial those addresses itself. The guard
+  matters when a cluster closes egress to everything but the Custodian: then the Custodian is not a way around it.
 - **One container holds two kinds of credential.** A fault in Envoy's TLS or HTTP parsing is a fault in the container
   that holds both the Sandbox token and the model keys. The branch with a separate Adapter keeps them apart.
 - **The Harness container now speaks the Orchestrator's two agent routes.** The Agent could always make those calls (the
@@ -234,9 +234,9 @@ decision generalizes that container. It holds every credential the Harness uses,
 - **Where the Custodian suite runs.** `just custodian-test`: node's test runner against the pinned image under docker,
   on the host network with free ports, with local HTTPS upstreams under their own CA. It is opt-in, like `@kind`,
   because it needs docker ([ADR-0010](0010-bdd-acceptance-tests.md)). About 23 seconds. It checks the swap, the strip,
-  403 with no Stand-in, 421, 400 and 403 on paths, the tunnel, the dial guard, 502 on an untrusted upstream, SSE timing,
-  abort, a 302, the start-up refusal, the log, and the Anthropic SDK through `HTTPS_PROXY`. The first SSE event arrives
-  through the Custodian about half a millisecond later than direct.
+  403 with no Stand-in, 421, 400 and 403 on paths, the tunnel, the dial guard by spelling and by resolved name, 502 on
+  an untrusted upstream, SSE timing, abort, a 302, the start-up refusal, the log, and the Anthropic SDK through
+  `HTTPS_PROXY`. The first SSE event arrives through the Custodian about half a millisecond later than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses a Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

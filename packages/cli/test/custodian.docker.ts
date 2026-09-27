@@ -76,6 +76,13 @@ before(async () => {
     upstreamCas: [a.ca.cert, b.ca.cert, c.ca.cert],
     orchestrator: { host: lanAddress(), port: orchestrator.port },
     sandbox: "ws-1",
+    // Names that RESOLVE to guarded addresses — the half of the dial guard a spelling cannot show.
+    names: {
+      "loop.guard.test": "127.0.0.1",
+      "meta.guard.test": "169.254.169.254",
+      "loop6.guard.test": "::1",
+      "fine.guard.test": lanAddress(),
+    },
   });
 });
 
@@ -277,6 +284,21 @@ describe("toward every other host", () => {
       .filter((l) => l.includes("reason=guard"));
     assert.ok(lines.length >= 6, `a guard line per refusal:\n${lines.join("\n")}`);
     assert.ok(lines.every((l) => /action=refuse/.test(l) && /status=403/.test(l)));
+  });
+
+  test("6b. the dial guard refuses a NAME that resolves to loopback or link-local, and passes one that does not", async () => {
+    for (const authority of ["loop.guard.test:443", "meta.guard.test:80", "loop6.guard.test:443"]) {
+      const t = await connectThrough(custodian.ports.egress, authority);
+      assert.ok("refused" in t && t.refused.status === 403, `${authority} is refused`);
+      assert.match(t.refused.body, /resolves to a loopback, link-local or unspecified address/);
+    }
+    const lines = await logLines(3, (l) => l.includes("reason=guard") && l.includes(".guard.test"));
+    assert.equal(lines.length, 3, `a guard line per refusal:\n${custodian.output()}`);
+    assert.ok(lines.every((l) => /action=refuse/.test(l) && /status=403/.test(l)));
+
+    const t = await connectThrough(custodian.ports.egress, `fine.guard.test:${c.port}`);
+    assert.ok("socket" in t, `a name that resolves elsewhere is tunneled: ${JSON.stringify(t)}`);
+    t.socket.destroy();
   });
 
   test("the egress listener speaks CONNECT alone", async () => {
