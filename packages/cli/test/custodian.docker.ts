@@ -326,11 +326,7 @@ describe("toward every other host", () => {
       const t = await connectThrough(custodian.ports.egress, authority);
       assert.ok("refused" in t && t.refused.status === 403, `${authority} is refused`);
     }
-    await new Promise((r) => setTimeout(r, 200));
-    const lines = custodian
-      .output()
-      .split("\n")
-      .filter((l) => l.includes("reason=guard"));
+    const lines = await logLines(6, (l) => l.includes("reason=guard"));
     assert.ok(lines.length >= 6, `a guard line per refusal:\n${lines.join("\n")}`);
     assert.ok(lines.every((l) => /action=refuse/.test(l) && /status=403/.test(l)));
   });

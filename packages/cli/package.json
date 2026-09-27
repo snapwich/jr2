@@ -37,7 +37,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test",
+    "test": "node --test 'test/**/*.test.ts'",
     "test:custodian": "node --test --test-concurrency=1 test/custodian.docker.ts"
   },
   "dependencies": {
