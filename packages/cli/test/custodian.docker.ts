@@ -350,6 +350,30 @@ describe("toward every other host", () => {
     t.socket.destroy();
   });
 
+  test("6c. every other spelling of a guarded address is refused, and none is tunneled", async () => {
+    const guarded = [
+      "[0:0:0:0:0:0:0:1]:443",
+      "[0::1]:443",
+      "[::]:443",
+      "[::ffff:7f00:1]:443",
+      "[::FFFF:127.0.0.1]:443",
+      "[0:0:0:0:0:ffff:a9fe:a9fe]:80",
+      "[fd00:ec2::254]:80",
+      "LOCALHOST.:443",
+      "127.0.0.1.:443",
+    ];
+    for (const authority of guarded) {
+      const t = await connectThrough(custodian.ports.egress, authority);
+      assert.ok("refused" in t && t.refused.status === 403, `${authority} is refused by the guard`);
+    }
+    // A zone ID is no CONNECT target. An inet_aton form (`2130706433` is 127.0.0.1) is a name to the
+    // resolver, which has none; one that resolved to a guarded address would meet the second half.
+    for (const authority of ["[::1%25lo]:443", "[fe80::1%25eth0]:443", "2130706433:443"]) {
+      const t = await connectThrough(custodian.ports.egress, authority);
+      assert.ok("refused" in t, `${authority} is not tunneled`);
+    }
+  });
+
   test("the egress listener speaks CONNECT alone", async () => {
     const res = await fetch(`http://127.0.0.1:${custodian.ports.egress}/`, {
       headers: { host: `${c.host}:${c.port}` },
