@@ -93,9 +93,14 @@ e2e-kind:
 #
 # Not folded into `e2e-kind`: a warm box pays a scenario's run time for nothing, and this recipe
 # names the cold case — the release job calls it, a cold box may.
+#
+# The scenario is picked by NAME, not `kind.feature:<line>`: an edit above it moves the line, and a
+# line that names no scenario selects nothing. `--parallel 0` runs it in-process — cucumber's
+# parallel coordinator given zero scenarios starts no worker and waits forever, which is how the
+# v0.3.0 release job sat in this step until its timeout.
 e2e-kind-warm:
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
-    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e exec cucumber-js --profile kind --parallel 1 kind.feature:28
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e exec cucumber-js --profile kind --parallel 0 --name '^the body works in a real worktree, and its Sandbox is reaped when it finishes$'
 
 # render the operator install manifest shipped inside the npm package (ADR-0019; check in the result)
 operator-manifest:
