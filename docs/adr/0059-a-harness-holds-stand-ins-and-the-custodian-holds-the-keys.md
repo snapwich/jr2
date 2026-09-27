@@ -77,6 +77,9 @@ decision generalizes that container. It holds every credential the Harness uses,
   trailing dot) — never the SNI, never the `Host` header. A target that a held secret is bound to goes to an internal
   listener for that target alone. That listener ends TLS with a leaf `jr2 up` issued (ALPN `http/1.1` only) and, per
   request:
+  - The method must be GET, HEAD, POST, PUT, PATCH, DELETE or OPTIONS, else 405. A server that answers TRACE echoes the
+    request, the value among it, back to the Agent. A header name with `_` gives 400: `x_api_key` is not `x-api-key` to
+    the strip, but some servers read it as one.
   - `Host` must name the target, else 421. An encoded `/`, `.` or `\` in the path gives 400. A path outside the secret's
     `paths` gives 403. It is checked after Envoy removes dot segments and reads `\` as `/` and `..;` as `..`, and the
     upstream gets that path. So IIS and Tomcat cannot read a different path. A credential header sent twice gives 400.
@@ -235,9 +238,10 @@ decision generalizes that container. It holds every credential the Harness uses,
 - **Where the Custodian suite runs.** `just custodian-test`: node's test runner against the pinned image under docker,
   on the host network with free ports, with local HTTPS upstreams under their own CA. It is opt-in, like `@kind`,
   because it needs docker ([ADR-0010](0010-bdd-acceptance-tests.md)). About 23 seconds. It checks the swap, the strip,
-  403 with no Stand-in, 421, 400 and 403 on paths, the tunnel, the dial guard by spelling and by resolved name, 502 on
-  an untrusted upstream, SSE timing, abort, a 302, the start-up refusal, the log, and the Anthropic SDK through
-  `HTTPS_PROXY`. The first SSE event arrives through the Custodian about half a millisecond later than direct.
+  403 with no Stand-in, 405 on a method, 400 on an underscore header, a header `Connection` names, two `Host` headers,
+  421, 400 and 403 on paths, the tunnel, the dial guard by spelling and by resolved name, 502 on an untrusted upstream,
+  SSE timing, abort, a 302, the start-up refusal, the log, and the Anthropic SDK through `HTTPS_PROXY`. The first SSE
+  event arrives through the Custodian about half a millisecond later than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses a Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

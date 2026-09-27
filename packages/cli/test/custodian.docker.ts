@@ -144,6 +144,41 @@ describe("toward a bound host", () => {
     assert.equal(a.seen.length, before);
   });
 
+  test("3b. a method outside the list → 405; an underscore header → 400; nothing is sent", async () => {
+    const before = a.seen.length;
+    const k = { "x-api-key": standIn("ANTHROPIC_API_KEY") };
+    for (const method of ["TRACE", "PROPFIND"]) {
+      const r = await via(a, { method, headers: k });
+      assert.equal(r.status, 405, method);
+    }
+    const r = await via(a, { headers: { ...k, x_api_key: "mine" } });
+    assert.equal(r.status, 400);
+    assert.equal(a.seen.length, before);
+    for (const method of ["HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+      assert.equal((await via(a, { method, headers: k })).status, 200, method);
+    }
+  });
+
+  test("3c. a header the Connection header names never leaves; two Host headers → 421", async () => {
+    const before = a.seen.length;
+    // Envoy drops what Connection names before the swap, so the request has no Stand-in.
+    let r = await via(a, {
+      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY"), connection: "keep-alive, x-api-key" },
+    });
+    assert.equal(r.status, 403);
+    r = await via(a, {
+      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY"), host: [`${a.host}:${a.port}`, "evil.example"] },
+    });
+    assert.equal(r.status, 421);
+    assert.equal(a.seen.length, before);
+    r = await via(a, {
+      headers: { "x-api-key": standIn("ANTHROPIC_API_KEY"), connection: "keep-alive, foo", foo: "x" },
+    });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(a.seen.at(-1)?.headers.foo, undefined);
+    assert.equal(a.seen.at(-1)?.headers.connection, undefined);
+  });
+
   test("4. Host ≠ target → 421; outside `paths` → 403, after \\ and ..; are read; an encoded / or \\ → 400", async () => {
     const before = b.seen.length;
     let r = await via(a, { headers: { host: "elsewhere.example:443", "x-api-key": standIn("ANTHROPIC_API_KEY") } });

@@ -158,7 +158,8 @@ function hcm(
       path_with_escaped_slashes_action: opts.strictPath ? "REJECT_REQUEST" : "KEEP_UNCHANGED",
       request_headers_timeout: "60s",
       stream_idle_timeout: `${opts.idleSeconds}s`,
-      common_http_protocol_options: { idle_timeout: "3600s" },
+      // `x_api_key` is not `x-api-key` to the strip, but some servers read it as one.
+      common_http_protocol_options: { idle_timeout: "3600s", headers_with_underscores_action: "REJECT_REQUEST" },
       ...(opts.upgrade ? { upgrade_configs: [{ upgrade_type: "CONNECT" }] } : {}),
       access_log: accessLog(opts.target),
       ...(opts.local ? { local_reply_config: opts.local } : {}),

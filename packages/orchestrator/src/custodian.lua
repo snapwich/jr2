@@ -234,7 +234,14 @@ local function egress(handle, headers)
   tag(handle, "log", true)
 end
 
+-- What a bound host is sent. TRACE is not: a server that answers it echoes the request, the
+-- swapped value among it, back to the Agent. Neither is a WebDAV or other extension method.
+local METHODS = { GET = true, HEAD = true, POST = true, PUT = true, PATCH = true, DELETE = true, OPTIONS = true }
+
 local function intercept(handle, headers, target)
+  if not METHODS[headers:get(":method")] then
+    return refuse(handle, 405, "method", target .. " takes GET, HEAD, POST, PUT, PATCH, DELETE or OPTIONS here")
+  end
   if headers:get("upgrade") ~= nil then
     return refuse(handle, 501, "upgrade", target .. " takes no protocol upgrade here")
   end
