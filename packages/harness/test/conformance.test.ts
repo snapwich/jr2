@@ -393,6 +393,23 @@ test("a Menu pick reaches the Orchestrator and its receipt reaches the model; th
   );
 });
 
+test("the instructions reach a custom provider as `system`, never `developer`: a chat template knows only the first", async () => {
+  // vLLM renders the model's own chat template, and Qwen's refuses `developer` with a 400
+  // ("Unexpected message role."). pi sends `developer` for a reasoning model on a host it does not
+  // recognise, and every custom-provider model is a reasoning model (provider.ts), so the compat
+  // flag is what keeps a self-hosted endpoint answering at all.
+  provider.reset([{ text: "Done." }]);
+  sandbox.reset(surfaceWith("ack"));
+  const iid = "conf/system-role";
+
+  const admission = await admit(iid, "Review the diff.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+
+  const roles = (provider.calls[0]?.messages ?? []).map((m) => m.role);
+  assert.equal(roles[0], "system", `the instructions lead as system (got: ${JSON.stringify(roles)})`);
+  assert.ok(!roles.includes("developer"), `no developer message (got: ${JSON.stringify(roles)})`);
+});
+
 test("INVERTED PINNED DEFECT: an abort mid-STREAM does not erase the assistant message", async () => {
   // The poison timing flue-contract pinned as broken: the abort lands while the model is still
   // STREAMING its pick. What the model had already committed to must survive into every later

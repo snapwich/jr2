@@ -179,5 +179,8 @@ function customModel(spec: ProviderSpec, id: string): Model<Api> {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: limits?.contextWindow ?? spec.contextWindow ?? 0,
     maxTokens: limits?.maxTokens ?? spec.maxTokens ?? 0,
+    // A self-hosted OpenAI-compatible server renders the model's own chat template, which knows
+    // `system` and not OpenAI's `developer` — pi would send `developer` for a reasoning model.
+    compat: { supportsDeveloperRole: false },
   };
 }
