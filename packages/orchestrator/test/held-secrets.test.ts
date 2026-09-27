@@ -155,6 +155,14 @@ test("R1: an envFrom Secret or ConfigMap whose key NAMES include a model key is 
     ),
     /^harness\.envFrom\[1\] loads Secret "team", which carries GEMINI_API_KEY/,
   );
+  // A prefix makes the env var name: `API_KEY` under `ANTHROPIC_` is ANTHROPIC_API_KEY.
+  assert.match(
+    refusal(
+      { harness: { envFrom: [{ prefix: "ANTHROPIC_", secretRef: { name: "plain" } }] } },
+      { envFromKeys: new Map([["secret/plain", ["API_KEY"]]]) },
+    ),
+    /carries ANTHROPIC_API_KEY/,
+  );
 });
 
 test("warn, never refuse: a signing credential in harness.env names the gateway as the fix", () => {
@@ -347,6 +355,26 @@ test("R13: a held Secret key that harness.env or harness.envFrom also hands the 
   );
 });
 
+test("R13: a harness.env literal equal to a held literal", () => {
+  assert.match(
+    refusal(held({}, { env: [{ name: "COPY", value: SECRET }] })),
+    /harness\.env\[0\] \(COPY\) is set to the value GATEWAY_KEY holds/,
+  );
+});
+
+test("R13: the kit's Secrets never reach the Harness, by env or envFrom, whatever is held", () => {
+  for (const secret of ["jr2-instance", "jr2-held-secrets", "jr2-held-tls", "jr2-held-ca"]) {
+    assert.match(
+      refusal({ harness: { env: [{ name: "X", valueFrom: { secretKeyRef: { name: secret, key: "k" } } }] } }),
+      new RegExp(`harness\\.env\\[0\\] \\(X\\) reads Secret "${secret}", which is the kit's`),
+    );
+    assert.match(
+      refusal({ harness: { envFrom: [{ secretRef: { name: secret } }] } }),
+      new RegExp(`harness\\.envFrom\\[0\\] loads Secret "${secret}", which is the kit's`),
+    );
+  }
+});
+
 test("R11: while a secret is held, harness.env may not set the proxy or the trust variables", () => {
   assert.match(
     refusal(held({}, { env: [{ name: "HTTPS_PROXY", value: "http://corp-proxy:3128" }] })),
@@ -360,7 +388,16 @@ test("R11: while a secret is held, harness.env may not set the proxy or the trus
 });
 
 test("R12: a path prefix nothing can step around", () => {
-  for (const path of ["v1/messages", "/v1/../admin", "/v1/%2e%2e/admin", "/v1%2Fadmin", '/v1"x']) {
+  for (const path of [
+    "v1/messages",
+    "/v1/../admin",
+    "/v1/%2e%2e/admin",
+    "/v1%2Fadmin",
+    '/v1"x',
+    "/v1\\x",
+    "/v1%5cx",
+    "/v1;x",
+  ]) {
     assert.match(refusal(held({ paths: [path] })), /paths\[0\]/, path);
   }
 });

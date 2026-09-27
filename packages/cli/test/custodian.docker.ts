@@ -144,7 +144,7 @@ describe("toward a bound host", () => {
     assert.equal(a.seen.length, before);
   });
 
-  test("4. Host ≠ target → 421; outside `paths` → 403; an encoded / → 400", async () => {
+  test("4. Host ≠ target → 421; outside `paths` → 403, after \\ and ..; are read; an encoded / or \\ → 400", async () => {
     const before = b.seen.length;
     let r = await via(a, { headers: { host: "elsewhere.example:443", "x-api-key": standIn("ANTHROPIC_API_KEY") } });
     assert.equal(r.status, 421);
@@ -160,6 +160,16 @@ describe("toward a bound host", () => {
       headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` },
     });
     assert.equal(r.status, 400);
+    r = await via(b, {
+      path: "/v1/messages%5C..%5Ckey",
+      headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` },
+    });
+    assert.equal(r.status, 400, "an encoded \\, which IIS reads as /");
+    // Envoy reads `\` as `/` and `..;` as `..` (Tomcat's reading) before the prefix is checked.
+    for (const path of ["/v1/messages/..\\key", "/v1/messages/..;/key"]) {
+      r = await via(b, { path, headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` } });
+      assert.equal(r.status, 403, path);
+    }
     assert.equal(b.seen.length, before, "none of them reached the upstream");
     r = await via(b, {
       path: "/v1/messages?beta=true",
@@ -167,6 +177,9 @@ describe("toward a bound host", () => {
     });
     assert.equal(r.status, 200, r.body);
     assert.equal(b.seen.at(-1)?.headers.authorization, `Bearer ${VALUES.LITELLM_KEY}`);
+    r = await via(b, { path: "/v1/messages\\x", headers: { authorization: `Bearer ${standIn("LITELLM_KEY")}` } });
+    assert.equal(r.status, 200, r.body);
+    assert.equal(b.seen.at(-1)?.url, "/v1/messages/x", "the upstream gets the path that was checked");
   });
 
   test("7. an upstream certificate upstream.crt does not trust → 502, and nothing is sent", async () => {

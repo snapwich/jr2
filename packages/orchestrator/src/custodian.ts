@@ -151,8 +151,10 @@ function hcm(
       skip_xff_append: true,
       normalize_path: true,
       merge_slashes: false,
-      // Toward a bound host an encoded `/` is refused (§5.4): a `paths` prefix must not be
+      // Toward a bound host an encoded `/` or `\` is refused (§5.4): a `paths` prefix must not be
       // steppable-around. The control listener keeps it — an Instance ID is one encoded segment.
+      // `normalize_path` reads a bare `\` as `/` and `..;` as `..`, so the upstream gets the path
+      // the prefix was checked against, whatever IIS or Tomcat would read.
       path_with_escaped_slashes_action: opts.strictPath ? "REJECT_REQUEST" : "KEEP_UNCHANGED",
       request_headers_timeout: "60s",
       stream_idle_timeout: `${opts.idleSeconds}s`,

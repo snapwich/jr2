@@ -21,6 +21,11 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import type { JR2Config, HarnessEnvVar } from "./config.ts";
 import { MODEL_KEYS, MODEL_KEY_PROVIDERS, SIGNING_CREDENTIALS } from "./model-keys.ts";
+import { HELD_CA_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, INSTANCE_SECRET } from "./names.ts";
+
+/** The kit's Secrets no Harness container may read (R13): the Instance token and signing key, the
+ * literal held values, the leaves, and the CA. */
+const KIT_SECRETS: readonly string[] = [INSTANCE_SECRET, HELD_SECRETS_SECRET, HELD_TLS_SECRET, HELD_CA_SECRET];
 
 /**
  * The Stand-in for one held secret: what its env var holds in the Harness container.
@@ -189,7 +194,8 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
       : ref.configMapRef
         ? `configmap/${ref.configMapRef.name}`
         : "";
-    const keys = lookups.envFromKeys?.get(lookup) ?? [];
+    // The env var names, as the kubelet writes them: `prefix` first.
+    const keys = (lookups.envFromKeys?.get(lookup) ?? []).map((key) => (ref.prefix ?? "") + key);
     const known = keys.find((key) => key in MODEL_KEYS);
     if (known === undefined) continue;
     const where = ref.secretRef ? `Secret "${ref.secretRef.name}"` : `ConfigMap "${ref.configMapRef?.name}"`;
@@ -283,25 +289,6 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
     const source = sourceOf(e, lookups);
     if (source.kind === "literal") values[e.name] = e.value as string;
 
-    // R13: a held value the Harness container is also handed, under any name, is not held.
-    if (source.kind === "secret") {
-      for (const [i, ref] of (harness.envFrom ?? []).entries()) {
-        if (ref.secretRef?.name !== source.secret) continue;
-        throw new Error(
-          `harness.envFrom[${i}] loads Secret "${source.secret}", which ${e.name} holds — the Agent would read ` +
-            `key "${source.key}" from its env. Move the held key to a Secret harness.envFrom does not load (ADR-0059)`,
-        );
-      }
-      for (const [i, v] of env.entries()) {
-        const ref = (v.valueFrom as { secretKeyRef?: { name?: string; key?: string } } | undefined)?.secretKeyRef;
-        if (ref?.name !== source.secret || ref.key !== source.key) continue;
-        throw new Error(
-          `harness.env[${i}] reads key "${source.key}" of Secret "${source.secret}", which ${e.name} holds — the ` +
-            `Agent would read it as ${v.name}. Drop the entry; the Harness sees the Stand-in as ${e.name} (ADR-0059)`,
-        );
-      }
-    }
-
     // R6
     const headers = [...(e.headers ?? DEFAULT_CREDENTIAL_HEADERS)];
     const seenHeader = new Set<string>();
@@ -320,9 +307,9 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
     // R12
     const paths = e.paths === undefined ? undefined : [...e.paths];
     for (const [j, path] of (paths ?? []).entries()) {
-      if (!/^\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*$/.test(path) || path.includes("..") || /%2e|%2f/i.test(path)) {
+      if (!/^\/[A-Za-z0-9._~!$&'()*+,=:@%/-]*$/.test(path) || path.includes("..") || /%2e|%2f|%5c/i.test(path)) {
         throw new Error(
-          `${e.at}.paths[${j}] "${path}" must start with "/" and hold no "..", "%2e" or "%2f" — a prefix the ` +
+          `${e.at}.paths[${j}] "${path}" must start with "/" and hold no "..", ";", "%2e", "%2f" or "%5c" — a prefix the ` +
             "request could step around is no prefix (ADR-0059)",
         );
       }
@@ -337,6 +324,54 @@ export function heldSecretsOf(config: JR2Config, lookups: HeldLookups = {}): Hel
       headers,
       ...(paths ? { paths } : {}),
     });
+  }
+
+  // R13: a held value the Harness container is also handed, under any name, is not held — `env`
+  // wins only a same-name collision (R3), so the Stand-in cannot cover it under another name. The
+  // kit's own Secrets are never the Harness's, whatever is held.
+  const heldBy = (secret: string, key?: string): string | undefined =>
+    secrets.find(
+      (b) => b.source.kind === "secret" && b.source.secret === secret && (key === undefined || b.source.key === key),
+    )?.name;
+  for (const [i, v] of env.entries()) {
+    const ref = (v.valueFrom as { secretKeyRef?: { name?: string; key?: string } } | undefined)?.secretKeyRef;
+    if (ref?.name !== undefined && KIT_SECRETS.includes(ref.name)) {
+      throw new Error(
+        `harness.env[${i}] (${v.name}) reads Secret "${ref.name}", which is the kit's and never the Harness's — the ` +
+          "Agent would read it. Drop the entry (ADR-0059)",
+      );
+    }
+    const by = ref?.name !== undefined ? heldBy(ref.name, ref.key) : undefined;
+    if (by !== undefined) {
+      throw new Error(
+        `harness.env[${i}] reads key "${ref!.key}" of Secret "${ref!.name}", which ${by} holds — the Agent would ` +
+          `read it as ${v.name}. Drop the entry; the Harness sees the Stand-in as ${by} (ADR-0059)`,
+      );
+    }
+    const same = v.value !== undefined ? Object.keys(values).find((n) => values[n] === v.value) : undefined;
+    if (same !== undefined) {
+      throw new Error(
+        `harness.env[${i}] (${v.name}) is set to the value ${same} holds — the Agent would read it there. Drop the ` +
+          `entry; the Harness sees the Stand-in as ${same} (ADR-0059)`,
+      );
+    }
+  }
+  for (const [i, ref] of (harness.envFrom ?? []).entries()) {
+    const secret = ref.secretRef?.name;
+    if (secret === undefined) continue;
+    if (KIT_SECRETS.includes(secret)) {
+      throw new Error(
+        `harness.envFrom[${i}] loads Secret "${secret}", which is the kit's and never the Harness's — the Agent ` +
+          "would read every key of it. Drop the entry (ADR-0059)",
+      );
+    }
+    const by = heldBy(secret);
+    if (by !== undefined) {
+      throw new Error(
+        `harness.envFrom[${i}] loads Secret "${secret}", which ${by} holds — the Agent would read every key of it ` +
+          "from its env. Move the held key to a Secret harness.envFrom does not load (ADR-0059)",
+      );
+    }
   }
 
   // R5: one header on one host names one secret.

@@ -105,6 +105,8 @@ export type HarnessEnvVar = {
 /** A whole-Secret/ConfigMap env injection (corev1.EnvFromSource) for the Harness container —
  * e.g. `{ secretRef: { name: "anthropic" } }` to hand a real Harness its model API key. */
 export type HarnessEnvFromSource = {
+  /** Put before every key's name, as corev1 does. */
+  prefix?: string;
   secretRef?: { name: string };
   configMapRef?: { name: string };
 };
