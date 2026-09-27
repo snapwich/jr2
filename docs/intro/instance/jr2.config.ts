@@ -36,9 +36,6 @@ export default defineConfig({
       // match llama-server's `-c` — `npm run llama` in this folder starts exactly that endpoint.
       models: { "qwen3.6-35b-a3b": { contextWindow: 65_536, maxTokens: 4096 } },
     },
-    // The CA `npm run certs` made for the endpoint (ADR-0020): the provider preflight trusts it, and
-    // the Custodian verifies the endpoint with it before the key goes out.
-    caBundle: "certs/ca.crt",
   },
   // Where Sandboxes land (ADR-0052): by default wherever an ordinary pod lands — not cordoned, no taint — and
   // the Repo cache agent follows the same set. No node label is needed. To admit a tainted pool or narrow to

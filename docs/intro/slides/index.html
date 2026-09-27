@@ -1328,21 +1328,32 @@ jr2 up</code></pre>
       // --- reaching the stage ------------------------------------------------------------------
       // `i` makes the stage live: clicks reach the Console and the terminal (the card keeps its
       // own), and every key you press is RETYPED into the tmux pane. The keyboard itself never
-      // leaves the deck — see the forwarder below for why — so Ctrl-Escape releases, and so does
-      // leaving the slide, which keeps the state from following you into the next section. The badge
-      // is a button as well as a sign, for releasing with the pointer.
+      // leaves the deck — see the forwarder below for why. Moving the pointer OFF the stage releases:
+      // onto the card, off the window, anywhere the stage iframe is not. Moving between panes stays
+      // live, because the panes are all inside that one iframe. Leaving the slide releases too, so the
+      // state cannot follow you into the next section, and Ctrl-] is the keyboard's way out. The badge
+      // is a button as well as a sign.
       const badge = document.createElement("button");
       badge.className = "stage-badge";
-      const RELEASE = "stage live — Ctrl-Escape to release";
+      const RELEASE = "stage live — move the pointer off to release";
       badge.textContent = RELEASE;
       badge.addEventListener("click", () => setLive(false));
       document.body.append(badge);
 
       let live = false;
+      /** The stage iframe that releases on `mouseleave` while live — the current slide's. */
+      let watched = null;
+      const release = () => setLive(false);
 
       function setLive(next) {
         if (next === live) return;
         live = next;
+        // `mouseleave` on the iframe ELEMENT: the deck hears the pointer cross the frame's edge, and
+        // hears nothing while it moves inside, from pane to pane. It fires only after the pointer was
+        // inside, so pressing `i` with the pointer on the card waits for it to reach the stage.
+        watched?.removeEventListener("mouseleave", release);
+        watched = live ? stageFrame(deck.getCurrentSlide()) : null;
+        watched?.addEventListener("mouseleave", release);
         document.querySelector(".reveal").classList.toggle("stage-live", live);
         document.body.classList.toggle("stage-live", live);
         // Live or not, the DECK holds the keyboard. Nothing is focused in the stage on purpose.
@@ -1362,7 +1373,7 @@ jr2 up</code></pre>
       // k9s, which is the presenter's and never hears a forwarded key. Both are cross-origin, so the
       // deck cannot tell a field from a link; the rule is physical instead: such a pane holds the
       // keyboard while the POINTER is on it. Moving off it (or clicking the demo terminal) hands the
-      // keyboard back, and with it Ctrl-Escape. The stage is
+      // keyboard back, and with it Ctrl-]. The stage is
       // same-origin, so which pane took focus is readable, and its iframe elements hear both events.
       function reclaim() {
         badge.textContent = RELEASE;
@@ -1438,18 +1449,20 @@ jr2 up</code></pre>
           if (!live || event.metaKey) return;
           event.stopImmediatePropagation();
           event.preventDefault();
-          // CTRL-Escape, not Escape: plain Escape belongs to whatever is running in the pane —
-          // k9s, vim, less all read it as "go back", and a release key that those programs need is
-          // a release key you cannot use while they are on screen.
-          if (event.key === "Escape" && event.ctrlKey) return setLive(false);
+          // Not plain Escape: it belongs to whatever is running in the pane — k9s, vim, less all
+          // read it as "go back", and a release key that those programs need is a release key you
+          // cannot use while they are on screen. Ctrl-] is telnet's escape and nothing on stage
+          // reads it; Ctrl-Escape stays for macOS, where Windows opens its Start menu on it before
+          // the page ever hears it. `code`, so a layout that moves `]` keeps the same key.
+          if (event.ctrlKey && (event.code === "BracketRight" || event.key === "Escape")) return setLive(false);
           const payload = asTmuxKey(event);
           if (payload) forward(payload);
         },
         true,
       );
 
-      // Going live only. While live, `i` is a letter you typed — Ctrl-Escape is the way out.
-      deck.addKeyBinding({ keyCode: 73, key: "i", description: "type into the stage (Ctrl-Escape releases)" }, () => {
+      // Going live only. While live, `i` is a letter you typed — Ctrl-] is the way out.
+      deck.addKeyBinding({ keyCode: 73, key: "i", description: "type into the stage (Ctrl-] releases)" }, () => {
         setLive(true);
       });
 

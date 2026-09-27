@@ -26,6 +26,4 @@ export const machine = customize(task, {
   agents: {
     coder: { model: "local/qwen3.6-35b-a3b" },
   },
-  // A registry ref `jr2 up` does not deliver: `npm run preload` puts it on the node.
-  user: "ghcr.io/snapwich/dev:k8s-arm64",
 });

@@ -11,12 +11,12 @@
     "llama": "set -a && . ./.env && set +a && LLAMA_API_KEY=\"$JR2_PROVIDER_API_KEY\" llama-server -hf unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q6_K_XL --alias qwen3.6-35b-a3b --no-mmproj --host 0.0.0.0 --port 8000 --ssl-key-file certs/llama.key --ssl-cert-file certs/llama.crt --jinja --temp 0.6 --presence-penalty 1.0 -c 65536 -ctk q8_0 -ctv q8_0 -fa on"
   },
   "dependencies": {
-    "@jr2/machines": "0.2.1",
-    "@jr2/orchestrator": "0.2.1",
+    "@jr2/machines": "0.3.0",
+    "@jr2/orchestrator": "0.3.0",
     "xstate": "^5.18.0"
   },
   "devDependencies": {
-    "@jr2/cli": "0.2.1",
+    "@jr2/cli": "0.3.0",
     "@types/node": "^26.0.1",
     "typescript": "^5.6.0"
   }

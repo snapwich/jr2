@@ -15,8 +15,6 @@ const exec = promisify(execFile);
 
 /** The refs `jr2 up` does not deliver. Keep in step with the files named beside each. */
 export const EXTRA_IMAGES = [
-  // workflows/task.ts `user:` — the User Container.
-  "ghcr.io/snapwich/dev:k8s-arm64",
   // `jr2 up`'s provider preflight runs its probe in this (packages/cli/src/kube.ts `runOneShot`).
   "node:24-slim",
   // seed.mjs — the git server the toy repo is served from.

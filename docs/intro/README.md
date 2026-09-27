@@ -32,10 +32,9 @@ cd instance && npm run seed        # serves repo/ in-cluster at http://seed.intr
 cd instance && npm run preload     # puts the images jr2 up does not build onto the node
 ```
 
-`npm run preload` loads the User Container image, `node:24-slim` (the image of `jr2 up`'s provider probe), the seed's
-two images, and the Custodian's Envoy (a Pinned image: `jr2 up` names it by digest and never delivers it). It also names
-any image `jr2 up` delivered that the node no longer holds. `npm start` checks the same list and the seed, and stops on
-anything missing.
+`npm run preload` loads `node:24-slim` (the image of `jr2 up`'s provider probe), the seed's two images, and the
+Custodian's Envoy (a Pinned image: `jr2 up` names it by digest and never delivers it). It also names any image `jr2 up`
+delivered that the node no longer holds. `npm start` checks the same list and the seed, and stops on anything missing.
 
 Then start the model with `LLAMA_ARG_OFFLINE=1 npm run llama`. Without `LLAMA_ARG_OFFLINE=1`, `-hf` asks Hugging Face
 for the manifest first. The model serves HTTPS with the certificate `npm run certs` made (once per machine, see
@@ -64,9 +63,9 @@ One more command:
 
 ## Keys
 
-| Key           | What it does                                                        |
-| ------------- | ------------------------------------------------------------------- |
-| `i`           | go live: click in the Console, and type into the terminal           |
-| `Ctrl-Escape` | leave live mode — plain Escape goes to the terminal, for k9s or vim |
+| Key      | What it does                                                                                                  |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| `i`      | go live: click in the Console, and type into the terminal                                                     |
+| `Ctrl-]` | leave live mode — so does moving the pointer off the stage; plain Escape goes to the terminal, for k9s or vim |
 
 Changing slides also leaves live mode.

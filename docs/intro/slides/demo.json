@@ -48,7 +48,7 @@
     },
     "containers": {
       "cmd": "kubectl get pods -n intro -l sandbox.jr2.dev/name -o custom-columns='POD:.metadata.name,CONTAINERS:.spec.containers[*].name'",
-      "note": "One Sandbox, three containers: Harness, Custodian, User Container.",
+      "note": "One Sandbox, two containers: Harness and Custodian. A `user:` image would add a third, the User Container.",
       "interrupt": true
     },
     "gate": {
