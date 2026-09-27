@@ -22,6 +22,7 @@ import type { Api, AssistantMessage, Model, Models, UserMessage } from "@earendi
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { RunawayError, type RunSubmission } from "./conversation.ts";
 import { readMenu, type MenuOptions } from "./menu.ts";
+import { menuTools } from "./menu-tools.ts";
 import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
 import { mapThinkingLevel, resolveModel } from "./provider.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
@@ -242,7 +243,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     }
 
     const harness = assembled.harness;
-    const tools = [...workingToolsFor(definition, definition.cwd), ...menu.tools];
+    const tools = [...workingToolsFor(definition, definition.cwd), ...menuTools(menu)];
     // The active names go explicitly: without them setTools KEEPS the previous active set, which
     // is empty on a harness constructed with no tools — every tool would ride to pi inactive.
     await harness.setTools(

@@ -1,8 +1,8 @@
 // Menu tests (ADR-0013/0027/0059): `readMenu` against the surface the Orchestrator serves, as the
-// Custodian relays it. Asserted: the `mcp__jr2__<name>` naming (sanitized like flue did), the
-// encoded-iid path, the Stand-in as the bearer on both routes, the event's schema as the tool's
-// parameters, a pick as one delivery whose receipt reads as prose, that an empty Menu is zero tools
-// and no error (ADR-0026), that a pick against a settled turn fails, that a deferred event refuses
+// Custodian relays it — no pi here (menu-tools.test.ts). Asserted: the bare name (sanitized like
+// flue did), the encoded-iid path, the Stand-in as the bearer on both routes, the event's schema as
+// the item's parameters, a pick as one delivery whose receipt reads as prose, that an empty Menu is
+// no items and no error (ADR-0026), that a pick against a settled turn fails, that a deferred event refuses
 // the turn, and the surface read's retry ladder (ADR-0042) — including the Custodian's own word
 // that the Orchestrator never answered.
 
@@ -57,19 +57,19 @@ function fakeFetch(answer: (call: Call) => Response | Promise<Response>): { fetc
 
 const opts = (f: typeof fetch) => ({ url: "http://127.0.0.1:8081/", token: STAND_IN, fetch: f, log: () => {} });
 
-test("the surface becomes the Menu: mcp__jr2__<name>, sanitized, the event's schema as parameters", async () => {
+test("the surface becomes the Menu: the bare name, sanitized, the event's schema as parameters", async () => {
   const { fetch, calls } = fakeFetch(() => Response.json(SURFACE));
   const menu = await readMenu(opts(fetch), "run-1/reviewer");
   assert.deepEqual(
-    menu.tools.map((t) => [t.name, t.label]),
+    menu.map((item) => [item.name, item.event]),
     [
-      ["mcp__jr2__review_verdict", "review_verdict"],
-      ["mcp__jr2__note_add", "note.add"],
+      ["review_verdict", "review_verdict"],
+      ["note_add", "note.add"],
     ],
   );
-  assert.equal(menu.tools[0]!.description, "Record the verdict.");
+  assert.equal(menu[0]!.description, "Record the verdict.");
   // The real contract, not a rebuilt shape — minus the dialect tag model APIs do not take.
-  assert.deepEqual(menu.tools[0]!.parameters, {
+  assert.deepEqual(menu[0]!.parameters, {
     type: "object",
     properties: { verdict: { type: "string", enum: ["approved", "changes"] } },
     required: ["verdict"],
@@ -90,13 +90,13 @@ test("a pick is one delivery with the Stand-in, and the receipt comes back as pr
   };
   const { fetch, calls } = fakeFetch((call) => Response.json(call.method === "GET" ? SURFACE : receipt));
   const menu = await readMenu(opts(fetch), "run-1/reviewer");
-  const result = await menu.tools[0]!.execute("call-1", { verdict: "approved" } as never, undefined as never);
+  const prose = await menu[0]!.pick({ verdict: "approved" });
   const post = calls[1]!;
   assert.equal(post.method, "POST");
   assert.equal(post.url, "http://127.0.0.1:8081/agents/run-1%2Freviewer/events");
   assert.equal(post.headers.authorization, `Bearer ${STAND_IN}`);
   assert.deepEqual(JSON.parse(post.body!), { type: "review_verdict", verdict: "approved" });
-  assert.deepEqual(result.content, [{ type: "text", text: receiptProse(receipt) }]);
+  assert.equal(prose, receiptProse(receipt));
   assert.match(receiptProse(receipt), /your turn is over/);
 });
 
@@ -107,7 +107,7 @@ test("an argument named `type` cannot make a pick another event", async () => {
     ),
   );
   const menu = await readMenu(opts(fetch), "run-1/reviewer");
-  await menu.tools[1]!.execute("call-1", { type: "review_verdict", verdict: "approved" } as never, undefined as never);
+  await menu[1]!.pick({ type: "review_verdict", verdict: "approved" });
   assert.equal(JSON.parse(calls[1]!.body!).type, "note.add");
 });
 
@@ -125,11 +125,8 @@ test("a turn that is over has an EMPTY Menu, not an error (ADR-0026); a pick aga
   });
   const menu = await readMenu(opts(fetch), "run-1/reviewer");
   live = false;
-  assert.deepEqual((await readMenu(opts(fetch), "run-1/reviewer")).tools, []);
-  await assert.rejects(
-    () => menu.tools[0]!.execute("call-1", { verdict: "approved" } as never, undefined as never),
-    /this turn is over/,
-  );
+  assert.deepEqual(await readMenu(opts(fetch), "run-1/reviewer"), []);
+  await assert.rejects(() => menu[0]!.pick({ verdict: "approved" }), /this turn is over/);
 });
 
 test("an Orchestrator refusal is loud — a 403 is not an empty Menu", async () => {
@@ -166,7 +163,7 @@ test("a surface read that never got an answer is retried, and what it cost is lo
     { ...opts(fetch), retryInitialMs: 1, retryMaxMs: 2, log: (l) => lines.push(l) },
     "run-1/reviewer",
   );
-  assert.equal(menu.tools.length, 2);
+  assert.equal(menu.length, 2);
   assert.equal(lines.length, 1);
   assert.match(lines[0]!, /^jr2\.routability seat=surface attempts=3 ms=\d+ last=custodian:UF url=/);
 
@@ -197,7 +194,7 @@ test("a surface read with no answer is ended and retried; a window that closes o
     { ...opts(hanging(fetch)), attemptTimeoutMs: 20, retryInitialMs: 1, retryMaxMs: 1, log: (l) => lines.push(l) },
     "run-1/reviewer",
   );
-  assert.equal(menu.tools.length, 2);
+  assert.equal(menu.length, 2);
   assert.match(lines[0]!, /attempts=2 ms=\d+ last=timeout /);
 
   const never = hanging((() => new Promise<Response>(() => {})) as typeof fetch);
@@ -252,7 +249,7 @@ test("over a real socket: the Menu reads and delivers through whatever answers a
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
     const menu = await readMenu({ url, token: STAND_IN }, "run-1/reviewer");
-    await menu.tools[1]!.execute("call-1", {} as never, undefined as never);
+    await menu[1]!.pick({});
     assert.deepEqual(seen, [
       `GET /agents/run-1%2Freviewer/surface Bearer ${STAND_IN}`,
       `POST /agents/run-1%2Freviewer/events Bearer ${STAND_IN}`,

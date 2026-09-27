@@ -1,5 +1,6 @@
 // The Menu (ADR-0013/0027): one Submission's read of the turn's surface, and each accepted event
-// wrapped as a pi `AgentTool` — presented to the model by this process, with no MCP between them.
+// as a pick the model can make. This module knows the wire and nothing of the model's library:
+// `menu-tools.ts` presents the Menu to pi, with no MCP between them.
 //
 // The Harness reads the surface from the Orchestrator itself, through the Custodian on this pod's
 // loopback (`$JR2_CUSTODIAN_URL`, ADR-0059). It sends `Authorization: Bearer <Stand-in>`: its env
@@ -13,15 +14,25 @@
 //   POST /agents/<iid>/events    → one pick, and the receipt, rendered as prose (ADR-0024/0029)
 //
 // Each Submission reads afresh, and the iid in the path is how the Orchestrator knows which turn is
-// live — no push channel, no turn index (ADR-0013's enabling fact). Tools surface to the model as
-// `mcp__jr2__<name>`: a NAME, kept because shipped instructions and the printer's prefix-stripping
-// depend on it, not a transport.
+// live — no push channel, no turn index (ADR-0013's enabling fact).
 
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { TSchema } from "@earendil-works/pi-ai";
+/**
+ * One pick on the Menu. `name` is the event's name made safe for a model API, bare: whoever
+ * presents the Menu adds its own prefix. `pick` delivers and answers the receipt as prose, and
+ * THROWS on every failure, so the model reads the message as an error it can act on.
+ */
+export type MenuItem = {
+  /** The event's name, as the Orchestrator knows it. */
+  event: string;
+  name: string;
+  description: string;
+  /** The event's input, as JSON Schema — without `$schema`. */
+  parameters: Record<string, unknown>;
+  pick: (params: unknown, signal?: AbortSignal) => Promise<string>;
+};
 
-/** One turn's Menu: the wrapped tools. */
-export type Menu = { tools: AgentTool[] };
+/** One turn's Menu. */
+export type Menu = MenuItem[];
 
 /** One event on an agent's live surface, as the Orchestrator serves it. */
 export type SurfaceEvent = {
@@ -99,20 +110,15 @@ function sanitizeToolNamePart(name: string): string {
 }
 
 /**
- * This turn's Menu. An empty one is valid (ADR-0026: a turn that is over has an empty Menu): zero
- * tools, no error. A surface read that fails for any other reason propagates: a turn that cannot
+ * This turn's Menu. An empty one is valid (ADR-0026: a turn that is over has an empty Menu): no
+ * items, no error. A surface read that fails for any other reason propagates: a turn that cannot
  * see its Menu settles `failed` (ADR-0027), and turn.ts owns that mapping. The Submission's `signal`
  * cancels a read in flight — an abort must promote the next admission promptly (ADR-0024).
- *
- * Each tool's `execute` delivers the pick and THROWS on every failure — pi's contract ("throw on
- * failure instead of encoding errors in content") turns the message into the error result the model
- * reads, so it can pick again or differently.
  */
 export async function readMenu(opts: MenuOptions, instanceId: string, signal?: AbortSignal): Promise<Menu> {
   const surface = await readSurface(opts, instanceId, signal);
-  if (!surface) return { tools: [] };
-  const tools: AgentTool[] = [];
-  for (const event of surface.accepts) {
+  if (!surface) return [];
+  return surface.accepts.map((event) => {
     if (event.semantics !== "ack") {
       // ADR-0013: `deferred`/`poll` are reserved in the model and have room on the wire, but nothing
       // answers a held call yet. Offering one as a plain tool would promise the Agent a result that
@@ -122,34 +128,33 @@ export async function readMenu(opts: MenuOptions, instanceId: string, signal?: A
           `(ADR-0013: reserved, not built — an Agent must not be handed a tool whose contract is a lie)`,
       );
     }
-    tools.push({
-      name: `mcp__jr2__${sanitizeToolNamePart(event.name)}`,
-      label: event.name,
+    return {
+      event: event.name,
+      name: sanitizeToolNamePart(event.name),
       description: event.description ?? "",
       parameters: parametersOf(event.input),
-      execute: async (_toolCallId, params, toolSignal) => {
-        const receipt = await deliver(
-          opts,
-          instanceId,
-          // The name last: an argument called `type` cannot make this pick another event.
-          { ...((params ?? {}) as object), type: event.name },
-          toolSignal,
-        );
-        return { content: [{ type: "text", text: receiptProse(receipt) }], details: undefined };
-      },
-    });
-  }
-  return { tools };
+      pick: async (params, pickSignal) =>
+        receiptProse(
+          await deliver(
+            opts,
+            instanceId,
+            // The name last: an argument called `type` cannot make this pick another event.
+            { ...((params ?? {}) as object), type: event.name },
+            pickSignal,
+          ),
+        ),
+    };
+  });
 }
 
 /**
- * The event's JSON Schema, as the tool's advertised signature. It is what the Orchestrator
+ * The event's JSON Schema, as the pick's advertised signature. It is what the Orchestrator
  * validates the pick against, so the model sees the real contract. `$schema` is dropped: it names
  * a dialect, not a parameter, and model APIs take the schema body alone.
  */
-function parametersOf(input: unknown): TSchema {
+function parametersOf(input: unknown): Record<string, unknown> {
   const { $schema: _dialect, ...schema } = (input ?? { type: "object", properties: {} }) as Record<string, unknown>;
-  return schema as unknown as TSchema;
+  return schema;
 }
 
 /**

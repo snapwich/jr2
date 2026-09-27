@@ -43,8 +43,8 @@ import type { AddressInfo, Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
 /** One request body as the provider received it. `tools` is where the per-turn Menu is visible:
- * the Menu the invoking state derived (as `mcp__jr2__<name>`, the model-facing name `menu.ts`
- * mints) plus the Working tools the definition's `workspace` left in place (ADR-0028). */
+ * the Menu the invoking state derived (as `mcp__jr2__<name>`, the model-facing name
+ * `menu-tools.ts` mints) plus the Working tools the definition's `workspace` left in place (ADR-0028). */
 export type RecordedCall = {
   /** Model-facing tool names, in the order the Harness offered them. */
   tools: string[];
@@ -257,7 +257,7 @@ function answerPreflight(res: ServerResponse, toolName: string): void {
 }
 
 /** Finish a parked stream as one tool call. The name is the MODEL-FACING one (`mcp__jr2__<tool>`
- * for a Menu pick — `menu.ts` mints it and pi matches on it), and `finish_reason: "tool_calls"` is
+ * for a Menu pick — `menu-tools.ts` mints it and pi matches on it), and `finish_reason: "tool_calls"` is
  * what makes pi execute rather than end the turn. */
 function streamToolCall(res: ServerResponse, name: string, args: string): void {
   const id = `chatcmpl-${Date.now()}`;

@@ -30,9 +30,10 @@ decision generalizes that container. It holds every credential the Harness uses,
   Secret (the Instance Harness: the `JR2_INSTANCE_HARNESS_TOKEN` key of `jr2-instance`). No other container mounts it.
 - **The Harness reads its Menu itself.** There is no MCP. For each Submission, `menu.ts` reads
   `GET /agents/<iid>/surface` and delivers a pick with `POST /agents/<iid>/events`, both to the Custodian on
-  `127.0.0.1:8081`, with the Stand-in as the bearer. It gives pi each accepted event as a tool. The tool names stay
-  `mcp__jr2__<event>`, because shipped instructions and the printer depend on them; the name is no longer a transport.
-  The Harness keeps what the Adapter did: a turn that is over has an empty Menu
+  `127.0.0.1:8081`, with the Stand-in as the bearer. `menu-tools.ts` gives pi each accepted event as a tool. The tool
+  names stay `mcp__jr2__<event>`, because shipped instructions and the printer depend on them; the name is no longer a
+  transport. `menu-tools.ts` adds the prefix, and `menu.ts` keeps the bare name, because an MCP client adds
+  `mcp__<server>__` itself. The Harness keeps what the Adapter did: a turn that is over has an empty Menu
   ([ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)), a receipt is prose
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md),
   [ADR-0029](0029-a-menu-offers-what-the-machine-will-accept-and-a-pick-that-moves-nothing-says-so.md)), the surface

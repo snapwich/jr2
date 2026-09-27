@@ -680,7 +680,7 @@ const WORKING_TOOLS = ["read", "write", "edit", "bash", "grep", "glob"];
  * What the Harness OFFERED the model for this turn, asserted off the provider's recorded request —
  * which is free here, and stronger than the retired persona's `listTools()` call: it is the tool
  * set pi actually put on the wire. Two halves in one claim: this state's Menu (ADR-0015/0029,
- * `mcp__jr2__`-prefixed by `menu.ts`) and exactly the Working tools the definition allows
+ * `mcp__jr2__`-prefixed by `menu-tools.ts`) and exactly the Working tools the definition allows
  * (ADR-0028). "Exactly one Menu tool" is the sharp edge — a turn must not see another state's.
  */
 Then(

@@ -40,8 +40,9 @@ Submission while a jr2 menu only changes at turn boundaries, no `list_changed` p
   makes ADR-0006's "the Agent never steers the workflow" **enforced** rather than advertised.
 
 - **The Harness presents the Menu to its model itself.** There is no MCP server and no MCP client. `menu.ts` turns each
-  accepted event into a pi tool, with the event's JSON Schema as its parameters, and turns a call into one
-  `POST …/events`. The receipt comes back as prose
+  accepted event into a Menu item, with the event's JSON Schema as its parameters, and turns a pick into one
+  `POST …/events`. It imports nothing from pi: `menu-tools.ts` gives each item to pi as a tool. A harness that only
+  speaks MCP would get a second presenter over the same `menu.ts`, not a second Menu. The receipt comes back as prose
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A 404 on the surface is an empty Menu
   ([ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)).
 - **The Orchestrator hosts no MCP, and judges every pick.** The registration table stays the one internal primitive; it
