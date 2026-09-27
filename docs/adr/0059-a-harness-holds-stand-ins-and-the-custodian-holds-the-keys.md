@@ -115,7 +115,9 @@ decision generalizes that container. It holds every credential the Harness uses,
 - **Health.** `0.0.0.0:15021`, `GET /healthz`. The kubelet cannot reach a loopback listener, and a distroless image has
   no shell for an exec probe. The Custodian's readiness probe is on it. Pod Ready needs every container ready, and the
   operator holds a Sandbox's Ready on pod Ready, so no Turn is admitted before the Custodian serves. The Instance
-  Harness's rollout wait covers it the same way.
+  Harness's rollout wait covers it the same way. It is the one listener a peer can reach, where the ADR-0058
+  NetworkPolicy is not enforced. So it is outside Envoy's global connection limit, holds 16 connections at most, and
+  closes a connection idle for 5 seconds: a peer's idle connections cannot stop the Menu or the egress.
 - **The config surface** (`jr2.config.ts`,
   [ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)): `harness.heldSecrets` (a `name`; a
   `value` or a `valueFrom.secretKeyRef`; `hosts`; `headers`, default `authorization`, `x-api-key`, `x-goog-api-key`,
@@ -237,11 +239,12 @@ decision generalizes that container. It holds every credential the Harness uses,
   it from its registry, so the `@kind` tier needs network to `docker.io`. `just kit-push` does not seed it.
 - **Where the Custodian suite runs.** `just custodian-test`: node's test runner against the pinned image under docker,
   on the host network with free ports, with local HTTPS upstreams under their own CA. It is opt-in, like `@kind`,
-  because it needs docker ([ADR-0010](0010-bdd-acceptance-tests.md)). About 23 seconds. It checks the swap, the strip,
+  because it needs docker ([ADR-0010](0010-bdd-acceptance-tests.md)). About 30 seconds. It checks the swap, the strip,
   403 with no Stand-in, 405 on a method, 400 on an underscore header, a header `Connection` names, two `Host` headers,
-  421, 400 and 403 on paths, the tunnel, the dial guard by spelling and by resolved name, 502 on an untrusted upstream,
-  SSE timing, abort, a 302, the start-up refusal, the log, and the Anthropic SDK through `HTTPS_PROXY`. The first SSE
-  event arrives through the Custodian about half a millisecond later than direct.
+  idle connections on the health listener, 421, 400 and 403 on paths, the tunnel, the dial guard by spelling and by
+  resolved name, 502 on an untrusted upstream, SSE timing, abort, a 302, the start-up refusal, the log, and the
+  Anthropic SDK through `HTTPS_PROXY`. The first SSE event arrives through the Custodian about half a millisecond later
+  than direct.
 - **The `@kind` tier's model wants a key.** Its fake provider serves HTTPS under the tier's CA and refuses a request
   without the key, which is `harness.provider.apiKey` — so every turn in the tier crosses a Custodian, in both
   placements. A Rule proves the key is in no env and no file of either Harness container.

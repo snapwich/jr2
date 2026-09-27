@@ -135,6 +135,8 @@ function hcm(
     target: string;
     routes: Json;
     idleSeconds: number;
+    /** How long a connection may hold no request, and take to send one's headers. */
+    connectionIdleSeconds?: number;
     lua: boolean;
     upgrade?: boolean;
     local?: Json;
@@ -156,10 +158,13 @@ function hcm(
       // `normalize_path` reads a bare `\` as `/` and `..;` as `..`, so the upstream gets the path
       // the prefix was checked against, whatever IIS or Tomcat would read.
       path_with_escaped_slashes_action: opts.strictPath ? "REJECT_REQUEST" : "KEEP_UNCHANGED",
-      request_headers_timeout: "60s",
+      request_headers_timeout: `${Math.min(60, opts.connectionIdleSeconds ?? 60)}s`,
       stream_idle_timeout: `${opts.idleSeconds}s`,
       // `x_api_key` is not `x-api-key` to the strip, but some servers read it as one.
-      common_http_protocol_options: { idle_timeout: "3600s", headers_with_underscores_action: "REJECT_REQUEST" },
+      common_http_protocol_options: {
+        idle_timeout: `${opts.connectionIdleSeconds ?? 3600}s`,
+        headers_with_underscores_action: "REJECT_REQUEST",
+      },
       ...(opts.upgrade ? { upgrade_configs: [{ upgrade_type: "CONNECT" }] } : {}),
       access_log: accessLog(opts.target),
       ...(opts.local ? { local_reply_config: opts.local } : {}),
@@ -409,12 +414,25 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
     {
       name: "health",
       address: { socket_address: { address: "0.0.0.0", port_value: CUSTODIAN_HEALTH_PORT } },
+      // A peer can reach this listener; the kubelet probes one request at a time. So a peer's idle
+      // connections cannot fill Envoy's global limit and stop the Menu and the egress: this listener
+      // is outside that limit, holds 16 connections at most, and closes one idle for 5 s.
+      ignore_global_conn_limit: true,
       filter_chains: [
         {
           filters: [
+            {
+              name: "envoy.filters.network.connection_limit",
+              typed_config: {
+                "@type": "type.googleapis.com/envoy.extensions.filters.network.connection_limit.v3.ConnectionLimit",
+                stat_prefix: "health",
+                max_connections: 16,
+              },
+            },
             hcm("health", {
               target: "health",
-              idleSeconds: 60,
+              idleSeconds: 5,
+              connectionIdleSeconds: 5,
               lua: true,
               routes: {
                 virtual_hosts: [

@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { connect, type Socket } from "node:net";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -403,6 +404,46 @@ describe("toward the Orchestrator (the control listener)", () => {
       assert.ok(r.status === 404 || r.status === 403, `${method} ${path} → ${r.status}`);
     }
     assert.equal(orchestrator.seen.length, before);
+  });
+});
+
+describe("the health listener (0.0.0.0, the one a peer can reach)", () => {
+  test("14. idle connections past Envoy's global limit fill the health listener alone: the Menu still answers", async () => {
+    // More than `max_active_downstream_connections` (4096), none of them sending a byte.
+    const sockets = await Promise.all(
+      Array.from(
+        { length: 4200 },
+        () =>
+          new Promise<Socket>((resolve) => {
+            const s = connect(custodian.ports.health, "127.0.0.1");
+            s.on("error", () => {});
+            s.once("connect", () => resolve(s));
+            s.once("close", () => resolve(s));
+          }),
+      ),
+    );
+    try {
+      await new Promise((r) => setTimeout(r, 500));
+      const open = sockets.filter((s) => !s.destroyed && s.readyState === "open").length;
+      assert.ok(open <= 32, `the health listener holds few connections, not ${open}`);
+      const r = await controlRequest(custodian.ports.control, "/agents/run-1/surface", {
+        headers: { authorization: `Bearer ${standIn("JR2_SANDBOX_TOKEN")}` },
+      });
+      assert.equal(r.status, 200, r.body);
+    } finally {
+      for (const s of sockets) s.destroy();
+    }
+    const r = await fetch(`http://127.0.0.1:${custodian.ports.health}/healthz`);
+    assert.equal(r.status, 200);
+  });
+
+  test("15. a health connection that sends nothing is closed within seconds", async () => {
+    const s = connect(custodian.ports.health, "127.0.0.1");
+    s.on("error", () => {});
+    const started = performance.now();
+    await new Promise((r) => s.once("close", r));
+    const ms = performance.now() - started;
+    assert.ok(ms < 8_000, `closed after ${Math.round(ms)} ms`);
   });
 });
 
