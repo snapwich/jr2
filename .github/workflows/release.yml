@@ -1,9 +1,9 @@
 # The release (ADR-0055): a pushed `v*` tag, made by `just release`. ONE job, in order —
 #
 #   1. the tag agrees with every manifest (else nothing else runs)
-#   2. every tier: unit, conformance, default e2e, then @kind and @dist on a runner kind cluster —
-#      the installed path proven on the exact tree that ships, not on a maintainer's box the day
-#      before
+#   2. every tier: unit, conformance, default e2e, the Custodian suite, then @kind and @dist on a
+#      runner kind cluster — the installed path proven on the exact tree that ships, not on a
+#      maintainer's box the day before
 #   3. the three Kit images, multi-arch, to their canonical home (ADR-0044)
 #   4. the four packages STAGED on npm, dependencies first — live once the maintainer approves
 #
@@ -98,6 +98,11 @@ jobs:
 
       - name: Default e2e profile
         run: pnpm --filter @jr2/e2e test:e2e
+
+      # The refusals @kind cannot see (ADR-0059): the Envoy config jr2 renders, against the pinned
+      # image. The image moves only with its pin; the config moves with any release.
+      - name: Custodian suite
+        run: just custodian-test
 
       # The hosted runner starts with ~14 GB free, and the heavy tiers spend more than that: every
       # image the tiers build lands three times — in the daemon, as the tar `kind load` writes to

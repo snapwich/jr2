@@ -31,13 +31,13 @@ version, images, gate, trigger.
   checkout `KIT_VERSION` must read the number the checkout will ship.
 - **The tag push is the release, and one job does the whole train in order.** `release.yml` runs on `v*`; it refuses
   first if the tag disagrees with any manifest. Then the full gate — unit, harness conformance, the default e2e profile,
-  and `@kind` and `@dist` on a kind cluster the job creates on the runner (the operator's own e2e job already works this
-  way) — so the installed path is proven on the tree that publishes, not on a maintainer's box the day before. Then
-  `scripts/kit-push.sh ghcr.io/snapwich` (multi-arch, `GITHUB_TOKEN` with `packages: write`), and **only then** npm:
-  each public package is packed with pnpm, which rewrites `workspace:*` to the exact version, and **staged** with
-  `npm stage publish`, the client that speaks trusted publishing — in pnpm's topological order, dependencies first,
-  skipping a version npm already holds live so a re-run converges. The order is the contract: a package whose images are
-  not at the home fails at pull on the user's first `jr2 up`
+  the Custodian suite, and `@kind` and `@dist` on a kind cluster the job creates on the runner (the operator's own e2e
+  job already works this way) — so the installed path is proven on the tree that publishes, not on a maintainer's box
+  the day before. Then `scripts/kit-push.sh ghcr.io/snapwich` (multi-arch, `GITHUB_TOKEN` with `packages: write`), and
+  **only then** npm: each public package is packed with pnpm, which rewrites `workspace:*` to the exact version, and
+  **staged** with `npm stage publish`, the client that speaks trusted publishing — in pnpm's topological order,
+  dependencies first, skipping a version npm already holds live so a re-run converges. The order is the contract: a
+  package whose images are not at the home fails at pull on the user's first `jr2 up`
   ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)); images with no package are inert,
   and stay so while the packages sit staged.
 - **The job stages; the maintainer approves.** Each trusted publisher is configured for `npm stage publish` only, so the
@@ -53,8 +53,8 @@ version, images, gate, trigger.
   tag), and so is the guard: a login alone publishes nothing under write-2FA, so a dev box holds no credential that
   publishes by itself.
 - **`ci.yml` on push and PR is the light gate**: frozen install, typecheck, format check, `pnpm -r test`, the default
-  Cucumber profile — minutes, no docker. The heavy tiers run on the tag and by hand (`just e2e-kind`, `just e2e-dist`)
-  when a change touches build, deploy, or dist code.
+  Cucumber profile — minutes, no docker. The heavy tiers and the Custodian suite run on the tag and by hand
+  (`just e2e-kind`, `just e2e-dist`, `just custodian-test`) when a change touches build, deploy, or dist code.
 - **`@jr2/machines` peers on `@jr2/orchestrator` exactly.** `workspace:*` stays; a Machine is written against one
   orchestrator, and a mismatched pair fails at install with a peer error instead of at run.
 - **`engines.node: ">=24"` on every public package and the root.** Every runtime the kit runs in is Node 24 already
