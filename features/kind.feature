@@ -279,8 +279,8 @@ Feature: a workspace() run drives a real Sandbox on kind
 
   Rule: jr2 mounts its runtime into the user's image, and the floor holds inside the pod
     ADR-0037. A Sandbox Image is the user's Dockerfile — zero jr2 knowledge, any base — run
-    byte-for-byte: an init container publishes /opt/jr2 onto a volume the primary container mounts,
-    and only the container's COMMAND is overridden. So the floor is a composition, not a build, and
+    byte-for-byte: the kit's Harness image is mounted as an image volume at /opt/jr2, and only the
+    container's COMMAND is overridden. So the floor is a composition, not a build, and
     every line of it is a SILENT failure when wrong: it surfaces inside a turn, as a tool error the
     model has to interpret. Only a real pod can prove the pieces met.
 

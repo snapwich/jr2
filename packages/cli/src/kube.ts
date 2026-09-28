@@ -138,6 +138,10 @@ export type KubeAdmin = {
     previous?: boolean;
     context?: string;
   }): Promise<string>;
+  /** The API server's `gitVersion` (`kubectl get --raw /version`), e.g. `v1.35.0-gke.1200` — what
+   * ADR-0037's Kubernetes floor is judged against. THROWS when the server does not answer, like
+   * `listJson`: a floor check that passed because it could not look is no check at all. */
+  serverVersion(opts: { context?: string }): Promise<string>;
   /** Run a one-shot node script IN the cluster (`kubectl run --rm`) and return its output — the
    * provider-preflight seam (ADR-0019: reachability must be probed from where pods live).
    * `caPem` makes the probe trust a private CA the same way the Harness does (ADR-0020):
@@ -184,6 +188,28 @@ export function rolloutStatusArgs({
     `${kind}/${name}`,
     `--timeout=${timeoutSeconds}s`,
   ];
+}
+
+/** ADR-0037's Kubernetes floor: every Sandbox's `/opt/jr2` is an `image` volume of the harness
+ * image, and image volumes are on by default from 1.35 (GA in 1.36). There is no fallback below it
+ * — a second pod shape kept alive for clusters no Instance runs on — so `jr2 up` refuses there. */
+export const KUBE_FLOOR = { major: 1, minor: 35 } as const;
+
+/**
+ * Why this server version cannot host an Instance, or undefined when it can. Pure, so the floor is
+ * checkable without a cluster. Judged on the leading `v<major>.<minor>` alone: distributions append
+ * their own suffixes (`-gke.1200`, `+k3s1`, `-eks-…`), and none of them moves the feature gate. A
+ * version with no such prefix is refused BY NAME rather than passed — a floor that waves through
+ * what it cannot read is the timeout ADR-0046 exists to replace.
+ */
+export function kubeFloorRefusal(gitVersion: string): string | undefined {
+  const floor = `${KUBE_FLOOR.major}.${KUBE_FLOOR.minor}`;
+  const why = `jr2 needs Kubernetes ${floor} or newer (every Sandbox mounts jr2's runtime as an image volume, ADR-0037)`;
+  const m = /^v?(\d+)\.(\d+)/.exec(gitVersion);
+  if (!m) return `reports version "${gitVersion}", which names no major.minor; ${why}`;
+  const [major, minor] = [Number(m[1]), Number(m[2])];
+  if (major > KUBE_FLOOR.major || (major === KUBE_FLOOR.major && minor >= KUBE_FLOOR.minor)) return undefined;
+  return `runs Kubernetes ${gitVersion}; ${why}`;
 }
 
 /**
@@ -285,6 +311,20 @@ export const kubectlAdmin: KubeAdmin = {
       return stdout;
     } catch {
       return ""; // "the container wrote nothing readable" IS the answer here — see the port's doc
+    }
+  },
+
+  async serverVersion({ context }) {
+    // `get --raw /version`, not `kubectl version`: that one reports the CLIENT too; this asks the
+    // server alone, and answers in the server's own JSON. Bounded like every first contact: it is
+    // the first thing `jr2 up` asks, so a dead context fails here, fast, with kubectl's own reason.
+    try {
+      const { stdout } = await exec("kubectl", [...ctxArgs(context), "get", "--raw", "/version", ...reachArgs], {
+        timeout: REACH_BUDGET_MS,
+      });
+      return (JSON.parse(stdout) as { gitVersion?: string }).gitVersion ?? "";
+    } catch (e) {
+      throw new Error(unreachable(e));
     }
   },
 

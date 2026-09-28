@@ -82,6 +82,11 @@ const REFS = {
   sandbox: { default: "jr2-sandbox-inst-default:d00", [RUST.key]: "jr2-sandbox-inst-rust:r00" },
 };
 
+/** How every seat that holds jr2's runtime mounts it (ADR-0037): the harness image's own
+ * `/opt/jr2`, by subPath of the image volume, and read-only — an image volume is read-only anyway,
+ * and saying so keeps the mount's meaning in the CR rather than in the volume type. */
+const RUNTIME_AT_OPT = { name: "runtime", mountPath: "/opt/jr2", subPath: "opt/jr2", readOnly: true };
+
 /** The Repo-resource port (ADR-0051) as a recorder: what a provision asked it to ensure, in order.
  * `bind` is the boot's statement of a spec and refuses: a provision that restated a bound Repo
  * would flip the resource between two Machines' spellings on every run. */
@@ -184,7 +189,7 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
   assert.deepEqual(applied.spec.volumeMounts, [
     { name: "work", mountPath: "/work" },
     // jr2's runtime, read-only in the container where the Agent has code execution.
-    { name: "runtime", mountPath: "/opt/jr2", readOnly: true },
+    RUNTIME_AT_OPT,
   ]);
   // Then the Custodian's own two (ADR-0059): what it holds and how it is told to hold it. With
   // nothing held and no CA bundle, the Harness container mounts neither.
@@ -194,7 +199,9 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
   );
   assert.deepEqual(applied.spec.volumes.slice(0, 2), [
     { name: "work", emptyDir: {} },
-    { name: "runtime", emptyDir: {} },
+    // The KIT's image, mounted as a volume (ADR-0037): no pull policy of its own, so the kubelet
+    // treats the ref exactly as it treats the same ref on a container.
+    { name: "runtime", image: { reference: "jr2-harness:h00" } },
   ]);
   assert.ok(!JSON.stringify(applied).includes("persistentVolumeClaim"), "no source PVC — the cache is per node");
 });
@@ -219,7 +226,7 @@ test("two slots spelling one repository are ONE CR entry; two repositories are t
   ]);
 });
 
-test("the Harness arrives at POD time: an /opt/jr2 volume, an init copy, and a command override", async () => {
+test("the Harness arrives at POD time: an /opt/jr2 image volume and a command override", async () => {
   // ADR-0037's whole mechanism, in one CR. There is NO build-time wrap: the primary container runs
   // the user's image byte-for-byte, and everything jr2 needs from it arrives beside it.
   const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
@@ -231,22 +238,21 @@ test("the Harness arrives at POD time: an /opt/jr2 volume, an init copy, and a c
   // Harness's, or the operator's Ready probe and restart semantics are lies.
   assert.deepEqual(applied.spec.command, ["/opt/jr2/bin/node", "/opt/jr2/src/main.ts"]);
 
-  const [runtime, preflight] = applied.spec.initContainers;
-  // Populate first, prove second — the preflight mounts what the copy wrote.
-  assert.equal(runtime.name, "runtime");
-  assert.equal(runtime.image, "jr2-harness:h00", "the runtime rides the KIT's image, not the user's");
-  assert.deepEqual(runtime.command, ["/opt/jr2/bin/init-copy", "/mnt/jr2"]);
+  // The runtime rides the KIT's image, mounted — nothing copies it, so no init step populates it.
+  const runtime = applied.spec.volumes.find((v: { name: string }) => v.name === "runtime");
+  assert.deepEqual(runtime, { name: "runtime", image: { reference: "jr2-harness:h00" } });
   assert.deepEqual(
-    runtime.volumeMounts,
-    [{ name: "runtime", mountPath: "/mnt/jr2" }],
-    "never /opt/jr2: it is the source",
+    applied.spec.initContainers.map((c: { name: string }) => c.name),
+    ["preflight"],
+    "one init step: the probe",
   );
+  const [preflight] = applied.spec.initContainers;
 
   // The probe runs in the USER'S image — that is what proves a registry ref, whose first
   // appearance is this provision, before the Harness container starts rather than mid-turn.
   assert.equal(preflight.name, "preflight");
   assert.equal(preflight.image, "jr2-sandbox-inst-rust:r00");
-  assert.deepEqual(preflight.volumeMounts, [{ name: "runtime", mountPath: "/opt/jr2", readOnly: true }]);
+  assert.deepEqual(preflight.volumeMounts, [RUNTIME_AT_OPT]);
   const script = preflight.command.at(-1);
   assert.match(script, /git config --global safe\.directory "\*"/, "git on PATH and a writable HOME");
   assert.match(script, /\/opt\/jr2\/bin\/node -e ""/, "the glibc floor — where musl dies");
@@ -254,7 +260,7 @@ test("the Harness arrives at POD time: an /opt/jr2 volume, an init copy, and a c
   assert.match(script, /export PATH="\$PATH:\/opt\/jr2\/bin"/, "APPENDED, never prepended");
   assert.match(script, /ADR-0037/, "the failure names the fix, not `node did not execute`");
 
-  // Both jr2-owned init steps carry the hardened context themselves: the operator schedules init
+  // The jr2-owned init step carries the hardened context itself: the operator schedules init
   // containers verbatim (ADR-0001), so nothing else would supply one.
   for (const c of applied.spec.initContainers) {
     assert.equal(c.securityContext.runAsNonRoot, true, `${c.name} runs non-root`);
@@ -280,7 +286,7 @@ test("a registry ref is deployed-never-built: it passes through verbatim, in eit
   assert.equal(applied.spec.image, "ghcr.io/acme/toolchain:2024-11");
   // The preflight still runs against it — that is the whole point: a ref's first appearance is a
   // provision, so this is the only moment the floor can be proven at all.
-  assert.equal(applied.spec.initContainers[1].image, "ghcr.io/acme/toolchain:2024-11");
+  assert.equal(applied.spec.initContainers[0].image, "ghcr.io/acme/toolchain:2024-11");
   assert.equal(applied.spec.sidecars[1].image, "ghcr.io/acme/sshd:1");
 });
 
@@ -311,7 +317,7 @@ test("the User Container is the zero-contract seat: own entrypoint, /work, and N
     // absolute path, and safe.directory stays the image's own line (ADR-0005).
     volumeMounts: [
       { name: "work", mountPath: "/work" },
-      { name: "runtime", mountPath: "/opt/jr2", readOnly: true },
+      RUNTIME_AT_OPT,
       { name: `repo-${APP_KEY}`, mountPath: `/repos/${APP_KEY}`, readOnly: true },
     ],
   });
@@ -362,7 +368,7 @@ test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH plac
   assert.deepEqual(applied.spec.volumeMounts.at(-1), { name: "home", mountPath: "/home/jr2" });
 
   // The probe runs in the SAME seat, or it proved a different uid's $HOME and proved nothing.
-  const preflight = applied.spec.initContainers[1];
+  const preflight = applied.spec.initContainers[0];
   assert.equal(preflight.securityContext.runAsUser, 1000);
   assert.deepEqual(preflight.env, [{ name: "HOME", value: "/home/jr2" }]);
   assert.deepEqual(preflight.volumeMounts.at(-1), { name: "home", mountPath: "/home/jr2" });
@@ -488,10 +494,7 @@ test("a recorded USER the kubelet would refuse fails the provision by NAME, not 
 const waitingPod = (container: string, reason: string, message: string, seat = "initContainerStatuses") =>
   JSON.stringify({
     status: {
-      [seat]: [
-        { name: "runtime", state: { terminated: { exitCode: 0 } } },
-        { name: container, state: { waiting: { reason, message } } },
-      ],
+      [seat]: [{ name: container, state: { waiting: { reason, message } } }],
     },
   });
 

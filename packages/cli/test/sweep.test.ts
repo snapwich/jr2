@@ -14,7 +14,12 @@ type Listing = {
   maps?: Record<string, unknown>;
   sandboxes?: Array<{
     metadata: { name: string; namespace?: string };
-    spec?: { image?: string; sidecars?: Array<{ image?: string }> };
+    spec?: {
+      image?: string;
+      sidecars?: Array<{ image?: string }>;
+      initContainers?: Array<{ image?: string }>;
+      volumes?: Array<{ name: string; image?: { reference?: string }; emptyDir?: object }>;
+    };
   }>;
   /** The cluster has no Sandbox CRD at all — what `jr2 down --all` leaves behind, and what any
    * cluster the operator never reached looks like. kubectl's own words. */
@@ -25,6 +30,7 @@ type Listing = {
       containers?: Array<{ image?: string }>;
       initContainers?: Array<{ image?: string }>;
       ephemeralContainers?: Array<{ image?: string }>;
+      volumes?: Array<{ name: string; image?: { reference?: string }; emptyDir?: object }>;
     };
   }>;
   /** Which read blows up, as an absent CRD, a forbidden verb, or an unreachable API all do. */
@@ -44,6 +50,7 @@ function mkKube(listing: Listing): KubeAdmin & { queries: string[] } {
     waitRollout: async () => assert.fail("the sweep waits for nothing"),
     logs: async () => assert.fail("the sweep reads no logs") as never,
     runOneShot: async () => assert.fail("the sweep probes nothing") as never,
+    serverVersion: async () => assert.fail("the sweep reads no version") as never,
     listJson: async <T>(o: { kind: string; selector?: string; fieldSelector?: string; allNamespaces?: boolean }) => {
       kube.queries.push(`${o.kind}${o.selector ? ` -l ${o.selector}` : ""}${o.allNamespaces ? " -A" : ""}`);
       const which = o.kind.startsWith("sandboxes") ? "sandboxes" : o.kind;
@@ -130,6 +137,37 @@ test("objects outside an instance namespace are not roots — labels decide, not
   });
   const { keep } = await readRoots(kube);
   assert.deepEqual([...keep], ["jr2-harness:0f1e"]);
+});
+
+test("an `image` volume holds its ref — the harness a Sandbox mounts at /opt/jr2 (ADR-0037)", async () => {
+  // The harness ref reaches a Sandbox ONLY as a volume, never as a container's image. A kit edit
+  // moves the map to a new harness tag while live and parked Sandboxes still mount the old one; a
+  // recreated pod re-resolves the volume `IfNotPresent`, so a swept local tag fails it.
+  const runtime = (reference: string) => ({ name: "runtime", image: { reference } });
+  const kube = mkKube({
+    namespaces: ["myinst"],
+    sandboxes: [
+      {
+        metadata: { name: "parked", namespace: "myinst" },
+        spec: {
+          image: "jr2-sandbox-myinst-default:aa11",
+          initContainers: [{ image: "jr2-sandbox-myinst-default:aa11" }],
+          volumes: [{ name: "work", emptyDir: {} }, runtime("jr2-harness:old1")],
+        },
+      },
+    ],
+    pods: [
+      {
+        metadata: { name: "sandbox-live", namespace: "myinst" },
+        spec: {
+          containers: [{ image: "jr2-sandbox-myinst-default:aa11" }],
+          volumes: [{ name: "work", emptyDir: {} }, runtime("jr2-harness:old2")],
+        },
+      },
+    ],
+  });
+  const { keep } = await readRoots(kube);
+  assert.deepEqual([...keep].sort(), ["jr2-harness:old1", "jr2-harness:old2", "jr2-sandbox-myinst-default:aa11"]);
 });
 
 test("a pod's init and ephemeral containers hold images too, and a terminating pod still counts", async () => {

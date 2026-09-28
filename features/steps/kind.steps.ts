@@ -724,7 +724,7 @@ Then("the model was shown the tool result {string}", async function (this: E2EWo
 
 /**
  * ADR-0037's composition, proved in the pod it was assembled for — the only tier that can. Nothing
- * here is a build any more: the runtime came off a volume an init container populated, the uid and
+ * here is a build any more: the runtime is the kit's image mounted as a volume, the uid and
  * the home came from the pod spec, and the umask and PATH came from the Harness PROCESS. Each is a
  * separate silent failure: no `git` and every attach fails; no writable `$HOME` and the attach's
  * `git config --global` dies with `fatal: $HOME not set` INSIDE a turn; a relocated node that

@@ -25,18 +25,20 @@
 //
 // The pod's primary container is the Sandbox Image BYTE-FOR-BYTE (ADR-0037): no appended layers,
 // no rewritten Dockerfile, no jr2 knowledge inside it. jr2's runtime arrives at POD time instead —
-// an emptyDir at `/opt/jr2`, populated by an init container running the kit's Harness image — and
-// the container's COMMAND is overridden to start the Harness from that volume. The image's own
-// `USER` and `HOME` are respected (the human who execs in lands in the environment its author
-// built); only its `ENTRYPOINT`/`CMD` do not run, because a container has one command and the
+// an `image` volume of the kit's Harness image, its `/opt/jr2` mounted read-only at `/opt/jr2` —
+// and the container's COMMAND is overridden to start the Harness from that volume. The kubelet
+// mounts the image's own layers, so every Sandbox on a node reads one set of runtime pages. The
+// image's own `USER` and `HOME` are respected (the human who execs in lands in the environment its
+// author built); only its `ENTRYPOINT`/`CMD` do not run, because a container has one command and the
 // Harness must own it — its death must be the container's death, which is what the operator's
 // Ready probe and restart semantics at `:8080` mean. A process the image WANTS running is not
 // lost: it has its own seat, the User Container (ADR-0005), composed here when the wrapper's static
 // `user` option names an image (ADR-0049).
 //
-// So this module composes the whole pod — two init steps and up to three containers:
+// So this module composes the whole pod — one volume from the kit, one init step, and up to three
+// containers:
 //
-//   initContainer runtime     the kit's Harness image → copies /opt/jr2 into the volume
+//   volume        runtime     the kit's Harness image, as an `image` volume → /opt/jr2
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
 //   container     harness     the Sandbox Image, command overridden, /work + /opt/jr2 mounted
@@ -84,9 +86,15 @@ export type KubectlExec = (args: string[], opts?: { input?: string }) => Promise
  * (node's rpath is `$ORIGIN/../lib`), `src/main.ts`, `node_modules/`. */
 export const RUNTIME_MOUNT = "/opt/jr2";
 
-/** Where the populate init container writes the runtime. NOT `/opt/jr2`: mounting the volume there
- * would shadow the very directory being copied out of the Harness image. */
-const RUNTIME_STAGE = "/mnt/jr2";
+/** How every seat that holds the runtime mounts it (ADR-0037). The volume is the WHOLE harness
+ * image, so `subPath` narrows it to that image's own `/opt/jr2` — the published surface, laid out
+ * exactly as the Harness image runs it, so node's `$ORIGIN/../lib` holds with nothing rearranged.
+ * Read-only in every seat: an image volume is read-only anyway, and the Agent has code execution
+ * in the Harness container, so the CR says so rather than leaving it to the volume type. The
+ * layers stay owned by root and the Sandbox Image may run any uid, so the image's MODE is the
+ * guarantee that any uid reads it — the harness Dockerfile's build-time check holds it there. */
+const RUNTIME_VOLUME = "runtime";
+const RUNTIME_VOLUME_MOUNT = { name: RUNTIME_VOLUME, mountPath: RUNTIME_MOUNT, subPath: "opt/jr2", readOnly: true };
 
 /** The primary container's command (ADR-0037). Absolute, so it never depends on the image's
  * `WORKDIR`, and identical to the stock Harness image's own `CMD` — one runtime, two placements. */
@@ -103,7 +111,7 @@ const UPLOAD_PACK = `${RUNTIME_MOUNT}/bin/jr2-upload-pack`;
 const DEFAULT_WORK_GROUP = 2000;
 
 /**
- * The isolation baseline for a jr2-owned seat, spelled out HERE for the init containers because the
+ * The isolation baseline for a jr2-owned seat, spelled out HERE for the init container because the
  * operator's hardened default covers the primary container and the sidecars only (ADR-0001/0005) —
  * init steps pass through verbatim, which is what keeps the operator agent-agnostic. Deliberately
  * not applied to the `user` container: that seat's identity is "what jr2 does not own".
@@ -379,7 +387,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     image: await resolveUserImage(refs, image),
     volumeMounts: [
       { name: "work", mountPath: workRoot },
-      { name: "runtime", mountPath: RUNTIME_MOUNT, readOnly: true },
+      RUNTIME_VOLUME_MOUNT,
       ...keys.map((key) => ({ name: repoVolumeName(key), mountPath: repoMountPath(key), readOnly: true })),
     ],
   });
@@ -412,42 +420,37 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   };
 
   /**
-   * The two init steps, in order (ADR-0037). They are plain container fragments the operator
-   * schedules without understanding, exactly like sidecars — the operator stays agent-agnostic
-   * (ADR-0001), so "how a Sandbox gets its runtime" is composed here, not reconciled there.
+   * The one init step (ADR-0037): `preflight`, the USER'S image with the runtime volume mounted,
+   * running the probe. It is a plain container fragment the operator schedules without
+   * understanding, exactly like a sidecar — the operator stays agent-agnostic (ADR-0001), so "how a
+   * Sandbox proves its image" is composed here, not reconciled there. Nothing populates the volume
+   * first: it is the kit's image, mounted (see `runtimeVolume`).
    *
-   * 1. `runtime` — the kit's Harness image, copying its `/opt/jr2` into the shared emptyDir. This
-   *    is what makes the runtime's version ride the VOLUME rather than the image: a kit edit moves
-   *    the harness image's own tag and re-images future pods without touching a single Sandbox
-   *    Image tag, which is the only way a registry-ref image could ever follow a kit update.
-   * 2. `preflight` — the USER'S image with that volume mounted, running the probe. Ordered second
-   *    because it needs what the first one wrote.
-   *
-   * Both carry jr2's hardened context explicitly, and `preflight` runs the probe in the SAME seat
-   * the Harness will get — the image's own user, or ADR-0037's fallback — because a probe that
-   * proved a different uid's `$HOME` proved nothing.
+   * It carries jr2's hardened context explicitly, and runs the probe in the SAME seat the Harness
+   * will get — the image's own user, or ADR-0037's fallback — because a probe that proved a
+   * different uid's `$HOME` proved nothing.
    */
-  const initContainersFor = (refs: ImageRefs, seat: Seat) => [
-    {
-      name: "runtime",
-      image: refs.harness,
-      // The copy's rules live beside the tree they copy (`deploy/harness/init-copy`), not in a
-      // string here: `/opt/jr2` is a published surface whose SHAPE is load-bearing — node's rpath
-      // is `$ORIGIN/../lib`, so `bin/` and `lib/` must land as siblings — and the script proves
-      // its own result by running the copied node before the pod moves on.
-      command: [`${RUNTIME_MOUNT}/bin/init-copy`, RUNTIME_STAGE],
-      volumeMounts: [{ name: "runtime", mountPath: RUNTIME_STAGE }],
-      securityContext: HARDENED,
-    },
+  const initContainersFor = (seat: Seat) => [
     {
       name: "preflight",
       image: seat.image,
       command: ["/bin/sh", "-c", PREFLIGHT_SCRIPT],
       ...(seat.env.length ? { env: seat.env } : {}),
-      volumeMounts: [{ name: "runtime", mountPath: RUNTIME_MOUNT, readOnly: true }, ...seat.homeMount],
+      volumeMounts: [RUNTIME_VOLUME_MOUNT, ...seat.homeMount],
       securityContext: seat.securityContext,
     },
   ];
+
+  /**
+   * jr2's runtime (ADR-0037): the kit's Harness image as an `image` volume. This is what makes the
+   * runtime's version ride the VOLUME rather than the image: a kit edit moves the harness image's
+   * own tag and re-images future pods without touching a single Sandbox Image tag, which is the
+   * only way a registry-ref image could ever follow a kit update. A live pod keeps the image it
+   * started with — the same create-if-absent stance ADR-0038 takes for images. No `pullPolicy`:
+   * the kubelet's default for a volume is its default for a container, so the ref is pulled
+   * exactly as the cluster already pulls the Harness image, and the volume adds nothing to deliver.
+   */
+  const runtimeVolume = (refs: ImageRefs) => ({ name: RUNTIME_VOLUME, image: { reference: refs.harness } });
 
   /**
    * The primary container's seat: which image runs, as whom, and with what home. One value, built
@@ -546,8 +549,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // the attach stamps on each repo root (attachScript below), without which fsGroup gives
         // group-READ, which is the trap. Both are inert when the uids match.
         fsGroup: req.workGroup ?? DEFAULT_WORK_GROUP,
-        // Ordered, and before any container starts: populate `/opt/jr2`, then prove the image on it.
-        initContainers: initContainersFor(refs, seat),
+        // Before any container starts: prove the image on the mounted `/opt/jr2`.
+        initContainers: initContainersFor(seat),
         // Never empty: the Custodian's address is unconditional. The seat's own vars (the fallback
         // `HOME`) come FIRST, so the instance's `harness.env` can still override them the way it
         // overrides anything the image set.
@@ -571,10 +574,8 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
           // files. An emptyDir lands group-writable under the pod's fsGroup, so it is writable
           // whatever uid the Sandbox Image runs as: `/work` unclaimed is the only image contract.
           { name: "work", emptyDir: {} },
-          // jr2's runtime (ADR-0037). An emptyDir, so it lives and dies with the pod and carries
-          // the version the pod STARTED with — a live Sandbox keeps its runtime across a kit
-          // update, the same create-if-absent stance ADR-0038 takes for images.
-          { name: "runtime", emptyDir: {} },
+          // jr2's runtime (ADR-0037): the kit's Harness image, mounted.
+          runtimeVolume(refs),
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,
           // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
@@ -585,9 +586,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // operator mounts each `repo-<key>` into this container itself.
         volumeMounts: [
           { name: "work", mountPath: workRoot },
-          // Read-only: nothing writes under `/opt/jr2` at runtime, and the Agent has code execution
-          // in this container — leaving its own runtime writable would let a turn edit it.
-          { name: "runtime", mountPath: RUNTIME_MOUNT, readOnly: true },
+          RUNTIME_VOLUME_MOUNT,
           ...seat.homeMount,
           ...custodian.harnessMounts,
         ],

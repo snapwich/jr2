@@ -7,11 +7,12 @@
 // is not this instance's garbage):
 //   1. the `jr2-images` ConfigMap of every jr2 instance (namespaces labeled `jr2.dev/instance`) — what
 //      FUTURE Sandboxes will be provisioned with;
-//   2. every Sandbox CR's `spec.image` in those namespaces — a parked Workspace must survive a pod
-//      restart, and `imagePullPolicy: IfNotPresent` cannot re-pull a local tag;
-//   3. every pod's container images in those namespaces plus `jr2-system` — what is actually running
-//      (orchestrator, Instance Harness, Custodians, Sandboxes, operator), mid-roll pods INCLUDED,
-//      without naming Deployments one by one.
+//   2. every Sandbox CR's `spec.image`, sidecar, init container and `image` volume in those
+//      namespaces — a parked Workspace must survive a pod restart, and `imagePullPolicy:
+//      IfNotPresent` cannot re-pull a local tag;
+//   3. every pod's container and `image` volume refs in those namespaces plus `jr2-system` — what is
+//      actually running (orchestrator, Instance Harness, Custodians, Sandboxes, operator), mid-roll
+//      pods INCLUDED, without naming Deployments one by one.
 // The keep set is their union. "Kit images are never pruned" is not a rule here: a kit ref is kept
 // because some instance's map or pod names it, and collects like anything else when the last
 // instance leaves the cluster.
@@ -53,13 +54,18 @@ export type Roots = { keep: Set<string>; namespaces: string[] };
 
 type NamespacedObject = { metadata: { name: string; namespace?: string } };
 type ConfigMapObject = NamespacedObject & { data?: Record<string, string> };
-type SandboxObject = NamespacedObject & { spec?: { image?: string; sidecars?: ContainerSpec[] } };
+type SandboxObject = NamespacedObject & {
+  spec?: { image?: string; sidecars?: ContainerSpec[]; initContainers?: ContainerSpec[]; volumes?: VolumeSpec[] };
+};
 type ContainerSpec = { image?: string };
+/** Only an `image` volume names a ref: every Sandbox's `/opt/jr2` is one, of the harness image (ADR-0037). */
+type VolumeSpec = { image?: { reference?: string } };
 type PodObject = NamespacedObject & {
   spec?: {
     containers?: ContainerSpec[];
     initContainers?: ContainerSpec[];
     ephemeralContainers?: ContainerSpec[];
+    volumes?: VolumeSpec[];
   };
 };
 
@@ -97,14 +103,16 @@ export async function readRoots(kube: KubeAdmin, ctx: { context?: string } = {})
   // covered by the other roots: a running Sandbox is deliberately never re-imaged, so an `up` that
   // moved the Custodian's pin leaves the CR naming the OLD one while the map names the new. If that pod
   // is then lost (node restart, eviction, drain), the recreated one pulls the CR's sidecar ref —
-  // and `IfNotPresent` cannot re-pull a local tag a sweep took.
+  // and `IfNotPresent` cannot re-pull a local tag a sweep took. The same holds for the harness ref: it
+  // reaches the pod only as the `runtime` image volume (ADR-0037), never as a container's image.
   const sandboxes = await listSandboxes(kube, ctx);
   for (const sandbox of sandboxes) {
     if (!instanceNs.has(sandbox.metadata.namespace ?? "")) continue;
     if (sandbox.spec?.image) keep.add(sandbox.spec.image);
-    for (const sidecar of sandbox.spec?.sidecars ?? []) {
-      if (sidecar.image) keep.add(sidecar.image);
+    for (const c of [...(sandbox.spec?.sidecars ?? []), ...(sandbox.spec?.initContainers ?? [])]) {
+      if (c.image) keep.add(c.image);
     }
+    for (const ref of volumeRefs(sandbox.spec?.volumes)) keep.add(ref);
   }
 
   // 3. what is running right now — plus the operator, which lives in the shared `jr2-system`.
@@ -116,9 +124,15 @@ export async function readRoots(kube: KubeAdmin, ctx: { context?: string } = {})
     for (const c of [...(spec.containers ?? []), ...(spec.initContainers ?? []), ...(spec.ephemeralContainers ?? [])]) {
       if (c.image) keep.add(c.image);
     }
+    for (const ref of volumeRefs(spec.volumes)) keep.add(ref);
   }
 
   return { keep, namespaces };
+}
+
+/** The refs a volume list mounts as `image` volumes — invisible to a read of containers alone. */
+function volumeRefs(volumes: VolumeSpec[] | undefined): string[] {
+  return (volumes ?? []).flatMap((v) => (v.image?.reference ? [v.image.reference] : []));
 }
 
 /**

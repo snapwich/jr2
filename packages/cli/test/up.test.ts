@@ -150,6 +150,16 @@ class FakeCluster implements KubeAdmin {
     }
     return undefined;
   }
+  /** The server's `gitVersion`, as `kubectl get --raw /version` reports it: at ADR-0037's floor by
+   * default, so every test that is not about the floor converges past it. */
+  version = "v1.35.0";
+  versionReads = 0;
+  versionFails = false;
+  async serverVersion(): Promise<string> {
+    this.versionReads++;
+    if (this.versionFails) throw new Error("no answer after 10s");
+    return this.version;
+  }
   probes: string[] = [];
   probeCaPems: Array<string | undefined> = [];
   probeFails = false;
@@ -462,6 +472,45 @@ test("the typecheck gate: a folder that does not compile converges nothing (ADR-
   const ok = mkWorld(root);
   assert.equal(await up(["--yes"], ok.io), 0);
   assert.match(ok.err.join("\n"), /typecheck: tsc --noEmit/, "the layer narrates itself either way");
+});
+
+test("up refuses a cluster whose API server does not answer the version read, naming the context", async () => {
+  // The floor read is `jr2 up`'s first contact, so a dead context or a down VPN fails HERE — as a
+  // refusal that names the context and kubectl's reason (ADR-0046), not kubectl's raw exec error.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const dead = mkWorld(root);
+  dead.kube.versionFails = true;
+
+  assert.equal(await up(["--yes"], dead.io), 1);
+  const said = dead.err.join("\n");
+  assert.match(said, /refusing: cannot reach the API server of kind-test \(no answer after 10s\)/);
+  assert.match(said, /Nothing was applied/);
+  assert.deepEqual(dead.kube.applied, []);
+  assert.deepEqual(dead.built, []);
+});
+
+test("up refuses a cluster below the Kubernetes floor, naming what it found (ADR-0037)", async () => {
+  // A Sandbox's /opt/jr2 is an `image` volume, on by default from 1.35, and there is no fallback
+  // mechanism below it — so a cluster under the floor would converge and then leave every Sandbox
+  // Pending on a volume type its kubelet does not know. The refusal comes before first contact:
+  // nothing to confirm, nothing applied, nothing built.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const old = mkWorld(root);
+  old.kube.version = "v1.34.2";
+
+  assert.equal(await up([], old.io), 1);
+  const said = old.err.join("\n");
+  assert.match(said, /refusing: .*v1\.34\.2/, "the version the server reported");
+  assert.match(said, /1\.35/, "and the floor");
+  assert.match(said, /kind-test/, "on which context — the one fact the user can change");
+  assert.deepEqual(old.kube.applied, [], "not even the namespace");
+  assert.deepEqual(old.built, []);
+  assert.deepEqual(old.confirms, [], "no first-contact ask for a cluster that cannot host it");
+
+  const current = mkWorld(root);
+  assert.equal(await up(["--yes"], current.io), 0);
+  assert.equal(current.kube.versionReads, 1, "one read per converge");
+  assert.match(current.err.join("\n"), /kubernetes: v1\.35\.0/, "the layer narrates itself either way");
 });
 
 test("up refuses a namespace labeled for another instance", async () => {

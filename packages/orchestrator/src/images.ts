@@ -227,7 +227,7 @@ export type ResolvedImage = {
    * cannot prove is non-root because it does not read the image's `/etc/passwd`, and uid 0
    * (`USER root`, `USER 0`), which plainly is root.
    *
-   * Both surface as CreateContainerConfigError on the FIRST init step that runs the image — the
+   * Both surface as CreateContainerConfigError on the init step that runs the image — the
    * preflight — and that container never starts, so `kubectl logs -c preflight` prints nothing. The
    * record is the one place that can see it coming: `docker inspect` at converge already put the
    * string in the map, so the provision can fail BEFORE it applies anything. Only a BUILT image is

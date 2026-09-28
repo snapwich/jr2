@@ -14,8 +14,8 @@
 //
 // A Sandbox Image is ONE `docker build` of the user's own Dockerfile straight to its content tag
 // (ADR-0037): no kit-owned second stage, no intermediate tag, and the resolved harness ref is NOT
-// one of its hash inputs. The Harness arrives at POD time instead — an init container populates an
-// `/opt/jr2` volume from the kit's harness image — so the runtime's version rides the volume, a kit
+// one of its hash inputs. The Harness arrives at POD time instead — every Sandbox mounts the kit's
+// harness image as an `image` volume at `/opt/jr2` — so the runtime's version rides the volume, a kit
 // edit re-images future pods without moving one Sandbox Image tag, and an image the user merely
 // BROUGHT (a registry ref) is possible at all. Refs are deployed-never-built: nothing in this file
 // ever sees one.
@@ -392,11 +392,11 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     repo: "jr2-harness",
     dockerfile: "deploy/harness/Dockerfile",
     context: ".",
-    // The whole `deploy/harness/` directory, not just its Dockerfile: since ADR-0037 the image also
-    // ships `init-copy`, the script the init container runs to publish /opt/jr2 onto a Sandbox's
-    // volume. Naming the two files by hand is the desynchronization this over-hash rule exists to
-    // delete — an init-copy edit would move no tag, and `jr2 up` would report convergence onto pods
-    // injecting the previous script. The directory covers whatever the next `COPY` adds.
+    // The whole `deploy/harness/` directory, not just its Dockerfile: the image also compiles
+    // `work-acl.c`, the static program the attach runs in every Sandbox (ADR-0005/0037). Naming the
+    // files by hand is the desynchronization this over-hash rule exists to delete — a work-acl edit
+    // would move no tag, and `jr2 up` would report convergence onto pods mounting the previous
+    // runtime. The directory covers whatever the next `COPY` adds.
     //
     // And the ONE thing this image builds from outside those two trees: `jr2-upload-pack`, the
     // program behind `origin`'s fetch url in every Sandbox (ADR-0053). Its source lives in the

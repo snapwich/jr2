@@ -27,18 +27,22 @@ every build) and promotes incidental image properties into contract items.
   a `workspace()` that names nothing gets it — so a local Machine never has to spell
   `import.meta.resolve("../images/default")`. A `file:` URL that names no folder fails at `jr2 up`; a ref is the
   cluster's to pull.
-- **The Harness arrives by volume, never by build.** The operator composes every Sandbox with an `/opt/jr2` volume,
-  populated from the kit's harness image by an init container, and overrides the primary container's **command** to
-  start the Harness. The image the pod runs is the user's, byte-for-byte: no appended layers, no rewritten Dockerfile,
-  no jr2 knowledge inside it. Its own `USER` and `HOME` are respected — the human who execs in lands in the environment
-  the image's author built, dotfiles included; its `ENTRYPOINT`/`CMD` simply do not run, because a container has one
-  command and the Harness must own it (its death must be the container's death — the Ready probe and restart semantics
-  are the operator's contract at `:8080`). A **built** image that declares no user runs as uid 1000 with
-  `HOME=/home/jr2` on an emptyDir as the fallback — jr2 learns "declares none" for free at build time (`docker inspect`)
-  and records it beside the ref. A **brought** ref is never inspected — that is the point of refs — so the fallback
-  cannot apply: a ref must declare a numeric non-root `USER` itself, and one that would run as root fails at provision
-  with an error that names that line (never as the kubelet's silent `CreateContainerConfigError`). A process the image
-  _wants_ running is not lost — it has its own seat, the User Container ([ADR-0005](0005-sandbox-pod-composition.md)).
+- **The Harness arrives by volume, never by build.** Every Sandbox is composed with an `/opt/jr2` volume that is an
+  **`image` volume of the kit's harness image** (`subPath: opt/jr2`, read-only in every container that mounts it), and
+  the primary container's **command** is overridden to start the Harness. The kubelet mounts the image's own layers, so
+  nothing is copied: a pod start costs what a warm image costs, whatever else starts on the node, and every Sandbox on a
+  node reads one set of runtime pages. The ref, pull policy, and pull secrets are the harness image's as the cluster
+  already pulls it — the volume adds nothing to deliver. The image the pod runs is the user's, byte-for-byte: no
+  appended layers, no rewritten Dockerfile, no jr2 knowledge inside it. Its own `USER` and `HOME` are respected — the
+  human who execs in lands in the environment the image's author built, dotfiles included; its `ENTRYPOINT`/`CMD` simply
+  do not run, because a container has one command and the Harness must own it (its death must be the container's death —
+  the Ready probe and restart semantics are the operator's contract at `:8080`). A **built** image that declares no user
+  runs as uid 1000 with `HOME=/home/jr2` on an emptyDir as the fallback — jr2 learns "declares none" for free at build
+  time (`docker inspect`) and records it beside the ref. A **brought** ref is never inspected — that is the point of
+  refs — so the fallback cannot apply: a ref must declare a numeric non-root `USER` itself, and one that would run as
+  root fails at provision with an error that names that line (never as the kubelet's silent
+  `CreateContainerConfigError`). A process the image _wants_ running is not lost — it has its own seat, the User
+  Container ([ADR-0005](0005-sandbox-pod-composition.md)).
 - **PATH is appended at the process level, never prepended.** The Harness exports `PATH="${PATH}:/opt/jr2/bin"` for
   itself, and Working tools spawn without an env override (`execFile(file, args, { cwd, signal })`), so children inherit
   it: the image's `node`, `rg`, and toolchain win where present and jr2's are the fallback; prepending would silently
@@ -105,6 +109,17 @@ every build) and promotes incidental image properties into contract items.
   user's entrypoint keeps "Running" through a Harness death, which makes the operator's Ready probe and restart
   semantics lies. Unattended services belong in the User Container (ADR-0005), whose command jr2 deliberately does not
   own.
+- **An init container copies the runtime into an emptyDir** (`init-copy`, the first mechanism). Rejected on measurement
+  (2026-09-27, home-lab Sandbox node, 4 cores): the copy is 272 MB in 18k files per pod, so its cost grows with how many
+  pods start on the node together — 3s for one pod, a 37s median for 20 at once and 46s for 40, where the `image` volume
+  took a 3.0s median for the same 20. It also charged 272 MB of ephemeral storage to every pod and gave every pod its
+  own copy of the node binary's pages. The copy existed because image volumes were not yet on by default.
+- **The copy as a fallback below the floor**, chosen by server version at provision. Rejected: two pod shapes and two
+  mechanisms to test in every tier, kept alive for clusters no Instance runs on.
+- **A runtime-only Kit image** (`FROM scratch`, `/opt/jr2` alone) as the volume's source. Rejected: it pulls 272 MB
+  instead of the harness image's 625 MB on a cold node, but adds a third Kit image to build, push, mirror, and sweep
+  ([ADR-0059](0059-a-harness-holds-stand-ins-and-the-custodian-holds-the-keys.md) cut the kit to two). The unused 353 MB
+  costs one pull per node per kit version, and pre-pull removes it from the start path.
 - **The Agent definition or an `agentRun` dial names the image.** Rejected on both doctrine and physics: available
   tooling is what an Agent may _do_ (ADR-0028 territory, identity — only `model` and `thinkingLevel` are dials,
   ADR-0018), and a Turn cannot change the image of a pod that already exists. A definition-level _assertion_ ("this
@@ -126,8 +141,17 @@ every build) and promotes incidental image properties into contract items.
   creds-free shell in the same pod when it matters.
 - **A glibc floor.** Bases older than the one jr2's node was built against fail the preflight, and alpine/musl is out
   entirely. Named in the error — at converge for a built image, at provision for a ref — not discovered in a pod log.
-- **The stock Harness image is also the injection source**: the init container that populates `/opt/jr2` runs it, and it
-  carries the vendoring step (static ripgrep per `TARGETARCH`, the two relocated C++ runtime libraries).
+- **The stock Harness image is also the injection source**: the `image` volume mounts its `/opt/jr2`, and it carries the
+  vendoring step (static ripgrep per `TARGETARCH`, the two relocated C++ runtime libraries).
+- **A Kubernetes floor: 1.35**, where image volumes are on by default (GA in 1.36). `jr2 up` reads the server version
+  and refuses below it, naming the version found and the floor
+  ([ADR-0046](0046-a-converge-failure-carries-its-diagnosis.md)). The container runtime must support image volumes too
+  (containerd ≥ 2.1, CRI-O ≥ 1.31); jr2 cannot see the runtime cheaply, so an older one fails at the first provision, in
+  the pod's own events.
+- **The mode is what every uid gets.** An image volume keeps the layers as built — owned by root, modes as the build
+  left them — and the Sandbox Image may run any uid. The harness image's `/opt/jr2` must therefore be readable by every
+  uid, and executable where the build made it so; a build-time check holds it there, and what the build copies from a
+  checkout (whose modes are the host's umask) is copied `a+rX`. (The copy restated this with a `chmod`.)
 - **`images/` is instance-local by design.** A built Sandbox Image travels as a folder to copy; a shared one travels as
   a registry ref — which is now a first-class origin, so sharing needs no further mechanism.
 - **CONTEXT.md**: **Sandbox Image** covers both origins; **Harness** names the runtime as mounted, not baked; **User

@@ -7,6 +7,7 @@ SPDX-License-Identifier: MIT
 package controller
 
 import (
+	"reflect"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -118,36 +119,50 @@ func TestBuildPodExemptsTheUserContainer(t *testing.T) {
 	}
 }
 
-// TestBuildPodCarriesFSGroupAndInitContainers pins the two passthroughs ADR-0037
-// and ADR-0005 need from the CR: the pod's work group, and the ordered init steps
-// that publish jr2's runtime and prove the primary image on it. Both are plain
-// pod-spec fields the operator forwards without understanding — the operator
-// stays agent-agnostic (ADR-0001), so it never invents an fsGroup of its own and
-// never edits an init container, not even to harden it.
-func TestBuildPodCarriesFSGroupAndInitContainers(t *testing.T) {
+// TestBuildPodCarriesFSGroupRuntimeVolumeAndInitContainers pins the three passthroughs ADR-0037
+// and ADR-0005 need from the CR: the pod's work group, the `image` volume that
+// carries jr2's runtime, and the init step that proves the primary image on it.
+// All are plain pod-spec fields the operator forwards without understanding — the
+// operator stays agent-agnostic (ADR-0001), so it never invents an fsGroup of its
+// own, never edits a volume, and never edits an init container, not even to
+// harden it.
+func TestBuildPodCarriesFSGroupRuntimeVolumeAndInitContainers(t *testing.T) {
 	r := &SandboxReconciler{}
+	runtime := corev1.Volume{
+		Name:         "runtime",
+		VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{Reference: "jr2-harness:h00"}},
+	}
+	mount := corev1.VolumeMount{Name: "runtime", MountPath: "/opt/jr2", SubPath: "opt/jr2", ReadOnly: true}
 	init := []corev1.Container{
-		{Name: "runtime", Image: "jr2-harness:h00", Command: []string{"/opt/jr2/bin/init-copy", "/mnt/jr2"}},
-		{Name: "preflight", Image: "user-image:c01"},
+		{Name: "preflight", Image: "user-image:c01", VolumeMounts: []corev1.VolumeMount{mount}},
 	}
 	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
 		Image:          testHarnessImage,
 		Port:           8080,
 		FSGroup:        ptr.To(int64(2000)),
 		InitContainers: init,
+		Volumes:        []corev1.Volume{runtime},
+		VolumeMounts:   []corev1.VolumeMount{mount},
 	}), nil)
 
 	if fg := pod.Spec.SecurityContext.FSGroup; fg == nil || *fg != 2000 {
 		t.Fatalf("pod fsGroup should carry the spec's work group, got %v", fg)
 	}
-	if len(pod.Spec.InitContainers) != 2 {
-		t.Fatalf("want 2 init containers, got %d", len(pod.Spec.InitContainers))
+	// The runtime is the kit's image, mounted — no init step populates it, so
+	// the volume must reach the pod exactly as the composer wrote it.
+	if len(pod.Spec.Volumes) != 1 || !reflect.DeepEqual(pod.Spec.Volumes[0], runtime) {
+		t.Fatalf("the image volume must pass through verbatim, got %+v", pod.Spec.Volumes)
 	}
-	// Order is the contract: preflight mounts what runtime wrote.
-	if pod.Spec.InitContainers[0].Name != "runtime" || pod.Spec.InitContainers[1].Name != "preflight" {
-		t.Fatalf("init containers must keep spec order, got %+v", pod.Spec.InitContainers)
+	if got := pod.Spec.Containers[0].VolumeMounts; len(got) != 1 || got[0] != mount {
+		t.Fatalf("the primary container's subPath mount must pass through verbatim, got %+v", got)
 	}
-	if sc := pod.Spec.InitContainers[1].SecurityContext; sc != nil {
+	if len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Name != "preflight" {
+		t.Fatalf("want the one preflight init container, got %+v", pod.Spec.InitContainers)
+	}
+	if got := pod.Spec.InitContainers[0].VolumeMounts; len(got) != 1 || got[0] != mount {
+		t.Fatalf("the init container's mounts must pass through verbatim, got %+v", got)
+	}
+	if sc := pod.Spec.InitContainers[0].SecurityContext; sc != nil {
 		t.Fatalf("init containers are scheduled verbatim; the operator adds no context, got %+v", sc)
 	}
 

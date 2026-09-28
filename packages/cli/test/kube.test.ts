@@ -9,6 +9,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  kubeFloorRefusal,
   kubectlKube,
   oneShotFailure,
   REACH_BUDGET_MS,
@@ -107,6 +108,7 @@ function mkKube(opts: {
     deleteManifest: async () => assert.fail("a diagnosis changes nothing"),
     waitRollout: async () => assert.fail("the wait already failed"),
     runOneShot: async () => assert.fail("a diagnosis runs no pods") as never,
+    serverVersion: async () => assert.fail("a diagnosis reads no version") as never,
     getJson: async <T>(o: { kind: string; name: string }): Promise<T | undefined> => {
       assert.equal(o.kind, "node");
       const architecture = opts.arch?.[o.name];
@@ -402,4 +404,30 @@ test("a kubectl that never answers is killed, and the wait is bounded", async ()
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ADR-0037's Kubernetes floor: a Sandbox's /opt/jr2 is an `image` volume, on by default from 1.35.
+// `jr2 up` reads the server's gitVersion and refuses below it — naming what it found and the floor
+// (ADR-0046: the failure carries its diagnosis), never as a Sandbox stuck Pending on a volume type
+// the kubelet does not know.
+test("the Kubernetes floor: 1.35 and newer pass, whatever the distribution appends", () => {
+  for (const v of ["v1.35.0", "v1.36.2", "v1.35.1-gke.1200", "v1.35.0+k3s1", "v1.40.0-eks-4f2c", "v2.0.0"]) {
+    assert.equal(kubeFloorRefusal(v), undefined, v);
+  }
+});
+
+test("below the floor, the refusal names the version found and the floor", () => {
+  const said = kubeFloorRefusal("v1.34.2");
+  assert.ok(said);
+  assert.match(said, /v1\.34\.2/, "the version the server reported, verbatim");
+  assert.match(said, /1\.35/, "the floor");
+  assert.match(said, /image volume/, "why: the mechanism that needs it");
+  assert.match(said, /ADR-0037/);
+  assert.ok(kubeFloorRefusal("v1.9.11"), "numeric, not lexical: 9 < 35");
+});
+
+test("a version the floor cannot read is refused by name, never passed", () => {
+  const said = kubeFloorRefusal("devel");
+  assert.ok(said);
+  assert.match(said, /"devel"/);
 });

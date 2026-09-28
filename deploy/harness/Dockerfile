@@ -11,17 +11,18 @@
 # It has THREE placements, and every line below serves all three:
 #   1. the Instance Harness deployment (ADR-0031) and the fallback Sandbox Image — the image runs
 #      as itself, on its own CMD;
-#   2. the INJECTION SOURCE (ADR-0037): an init container runs it as `/opt/jr2/bin/init-copy <dir>`
-#      to publish /opt/jr2 into a pod volume that the primary container — the USER'S Sandbox Image,
-#      byte-for-byte, no jr2 layers — mounts at /opt/jr2 with its command overridden to this CMD.
+#   2. the INJECTION SOURCE (ADR-0037): every Sandbox mounts it as an `image` volume, `subPath:
+#      opt/jr2`, read-only at /opt/jr2 in every container that mounts it (primary, preflight, User
+#      Container). The primary container is the USER'S Sandbox Image, byte-for-byte, no jr2
+#      layers, with its command overridden to this CMD.
 #   3. nothing else. There is NO build-time wrap any more: jr2 never builds a stage on top of a
 #      user's image, so a Sandbox Image's tag is not coupled to this image's, and an image the user
 #      baked on their own registry is runnable without jr2 ever touching it.
 #
 # So **/opt/jr2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/work-acl · bin/jr2-upload-pack · bin/init-copy · lib/*.so · src/ ·
-#   node_modules/ · package.json
-# — is copied verbatim onto a volume that lands in a stranger's filesystem. Moving anything inside
+#   bin/node · bin/rg · bin/work-acl · bin/jr2-upload-pack · lib/*.so · src/ · node_modules/ ·
+#   package.json
+# — is mounted verbatim, this image's own layers, into a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
 # this repo never sees. `/opt/jr2` and not `/app`, because a user's base may already use /app and a
 # WORKDIR there would shadow it — one layout for both placements, never two.
@@ -83,7 +84,7 @@ RUN set -eux; \
 #     into an image where its target does not exist.
 #   - the rpath is load-bearing: without it, this node on a base lacking libstdc++ dies with
 #     "error while loading shared libraries: libstdc++.so.6"; with it, the same binary runs. That
-#     is also why /opt/jr2/lib must stay a SIBLING of /opt/jr2/bin — init-copy publishes the whole
+#     is also why /opt/jr2/lib must stay a SIBLING of /opt/jr2/bin — the volume mounts the whole
 #     tree, so $ORIGIN/../lib is the one form that survives landing in a stranger's image.
 RUN set -eux; \
     mkdir -p /opt/jr2/bin /opt/jr2/lib; \
@@ -168,18 +169,29 @@ ENV NODE_ENV=production
 # its manifest directly. The devDependencies are workspace:* test rigging npm cannot parse outside
 # the workspace (even under --omit=dev), so they are pruned from the vendored manifest first. The
 # runtime deps are exact-pinned where it matters (pi 0.x minors break, ADR-0027).
-COPY packages/harness/package.json ./package.json
+COPY --chmod=a+rX packages/harness/package.json ./package.json
 RUN node -e 'const f="package.json",j=JSON.parse(require("fs").readFileSync(f));delete j.devDependencies;require("fs").writeFileSync(f,JSON.stringify(j,null,2))' \
  && npm install --no-audit --no-fund --omit=dev
 
 # Node 24 strips the types natively — @jr2/harness ships as source, no build step (zero-build,
 # ADR-0010). Nothing writes under /opt/jr2 at runtime, so no chown: the worktree root is a pod volume.
-COPY packages/harness/src ./src
+# `a+rX` here and on package.json: these two come from the CHECKOUT, whose modes are the host's
+# umask (a 077 checkout is 0600), and the mode check below would refuse them.
+COPY --chmod=a+rX packages/harness/src ./src
 
-# The injection command (ADR-0037). Mode 0755 and inside the published tree on purpose: the init
-# container has no other way to name it, and a volume populated by `cp -a` carries it along, so the
-# script that publishes the runtime is itself part of what was published.
-COPY --chmod=0755 deploy/harness/init-copy /opt/jr2/bin/init-copy
+# The MODE check (ADR-0037), last of everything written under /opt/jr2. The `image` volume mounts
+# these layers as built: owned by root, and the Sandbox Image may run any uid, so what every uid
+# gets is the mode — readable everywhere, directories traversable, and executable wherever the
+# build made a file executable. Checked, not restated with a chmod: a chmod here would be one more
+# layer duplicating every file it touches, and the check fails the build naming each offender
+# instead of shipping a runtime some uid cannot read.
+RUN set -eu; \
+    bad="$(find /opt/jr2 \( -type d ! -perm -o+rx \) -o \( -type f ! -perm -o+r \) -o \( -type f -perm -u+x ! -perm -o+x \))"; \
+    if [ -n "$bad" ]; then \
+      echo "jr2: /opt/jr2 must be readable by every uid (ADR-0037) — these lack o+r, o+rx on a directory, or o+x on an executable:" >&2; \
+      echo "$bad" | head -n 50 >&2; \
+      exit 1; \
+    fi
 
 # $HOME, created at build as an image layer. This is the STOCK image's own home; a Sandbox Image
 # brings its own (ADR-0037 respects the image's USER and HOME), and one that declares neither gets

@@ -1,15 +1,15 @@
 // `jr2 up [--yes] [--force] [-n <ns>] [--context <ctx>]` (ADR-0019): idempotently converge the target
 // namespace to this instance — every layer, loudly narrated, safe to re-run. Layers in order:
-// typecheck → the Machine walk → ownership → image resolution → operator → kit images → instance
-// image → Sandbox Images → Secret (+ preflight of referenced Secrets) → apply + rollout → the cache
-// agent (ADR-0051: a DaemonSet converged when a registered Machine composes a Sandbox, deleted when
-// none does) → Instance Harness (ADR-0031: converged by convention when a carried definition
-// declares `workspace: "none"`, deleted when none does) → a report of live workspaces still on an
-// older image. The Orchestrator creates a Repo resource per Repo the walk found bound, at boot, and
-// the cache agent clones it onto a node on first need (ADR-0051); a configured custom provider is
-// preflighted from inside the cluster. A bound ssh url asks where its deploy key comes from
-// (ADR-0047), and a converge that GENERATED one ends by saying so — the key is dead until a human
-// registers it.
+// typecheck → the Machine walk → the Kubernetes floor (ADR-0037) → ownership → image resolution →
+// operator → kit images → instance image → Sandbox Images → Secret (+ preflight of referenced
+// Secrets) → apply + rollout → the cache agent (ADR-0051: a DaemonSet converged when a registered
+// Machine composes a Sandbox, deleted when none does) → Instance Harness (ADR-0031: converged by
+// convention when a carried definition declares `workspace: "none"`, deleted when none does) → a
+// report of live workspaces still on an older image. The Orchestrator creates a Repo resource per
+// Repo the walk found bound, at boot, and the cache agent clones it onto a node on first need
+// (ADR-0051); a configured custom provider is preflighted from inside the cluster. A bound ssh url
+// asks where its deploy key comes from (ADR-0047), and a converge that GENERATED one ends by saying
+// so — the key is dead until a human registers it.
 //
 // The typecheck is FIRST and is a gate (ADR-0050): a Machine names its Agents, its composed
 // Machines, and its Repo Slots by string, and since ADR-0049 those strings are typed, so a wrong
@@ -117,8 +117,10 @@ import {
 } from "../deploy.ts";
 import { resolveRoot } from "../instance.ts";
 import {
+  kubeFloorRefusal,
   kubectlAdmin,
   rolloutFailure,
+  KUBE_FLOOR,
   ORCHESTRATOR_SERVICE,
   type KubeAdmin,
   type KubeObject,
@@ -222,6 +224,28 @@ export async function up(args: string[], io: Io): Promise<number> {
   }
   const agentNames = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
   activity(io, `agents: ${agentNames} (carried by ${workflows.length} workflow machine(s))`);
+
+  // --- the Kubernetes floor (ADR-0037) ----------------------------------------------------------
+  // Every Sandbox mounts jr2's runtime as an `image` volume, and there is no fallback below the
+  // version that turns them on — so a cluster under it is refused HERE, naming what it runs and the
+  // floor (ADR-0046), rather than converging and leaving every Sandbox Pending on a volume type its
+  // kubelet does not know. Before ownership, so first contact never asks to deploy somewhere that
+  // cannot host it. Unconditional: the floor is the Instance's, not one Machine's. The container
+  // runtime owes image volumes too (containerd ≥ 2.1, CRI-O ≥ 1.31); that is not cheaply visible
+  // from here, so an older one fails at the first provision, in the pod's own events.
+  let serverVersion: string;
+  try {
+    serverVersion = await kube.serverVersion(ctx);
+  } catch (e) {
+    activity(io, `refusing: cannot reach the API server of ${context} (${(e as Error).message}). Nothing was applied.`);
+    return 1;
+  }
+  const belowFloor = kubeFloorRefusal(serverVersion);
+  if (belowFloor) {
+    activity(io, `refusing: ${context} ${belowFloor}. Nothing was applied.`);
+    return 1;
+  }
+  activity(io, `kubernetes: ${serverVersion} (floor ${KUBE_FLOOR.major}.${KUBE_FLOOR.minor}, ADR-0037)`);
 
   // --- ownership: the cluster is the record (ADR-0019) -------------------------------------------
   const ns = await kube.getJson({ kind: "namespace", name: namespace, ...ctx });
@@ -491,8 +515,8 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- the kit's own runtime images (ADR-0038) ---------------------------------------------------
   // Built here rather than lazily beside its consumers. The Harness is the injection source
-  // (ADR-0037): the pod's `runtime` init step copies `/opt/jr2` out of this exact ref onto the
-  // volume the Sandbox Image mounts. It is not a hash input for a Sandbox Image — the runtime rides
+  // (ADR-0037): every Sandbox mounts this exact ref as an `image` volume, its `/opt/jr2` read-only
+  // at `/opt/jr2` in the Sandbox Image. It is not a hash input for a Sandbox Image — the runtime rides
   // the pod's volume, so a kit edit re-images future pods and re-tags nothing of the user's.
   await ensureKitImage("harness");
 
