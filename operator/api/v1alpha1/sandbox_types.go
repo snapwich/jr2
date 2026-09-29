@@ -8,6 +8,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -97,9 +98,41 @@ type SandboxSpec struct {
 	// +optional
 	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
 
-	// Resources are the compute resources for the primary container.
+	// Resources are the primary container's resources — the Harness's share
+	// of the Workspace's Size (ADR-0060), copied onto the container verbatim.
+	// The Orchestrator splits the Size and sets requests = limits for cpu and
+	// memory, plus the `/work` disk as an ephemeral-storage request with no
+	// limit (a limit would evict the pod and lose `/work`). The operator
+	// computes nothing here: every number is the Orchestrator's. The other
+	// containers' shares ride their own fragments — Sidecars and
+	// InitContainers are whole Containers, `resources` included.
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// PodResources is the pod-level ceiling (KEP-2837's `spec.resources` on
+	// the Pod): the whole Size, cpu and memory, requests = limits (ADR-0060).
+	// It is what lets a container with no limit of its own — a User Container
+	// the Machine gave no split — share the pod's budget, and it holds the pod
+	// Guaranteed. Copied verbatim; unset leaves the Pod without one.
+	// +optional
+	PodResources *corev1.ResourceRequirements `json:"podResources,omitempty"`
+
+	// ShmSize is the sizeLimit of the memory-backed emptyDir the operator
+	// mounts at /dev/shm in the primary container only (ADR-0060). The
+	// Orchestrator computes it from the Harness's share; shm is charged inside
+	// that container's memory limit, so it reserves nothing extra, and a full
+	// shm is ENOSPC or SIGBUS — a tool error, never a memory kill. Unset
+	// mounts nothing and leaves the runtime's own /dev/shm: an unbounded
+	// memory emptyDir is never the default, because filling it kills the
+	// container.
+	// +optional
+	ShmSize *resource.Quantity `json:"shmSize,omitempty"`
+
+	// PriorityClassName is the Pod's priority class, copied verbatim
+	// (ADR-0060): the Instance's sandbox class, `jr2-sandbox` unless the
+	// cluster names its own. Empty leaves the cluster's default.
+	// +optional
+	PriorityClassName string `json:"priorityClassName,omitempty"`
 
 	// Env sets environment variables on the primary container. Use valueFrom
 	// for secret/configmap references.
@@ -231,11 +264,52 @@ type SandboxStatus struct {
 	// +optional
 	Repos []SandboxRepoStatus `json:"repos,omitempty"`
 
-	// Conditions represent the current state of the Sandbox resource.
+	// Harness is what the kubelet reports about the primary container of the
+	// Pod status.podUID names (ADR-0063): its restarts and how it last ended.
+	// The Orchestrator never reads a Pod; this is how it tells a
+	// crash-looping Harness, and a memory kill (`OOMKilled`, ADR-0061), from
+	// a lost conversation. Absent until the kubelet reports the container.
+	// +optional
+	Harness *SandboxHarnessStatus `json:"harness,omitempty"`
+
+	// Conditions represent the current state of the Sandbox resource: Ready
+	// (the gate), ReposFresh (the Repo gate's verdict), and Scheduled — the
+	// Pod's PodScheduled condition restated with the scheduler's own reason
+	// and message, so a Pending Sandbox says why it waits (ADR-0063).
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// SandboxHarnessStatus is the primary container's restarts and last end, as
+// the kubelet reports them on the Pod (ADR-0063). The operator copies them; it
+// reads no meaning into them.
+type SandboxHarnessStatus struct {
+	// RestartCount is the container's restartCount on the current Pod. A
+	// replacement Pod (new podUID) starts again at zero.
+	// +optional
+	RestartCount int32 `json:"restartCount"`
+
+	// LastTerminated is how the container's previous run ended — the Pod's
+	// `lastState.terminated`. Absent while the container has never restarted.
+	// +optional
+	LastTerminated *SandboxTermination `json:"lastTerminated,omitempty"`
+}
+
+// SandboxTermination is one ended run of a container, in the kubelet's words.
+type SandboxTermination struct {
+	// Reason is the kubelet's reason, e.g. `OOMKilled`, `Error`, `Completed`.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// ExitCode is the run's exit code (137 for a kernel kill).
+	// +optional
+	ExitCode int32 `json:"exitCode"`
+
+	// FinishedAt is when the run ended.
+	// +optional
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
 }
 
 // SandboxRepoStatus is what one Repo cache this Sandbox mounts has done about

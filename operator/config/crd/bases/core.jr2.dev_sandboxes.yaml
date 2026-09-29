@@ -1824,6 +1824,70 @@ spec:
                   it; its own soft affinity toward nodes holding this Sandbox's Repo caches
                   sits beside it, and a preference never conflicts with a requirement.
                 type: object
+              podResources:
+                description: |-
+                  PodResources is the pod-level ceiling (KEP-2837's `spec.resources` on
+                  the Pod): the whole Size, cpu and memory, requests = limits (ADR-0060).
+                  It is what lets a container with no limit of its own — a User Container
+                  the Machine gave no split — share the pod's budget, and it holds the pod
+                  Guaranteed. Copied verbatim; unset leaves the Pod without one.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
               port:
                 default: 8080
                 description: |-
@@ -1833,6 +1897,12 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              priorityClassName:
+                description: |-
+                  PriorityClassName is the Pod's priority class, copied verbatim
+                  (ADR-0060): the Instance's sandbox class, `jr2-sandbox` unless the
+                  cluster names its own. Empty leaves the cluster's default.
+                type: string
               readinessProbe:
                 description: |-
                   ReadinessProbe overrides the primary container's readiness probe. When
@@ -2025,7 +2095,15 @@ spec:
                 - key
                 x-kubernetes-list-type: map
               resources:
-                description: Resources are the compute resources for the primary container.
+                description: |-
+                  Resources are the primary container's resources — the Harness's share
+                  of the Workspace's Size (ADR-0060), copied onto the container verbatim.
+                  The Orchestrator splits the Size and sets requests = limits for cpu and
+                  memory, plus the `/work` disk as an ephemeral-storage request with no
+                  limit (a limit would evict the pod and lose `/work`). The operator
+                  computes nothing here: every number is the Orchestrator's. The other
+                  containers' shares ride their own fragments — Sidecars and
+                  InitContainers are whole Containers, `resources` included.
                 properties:
                   claims:
                     description: |-
@@ -2281,6 +2359,21 @@ spec:
                         type: string
                     type: object
                 type: object
+              shmSize:
+                anyOf:
+                - type: integer
+                - type: string
+                description: |-
+                  ShmSize is the sizeLimit of the memory-backed emptyDir the operator
+                  mounts at /dev/shm in the primary container only (ADR-0060). The
+                  Orchestrator computes it from the Harness's share; shm is charged inside
+                  that container's memory limit, so it reserves nothing extra, and a full
+                  shm is ENOSPC or SIGBUS — a tool error, never a memory kill. Unset
+                  mounts nothing and leaves the runtime's own /dev/shm: an unbounded
+                  memory emptyDir is never the default, because filling it kills the
+                  container.
+                pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                x-kubernetes-int-or-string: true
               sidecars:
                 description: |-
                   Sidecars are generic Kubernetes container fragments scheduled alongside
@@ -5830,8 +5923,11 @@ spec:
             description: status defines the observed state of Sandbox
             properties:
               conditions:
-                description: Conditions represent the current state of the Sandbox
-                  resource.
+                description: |-
+                  Conditions represent the current state of the Sandbox resource: Ready
+                  (the gate), ReposFresh (the Repo gate's verdict), and Scheduled — the
+                  Pod's PodScheduled condition restated with the scheduler's own reason
+                  and message, so a Pending Sandbox says why it waits (ADR-0063).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -5895,6 +5991,40 @@ spec:
                   Endpoint is the in-cluster Service DNS the Orchestrator uses to reach the
                   Harness, e.g. http://<name>.<ns>.svc:8080.
                 type: string
+              harness:
+                description: |-
+                  Harness is what the kubelet reports about the primary container of the
+                  Pod status.podUID names (ADR-0063): its restarts and how it last ended.
+                  The Orchestrator never reads a Pod; this is how it tells a
+                  crash-looping Harness, and a memory kill (`OOMKilled`, ADR-0061), from
+                  a lost conversation. Absent until the kubelet reports the container.
+                properties:
+                  lastTerminated:
+                    description: |-
+                      LastTerminated is how the container's previous run ended — the Pod's
+                      `lastState.terminated`. Absent while the container has never restarted.
+                    properties:
+                      exitCode:
+                        description: ExitCode is the run's exit code (137 for a kernel
+                          kill).
+                        format: int32
+                        type: integer
+                      finishedAt:
+                        description: FinishedAt is when the run ended.
+                        format: date-time
+                        type: string
+                      reason:
+                        description: Reason is the kubelet's reason, e.g. `OOMKilled`,
+                          `Error`, `Completed`.
+                        type: string
+                    type: object
+                  restartCount:
+                    description: |-
+                      RestartCount is the container's restartCount on the current Pod. A
+                      replacement Pod (new podUID) starts again at zero.
+                    format: int32
+                    type: integer
+                type: object
               node:
                 description: |-
                   Node is the node the Pod was scheduled onto, once it was — the node

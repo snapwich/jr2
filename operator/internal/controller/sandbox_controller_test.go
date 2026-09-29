@@ -174,6 +174,88 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(ready.Reason).To(Equal("PodNotReady"))
 		})
 
+		It("publishes the pod facts the Orchestrator reads instead of the Pod (ADR-0063)", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodPending
+			pod.Status.Conditions = []corev1.PodCondition{{
+				Type:    corev1.PodScheduled,
+				Status:  corev1.ConditionFalse,
+				Reason:  corev1.PodReasonUnschedulable,
+				Message: "0/2 nodes are available: 2 Insufficient memory.",
+			}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			scheduled := meta.FindStatusCondition(sandbox.Status.Conditions, conditionScheduled)
+			Expect(scheduled).NotTo(BeNil())
+			Expect(scheduled.Status).To(Equal(metav1.ConditionFalse))
+			Expect(scheduled.Reason).To(Equal("Unschedulable"))
+			Expect(scheduled.Message).To(ContainSubstring("Insufficient memory"))
+			Expect(sandbox.Status.Harness).To(BeNil(), "no container has been reported yet")
+
+			By("placing the pod, then losing the Harness to a memory kill")
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}}
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+				{Name: "agent", Image: "agent", ImageID: "agent", Ready: true},
+				{
+					Name: "harness", Image: "harness", ImageID: "harness", RestartCount: 1,
+					LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+						Reason: "OOMKilled", ExitCode: 137,
+						StartedAt: metav1.NewTime(time.Now().Add(-time.Minute)), FinishedAt: metav1.Now(),
+					}},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			scheduled = meta.FindStatusCondition(sandbox.Status.Conditions, conditionScheduled)
+			Expect(scheduled.Status).To(Equal(metav1.ConditionTrue))
+			Expect(sandbox.Status.Harness).NotTo(BeNil())
+			Expect(sandbox.Status.Harness.RestartCount).To(Equal(int32(1)))
+			Expect(sandbox.Status.Harness.LastTerminated).NotTo(BeNil())
+			Expect(sandbox.Status.Harness.LastTerminated.Reason).To(Equal("OOMKilled"))
+			Expect(sandbox.Status.Harness.LastTerminated.ExitCode).To(Equal(int32(137)))
+		})
+
+		It("writes status only when it changed — every write is a watch event (ADR-0063)", func() {
+			// Counted at the client, not by resourceVersion: the API server drops a
+			// byte-identical update itself, so only the call count shows the guard.
+			writes := 0
+			counting := &SandboxReconciler{Scheme: k8sClient.Scheme(), Client: statusWriteCounter{k8sClient, &writes}}
+			_, err := counting.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(writes).To(Equal(1), "the first reconcile publishes status")
+
+			By("reconciling again with nothing changed, as a lease renewal does")
+			_, err = counting.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(writes).To(Equal(1), "an unchanged status must not be written")
+
+			By("writing once the pod's facts move")
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodRunning
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+			_, err = counting.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(writes).To(Equal(2))
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
+		})
+
 		It("republishes a new podUID when the Pod is replaced under the same Sandbox", func() {
 			// The divergence this field exists for: an eviction or node loss takes the Pod
 			// but not the CR, and the replacement comes up with an empty `work` volume — so
@@ -497,3 +579,23 @@ var _ = Describe("Sandbox Controller", func() {
 		})
 	})
 })
+
+// statusWriteCounter counts status writes on their way to the API server.
+type statusWriteCounter struct {
+	client.Client
+	writes *int
+}
+
+func (c statusWriteCounter) Status() client.SubResourceWriter {
+	return countingStatusWriter{c.Client.Status(), c.writes}
+}
+
+type countingStatusWriter struct {
+	client.SubResourceWriter
+	writes *int
+}
+
+func (w countingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	*w.writes++
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}

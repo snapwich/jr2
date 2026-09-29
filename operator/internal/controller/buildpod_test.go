@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -188,6 +189,11 @@ func TestBuildPodReadinessProbe(t *testing.T) {
 	}
 	if probe.TCPSocket.Port.IntValue() != 9000 {
 		t.Fatalf("default probe should target the serving port 9000, got %v", probe.TCPSocket.Port)
+	}
+	// The kubelet's 10s default adds up to 10s to every provision for nothing
+	// (the scaling review's R12): a TCP connect each second is free.
+	if probe.PeriodSeconds != 1 {
+		t.Fatalf("default probe periodSeconds = %d, want 1", probe.PeriodSeconds)
 	}
 
 	custom := &corev1.Probe{
@@ -454,5 +460,138 @@ func TestBuildPodCarriesPlacementVerbatim(t *testing.T) {
 	bare := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
 	if bare.Spec.NodeSelector != nil || bare.Spec.Tolerations != nil {
 		t.Fatalf("a CR that says nothing places nothing: selector=%v tolerations=%v", bare.Spec.NodeSelector, bare.Spec.Tolerations)
+	}
+}
+
+// TestBuildPodCarriesTheSize: the Orchestrator splits the Workspace's Size and
+// the CR carries every share (ADR-0060) — the Harness's on spec.resources (with
+// the `/work` disk request), each other container's in its own fragment, and
+// the whole Size at pod level. The operator copies each one verbatim and
+// computes none: it is config-blind (ADR-0001, ADR-0052).
+func TestBuildPodCarriesTheSize(t *testing.T) {
+	r := &SandboxReconciler{}
+	q := resource.MustParse
+	harness := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:              q("950m"),
+			corev1.ResourceMemory:           q("1984Mi"),
+			corev1.ResourceEphemeralStorage: q("10Gi"),
+		},
+		Limits: corev1.ResourceList{corev1.ResourceCPU: q("950m"), corev1.ResourceMemory: q("1984Mi")},
+	}
+	custodian := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("64Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("64Mi")},
+	}
+	user := corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: q("512Mi")}}
+	preflight := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("64Mi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: q("50m"), corev1.ResourceMemory: q("64Mi")},
+	}
+	whole := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: q("1"), corev1.ResourceMemory: q("2Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: q("1"), corev1.ResourceMemory: q("2Gi")},
+	}
+	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
+		Image:          testHarnessImage,
+		Port:           8080,
+		Resources:      harness,
+		PodResources:   &whole,
+		Sidecars:       []corev1.Container{{Name: "custodian", Image: "envoy", Resources: custodian}, {Name: "user", Image: "sshd", Resources: user}},
+		InitContainers: []corev1.Container{{Name: "preflight", Image: "user-image", Resources: preflight}},
+	}), nil)
+
+	byName := map[string]corev1.Container{}
+	for _, c := range append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		byName[c.Name] = c
+	}
+	for name, want := range map[string]corev1.ResourceRequirements{"harness": harness, "custodian": custodian, "user": user, "preflight": preflight} {
+		if got := byName[name].Resources; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s resources = %+v, want the CR's verbatim %+v", name, got, want)
+		}
+	}
+	if got := pod.Spec.Resources; got == nil || !reflect.DeepEqual(*got, whole) {
+		t.Fatalf("pod-level resources = %+v, want the whole Size %+v", got, whole)
+	}
+
+	bare := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
+	if bare.Spec.Resources != nil {
+		t.Fatalf("a CR with no pod-level resources sets none, got %+v", bare.Spec.Resources)
+	}
+}
+
+// TestBuildPodMountsShmInTheHarnessOnly: /dev/shm is a memory-backed emptyDir
+// bounded by the CR's shmSize, in the Harness container and no other
+// (ADR-0060) — charged inside the Harness's own limit, so a full shm is a tool
+// error there and never touches the Custodian. A CR with no shmSize gets
+// nothing: an unbounded memory emptyDir is never a default.
+func TestBuildPodMountsShmInTheHarnessOnly(t *testing.T) {
+	r := &SandboxReconciler{}
+	size := resource.MustParse("496Mi")
+	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
+		Image:    testHarnessImage,
+		Port:     8080,
+		ShmSize:  &size,
+		Sidecars: []corev1.Container{{Name: "custodian", Image: "envoy"}},
+	}), nil)
+
+	var shm *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == shmVolumeName {
+			shm = &pod.Spec.Volumes[i]
+		}
+	}
+	if shm == nil || shm.EmptyDir == nil {
+		t.Fatalf("want an emptyDir volume %q, got %+v", shmVolumeName, pod.Spec.Volumes)
+	}
+	if shm.EmptyDir.Medium != corev1.StorageMediumMemory {
+		t.Fatalf("shm medium = %q, want Memory", shm.EmptyDir.Medium)
+	}
+	if shm.EmptyDir.SizeLimit == nil || shm.EmptyDir.SizeLimit.Cmp(size) != 0 {
+		t.Fatalf("shm sizeLimit = %v, want the CR's %v", shm.EmptyDir.SizeLimit, size)
+	}
+	mounted := func(c corev1.Container) bool {
+		for _, m := range c.VolumeMounts {
+			if m.Name == shmVolumeName {
+				return m.MountPath == "/dev/shm"
+			}
+		}
+		return false
+	}
+	if !mounted(pod.Spec.Containers[0]) {
+		t.Fatalf("the Harness container must mount %q at /dev/shm, got %+v", shmVolumeName, pod.Spec.Containers[0].VolumeMounts)
+	}
+	if mounted(pod.Spec.Containers[1]) {
+		t.Fatalf("shm is the Harness container's alone, but the Custodian mounts it")
+	}
+
+	bare := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)
+	for _, v := range bare.Spec.Volumes {
+		if v.Name == shmVolumeName {
+			t.Fatalf("a CR with no shmSize mounts no shm, got %+v", v)
+		}
+	}
+}
+
+// TestBuildPodPriorityAndDisruption: the priority class is the CR's, copied
+// verbatim, and every Sandbox pod tells both autoscalers not to move it — a
+// move loses `/work` (ADR-0060).
+func TestBuildPodPriorityAndDisruption(t *testing.T) {
+	r := &SandboxReconciler{}
+	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
+		Image:             testHarnessImage,
+		Port:              8080,
+		PriorityClassName: "jr2-sandbox",
+	}), nil)
+	if pod.Spec.PriorityClassName != "jr2-sandbox" {
+		t.Fatalf("priorityClassName = %q, want the CR's", pod.Spec.PriorityClassName)
+	}
+	for _, p := range []*corev1.Pod{pod, r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 8080}), nil)} {
+		if got := p.Annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"]; got != "false" {
+			t.Errorf("safe-to-evict = %q, want \"false\"", got)
+		}
+		if got := p.Annotations["karpenter.sh/do-not-disrupt"]; got != "true" {
+			t.Errorf("do-not-disrupt = %q, want \"true\"", got)
+		}
 	}
 }

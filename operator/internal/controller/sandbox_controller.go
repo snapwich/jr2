@@ -15,6 +15,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,6 +45,15 @@ const (
 	// absence does not. It is the gate's verdict for the Pod status.podUID
 	// names, taken once and standing for that Pod's life (reposAdmitted).
 	conditionReposFresh = "ReposFresh"
+	// conditionScheduled restates the Pod's PodScheduled condition with the
+	// scheduler's own reason and message (ADR-0063): the Orchestrator never
+	// reads a Pod, and a Pending Sandbox has to say why it waits.
+	conditionScheduled = "Scheduled"
+	// reasonScheduled and reasonSchedulingPending are the Scheduled reasons the
+	// operator supplies itself: the scheduler writes no reason on True, and
+	// before it has looked at the Pod there is no condition at all.
+	reasonScheduled         = "Scheduled"
+	reasonSchedulingPending = "SchedulingPending"
 
 	// Ready reasons a Repo cache can hold a Sandbox at, and the two ReposFresh
 	// reasons. The Orchestrator's port keys on RepoCloneFailed to fail a
@@ -60,7 +70,24 @@ const (
 	// (ADR-0001): an RFC3339 timestamp it PATCHes periodically. Idle GC fires
 	// only once spec.idleTimeout has elapsed since max(creation, last keepalive).
 	keepaliveAnnotation = "jr2.dev/keepalive"
+
+	// harnessContainerName is the primary container's name: the Harness.
+	harnessContainerName = "harness"
+	// shmVolumeName is the memory-backed emptyDir mounted at /dev/shm in the
+	// Harness container alone, when the CR sizes one (ADR-0060).
+	shmVolumeName = "shm"
+	shmMountPath  = "/dev/shm"
 )
+
+// noDisruption is on every Sandbox pod (ADR-0060): moving the pod loses
+// `/work`, so neither the cluster autoscaler nor Karpenter may consolidate it
+// away. A drain still ends in `workspace.lost`, and the body's policy decides
+// (ADR-0021). No PodDisruptionBudget: `maxUnavailable: 0` would block node
+// upgrades without end.
+var noDisruption = map[string]string{
+	"cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
+	"karpenter.sh/do-not-disrupt":                    "true",
+}
 
 // SandboxReconciler reconciles a Sandbox object
 type SandboxReconciler struct {
@@ -359,15 +386,16 @@ func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *corev1alp
 // which the Pod is steered toward nodes already holding.
 func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[string]*corev1alpha1.Repo) *corev1.Pod {
 	repoVolumes, repoMounts := repoVolumesFor(sandbox)
+	shmVolumes, shmMounts := shmVolumeFor(sandbox)
 	primary := corev1.Container{
-		Name:            "harness",
+		Name:            harnessContainerName,
 		Image:           sandbox.Spec.Image,
 		Command:         sandbox.Spec.Command,
 		Args:            sandbox.Spec.Args,
 		Resources:       sandbox.Spec.Resources,
 		Env:             sandbox.Spec.Env,
 		EnvFrom:         sandbox.Spec.EnvFrom,
-		VolumeMounts:    append(append([]corev1.VolumeMount{}, sandbox.Spec.VolumeMounts...), repoMounts...),
+		VolumeMounts:    append(append(append([]corev1.VolumeMount{}, sandbox.Spec.VolumeMounts...), repoMounts...), shmMounts...),
 		ReadinessProbe:  readinessProbeFor(sandbox),
 		SecurityContext: containerSecurityContextFor(sandbox),
 		Ports: []corev1.ContainerPort{{
@@ -395,6 +423,9 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			Name:      sandbox.Name,
 			Namespace: sandbox.Namespace,
 			Labels:    sandboxLabels(sandbox),
+			// Copied, so reconcileAsks' merge into the Pod's own map never
+			// writes through to the shared default.
+			Annotations: maps.Clone(noDisruption),
 		},
 		Spec: corev1.PodSpec{
 			// Bare pod, long-lived and interactive: no Deployment-style
@@ -407,7 +438,12 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 			// context.
 			InitContainers: sandbox.Spec.InitContainers,
 			Containers:     containers,
-			Volumes:        append(append([]corev1.Volume{}, sandbox.Spec.Volumes...), repoVolumes...),
+			Volumes:        append(append(append([]corev1.Volume{}, sandbox.Spec.Volumes...), repoVolumes...), shmVolumes...),
+			// The whole Size at pod level (KEP-2837) and the priority class,
+			// both verbatim (ADR-0060): every number and name is the
+			// Orchestrator's, so this operator reads no config.
+			Resources:         sandbox.Spec.PodResources,
+			PriorityClassName: sandbox.Spec.PriorityClassName,
 			// Soft: a node already holding the caches saves a clone; a node
 			// without them clones on first need, the image-pull economics
 			// ADR-0051 chose. Never a hard requirement, so node count never
@@ -504,6 +540,28 @@ func repoAffinityFor(sandbox *corev1alpha1.Sandbox, repos map[string]*corev1alph
 	}
 }
 
+// shmVolumeFor returns the memory-backed emptyDir at /dev/shm and its mount
+// in the Harness container, when the CR sizes one (ADR-0060). The Harness
+// container alone: shm is charged to the container that writes it, so it sits
+// inside the Harness's own limit, and the Custodian never shares it. The
+// sizeLimit is what makes a full shm ENOSPC or SIGBUS — a tool error — instead
+// of a memory kill; without one the CR gets the runtime's own /dev/shm.
+func shmVolumeFor(sandbox *corev1alpha1.Sandbox) ([]corev1.Volume, []corev1.VolumeMount) {
+	if sandbox.Spec.ShmSize == nil {
+		return nil, nil
+	}
+	size := sandbox.Spec.ShmSize.DeepCopy()
+	return []corev1.Volume{{
+			Name: shmVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory, SizeLimit: &size},
+			},
+		}}, []corev1.VolumeMount{{
+			Name:      shmVolumeName,
+			MountPath: shmMountPath,
+		}}
+}
+
 // readinessProbeFor returns the primary container's readiness probe: the
 // Sandbox's override when set, otherwise a TCPSocket probe on the serving port
 // so phase Ready means the Harness accepts connections (not just "started").
@@ -515,6 +573,9 @@ func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 		ProbeHandler: corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{Port: intstrFromInt32(portFor(sandbox))},
 		},
+		// Every second, not the kubelet's 10: the default period adds up to
+		// 10s to every provision (the scaling review's R12).
+		PeriodSeconds: 1,
 	}
 }
 
@@ -569,8 +630,10 @@ func hardenedContainerSecurityContext() *corev1.SecurityContext {
 	}
 }
 
-// reconcileStatus computes phase/endpoint/refs from the live Pod and the Repo
-// resources it depends on, and writes status. Phase reaches Ready only when the
+// reconcileStatus computes phase/endpoint/refs and the pod facts from the live
+// Pod and the Repo resources it depends on, and writes status when it changed —
+// only then, because every write is a watch event at the Orchestrator
+// (ADR-0063), and a lease renewal that changes nothing must not cost one. Phase reaches Ready only when the
 // Pod reports the Ready condition AND every Repo the spec names is present on
 // the Pod's node and fetched since this Sandbox was created (ADR-0051). The
 // Repo half is a gate on the way to Ready, not a standing check: it is asked
@@ -580,6 +643,7 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// Read before status.podUID is overwritten below: the latch is keyed on the
 	// Pod the last status named.
 	admitted := reposAdmitted(sandbox, pod)
+	observed := sandbox.Status.DeepCopy()
 	sandbox.Status.Endpoint = fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
 	sandbox.Status.PodRef = &corev1.LocalObjectReference{Name: pod.Name}
 	// Identity, not just address: a replacement Pod reuses the name but never the
@@ -595,6 +659,11 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// Standing, per key, and recomputed every time: what a fetch inside the pod
 	// waits on (ADR-0053). Ready below is the gate it always was.
 	sandbox.Status.Repos = repoStatuses(ctx, sandbox, pod.Spec.NodeName, repos)
+	// The pod facts the Orchestrator reads instead of the Pod (ADR-0063): the
+	// Harness container's restarts and last end (a memory kill is named from
+	// it, ADR-0061), and the scheduler's words on placement.
+	sandbox.Status.Harness = harnessStatus(pod)
+	meta.SetStatusCondition(&sandbox.Status.Conditions, scheduledCondition(pod, sandbox.Generation))
 
 	cond := metav1.Condition{
 		Type:               conditionReady,
@@ -654,7 +723,58 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 		meta.RemoveStatusCondition(&sandbox.Status.Conditions, conditionReposFresh)
 	}
 
+	if equality.Semantic.DeepEqual(observed, &sandbox.Status) {
+		return nil
+	}
 	return r.Status().Update(ctx, sandbox)
+}
+
+// harnessStatus copies the Harness container's restarts and last end off the
+// Pod (ADR-0063), or nil while the kubelet has not reported the container.
+func harnessStatus(pod *corev1.Pod) *corev1alpha1.SandboxHarnessStatus {
+	for _, c := range pod.Status.ContainerStatuses {
+		if c.Name != harnessContainerName {
+			continue
+		}
+		out := &corev1alpha1.SandboxHarnessStatus{RestartCount: c.RestartCount}
+		if t := c.LastTerminationState.Terminated; t != nil {
+			out.LastTerminated = &corev1alpha1.SandboxTermination{Reason: t.Reason, ExitCode: t.ExitCode}
+			if !t.FinishedAt.IsZero() {
+				out.LastTerminated.FinishedAt = t.FinishedAt.DeepCopy()
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// scheduledCondition restates the Pod's PodScheduled condition (ADR-0063):
+// its status, the scheduler's reason and message. Unknown until the scheduler
+// has written one — a replacement Pod must never inherit its predecessor's
+// True.
+func scheduledCondition(pod *corev1.Pod, generation int64) metav1.Condition {
+	cond := metav1.Condition{
+		Type:               conditionScheduled,
+		ObservedGeneration: generation,
+		Status:             metav1.ConditionUnknown,
+		Reason:             reasonSchedulingPending,
+		Message:            "the scheduler has not placed the pod yet",
+	}
+	for _, c := range pod.Status.Conditions {
+		if c.Type != corev1.PodScheduled {
+			continue
+		}
+		cond.Status = metav1.ConditionStatus(c.Status)
+		cond.Message = c.Message
+		cond.Reason = c.Reason
+		if cond.Reason == "" {
+			cond.Reason = reasonUnschedulable
+			if c.Status == corev1.ConditionTrue {
+				cond.Reason = reasonScheduled
+			}
+		}
+	}
+	return cond
 }
 
 // reposAdmitted reports whether the Repo gate already passed for the Pod

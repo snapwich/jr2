@@ -87,16 +87,18 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        # TODO(user): Configure the resources accordingly based on the project requirements.
-        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        # Kit-sized, with no config key (ADR-0060): memory request = limit (it
+        # caches every Pod in the cluster), a CPU request and no CPU limit.
         resources:
           limits:
-            cpu: 500m
-            memory: 128Mi
+            memory: 256Mi
           requests:
-            cpu: 10m
-            memory: 64Mi
+            cpu: 50m
+            memory: 256Mi
         volumeMounts: []
       volumes: []
       serviceAccountName: controller-manager
+      # Small, fixed, and needed by every Sandbox (ADR-0060). `jr2 up` creates
+      # the class beside the CRDs.
+      priorityClassName: jr2-control
       terminationGracePeriodSeconds: 10
