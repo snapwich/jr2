@@ -36,7 +36,10 @@ whose processes are gone, with no way to know why.
 - **The Orchestrator is the only keeper of notices**: pending notices are plain data in the run's persisted state
   (ADR-0007). It sees kernel kills and fresh conversations itself; the Harness reports a guard kill (ADR-0061) as an
   event on its updates stream. A notice counts as delivered when its admission is ledgered, so a restart before that
-  point delivers it again and a restart after it does not.
+  point delivers it again and a restart after it does not. Delivered is not yet heard: if the Orchestrator ends the Turn
+  before the Harness reads its surface, the Harness never prompts it (ADR-0026), so the Orchestrator raises that
+  admission's notices again. A nudge takes no notices: it re-prompts the Turn within itself, and a notice raised during
+  that Turn is for the next one.
 - **The Harness writes every word.** The admit body carries typed notices
   (`notices: [{ kind: "memory-limit", scope, agent, peak?, limit } | { kind: "conversation-new", reason } …]`), and the
   Harness renders both parts. The standing part needs no wire: the Harness already holds its limits (cgroup and Downward

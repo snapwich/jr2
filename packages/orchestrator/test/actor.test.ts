@@ -881,3 +881,67 @@ test("an admission that fails releases its notices for the next one; a ledgered 
   assert.deepEqual(ok.notices, [[notice]], "the notices ride the admission");
   assert.deepEqual(delivered, [["n1"]], "and are delivered by the SAME ledger write");
 });
+
+test("a nudge takes no notices: it re-prompts the Turn that heard its own kill (ADR-0016, ADR-0062)", async () => {
+  const notice = { kind: "memory-limit" as const, scope: "workspace" as const, agent: "coder", limit: "2Gi" };
+  let takes = 0;
+  const mock = new MockFlueClient();
+  harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, {
+    // Every take finds the notice pending — as one raised DURING the Turn would be.
+    takeNotices: () => (takes++, { ids: ["n1"], notices: [notice] }),
+  });
+  await tick();
+  assert.equal(takes, 1, "the Turn's own admission takes");
+
+  mock.complete(); // no pick → the nudge
+  await tick();
+  assert.equal(mock.admits.length, 2);
+  assert.equal(takes, 1, "the nudge does not take");
+  assert.deepEqual(mock.notices[1], [], "…so it carries nothing, and the next Turn hears it");
+});
+
+test("a Turn the Orchestrator ends before its surface is read raises its notices again (ADR-0026, ADR-0062)", async () => {
+  const kill = { kind: "memory-limit" as const, scope: "workspace" as const, agent: "coder", limit: "2Gi" };
+  const lost = { kind: "conversation-new" as const, scope: "conversation" as const, reason: "a fault" };
+  const run = () => {
+    const raised: Array<{ notice: unknown; to: string }> = [];
+    const mock = new MockFlueClient();
+    let taken = false;
+    const h = harness(
+      mock,
+      { ...baseInput, instanceId: "run-1/root/coder", continuation: true, sandbox: "ws-7" },
+      undefined,
+      undefined,
+      {
+        takeNotices: () =>
+          taken ? { ids: [], notices: [] } : ((taken = true), { ids: ["n1", "n2"], notices: [lost, kill] }),
+        raiseNotice: (notice, to) => raised.push({ notice, to }),
+      },
+    );
+    return { h, mock, raised };
+  };
+
+  // Admitted and ledgered — but the state exits before the Harness reads the surface, so the
+  // Harness finds it gone and settles the Submission `aborted` with no model asked (ADR-0026).
+  const unread = run();
+  await tick();
+  assert.deepEqual(unread.mock.notices[0], [lost, kill]);
+  unread.h.actor.send({ type: "CANCEL_RUN" });
+  await tick();
+  assert.deepEqual(
+    unread.raised,
+    [
+      { notice: lost, to: "run-1/root/coder" },
+      { notice: kill, to: "ws-7" },
+    ],
+    "no model heard them, so the next Turn in scope does",
+  );
+
+  // Read: the Harness had the Turn in hand, so the notices reached a model and stay delivered.
+  const read = run();
+  await tick();
+  read.h.table.lookup(agentAddress("run-1/root/coder"))!.served!();
+  read.h.actor.send({ type: "CANCEL_RUN" });
+  await tick();
+  assert.deepEqual(read.raised, []);
+});

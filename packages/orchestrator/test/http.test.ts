@@ -154,6 +154,21 @@ test("while the host is stopping, /agents/* answers 503 — only a Turn that is 
   assert.equal((await app.request(`/agents/${unknown}/surface`)).status, 503, "no registration reads as 404 no more");
 });
 
+test("a surface read that is answered tells the host the Turn is in the Harness's hands (ADR-0026, ADR-0062)", async () => {
+  const { host, app, clients } = await mkApp();
+  const { instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  const iid = await admittedIid(clients.get(instanceId)!);
+  const served: string[] = [];
+  host.agentSurfaceServed = (id) => void served.push(id);
+
+  // A read that is refused serves nothing.
+  assert.equal((await app.request(`/agents/no-such-turn/surface`)).status, 404);
+  assert.deepEqual(served, []);
+  // The read that is answered is the one the Harness prompts from: its notices reach a model now.
+  assert.equal((await app.request(`/agents/${encodeURIComponent(iid)}/surface`)).status, 200);
+  assert.deepEqual(served, [iid]);
+});
+
 test("POST /runs/:id/events takes CANCEL, and nothing else", async () => {
   const { host, app } = await mkApp();
   const { runId } = await host.start("coding");

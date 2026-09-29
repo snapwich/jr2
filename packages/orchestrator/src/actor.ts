@@ -351,6 +351,7 @@ const NUDGE_PROMPT =
   `Your previous turn ended without calling one of the required workflow tools. ` +
   `You MUST end your turn by calling exactly one of the workflow tools allowed below. ` +
   `Pick the one that matches the true state of your work and call it now.`;
+
 /**
  * Where this Turn works — the Frame's other half (ADR-0057), resolved before admission.
  *
@@ -522,6 +523,8 @@ export function agentActorWith(
     // The Menu (ADR-0029): resolved against the same vocabulary, and served as the tools block.
     const menu = resolveAccepts(self, input.menu ?? input.tools);
     const disposers: Array<() => void> = [];
+    // The iids whose surface the Harness has read (see `carried` below).
+    const served = new Set<string>();
     const registerSurface = (iid: string) =>
       disposers.push(
         binding.table.register({
@@ -547,6 +550,8 @@ export function agentActorWith(
             });
             sendBack(event);
           },
+          // The Harness read this Turn's surface: it has the Turn in hand, and prompts it.
+          served: () => served.add(iid),
           // The state that invoked us — the machine the menu derived from, so the only one whose
           // guards can say whether a pick would move anything (ADR-0029). Same `_parent` the ambient
           // walk above uses; structural, so a sibling's snapshot is unreachable.
@@ -600,11 +605,19 @@ export function agentActorWith(
       binding.raiseNotice?.(memoryLimit(kill.limit, kill.peak), noticeWorkspace, kill.source);
     };
 
-    // Every admission — the Turn's, a reroll's, a nudge's — carries the pending notices in scope.
-    // Reserved first, so no concurrent admission carries them too; delivered by the ledger write;
-    // released when the admission fails, for the next one to carry.
-    const admitTurn = async (turn: AgentRunInput): Promise<AgentAdmission> => {
-      const taken = binding.takeNotices?.(noticeScope) ?? { ids: [], notices: [] };
+    // The Turn's admission and a reroll's carry the pending notices in scope — a reroll's
+    // conversation is fresh, and has heard nothing. A nudge's does not: it re-prompts the Turn
+    // within itself (ADR-0016), whose Agent read a guard kill in its own `bash` answer, and a notice
+    // spent there never reaches the next Turn in the Workspace it is for (ADR-0062). Reserved
+    // first, so no concurrent admission carries them too; delivered by the ledger write; released
+    // when the admission fails, for the next one to carry.
+    //
+    // What the last carrying admission took, and under which iid: delivered is not HEARD. If this
+    // actor ends the Turn before the Harness reads that iid's surface, the Harness finds the Turn
+    // over and settles it with no model asked (ADR-0026) — so `abandon` raises them again.
+    let carried: { iid: string; notices: Notice[] } | undefined;
+    const admitTurn = async (turn: AgentRunInput, opts: { notices: boolean } = { notices: true }) => {
+      const taken = (opts.notices ? binding.takeNotices?.(noticeScope) : undefined) ?? { ids: [], notices: [] };
       let admission: AgentAdmission;
       try {
         admission = await client.admit(turn, {
@@ -617,7 +630,17 @@ export function agentActorWith(
         throw err;
       }
       ledger(admission, taken.ids);
+      if (taken.notices.length) carried = { iid: turn.instanceId, notices: taken.notices };
       return admission;
+    };
+    // The notices an unheard admission carried, pending again for the next Turn in their scope.
+    const reraiseUnheard = (): void => {
+      if (carried === undefined || served.has(carried.iid)) return;
+      for (const notice of carried.notices) {
+        const to = notice.scope === "conversation" ? conversation : noticeWorkspace;
+        if (to !== undefined) binding.raiseNotice?.(notice, to);
+      }
+      carried = undefined;
     };
 
     const abandon = () => {
@@ -631,6 +654,7 @@ export function agentActorWith(
       // Pool cancelling a child. The one exception is the host stopping the run for its own
       // reasons, which ADR-0007's restore re-attaches to.
       if (binding.hostStopping) return;
+      reraiseUnheard();
       // Fire-and-forget, and unreportable BY CONSTRUCTION: this actor is stopped, so there is no
       // `agent.fault` left to raise. An orphan that survives a failed abort 404s on every tool
       // call and settles on its own.
@@ -743,12 +767,15 @@ export function agentActorWith(
             attempt: nudges,
             reason: "no-signal nudge",
           });
-          admission = await admitTurn({
-            ...framed,
-            attach: undefined,
-            instanceId: currentIid,
-            prompt: NUDGE_PROMPT,
-          });
+          admission = await admitTurn(
+            {
+              ...framed,
+              attach: undefined,
+              instanceId: currentIid,
+              prompt: NUDGE_PROMPT,
+            },
+            { notices: false },
+          );
         }
       } catch (err) {
         if (stopped) return;

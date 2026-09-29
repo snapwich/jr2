@@ -652,6 +652,12 @@ export class RunHost {
     };
   }
 
+  /** The Harness read this Turn's surface and was answered (ADR-0026): the notices its admission
+   * carried reach a model now, so an end to the Turn no longer raises them again (ADR-0062). */
+  agentSurfaceServed(instanceId: string): void {
+    this.table.lookup(agentAddress(instanceId))?.served?.();
+  }
+
   /**
    * Deliver one event from an Agent's Harness (`POST /agents/:iid/events` — ADR-0013). Validation
    * and delivery are the table's; this only agent-scopes the address and mints the receipt. (A

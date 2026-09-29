@@ -75,6 +75,9 @@ export type Registration = {
   sandbox?: string;
   /** Close over the invoking state's `sendBack`; delivery lands where the actor was invoked. */
   deliver: (event: DeliveredEvent) => void;
+  /** An Agent's: the Harness read this surface (`GET /agents/:iid/surface`), so it has the Turn in
+   * hand and prompts it. Until then the Turn may end with no model ever asked (ADR-0026). */
+  served?: () => void;
   /**
    * The Machine that invoked this actor — `self._parent`, captured at registration. The menu was
    * derived from THIS machine's transitions (ADR-0015), so it is the only snapshot whose guards

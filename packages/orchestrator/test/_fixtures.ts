@@ -288,6 +288,59 @@ export function continuedDef(clients: Map<string, MockFlueClient>): WorkflowDef 
   };
 }
 
+/**
+ * TWO fresh Turns in ONE Workspace: `code`, then `check` on the same Sandbox — the coder, then the
+ * tester, as the notices of ADR-0061/0062 picture them. Each state mints its own conversation; what
+ * the second Turn inherits from the first is the Workspace alone.
+ */
+export const workspaceTemplate = jr2Setup({
+  types: {} as { context: Ctx; input: { sandbox?: string } },
+  events: [doneEvent, requestReviewEvent],
+  actors: { coder: agent(coderDefinition) },
+}).createMachine({
+  id: "w",
+  context: ({ input }) => ({ sandbox: input.sandbox }),
+  initial: "code",
+  states: {
+    code: {
+      invoke: {
+        src: "coder",
+        input: ({ context }): AgentTurnInput & AgentTurnPlacement => ({
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "write it",
+        }),
+      },
+      on: { request_review: "check" },
+    },
+    check: {
+      invoke: {
+        src: "coder",
+        input: ({ context }): AgentTurnInput & AgentTurnPlacement => ({
+          endpoint: "http://harness.invalid",
+          sandbox: context.sandbox,
+          prompt: "check it",
+        }),
+      },
+      on: { done: "#w.done" },
+    },
+    done: { type: "final" },
+  },
+});
+
+/** The two-Turn Workspace workflow, over one MockFlueClient per run (one Harness, one pod). */
+export function workspaceDef(clients: Map<string, MockFlueClient>): WorkflowDef {
+  return {
+    name: "workspace",
+    machine: workspaceTemplate,
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      clients.set(instanceId, client);
+      return { actors: { coder: agentActorWith(() => client, coderDefinition) } };
+    },
+  };
+}
+
 // ---- Gate fixtures (ADR-0011): a workflow that parks on an addressable gate. -----------------
 
 export const approveDef = defineEvent({ name: "approve", input: z.object({}) });

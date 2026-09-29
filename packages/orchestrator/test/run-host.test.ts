@@ -25,6 +25,7 @@ import {
   pipelineDef,
   tick,
   waitFor,
+  workspaceDef,
 } from "./_fixtures.ts";
 import type { Ctx } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
@@ -753,21 +754,26 @@ test("a continued conversation the Harness no longer holds is told it is new", a
 test("a guard kill is told to the next Turn in that Workspace, and only once (ADR-0061, ADR-0062)", async () => {
   const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
-  host.register(codingDef(clients));
-  const { instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  host.register(workspaceDef(clients));
+  const { instanceId } = await host.start("workspace", { sandbox: "ws-1" });
   const flue = clients.get(instanceId)!;
   await waitFor(() => flue.settled.length === 1);
+  const coder = flue.admits[0]!.instanceId;
 
   // The Harness's guard killed the Agent's processes during this Turn and said so on its stream.
   flue.guardKill({ peak: "1.8Gi", limit: "1920Mi", source: "c@7.0" });
   flue.guardKill({ peak: "1.8Gi", limit: "1920Mi", source: "c@7.0" }); // a replayed read
-  // The Turn ends with no pick; the nudge is the next admission in the Workspace.
+  // The Turn ends with no pick. Its nudge is a re-prompt WITHIN the Turn (ADR-0016), not the next
+  // Turn: the Agent read about the kill in its `bash` answer, so the nudge carries nothing.
   flue.complete();
   await waitFor(() => flue.settled.length === 2);
-  assert.deepEqual(flue.notices[1], [
+  assert.deepEqual(flue.notices[1], [], "the killed Turn's own nudge does not use up the notice");
+
+  // The next Turn in the Workspace — the tester after the coder — is the reader the notice is for.
+  host.sendToAgent(coder, { type: "request_review", summary: "PR up" });
+  await waitFor(() => flue.admits.length === 3);
+  assert.equal(flue.admits[2]!.prompt, "check it");
+  assert.deepEqual(flue.notices[2], [
     { kind: "memory-limit", scope: "workspace", agent: "coder", peak: "1.8Gi", limit: "1920Mi" },
   ]);
-  flue.complete();
-  await waitFor(() => flue.admits.length === 3);
-  assert.deepEqual(flue.notices[2], [], "delivered once");
 });

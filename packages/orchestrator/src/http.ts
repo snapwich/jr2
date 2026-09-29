@@ -713,7 +713,9 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // per Submission and needs no `list_changed`.
   app.get("/agents/:instanceId/surface", authenticated, (c) => {
     const { surface, error } = agentRegistration(c);
-    return error ?? c.json(surface);
+    if (error) return error;
+    host.agentSurfaceServed(c.req.param("instanceId"));
+    return c.json(surface);
   });
 
   // The Agent's pick, delivered into the state that invoked it. The receipt describes itself
