@@ -16,9 +16,14 @@ whose processes are gone, with no way to know why.
   change that knowing could cause is an attempt to go around the Custodian.
 - **Two parts, placed by how often they change.** The standing part is the same on every Turn of a seat; it follows
   `instructions` in the system prompt, in its own delimited section, and is byte-stable (no timestamps, no counters, no
-  Menu names). The Turn part rides ahead of the Frame's prompt in a delimited block: the working directory and the
-  notices. So the Briefing never breaks the provider's prompt cache — the Turn part sits in the newest message, which is
-  uncached anyway, and stays unchanged in the history after.
+  Menu names). The Turn part follows the Frame's prompt in a delimited block: the working directory, the Turn's Allowed
+  picks ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)) and the notices.
+  So the Briefing never breaks the provider's prompt cache — the Turn part sits in the newest message, which is uncached
+  anyway, and stays unchanged in the history after.
+- **The Turn part comes last, because a model obeys what it read last.** Measured on the home-lab vLLM model: with a
+  prompt that argued for a pick the Turn did not allow, the Allowed picks placed ahead of the prompt were obeyed 0/10
+  (thinking off) and 5/10 (thinking on); placed after it, 10/10 both. Wording made no difference. The author's task
+  still reads first, as it would with no jr2.
 - **Always on.** No author can turn it off: every fact in it passes the rule above, so removing one can only make the
   Agent act worse. An `instructions` that repeats a fact is harmless.
 - **A notice is delivered once**, on the next Turn in its scope, then cleared.
@@ -55,6 +60,7 @@ whose processes are gone, with no way to know why.
 
 - ADR-0060's CPU fact and ADR-0061's memory-limit notice are the Briefing's first users.
 - The no-signal nudge stays a re-prompt within a Turn (ADR-0016); it is not a notice.
-- A separate cache break exists and is not the Briefing's: the Harness rebuilds the tools block from each Turn's Menu
-  (ADR-0029), so a continued conversation whose Menu changes loses its cached prefix. It is being decided on its own.
+- The Briefing is how a Turn learns its Allowed picks: the tools block is the whole Menu, fixed for a conversation so it
+  does not break the cache
+  ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)).
 - CONTEXT.md gains **Briefing**.

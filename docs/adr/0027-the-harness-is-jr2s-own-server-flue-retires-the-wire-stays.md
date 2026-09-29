@@ -3,7 +3,7 @@
 jr2 has been programming around its Harness, not with it. The evidence is the ADR trail itself.
 [ADR-0018](0018-instance-agents-are-definitions-jr2-assembles-the-harness.md)'s entire codegen-at-pod-start mechanism —
 generated shims, a boot-time `flue build`, agent names frozen at that build — exists because flue offers no programmatic
-server assembly; its own Considered options says so. [ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md) was
+server assembly; its own Considered options says so. [ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md) was
 forced by a foreign advisory session jr2 never asked for, and records a rejection ("there is nothing on the wire to
 branch on") that is only true because someone else writes the wire.
 [ADR-0023](0023-the-harness-prints-the-conversation.md)'s printer needed a loopback SSE client plus a 40-attempt

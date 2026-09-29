@@ -73,8 +73,9 @@ windows more often. That is why the flake was degree-independent and serial runs
   Custodian itself retries only a connection reset: any reset under the read, and under a pick or an ask only one before
   the request was sent. It also drops a pooled connection after 4 seconds idle, before Node's 5-second keep-alive closes
   it. A GET is idempotent, so the narrow never-delivered test the admission needs buys nothing here — there is no second
-  turn to accidentally start, so the rule is simply "an answered request is an answer". A 404 stays ADR-0026's
-  turn-is-over and a 403 stays a scope refusal: both are answers, and neither is re-asked.
+  turn to accidentally start, so the rule is simply "an answered request is an answer". A 503 is the Orchestrator's word
+  that it is stopping, so it is re-asked too ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)). A 404 stays
+  ADR-0026's turn-is-over and a 403 stays a scope refusal: both are answers, and neither is re-asked.
 - **`deliver` does not retry, and that is not an oversight.** A failed pick reaches the model as a tool error it can act
   on — pick again, or pick differently — so the turn survives one; and a POST that may have been delivered must never be
   re-sent, because a duplicate pick is a duplicate transition. The asymmetry between the Menu's two calls is the same
