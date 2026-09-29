@@ -26,11 +26,13 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
   - A resume that is too old arrives as an `ERROR` event with code 410 **inside an HTTP 200**. Any `ERROR` event
     re-lists.
   - Concurrent writes are capped (8–16). 200 parallel writes each opened a TLS connection and cost about 130% CPU.
-- **The Orchestrator watches Sandboxes only**, one watch, selected by the Instance's label. Observed: event latency p50
-  11ms, p95 92ms, max 186ms; 0 events lost across a 200-object burst and a CRD run; about 75 MiB and 3% CPU for the
-  watcher. **It never reads a Pod.** The operator owns the pod (ADR-0001) and already reads it on every reconcile, so it
-  publishes what the Orchestrator needs onto the Sandbox's status: a scheduling condition with the scheduler's message,
-  the Harness container's restarts and last terminated reason, and `podUID`.
+- **The Orchestrator watches Sandboxes only**, one watch on the Instance's namespace — the namespace is the Instance's
+  identity (ADR-0019), and `jr2 up` refuses one another Instance owns — selected by the `jr2.dev/run` label every
+  Sandbox it provisions carries. Observed: event latency p50 11ms, p95 92ms, max 186ms; 0 events lost across a
+  200-object burst and a CRD run; about 75 MiB and 3% CPU for the watcher. **It never reads a Pod.** The operator owns
+  the pod (ADR-0001) and already reads it on every reconcile, so it publishes what the Orchestrator needs onto the
+  Sandbox's status: a scheduling condition with the scheduler's message, the Harness container's restarts and last
+  terminated reason, and `podUID`.
 - **The watch drives everything that polled.**
   - Provisioning waits for `Ready` on watch events, and sees Unschedulable or a crash-looping Harness as it happens.
   - Continuity: a changed `podUID` or a gone Sandbox is `workspace.lost` within seconds (ADR-0021). A dropped watch is

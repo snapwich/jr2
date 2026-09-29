@@ -81,7 +81,8 @@ export const WATCH_TIMEOUT_SECONDS = 240;
 
 export type SandboxWatchOptions = {
   namespace: string;
-  /** This Instance's Sandboxes. Default: every CR this Orchestrator provisions carries `jr2.dev/run`. */
+  /** This Instance's Sandboxes. Default: every CR this Orchestrator provisions carries `jr2.dev/run`;
+   * the namespace is the Instance's own (ADR-0019), so no Instance label is needed to tell them apart. */
   labelSelector?: string;
   /** Back-off after a failed list or watch request: doubling from this, capped at 30s. Default 500ms. */
   backoffMs?: number;
