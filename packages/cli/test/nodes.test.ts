@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildNodes, excludedBecause, sandboxNodes, tolerates, type NodeObject } from "../src/nodes.ts";
+import { resolveSize } from "@jr2/orchestrator";
+import { anyNodeHolds, buildNodes, excludedBecause, sandboxNodes, tolerates, type NodeObject } from "../src/nodes.ts";
 
 const node = (name: string, over: Partial<NodeObject> = {}): NodeObject => ({
   metadata: { name, ...(over.metadata ?? {}) },
@@ -88,4 +89,22 @@ test("the build set is the union of ordinary-pod nodes and Sandbox nodes (ADR-00
     ["gpu", "worker"],
     "a selector narrows the Sandbox nodes, never the Orchestrator's own",
   );
+});
+
+test("anyNodeHolds: a node whose allocatable covers the whole Size holds it; no allocatable is unknown (ADR-0060)", () => {
+  const size = resolveSize({ limits: { memory: "3Gi", cpu: "2" } }, undefined);
+  const sized = (name: string, allocatable?: Record<string, string>): NodeObject => ({
+    metadata: { name },
+    ...(allocatable ? { status: { allocatable } } : {}),
+  });
+  assert.equal(
+    anyNodeHolds([sized("a", { memory: "2Gi", cpu: "8" }), sized("b", { memory: "8Gi", cpu: "2" })], size),
+    true,
+  );
+  assert.equal(
+    anyNodeHolds([sized("a", { memory: "2Gi", cpu: "8" }), sized("b", { memory: "8Gi", cpu: "1500m" })], size),
+    false,
+  );
+  assert.equal(anyNodeHolds([sized("a")], size), undefined, "unknown, never a no");
+  assert.equal(anyNodeHolds([], size), undefined);
 });

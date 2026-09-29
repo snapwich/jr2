@@ -192,20 +192,17 @@ export async function contentHash(paths: string[], salt: string, exclude: Set<st
   return h.digest("hex").slice(0, 12);
 }
 
-/** The Dockerfile every instance image is built from — generated, never user-authored (ADR-0019).
- * No git and no ssh client: the Orchestrator clones nothing (ADR-0051) — the cache agent on each
- * node does, reading the credential Secret a Repo's `secretRef` names (ADR-0047), and the attach's
- * git runs inside the Sandbox pod over `kubectl exec` (ADR-0004).
- * kubectl: the Sandbox backend shells it against the pod's ServiceAccount (sandbox-kubectl).
+/** The Dockerfile every instance image is built from — generated, never
+ * user-authored (ADR-0019). No git and no ssh client: the Orchestrator clones nothing (ADR-0051) —
+ * the cache agent on each node does, reading the credential Secret a Repo's `secretRef` names
+ * (ADR-0047), and the attach's git runs in the Sandbox pod's Harness, on its own `POST /attach`
+ * (ADR-0063). No kubectl: the Orchestrator talks to the API server with its own client on built-in
+ * `fetch`, trusting the ServiceAccount's CA through NODE_EXTRA_CA_CERTS (ADR-0063, deploy.ts).
  * tsx: in the bundle the kit's `.ts` sources live under node_modules (materialized, not
  * workspace-linked), where Node's own type stripping refuses to run — so the image runs the
  * entrypoint through tsx. An image-runtime detail only; the repo stays zero-build. */
 export const INSTANCE_DOCKERFILE = `FROM node:24-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \\
-  && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.4/bin/linux/$(dpkg --print-architecture)/kubectl" \\
-  && chmod +x /usr/local/bin/kubectl \\
-  && apt-get purge -y curl && rm -rf /var/lib/apt/lists/* \\
-  && npm install -g --no-audit --no-fund tsx@4
+RUN npm install -g --no-audit --no-fund tsx@4
 WORKDIR /instance
 COPY . .
 ENV NODE_ENV=production
@@ -888,7 +885,7 @@ export function formatBytes(bytes: number): string {
  * workflow-internal and statically unrecoverable (ADR-0031, the same line that puts an unknown image
  * name at provision). So a converge cannot know what to hold an image to. The probe lives at the one
  * place the seat IS known: the `preflight` init step at provision, in the user's own image, on the
- * mounted `/opt/jr2` (sandbox-kubectl.ts owns it). That is also the only thing that can ever prove a
+ * mounted `/opt/jr2` (sandbox-kube.ts owns it). That is also the only thing that can ever prove a
  * registry ref, which no converge sees at all — so one prover, not two that can disagree.
  */
 

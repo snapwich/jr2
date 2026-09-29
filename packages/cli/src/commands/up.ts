@@ -68,13 +68,18 @@ import {
   matchCredential,
   partsOf,
   harnessTokenDigest,
+  formatCpu,
+  formatMemory,
+  resolveSize,
   sandboxToken,
+  splitSize,
   type CarriedAgent,
   type CarriedImage,
   type CarriedRepo,
   type HeldManifest,
   type ImageRefs,
   type JR2Config,
+  type ResolvedSize,
 } from "@jr2/orchestrator";
 import { caFits, fingerprint, issueCa, issueLeaf, leafFits, trustBundles, type Pem } from "../held-pki.ts";
 import {
@@ -111,6 +116,8 @@ import {
   OPERATOR_NAMESPACE,
   OPERATOR_SELECTOR,
   operatorManifest,
+  priorityClassNames,
+  priorityClassObjects,
   REPO_CACHE,
   trustObject,
   type HeldObjects,
@@ -126,7 +133,7 @@ import {
   type KubeObject,
   type RolloutTarget,
 } from "../kube.ts";
-import { buildNodes, sandboxNodes, type NodeObject } from "../nodes.ts";
+import { anyNodeHolds, buildNodes, sandboxNodes, type NodeObject } from "../nodes.ts";
 import { activity, chooseOrBail, confirmOrBail, promptLine, readSecretInput, type Io } from "../output.ts";
 import { kindCluster, sweepImages } from "../sweep.ts";
 import { tscTypecheck } from "../typecheck.ts";
@@ -220,6 +227,32 @@ export async function up(args: string[], io: Io): Promise<number> {
           `registered: export const machine = ${customizeLine("<import>", path, slot, part)}  (${adr})`,
       );
       return 1;
+    }
+  }
+  // The Size (ADR-0060): every `workspace()` a registered Machine composes, resolved down its chain
+  // (the Machine's, then `sandbox.resources`, then the kit's) and split inside the pod, exactly as
+  // the provision will. A split that leaves the Harness below its floor is refused HERE, naming the
+  // Machine and the number to change, rather than at the first provision of a run. The resolved
+  // Sizes are kept for the Sandbox-node warning below.
+  const sizes: Array<{ workflow: string; size: ResolvedSize }> = [];
+  for (const w of workflows) {
+    for (const { path, resources, user } of partsOf([w.machine]).sizes) {
+      try {
+        const size = resolveSize(resources, config.sandbox?.resources);
+        splitSize(size, user);
+        sizes.push({ workflow: w.name, size });
+      } catch (e) {
+        const where =
+          path !== undefined && path.length
+            ? ` (on the Machine composed as ${path.map((k) => `"${k}"`).join(" → ")})`
+            : "";
+        const fix =
+          path === undefined
+            ? ""
+            : `; a composer retunes it where the Machine is registered: export const machine = ${sizeLine(path)}`;
+        activity(io, `refusing: workflow "${w.name}"${where}: ${(e as Error).message}${fix}`);
+        return 1;
+      }
     }
   }
   const agentNames = [...new Set(agents.map((a) => a.name))].join(", ") || "(none)";
@@ -329,6 +362,22 @@ export async function up(args: string[], io: Io): Promise<number> {
         io,
         "  a Sandbox lands where an ordinary pod lands; to admit a tainted or labeled node, set " +
           "`sandbox: { nodeSelector, tolerations }` in jr2.config.ts (raw pod-spec shapes, ADR-0052).",
+      );
+    }
+    // A Size no Sandbox node could hold today WARNS (ADR-0060, the ADR-0052 stance): the node set
+    // moves, and an autoscaler may bring a bigger node for the Pending pod. A node that reports no
+    // allocatable is an unknown, never a no. One line per distinct Size, naming its workflows.
+    const unheld = new Map<string, string[]>();
+    for (const { workflow, size } of sizes) {
+      if (candidates.length === 0 || anyNodeHolds(candidates, size) !== false) continue;
+      const key = `memory ${formatMemory(size.memory.bytes)}, cpu ${formatCpu(size.cpu.millis)}`;
+      unheld.set(key, [...new Set([...(unheld.get(key) ?? []), workflow])]);
+    }
+    for (const [key, names] of unheld) {
+      activity(
+        io,
+        `warning: no Sandbox node right now has the allocatable for a Size of ${key} ` +
+          `(workflow ${names.map((n) => `"${n}"`).join(", ")}) — its Sandbox stays Pending until one does`,
       );
     }
   }
@@ -459,6 +508,17 @@ export async function up(args: string[], io: Io): Promise<number> {
     return ref;
   };
 
+  // --- priority (per-cluster, shared, ADR-0060) --------------------------------------------------
+  // The two PriorityClasses, beside the CRDs and before anything that names them: a pod whose class
+  // does not exist is refused at admission. Unconditional on `operator.manage` — the Instance's own
+  // pods name them too — and skipped per key the Instance's `priorityClasses` names.
+  const classes = priorityClassObjects(config.priorityClasses);
+  for (const manifest of classes) await kube.apply({ manifest, ...ctx });
+  const named = Object.entries(config.priorityClasses ?? {}).filter(([, v]) => v !== undefined);
+  if (named.length) {
+    activity(io, `priority: the Instance's own — ${named.map(([tier, cls]) => `${tier} "${cls}"`).join(", ")}`);
+  }
+
   // --- operator (per-cluster, shared) ------------------------------------------------------------
   // The operator IMAGE is resolved whenever anything this converge deploys runs it: the operator
   // layer itself, or the data plane's cache agent, which is the same binary (`/manager repo-cache`,
@@ -485,7 +545,10 @@ export async function up(args: string[], io: Io): Promise<number> {
       activity(io, `operator: leaving v${deployed} (newer than this kit's v${KIT_VERSION} — never downgraded)`);
     } else {
       activity(io, `operator: applying v${KIT_VERSION} (${image})${deployed ? ` over v${deployed}` : ""}`);
-      await kube.apply({ manifest: await operatorManifest(image), ...ctx });
+      await kube.apply({
+        manifest: await operatorManifest(image, priorityClassNames(config.priorityClasses).control),
+        ...ctx,
+      });
       await kube.label({
         kind: "deployment",
         name: OPERATOR_DEPLOYMENT,
@@ -737,6 +800,7 @@ export async function up(args: string[], io: Io): Promise<number> {
       held: held.objects,
       imageRefs: converged,
       repoCache: carried.composesSandbox ? { image: operatorImage!, placement: config.sandbox } : undefined,
+      ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
     }),
     ...ctx,
   });
@@ -827,6 +891,7 @@ export async function up(args: string[], io: Io): Promise<number> {
         // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
         // placement from the kept key — the same shape it stamps onto every Sandbox at provision.
         bearerSha256: harnessTokenDigest(Buffer.from(signingKey, "base64"), INSTANCE_HARNESS_SERVICE),
+        ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
       }),
       ...ctx,
     });
@@ -1571,4 +1636,13 @@ function noteDeferred(io: Io, repos: CarriedRepo[]): void {
         "agent clones on first need (`jr2 status` reports sync state)",
     );
   }
+}
+
+/**
+ * The `customize` line that retunes a composed Machine's Size (ADR-0060), nested through `actors`
+ * the way `customize()` accepts — the Size twin of `customizeLine`, so the refusal pastes.
+ */
+function sizeLine(path: readonly string[]): string {
+  const binds = '{ resources: { limits: { memory: "<memory>" } } }';
+  return `customize(<import>, ${path.reduceRight((parts, key) => `{ actors: { ${key}: ${parts} } }`, binds)})`;
 }

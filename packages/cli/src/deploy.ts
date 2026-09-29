@@ -27,13 +27,18 @@ import {
   INSTANCE_HARNESS_SERVICE,
   INSTANCE_SECRET,
   KIT_VERSION,
+  NO_DISRUPT_ANNOTATIONS,
   ORCHESTRATOR_PORT,
   ORCHESTRATOR_SERVICE,
   REPO_CACHE,
+  PRIORITY_CLASS_CONTROL,
+  PRIORITY_CLASS_SANDBOX,
   REPO_CACHE_HOSTPATH,
+  SERVICE_ACCOUNT_CA,
   STATE_PVC,
   type HarnessConfig,
   type HeldManifest,
+  type PriorityClasses,
   type SandboxPlacement,
 } from "@jr2/orchestrator";
 import type { Pem } from "./held-pki.ts";
@@ -77,13 +82,21 @@ export const OPERATOR_DEPLOYMENT = "jr2-controller-manager";
 export const OPERATOR_SELECTOR = "control-plane=controller-manager";
 
 /** The rendered operator install manifest shipped inside this package (`just operator-manifest`
- * regenerates it from operator/config). The manager image ref is substituted at apply time. */
-export async function operatorManifest(image: string): Promise<string> {
+ * regenerates it from operator/config). The manager image ref is substituted at apply time, and so
+ * is its PriorityClass (ADR-0060): the manifest names `jr2-control`, and an Instance that names its
+ * own control class gets no pod that names one `jr2 up` did not create. */
+export async function operatorManifest(image: string, controlClass = PRIORITY_CLASS_CONTROL): Promise<string> {
   const raw = await readFile(fileURLToPath(new URL("../manifests/operator.yaml", import.meta.url)), "utf8");
   if (!raw.includes("image: controller:latest")) {
     throw new Error("packaged operator.yaml has no `image: controller:latest` placeholder — regenerate it");
   }
-  return raw.replace("image: controller:latest", `image: ${image}`);
+  const classLine = `priorityClassName: ${PRIORITY_CLASS_CONTROL}`;
+  if (!raw.includes(classLine)) {
+    throw new Error(`packaged operator.yaml has no \`${classLine}\` — regenerate it`);
+  }
+  return raw
+    .replace("image: controller:latest", `image: ${image}`)
+    .replace(classLine, `priorityClassName: ${controlClass}`);
 }
 
 /** Compare dotted versions: negative when a < b, 0 when equal, positive when a > b. */
@@ -98,6 +111,81 @@ export function compareVersions(a: string, b: string): number {
 }
 
 type KubeManifest = Record<string, unknown>;
+
+/**
+ * jr2's own pods are kit-sized, with no config key (ADR-0060): memory request = limit, a CPU request
+ * and NO CPU limit — a provisioning burst needs CPU, and no Agent Substrate move applies to them.
+ * The Repo cache agent is the one exception to request = limit: `git index-pack` spikes, and its OOM
+ * costs only a refetch. The operator's own size rides its manifest (operator/config).
+ */
+export const KIT_POD_SIZES = {
+  orchestrator: { requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "1Gi" } },
+  /** Its conversations are never freed yet. */
+  instanceHarness: { requests: { cpu: "250m", memory: "1Gi" }, limits: { memory: "1Gi" } },
+  /** The Instance Harness pod's Custodian: the same 64Mi/50m slice a Sandbox's takes, kit-sized. */
+  instanceCustodian: { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } },
+  repoCache: { requests: { cpu: "50m", memory: "128Mi" }, limits: { memory: "1Gi" } },
+} as const;
+
+/** A fresh copy, so no manifest shares an object with another (or with the constant). */
+const sized = (r: { requests: Record<string, string>; limits: Record<string, string> }) => ({
+  requests: { ...r.requests },
+  limits: { ...r.limits },
+});
+
+/** The PriorityClass each of jr2's two tiers runs under (ADR-0060): the Instance's own when
+ * `priorityClasses` names one, else the one `jr2 up` creates. */
+export function priorityClassNames(classes: PriorityClasses | undefined): { control: string; sandbox: string } {
+  return {
+    control: classes?.control ?? PRIORITY_CLASS_CONTROL,
+    sandbox: classes?.sandbox ?? PRIORITY_CLASS_SANDBOX,
+  };
+}
+
+/**
+ * The PriorityClasses `jr2 up` creates, cluster-scoped, beside the CRDs (ADR-0060) — one manifest
+ * each, and none for a key `priorityClasses` names, since the cluster then has its own scheme.
+ * `jr2-control` preempts lower priorities: the Orchestrator, the operator and the Repo cache agent
+ * are small, fixed, and needed by every Sandbox. `jr2-sandbox` never preempts: a waiting Sandbox
+ * evicts nobody, and an ordinary pod (priority 0) cannot preempt a live one. Both stay far below the
+ * system classes (2000000000+). Shared by every Instance on the cluster, like the operator, so they
+ * carry no instance label; a class's value and policy are immutable, and these never change.
+ */
+export function priorityClassObjects(classes: PriorityClasses | undefined): string[] {
+  const managed = { "app.kubernetes.io/managed-by": "jr2" };
+  const pc = (name: string, value: number, preemptionPolicy: string, description: string): string =>
+    JSON.stringify({
+      apiVersion: "scheduling.k8s.io/v1",
+      kind: "PriorityClass",
+      metadata: { name, labels: managed },
+      value,
+      preemptionPolicy,
+      globalDefault: false,
+      description,
+    });
+  return [
+    ...(classes?.control === undefined
+      ? [
+          pc(
+            PRIORITY_CLASS_CONTROL,
+            100000,
+            "PreemptLowerPriority",
+            "jr2 control: the Orchestrator, the operator and the Repo cache agent (ADR-0060)",
+          ),
+        ]
+      : []),
+    ...(classes?.sandbox === undefined
+      ? [
+          pc(
+            PRIORITY_CLASS_SANDBOX,
+            1000,
+            "Never",
+            "jr2 Sandboxes and the Instance Harness: never preempted by ordinary pods, never preempting (ADR-0060)",
+          ),
+        ]
+      : []),
+  ];
+}
 
 /**
  * What `jr2 up` resolved about held secrets (ADR-0059), ready to become objects. Values appear in
@@ -145,8 +233,11 @@ export function instanceObjects(opts: {
    * resolved operator ref — the same binary is the cache agent (`/manager repo-cache`). Absent, no
    * DaemonSet and none of its RBAC is applied; `up` deletes a stale one. */
   repoCache?: { image: string; placement?: SandboxPlacement };
+  /** `priorityClasses` from jr2.config.ts (ADR-0060): the classes to name instead of jr2's own. */
+  priorityClasses?: PriorityClasses;
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
+  const priority = priorityClassNames(opts.priorityClasses);
   const meta = (name: string, extra: Record<string, string> = {}): KubeManifest => ({
     name,
     namespace: opts.namespace,
@@ -167,21 +258,21 @@ export function instanceObjects(opts: {
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(ORCHESTRATOR_SA) },
     {
       // The orchestrator drives Sandbox CRs (+ their token Secrets) in its own namespace
-      // (ADR-0012/0013) and creates the Repo CRs the cache agent reconciles (ADR-0051); pod
-      // exec/port-forward are the attach path (ADR-0004).
+      // (ADR-0012/0013), watches them (ADR-0063), and creates the Repo CRs the cache agent
+      // reconciles (ADR-0051). Nothing on Pods: it never reads one — the operator publishes the pod
+      // facts on the Sandbox's status — and the attach is the Harness's own `POST /attach`, so no
+      // `pods/exec` stream crosses the API server (ADR-0063).
       apiVersion: "rbac.authorization.k8s.io/v1",
       kind: "Role",
       metadata: meta(ORCHESTRATOR_SA),
       rules: [
         { apiGroups: ["core.jr2.dev"], resources: ["sandboxes", "repos"], verbs: ["*"] },
-        // patch/update: the token Secret is `kubectl apply`d idempotently and later ownerRef-patched.
+        // patch: the token Secret is server-side applied idempotently and later ownerRef-patched.
         {
           apiGroups: [""],
           resources: ["secrets"],
           verbs: ["get", "list", "create", "delete", "patch", "update"],
         },
-        { apiGroups: [""], resources: ["pods", "pods/log"], verbs: ["get", "list", "watch"] },
-        { apiGroups: [""], resources: ["pods/exec", "pods/portforward"], verbs: ["create"] },
       ],
     },
     {
@@ -286,6 +377,9 @@ export function instanceObjects(opts: {
           metadata: { labels: { ...labels, app: ORCHESTRATOR_SERVICE } },
           spec: {
             serviceAccountName: ORCHESTRATOR_SA,
+            // Control tier (ADR-0060): small, fixed, needed by every Sandbox. No disruption opt-out:
+            // a restarted Orchestrator re-attaches (ADR-0007).
+            priorityClassName: priority.control,
             containers: [
               {
                 name: "orchestrator",
@@ -300,6 +394,10 @@ export function instanceObjects(opts: {
                   // the image tag carries (ADR-0019), in-process so a CLI can ask over HTTP
                   // instead of needing kube access to read the Deployment's labels.
                   { name: "JR2_CONTENT_HASH", value: opts.hash },
+                  // The API server's trust (ADR-0063): the Orchestrator's own Kubernetes client is
+                  // built-in `fetch`, which trusts the ServiceAccount's CA through this and nothing
+                  // else — no TLS code, no dependency.
+                  { name: "NODE_EXTRA_CA_CERTS", value: SERVICE_ACCOUNT_CA },
                 ],
                 // The Orchestrator creates Repo resources and never clones (ADR-0051) — the cache
                 // agent on each node does, reading the credential Secret a Repo's `secretRef`
@@ -313,6 +411,7 @@ export function instanceObjects(opts: {
                   // and hosts, which this process could not derive — its `.env` values are absent.
                   { name: "held", mountPath: HELD_MOUNT, readOnly: true },
                 ],
+                resources: sized(KIT_POD_SIZES.orchestrator),
                 // The period, not the boot, is what `up`'s rollout wait measures. Measured: the
                 // container answers `/healthz` 1.1s after it starts, and the default 10s period
                 // billed that as 11.0s — one probe fired before the server was up, then a whole
@@ -352,7 +451,15 @@ export function instanceObjects(opts: {
       },
     },
     ...harnessIngressPolicies(opts.name, meta),
-    ...(opts.repoCache ? repoCacheObjects({ ...opts.repoCache, namespace: opts.namespace, labels, meta }) : []),
+    ...(opts.repoCache
+      ? repoCacheObjects({
+          ...opts.repoCache,
+          namespace: opts.namespace,
+          labels,
+          meta,
+          priorityClassName: priority.control,
+        })
+      : []),
   ];
 
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
@@ -425,8 +532,10 @@ function repoCacheObjects(opts: {
   namespace: string;
   labels: Record<string, string>;
   meta: (name: string, extra?: Record<string, string>) => KubeManifest;
+  /** The control tier's class (ADR-0060): every Sandbox on the node needs this agent. */
+  priorityClassName: string;
 }): KubeManifest[] {
-  const { image, namespace, labels, meta, placement } = opts;
+  const { image, namespace, labels, meta, placement, priorityClassName } = opts;
   return [
     { apiVersion: "v1", kind: "ServiceAccount", metadata: meta(REPO_CACHE) },
     {
@@ -463,6 +572,7 @@ function repoCacheObjects(opts: {
           spec: {
             serviceAccountName: REPO_CACHE,
             automountServiceAccountToken: true,
+            priorityClassName,
             // One agent per Sandbox node (ADR-0052): the pod's own placement, verbatim. A node no
             // Sandbox can reach gets no agent — a cache there is a clone nobody reads, and an
             // affinity term the scheduler cannot honor. (The DaemonSet controller still adds its
@@ -487,7 +597,8 @@ function repoCacheObjects(opts: {
                   { name: "home", mountPath: REPO_CACHE_HOME },
                   { name: "tmp", mountPath: "/tmp" },
                 ],
-                resources: { requests: { cpu: "20m", memory: "64Mi" } },
+                // Kit-sized (ADR-0060): the one request below its limit — `git index-pack` spikes.
+                resources: sized(KIT_POD_SIZES.repoCache),
                 securityContext: {
                   runAsUser: 0,
                   runAsGroup: 0,
@@ -610,6 +721,8 @@ export function instanceHarnessObjects(opts: {
    * every Sandbox Harness container gets, so this pod can verify the Orchestrator and mint
    * nothing. */
   bearerSha256: string;
+  /** `priorityClasses` from jr2.config.ts (ADR-0060): the classes to name instead of jr2's own. */
+  priorityClasses?: PriorityClasses;
 }): string {
   const labels = { [LABEL_INSTANCE]: opts.name, "app.kubernetes.io/managed-by": "jr2" };
   const meta = (): KubeManifest => ({
@@ -635,6 +748,7 @@ export function instanceHarnessObjects(opts: {
     image: opts.custodianImage,
     token: { secret: INSTANCE_SECRET, key: "JR2_INSTANCE_HARNESS_TOKEN" },
     caBundle: opts.caBundle === true,
+    resources: sized(KIT_POD_SIZES.instanceCustodian),
   });
 
   const harnessContainer = {
@@ -672,6 +786,7 @@ export function instanceHarnessObjects(opts: {
       periodSeconds: 2,
       failureThreshold: 15,
     },
+    resources: sized(KIT_POD_SIZES.instanceHarness),
     securityContext: hardenedContainerSecurityContext(),
   };
 
@@ -693,10 +808,14 @@ export function instanceHarnessObjects(opts: {
           metadata: {
             labels: { ...labels, app: INSTANCE_HARNESS_SERVICE },
             // A held-secret edit rolls this pod; a live Sandbox keeps what its Custodian read at
-            // start (ADR-0059, the ADR-0037 stance).
-            annotations: { [ANNOTATION_HELD_DIGEST]: opts.heldDigest },
+            // start (ADR-0059, the ADR-0037 stance). Moving it loses its live conversations, so no
+            // autoscaler may choose to (ADR-0060) — a drain still can.
+            annotations: { [ANNOTATION_HELD_DIGEST]: opts.heldDigest, ...NO_DISRUPT_ANNOTATIONS },
           },
           spec: {
+            // The Sandbox tier's class (ADR-0060): it holds live conversations, as a Sandbox holds
+            // `/work`, and it may wait rather than preempt.
+            priorityClassName: priorityClassNames(opts.priorityClasses).sandbox,
             containers: [harnessContainer, custodian.custodianContainer],
             // The operator's isolation baseline (sandbox_controller.go), mirrored: same Harness
             // image, same "never reach the Kubernetes API" north star — JR2_MENU_ONLY makes code

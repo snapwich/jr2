@@ -7,13 +7,13 @@
 // at the moment of the read. The set moves (a pool autoscales, a node is cordoned), which is why an
 // empty set is reported and never refused.
 
-import type { SandboxPlacement, Toleration } from "@jr2/orchestrator";
+import { cpuMillis, memoryBytes, type ResolvedSize, type SandboxPlacement, type Toleration } from "@jr2/orchestrator";
 
 /** A cluster node, read for the facts that decide placement and platform (ADR-0045/0052). */
 export type NodeObject = {
   metadata: { name: string; labels?: Record<string, string> };
   spec?: { unschedulable?: boolean; taints?: readonly Taint[] };
-  status?: { nodeInfo?: { architecture?: string } };
+  status?: { nodeInfo?: { architecture?: string }; allocatable?: Record<string, string> };
 };
 
 export type Taint = { key: string; value?: string; effect: string };
@@ -71,4 +71,29 @@ export function tolerates(t: Toleration, taint: Taint): boolean {
   if (t.key !== taint.key) return false;
   if (t.operator === "Exists") return true;
   return (t.value ?? "") === (taint.value ?? "");
+}
+
+/**
+ * Whether any of `nodes` could hold `size` (ADR-0060): its allocatable memory and cpu both at least
+ * the whole Size — what the scheduler compares a Guaranteed pod against on an empty node. `undefined`
+ * when no node reports allocatable, which is an unknown, never a no. A WARNING at `jr2 up`, never a
+ * refusal: the node set moves (ADR-0052), and a pool may scale up a bigger node tomorrow.
+ */
+export function anyNodeHolds(nodes: readonly NodeObject[], size: ResolvedSize): boolean | undefined {
+  let known = false;
+  for (const node of nodes) {
+    const alloc = node.status?.allocatable;
+    if (alloc?.memory === undefined || alloc.cpu === undefined) continue;
+    let memory: number;
+    let cpu: number;
+    try {
+      memory = memoryBytes(alloc.memory);
+      cpu = cpuMillis(alloc.cpu);
+    } catch {
+      continue;
+    }
+    known = true;
+    if (memory >= size.memory.bytes && cpu >= size.cpu.millis) return true;
+  }
+  return known ? false : undefined;
 }

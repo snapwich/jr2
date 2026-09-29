@@ -100,7 +100,7 @@ class FakeCluster implements KubeAdmin {
   nodes: Array<{
     metadata: { name: string; labels?: Record<string, string> };
     spec?: { unschedulable?: boolean; taints?: Array<{ key: string; value?: string; effect: string }> };
-    status?: { nodeInfo?: { architecture?: string } };
+    status?: { nodeInfo?: { architecture?: string }; allocatable?: Record<string, string> };
   }> = [{ metadata: { name: "kind-test-control-plane" }, status: { nodeInfo: { architecture: "amd64" } } }];
   imageMaps: Array<{ metadata: { name: string; namespace?: string }; data?: Record<string, string> }> = [];
   clusterPods: Array<{
@@ -1220,7 +1220,8 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
   // The Orchestrator neither clones nor holds a key: its one claim is its state, its mounts are
   // state, the image map and the held-secret manifest (names and hosts, never a value — ADR-0059),
   // and its env is its namespace and content hash — the credential rides the Secret above and is
-  // read only by the cache agent.
+  // read only by the cache agent. The one addition is the API server's trust, for its own client
+  // (ADR-0063).
   assert.deepEqual(
     items.filter((i) => i.kind === "PersistentVolumeClaim").map((i) => i.metadata.name),
     ["jr2-state"],
@@ -1233,7 +1234,12 @@ test("a bound Repo is narrated as the boot's to create; the token env vars git.c
   );
   assert.deepEqual(
     podSpec.containers[0].env.map((e: { name: string }) => e.name),
-    ["JR2_NAMESPACE", "JR2_CONTENT_HASH"],
+    ["JR2_NAMESPACE", "JR2_CONTENT_HASH", "NODE_EXTRA_CA_CERTS"],
+  );
+  // Built-in `fetch` trusts the API server through the ServiceAccount's own CA (ADR-0063).
+  assert.equal(
+    podSpec.containers[0].env.find((e: { name: string }) => e.name === "NODE_EXTRA_CA_CERTS").value,
+    "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
   );
 });
 
@@ -1444,6 +1450,10 @@ test("the Orchestrator's Role reaches the Repo resources it creates", async () =
     crds.resources.includes("repos"),
     `the Orchestrator creates, labels, and lists Repos (got: ${crds.resources})`,
   );
+  // …and nothing on Pods (ADR-0063): it never reads one — the operator publishes the pod facts on
+  // the Sandbox — and the attach is the Harness's own route, so `pods/exec` is not the Orchestrator's.
+  const podRules = role.rules.filter((r: { resources: string[] }) => r.resources.some((x) => x.startsWith("pods")));
+  assert.deepEqual(podRules, [], "no pods, pods/log, pods/exec or pods/portforward");
 });
 
 test("no Machine composing a Sandbox → no cache agent, and a stale one is deleted on converge", async () => {
@@ -2489,4 +2499,193 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
     items.find((i) => i.metadata.name === "jr2-held-secrets")!.stringData.ANTHROPIC_API_KEY === "sk-litellm-secret",
     "…the Custodian's Secret",
   );
+});
+
+// --- the Size and the priority tiers (ADR-0060) ------------------------------------------------
+
+/** A `workspace()` that states a Size, and optionally a User Container split — `under` composes it
+ * one level down, as a packaged Machine arrives. */
+async function withSized(root: string, resources: string, user?: string, under?: "child"): Promise<string> {
+  const sized =
+    `workspace(body, { repos: { app: "https://e.test/a.git" }, spec: () => ({ branch: "b" }), ` +
+    `resources: ${resources}${user ? `, user: ${user}` : ""} })`;
+  await writeFile(
+    join(root, "workflows", "sized.ts"),
+    `import { jr2Setup, workspace } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const body = jr2Setup({ events: [] })\n` +
+      `  .createMachine({ id: "body", initial: "done", states: { done: { type: "final" } } });\n` +
+      (under === "child"
+        ? `export const machine = jr2Setup({ events: [], actors: { review: ${sized} } })\n` +
+          `  .createMachine({ id: "host", initial: "reviewing", states: { reviewing: { invoke: { src: "review" } } } });\n`
+        : `export const machine = ${sized};\n`),
+  );
+  return root;
+}
+
+/** Every object this converge applied, flattened out of Lists, by `<kind>/<name>`. */
+function appliedObjects(w: World): Map<string, Record<string, any>> {
+  const out = new Map<string, Record<string, any>>();
+  for (const manifest of w.kube.applied) {
+    if (!manifest.trimStart().startsWith("{")) continue;
+    const doc = JSON.parse(manifest) as Record<string, any>;
+    for (const i of doc.kind === "List" ? doc.items : [doc]) out.set(`${i.kind}/${i.metadata?.name}`, i);
+  }
+  return out;
+}
+
+test("a split that leaves the Harness below its floor is refused at the converge, naming the number and the line", async () => {
+  const root = await withSized(
+    await mkInstance(`export default { name: "myinst" };\n`),
+    `{ limits: { memory: "1Gi" } }`,
+    `{ image: "ghcr.io/acme/sshd:1", resources: { limits: { memory: "800Mi" } } }`,
+    "child",
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  const err = w.err.join("\n");
+  assert.match(
+    err,
+    /refusing: workflow "sized" \(on the Machine composed as "review"\): the Size leaves the Harness container 160Mi/,
+  );
+  assert.match(err, /the User Container's 800Mi \(its user\.resources\.limits\.memory\)/);
+  assert.match(
+    err,
+    /export const machine = customize\(<import>, \{ actors: \{ review: \{ resources: \{ limits: \{ memory: "<memory>" \} \} \} \} \}\)/,
+  );
+  assert.deepEqual(w.kube.applied, [], "not even the namespace");
+  assert.deepEqual(w.built, []);
+});
+
+test("the Instance default is split too: a sandbox.resources below the floor is refused naming jr2.config.ts", async () => {
+  const root = await withWorkspace(
+    await mkInstance(`export default { name: "myinst", sandbox: { resources: { limits: { memory: "300Mi" } } } };\n`),
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 1);
+  assert.match(w.err.join("\n"), /sandbox\.resources\.limits\.memory in jr2\.config\.ts/);
+});
+
+test("a Size no Sandbox node could hold WARNS and converges; a node reporting no allocatable is no evidence", async () => {
+  const root = await withSized(
+    await mkInstance(`export default { name: "myinst" };\n`),
+    `{ limits: { memory: "64Gi", cpu: "2" } }`,
+  );
+  const w = mkWorld(root);
+  w.kube.nodes = [
+    {
+      metadata: { name: "small" },
+      status: { nodeInfo: { architecture: "amd64" }, allocatable: { memory: "16Gi", cpu: "8" } },
+    },
+  ];
+  assert.equal(await up(["--yes"], w.io), 0, "a warning, never a refusal — the node set moves");
+  assert.match(
+    w.err.join("\n"),
+    /warning: no Sandbox node right now has the allocatable for a Size of memory 64Gi, cpu 2 \(workflow "sized"\)/,
+  );
+
+  const fits = mkWorld(root);
+  fits.kube.nodes = [
+    {
+      metadata: { name: "big" },
+      status: { nodeInfo: { architecture: "amd64" }, allocatable: { memory: "128Gi", cpu: "32" } },
+    },
+  ];
+  assert.equal(await up(["--yes"], fits.io), 0);
+  assert.doesNotMatch(fits.err.join("\n"), /has the allocatable/);
+
+  const unknown = mkWorld(root); // the default fake node reports no allocatable
+  assert.equal(await up(["--yes"], unknown.io), 0);
+  assert.doesNotMatch(unknown.err.join("\n"), /has the allocatable/);
+});
+
+test("`jr2 up` creates the two PriorityClasses before the operator, and none for a key the Instance names", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const objects = appliedObjects(w);
+  assert.deepEqual(
+    { ...objects.get("PriorityClass/jr2-control"), metadata: undefined, description: undefined },
+    {
+      apiVersion: "scheduling.k8s.io/v1",
+      kind: "PriorityClass",
+      metadata: undefined,
+      value: 100000,
+      preemptionPolicy: "PreemptLowerPriority",
+      globalDefault: false,
+      description: undefined,
+    },
+  );
+  assert.equal(objects.get("PriorityClass/jr2-sandbox")!.value, 1000);
+  assert.equal(objects.get("PriorityClass/jr2-sandbox")!.preemptionPolicy, "Never");
+  // Before anything that names them: a pod whose class does not exist is refused at admission.
+  const firstClass = w.kube.applied.findIndex((m) => m.includes(`"kind":"PriorityClass"`));
+  const operator = w.kube.applied.findIndex((m) => m.includes("controller-manager"));
+  assert.ok(firstClass >= 0 && firstClass < operator, "the classes precede the operator layer");
+
+  const own = await withWorkspace(
+    await mkInstance(`export default { name: "own", priorityClasses: { sandbox: "batch-low" } };\n`, "own"),
+  );
+  const o = mkWorld(own);
+  assert.equal(await up(["--yes"], o.io), 0);
+  const ownObjects = appliedObjects(o);
+  assert.ok(ownObjects.has("PriorityClass/jr2-control"), "the key it did not name is still jr2's");
+  assert.ok(!ownObjects.has("PriorityClass/jr2-sandbox"), "the cluster's own scheme names the other");
+});
+
+test("the operator runs under the Instance's control class when `priorityClasses` names one", async () => {
+  const root = await withWorkspace(
+    await mkInstance(`export default { name: "own", priorityClasses: { control: "ops-high" } };\n`, "own"),
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const operatorApply = w.kube.applied.find((m) => m.includes("controller-manager") && m.includes("kind: Deployment"));
+  assert.ok(operatorApply, "the operator layer was applied");
+  assert.match(operatorApply, /priorityClassName: ops-high/);
+  assert.doesNotMatch(operatorApply, /priorityClassName: jr2-control/, "no pod names a class jr2 did not create");
+  assert.ok(!appliedObjects(w).has("PriorityClass/jr2-control"));
+});
+
+test("jr2's own pods are kit-sized: memory request = limit, a cpu request, no cpu limit, and the control class", async () => {
+  const root = await withWorkspace(await mkInstance(`export default { name: "myinst" };\n`));
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const objects = appliedObjects(w);
+  const orch = objects.get("Deployment/jr2-orchestrator")!.spec.template.spec;
+  assert.equal(orch.priorityClassName, "jr2-control");
+  assert.deepEqual(orch.containers[0].resources, {
+    requests: { cpu: "500m", memory: "1Gi" },
+    limits: { memory: "1Gi" },
+  });
+  assert.equal(
+    objects.get("Deployment/jr2-orchestrator")!.spec.template.metadata.annotations,
+    undefined,
+    "a restarted Orchestrator re-attaches — no disruption opt-out",
+  );
+  const cache = objects.get("DaemonSet/jr2-repo-cache")!.spec.template.spec;
+  assert.equal(cache.priorityClassName, "jr2-control");
+  // The one exception: `git index-pack` spikes, and its OOM costs only a refetch.
+  assert.deepEqual(cache.containers[0].resources, {
+    requests: { cpu: "50m", memory: "128Mi" },
+    limits: { memory: "1Gi" },
+  });
+});
+
+test("the Instance Harness: kit-sized, the sandbox class, and the two disruption opt-outs (ADR-0060)", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", priorityClasses: { sandbox: "batch-low" } };\n`,
+    "myinst",
+    {
+      triager: { model: "anthropic/claude-haiku-x", workspace: "none" },
+    },
+  );
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const deploy = appliedObjects(w).get("Deployment/jr2-instance-harness")!;
+  const pod = deploy.spec.template;
+  assert.equal(pod.spec.priorityClassName, "batch-low");
+  assert.equal(pod.metadata.annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"], "false");
+  assert.equal(pod.metadata.annotations["karpenter.sh/do-not-disrupt"], "true");
+  const [harness, custodian] = pod.spec.containers;
+  assert.deepEqual(harness.resources, { requests: { cpu: "250m", memory: "1Gi" }, limits: { memory: "1Gi" } });
+  assert.deepEqual(custodian.resources, { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } });
 });

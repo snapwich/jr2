@@ -99,7 +99,7 @@ export async function readRoots(kube: KubeAdmin, ctx: { context?: string } = {})
   }
 
   // 2. what a parked Workspace's pod will be recreated with — the Sandbox Image AND every sidecar's
-  // ref. The CR always carries the Custodian as a sidecar (sandbox-kubectl.ts), and its ref is not
+  // ref. The CR always carries the Custodian as a sidecar (sandbox-kube.ts), and its ref is not
   // covered by the other roots: a running Sandbox is deliberately never re-imaged, so an `up` that
   // moved the Custodian's pin leaves the CR naming the OLD one while the map names the new. If that pod
   // is then lost (node restart, eviction, drain), the recreated one pulls the CR's sidecar ref —
