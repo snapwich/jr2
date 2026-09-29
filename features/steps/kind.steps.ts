@@ -570,9 +570,9 @@ Then("the connection never completes", function (this: E2EWorld): void {
 });
 
 /**
- * The detached review worktree (ADR-0028), attached the way the attach step will: the same
- * idempotent script lines `attachScript` emits with a `reviewSha`, exec'd in the Harness
- * container. Played from here rather than through a workflow because the Workspace-port verb
+ * The detached review worktree (ADR-0028), attached the way the attach step does: the same
+ * idempotent git steps the Harness's `POST /attach` runs with a `reviewSha` (ADR-0063), exec'd in
+ * the Harness container. Played from here rather than through a workflow because the Workspace-port verb
  * that requests it per review round is a later phase — what this tier pins is the containment
  * property of the worktree itself, on a real pod with the real shared clone.
  */
@@ -734,8 +734,10 @@ Then("the model was shown the tool result {string}", async function (this: E2EWo
  * Two of the contracts are process-level settings of the Harness itself, made AFTER execve, so an
  * `exec` shell inherits neither and the image carries no jr2 `ENV` at all (ADR-0037). Each needs an
  * observation that can actually see it:
- *   - umask 002 is kernel state, so `/proc/1/status` reports it live (PID 1 is the Harness — the
- *     container's command, and `shareProcessNamespace` stays off, ADR-0005). Defence in depth
+ *   - umask 002 is kernel state, so `/proc/<pid>/status` reports it live. The Harness is NOT PID 1:
+ *     tini is (ADR-0061), and the Harness is its one child — found by its command line, which
+ *     starts with the runtime's node (tini's own starts with tini). `shareProcessNamespace` stays
+ *     off (ADR-0005), so these are the container's processes alone. Defence in depth
  *     behind the attach's default ACL: outside a repo tree only the umask keeps jr2's writes
  *     group-writable. The supplemental gid proves the ownership half (fsGroup) arrived.
  *   - PATH must be APPENDED, so the image's own toolchain wins and jr2's vendored bin is the
@@ -762,7 +764,11 @@ Then("the Harness container satisfies the injection contracts", async function (
     // PATH is the image's own — which is exactly the point.
     `/opt/jr2/bin/node -e ''`,
     `/opt/jr2/bin/rg --version >/dev/null`,
-    `printf 'umask=%s\\n' "$(sed -n 's/^Umask:[[:space:]]*//p' /proc/1/status)"`,
+    // tini is PID 1 (ADR-0061): it reaps what the memory guard's kill orphans.
+    `[ "$(tr '\\0' ' ' </proc/1/cmdline | cut -d' ' -f1)" = /opt/jr2/bin/tini ]`,
+    `harness=; for p in /proc/[0-9]*; do if tr '\\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q '^/opt/jr2/bin/node /opt/jr2/src/main.ts'; then harness="$p"; fi; done`,
+    `[ -n "$harness" ]`,
+    `printf 'umask=%s\\n' "$(sed -n 's/^Umask:[[:space:]]*//p' "$harness/status")"`,
     `printf 'node=%s\\n' "$(command -v node)"`,
   ].join("\n");
   const out = await kubectl(this, ["exec", `pod/${pod}`, "-c", "harness", "--", "sh", "-ec", script]);

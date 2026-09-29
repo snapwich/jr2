@@ -139,8 +139,8 @@ Feature: a workspace() run drives a real Sandbox on kind
       When the orchestrator stops
       And the run's Sandbox is reaped behind its back
       And the orchestrator starts again
-      # The reconcile probe found the CR gone and delivered `workspace.lost` INTO the body, whose
-      # policy settled it. The unpushed commits are gone; resuming would have been a lie.
+      # The Sandbox watch's first list found the CR gone and delivered `workspace.lost` INTO the
+      # body, whose policy settled it (ADR-0063). The unpushed commits are gone; resuming would have been a lie.
       Then the run's body settled as "lost"
       And no Sandbox was re-provisioned for the run
 
@@ -269,9 +269,9 @@ Feature: a workspace() run drives a real Sandbox on kind
       When I start the "sandboxed" workflow detached
       Then the run's Sandbox becomes Ready
       And the run's Sandbox has repo "app" checked out on branch "feat-e2e"
-      # The same idempotent lines attachScript emits (ADR-0028), played in the pod. The Workspace
-      # -port verb that requests this per review round is a later, workflow-driven change; what
-      # this scenario pins is the containment property those lines buy.
+      # The same idempotent git steps the Harness's attach runs (ADR-0028, ADR-0063), played in the
+      # pod. The Workspace-port verb that requests this per review round is a later, workflow-driven
+      # change; what this scenario pins is the containment property those lines buy.
       When a detached review worktree is attached for repo "app" at the head of branch "feat-e2e"
       And the review worktree gets a write probe and a commit
       Then the branch ref of repo "app" branch "feat-e2e" is unmoved

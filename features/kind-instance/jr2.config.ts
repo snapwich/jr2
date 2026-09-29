@@ -23,6 +23,11 @@ import { defineConfig } from "@jr2/orchestrator";
 export default defineConfig({
   name: "jr2-e2e-kind",
   git: { credentials: [{ match: "seed.jr2-e2e-seed.svc/" }] },
+  // The Size of every Sandbox this tier provisions (ADR-0060): below the kit default, because jr2
+  // reserves the whole Size and the tier runs four scenarios at once on ONE kind node — at 2Gi and
+  // one cpu each, beside every scenario's kit-sized control pods, a 4-core runner leaves Sandboxes
+  // Pending. The Harness still gets 960Mi and 450m after the Custodian's share.
+  sandbox: { resources: { limits: { memory: "1Gi", cpu: "500m" } } },
   harness: {
     provider: {
       id: "fake",
