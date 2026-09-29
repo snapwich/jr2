@@ -1,7 +1,7 @@
 // The resolved key→ref image map, from the READ side (ADR-0037/0038/0049). `jr2 up` builds every
 // image it deploys and writes this map into the `jr2-images` ConfigMap; the Sandbox port consults it
 // when it creates a pod. This module is the shape both sides agree on — deliberately its own file,
-// not folded into sandbox-kubectl.ts, because the CLI needs the type without dragging in the
+// not folded into sandbox-kube.ts, because the CLI needs the type without dragging in the
 // kubectl port.
 //
 // The map is NESTED, never flat. The kit's own `harness` and the `custodian` sit beside a `sandbox`
@@ -231,9 +231,10 @@ export type ResolvedImage = {
    * preflight — and that container never starts, so `kubectl logs -c preflight` prints nothing. The
    * record is the one place that can see it coming: `docker inspect` at converge already put the
    * string in the map, so the provision can fail BEFORE it applies anything. Only a BUILT image is
-   * knowable here; a registry ref was never inspected, so it answers undefined and that pod is
-   * caught later, from the cluster (`rootImageFault` in sandbox-kubectl.ts) — same fault, same fix,
-   * one round trip more expensive.
+   * knowable here; a registry ref was never inspected, so it answers undefined and that pod runs
+   * out the provision's Ready budget, whose message names the numeric non-root `USER` among the
+   * floor's causes (sandbox-kube.ts). The Orchestrator reads no Pod (ADR-0063), so the kubelet's
+   * waiting reason is not visible to it.
    */
   refusedUser?: string;
 };

@@ -1,57 +1,84 @@
-// kubectlSandbox — the CR/exec MAPPING, against a fake process seam (the cluster itself is the
-// kind e2e tier's job). What matters here: the CR carries the run labels and names its Repos by
-// cache key (ADR-0051), Ready gates provisioning (returning the CR's own svc-DNS endpoint), the
-// attach script is the idempotent ADR-0004 sequence off `/repos/<key>`, every Repo's resource is
-// ensured before the CR names it and the operator's Ready verdict on it is read (a clone that
+// kubeSandbox — the CR MAPPING and the waits, against the fake API server (_fake-kube.ts) with
+// the operator played by the test (the cluster itself is the kind e2e tier's job). What matters
+// here: the CR carries the run labels and names its Repos by cache key (ADR-0051), Ready gates
+// provisioning on WATCH EVENTS (ADR-0063) and returns the CR's own svc-DNS endpoint, the attach is
+// the Harness's `POST /attach` with the Harness bearer (ADR-0058, ADR-0063), every Repo's resource
+// is ensured before the CR names it and the operator's Ready verdict on it is read (a clone that
 // failed fails the provision by name; a fetch that failed makes the attach stale), the credentials
-// fence refuses a per-run url no entry admits before anything is applied, and — since
-// ADR-0037/0038/0049 — `spec.image` is RESOLVED from the mounted image map on every provision
-// rather than pinned at construction, by the CONTENT DIGEST of the `file:` context the
-// `workspace()` named.
+// fence refuses a per-run url no entry admits before anything is applied, the lease is a merge
+// patch and Continuity is the watch's (ADR-0021), a memory kill is named from the operator's
+// status (ADR-0061), and — since ADR-0037/0038/0049 — `spec.image` is RESOLVED from the mounted
+// image map on every provision rather than pinned at construction, by the CONTENT DIGEST of the
+// `file:` context the `workspace()` named.
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { EMPTY_HELD, leafStem, standIn, type HeldManifest } from "../src/held-secrets.ts";
 import { imageContextDigest } from "../src/images.ts";
+import { kubeClient } from "../src/kube-client.ts";
 import { repoKey } from "../src/repo-identity.ts";
-import { attachScript, kubectlSandbox, rootImageFault } from "../src/sandbox-kubectl.ts";
-import type { KubectlExec } from "../src/sandbox-kubectl.ts";
+import { kubeSandbox, memoryFaultOf } from "../src/sandbox-kube.ts";
+import { watchSandboxes } from "../src/sandbox-watch.ts";
 import { harnessToken, harnessTokenDigest } from "../src/tokens.ts";
 import type { RepoResources } from "../src/repos.ts";
-import type { ProvisionedRepo } from "../src/workspace.ts";
+import type { AttachRequest } from "../src/wire.ts";
+import type { Continuity, ProvisionedRepo } from "../src/workspace.ts";
+import { fakeKube, type FakeCall } from "./_fake-kube.ts";
+import { waitFor } from "./_fixtures.ts";
 
-type Call = { args: string[]; input?: string };
+/** The status the operator publishes once a Sandbox is serving. */
+const READY = { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-1" };
+const PENDING = { phase: "Pending" };
 
-/** Script kubectl by verb: each handler sees the full argv and returns stdout (or throws). */
-function fakeExec(handlers: Record<string, (call: Call) => string>) {
-  const calls: Call[] = [];
-  const exec: KubectlExec = async (args, opts) => {
-    const call = { args, input: opts?.input };
-    calls.push(call);
-    // A `get` is not one question any more: the provision loop reads the POD as well as the CR,
-    // for a fault the Sandbox's phase cannot express. An unregistered pod read answers NotFound —
-    // the shape every provision has for its first moment, and what every test not about the fault
-    // wants, since the port must read "absent" as "too early", never as "healthy".
-    const key = args[0] === "get" && args[1] === "pod" ? "get pod" : args[0]!;
-    const handler = handlers[key];
-    if (!handler) {
-      if (key === "get pod") throw new Error(`pods "${args[2]}" not found`);
-      throw new Error(`unexpected kubectl ${args[0]}`);
-    }
-    return { stdout: handler(call), stderr: "" };
-  };
-  return { exec, calls };
+const stops: Array<() => void> = [];
+after(() => stops.forEach((stop) => stop()));
+
+/**
+ * The fake API server with the operator played: every Sandbox APPLIED is answered by each status
+ * in `script`, one watch event apiece, in order — `[READY]` unless a test says otherwise, `[]` for
+ * an operator that never answers. `exec` is what the port is wired with (the client, the watch,
+ * and a fake Harness for the attach); `calls` is every write the port made.
+ */
+function cluster(script: object[] = [READY], harness?: (req: AttachRequest, auth: string | null) => Response) {
+  const api = fakeKube();
+  const client = kubeClient({ baseUrl: "https://kube.test", fetch: api.fetch, token: async () => api.token });
+  const watch = watchSandboxes(client, { namespace: "default", backoffMs: 5 });
+  stops.push(() => watch.stop());
+  api.onWrite((plural, obj, call) => {
+    if (plural !== "sandboxes" || call.contentType !== "application/apply-patch+yaml") return;
+    const name = obj.metadata.name;
+    void (async () => {
+      for (const status of script) {
+        await new Promise((r) => setTimeout(r, 1));
+        api.setStatus("sandboxes", name, status);
+      }
+    })();
+  });
+  const attaches: Array<{ url: string; body: AttachRequest; auth: string | null }> = [];
+  const harnessFetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    const body = JSON.parse(String(init.body)) as AttachRequest;
+    const auth = new Headers(init.headers).get("authorization");
+    attaches.push({ url: String(input), body, auth });
+    if (harness) return harness(body, auth);
+    const repos = Object.fromEntries(
+      body.slots.map((s) => [s.slot, `/work/${s.slot}/${body.branch.replace(/\//g, "-")}`]),
+    );
+    return Response.json({ repos });
+  }) as typeof fetch;
+  return { api, calls: api.writes, attaches, exec: { client, watch, harnessFetch } };
 }
 
 /** Every provision applies a token Secret first (the Custodian is unconditional — ADR-0013), so
- * "the CR" is the apply whose body is a Sandbox, never simply the first call. */
-const crOf = (calls: Call[]): any =>
-  JSON.parse(calls.find((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))!.input!);
+ * "the CR" is the apply of a Sandbox, never simply the first write. */
+const applies = (calls: FakeCall[], plural: string): any[] =>
+  calls
+    .filter((c) => c.contentType === "application/apply-patch+yaml" && c.target.startsWith(`${plural}/`))
+    .map((c) => c.body);
+const crOf = (calls: FakeCall[]): any => applies(calls, "sandboxes")[0];
 
 /** The mounted `jr2-images` map (ADR-0038) as a real file — the port reads it per provision. */
 async function mkImages(refs: unknown): Promise<string> {
@@ -123,7 +150,6 @@ const NOTHING_HELD = await mkHeld(EMPTY_HELD);
 const provisionable = {
   signingKey: Buffer.from("k"),
   heldPath: NOTHING_HELD,
-  pollMs: 1,
   repos: fakeRepos().port,
 };
 
@@ -134,17 +160,19 @@ const APP_KEY = repoKey(APP_URL);
 const app: ProvisionedRepo = { slot: "app", url: APP_URL, perRun: false };
 const withApp = { repos: [app] };
 
-const readyStatus = JSON.stringify({
-  status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-1" },
-});
+/** The CPU hints every Harness container carries (ADR-0060): its own `limits.cpu`, whole cpus. */
+const CPU_HINTS = ["JR2_CPUS", "OMP_NUM_THREADS", "PYTHON_CPU_COUNT", "GOMAXPROCS"].map((name) => ({
+  name,
+  valueFrom: { resourceFieldRef: { resource: "limits.cpu", divisor: "1" } },
+}));
 
 test("the Instance's `sandbox` placement rides the CR verbatim; absent, the CR says nothing (ADR-0052)", async () => {
   const placement = {
     nodeSelector: { pool: "agents" },
     tolerations: [{ key: "gpu", operator: "Exists" as const, effect: "NoSchedule" as const }],
   };
-  const placed = fakeExec({ apply: () => "applied", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, placement, exec: placed.exec });
+  const placed = cluster();
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, placement, ...placed.exec });
   await port.provision({ name: "sb-p", runId: "run-1", workflow: "coding", ...withApp });
   const spec = crOf(placed.calls).spec;
   // Raw pod-spec shapes, copied by the operator onto the pod with nothing merged in — its own soft
@@ -152,25 +180,29 @@ test("the Instance's `sandbox` placement rides the CR verbatim; absent, the CR s
   assert.deepEqual(spec.nodeSelector, { pool: "agents" });
   assert.deepEqual(spec.tolerations, [{ key: "gpu", operator: "Exists", effect: "NoSchedule" }]);
 
-  const bare = fakeExec({ apply: () => "applied", patch: () => "ok", get: () => readyStatus });
-  const unplaced = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec: bare.exec });
+  const bare = cluster();
+  const unplaced = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...bare.exec });
   await unplaced.provision({ name: "sb-u", runId: "run-2", workflow: "coding", ...withApp });
   assert.ok(!("nodeSelector" in crOf(bare.calls).spec), "no key at all — wherever an ordinary pod lands");
   assert.ok(!("tolerations" in crOf(bare.calls).spec));
 });
 
 test("provision applies the labeled CR naming its Repos by cache key, gates on Ready", async () => {
-  let gets = 0;
-  const { exec, calls } = fakeExec({
-    apply: () => "applied",
-    patch: () => "ok",
-    get: () => (++gets < 3 ? JSON.stringify({ status: { phase: "Pending" } }) : readyStatus),
-  });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const { exec, calls, api } = cluster([PENDING, PENDING, READY]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
 
   const { endpoint } = await port.provision({ name: "sb-1", runId: "run-9", workflow: "coding", ...withApp });
   assert.equal(endpoint, "http://sb-1.default.svc:8080");
-  assert.equal(gets, 3, "polled until phase Ready");
+  // Waited on WATCH EVENTS (ADR-0063): the Sandbox was never read by name, and no Pod ever was.
+  assert.deepEqual(
+    api.calls.filter((c) => c.method === "GET" && c.target !== "sandboxes"),
+    [],
+    "no get, no poll — the watch carried every status",
+  );
+  // Written the ADR-0063 way: server-side apply as field manager jr2, forced.
+  const write = calls.find((c) => c.target === "sandboxes/sb-1")!;
+  assert.equal(write.contentType, "application/apply-patch+yaml");
+  assert.deepEqual(write.query, { fieldManager: "jr2", force: "true" });
 
   const applied = crOf(calls);
   assert.equal(applied.metadata.name, "sb-1");
@@ -207,8 +239,8 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
 });
 
 test("two slots spelling one repository are ONE CR entry; two repositories are two", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   await port.provision({
     name: "sb-two",
     runId: "r",
@@ -229,14 +261,15 @@ test("two slots spelling one repository are ONE CR entry; two repositories are t
 test("the Harness arrives at POD time: an /opt/jr2 image volume and a command override", async () => {
   // ADR-0037's whole mechanism, in one CR. There is NO build-time wrap: the primary container runs
   // the user's image byte-for-byte, and everything jr2 needs from it arrives beside it.
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   await port.provision({ name: "sb-inj", runId: "r", workflow: "w", image: RUST.url, ...withApp });
 
   const applied = crOf(calls);
   // The one thing jr2 takes from the image. A container has one command and it must be the
   // Harness's, or the operator's Ready probe and restart semantics are lies.
-  assert.deepEqual(applied.spec.command, ["/opt/jr2/bin/node", "/opt/jr2/src/main.ts"]);
+  // `tini` is PID 1 (ADR-0061): a tree the memory guard kills leaves no zombies.
+  assert.deepEqual(applied.spec.command, ["/opt/jr2/bin/tini", "--", "/opt/jr2/bin/node", "/opt/jr2/src/main.ts"]);
 
   // The runtime rides the KIT's image, mounted — nothing copies it, so no init step populates it.
   const runtime = applied.spec.volumes.find((v: { name: string }) => v.name === "runtime");
@@ -271,8 +304,8 @@ test("the Harness arrives at POD time: an /opt/jr2 image volume and a command ov
 test("a registry ref is deployed-never-built: it passes through verbatim, in either seat", async () => {
   // ADR-0037's second origin. jr2 never built it, so jr2 has no ref to look up — and never labels,
   // sweeps, or preflights it at converge. Its pull is the cluster's own.
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   await port.provision({
     name: "sb-ref",
     runId: "r",
@@ -291,11 +324,11 @@ test("a registry ref is deployed-never-built: it passes through verbatim, in eit
 });
 
 test("the User Container is the zero-contract seat: own entrypoint, /work, and NOTHING else", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    exec,
+    ...exec,
     caBundle: true,
     env: [{ name: "MODEL", value: "x" }],
     envFrom: [{ secretRef: { name: "anthropic" } }],
@@ -325,8 +358,8 @@ test("the User Container is the zero-contract seat: own entrypoint, /work, and N
   assert.ok(!("securityContext" in user), "the seat jr2 does not own is not hardened by jr2");
 
   // Absent → two containers, exactly as before the seat existed.
-  const { exec: e2, calls: c2 } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  await kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec: e2 }).provision({
+  const { exec: e2, calls: c2 } = cluster();
+  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...e2 }).provision({
     name: "sb-nouser",
     runId: "r",
     workflow: "w",
@@ -349,8 +382,8 @@ test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH plac
     sandbox: { ...REFS.sandbox, [BARE.key]: "jr2-sandbox-inst-bare:b00" },
     sandboxUser: { [BARE.key]: "" },
   };
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  await kubectlSandbox({ imagesPath: await mkImages(bare), ...provisionable, exec }).provision({
+  const { exec, calls } = cluster();
+  await kubeSandbox({ imagesPath: await mkImages(bare), ...provisionable, ...exec }).provision({
     name: "sb-bare",
     runId: "r",
     workflow: "w",
@@ -375,8 +408,8 @@ test("an image that declares no USER gets ADR-0037's fallback seat, in BOTH plac
 
   // And an image that DID declare one keeps its own environment, dotfiles included: no uid, no
   // HOME, no home volume anywhere in the CR.
-  const { exec: e2, calls: c2 } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  await kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec: e2 }).provision({
+  const { exec: e2, calls: c2 } = cluster();
+  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...e2 }).provision({
     name: "sb-own",
     runId: "r",
     workflow: "w",
@@ -394,8 +427,8 @@ test("the pod carries the work group: fsGroup = spec.workGroup ?? 2000", async (
   // writability half). The override exists for the image whose sessions already hold a gid of
   // their own — pointing the work group at it costs no rebuild.
   const fsGroupFor = async (workGroup?: number): Promise<number> => {
-    const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-    const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+    const { exec, calls } = cluster();
+    const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
     await port.provision({
       name: "sb",
       runId: "r",
@@ -412,8 +445,8 @@ test("the pod carries the work group: fsGroup = spec.workGroup ?? 2000", async (
 
 test("the Sandbox Image chain: the wrapper's context → images/default → the stock Harness", async () => {
   const provisionWith = async (refs: unknown, image?: string): Promise<string> => {
-    const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-    const port = kubectlSandbox({ imagesPath: await mkImages(refs), ...provisionable, exec });
+    const { exec, calls } = cluster();
+    const port = kubeSandbox({ imagesPath: await mkImages(refs), ...provisionable, ...exec });
     await port.provision({ name: "sb", runId: "r", workflow: "w", ...withApp, ...(image ? { image } : {}) });
     return crOf(calls).spec.image;
   };
@@ -432,8 +465,8 @@ test("the Sandbox Image chain: the wrapper's context → images/default → the 
 test("a context this converge did not build fails the provision with NOTHING applied", async () => {
   // The stale-deployment case (ADR-0049): the Orchestrator's bundle holds a context whose digest is
   // in no map, because the last `jr2 up` predates the Machine edit that named it.
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
 
   await assert.rejects(
     () => port.provision({ name: "sb", runId: "r", workflow: "w", image: GOLANG.url, ...withApp }),
@@ -453,13 +486,13 @@ test("a recorded USER the kubelet would refuse fails the provision by NAME, not 
   // CreateContainerConfigError on the `preflight` init container, and a container that never
   // starts has no logs — so the timeout hint dead-ends and 120s burn before anything is said. The
   // converge already recorded the string, so the read-first provision can say it up front.
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const { exec, calls } = cluster();
   const named = {
     ...REFS,
     sandbox: { ...REFS.sandbox, [DEV.key]: "jr2-sandbox-inst-dev:v00" },
     sandboxUser: { [DEV.key]: "dev" },
   };
-  const port = kubectlSandbox({ imagesPath: await mkImages(named), ...provisionable, exec });
+  const port = kubeSandbox({ imagesPath: await mkImages(named), ...provisionable, ...exec });
 
   await assert.rejects(
     () => port.provision({ name: "sb", runId: "r", workflow: "w", image: DEV.url, ...withApp }),
@@ -472,130 +505,87 @@ test("a recorded USER the kubelet would refuse fails the provision by NAME, not 
   assert.deepEqual(calls, [], "nothing applied: no token Secret, no CR, nothing to clean up");
 
   // Root is the same refusal for the other reason, and `uid:gid` is judged on the uid half only.
-  const rooted = kubectlSandbox({
+  const rooted = kubeSandbox({
     imagesPath: await mkImages({ ...named, sandboxUser: { [DEV.key]: "0" } }),
     ...provisionable,
-    exec,
+    ...exec,
   });
   await assert.rejects(
     () => rooted.provision({ name: "sb", runId: "r", workflow: "w", image: DEV.url, ...withApp }),
     /`USER 0`/,
   );
 
-  const paired = kubectlSandbox({
+  const paired = kubeSandbox({
     imagesPath: await mkImages({ ...named, sandboxUser: { [DEV.key]: "1000:2000" } }),
     ...provisionable,
-    exec,
+    ...exec,
   });
   await paired.provision({ name: "sb", runId: "r", workflow: "w", image: DEV.url, ...withApp });
 });
 
-/** A pod whose named container sits in `waiting`, as `kubectl get pod -o json` prints it. */
-const waitingPod = (container: string, reason: string, message: string, seat = "initContainerStatuses") =>
-  JSON.stringify({
-    status: {
-      [seat]: [{ name: container, state: { waiting: { reason, message } } }],
-    },
-  });
-
-/** The kubelet's actual wording for the fault, which is the only evidence this case ever leaves. */
-const RUNS_AS_ROOT = "container has runAsNonRoot and image will run as root";
-
-test("a BROUGHT ref that runs as root fails the provision by name, not as the preflight's timeout", async () => {
-  // The one seat-fault a converge cannot see coming (ADR-0037): a registry ref is never built and
-  // never inspected, so nothing recorded its `USER` and `resolveSandboxImage` reports no
-  // `refusedUser` to judge it by. The
-  // kubelet refuses it against the hardened seat, the `preflight` init container never STARTS, and
-  // a container that never started has no logs — so the pod is the only witness, and without this
-  // read the 120s timeout blames a probe that never ran.
-  const { exec } = fakeExec({
-    apply: () => "ok",
-    patch: () => "ok",
-    get: () => JSON.stringify({ status: { phase: "Pending" } }),
-    "get pod": () => waitingPod("preflight", "CreateContainerConfigError", RUNS_AS_ROOT),
-  });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
-
+test("a Harness that keeps dying before Ready fails the provision BY NAME, with the kubelet's reason", async () => {
+  // ADR-0063: the operator publishes the Harness container's restarts and last end, so a Harness
+  // that dies on start is seen as it happens — not as the rest of a 120s budget.
+  const crashing = {
+    phase: "Pending",
+    harness: { restartCount: 2, lastTerminated: { reason: "Error", exitCode: 1 } },
+  };
+  const { exec } = cluster([
+    PENDING,
+    { ...crashing, harness: { restartCount: 1, lastTerminated: { reason: "Error", exitCode: 1 } } },
+    crashing,
+  ]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 60_000, ...exec });
   await assert.rejects(
-    () =>
-      port.provision({
-        name: "sb-root",
-        runId: "r",
-        workflow: "w",
-        image: "ghcr.io/acme/toolchain:2024-11",
-        ...withApp,
-      }),
+    () => port.provision({ name: "sb-crash", runId: "r", workflow: "w", ...withApp }),
     (err: Error) => {
-      assert.match(err.message, /runs as ROOT/);
-      assert.match(err.message, /`USER <uid>`/, "the fix is a line in the image, not a jr2 setting");
-      assert.match(err.message, /USER 1000/);
-      assert.match(err.message, /numeric/, "…and numeric, because the kubelet cannot resolve a name");
-      assert.match(err.message, /brought registry ref/, "…and it says WHY jr2 supplied no uid itself");
-      assert.match(err.message, /preflight/, "the container the kubelet named is quoted back");
-      assert.ok(!/never reached Ready/.test(err.message), "it replaces the timeout, it does not follow it");
+      assert.match(err.message, /Sandbox "sb-crash" cannot start: its Harness has ended 2 times/);
+      assert.match(err.message, /last: Error, exit 1/, "the kubelet's reason and exit code");
+      assert.match(err.message, /kubectl logs sb-crash -c harness --previous/, "where the rest is");
       return true;
     },
   );
-});
 
-test("only THAT waiting shape is the root fault; every other pod passes through", async () => {
-  // CreateContainerConfigError is also what an absent Secret key produces, and that has a different
-  // fix — so the reason alone must not be enough. A name with no evidence behind it is worse than
-  // the timeout it replaces, because it sends the reader to edit the wrong file.
+  // One restart on the way up is a pod that may still come up.
+  const once = cluster([
+    { phase: "Pending", harness: { restartCount: 1, lastTerminated: { reason: "OOMKilled", exitCode: 137 } } },
+    READY,
+  ]);
+  const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...once.exec });
   assert.equal(
-    rootImageFault(JSON.parse(waitingPod("harness", "CreateContainerConfigError", `secret "jr2-sb" not found`))),
-    undefined,
-  );
-  assert.equal(rootImageFault(JSON.parse(waitingPod("preflight", "PodInitializing", RUNS_AS_ROOT))), undefined);
-  assert.equal(
-    rootImageFault(JSON.parse(waitingPod("preflight", "ImagePullBackOff", "pull access denied"))),
-    undefined,
-  );
-  assert.equal(rootImageFault({ status: {} }), undefined, "a pod with no statuses yet is not a fault");
-  assert.equal(rootImageFault({}), undefined);
-  assert.equal(rootImageFault(null), undefined, "…nor is an unreadable answer");
-
-  // The primary containers are read too: the same image sits in the `harness` seat, which is
-  // hardened identically, so the fault can surface there when the preflight is not what ran first.
-  assert.match(
-    rootImageFault(JSON.parse(waitingPod("harness", "CreateContainerConfigError", RUNS_AS_ROOT, "containerStatuses")))!,
-    /container "harness"/,
+    (await port2.provision({ name: "sb-once", runId: "r", workflow: "w", ...withApp })).endpoint,
+    READY.endpoint,
   );
 
-  // And end to end: a pod that is merely slow still reaches Ready, with the pod read costing it
-  // nothing but a look.
-  let gets = 0;
-  const { exec } = fakeExec({
-    apply: () => "ok",
-    patch: () => "ok",
-    get: () => (++gets < 3 ? JSON.stringify({ status: { phase: "Pending" } }) : readyStatus),
-    "get pod": () => waitingPod("preflight", "PodInitializing", "waiting to start"),
-  });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
-  const { endpoint } = await port.provision({ name: "sb-slow", runId: "r", workflow: "w", ...withApp });
-  assert.equal(endpoint, "http://sb-1.default.svc:8080");
+  // And a memory kill says so, with the fix.
+  const oom = cluster([
+    { phase: "Pending", harness: { restartCount: 2, lastTerminated: { reason: "OOMKilled", exitCode: 137 } } },
+  ]);
+  const port3 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...oom.exec });
+  await assert.rejects(
+    () => port3.provision({ name: "sb-oom", runId: "r", workflow: "w", ...withApp }),
+    /OOMKilled, exit 137.*larger Size/s,
+  );
 });
 
 test("the map is re-read PER provision, so a converge reaches the next Sandbox without a roll", async () => {
   // The whole reason the refs arrive as a mounted ConfigMap rather than Deployment env (ADR-0038):
   // a rebuilt image must reach FUTURE Sandboxes without bouncing every live run through restore.
   const imagesPath = await mkImages(REFS);
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ imagesPath, ...provisionable, exec });
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({ imagesPath, ...provisionable, ...exec });
 
   await port.provision({ name: "sb-a", runId: "r", workflow: "w", ...withApp });
   await writeFile(imagesPath, JSON.stringify({ ...REFS, sandbox: { default: "jr2-sandbox-inst-default:d99" } }));
   await port.provision({ name: "sb-b", runId: "r", workflow: "w", ...withApp });
 
-  const images = calls
-    .filter((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))
-    .map((c) => (JSON.parse(c.input!) as { spec: { image: string } }).spec.image);
+  const images = applies(calls, "sandboxes").map((cr: { spec: { image: string } }) => cr.spec.image);
   assert.deepEqual(images, ["jr2-sandbox-inst-default:d00", "jr2-sandbox-inst-default:d99"]);
 });
 
 test("an absent or malformed image map fails the provision pointing at `jr2 up`, never a published tag", async () => {
-  const { exec } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const missing = kubectlSandbox({ imagesPath: "/nonexistent/jr2/images.json", ...provisionable, exec });
+  const { exec } = cluster();
+  const missing = kubeSandbox({ imagesPath: "/nonexistent/jr2/images.json", ...provisionable, ...exec });
   await assert.rejects(
     () => missing.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
     (err: Error) => {
@@ -607,10 +597,10 @@ test("an absent or malformed image map fails the provision pointing at `jr2 up`,
 
   // A map with no `custodian` is loud, not a pod with no route home: an Agent whose pod has no
   // Custodian parks its Machine forever on a Menu it cannot read (ADR-0013).
-  const noCustodian = kubectlSandbox({
+  const noCustodian = kubeSandbox({
     imagesPath: await mkImages({ harness: "jr2-harness:h00", sandbox: {} }),
     ...provisionable,
-    exec,
+    ...exec,
   });
   await assert.rejects(
     () => noCustodian.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
@@ -619,11 +609,11 @@ test("an absent or malformed image map fails the provision pointing at `jr2 up`,
 
   // And so is an absent held-secret manifest: composing a Custodian on a guess would hold what the
   // converge did not, or leave out what it did (ADR-0059).
-  const noHeld = kubectlSandbox({
+  const noHeld = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
     heldPath: "/nonexistent/jr2/held.json",
-    exec,
+    ...exec,
   });
   await assert.rejects(
     () => noHeld.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
@@ -632,11 +622,11 @@ test("an absent or malformed image map fails the provision pointing at `jr2 up`,
 });
 
 test("env/envFrom pass through to the HARNESS container spec; mechanism env rides after them", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    exec,
+    ...exec,
     env: [{ name: "FLUE_LOG", value: "debug" }],
     envFrom: [{ secretRef: { name: "anthropic" } }],
   });
@@ -645,25 +635,33 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
   const applied = crOf(calls);
   assert.deepEqual(
     applied.spec.env.map((e: { name: string }) => e.name),
-    ["FLUE_LOG", "JR2_CUSTODIAN_URL", "JR2_SANDBOX_TOKEN", "JR2_HARNESS_TOKEN_SHA256"],
+    [
+      "FLUE_LOG",
+      "JR2_CUSTODIAN_URL",
+      "JR2_SANDBOX_TOKEN",
+      // The CPU hints (ADR-0060): mechanism, so after the instance's own.
+      "JR2_CPUS",
+      "OMP_NUM_THREADS",
+      "PYTHON_CPU_COUNT",
+      "GOMAXPROCS",
+      "JR2_HARNESS_TOKEN_SHA256",
+    ],
   );
   assert.deepEqual(applied.spec.envFrom, [{ secretRef: { name: "anthropic" } }]);
 });
 
 test("each Sandbox's Harness gets the DIGEST of its own placement's bearer, last — never the bearer (ADR-0058)", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    exec,
+    ...exec,
     // An instance's `harness.env` naming the same var cannot open the gate: the mechanism's rides last.
     env: [{ name: "JR2_HARNESS_TOKEN_SHA256", value: "attacker-chosen" }],
   });
   await port.provision({ name: "sb-a", runId: "r", workflow: "w", ...withApp });
   await port.provision({ name: "sb-b", runId: "r", workflow: "w", ...withApp });
-  const crs = calls
-    .filter((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Sandbox"'))
-    .map((c) => JSON.parse(c.input!));
+  const crs = applies(calls, "sandboxes");
   const digestOf = (cr: { spec: { env: Array<{ name: string; value?: string }> } }) =>
     cr.spec.env.filter((e) => e.name === "JR2_HARNESS_TOKEN_SHA256").at(-1)?.value;
 
@@ -672,16 +670,16 @@ test("each Sandbox's Harness gets the DIGEST of its own placement's bearer, last
   assert.notEqual(digestOf(crs[0]), digestOf(crs[1]), "one pod's bearer opens no other pod");
   // The bearer itself appears nowhere in what the pod is given — not in the CR, not in a Secret.
   for (const call of calls) {
-    assert.ok(!call.input?.includes(harnessToken(provisionable.signingKey, "sb-a")));
+    assert.ok(!JSON.stringify(call.body ?? {}).includes(harnessToken(provisionable.signingKey, "sb-a")));
   }
 });
 
 test("the Custodian is UNCONDITIONAL and is the pod's only credential holder (ADR-0013, ADR-0059)", async () => {
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    exec,
+    ...exec,
     envFrom: [{ secretRef: { name: "anthropic" } }],
   });
   await port.provision({ name: "sb-env2", runId: "r", workflow: "w", ...withApp });
@@ -712,8 +710,17 @@ test("the Custodian is UNCONDITIONAL and is the pod's only credential holder (AD
     !applied.spec.volumeMounts.some((m: { name: string }) => m.name.startsWith("custodian-")),
     "the Harness container mounts nothing of the Custodian's",
   );
-  const secret = JSON.parse(calls.find((c) => c.args[0] === "apply" && c.input!.includes('"kind":"Secret"'))!.input!);
+  const [secret] = applies(calls, "secrets");
   assert.equal(secret.metadata.name, "sb-env2-token");
+  // `data`, not `stringData`: a server-side apply owns the fields it names (ADR-0063).
+  assert.ok(Buffer.from(secret.data.JR2_SANDBOX_TOKEN, "base64").toString().length > 0);
+  assert.equal(secret.stringData, undefined);
+  // …and it is the CR's child, by the uid the apply answered with — no read in between.
+  const own = calls.find(
+    (c) => c.target === "secrets/sb-env2-token" && c.contentType === "application/merge-patch+json",
+  )!;
+  assert.equal(own.body.metadata.ownerReferences[0].kind, "Sandbox");
+  assert.match(own.body.metadata.ownerReferences[0].uid, /^uid-/);
 });
 
 test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alone mounts values and leaves (ADR-0059)", async () => {
@@ -734,12 +741,12 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
       },
     ],
   };
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  await kubectlSandbox({
+  const { exec, calls } = cluster();
+  await kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
     heldPath: await mkHeld(manifest),
-    exec,
+    ...exec,
     caBundle: true,
     env: [{ name: "FLUE_LOG", value: "debug" }],
     // A same-named key in an envFrom Secret loses to the Stand-in: `env` wins over `envFrom`.
@@ -764,6 +771,7 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
       ["SSL_CERT_FILE", "/etc/jr2/ca/bundle.crt"],
       ["REQUESTS_CA_BUNDLE", "/etc/jr2/ca/bundle.crt"],
       ["GIT_SSL_CAINFO", "/etc/jr2/ca/bundle.crt"],
+      ...CPU_HINTS.map((h) => [h.name, undefined]),
       ["JR2_HARNESS_TOKEN_SHA256", harnessTokenDigest(provisionable.signingKey, "sb-held")],
     ],
   );
@@ -817,8 +825,8 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
 
 test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS container with NODE_EXTRA_CA_CERTS; absent → nothing", async () => {
   const imagesPath = await mkImages(REFS);
-  const withCa = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  await kubectlSandbox({ imagesPath, ...provisionable, exec: withCa.exec, caBundle: true }).provision({
+  const withCa = cluster();
+  await kubeSandbox({ imagesPath, ...provisionable, ...withCa.exec, caBundle: true }).provision({
     name: "sb-ca",
     runId: "r",
     workflow: "w",
@@ -829,6 +837,7 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
     { name: "JR2_CUSTODIAN_URL", value: "http://127.0.0.1:8081" },
     { name: "JR2_SANDBOX_TOKEN", value: "jr2-held-JR2_SANDBOX_TOKEN" },
     { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/ca.crt" },
+    ...CPU_HINTS,
     { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(provisionable.signingKey, "sb-ca") },
   ]);
   assert.deepEqual(applied.spec.volumes.at(-1), { name: "ca", configMap: { name: "jr2-ca" } });
@@ -838,8 +847,8 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
   const custodian = applied.spec.sidecars.find((c: { name: string }) => c.name === "custodian");
   assert.ok(!custodian.volumeMounts.some((m: { name: string }) => m.name === "ca" || m.name === "custodian-trust"));
 
-  const without = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  await kubectlSandbox({ imagesPath, ...provisionable, exec: without.exec }).provision({
+  const without = cluster();
+  await kubeSandbox({ imagesPath, ...provisionable, ...without.exec }).provision({
     name: "sb-noca",
     runId: "r",
     workflow: "w",
@@ -850,8 +859,8 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
 });
 
 test("provision reports the pod identity the lease will hold the workspace to", async () => {
-  const { exec } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const { exec } = cluster();
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
 
   assert.deepEqual(await port.provision({ name: "sb-1", runId: "r", workflow: "w", ...withApp }), {
     endpoint: "http://sb-1.default.svc:8080",
@@ -859,73 +868,127 @@ test("provision reports the pod identity the lease will hold the workspace to", 
   });
 });
 
-test("renew(): one call stamps the lease AND reads back continuity", async () => {
-  const { exec, calls } = fakeExec({ annotate: () => readyStatus });
-  const port = kubectlSandbox({ exec });
+test("renew() is a merge patch of the keepalive stamp — a write, and nothing is read back (ADR-0021)", async () => {
+  const { exec, calls, api } = cluster();
+  api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  const port = kubeSandbox({ ...exec });
 
-  assert.deepEqual(await port.renew("sb-1"), { present: true, identity: "pod-uid-1" });
+  assert.equal(await port.renew("sb-1"), undefined);
+  assert.equal(calls.length, 1, "one write per renewal");
+  const [patch] = calls;
+  assert.equal(patch!.method, "PATCH");
+  assert.equal(patch!.target, "sandboxes/sb-1");
+  assert.equal(patch!.contentType, "application/merge-patch+json");
+  const stamp = patch!.body.metadata.annotations["jr2.dev/keepalive"];
+  assert.ok(!Number.isNaN(Date.parse(stamp)), "value is a parseable timestamp");
 
-  // Exactly one round trip — the whole point of folding the read into the write.
-  assert.equal(calls.length, 1);
-  const args = calls[0]!.args;
-  assert.deepEqual(args.slice(0, 3), ["annotate", "sandbox", "sb-1"]);
-  const kv = args.find((a) => a.startsWith("jr2.dev/keepalive="))!;
-  assert.ok(!Number.isNaN(Date.parse(kv.slice("jr2.dev/keepalive=".length))), "value is a parseable timestamp");
-  assert.ok(args.includes("--overwrite"), "re-stamps the existing annotation");
-  assert.deepEqual(args.slice(-2), ["-o", "json"], "prints the patched object, status included");
+  // A failure rejects — the lease shrugs it off; loss is the watch's to report, never this.
+  await assert.rejects(() => port.renew("gone"), /404/);
 });
 
-test("renew(): a replacement pod is reported as a NEW identity under the same name", async () => {
-  // What an eviction looks like from here: the CR answers, the name is unchanged, the endpoint
-  // is unchanged — and the pod behind it is a different pod with an empty `work` volume.
-  const { exec } = fakeExec({
-    annotate: () =>
-      JSON.stringify({ status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-2" } }),
-  });
-  const port = kubectlSandbox({ exec });
+/** Every Continuity the port reports for one name, in order. */
+function heard(port: ReturnType<typeof kubeSandbox>, name: string): Continuity[] {
+  const seen: Continuity[] = [];
+  port.continuity(name, (c) => seen.push(c));
+  return seen;
+}
 
-  assert.deepEqual(await port.renew("sb-1"), { present: true, identity: "pod-uid-2" });
+test("continuity(): the watch's first list is the reconcile — present with its pod, or gone (ADR-0012, ADR-0021)", async () => {
+  const { exec, api } = cluster();
+  api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  const port = kubeSandbox({ ...exec });
+  const live = heard(port, "sb-1");
+  const gone = heard(port, "sb-reaped-while-we-were-down");
+  await waitFor(() => live.length === 1 && gone.length === 1);
+  assert.deepEqual(live, [{ present: true, identity: "pod-uid-1" }]);
+  assert.deepEqual(gone, [{ present: false }]);
 });
 
-test("renew(): NotFound is absent; any other kubectl failure THROWS (unknown is never loss)", async () => {
-  const notFound = fakeExec({
-    annotate: () => {
-      throw new Error(`Error from server (NotFound): sandboxes.core.jr2.dev "gone" not found`);
-    },
-  });
-  assert.deepEqual(await kubectlSandbox({ exec: notFound.exec }).renew("gone"), { present: false });
-
-  const down = fakeExec({
-    annotate: () => {
-      throw new Error("The connection to the server localhost:6443 was refused");
-    },
-  });
-  // Rejecting is load-bearing: resolving `{present: false}` here would settle every live run
-  // in the namespace the first time the API server hiccuped.
-  await assert.rejects(() => kubectlSandbox({ exec: down.exec }).renew("sb"), /refused/);
+test("continuity(): a changed podUID is heard within one event — the replacement pod (ADR-0021)", async () => {
+  // What an eviction looks like from here: the CR is there, the name and endpoint unchanged — and
+  // the pod behind it is a different pod with an empty `work` volume.
+  const { exec, api } = cluster();
+  api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  const port = kubeSandbox({ ...exec });
+  const seen = heard(port, "sb-1");
+  await waitFor(() => seen.length === 1);
+  api.setStatus("sandboxes", "sb-1", { ...READY, podUID: "pod-uid-2" });
+  await waitFor(() => seen.length === 2);
+  assert.deepEqual(seen[1], { present: true, identity: "pod-uid-2" });
+  api.remove("sandboxes", "sb-1");
+  await waitFor(() => seen.length === 3);
+  assert.deepEqual(seen[2], { present: false });
 });
 
-test("renew(): an operator that publishes no podUID degrades to presence-only continuity", async () => {
-  const { exec } = fakeExec({
-    annotate: () => JSON.stringify({ status: { phase: "Ready", endpoint: "http://sb-1.default.svc:8080" } }),
-  });
-  assert.deepEqual(await kubectlSandbox({ exec }).renew("sb-1"), {
-    present: true,
-    identity: undefined,
-  });
+test("continuity(): a dropped watch reports NOTHING — unknown is never loss", async () => {
+  const { exec, api } = cluster();
+  api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  let down = false;
+  api.refuse((c) => (down && c.method === "GET" ? new Response("unavailable", { status: 503 }) : undefined));
+  const port = kubeSandbox({ ...exec });
+  const seen = heard(port, "sb-1");
+  await waitFor(() => seen.length === 1);
+  down = true;
+  api.closeWatches();
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(seen.length, 1, "the API server went away; the Sandbox did not");
+});
+
+test("continuity(): an operator that publishes no podUID degrades to presence-only", async () => {
+  const { exec, api } = cluster();
+  api.seed("sandboxes", {
+    metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } },
+    status: { phase: "Ready", endpoint: READY.endpoint },
+  } as never);
+  const seen = heard(kubeSandbox({ ...exec }), "sb-1");
+  await waitFor(() => seen.length === 1);
+  assert.deepEqual(seen, [{ present: true }]);
+});
+
+// --- the memory fault (ADR-0061) ---------------------------------------------------------------
+
+const TURN = new Date("2026-09-28T10:00:00Z");
+const killed = (finishedAt: string, reason = "OOMKilled") => ({
+  metadata: { name: "sb-1" },
+  spec: { resources: { limits: { memory: "1920Mi" } } },
+  status: { ...READY, harness: { restartCount: 1, lastTerminated: { reason, exitCode: 137, finishedAt } } },
+});
+
+test("memoryFaultOf: OOMKilled since the Turn began → the fixed prefix `memory limit`, with the limit", () => {
+  const reason = memoryFaultOf(killed("2026-09-28T10:03:00Z"), TURN)!;
+  assert.ok(reason.startsWith("memory limit"), reason);
+  assert.match(reason, /^memory limit \(OOMKilled, limit 1920Mi\)/);
+  assert.match(reason, /larger Size/);
+  // Not a memory kill, not this Turn's, or not a kill at all → nothing to name.
+  assert.equal(memoryFaultOf(killed("2026-09-28T10:03:00Z", "Error"), TURN), undefined);
+  assert.equal(memoryFaultOf(killed("2026-09-28T09:00:00Z"), TURN), undefined, "an earlier Turn's kill");
+  assert.equal(memoryFaultOf({ metadata: { name: "sb-1" }, status: READY }, TURN), undefined);
+  assert.equal(memoryFaultOf(undefined, TURN), undefined);
+});
+
+test("memoryFault(): waits a moment for the operator's word, which can trail the Harness's restart", async () => {
+  const { exec, api } = cluster();
+  api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  const port = kubeSandbox({ ...exec });
+  await waitFor(() => api.openWatches === 1);
+  const named = port.memoryFault("sb-1", TURN);
+  setTimeout(() => api.setStatus("sandboxes", "sb-1", killed("2026-09-28T10:03:00Z").status), 5);
+  assert.match((await named)!, /^memory limit \(OOMKilled/);
+  // A name the watch does not hold (the Instance Harness is a Deployment) answers at once.
+  assert.equal(await port.memoryFault("jr2-instance-harness", TURN), undefined);
 });
 
 // --- the credentials fence (ADR-0051) --------------------------------------------------------------
 
-test("a per-run url matching no git.credentials entry is REFUSED before any kubectl call", async () => {
+test("a per-run url matching no git.credentials entry is REFUSED before any write", async () => {
   // A per-run url is run input — a ticket field — and otherwise a way to spend the cluster's
   // credential against any host. The refusal names the identity and the list, and costs nothing:
   // no map read, no Secret, no CR.
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-  const port = kubectlSandbox({
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    exec,
+    ...exec,
     credentials: [{ match: "github.com/ourorg/", token: "GH" }],
   });
   await assert.rejects(
@@ -948,10 +1011,10 @@ test("a per-run url matching no git.credentials entry is REFUSED before any kube
 
   // A url spelled as a git OPTION passes no fence at all: the identity refuses it before the list
   // is consulted, even under an entry whose prefix the smuggled host part would match (ADR-0051).
-  const narrowed = kubectlSandbox({
+  const narrowed = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    exec,
+    ...exec,
     credentials: [{ match: "github.com/ourorg/", token: "GH" }],
   });
   await assert.rejects(
@@ -978,7 +1041,7 @@ test("a per-run url matching no git.credentials entry is REFUSED before any kube
   assert.deepEqual(calls, [], "nothing applied");
 
   // No entries at all → every per-run url is refused, and the message says the list is empty.
-  const bare = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const bare = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   await assert.rejects(
     () => bare.provision({ name: "sb", runId: "r", workflow: "w", repos: [{ ...app, perRun: true }] }),
     /entries: none/,
@@ -989,8 +1052,8 @@ test("a STATIC binding is admitted without a match; a matching entry — or the 
   // Code the instance typechecked and deployed is not run input: a bound url clones anonymously
   // (or with whatever its entry says) and the fence has nothing to say about it.
   const mk = async (credentials: Array<{ match: string; token?: string }>) => {
-    const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
-    return { port: kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec, credentials }), calls };
+    const { exec, calls } = cluster();
+    return { port: kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec, credentials }), calls };
   };
   const none = await mk([]);
   await none.port.provision({
@@ -1032,18 +1095,18 @@ test("provision ENSURES every Repo's resource — per key, identity and boundnes
   // spelling does not rewrite the spec. Ordered after the image resolution (a refused image still
   // costs nothing) and before the token Secret (no Secret for a Sandbox whose Repo could not be
   // recorded).
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const { exec, calls } = cluster();
   const repos = fakeRepos();
   let ensuredBeforeSecret: boolean | undefined;
   repos.port.ensure = async (repo) => {
     repos.ensured.push(repo);
     ensuredBeforeSecret ??= calls.length === 0;
   };
-  const port = kubectlSandbox({
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
     repos: repos.port,
-    exec,
+    ...exec,
     credentials: [{ match: "*" }],
   });
   await port.provision({
@@ -1073,20 +1136,20 @@ test("provision ENSURES every Repo's resource — per key, identity and boundnes
       bound: false,
     },
   ]);
-  assert.equal(ensuredBeforeSecret, true, "ensured before any kubectl call — the Secret and the CR come after");
+  assert.equal(ensuredBeforeSecret, true, "ensured before any write — the Secret and the CR come after");
 });
 
 test("a port with NO Repo-resource port refuses to provision, naming what would otherwise happen", async () => {
   // Without it the CR names keys no resource backs, and the operator parks the Sandbox on
   // `RepoMissing` for the whole Ready budget — a hang with a cause nobody printed.
-  const { exec, calls } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => readyStatus });
+  const { exec, calls } = cluster();
   const { repos: _omitted, ...rest } = provisionable;
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...rest, exec });
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...rest, ...exec });
   await assert.rejects(
     () => port.provision({ name: "sb", runId: "r", workflow: "w", ...withApp }),
     (err: Error) => {
       assert.match(err.message, /no Repo-resource port/);
-      assert.match(err.message, /kubectlRepos/, "names the fix");
+      assert.match(err.message, /kubeRepos/, "names the fix");
       assert.match(err.message, /ADR-0051/);
       return true;
     },
@@ -1095,29 +1158,25 @@ test("a port with NO Repo-resource port refuses to provision, naming what would 
 });
 
 /** A Sandbox CR as the operator reports it while holding Ready on a Repo (sandbox_controller.go). */
-const heldOn = (reason: string, message: string) =>
-  JSON.stringify({
-    status: { phase: "Pending", conditions: [{ type: "Ready", status: "False", reason, message }] },
-  });
+const heldOn = (reason: string, message: string) => ({
+  phase: "Pending",
+  conditions: [{ type: "Ready", status: "False", reason, message }],
+});
 
 test("Ready held with reason RepoCloneFailed fails the provision BY NAME, not as a timeout", async () => {
   // ADR-0051: absence does not degrade — a clone that fails on a cold node fails that provision
   // pointedly, naming the repository and git's error. The operator's condition carries all three
   // (key, node, error); the port adds what the operator cannot know: the agent keeps retrying,
   // `jr2 status` shows the same line, and where the credential is configured.
-  let gets = 0;
-  const { exec } = fakeExec({
-    apply: () => "ok",
-    patch: () => "ok",
-    get: () =>
-      ++gets < 3
-        ? heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`)
-        : heldOn(
-            "RepoCloneFailed",
-            `Repo "${APP_KEY}" could not be cloned onto node kind-worker: fatal: Authentication failed`,
-          ),
-  });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 60_000, exec });
+  const { exec } = cluster([
+    heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`),
+    heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`),
+    heldOn(
+      "RepoCloneFailed",
+      `Repo "${APP_KEY}" could not be cloned onto node kind-worker: fatal: Authentication failed`,
+    ),
+  ]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 60_000, ...exec });
   await assert.rejects(
     () => port.provision({ name: "sb-clone", runId: "r", workflow: "w", ...withApp }),
     (err: Error) => {
@@ -1133,7 +1192,6 @@ test("Ready held with reason RepoCloneFailed fails the provision BY NAME, not as
       return true;
     },
   );
-  assert.equal(gets, 3, "RepoPending is waited out; RepoCloneFailed is not");
 });
 
 test("a Sandbox the operator holds on its Repos waits on the REPO budget, not the pod's", async () => {
@@ -1142,39 +1200,35 @@ test("a Sandbox the operator holds on its Repos waits on the REPO budget, not th
   // on a Repo reason only once the pod IS Ready, so from that poll on the wait is the Repo
   // budget's: the pod budget here is long gone before the cache lands, and the provision still
   // returns Ready.
-  let gets = 0;
-  const { exec } = fakeExec({
-    apply: () => "ok",
-    patch: () => "ok",
-    get: () => (++gets < 8 ? heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`) : readyStatus),
-  });
-  const port = kubectlSandbox({
+  const pending = heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`);
+  const { exec } = cluster([
+    pending,
+    { ...pending, conditions: [{ ...pending.conditions[0], message: "fetching" }] },
+    READY,
+  ]);
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
-    readyTimeoutMs: 0,
+    // The pod budget runs out between the first held event and the landing; the Repo budget holds.
+    readyTimeoutMs: 1,
     repoTimeoutMs: 60_000,
-    exec,
+    ...exec,
   });
   const out = await port.provision({ name: "sb-cold", runId: "r", workflow: "w", ...withApp });
   assert.equal(out.endpoint, "http://sb-1.default.svc:8080");
-  assert.equal(gets, 8, "every RepoPending poll past the pod budget was waited out");
 });
 
 test("the Repo budget runs out BY NAME: the operator's verdict, the node, and where to look — never the preflight", async () => {
   // The pod came up, so the preflight passed; a timeout that pointed at the image would lie. The
   // operator's condition names the Repo and the node, and the port adds that the agent is still
   // at it, that `jr2 status` shows it per node, and that the budget is the port's own.
-  const { exec } = fakeExec({
-    apply: () => "ok",
-    patch: () => "ok",
-    get: () => heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`),
-  });
-  const port = kubectlSandbox({
+  const { exec } = cluster([heldOn("RepoPending", `Repo "${APP_KEY}" is not on node kind-worker yet`)]);
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
     readyTimeoutMs: 60_000,
     repoTimeoutMs: 5,
-    exec,
+    ...exec,
   });
   await assert.rejects(
     () => port.provision({ name: "sb-slow", runId: "r", workflow: "w", ...withApp }),
@@ -1194,17 +1248,27 @@ test("a pod that never comes up is still the POD budget's timeout, with the pref
   // The Repo budget applies only once the operator has held the Sandbox on a Repo reason, which
   // it reports after the pod is Ready. A pod stuck before that — PodNotReady, or no condition
   // at all — runs out the pod budget and gets the image hint, Repo budget untouched.
-  const { exec } = fakeExec({
-    apply: () => "ok",
-    patch: () => "ok",
-    get: () => heldOn("PodNotReady", "pod is not yet Ready"),
-  });
-  const port = kubectlSandbox({
+  const { exec } = cluster([
+    {
+      ...heldOn("PodNotReady", "pod is not yet Ready"),
+      conditions: [
+        ...heldOn("PodNotReady", "pod is not yet Ready").conditions,
+        // The scheduler's word, published by the operator (ADR-0063): where the pod waits.
+        {
+          type: "Scheduled",
+          status: "False",
+          reason: "Unschedulable",
+          message: "0/2 nodes are available: Insufficient memory",
+        },
+      ],
+    },
+  ]);
+  const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
     readyTimeoutMs: 5,
     repoTimeoutMs: 60_000,
-    exec,
+    ...exec,
   });
   await assert.rejects(
     () => port.provision({ name: "sb-stuck", runId: "r", workflow: "w", ...withApp }),
@@ -1212,6 +1276,7 @@ test("a pod that never comes up is still the POD budget's timeout, with the pref
       assert.match(err.message, /never reached Ready \(last phase: Pending\)/);
       assert.match(err.message, /check the preflight/);
       assert.match(err.message, /Ready condition says: PodNotReady: pod is not yet Ready/);
+      assert.match(err.message, /the scheduler says: Unschedulable: 0\/2 nodes are available: Insufficient memory/);
       return true;
     },
   );
@@ -1223,23 +1288,21 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
   // The operator's clause names the KEY; the port keys it back to the slot the body knows.
   const infraUrl = "https://example.test/infra.git";
   const infraKey = repoKey(infraUrl);
-  const staleReady = JSON.stringify({
-    status: {
-      phase: "Ready",
-      endpoint: "http://sb-stale.default.svc:8080",
-      conditions: [
-        { type: "Ready", status: "True", reason: "PodReady" },
-        {
-          type: "ReposFresh",
-          status: "False",
-          reason: "FetchFailed",
-          message: `Repo "${infraKey}" on node kind-worker is stale: fatal: unable to access 'https://example.test/infra.git/': Could not resolve host`,
-        },
-      ],
-    },
-  });
-  const { exec } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => staleReady, exec: () => "" });
-  const port = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec });
+  const staleReady = {
+    phase: "Ready",
+    endpoint: "http://sb-stale.default.svc:8080",
+    conditions: [
+      { type: "Ready", status: "True", reason: "PodReady" },
+      {
+        type: "ReposFresh",
+        status: "False",
+        reason: "FetchFailed",
+        message: `Repo "${infraKey}" on node kind-worker is stale: fatal: unable to access 'https://example.test/infra.git/': Could not resolve host`,
+      },
+    ],
+  };
+  const { exec } = cluster([staleReady]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
   const slots = [
     { slot: "app", url: APP_URL, perRun: false },
     { slot: "infra", url: infraUrl, perRun: false },
@@ -1253,266 +1316,216 @@ test("Ready with ReposFresh=False makes the attach STALE per slot, with git's ow
 
   // Fresh (the common case): no `stale` key at all, and a later fresh provision of the same name
   // forgets an earlier verdict.
-  const fresh = JSON.stringify({
-    status: {
-      phase: "Ready",
-      endpoint: "http://sb-stale.default.svc:8080",
-      conditions: [{ type: "ReposFresh", status: "True", reason: "Fetched", message: "every Repo was fetched" }],
-    },
-  });
-  const { exec: e2 } = fakeExec({ apply: () => "ok", patch: () => "ok", get: () => fresh, exec: () => "" });
-  const port2 = kubectlSandbox({ imagesPath: await mkImages(REFS), ...provisionable, exec: e2 });
+  const fresh = {
+    phase: "Ready",
+    endpoint: "http://sb-stale.default.svc:8080",
+    conditions: [{ type: "ReposFresh", status: "True", reason: "Fetched", message: "every Repo was fetched" }],
+  };
+  const { exec: e2 } = cluster([fresh]);
+  const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...e2 });
   await port2.provision({ name: "sb-stale", runId: "r", workflow: "w", repos: slots });
   assert.equal("stale" in (await port2.attach({ name: "sb-stale", spec: { branch: "b" }, repos: slots })), false);
 });
 
-// --- the attach (ADR-0004, ADR-0051) ----------------------------------------------------------------
+// --- the attach (ADR-0004, ADR-0051, ADR-0063) ------------------------------------------------------
 
-test("attach execs the idempotent ADR-0004 script in the harness container, per slot, off /repos/<key>", async () => {
-  const { exec, calls } = fakeExec({ exec: () => "" });
-  const port = kubectlSandbox({ exec });
+/** A Sandbox the operator already reports Ready, in the store before the port is built. */
+function readySandbox(name: string, status: object = READY) {
+  const c = cluster([]);
+  c.api.seed("sandboxes", { metadata: { name, labels: { "jr2.dev/run": "r" } }, status } as never);
+  return c;
+}
 
-  const spec = { branch: "feat/login" };
+test("attach is the Harness's POST /attach at the Sandbox's endpoint, with the Harness bearer (ADR-0058, ADR-0063)", async () => {
+  const c = readySandbox("sb-3");
+  const port = kubeSandbox({ ...provisionable, ...c.exec });
   const repos = [
-    { slot: "app", url: "git@github.com:acme/app.git", ref: "main" },
-    { slot: "infra", url: "https://example.test/infra.git", ref: "v2" },
+    { slot: "app", url: APP_URL },
+    { slot: "infra", url: "git@github.com:acme/infra.git", ref: "release/2" },
   ];
-  const { repos: paths, ...rest } = await port.attach({ name: "sb-3", spec, repos });
-  assert.deepEqual(paths, { app: "/work/app/feat-login", infra: "/work/infra/feat-login" });
-  assert.deepEqual(Object.keys(paths), ["app", "infra"], "declaration order — the one thing the kit promises about it");
-  assert.deepEqual(rest, {}, "no slot is privileged: the attach names no `workdir` (ADR-0051)");
+  const out = await port.attach({ name: "sb-3", spec: { branch: "feat/x", reviewSha: "abc123" }, repos });
 
-  const argv = calls[0]!.args;
-  assert.deepEqual(argv.slice(0, 2), ["exec", "pod/sb-3"]);
-  // Still `harness`, and still right after ADR-0037: the primary container IS the Sandbox Image,
-  // run unmodified with jr2's runtime beside it on a volume — so the agent's own worktrees, tools,
-  // and `$HOME` are what this attach touches.
-  assert.ok(argv.includes("harness"), "targets the harness container");
-  const script = argv[argv.length - 1]!;
-  // The clone source is the node cache at `/repos/<key>` — the key every spelling of the
-  // repository derives (ADR-0051) — and the pod-local layout is `/work/<slot>/{default,<branch>}`.
-  const appKey = repoKey("git@github.com:acme/app.git");
-  const infraKey = repoKey("https://example.test/infra.git");
-  assert.match(script, new RegExp(`git clone --shared '/repos/${appKey}' '/work/app/default'`));
-  assert.match(script, new RegExp(`git clone --shared '/repos/${infraKey}' '/work/infra/default'`));
-  // A Binding's `ref` is the BASE the branch is cut from (ADR-0051) — named through the clone's
-  // remote-tracking ref when one exists, else as written (a tag, a sha). Bare, git's DWIM would
-  // make the base branch itself and discard `-b` (see the real-git test below).
-  assert.match(
-    script,
-    /worktree add '\/work\/infra\/feat-login' -b 'feat\/login' "\$\(git -C '\/work\/infra\/default' rev-parse --verify -q 'refs\/remotes\/origin\/v2' >\/dev\/null && printf %s 'refs\/remotes\/origin\/v2' \|\| printf %s 'v2'\)"/,
-  );
-  // The fetch/push split (ADR-0005/0051): push goes to the REAL remote, in the Binding's OWN
-  // spelling — a Machine that bound over ssh pushes over ssh even when the cache was cloned over
-  // https. Nothing is read off the cache to learn it.
-  assert.match(
-    script,
-    /git -C '\/work\/app\/default' remote set-url --push origin -- 'git@github\.com:acme\/app\.git'/,
-  );
-  assert.doesNotMatch(script, /config remote\.origin\.url/);
-  // The FETCH url is a command, not a path (ADR-0053): git's `ext::` transport, the program on the
-  // runtime volume, the service git substitutes for `%S`, and the Repo's IDENTITY — the name a
-  // human reads in `git remote -v`, never the cache key. Nothing in the url says where the objects
-  // are: the program reads that off the checkout's alternates.
-  assert.match(
-    script,
-    /git -C '\/work\/app\/default' remote set-url origin -- 'ext::\/opt\/jr2\/bin\/jr2-upload-pack %S github\.com\/acme\/app'\n/,
-  );
-  assert.match(
-    script,
-    /git -C '\/work\/infra\/default' remote set-url origin -- 'ext::\/opt\/jr2\/bin\/jr2-upload-pack %S example\.test\/infra'\n/,
-  );
-  // The url names no address — the program's default is the Custodian's, so spelling it would put
-  // a number in every `git remote -v` that says nothing.
-  assert.doesNotMatch(script, /jr2-upload-pack %S [^ ']+ /);
-  // And the policy that lets git run it at all. `ext` is on git's own "known scary" list, so its
-  // built-in default is `never` and the url above would die with `fatal: transport 'ext' not
-  // allowed` before the program ever ran. `user` is what ADR-0053 argues for: a fetch a person or
-  // the Agent runs, never one git makes for itself out of a url jr2 did not write.
-  assert.match(script, /git -C '\/work\/app\/default' config protocol\.ext\.allow user\n/);
-  assert.doesNotMatch(script, /protocol\.ext\.allow (always|never)/);
-  // Exactly two remote lines per slot, and no other way of writing a remote: a `remote add` or a
-  // refspec rewrite would point the Agent's `git fetch` somewhere the pod cannot reach.
-  for (const line of script.split("\n")) {
-    if (/\bremote\b/.test(line))
-      assert.match(line, /remote set-url (--push )?origin -- /, `remotes are set, never added: ${line}`);
-  }
-  assert.doesNotMatch(script, /remote\.origin\.fetch|remote add|--fetch/);
-  // No ref → the Repo's OWN default branch, via the clone's origin/HEAD — never a hardcoded
-  // guess like `main` against a `master` repo.
-  const defaulted = await port.attach({
-    name: "sb-3",
-    spec,
-    repos: [{ slot: "app", url: "git@github.com:acme/app.git" }],
-  });
-  assert.equal(defaulted.repos.app, "/work/app/feat-login");
-  const defaultedScript = calls[calls.length - 1]!.args.at(-1)!;
-  assert.match(defaultedScript, /worktree add '\/work\/app\/feat-login' -b 'feat\/login' 'origin\/HEAD'/);
-  assert.match(script, /\[ -d '\/work\/app\/default\/\.git' \] \|\|/, "clone is guarded (idempotent re-run)");
-  // The attach execs in — it is NOT a child of the Harness process — so it must set the work
-  // group's umask itself or every dir it creates is 755 and the User Container seat can never
-  // CREATE a file in the worktree (ADR-0005's cross-uid write promise).
-  assert.match(script, /^umask 002\n/, "the exec'd attach carries its own umask");
-  // The clone SOURCE is the RO cache the node's agent wrote — git's dubious-ownership guard
-  // refuses it without this (safe.directory is honored from global config only, never -c).
-  assert.match(
-    script,
-    /^umask 002\ngit config --global safe\.directory '\*'/,
-    "trusts the pod's jr2-owned paths first",
-  );
-  // ADR-0005's default ACL: stamped on the slot root AFTER the mkdir that makes it and BEFORE the
-  // clone that fills it — inheritance happens at creation, never retroactively. This ordering is
-  // the whole cross-uid promise ("zero umask lines in any image"), so it is pinned per slot.
-  assert.match(script, /mkdir -p '\/work\/app'\n\/opt\/jr2\/bin\/work-acl '\/work\/app'\n\[ -d '\/work\/app\/default/);
-  assert.match(script, /mkdir -p '\/work\/infra'\n\/opt\/jr2\/bin\/work-acl '\/work\/infra'\n/);
-});
-
-const PATHS = { reposMount: "/repos", workRoot: "/work" };
-
-test("the fetch url names no address: every pod's Custodian answers the ask at the one loopback address", async () => {
-  // The program defaults to `http://127.0.0.1:8081`, where every Harness pod's Custodian listens
-  // (ADR-0053, ADR-0059); the User Container gets no env, so an address that moved would have had to
-  // ride the url — and none moves.
-  const { exec, calls } = fakeExec({ exec: () => "" });
-  await kubectlSandbox({ exec }).attach({
-    name: "sb-default",
-    spec: { branch: "b" },
-    repos: [{ slot: "app", url: APP_URL }],
-  });
-  assert.match(calls[0]!.args.at(-1)!, /jr2-upload-pack %S example\.test\/app'/);
-});
-
-test("the fetch url escapes what git's ext:: transport would read as syntax", () => {
-  // Git splits an `ext::` url on spaces and reads `%` as a placeholder introducer, so an identity
-  // carrying either is syntax unless it is escaped: a percent-encoded forge path
-  // (`My%20Project`, Azure DevOps) dies with `fatal: Bad remote-ext placeholder '%2'` before the
-  // program runs — every fetch in the pod, not a degraded one — and a literal space splits the
-  // identity in two, handing the program half an identity and a stray argument.
-  // Git's own spellings are `%%` and `% `, and the program receives the identity back exactly as
-  // written, which is what the Orchestrator derives the cache key from.
-  const { script } = attachScript(
-    { branch: "b" },
-    [
-      { slot: "azure", url: "https://dev.azure.com/org/My Project/_git/repo" },
-      { slot: "spaced", url: "git@host:team space/app.git" },
+  assert.equal(c.attaches.length, 1);
+  const [call] = c.attaches;
+  // The address is the Sandbox's own, off the watch; no `kubectl exec`, no stream through the API
+  // server, no pod read.
+  assert.equal(call!.url, "http://sb-1.default.svc:8080/attach");
+  assert.equal(call!.auth, `Bearer ${harnessToken(provisionable.signingKey, "sb-3")}`, "the bearer for THIS pod");
+  // The identity and cache key are resolved HERE, so the cache the Harness clones from is the one
+  // the operator mounted — the Harness never re-derives them (ADR-0051).
+  assert.deepEqual(call!.body, {
+    slots: [
+      { slot: "app", url: APP_URL, identity: "example.test/app", key: APP_KEY },
+      {
+        slot: "infra",
+        url: "git@github.com:acme/infra.git",
+        identity: "github.com/acme/infra",
+        key: repoKey("git@github.com:acme/infra.git"),
+        ref: "release/2",
+      },
     ],
-    PATHS,
-  );
-  assert.match(script, /%S dev\.azure\.com\/org\/My%%20Project\/_git\/repo'/);
-  assert.match(script, /%S host\/team% space\/app'/);
-  // `%S` is git's own placeholder, not an argument: it survives unescaped, once per url.
-  for (const line of script.split("\n")) {
-    if (line.includes("jr2-upload-pack")) assert.equal(line.match(/%S/g)?.length, 1);
-  }
+    branch: "feat/x",
+    reviewSha: "abc123",
+  });
+  assert.deepEqual(out.repos, { app: "/work/app/feat-x", infra: "/work/infra/feat-x" }, "the Harness's paths");
+  assert.deepEqual(c.api.writes, [], "the attach writes nothing to the cluster");
 });
 
-test("attachScript with a reviewSha adds the detached review worktree beside every branch worktree", () => {
-  // ADR-0028: the reviewer's seat — `<branchDir>-review`, DETACHED at the sha under review, so a
-  // rogue write cannot move the branch and a rogue commit evaporates with the checkout.
-  const { script, review } = attachScript(
-    { branch: "feat/login", reviewSha: "abc123" },
-    [
-      { slot: "app", url: APP_URL, ref: "main" },
-      { slot: "infra", url: "https://example.test/infra.git", ref: "v2" },
-    ],
-    PATHS,
+test("attach re-sends a request that never reached the Harness — Ready is not routable (ADR-0042)", async () => {
+  const c = readySandbox("sb-r");
+  let refusals = 2;
+  const flaky = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (refusals-- > 0) throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } });
+    return c.exec.harnessFetch(input, init);
+  }) as typeof fetch;
+  const port = kubeSandbox({ ...provisionable, ...c.exec, harnessFetch: flaky });
+  const out = await port.attach({ name: "sb-r", spec: { branch: "b" }, repos: [{ slot: "app", url: APP_URL }] });
+  assert.deepEqual(out.repos, { app: "/work/app/b" });
+
+  // A window that closes names the address it never reached.
+  const never = kubeSandbox({
+    ...provisionable,
+    ...c.exec,
+    attachWindowMs: 0,
+    harnessFetch: (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch,
+  });
+  await assert.rejects(
+    () => never.attach({ name: "sb-r", spec: { branch: "b" }, repos: [{ slot: "app", url: APP_URL }] }),
+    /never reached its Harness at http:\/\/sb-1\.default\.svc:8080/,
   );
-  assert.deepEqual(review, { app: "/work/app/feat-login-review", infra: "/work/infra/feat-login-review" });
-  assert.match(script, /worktree add --detach '\/work\/app\/feat-login-review' 'abc123'/);
-  assert.match(script, /worktree add --detach '\/work\/infra\/feat-login-review' 'abc123'/);
-  assert.match(
-    script,
-    /\[ -d '\/work\/app\/feat-login-review' \] \|\| git -C '\/work\/app\/default' worktree add --detach/,
-    "the add is guarded (idempotent re-run)",
-  );
-  // Forced checkout AND clean on EVERY attach: a previous round's rogue edits (tracked) and
-  // leftovers (untracked) must not survive into this round's review worktree.
-  assert.match(script, /git -C '\/work\/app\/feat-login-review' checkout --detach -f 'abc123'/);
-  assert.match(script, /git -C '\/work\/app\/feat-login-review' clean -fd/);
 });
 
-test("attachScript without a reviewSha emits no review worktree", () => {
-  const { script, review } = attachScript({ branch: "b" }, [{ slot: "app", url: APP_URL, ref: "main" }], PATHS);
-  assert.equal(review, undefined);
-  assert.doesNotMatch(script, /--detach/);
-  assert.doesNotMatch(script, /-review/);
+test("a failed attach carries the Harness's own words — the slot, the step, git's stderr — and is not re-sent", async () => {
+  const c = cluster([], () =>
+    Response.json(
+      {
+        error: "slot \"app\": clone off the node cache failed: fatal: repository '/repos/x' does not exist",
+        slot: "app",
+      },
+      { status: 500 },
+    ),
+  );
+  c.api.seed("sandboxes", { metadata: { name: "sb-f", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  const port = kubeSandbox({ ...provisionable, ...c.exec });
+  await assert.rejects(
+    () => port.attach({ name: "sb-f", spec: { branch: "b" }, repos: [{ slot: "app", url: APP_URL }] }),
+    /Sandbox "sb-f": the attach failed \(500\): slot "app": clone off the node cache failed: fatal: repository/,
+  );
+  assert.equal(c.attaches.length, 1, "an answer is an answer: only a request that never arrived is re-sent");
 });
 
-test("attachScript quotes hostile refs and urls, and rejects an empty slot list", () => {
-  const { script } = attachScript({ branch: "b" }, [{ slot: "app", url: APP_URL, ref: "main; rm -rf /" }], PATHS);
-  assert.match(
-    script,
-    /-b 'b' "\$\(git -C '\/work\/app\/default' rev-parse --verify -q 'refs\/remotes\/origin\/main; rm -rf \/' >\/dev\/null && printf %s 'refs\/remotes\/origin\/main; rm -rf \/' \|\| printf %s 'main; rm -rf \/'\)"/,
-    "ref rides inside single quotes, never bare",
+test("attach refuses a Sandbox with no endpoint, and an empty slot list", async () => {
+  const c = cluster([]);
+  const port = kubeSandbox({ ...provisionable, ...c.exec });
+  await assert.rejects(
+    () => port.attach({ name: "sb-none", spec: { branch: "b" }, repos: [{ slot: "app", url: APP_URL }] }),
+    /no endpoint to attach through/,
   );
-  const reviewed = attachScript(
-    { branch: "b", reviewSha: "$(reboot)" },
-    [{ slot: "app", url: APP_URL, ref: "main" }],
-    PATHS,
+  const ready = readySandbox("sb-e");
+  await assert.rejects(
+    () => kubeSandbox({ ...provisionable, ...ready.exec }).attach({ name: "sb-e", spec: { branch: "b" }, repos: [] }),
+    /names no Repo Slot/,
   );
-  assert.match(reviewed.script, /worktree add --detach '\/work\/app\/b-review' '\$\(reboot\)'/, "the sha too");
-  const pushed = attachScript({ branch: "b" }, [{ slot: "app", url: "https://example.test/a'b.git" }], PATHS);
-  assert.match(pushed.script, /set-url --push origin -- 'https:\/\/example\.test\/a'\\''b\.git'/, "and the push url");
-  assert.throws(() => attachScript({ branch: "b" }, [], PATHS), /names no Repo Slot/);
 });
 
-test("attachScript cuts the branch worktree FROM a Binding's ref, never ON it (real git)", async (t) => {
-  // ADR-0051: `ref` is the base the branch Worktree is cut from. The pod-local clone is a fresh
-  // clone off the cache, so only the default branch exists locally and every other branch is
-  // `origin/<name>`; handed a bare `develop`, git's "worktree add" DWIM creates a local
-  // `develop` tracking `origin/develop` and silently drops `-b` — the Agent would commit on, and
-  // push to, the base. This drives the emitted worktree line through real git in a temp layout
-  // shaped like the pod's (`/repos/<key>` cache, `/work/<slot>/default`) for each ref kind.
-  // The developer's own git config is not part of the layout under test, and it is free to break
-  // it: a global `commit.gpgsign = true` fails every commit below, because a temp repo has no
-  // signing key. `/dev/null` for both config files is the seal — the only settings that reach git
-  // here are the ones this test passes, which is also why `commit` still names a `user.email`.
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
-  const git = (cwd: string, ...args: string[]) =>
-    execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-  const root = await mkdtemp(join(tmpdir(), "jr2-attach-"));
-  const src = join(root, "src");
-  await mkdir(src);
-  git(src, "init", "-q", "-b", "main");
-  const commit = (m: string) =>
-    git(src, "-c", "user.email=t@jr2", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", m);
-  commit("one");
-  git(src, "branch", "develop");
-  commit("two");
-  git(src, "tag", "v3");
-  const sha = git(src, "rev-parse", "HEAD");
-  const url = "https://example.test/acme/app.git";
-  const key = repoKey(url);
-  const reposMount = join(root, "repos");
-  await mkdir(reposMount);
-  git(root, "clone", "-q", "--bare", src, join(reposMount, key));
-  // safe.directory is irrelevant here (one uid owns everything), and the ACL helper does not
-  // exist on the host — so run the script's git lines only, from `mkdir` on.
-  const attachable = (s: string) => s.split("\n").filter((l) => !/^umask|safe\.directory|work-acl/.test(l));
-  const cases: Array<{ ref: string | undefined; head: string; at: string }> = [
-    { ref: "develop", head: "feat/x", at: git(src, "rev-parse", "develop") }, // a non-default branch
-    { ref: "main", head: "feat/x", at: sha }, // the default branch, by name
-    { ref: "v3", head: "feat/x", at: sha }, // a tag
-    { ref: sha, head: "feat/x", at: sha }, // a sha
-    { ref: undefined, head: "feat/x", at: sha }, // absent → the Repo's own default branch
-  ];
-  for (const [i, c] of cases.entries()) {
-    await t.test(`ref ${c.ref === undefined ? "(absent)" : c.ref}`, async () => {
-      const workRoot = join(root, `work${i}`);
-      const { script, repos } = attachScript(
-        { branch: c.head },
-        [{ slot: "app", url, ...(c.ref === undefined ? {} : { ref: c.ref }) }],
-        { reposMount, workRoot },
-      );
-      execFileSync("sh", ["-ec", attachable(script).join("\n")], { stdio: ["ignore", "pipe", "pipe"] });
-      const workdir = repos.app!;
-      assert.equal(git(workdir, "branch", "--show-current"), c.head, "the worktree is ON the new branch");
-      assert.equal(git(workdir, "rev-parse", "HEAD"), c.at, "cut FROM the ref");
-      assert.equal(
-        git(join(workRoot, "app", "default"), "branch", "--list", "develop"),
-        "",
-        "no local branch named after the base was conjured",
-      );
+// --- the Size (ADR-0060) ---------------------------------------------------------------------
+
+test("the CR carries the whole Size: pod-level ceiling, per-container split, requests = limits (ADR-0060)", async () => {
+  const { exec, calls } = cluster();
+  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec }).provision({
+    name: "sb-size",
+    runId: "r",
+    workflow: "w",
+    resources: { limits: { memory: "3Gi", cpu: "2" } },
+    ...withApp,
+  });
+  const spec = crOf(calls).spec;
+  assert.deepEqual(spec.podResources, {
+    requests: { cpu: "2", memory: "3Gi" },
+    limits: { cpu: "2", memory: "3Gi" },
+  });
+  // The Harness container: the rest after the Custodian's slice, and the `/work` disk as a request
+  // with no limit — a limit evicts the pod and loses `/work`.
+  assert.deepEqual(spec.resources, {
+    requests: { cpu: "1950m", memory: "3008Mi", "ephemeral-storage": "10Gi" },
+    limits: { cpu: "1950m", memory: "3008Mi" },
+  });
+  const custodian = spec.sidecars.find((c: { name: string }) => c.name === "custodian");
+  assert.deepEqual(custodian.resources, {
+    requests: { cpu: "50m", memory: "64Mi" },
+    limits: { cpu: "50m", memory: "64Mi" },
+  });
+  assert.deepEqual(spec.initContainers[0].resources, {
+    requests: { cpu: "10m", memory: "32Mi" },
+    limits: { memory: "128Mi" },
+  });
+  // `/dev/shm`: a quarter of the Harness share. The operator mounts it, in the Harness container
+  // alone, so the CR composes no volume for it.
+  assert.equal(spec.shmSize, "752Mi");
+  assert.ok(!spec.volumes.some((v: { name: string }) => v.name === "shm"));
+  // Priority: the class `jr2 up` creates, unless the Instance names its own.
+  assert.equal(spec.priorityClassName, "jr2-sandbox");
+});
+
+test("the chain: a stated field wins, the Instance default fills the rest, the kit fills what is left (ADR-0060)", async () => {
+  const run = async (resources: unknown, defaultSize?: unknown) => {
+    const { exec, calls } = cluster();
+    await kubeSandbox({
+      imagesPath: await mkImages(REFS),
+      ...provisionable,
+      ...exec,
+      ...(defaultSize ? { defaultSize: defaultSize as never } : {}),
+      priorityClassName: "batch-low",
+    }).provision({
+      name: "sb-chain",
+      runId: "r",
+      workflow: "w",
+      ...(resources ? { resources: resources as never } : {}),
+      ...withApp,
     });
-  }
+    return crOf(calls).spec;
+  };
+  const kit = await run(undefined);
+  assert.deepEqual(kit.podResources.limits, { cpu: "1", memory: "2Gi" }, "the kit default: 2Gi, 1 cpu");
+  assert.equal(kit.priorityClassName, "batch-low", "priorityClasses.sandbox names the class");
+  const instance = await run(undefined, { limits: { memory: "4Gi", cpu: "2" } });
+  assert.deepEqual(instance.podResources.limits, { cpu: "2", memory: "4Gi" });
+  const stated = await run({ limits: { memory: "3Gi" } }, { limits: { memory: "4Gi", cpu: "2" } });
+  assert.deepEqual(stated.podResources.limits, { cpu: "2", memory: "3Gi" }, "never an override of a stated field");
+});
+
+test("a stated User Container split lands on the user sidecar and comes out of the Harness share (ADR-0060)", async () => {
+  const { exec, calls } = cluster();
+  await kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec }).provision({
+    name: "sb-split",
+    runId: "r",
+    workflow: "w",
+    user: "ghcr.io/acme/sshd:1",
+    userResources: { limits: { memory: "512Mi", cpu: "250m" } },
+    ...withApp,
+  });
+  const spec = crOf(calls).spec;
+  const user = spec.sidecars.find((c: { name: string }) => c.name === "user");
+  assert.deepEqual(user.resources, {
+    requests: { cpu: "250m", memory: "512Mi" },
+    limits: { cpu: "250m", memory: "512Mi" },
+  });
+  assert.deepEqual(spec.resources.limits, { cpu: "700m", memory: "1472Mi" });
+});
+
+test("a split below the Harness floor fails the provision by name, with NOTHING applied (ADR-0060)", async () => {
+  const { exec, calls } = cluster();
+  await assert.rejects(
+    kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec }).provision({
+      name: "sb-tiny",
+      runId: "r",
+      workflow: "w",
+      resources: { limits: { memory: "300Mi" } },
+      ...withApp,
+    }),
+    /Sandbox "sb-tiny" cannot be provisioned: the Size leaves the Harness container .* below its 256Mi floor/,
+  );
+  assert.deepEqual(calls, [], "no Secret, no CR");
 });

@@ -1,20 +1,23 @@
-// The canonical SandboxPort (ADR-0012 / GAP(3)): drives the operator's Sandbox CRD through
-// `kubectl`, honoring the current kube context (ADR-0009: the kube target IS the kubectl
-// context; `--context` overrides). Shelling to kubectl instead of a client library keeps the
-// dependency surface at zero and the behavior identical to what a human debugging the cluster
-// would type; the `exec` process seam is injectable so the mapping logic is unit-testable
-// without a cluster. The kind e2e tier exercises the real thing.
+// The canonical SandboxPort (ADR-0012 / GAP(3)): drives the operator's Sandbox CRD through the
+// Orchestrator's own Kubernetes client (kube-client.ts, ADR-0063) — plain REST on built-in
+// `fetch`, no dependency — and reads it back through the one watch (sandbox-watch.ts). Every wait
+// that polled is now a watch event: the provision's Ready, and Continuity (ADR-0021). The
+// Orchestrator never reads a Pod: the operator owns it (ADR-0001) and publishes what this port
+// needs on the Sandbox's status — `podUID`, the scheduler's word, the Harness container's restarts
+// and last end. The client and the watch are injectable, so the mapping is unit-testable against a
+// fake API server; the kind e2e tier exercises the real thing.
 //
 // Reachability: the orchestrator always runs in-cluster (ADR-0019), so it dials
 // `status.endpoint` (`http://<name>.<ns>.svc:…`) directly — stable across orchestrator
 // restarts by nature, which is what ADR-0012's "same endpoint" re-attach promise rides on.
 //
-// All four operations are idempotent (SandboxPort contract): apply is create-or-update, attach
-// guards every clone/worktree, delete ignores absent.
+// Every operation is idempotent (SandboxPort contract): apply is create-or-update, the attach is
+// the Harness's own `POST /attach`, which guards every clone and worktree (ADR-0063), delete
+// ignores absent.
 //
 // WHICH REPOS a Sandbox attaches arrive resolved from the `workspace()`'s Repo Slots (ADR-0051):
 // the CR names each by its cache key, the operator mounts the node's cache read-only at
-// `/repos/<key>` and gates Ready on it, and the attach clones off that mount. The one judgement
+// `/repos/<key>` and gates Ready on it, and the Harness's attach clones off that mount. The one judgement
 // made here is the FENCE: a per-run url must match a `git.credentials` entry, or it is refused
 // before anything is applied.
 //
@@ -46,6 +49,11 @@
 //   container     user        optional, the image's own entrypoint, the checkouts (/work, plus
 //                             /repos and /opt/jr2 read-only) and NOTHING else
 //
+// and SIZES it (ADR-0060): the Workspace's Size, resolved down its chain, is the pod-level ceiling;
+// the Custodian takes a fixed slice, the User Container its split if the Machine states one, and
+// the Harness container the rest as its own limit. Every request equals its limit, so the pod is
+// Guaranteed and the CPU limit is enforced.
+//
 // This is also where the CUSTODIAN is composed (ADR-0013, ADR-0059). The operator needs no change
 // to carry it: ADR-0001 made `Sidecars` generic container fragments it schedules WITHOUT
 // understanding, so the Custodian is exactly that — a container with an image, its mounts, and a
@@ -59,7 +67,6 @@
 // the Secret re-applies as a no-op. What else the Custodian holds is `jr2 up`'s resolution, read
 // per provision from the `jr2-held` mount (custodian.ts builds both placements' pods alike).
 
-import { execFile } from "node:child_process";
 import { join } from "node:path";
 import {
   matchCredential,
@@ -71,14 +78,15 @@ import {
 import { custodianComposition, type CustodianComposition } from "./custodian.ts";
 import { readHeldManifest } from "./held-secrets.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
-import { HELD_KEY, HELD_MOUNT, IMAGES_KEY, IMAGES_MOUNT, REPOS_MOUNT } from "./names.ts";
+import { HELD_KEY, HELD_MOUNT, IMAGES_KEY, IMAGES_MOUNT, PRIORITY_CLASS_SANDBOX, REPOS_MOUNT } from "./names.ts";
+import { SANDBOXES, SECRETS, kubeClient, type KubeClient } from "./kube-client.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import type { RepoResources } from "./repos.ts";
-import { harnessTokenDigest, sandboxToken } from "./tokens.ts";
-import type { ProvisionedRepo, SandboxPort, WorkspaceSpec } from "./workspace.ts";
-
-/** Run one kubectl invocation to completion. `input` is piped to stdin (`apply -f -`). */
-export type KubectlExec = (args: string[], opts?: { input?: string }) => Promise<{ stdout: string; stderr: string }>;
+import { resolveSize, splitSize, type Size, type SizeSplit } from "./size.ts";
+import { watchSandboxes, type Condition, type SandboxObject, type SandboxWatch } from "./sandbox-watch.ts";
+import { harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
+import type { AttachError, AttachRequest, AttachResponse } from "./wire.ts";
+import type { Continuity, ProvisionedRepo, SandboxPort } from "./workspace.ts";
 
 /** Where jr2's runtime lands in every container that gets it (ADR-0037). `/opt/jr2` and not `/app`
  * because a stranger's base may already use `/app`, and one layout must serve both the stock
@@ -97,13 +105,19 @@ const RUNTIME_VOLUME = "runtime";
 const RUNTIME_VOLUME_MOUNT = { name: RUNTIME_VOLUME, mountPath: RUNTIME_MOUNT, subPath: "opt/jr2", readOnly: true };
 
 /** The primary container's command (ADR-0037). Absolute, so it never depends on the image's
- * `WORKDIR`, and identical to the stock Harness image's own `CMD` — one runtime, two placements. */
-const HARNESS_COMMAND = [`${RUNTIME_MOUNT}/bin/node`, `${RUNTIME_MOUNT}/src/main.ts`];
+ * `WORKDIR`, and identical to the stock Harness image's own `CMD` — one runtime, two placements.
+ * `tini` is PID 1 (ADR-0061): the Agent's processes are the Harness's children, and a tree the
+ * memory guard kills must leave no zombies behind. */
+const HARNESS_COMMAND = [
+  `${RUNTIME_MOUNT}/bin/tini`,
+  "--",
+  `${RUNTIME_MOUNT}/bin/node`,
+  `${RUNTIME_MOUNT}/src/main.ts`,
+];
 
-/** The program `origin`'s fetch url runs (ADR-0053), on the runtime volume beside `work-acl`. It
- * asks the node cache for a fetch and then serves the cache, so every seat that holds the
- * checkouts must hold this volume — which is why the User Container mounts it (ADR-0005). */
-const UPLOAD_PACK = `${RUNTIME_MOUNT}/bin/jr2-upload-pack`;
+/** Where the Harness attaches (ADR-0004): the `work` volume's mount in every seat that holds the
+ * checkouts. Fixed, because the Harness's attach writes exactly here (ADR-0063). */
+const WORK_ROOT = "/work";
 
 /** ADR-0005's default work group. Convention, not config: the pod's `fsGroup` is granted to every
  * container as a supplemental group, so the Harness writes `/work` whatever the number and no
@@ -139,78 +153,43 @@ const FALLBACK_UID = 1000;
 const FALLBACK_HOME = "/home/jr2";
 
 /**
- * The kubelet's verdict on a container whose image resolves to root under `runAsNonRoot: true`.
- * Matched, not merely reported, because it is the ONE provision failure with no evidence anywhere
- * else: the container never starts, so it has no logs, and the pod sits in this waiting state until
- * the provision times out — which then blames the preflight for a container the preflight never got
- * to run. A BUILT image is caught earlier and cheaper (the converge's `docker inspect` recorded the
- * string; `resolveSandboxImage` in images.ts judges it into `refusedUser` before anything is
- * applied), so this is the brought ref's path: never inspected, never given the uid-1000 fallback,
- * knowable only from the cluster.
+ * The CPU hints (ADR-0060), each the Harness container's own `limits.cpu` through the Downward API
+ * (divisor 1, so a fractional limit rounds UP to whole cpus). For the tools that read neither the
+ * cgroup's limit nor their affinity: `OMP_NUM_THREADS` also makes `nproc` answer N, and
+ * `PYTHON_CPU_COUNT` and `GOMAXPROCS` speak for their runtimes. `os.cpus()` still reports the node —
+ * a Machine that runs Playwright passes `--workers=$JR2_CPUS`.
  *
- * Reason and message are BOTH required. The reason alone covers a missing Secret or ConfigMap key
- * too — a different fault with a different fix — and only the message distinguishes them.
+ * TODO(ADR-0062): the Agent is told its CPU count and Size by the Briefing, never by the Frame.
  */
-const ROOT_IMAGE_REASON = "CreateContainerConfigError";
-const ROOT_IMAGE_MESSAGE = /runAsNonRoot/i;
-
-/** How many CR polls pass between two pod reads. See the provision loop for why it is not 1. */
-const POD_CHECK_EVERY = 5;
+const CPU_HINTS = ["JR2_CPUS", "OMP_NUM_THREADS", "PYTHON_CPU_COUNT", "GOMAXPROCS"] as const;
+const cpuHintEnv = (): HarnessEnvVar[] =>
+  CPU_HINTS.map((name) => ({ name, valueFrom: { resourceFieldRef: { resource: "limits.cpu", divisor: "1" } } }));
 
 /**
- * The kubelet's own words when a container's image resolves to root under `runAsNonRoot`, or
- * undefined for every other pod shape. A pure read of pod status: the caller supplies the parsed
- * `kubectl get pod -o json`, so the claim is testable without a cluster and the fault detection
- * cannot drift from the message the provision prints.
- *
- * Init containers are searched FIRST because they run first: the `preflight` step runs the user's
- * image before the Harness container ever exists, so that is where a root image dies. The primary
- * containers are searched too — the same image sits in the `harness` seat, and the `user` seat is
- * deliberately un-hardened (ADR-0005), so a fault there would mean something else entirely.
- *
- * Both the reason AND the message must match. `CreateContainerConfigError` is also what an absent
- * Secret key produces, and that fault has a different fix; a name with no evidence behind it is
- * worse than the timeout it replaces.
+ * How many times the Harness container may end before the provision stops waiting for it
+ * (ADR-0063). The operator publishes its restarts and last end on the Sandbox's status, so a
+ * Harness that dies on start — a Sandbox Image that misses ADR-0037's floor in a way the preflight
+ * did not catch, a runtime the image cannot run — fails the provision by NAME, with the kubelet's
+ * reason and exit code, instead of burning the whole Ready budget. Two, not one: a single restart
+ * on the way up (a memory kill during a heavy start, ADR-0061) is a pod that may still come up.
  */
-export function rootImageFault(pod: unknown): string | undefined {
-  const status = (pod as { status?: Record<string, unknown> } | null)?.status;
-  if (!status) return undefined;
-  type Waiting = { name?: string; state?: { waiting?: { reason?: string; message?: string } } };
-  const groups = [status["initContainerStatuses"], status["containerStatuses"]];
-  for (const group of groups) {
-    if (!Array.isArray(group)) continue;
-    for (const cs of group as Waiting[]) {
-      const waiting = cs?.state?.waiting;
-      if (!waiting || waiting.reason !== ROOT_IMAGE_REASON) continue;
-      if (!waiting.message || !ROOT_IMAGE_MESSAGE.test(waiting.message)) continue;
-      return `container "${cs.name ?? "?"}": ${waiting.message}`;
-    }
-  }
-  return undefined;
-}
+const CRASH_LOOP_RESTARTS = 2;
 
-/**
- * The fix, not the symptom. The kubelet's message says what it refused; it cannot say that the
- * image is a Sandbox Image, that jr2 declined to patch a uid onto it, or where the one-line edit
- * goes — and without those three the reader has a Kubernetes error and no next step.
- *
- * It names the BROUGHT case specifically because that is the only one that reaches here: a built
- * image's `USER` was inspected at converge and judged before anything was applied (images.ts), and
- * an image declaring none gets the uid-1000 fallback. A ref is never inspected — that is the point
- * of refs (ADR-0037) — so it must declare a numeric non-root `USER` itself.
- */
-function rootImageError(name: string, fault: string): string {
-  return (
-    `Sandbox "${name}" cannot start: its image runs as ROOT, and every jr2-owned seat is hardened ` +
-    `with runAsNonRoot (ADR-0005). The kubelet refused it — ${fault}\n` +
-    `  - the fix is one line in the image: a NUMERIC non-root \`USER <uid>\` (e.g. \`USER 1000\`)\n` +
-    `  - numeric because the kubelet does not read the image's /etc/passwd, so \`USER app\` is ` +
-    `refused too — it cannot prove that name is non-root\n` +
-    `  - jr2 does not supply a uid for a brought registry ref: it is never inspected and never ` +
-    `modified, which is what "bring your own image" means (ADR-0037). Only an image jr2 BUILDS, ` +
-    `and only one that declares no USER at all, gets the uid-${FALLBACK_UID} fallback.`
-  );
-}
+/** The kubelet's reason for a container the kernel killed at its memory limit (ADR-0061). */
+const OOM_KILLED = "OOMKilled";
+
+/** How long a lost conversation waits for the operator's word on a memory kill (ADR-0061). The
+ * Harness can be serving again — and answering 404 — a moment before the kubelet's status for its
+ * last run has reached the Sandbox, and this port never reads the Pod to learn it sooner. */
+const MEMORY_FAULT_GRACE_MS = 5_000;
+
+/** Clock skew allowed between a node's kubelet stamping `finishedAt` and this process's `since`. */
+const MEMORY_FAULT_SKEW_MS = 10_000;
+
+/** How long an attach keeps re-sending a request that never reached the Harness (ADR-0042): the
+ * attach is now the FIRST thing that dials a Sandbox's Service, and Ready is not routable. The
+ * same measured window the admission uses (harness-client.ts). */
+const ATTACH_WINDOW_MS = 90_000;
 
 /**
  * ADR-0037's preflight, VERBATIM: git present · `$HOME` writable · glibc new enough for jr2's node
@@ -260,7 +239,7 @@ const PREFLIGHT_SCRIPT = [
   `exit 1`,
 ].join("\n");
 
-export type KubectlSandboxOptions = {
+export type KubeSandboxOptions = {
   /** The mounted image map (ADR-0037/0038) — every ref this port can name, written by `jr2 up`.
    * Default: the `jr2-images` ConfigMap's mount. No image option here: which image a Sandbox runs
    * is the `workspace()` wrapper's static `image` option (ADR-0049) — carried on the Machine, read
@@ -281,6 +260,12 @@ export type KubectlSandboxOptions = {
    * `sandbox.tolerations`, written on the CR verbatim and copied onto the pod by the operator, which
    * merges nothing with them. Absent → wherever an ordinary pod lands. */
   placement?: SandboxPlacement;
+  /** The Instance's default Size (`sandbox.resources`, ADR-0060): applied field by field to a
+   * Workspace that states none, never over a stated one. Absent → the kit default. */
+  defaultSize?: Size;
+  /** The Sandbox pod's PriorityClass (ADR-0060): `priorityClasses.sandbox`, or the `jr2-sandbox`
+   * class `jr2 up` creates. */
+  priorityClassName?: string;
   /** The instance ships a private-CA bundle (ADR-0020): the HARNESS container trusts it, and the
    * Custodian verifies a bound host with it (custodian.ts). */
   caBundle?: boolean;
@@ -288,19 +273,16 @@ export type KubectlSandboxOptions = {
   signingKey?: Buffer;
   /** Kube namespace for Sandbox CRs. Default `default`. */
   namespace?: string;
-  /** kubectl `--context` override. Default: the current context (ADR-0009). */
-  context?: string;
-  /** In-pod root for the pod-local clones + worktrees (ADR-0004 layout). Default `/work`. */
-  workRoot?: string;
   /** CR `spec.idleTimeout` — the operator's abandoned-Sandbox GC backstop (ADR-0001). Default `30m`. */
   idleTimeout?: string;
   /** How often a workspace's lease actor renews (ADR-0001/0021): the cadence at which
-   * `jr2.dev/keepalive` is re-stamped AND continuity is read back. Must be ≪ idleTimeout, since
-   * a lapsed lease is what lets the operator reap. Default 5m. */
+   * `jr2.dev/keepalive` is re-stamped, ±20%. Must be ≪ idleTimeout, since a lapsed lease is what
+   * lets the operator reap. Default 5m. */
   leaseIntervalMs?: number;
   /** Await-Ready budget for the POD: from the CR apply until the operator reports the pod Ready.
-   * Default 120s, polled every second. A pod that never comes up (an image that misses ADR-0037's
-   * floor) is what this bounds; a pod that is up and waiting on its Repos is `repoTimeoutMs`'s. */
+   * Default 120s, measured against watch events. A pod that never comes up (an image that misses
+   * ADR-0037's floor) is what this bounds; a pod that is up and waiting on its Repos is
+   * `repoTimeoutMs`'s. */
   readyTimeoutMs?: number;
   /**
    * Await-Ready budget for the REPOS (ADR-0051): once the operator holds a Sandbox whose pod is
@@ -312,7 +294,6 @@ export type KubectlSandboxOptions = {
    * reaps a Sandbox that waits longer than that. Default 25m.
    */
   repoTimeoutMs?: number;
-  pollMs?: number;
   /**
    * The Repo-resource port (ADR-0051, repos.ts): every Repo a provision names must exist as a
    * `Repo` resource before the CR names it, or the operator reports it missing and the Sandbox
@@ -331,23 +312,36 @@ export type KubectlSandboxOptions = {
    * Default: no entries, so every per-run url is refused.
    */
   credentials?: readonly GitCredential[];
-  /** Process seam, injectable for tests. Defaults shell to the `kubectl` on PATH. */
-  exec?: KubectlExec;
+  /** The Kubernetes client (ADR-0063), shared with the Repo ports so one write cap covers the
+   * process. Default: the in-cluster client. */
+  client?: KubeClient;
+  /** The one Sandbox watch (ADR-0063), shared with the fetch ask. Default: one started on first
+   * use, over `client`, in `namespace`. */
+  watch?: SandboxWatch;
+  /** The transport the attach dials the Harness with (ADR-0063). Injectable for tests. Default:
+   * global `fetch`. */
+  harnessFetch?: typeof fetch;
+  /** How long an attach re-sends a request that never reached the Harness. Default 90s. */
+  attachWindowMs?: number;
 };
 
-export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
+export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const ns = opts.namespace ?? "default";
   const imagesPath = opts.imagesPath ?? join(IMAGES_MOUNT, IMAGES_KEY);
   const heldPath = opts.heldPath ?? join(HELD_MOUNT, HELD_KEY);
-  const workRoot = opts.workRoot ?? "/work";
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
   const repoTimeoutMs = opts.repoTimeoutMs ?? 25 * 60_000;
-  const pollMs = opts.pollMs ?? 1_000;
-  const exec = opts.exec ?? defaultKubectlExec;
   const credentials = opts.credentials ?? [];
-
   const leaseIntervalMs = opts.leaseIntervalMs ?? 5 * 60_000;
-  const base = ["--namespace", ns, ...(opts.context ? ["--context", opts.context] : [])];
+  const harnessFetch = opts.harnessFetch ?? fetch;
+  const attachWindowMs = opts.attachWindowMs ?? ATTACH_WINDOW_MS;
+
+  // Built on first use, never at construction: a boot that builds this port has not yet reached
+  // the cluster, and must not need to (ADR-0048's stance for the Repos, held for the Sandboxes).
+  let client: KubeClient | undefined = opts.client;
+  const kube = () => (client ??= kubeClient());
+  let watch: SandboxWatch | undefined = opts.watch;
+  const sandboxes = () => (watch ??= watchSandboxes(kube(), { namespace: ns }));
 
   /** The Sandbox's token Secret — mounted into the Custodian container, and nothing else in the pod. */
   const secretName = (name: string) => `${name}-token`;
@@ -382,24 +376,30 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * and the standard managed-access shape (a root sshd that setuids sessions down) must run
    * unmodified.
    */
-  const userSidecar = async (refs: ImageRefs, image: string, keys: string[]) => ({
+  const userSidecar = async (refs: ImageRefs, image: string, keys: string[], split: SizeSplit) => ({
     name: "user",
     image: await resolveUserImage(refs, image),
     volumeMounts: [
-      { name: "work", mountPath: workRoot },
+      { name: "work", mountPath: WORK_ROOT },
       RUNTIME_VOLUME_MOUNT,
       ...keys.map((key) => ({ name: repoVolumeName(key), mountPath: repoMountPath(key), readOnly: true })),
     ],
+    // Its split of the Size, only when the Machine states one (ADR-0060) — a fact the Machine
+    // wrote, not an injection. Otherwise the seat has no limit of its own and shares the pod's.
+    ...(split.user ? { resources: split.user } : {}),
   });
 
   /** The pod's sidecar list (ADR-0001: opaque fragments the operator schedules verbatim). The
    * Custodian is ALWAYS here: a Sandbox without one is a pod that comes up Ready and then parks its
    * Machine forever on a Menu it cannot read (ADR-0013). The User Container joins it only when the
    * spec named one. */
-  const sidecarsFor = async (custodian: CustodianComposition, refs: ImageRefs, keys: string[], user?: string) => [
-    custodian.custodianContainer,
-    ...(user !== undefined ? [await userSidecar(refs, user, keys)] : []),
-  ];
+  const sidecarsFor = async (
+    custodian: CustodianComposition,
+    refs: ImageRefs,
+    keys: string[],
+    split: SizeSplit,
+    user?: string,
+  ) => [custodian.custodianContainer, ...(user !== undefined ? [await userSidecar(refs, user, keys, split)] : [])];
 
   // The Harness container's env: the instance's passthrough (`harness.env` — e.g. model
   // config) first, then the mechanism-owned vars (the Custodian's address and every Stand-in, the
@@ -410,11 +410,14 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   // The gate rides LAST (ADR-0058): the digest of the bearer the Orchestrator derives for THIS
   // Sandbox. A digest because the Agent reads this env; last because a `harness.env` entry of the
   // same name must not be able to choose the Harness's credential.
-  const harnessEnv = (name: string, custodian: CustodianComposition): HarnessEnvVar[] => {
-    if (!opts.signingKey) throw new Error("kubectlSandbox: a Harness needs a signingKey to check its bearer");
+  const harnessEnv = (name: string, custodian: CustodianComposition, hints: HarnessEnvVar[]): HarnessEnvVar[] => {
+    if (!opts.signingKey) throw new Error("kubeSandbox: a Harness needs a signingKey to check its bearer");
     return [
       ...(opts.env ?? []),
       ...custodian.harnessEnv,
+      // The CPU hints (ADR-0060) are mechanism: they say what the Size gives, so they win over a
+      // `harness.env` entry of the same name.
+      ...hints,
       { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(opts.signingKey, name) },
     ];
   };
@@ -430,13 +433,15 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    * will get — the image's own user, or ADR-0037's fallback — because a probe that proved a
    * different uid's `$HOME` proved nothing.
    */
-  const initContainersFor = (seat: Seat) => [
+  const initContainersFor = (seat: Seat, split: SizeSplit) => [
     {
       name: "preflight",
       image: seat.image,
       command: ["/bin/sh", "-c", PREFLIGHT_SCRIPT],
       ...(seat.env.length ? { env: seat.env } : {}),
       volumeMounts: [RUNTIME_VOLUME_MOUNT, ...seat.homeMount],
+      // Small and fixed, inside the pod's budget (ADR-0060): it runs before the others start.
+      resources: split.preflight,
       securityContext: seat.securityContext,
     },
   ];
@@ -501,16 +506,26 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   };
 
   const crFor = async (
-    req: { name: string; runId: string; workflow: string; image?: string; user?: string; workGroup?: number },
+    req: {
+      name: string;
+      runId: string;
+      workflow: string;
+      image?: string;
+      user?: string;
+      workGroup?: number;
+      userResources?: Size;
+    },
     refs: ImageRefs,
     repos: FencedRepo[],
     custodian: CustodianComposition,
+    split: SizeSplit,
   ) => {
     const seat = await seatFor(refs, req.image);
     const sidecars = await sidecarsFor(
       custodian,
       refs,
       repos.map((r) => r.key),
+      split,
       req.user,
     );
     return {
@@ -543,18 +558,32 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // preference never conflicts with a requirement.
         ...(opts.placement?.nodeSelector ? { nodeSelector: opts.placement.nodeSelector } : {}),
         ...(opts.placement?.tolerations?.length ? { tolerations: opts.placement.tolerations } : {}),
+        // Priority (ADR-0060): a pod of ordinary priority cannot preempt a live Workspace, and a
+        // waiting Sandbox evicts nobody (the class's preemptionPolicy is Never).
+        priorityClassName: opts.priorityClassName ?? PRIORITY_CLASS_SANDBOX,
+        // The Size (ADR-0060). `resources` is the HARNESS container's (the operator's contract):
+        // the rest of the Size after the Custodian and the User Container, requests = limits, plus
+        // the `/work` disk as an ephemeral-storage request with no limit. `podResources` is the
+        // whole Size, pod-level (KEP-2837) — the ceiling the pod never passes.
+        resources: split.harness,
+        podResources: split.pod,
+        // `/dev/shm` (ADR-0060): the operator mounts a memory-backed emptyDir there, in the Harness
+        // container only, with this `sizeLimit` — a quarter of the Harness share, minimum 64Mi.
+        // Charged inside the Harness container's limit, so it reserves nothing extra; full, it is
+        // ENOSPC or SIGBUS — a tool error, never a memory kill.
+        shmSize: split.shmSizeLimit,
         // The work group (ADR-0005), the ownership half of cross-uid sharing on `/work`.
         // Kubernetes grants it as a supplemental group to every container, and puts a setgid
         // group on the volume root that propagates down; the WRITABILITY half is the default ACL
-        // the attach stamps on each repo root (attachScript below), without which fsGroup gives
+        // the Harness's attach stamps on each repo root (ADR-0063), without which fsGroup gives
         // group-READ, which is the trap. Both are inert when the uids match.
         fsGroup: req.workGroup ?? DEFAULT_WORK_GROUP,
         // Before any container starts: prove the image on the mounted `/opt/jr2`.
-        initContainers: initContainersFor(seat),
+        initContainers: initContainersFor(seat, split),
         // Never empty: the Custodian's address is unconditional. The seat's own vars (the fallback
         // `HOME`) come FIRST, so the instance's `harness.env` can still override them the way it
         // overrides anything the image set.
-        env: [...seat.env, ...harnessEnv(req.name, custodian)],
+        env: [...seat.env, ...harnessEnv(req.name, custodian, cpuHintEnv())],
         ...(opts.envFrom?.length ? { envFrom: opts.envFrom } : {}),
         // What the AGENT gets: an address on its own loopback and a Stand-in for every credential,
         // and no credential anywhere. The Custodian beside it holds them (ADR-0013, ADR-0059).
@@ -585,7 +614,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         // trust bundles, and none of the Custodian's volumes. The Repo caches are not listed: the
         // operator mounts each `repo-<key>` into this container itself.
         volumeMounts: [
-          { name: "work", mountPath: workRoot },
+          { name: "work", mountPath: WORK_ROOT },
           RUNTIME_VOLUME_MOUNT,
           ...seat.homeMount,
           ...custodian.harnessMounts,
@@ -594,96 +623,42 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     };
   };
 
-  type SandboxStatus = {
-    phase?: string;
-    endpoint?: string;
-    podUID?: string;
-    uid?: string;
-    conditions?: Condition[];
-  };
-
-  /** Parse a Sandbox CR off any kubectl call that printed one (`get -o json`, and the lease's
-   * `annotate -o json` — which returns the object AFTER the patch, status included). */
-  const readSandbox = (stdout: string): SandboxStatus => {
-    const parsed = JSON.parse(stdout) as {
-      metadata?: { uid?: string };
-      status?: { phase?: string; endpoint?: string; podUID?: string; conditions?: Condition[] };
-    };
-    return { ...(parsed.status ?? {}), uid: parsed.metadata?.uid };
-  };
-
-  const conditionOf = (status: SandboxStatus | undefined, type: string): Condition | undefined =>
-    status?.conditions?.find((c) => c.type === type);
-
-  const getSandbox = async (name: string): Promise<SandboxStatus | undefined> => {
-    try {
-      const { stdout } = await exec(["get", "sandbox", name, ...base, "-o", "json"]);
-      return readSandbox(stdout);
-    } catch (err) {
-      if (isNotFound(err)) return undefined;
-      throw err;
-    }
-  };
-
-  /**
-   * Ask the POD whether it is stuck on a fault the Sandbox's phase cannot express (see
-   * {@link rootImageFault}). The CR is the port's normal window on a provision; this is the one
-   * question it cannot answer, because the operator reports "not Ready yet" for a pod that will
-   * never be Ready and one that simply has not started.
-   *
-   * Absent or unreadable answers undefined: the pod trails the CR by a moment at every provision,
-   * and a missing pod is a normal early poll, never evidence of a fault. This may only ever CONVERT
-   * a failure that was already going to happen into a named one.
-   */
-  const podFault = async (name: string): Promise<string | undefined> => {
-    try {
-      const { stdout } = await exec(["get", "pod", name, ...base, "-o", "json"]);
-      return rootImageFault(JSON.parse(stdout));
-    } catch {
-      return undefined;
-    }
-  };
+  const conditionOf = (sandbox: SandboxObject | undefined, type: string): Condition | undefined =>
+    sandbox?.status?.conditions?.find((c) => c.type === type);
 
   /**
    * Mint this Sandbox's token into a Secret, BEFORE the CR exists — the operator creates the pod
    * the moment it sees the CR, and a pod whose volume names an absent Secret never starts.
    * Idempotent by construction: the token is the Sandbox's name, signed (tokens.ts), so a
    * re-provision after an orchestrator restart re-applies the SAME value, and the Custodian that has
-   * been holding it all along stays valid.
+   * been holding it all along stays valid. `data`, not `stringData`: a server-side apply owns the
+   * fields it names, and `stringData` is write-only — it never reads back as the field applied.
    */
   const applyTokenSecret = async (name: string): Promise<void> => {
-    if (!opts.signingKey) throw new Error("kubectlSandbox: a Custodian needs a signingKey to mint its Sandbox token");
-    const secret = {
+    if (!opts.signingKey) throw new Error("kubeSandbox: a Custodian needs a signingKey to mint its Sandbox token");
+    await kube().apply(SECRETS, ns, {
       apiVersion: "v1",
       kind: "Secret",
       metadata: { name: secretName(name), namespace: ns, labels: { "jr2.dev/sandbox": name } },
       type: "Opaque",
-      stringData: { JR2_SANDBOX_TOKEN: sandboxToken(opts.signingKey, name) },
-    };
-    await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(secret) });
+      data: { JR2_SANDBOX_TOKEN: Buffer.from(sandboxToken(opts.signingKey, name)).toString("base64") },
+    });
   };
 
   /**
    * Make the Secret a child of the Sandbox CR, so Kubernetes reaps it whenever the CR goes — including
    * the paths no jr2 code observes (the operator's idle-timeout GC, a `kubectl delete sandbox` by hand).
-   * Needs the CR's uid, so it can only happen after the apply; a failure here leaks a Secret, never a
-   * pod, so it is not worth failing the provision over.
+   * Needs the CR's uid, which the apply answered with; a failure here leaks a Secret, never a pod,
+   * so it is not worth failing the provision over.
    */
   const ownSecret = async (name: string, uid: string | undefined): Promise<void> => {
     if (!uid) return;
-    const ownerRef = [
+    const ownerReferences = [
       { apiVersion: "core.jr2.dev/v1alpha1", kind: "Sandbox", name, uid, controller: true, blockOwnerDeletion: false },
     ];
-    await exec([
-      "patch",
-      "secret",
-      secretName(name),
-      ...base,
-      "--type",
-      "merge",
-      "-p",
-      JSON.stringify({ metadata: { ownerReferences: ownerRef } }),
-    ]).catch(() => {});
+    await kube()
+      .patch(SECRETS, ns, secretName(name), { metadata: { ownerReferences } })
+      .catch(() => {});
   };
 
   /**
@@ -717,7 +692,7 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
   /**
    * What the operator will hold this Sandbox's Ready on, and what an attach reads afterwards
    * (ADR-0051). `Ready` with reason `RepoCloneFailed` is terminal for the provision — the cache
-   * agent could not clone onto the node the pod landed on, and the reason names it — so the loop
+   * agent could not clone onto the node the pod landed on, and the reason names it — so the wait
    * fails on it by name rather than burning the budget. `ReposFresh=False` is the other verdict:
    * the caches are there but a fetch since this CR asked failed, so the attach proceeds STALE and
    * says so. Remembered per name until the Sandbox is destroyed, because the attach is a separate
@@ -726,18 +701,110 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
    */
   const staleByName = new Map<string, string>();
 
+  /**
+   * The provision's wait, as watch events (ADR-0063): every change the operator publishes on this
+   * Sandbox is judged as it lands, and a timer holds the budget. `judge` answers a result, throws a
+   * named failure, or answers undefined to keep waiting; `budget` is re-read after every judgement,
+   * because the Repo budget replaces the pod's the moment the operator holds the Sandbox on its
+   * Repos.
+   */
+  const waitFor = <T>(
+    name: string,
+    judge: (sandbox: SandboxObject | undefined) => T | undefined,
+    budget: () => { deadline: number; expire: (last: SandboxObject | undefined) => Error },
+  ): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      let settled = false;
+      let last: SandboxObject | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        fn();
+      };
+      const arm = () => {
+        clearTimeout(timer);
+        const { deadline, expire } = budget();
+        timer = setTimeout(() => finish(() => reject(expire(last))), Math.max(0, deadline - Date.now()));
+      };
+      const unsubscribe = sandboxes().subscribe(name, (sandbox) => {
+        last = sandbox;
+        try {
+          const out = judge(sandbox);
+          if (out !== undefined) return finish(() => resolve(out));
+        } catch (err) {
+          return finish(() => reject(err));
+        }
+        arm();
+      });
+      arm();
+    });
+
+  /** The Harness's `POST /attach` (ADR-0063), re-sent while it demonstrably never reached the
+   * Harness. Idempotent on the Harness's side (every step guarded, calls serialized), so a re-send
+   * after a request that DID land is harmless too — but only a transport failure is retried: an
+   * answer is an answer. */
+  const postAttach = async (name: string, endpoint: string, body: AttachRequest): Promise<AttachResponse> => {
+    if (!opts.signingKey) throw new Error("kubeSandbox: the attach needs a signingKey for the Harness bearer");
+    const url = new URL("/attach", endpoint).toString();
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${harnessToken(opts.signingKey, name)}`,
+    };
+    const until = Date.now() + attachWindowMs;
+    let backoff = 250;
+    for (;;) {
+      let res: Response;
+      try {
+        res = await harnessFetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+      } catch (err) {
+        // Ready is not routable (ADR-0042): the EndpointSlice behind the Service is programmed after
+        // the pod passes its probe, and the attach is now the first thing that dials it.
+        if (Date.now() >= until) {
+          throw new Error(
+            `Sandbox "${name}": the attach never reached its Harness at ${endpoint}: ${(err as Error).message}`,
+          );
+        }
+        await sleep(backoff);
+        backoff = Math.min(backoff * 2, 5_000);
+        continue;
+      }
+      const text = await res.text();
+      if (res.ok) return JSON.parse(text) as AttachResponse;
+      // The Harness's own words: the slot, the step, and git's stderr.
+      let error = text;
+      try {
+        error = (JSON.parse(text) as AttachError).error ?? text;
+      } catch {
+        // not an AttachError: the raw body is the most there is
+      }
+      throw new Error(`Sandbox "${name}": the attach failed (${res.status}): ${error}`);
+    }
+  };
+
   return {
     async provision(req) {
       // The fence first: a refused url costs nothing — no map read, no Secret, no CR.
       const repos = fencedRepos(req.name, req.repos);
+      // The Size next (ADR-0060), for the same price: the Machine's, then the Instance default, then
+      // the kit's, split inside the pod — or refused before anything exists. `jr2 up` makes the
+      // same refusal at the converge; this one covers a Machine it never walked.
+      let split: SizeSplit;
+      try {
+        split = splitSize(resolveSize(req.resources, opts.defaultSize), req.userResources);
+      } catch (err) {
+        throw new Error(`Sandbox "${req.name}" cannot be provisioned: ${(err as Error).message}`);
+      }
       if (opts.repos === undefined) {
         throw new Error(
           `Sandbox "${req.name}" cannot be provisioned: this port has no Repo-resource port (ADR-0051). The ` +
             "operator holds a Sandbox's Ready until every Repo it names exists as a resource, and creating " +
-            "them is this provision's job — build the port with `repos: kubectlRepos(...)`.",
+            "them is this provision's job — build the port with `repos: kubeRepos(...)`.",
         );
       }
-      // Read PER PROVISION, and next (ADR-0038). Not hoisted into `kubectlSandbox()`: a boot-time
+      // Read PER PROVISION, and next (ADR-0038). Not hoisted into `kubeSandbox()`: a boot-time
       // read would freeze the map for the process lifetime, which is precisely the Deployment-env
       // behavior the ConfigMap mount was chosen over — the point of the mount is that a `jr2 up`
       // reaches future Sandboxes without rolling the Orchestrator. Reading before the Secret apply
@@ -752,8 +819,9 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
         token: { secret: secretName(req.name), key: "JR2_SANDBOX_TOKEN" },
         sandbox: req.name,
         caBundle: opts.caBundle === true,
+        resources: split.custodian,
       });
-      const cr = await crFor(req, refs, repos, custodian);
+      const cr = await crFor(req, refs, repos, custodian, split);
 
       // The Repo resources, BEFORE the CR names them (ADR-0051): a bound one already exists from
       // the boot and only its eviction clock moves — this run's spelling never rewrites the spec
@@ -764,85 +832,89 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
       // a Sandbox whose Repo could not be recorded.
       for (const repo of repos) await opts.repos.ensure(repo);
 
+      // The watch is started before the write (on first use), and it is level-based: whatever it
+      // holds when the wait below subscribes is the first thing judged, so no event about this
+      // Sandbox can fall between the write and the wait. Not awaited: an API server that cannot
+      // be reached fails the apply below at once, rather than hanging on a list.
+      sandboxes();
       await applyTokenSecret(req.name); // before the CR: the pod's Custodian mounts it at start
-      await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(cr) });
+      const applied = await kube().apply(SANDBOXES, ns, cr);
+      // The apply answered with the CR's uid, so the Secret's owner is known at once.
+      await ownSecret(req.name, applied.metadata?.uid);
 
-      const applied = Date.now();
+      const at = Date.now();
       // Two budgets from one instant (see the options): the pod's until the operator has seen the
-      // pod Ready, the Repos' from the first poll that finds the Sandbox held on a Repo reason —
+      // pod Ready, the Repos' from the first event that finds the Sandbox held on a Repo reason —
       // which the operator reports only once the pod IS Ready, so the preflight has already passed
       // and what remains is a clone or a fetch on the node. Sticky: a pod that came up once is not
       // a pod that will never come up, whatever it does afterwards.
       let held = false;
-      let owned = false;
-      let polls = 0;
-      for (;;) {
-        const status = await getSandbox(req.name);
-        if (!owned && status?.uid) ((owned = true), await ownSecret(req.name, status.uid));
-        // The pod is read at a COARSER cadence than the CR, and only while not Ready. The fault it
-        // looks for is terminal — the kubelet never retries out of it — so learning about it a few
-        // seconds late costs nothing, while reading the pod on every poll would double this port's
-        // API traffic for every healthy provision in the cluster.
-        if (status?.phase !== "Ready" && polls++ % POD_CHECK_EVERY === 0) {
-          const fault = await podFault(req.name);
-          if (fault) throw new Error(rootImageError(req.name, fault));
-        }
-        // Terminal for THIS provision: the cache agent tried to clone onto the pod's node and git
-        // refused. The operator's message carries the key, the node, and git's own words; the
-        // agent keeps retrying on its own, so `jr2 status` will show the same error until it is fixed.
-        const ready = conditionOf(status, "Ready");
-        if (status?.phase !== "Ready" && ready?.reason === REPO_CLONE_FAILED) {
-          throw new Error(repoCloneError(req.name, ready.message ?? ready.reason));
-        }
-        if (ready?.reason !== undefined && REPO_HELD.has(ready.reason)) held = true;
-        if (status?.phase === "Ready") {
+      return waitFor(
+        req.name,
+        (sandbox) => {
+          const status = sandbox?.status;
+          const ready = conditionOf(sandbox, "Ready");
+          // Terminal for THIS provision: the cache agent tried to clone onto the pod's node and git
+          // refused. The operator's message carries the key, the node, and git's own words; the
+          // agent keeps retrying on its own, so `jr2 status` will show the same error until it is fixed.
+          if (status?.phase !== "Ready" && ready?.reason === REPO_CLONE_FAILED) {
+            throw new Error(repoCloneError(req.name, ready.message ?? ready.reason));
+          }
+          // A Harness that keeps dying before it is ever Ready (ADR-0063): the kubelet's reason and
+          // exit code, published by the operator, instead of the rest of the budget.
+          const harness = status?.harness;
+          if (status?.phase !== "Ready" && (harness?.restartCount ?? 0) >= CRASH_LOOP_RESTARTS) {
+            throw new Error(crashLoopError(req.name, harness!));
+          }
+          if (ready?.reason !== undefined && REPO_HELD.has(ready.reason)) held = true;
+          if (status?.phase !== "Ready") return undefined;
           // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
           if (!status.endpoint) throw new Error(`Sandbox "${req.name}" is Ready but reports no endpoint`);
           // Freshness degrades, absence does not (ADR-0051): Ready with `ReposFresh=False` is a
           // Sandbox whose caches exist but could not be fetched since it asked. Remembered for the
           // attach, which is where a slot can be named; forgotten when the caches are fresh.
-          const fresh = conditionOf(status, "ReposFresh");
+          const fresh = conditionOf(sandbox, "ReposFresh");
           if (fresh?.status === "False" && fresh.message) staleByName.set(req.name, fresh.message);
           else staleByName.delete(req.name);
           // The identity the lease will hold this workspace to (ADR-0021). Ready means the pod
           // is up, so the operator has published it; an operator too old to do so leaves it
           // undefined and the lease falls back to presence.
           return { endpoint: status.endpoint, identity: status.podUID };
-        }
-        if (Date.now() >= applied + (held ? repoTimeoutMs : readyTimeoutMs)) {
+        },
+        () => ({
+          deadline: at + (held ? repoTimeoutMs : readyTimeoutMs),
           // A Sandbox the operator held on its Repos ran out the Repo budget: the pod is up and the
           // preflight passed, so the hint about the image would be a lie. What is true is the
           // operator's own verdict — which Repo, on which node — and that the agent is still at it.
-          if (held) throw new Error(repoWaitError(req.name, repoTimeoutMs, ready));
-          // One last look before falling back to the hint: the fault may have appeared inside the
-          // final interval, and a named error beats a timeout in every case where both are true.
-          const fault = await podFault(req.name);
-          if (fault) throw new Error(rootImageError(req.name, fault));
-          // Otherwise name where to look, because the next most likely cause is an image that
-          // misses ADR-0037's floor, and that failure is an INIT container's — invisible in the
-          // phase alone. A musl or git-less base dies INSIDE the preflight, on jr2's own message.
-          // The operator's own verdict rides along when it has one: a Repo still pending on the
-          // node (a slow clone) reads very differently from a preflight death.
-          throw new Error(
-            `Sandbox "${req.name}" never reached Ready (last phase: ${status?.phase ?? "absent"}) — if its ` +
-              "Sandbox Image is new, check the preflight: `kubectl logs " +
-              req.name +
-              " -c preflight` (ADR-0037's floor: glibc, git, a writable HOME, a numeric non-root USER)." +
-              (ready?.message
-                ? `\n  the operator's Ready condition says: ${ready.reason ?? "?"}: ${ready.message}`
-                : ""),
-          );
-        }
-        await sleep(pollMs);
-      }
+          expire: (last) =>
+            new Error(
+              held ? repoWaitError(req.name, repoTimeoutMs, conditionOf(last, "Ready")) : notReadyError(req.name, last),
+            ),
+        }),
+      );
     },
 
     async attach(req) {
-      const { script, repos, review } = attachScript(req.spec, req.repos, { reposMount: REPOS_MOUNT, workRoot });
-      // `-c harness` is unchanged and still correct after ADR-0037: the primary container runs the
-      // Sandbox Image, so `git` here is the git the user chose. Never `-c user` — that seat is
-      // zero-contract, may hold no git at all, and jr2 commands nothing in it (ADR-0005).
-      await exec(["exec", `pod/${req.name}`, ...base, "-c", "harness", "--", "sh", "-ec", script]);
+      // The Harness's own route (ADR-0063): the same bearer as every Harness call (ADR-0058), and
+      // the Repo's identity and cache key resolved HERE, so the cache the Harness clones from is
+      // the one the operator mounted, by construction (ADR-0051). The address is the Sandbox's
+      // own, off the watch — the one provision just waited on, or a restore's first list — or the
+      // API server's, for one the watch has not listed yet.
+      const sandbox = sandboxes().get(req.name) ?? (await kube().get<SandboxObject>(SANDBOXES, ns, req.name));
+      const endpoint = sandbox?.status?.endpoint;
+      if (!endpoint) throw new Error(`Sandbox "${req.name}" has no endpoint to attach through — is it gone?`);
+      if (req.repos.length === 0) {
+        throw new Error("the attach names no Repo Slot — nothing to attach (a workspace() declares at least one)");
+      }
+      const body: AttachRequest = {
+        slots: req.repos.map((r) => {
+          const { identity, key } = repoIdentity(r.url);
+          return { slot: r.slot, url: r.url, identity, key, ...(r.ref !== undefined ? { ref: r.ref } : {}) };
+        }),
+        branch: req.spec.branch,
+        ...(req.spec.reviewSha ? { reviewSha: req.spec.reviewSha } : {}),
+      };
+      const { repos, review } = await postAttach(req.name, endpoint, body);
       const stale = staleSlots(req.repos, staleByName.get(req.name));
       return { repos, ...(review ? { review } : {}), ...(stale ? { stale } : {}) };
     },
@@ -850,35 +922,70 @@ export function kubectlSandbox(opts: KubectlSandboxOptions = {}): SandboxPort {
     leaseIntervalMs,
 
     async renew(name) {
-      // ONE call, both directions: `annotate --overwrite -o json` writes the stamp and prints the
-      // object as it stands afterwards, status included. So asserting liveness and learning
-      // whether the workspace survived cost exactly one API round trip (ADR-0021).
-      try {
-        const { stdout } = await exec([
-          "annotate",
-          "sandbox",
-          name,
-          ...base,
-          `jr2.dev/keepalive=${new Date().toISOString()}`,
-          "--overwrite",
-          "-o",
-          "json",
-        ]);
-        return { present: true, identity: readSandbox(stdout).podUID };
-      } catch (err) {
-        if (isNotFound(err)) return { present: false };
-        throw err; // anything else is UNKNOWN — the caller must not read it as loss
-      }
+      // A write, and only that (ADR-0021): the stamp the operator's idle GC reads. What the
+      // workspace IS comes from the watch, never from this answer.
+      await kube().patch(SANDBOXES, ns, name, {
+        metadata: { annotations: { "jr2.dev/keepalive": new Date().toISOString() } },
+      });
+    },
+
+    continuity(name, listener) {
+      // The watch's word on this name (ADR-0063): the first list, then every event. A dropped
+      // watch says nothing, so this says nothing either — unknown is never loss.
+      return sandboxes().subscribe(name, (sandbox) => listener(continuityOf(sandbox)));
+    },
+
+    async memoryFault(name, since) {
+      // Only a Sandbox the watch knows: the Instance Harness is a Deployment, not a Sandbox, and
+      // waiting on a name that will never appear would only delay its fault (ADR-0031).
+      if (!sandboxes().get(name)) return undefined;
+      const judge = (sandbox: SandboxObject | undefined) => memoryFaultOf(sandbox, since);
+      const now = judge(sandboxes().get(name));
+      if (now !== undefined) return now;
+      // The operator's word can trail the Harness's restart; give it a moment, then call it lost.
+      return waitFor<string>(name, judge, () => ({
+        deadline: Date.now() + MEMORY_FAULT_GRACE_MS,
+        expire: () => new Error("no memory kill"),
+      })).catch(() => undefined);
     },
 
     async destroy(name) {
       staleByName.delete(name);
       // The Secret is an owned child of the CR, so deleting the CR reaps it — this is belt and
       // braces for the case where the ownerRef patch didn't land.
-      await exec(["delete", "sandbox", name, ...base, "--ignore-not-found"]);
-      await exec(["delete", "secret", secretName(name), ...base, "--ignore-not-found"]).catch(() => {});
+      await kube().delete(SANDBOXES, ns, name);
+      await kube()
+        .delete(SECRETS, ns, secretName(name))
+        .catch(() => {});
     },
   };
+}
+
+/** A Sandbox as Continuity (ADR-0021): gone, or present with the pod the operator last published. */
+function continuityOf(sandbox: SandboxObject | undefined): Continuity {
+  if (!sandbox) return { present: false };
+  const identity = sandbox.status?.podUID;
+  return identity ? { present: true, identity } : { present: true };
+}
+
+/**
+ * The memory fault's reason (ADR-0061), or undefined: the Harness container's last run ended
+ * `OOMKilled`, at or after `since` (less the skew a node's clock may carry). The prefix is FIXED —
+ * `memory limit` — so a Machine, `jr2 status` and the feed can tell a memory kill from a
+ * conversation lost any other way; the limit named is the Harness container's own, the one the
+ * kernel enforced.
+ */
+export function memoryFaultOf(sandbox: SandboxObject | undefined, since: Date): string | undefined {
+  const last = sandbox?.status?.harness?.lastTerminated;
+  if (last?.reason !== OOM_KILLED) return undefined;
+  const finished = last.finishedAt === undefined ? NaN : Date.parse(last.finishedAt);
+  if (Number.isNaN(finished) || finished < since.getTime() - MEMORY_FAULT_SKEW_MS) return undefined;
+  const limit = sandbox?.spec?.resources?.limits?.memory;
+  return (
+    `memory limit (${OOM_KILLED}${limit ? `, limit ${limit}` : ""}): the Workspace's processes passed the ` +
+    "Harness container's memory limit and the kernel killed the container, the conversation with it. " +
+    "Use fewer workers, or give the Workspace a larger Size (ADR-0060, ADR-0061)."
+  );
 }
 
 /** The pod volume the operator defines for one Repo's node cache, and where it lands in the
@@ -890,9 +997,6 @@ export const repoMountPath = (key: string): string => `${REPOS_MOUNT}/${key}`;
 /** One Repo as the provision names it: the CR entry, plus what its resource records — the
  * identity, and whether a Machine's slot (not only the run's) binds it. */
 type FencedRepo = { key: string; url: string; identity: string; bound: boolean };
-
-/** One entry of a Sandbox CR's `status.conditions`, as the operator writes it. */
-type Condition = { type: string; status: string; reason?: string; message?: string };
 
 /** The operator's Ready reason when the cache agent could not clone onto the pod's node
  * (sandbox_controller.go) — the one Ready verdict a provision cannot wait out. */
@@ -933,6 +1037,46 @@ function repoCloneError(name: string, verdict: string): string {
 }
 
 /**
+ * A Harness that never came up (ADR-0063): the kubelet's reason and exit code for its last run,
+ * as the operator published them, and where the rest is — the container's own log. A preflight
+ * that passes and a Harness that still dies is a Sandbox Image the floor did not fully prove, or
+ * a Harness that ran out of memory on the way up (ADR-0061).
+ */
+function crashLoopError(name: string, harness: NonNullable<NonNullable<SandboxObject["status"]>["harness"]>): string {
+  const last = harness.lastTerminated;
+  const how = last ? `${last.reason ?? "?"}, exit ${last.exitCode ?? "?"}` : "no reason reported";
+  return (
+    `Sandbox "${name}" cannot start: its Harness has ended ${harness.restartCount} times before it was ever ` +
+    `Ready (last: ${how}). See its output: \`kubectl logs ${name} -c harness --previous\`` +
+    (last?.reason === OOM_KILLED
+      ? " — it passed its memory limit, so give the Workspace a larger Size (ADR-0060)."
+      : ".")
+  );
+}
+
+/**
+ * The pod budget ran out. The most likely cause is an image that misses ADR-0037's floor, and that
+ * failure is an INIT container's — invisible in the phase alone. A musl or git-less base dies
+ * INSIDE the preflight, on jr2's own message; a root image never starts it. The operator's words
+ * ride along: a pod the scheduler could not place reads very differently from a preflight death.
+ */
+function notReadyError(name: string, last: SandboxObject | undefined): string {
+  const said = (c: Condition | undefined) => (c?.message ? `${c.reason ?? "?"}: ${c.message}` : undefined);
+  const ready = said(last?.status?.conditions?.find((c) => c.type === "Ready"));
+  const scheduled = last?.status?.conditions?.find((c) => c.type === "Scheduled");
+  const unplaced = scheduled && scheduled.status !== "True" ? said(scheduled) : undefined;
+  return (
+    `Sandbox "${name}" never reached Ready (last phase: ${last?.status?.phase ?? "absent"}) — if its ` +
+    "Sandbox Image is new, check the preflight: `kubectl logs " +
+    name +
+    " -c preflight` (ADR-0037's floor: glibc, git, a writable HOME, a numeric non-root USER — an image " +
+    "that runs as root never starts it, and `kubectl describe pod` says so)." +
+    (unplaced ? `\n  the scheduler says: ${unplaced}` : "") +
+    (ready ? `\n  the operator's Ready condition says: ${ready}` : "")
+  );
+}
+
+/**
  * The `ReposFresh=False` message, keyed back to SLOTS for the attach's `stale`. The operator
  * writes one clause per stale Repo — `Repo "<key>" on node <n> is stale: <error>` — joined by
  * `; `; each slot whose key a clause names gets that clause. A message that names no key at all
@@ -956,152 +1100,4 @@ function staleSlots(
   return Object.keys(stale).length ? stale : undefined;
 }
 
-/**
- * The post-Ready attach step as one idempotent in-pod script (ADR-0004, ADR-0051): per Repo Slot
- * in declaration order, a pod-local `git clone --shared` borrowing objects from the node's
- * read-only cache at `/repos/<key>` — `<slot>/default/`, a checkout of the Repo's default branch
- * — then the branch worktree as a sibling (gwtmux layout: `<slot>/default/` + `<slot>/<branch>/`). With a `reviewSha`, also the detached review worktree
- * (ADR-0028) — another sibling. `repos` keeps the slots' declaration order. Exported for the port's
- * tests; the workflow never sees it.
- */
-export function attachScript(
-  spec: WorkspaceSpec,
-  repos: Array<{ slot: string; url: string; ref?: string }>,
-  paths: { reposMount: string; workRoot: string },
-): { script: string; repos: Record<string, string>; review?: Record<string, string> } {
-  const worktrees: Record<string, string> = {};
-  const review: Record<string, string> = {};
-  // The cache is written by the node's cache agent and read here as the Harness's unprivileged
-  // uid (ADR-0001/0004/0051), so git's dubious-ownership guard would refuse the clone source.
-  // safe.directory is only honored from global/system config (never `-c`), and inside the pod
-  // every path is jr2-owned — trusting them all is the honest scope.
-  // The attach runs via exec, not as a child of the Harness process, so it does NOT inherit the
-  // Harness's `umask 002` — without its own, the repo roots it mkdirs land 755 and the work group
-  // could never create a file at a tree's top. INSIDE the trees the umask stops mattering: the
-  // default ACL stamped below governs everything created beneath a repo root (ADR-0005).
-  const lines: string[] = [`umask 002`, `git config --global safe.directory '*'`];
-  const branchDir = spec.branch.replace(/\//g, "-");
-  for (const repo of repos) {
-    const slotDir = `${paths.workRoot}/${repo.slot}`;
-    const dflt = `${slotDir}/default`;
-    const worktree = `${slotDir}/${branchDir}`;
-    const { identity, key } = repoIdentity(repo.url);
-    const cache = `${paths.reposMount}/${key}`;
-    worktrees[repo.slot] = worktree;
-    lines.push(
-      `mkdir -p ${sq(slotDir)}`,
-      // BEFORE the clone fills it: a default ACL is inherited at creation, never retrofitted, so
-      // the stamp must exist while the tree is still empty. From here down, both seats' files land
-      // group-writable with zero umask lines in any image (ADR-0005); on a filesystem without
-      // POSIX ACLs the helper warns and exits 0, degrading to the umask sharing above.
-      `/opt/jr2/bin/work-acl ${sq(slotDir)}`,
-      `[ -d ${sq(`${dflt}/.git`)} ] || git clone --shared ${sq(cache)} ${sq(dflt)}`,
-      // No ref → the Repo's own default branch: this clone's `origin/HEAD` tracks the cache's
-      // HEAD, which the cache agent's clone pointed at the remote's default (ADR-0004).
-      `[ -d ${sq(worktree)} ] || git -C ${sq(dflt)} worktree add ${sq(worktree)} -b ${sq(spec.branch)} ${repo.ref === undefined ? sq("origin/HEAD") : baseOf(dflt, repo.ref)}`,
-      // Fetch/push split (ADR-0005). The FETCH url is a command, not a path (ADR-0053): git's
-      // built-in `ext::` transport runs the program on the runtime volume, which asks the node
-      // cache to fetch the remote, waits for the landing, then serves the cache — so every fetch
-      // inside the pod is a fetch of the remote's now, and a stale attach is stale only until the
-      // next fetch anyone in the pod runs. Git substitutes `%S` with the service it wants
-      // (`git-upload-pack`), and splits the rest on spaces with no quoting of its own, so the
-      // url's arguments carry none: the Repo's IDENTITY, never the cache key — that is the name a
-      // human reads in `git remote -v`, and a key is a derived directory name (ADR-0004). The
-      // program discovers the cache from the checkout's alternates, so the url says nothing about
-      // where the objects are. `git push` goes to the REAL remote — the Binding's own spelling, so
-      // a Machine that bound over ssh pushes over ssh even when the cache was cloned over https
-      // (ADR-0051). Push still succeeds only with a caller-supplied credential (a forwarded agent
-      // in the User Container); the pod itself holds none. `--` keeps the url an operand, never an
-      // option.
-      `git -C ${sq(dflt)} remote set-url origin -- ${sq(fetchUrl(identity))}`,
-      `git -C ${sq(dflt)} remote set-url --push origin -- ${sq(repo.url)}`,
-      // `ext` is on git's own "known scary" list, so its built-in default is `never` and the url
-      // above would die with `fatal: transport 'ext' not allowed` before the program ever ran.
-      // `user` is the policy ADR-0053 argues for, said out loud: a fetch A PERSON OR THE AGENT
-      // runs is allowed, and a recursive one git makes for itself (a submodule url, anything with
-      // `GIT_PROTOCOL_FROM_USER=0`) is still refused — so a repository cannot smuggle a program
-      // into this pod through a url jr2 did not write. Repo-level, on the pod-local clone: the
-      // linked worktrees share this config, so the branch worktree and the review worktree inherit
-      // it with no env and no `--global`.
-      `git -C ${sq(dflt)} config protocol.ext.allow user`,
-    );
-    if (spec.reviewSha) {
-      // The reviewer's seat (ADR-0028): a DETACHED HEAD at the sha under review, so a rogue write
-      // cannot move the branch and a rogue commit evaporates with the checkout. Forced checkout
-      // AND clean on every attach: a previous round's rogue edits (tracked) and leftovers
-      // (untracked) must not survive into this round — the review worktree's contents are the
-      // sha under review, period.
-      const reviewDir = `${worktree}-review`;
-      review[repo.slot] = reviewDir;
-      lines.push(
-        `[ -d ${sq(reviewDir)} ] || git -C ${sq(dflt)} worktree add --detach ${sq(reviewDir)} ${sq(spec.reviewSha)}`,
-        `git -C ${sq(reviewDir)} checkout --detach -f ${sq(spec.reviewSha)}`,
-        `git -C ${sq(reviewDir)} clean -fd`,
-      );
-    }
-  }
-  if (repos.length === 0)
-    throw new Error("the attach names no Repo Slot — nothing to attach (a workspace() declares at least one)");
-  return {
-    script: lines.join("\n"),
-    repos: worktrees,
-    ...(spec.reviewSha ? { review } : {}),
-  };
-}
-
-/**
- * `origin`'s fetch url for one Repo (ADR-0053): the `ext::` transport, the program's absolute path
- * on the runtime volume, the service git asks for, and the Repo's identity. No address: the
- * program asks the Custodian at its one loopback address, which every Harness pod has (ADR-0059).
- */
-function fetchUrl(identity: string): string {
-  return `ext::${UPLOAD_PACK} %S ${extArg(identity)}`;
-}
-
-/**
- * One argument of an `ext::` url, in git's own escaping. Git splits the url on spaces and reads
- * `%` as a placeholder introducer — `%S` is the service it substitutes — so it DIES on a `%` it
- * does not recognize (`fatal: Bad remote-ext placeholder '%2'`) and silently splits an argument
- * that holds a space. An identity carries both: a forge path may be percent-encoded
- * (`dev.azure.com/org/My%20Project/_git/repo`) and an scp-style url may hold a literal space. Git
- * spells those two `%%` and `% `, and the program receives the identity back exactly as written —
- * which it must, because the Orchestrator derives the cache key from that same string. The
- * placeholder jr2 writes itself (`%S`) is not escaped: it is git's, not an argument's.
- */
-function extArg(value: string): string {
-  return value.replace(/%/g, "%%").replace(/ /g, "% ");
-}
-
-/**
- * The commit-ish a Binding's `ref` names inside the pod-local clone, as a shell expression: the
- * remote-tracking branch `refs/remotes/origin/<ref>` when the clone has one, else `<ref>` as
- * written (a tag, a sha). A fresh clone holds ONE local branch — the default — so a bare
- * branch name is never a local ref here, and git's "worktree add" DWIM would then create the BASE
- * branch tracking `origin/<ref>` and discard `-b`: the Agent would commit on, and push to, the base
- * it was meant to branch FROM. Naming the remote-tracking ref outright leaves nothing to guess.
- */
-function baseOf(dflt: string, ref: string): string {
-  const remote = sq(`refs/remotes/origin/${ref}`);
-  return `"$(git -C ${sq(dflt)} rev-parse --verify -q ${remote} >/dev/null && printf %s ${remote} || printf %s ${sq(ref)})"`;
-}
-
-/** POSIX single-quote an argument for the in-pod `sh -ec` script. */
-function sq(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-function isNotFound(err: unknown): boolean {
-  return err instanceof Error && /NotFound|not found/i.test(err.message);
-}
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** The `kubectl` on PATH, as every kubectl-driven port shells to it (this one and repos.ts). */
-export const defaultKubectlExec: KubectlExec = (args, opts) =>
-  new Promise((resolve, reject) => {
-    const child = execFile("kubectl", args, { maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`kubectl ${args[0]} failed: ${stderr || err.message}`));
-      else resolve({ stdout, stderr });
-    });
-    if (opts?.input !== undefined) child.stdin?.end(opts.input);
-  });

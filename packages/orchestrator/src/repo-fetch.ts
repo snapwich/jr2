@@ -17,8 +17,8 @@
 // would count a fetch that began BEFORE the ask. The same coalescing happens one hop earlier, in
 // this process: asks that raise the same bar for one Sandbox and key share one mark and one wait,
 // and past a cap on how many waits may be open the answer is the cache — the caller is inside an
-// untrusted pod (ADR-0013), and a `git fetch` loop must not cost this process a kubectl per
-// second per iteration.
+// untrusted pod (ADR-0013), and a `git fetch` loop must not cost this process a write per
+// iteration.
 //
 // Freshness degrades, absence does not (ADR-0051/0053): a remote fetch that failed, or one that
 // outran the budget, is answered as `stale` with what the cache holds — never as an error. The
@@ -26,13 +26,15 @@
 // still succeeds. Only a Repo the Sandbox does not mount is a refusal: the Sandbox token's scope
 // is the caches its own pod mounts (ADR-0013).
 //
-// Drives the Sandbox CR through `kubectl` exactly as the provision's Ready wait does
-// (sandbox-kubectl.ts) — same process seam, injectable, so the mapping is unit-testable without a
-// cluster; the kind e2e tier exercises the real thing.
+// The mark is a merge patch through the Orchestrator's own client, and the wait is the one
+// Sandbox watch (ADR-0063): the watch event that carries the landing answers the ask. Both are
+// injectable, so the mapping is unit-testable against a fake API server; the kind e2e tier
+// exercises the real thing.
 
+import { SANDBOXES, kubeClient, type KubeClient } from "./kube-client.ts";
 import { askedAnnotation } from "./names.ts";
 import { repoKeyOfIdentity } from "./repo-identity.ts";
-import { defaultKubectlExec, type KubectlExec } from "./sandbox-kubectl.ts";
+import { watchSandboxes, type SandboxObject, type SandboxRepoStatus, type SandboxWatch } from "./sandbox-watch.ts";
 
 /** What one ask settles as. `fetched` is the landing's timestamp; `stale` is git's own words (or
  * this port's, when the budget ran out) beside the time the cache's objects are as of — `null`
@@ -54,54 +56,49 @@ export class UnmountedRepoError extends Error {}
 const CACHE_BUDGET_MS = 60_000;
 /** How many asks this Orchestrator will hold open at once, counting one per Sandbox and key. The
  * caller is inside a pod (ADR-0013: untrusted), an Agent that loops on `git fetch` is a mode this
- * codebase has already seen, and every open ask costs a `kubectl` per second in the one process
+ * codebase has already seen, and every open ask costs a write and a waiter in the one process
  * that serves every run in the instance. Past the cap an ask is answered the way a failed one is —
  * the cache, said out loud — so a pod that floods degrades its own fetches and nobody else's. */
 const MAX_IN_FLIGHT = 16;
 /** Watch slack on top of it: the agent's verdict has to reach the Repo CR, the operator has to
- * compute the Sandbox entry from it, and this port has to read it. The ADR's "nothing else owns a
+ * compute the Sandbox entry from it, and the watch has to carry it here. The ADR's "nothing else owns a
  * timeout" holds — this is the agent's budget plus the round trip, not a second policy. */
 const WATCH_SLACK_MS = 15_000;
 
-export type KubectlRepoFetchesOptions = {
+export type KubeRepoFetchesOptions = {
   /** The instance's namespace — the Sandboxes are here. */
   namespace: string;
-  /** kubectl `--context` override. Default: the current context (ADR-0009). */
-  context?: string;
-  /** Process seam, injectable for tests. Defaults shell to the `kubectl` on PATH. */
-  exec?: KubectlExec;
-  /** The clock the ask is stamped from, and the budget measured with. Injectable for tests. */
+  /** The Kubernetes client (ADR-0063), shared with the Sandbox port. Default: the in-cluster one. */
+  client?: KubeClient;
+  /** The one Sandbox watch, shared with the Sandbox port. Default: one started on first use. */
+  watch?: SandboxWatch;
+  /** The clock the ask is stamped from. Injectable for tests. */
   now?: () => Date;
-  /** How often the Sandbox's status is re-read while waiting. Default 1s. */
-  pollMs?: number;
   /** The whole wait. Default: the cache agent's on-demand budget plus watch slack. */
   budgetMs?: number;
   /** How many asks may be open at once. Default {@link MAX_IN_FLIGHT}. */
   maxInFlight?: number;
 };
 
-export function kubectlRepoFetches(opts: KubectlRepoFetchesOptions): RepoFetches {
-  const exec = opts.exec ?? defaultKubectlExec;
+export function kubeRepoFetches(opts: KubeRepoFetchesOptions): RepoFetches {
   const now = opts.now ?? (() => new Date());
-  const pollMs = opts.pollMs ?? 1_000;
   const budgetMs = opts.budgetMs ?? CACHE_BUDGET_MS + WATCH_SLACK_MS;
   const maxInFlight = opts.maxInFlight ?? MAX_IN_FLIGHT;
-  const base = ["--namespace", opts.namespace, ...(opts.context ? ["--context", opts.context] : [])];
+  let client: KubeClient | undefined = opts.client;
+  const kube = () => (client ??= kubeClient());
+  let watch: SandboxWatch | undefined = opts.watch;
+  const sandboxes = () => (watch ??= watchSandboxes(kube(), { namespace: opts.namespace }));
   // The asks this port is holding open, one per Sandbox and key, each with the second its mark was
   // raised to. The mark is a COALESCER on the node; this is the same coalescing one hop earlier,
   // and it is exact rather than approximate: every stamp that can answer an ask is kept at the
   // second (askedAt below), so two asks that raise the same bar CANNOT get different answers.
-  // Sharing one wait between them spares the CR a second write and this process a second poll.
+  // Sharing one wait between them spares the CR a second write and this process a second waiter.
   const openAsks = new Map<string, { until: number; answer: Promise<FetchAnswer> }>();
 
-  const get = async (sandbox: string): Promise<SandboxItem | undefined> => {
-    try {
-      const { stdout } = await exec(["get", "sandbox", sandbox, ...base, "-o", "json"]);
-      return JSON.parse(stdout) as SandboxItem;
-    } catch (err) {
-      if (isNotFound(err)) return undefined;
-      throw err;
-    }
+  /** The Sandbox as the watch holds it; the API server itself for one the watch has not seen (or
+   * before its first list has landed). */
+  const get = async (sandbox: string): Promise<SandboxObject | undefined> => {
+    return sandboxes().get(sandbox) ?? (await kube().get<SandboxObject>(SANDBOXES, opts.namespace, sandbox));
   };
 
   return {
@@ -144,38 +141,37 @@ export function kubectlRepoFetches(opts: KubectlRepoFetchesOptions): RepoFetches
   /** The mark and the wait on it, for one Sandbox and key. Every ask that shares the mark's second
    * shares this one promise. */
   async function wait(sandbox: string, key: string, asked: string): Promise<FetchAnswer> {
-    // The mark. ONE call writes it and prints the object as it stands afterwards (the lease's
-    // trick, sandbox-kubectl.ts), so the first look at the status costs no second round trip —
-    // and a fetch that already landed since an earlier ask answers immediately.
-    const { stdout } = await exec([
-      "annotate",
-      "sandbox",
-      sandbox,
-      ...base,
-      `${askedAnnotation(key)}=${asked}`,
-      "--overwrite",
-      "-o",
-      "json",
-    ]);
-    const deadline = now().getTime() + budgetMs;
-    let item = JSON.parse(stdout) as SandboxItem;
-    for (;;) {
-      const answer = verdict(item, key, asked);
-      if (answer) return answer;
-      if (now().getTime() >= deadline) {
-        // The budget is the cache agent's, and this is what running past it looks like from
-        // here: the agent may still be at it (its next interval will land), so what the caller
-        // gets is the cache, said out loud.
-        return { stale: "timed out waiting for the node cache", asOf: fetchedOf(item, key) };
-      }
-      await sleep(pollMs);
-      const next = await get(sandbox);
-      // The Sandbox went while we waited: the pod that asked is gone, so there is nothing left
-      // to answer for. The caller is inside that pod, so this is nearly unreachable — and a
-      // refusal beats inventing a verdict on a resource that no longer exists.
-      if (!next) throw new UnmountedRepoError(`Sandbox "${sandbox}" is gone`);
-      item = next;
-    }
+    // The mark. The merge patch answers the object as it stands afterwards, so a fetch that
+    // already landed since an earlier ask answers at once, with no event to wait for.
+    const marked = await kube().patch<SandboxObject>(SANDBOXES, opts.namespace, sandbox, {
+      metadata: { annotations: { [askedAnnotation(key)]: asked } },
+    });
+    const first = verdict(marked, key, asked);
+    if (first) return first;
+    // Then the watch: the event that carries the landing is the answer (ADR-0063). The budget is
+    // the cache agent's, and running past it looks like this from here: the agent may still be at
+    // it (its next interval will land), so what the caller gets is the cache, said out loud.
+    return new Promise<FetchAnswer>((resolve, reject) => {
+      let last: SandboxObject = marked;
+      const done = (fn: () => void) => {
+        clearTimeout(timer);
+        unsubscribe();
+        fn();
+      };
+      const timer = setTimeout(
+        () => done(() => resolve({ stale: "timed out waiting for the node cache", asOf: fetchedOf(last, key) })),
+        budgetMs,
+      );
+      const unsubscribe = sandboxes().subscribe(sandbox, (item) => {
+        // The Sandbox went while we waited: the pod that asked is gone, so there is nothing left
+        // to answer for. The caller is inside that pod, so this is nearly unreachable — and a
+        // refusal beats inventing a verdict on a resource that no longer exists.
+        if (!item) return done(() => reject(new UnmountedRepoError(`Sandbox "${sandbox}" is gone`)));
+        last = item;
+        const answer = verdict(item, key, asked);
+        if (answer) done(() => resolve(answer));
+      });
+    });
   }
 }
 
@@ -194,7 +190,7 @@ export function kubectlRepoFetches(opts: KubectlRepoFetchesOptions): RepoFetches
  *
  * `error` is the other verdict, and the operator scopes it to an attempt made for that same ask.
  */
-function verdict(item: SandboxItem, key: string, asked: string): FetchAnswer | undefined {
+function verdict(item: SandboxObject, key: string, asked: string): FetchAnswer | undefined {
   const entry = entryOf(item, key);
   if (!entry) return undefined;
   const entryAsked = at(entry.asked);
@@ -221,11 +217,11 @@ function askedAt(stamp: string): number {
  * fetch at all, which is what the program prints as "an unknown time". This is the `asOf` of a
  * stale answer: the fetch it names did NOT answer the ask, and saying when the objects are from is
  * the whole of what a degraded answer can offer (ADR-0053). */
-function fetchedOf(item: SandboxItem, key: string): string | null {
+function fetchedOf(item: SandboxObject, key: string): string | null {
   return entryOf(item, key)?.fetched ?? null;
 }
 
-function entryOf(item: SandboxItem, key: string): SandboxRepoStatus | undefined {
+function entryOf(item: SandboxObject, key: string): SandboxRepoStatus | undefined {
   return (item.status?.repos ?? []).find((r) => r.key === key);
 }
 
@@ -236,24 +232,3 @@ function at(stamp: string | undefined): number | undefined {
   const ms = Date.parse(stamp);
   return Number.isNaN(ms) ? undefined : ms;
 }
-
-/** A `Sandbox` resource as `kubectl get -o json` prints it — the fields this port reads. */
-type SandboxItem = {
-  spec?: { repos?: Array<{ key?: string }> };
-  status?: { repos?: SandboxRepoStatus[] };
-};
-
-/** The operator's standing per-key Repo entry on a Sandbox (ADR-0053). */
-type SandboxRepoStatus = {
-  key: string;
-  asked?: string;
-  fetched?: string;
-  attempted?: string;
-  error?: string;
-};
-
-function isNotFound(err: unknown): boolean {
-  return err instanceof Error && /NotFound|not found/i.test(err.message);
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

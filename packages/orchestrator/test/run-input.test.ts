@@ -58,7 +58,9 @@ const wsBody = jr2Setup({
 const parkedSandbox = (): SandboxPort => ({
   provision: () => new Promise(() => {}),
   attach: () => new Promise(() => {}),
-  renew: async () => ({ present: true }),
+  renew: async () => {},
+  continuity: () => () => {},
+  memoryFault: async () => undefined,
   destroy: async () => {},
 });
 

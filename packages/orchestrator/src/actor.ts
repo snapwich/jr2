@@ -296,6 +296,15 @@ function runawayReason(err: unknown): string | undefined {
   return error?.type === "runaway" ? (error.message ?? "runaway") : undefined;
 }
 
+/**
+ * A lost conversation (ADR-0027), read STRUCTURALLY like {@link runawayReason}: the wire client's
+ * `SettlementFault` marks a 404 `lost`, and this module is wire-free. The one fault class a
+ * memory kill can hide behind (ADR-0061).
+ */
+function isLostConversation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { lost?: unknown }).lost === true;
+}
+
 /** The forced-final-pick re-prompt (ADR-0006, absorbed here by ADR-0016). */
 function nudgePrompt(tools: readonly string[]): string {
   return (
@@ -510,6 +519,12 @@ export function agentActorWith(
     // delivery scope: the pod hosting this Turn. One name, both directions — the Custodian there may
     // speak for these picks, and only this bearer may drive the conversation there.
     const client = portFactory(endpoint, sandbox === undefined ? undefined : binding.harnessBearer?.(sandbox));
+    // When this Turn started: a memory kill that ended the Harness before it is not this Turn's
+    // (ADR-0061). Undefined from a backend that cannot see the container — and never throws:
+    // naming the fault is a courtesy, the fault itself lands either way.
+    const turnStarted = new Date();
+    const memoryFault = (name: string): Promise<string | undefined> =>
+      binding.sandbox?.memoryFault(name, turnStarted).catch(() => undefined) ?? Promise.resolve(undefined);
     const controller = new AbortController();
     // Shared per run, created on demand so the ordering guarantee holds for any binding.
     const pendingAborts = (binding.pendingAborts ??= new Map<string, Promise<void>>());
@@ -642,7 +657,17 @@ export function agentActorWith(
         }
       } catch (err) {
         if (stopped) return;
-        fault(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        // A lost conversation may be a memory kill (ADR-0061): the kernel's group kill took the
+        // Harness with the Agent's processes. The operator publishes the container's last end on
+        // the Sandbox, so the fault is NAMED — the fixed prefix `memory limit` — instead of
+        // "conversation lost", and the Machine's policy can tell the two apart.
+        //
+        // TODO(ADR-0062): the next Agent in this Workspace is told of the memory kill through
+        // the Briefing, never through the Frame (ADR-0057).
+        const named = isLostConversation(err) && sandbox !== undefined ? await memoryFault(sandbox) : undefined;
+        if (stopped) return;
+        fault(named !== undefined ? `${named}\n  ${message}` : message);
       }
     })();
 

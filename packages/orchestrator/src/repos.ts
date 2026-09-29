@@ -6,9 +6,9 @@
 // on every node that needs the repository. What comes back is that agent's per-node status, which
 // is what `jr2 status` reports and what a provision waits on through the Sandbox's `Ready`.
 //
-// The port's kubectl implementation (`kubectlRepos`) drives the CRD the same way the Sandbox port
-// does (sandbox-kubectl.ts): shelling to `kubectl`, honoring the current kube context, with the
-// process seam injectable so the mapping is unit-testable without a cluster.
+// The port's implementation (`kubeRepos`) drives the CRD the same way the Sandbox port does
+// (sandbox-kube.ts): through the Orchestrator's own Kubernetes client (kube-client.ts, ADR-0063),
+// injectable so the mapping is unit-testable against a fake API server.
 //
 // TWO SPELLINGS, ONE RESOURCE: the resource is named by the cache key, and its `spec.url` and
 // `secretRef` are ONE statement — the boot's. The walk collapses every Machine binding an
@@ -18,7 +18,7 @@
 // eviction clock — never the url. So a Machine that binds over ssh what another bound over https
 // borrows the cache the boot stated, and its runs never flip the resource between the two (each
 // flip is a generation the cache agent re-points origin and refetches on). The push url is each
-// Binding's own (attachScript), so nothing about the run is wrong; only the cache's transport is
+// Binding's own (the Harness's attach, ADR-0063), so nothing about the run is wrong; only the cache's transport is
 // shared.
 //
 // A resource NOTHING binds has no boot to restate it, so the provision is its one writer: an
@@ -33,7 +33,7 @@
 
 import { credentialSecretFor, matchCredential, type GitCredential } from "./config.ts";
 import { ANNOTATION_REPO_IDENTITY, ANNOTATION_REPO_LAST_ATTACHED, LABEL_REPO_BOUND } from "./names.ts";
-import { defaultKubectlExec, type KubectlExec } from "./sandbox-kubectl.ts";
+import { REPOS, SECRETS, isAlreadyExists, kubeClient, KubeError, type KubeClient } from "./kube-client.ts";
 
 /** One node's view of a Repo, as the cache agent reports it on the resource's status. */
 export type RepoNodeState = {
@@ -95,14 +95,9 @@ export interface RepoResources {
   list(): Promise<RepoStatus[]>;
 }
 
-/** The CRD's fully qualified plural — unambiguous to kubectl whatever else calls itself a repo. */
-const REPO_RESOURCE = "repos.core.jr2.dev";
-
-export type KubectlReposOptions = {
+export type KubeReposOptions = {
   /** The instance's namespace — the Repo resources live beside the Sandboxes that name them. */
   namespace: string;
-  /** kubectl `--context` override. Default: the current context (ADR-0009). */
-  context?: string;
   /** The instance's `git.credentials`, matched by prefix on the identity (config.ts). */
   credentials: readonly GitCredential[];
   /** Where a token entry's env var is read from (deployed: `process.env`, which the Instance
@@ -111,32 +106,36 @@ export type KubectlReposOptions = {
   env: Record<string, string | undefined>;
   /** CR `spec.refreshInterval` — how often the cache agent fetches a warm cache. Default `5m`. */
   refreshInterval?: string;
-  /** Process seam, injectable for tests. Defaults shell to the `kubectl` on PATH. */
-  exec?: KubectlExec;
+  /** The Kubernetes client (ADR-0063), shared with the Sandbox port. Default: the in-cluster one. */
+  client?: KubeClient;
   /** The clock `last-attached` is stamped from. Injectable for tests. */
   now?: () => Date;
 };
 
-export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
-  const exec = opts.exec ?? defaultKubectlExec;
+export function kubeRepos(opts: KubeReposOptions): RepoResources {
   const now = opts.now ?? (() => new Date());
-  const base = ["--namespace", opts.namespace, ...(opts.context ? ["--context", opts.context] : [])];
+  const ns = opts.namespace;
+  // Built on first use: a boot never needs the cluster to construct this port (ADR-0048).
+  let client: KubeClient | undefined = opts.client;
+  const kube = () => (client ??= kubeClient());
 
   /**
    * The Secret the cache agent spends for an https url, in Flux's shape (`username`/`password`),
    * so a Flux or Argo user reuses the Secret they have. Its name is derived from the entry's
    * `match`, so a redeploy finds its own and two entries never share one. Applied (create-or-
    * update) on every ensure: a token rotated by `jr2 up` reaches the Secret at the next boot.
+   * `data`, not `stringData`: a server-side apply owns the fields it names, and `stringData` never
+   * reads back as one.
    */
   const applyTokenSecret = async (name: string, password: string): Promise<void> => {
-    const secret = {
+    const b64 = (v: string) => Buffer.from(v).toString("base64");
+    await kube().apply(SECRETS, ns, {
       apiVersion: "v1",
       kind: "Secret",
-      metadata: { name, namespace: opts.namespace, labels: { "app.kubernetes.io/managed-by": "jr2" } },
+      metadata: { name, namespace: ns, labels: { "app.kubernetes.io/managed-by": "jr2" } },
       type: "Opaque",
-      stringData: { username: "x-access-token", password },
-    };
-    await exec(["apply", ...base, "-f", "-"], { input: JSON.stringify(secret) });
+      data: { username: b64("x-access-token"), password: b64(password) },
+    });
   };
 
   /**
@@ -168,7 +167,7 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
         kind: "Repo",
         metadata: {
           name: repo.key,
-          namespace: opts.namespace,
+          namespace: ns,
           ...(repo.bound ? { labels: { [LABEL_REPO_BOUND]: "true" } } : {}),
           annotations: {
             [ANNOTATION_REPO_IDENTITY]: repo.identity,
@@ -185,9 +184,9 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
   };
 
   /** Create, never apply — an existing resource keeps its spec. True when this call created it. */
-  const create = async (cr: object): Promise<boolean> => {
+  const create = async (cr: RepoItem & { metadata: { name: string } }): Promise<boolean> => {
     try {
-      await exec(["create", ...base, "-f", "-"], { input: JSON.stringify(cr) });
+      await kube().create(REPOS, ns, cr);
       return true;
     } catch (err) {
       if (!isAlreadyExists(err)) throw err;
@@ -196,13 +195,14 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
   };
 
   const patch = async (key: string, body: object): Promise<void> => {
-    await exec(["patch", REPO_RESOURCE, key, ...base, "--type", "merge", "-p", JSON.stringify(body)]);
+    await kube().patch(REPOS, ns, key, body);
   };
 
   /** One resource as it stands — what an unbound `ensure` restates its credential against. */
   const get = async (key: string): Promise<RepoItem> => {
-    const { stdout } = await exec(["get", REPO_RESOURCE, key, ...base, "-o", "json"]);
-    return JSON.parse(stdout) as RepoItem;
+    const item = await kube().get<RepoItem>(REPOS, ns, key);
+    if (!item) throw new Error(`Repo "${key}" vanished between its create and its read`);
+    return item;
   };
 
   return {
@@ -246,9 +246,9 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
 
     async reconcileBound(keys) {
       const keep = new Set(keys);
-      let stdout: string;
+      let items: RepoItem[];
       try {
-        ({ stdout } = await exec(["get", REPO_RESOURCE, ...base, "-l", `${LABEL_REPO_BOUND}=true`, "-o", "json"]));
+        ({ items } = await kube().list<RepoItem>(REPOS, ns, { labelSelector: `${LABEL_REPO_BOUND}=true` }));
       } catch (err) {
         // A cluster with no `repos.core.jr2.dev` resource type holds no Repos, so "nothing to
         // unlabel" is the complete answer — the one read that may answer none. An instance that
@@ -258,23 +258,25 @@ export function kubectlRepos(opts: KubectlReposOptions): RepoResources {
         if (!isMissingResourceType(err)) throw err;
         return;
       }
-      for (const item of itemsOf(stdout)) {
+      for (const item of items) {
         const name = item.metadata?.name;
         if (name === undefined || keep.has(name)) continue;
-        // `<label>-` is kubectl's spelling for "remove the label".
-        await exec(["label", REPO_RESOURCE, name, ...base, `${LABEL_REPO_BOUND}-`]);
+        // A merge patch's `null` removes the label.
+        await patch(name, { metadata: { labels: { [LABEL_REPO_BOUND]: null } } });
       }
     },
 
     async list() {
-      const { stdout } = await exec(["get", REPO_RESOURCE, ...base, "-o", "json"]);
-      return itemsOf(stdout).map(repoStatusOf);
+      const { items } = await kube().list<RepoItem>(REPOS, ns);
+      return items.map(repoStatusOf);
     },
   };
 }
 
-/** A `Repo` resource as `kubectl get -o json` prints it — the fields this port reads. */
+/** A `Repo` resource as the API server answers it — the fields this port reads. */
 type RepoItem = {
+  apiVersion?: string;
+  kind?: string;
   metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> };
   spec?: { url?: string };
   status?: {
@@ -289,11 +291,6 @@ type RepoItem = {
     }>;
   };
 };
-
-function itemsOf(stdout: string): RepoItem[] {
-  const parsed = JSON.parse(stdout) as { items?: RepoItem[] };
-  return parsed.items ?? [];
-}
 
 /** The resource → what `GET /repos` reports: the Orchestrator's own metadata read back, and the
  * cache agent's per-node entries verbatim. Absent optional fields stay absent, not `undefined`
@@ -319,12 +316,9 @@ export function repoStatusOf(item: RepoItem): RepoStatus {
   };
 }
 
-function isAlreadyExists(err: unknown): boolean {
-  return err instanceof Error && /AlreadyExists|already exists/i.test(err.message);
-}
-
-/** kubectl's words for "this cluster has no such CRD" — the Repo type is the operator's to install
- * (ADR-0051), and an instance may be deployed where nothing installed it. */
+/** The API server's answer for a kind it does not serve: 404 on the collection itself — the Repo
+ * type is the operator's to install (ADR-0051), and an instance may be deployed where nothing
+ * installed it. (An object that is absent is a 404 on the OBJECT, which a list never asks for.) */
 function isMissingResourceType(err: unknown): boolean {
-  return /doesn't have a resource type/i.test(err instanceof Error ? err.message : String(err));
+  return err instanceof KubeError && err.status === 404;
 }

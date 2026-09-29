@@ -128,7 +128,15 @@ test("the walk terminates on a Machine that composes itself", () => {
   assert.deepEqual(partsOf([recursive]).agents, [{ name: "coder", definition: def("vllm/qwen") }]);
 });
 
-const NOTHING = { agents: [], images: [], repos: [], openSlots: [], openAgents: [], composesSandbox: false };
+const NOTHING = {
+  agents: [],
+  images: [],
+  repos: [],
+  openSlots: [],
+  openAgents: [],
+  sizes: [],
+  composesSandbox: false,
+};
 
 test("no Agents anywhere is an empty answer — a workflow may invoke none, and compose no Sandbox", () => {
   const plain = setup({}).createMachine({ id: "plain", initial: "idle", states: { idle: {} } });
@@ -257,6 +265,9 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
     repos: [{ url: "git@github.com:acme/app.git", identity: "github.com/acme/app", key: APP_KEY }],
     openSlots: [{ slot: "docs", path: ["feature"] }],
     openAgents: [],
+    // The Workspace states no Size, and is still reported: the converge resolves it against the
+    // Instance default and the kit's, and splits it (ADR-0060).
+    sizes: [{ path: ["feature"] }],
     composesSandbox: true,
   });
 });
@@ -490,4 +501,29 @@ test("the stamps are read by a SECOND copy of this module — the installed CLI'
     ["example.test/app"],
     "the bound Repo the boot creates a CR for",
   );
+});
+
+test("the walk reports every workspace()'s Size and User Container split, located like an Open slot (ADR-0060)", () => {
+  const sized = workspace(carrier("inner", "coder", "p/m"), {
+    repos: { app: "https://example.test/app.git" },
+    spec: () => ({ branch: "b" }),
+    resources: { limits: { memory: "3Gi" } },
+    user: { image: "ghcr.io/acme/sshd:1", resources: { limits: { memory: "256Mi" } } },
+  });
+  const unsized = workspace(carrier("other", "coder", "p/m"), {
+    repos: { app: "https://example.test/app.git" },
+    spec: () => ({ branch: "b" }),
+  });
+  const top = setup({ actors: { review: sized } }).createMachine({
+    id: "top",
+    initial: "go",
+    states: { go: { invoke: { src: "review" } } },
+  });
+  const parts = partsOf([top, unsized]);
+  assert.deepEqual(parts.sizes, [
+    { path: ["review"], resources: { limits: { memory: "3Gi" } }, user: { limits: { memory: "256Mi" } } },
+    { path: [] },
+  ]);
+  // The object form's image is still a part the walk collects — a `file:` context would be built.
+  assert.equal(partsOf([carrier("plain", "coder", "p/m")]).sizes.length, 0, "no workspace(), no Size");
 });

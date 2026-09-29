@@ -93,8 +93,15 @@ class FakeSandbox implements SandboxPort {
     const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
     return { repos };
   }
-  async renew(): Promise<{ present: true }> {
-    return { present: true };
+  /** What the watch says about the Sandbox (ADR-0021, ADR-0063). */
+  present = true;
+  async renew(): Promise<void> {}
+  continuity(_name: string, listener: (seen: { present: boolean }) => void): () => void {
+    queueMicrotask(() => listener({ present: this.present }));
+    return () => {};
+  }
+  async memoryFault(): Promise<string | undefined> {
+    return undefined;
   }
   async destroy(name: string): Promise<void> {
     this.destroyed.push(name);
@@ -377,8 +384,8 @@ test("the door's Dials reach the Turn, and never touch the Agent's identity (ADR
 test("a lost Workspace settles the run as lost rather than resuming into an empty pod (ADR-0021)", async () => {
   const port = new MockPort();
   const sandbox = new FakeSandbox();
-  // Continuity broken: the CR is gone, so the lease's first renewal reports it and the body decides.
-  sandbox.renew = async () => ({ present: false }) as never;
+  // Continuity broken: the CR is gone, so the watch's first word reports it and the body decides.
+  sandbox.present = false;
   const host = new RunHost({ store: await mkStore(), sandbox });
   host.register({ name: "task", machine: wire(bound, port, []), provide: () => ({}) } satisfies WorkflowDef);
 

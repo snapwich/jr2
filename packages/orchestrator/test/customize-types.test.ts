@@ -20,7 +20,9 @@
 //   6. `repos` offers exactly the Repo Slots the reached `workspace()` declared (ADR-0051), in
 //      any of the three forms, through a wrapper chain — and nothing on a Machine that composes
 //      no Sandbox; a `workspace()` that declared its map Open takes any keys, since naming them
-//      is the composer's half.
+//      is the composer's half;
+//   7. `resources` is a Size — `limits.memory` and `limits.cpu`, nothing else (ADR-0060) — and
+//      `user` takes the image alone or `{ image, resources }`.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -110,6 +112,21 @@ const wrapped = workspace(body, {
 // The body's Agent, reached through the wrapper — the consumer never writes `body` and never has
 // to know that jr2 wrapped anything.
 void customize(wrapped, { agents: { coder: { model: opus } }, image: "ghcr.io/acme/tools:2" });
+
+// A Size, and the User Container's split beside it (ADR-0060).
+void customize(wrapped, {
+  resources: { limits: { memory: "4Gi", cpu: 2 } },
+  user: { image: "ghcr.io/acme/sshd:1", resources: { limits: { memory: "256Mi" } } },
+});
+
+function refusedSizes(): void {
+  // @ts-expect-error a Size is limits only — jr2 reserves the whole Size, so no request is stated
+  void customize(wrapped, { resources: { limits: { memory: "4Gi" }, requests: { memory: "1Gi" } } });
+  // @ts-expect-error and only the two limits Agent Substrate's template size carries
+  void customize(wrapped, { resources: { limits: { "ephemeral-storage": "10Gi" } } });
+  // @ts-expect-error the User Container seat forwards nothing but its image and its split
+  void customize(wrapped, { user: { image: "ghcr.io/acme/sshd:1", env: [] } });
+}
 
 function refusedThroughTheWrapper(): void {
   // @ts-expect-error `body` is jr2's own slot: the transparency is the whole point, so it is not on
@@ -256,6 +273,7 @@ test("customize()'s type-level claims are the compiler's; this run pins the runt
       refusedOverrides,
       refusedRepos,
       refusedUnderOpenMap,
+      refusedSizes,
     ].every((f) => !!f),
   );
 });

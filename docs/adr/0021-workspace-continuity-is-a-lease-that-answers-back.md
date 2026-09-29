@@ -66,5 +66,6 @@ idle timeout on its own. The behavior `release()` was written to produce is emer
   continuity — the pre-0021 behavior, minus the edge-triggering.
 - The lease is per-workspace, not per-run: a workflow with concurrent workspaces gets one actor each, and each is lost
   independently. This falls out of invoking it beside the body rather than owning it at the host.
-- `SandboxPort` drops from five operations to four, and the optional-method wart is gone. The `jr2.dev/run` label
-  survives for `jr2 ls`, no longer load-bearing for lease bookkeeping.
+- `SandboxPort` has no optional method: `renew` is a write, `continuity` is a subscription to the watch, and
+  `memoryFault` (ADR-0061) answers undefined from a backend that cannot see the container. The `jr2.dev/run` label
+  survives for `jr2 ls` and as the watch's selector, no longer load-bearing for lease bookkeeping.

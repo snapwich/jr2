@@ -11,7 +11,7 @@
 //                             of names, headers, paths and targets in front — never a value
 //   custodianComposition(...) what a Harness pod gains: the Custodian container, its volumes, and
 //                             the Harness container's env and mounts. BOTH placements call it —
-//                             `kubectlSandbox` per provision, `instanceHarnessObjects` at converge —
+//                             `kubeSandbox` per provision, `instanceHarnessObjects` at converge —
 //                             so the two pod shapes cannot drift
 //
 // The Custodian is a separate container from the Harness, and that is the point: the Agent
@@ -21,6 +21,7 @@
 
 import { readFileSync } from "node:fs";
 import type { HarnessEnvVar } from "./config.ts";
+import type { ResourceRequirements } from "./size.ts";
 import {
   CREDENTIAL_HEADERS,
   SANDBOX_TOKEN_NAME,
@@ -766,6 +767,9 @@ export type CustodianCompositionOptions = {
   sandbox?: string;
   /** The Instance ships a `harness.caBundle` (ADR-0020). */
   caBundle: boolean;
+  /** The Custodian container's resources (ADR-0060) — the placement's to choose: a Sandbox's fixed
+   * slice of its Size (requests = limits), the Instance Harness's kit-sized request. */
+  resources?: ResourceRequirements;
 };
 
 type Container = Record<string, unknown>;
@@ -887,6 +891,7 @@ export function custodianComposition(manifest: HeldManifest, opts: CustodianComp
       periodSeconds: 2,
       failureThreshold: 15,
     },
+    ...(opts.resources !== undefined ? { resources: opts.resources } : {}),
     securityContext: CUSTODIAN_SECURITY,
   };
 

@@ -174,3 +174,31 @@ test("loadConfig checks harness.heldSecrets and harness.catalog by SHAPE — in-
   );
   await assert.rejects(() => write(`{ heldSecrets: {} }`), /at harness\.heldSecrets: expected an array/);
 });
+
+test("loadConfig refuses sandbox.resources beyond the two limits, and a mis-shaped priorityClasses, by field (ADR-0060)", async () => {
+  const load = async (body: string) => {
+    const d = await mkdtemp(join(tmpdir(), "jr2-config-"));
+    await writeFile(join(d, "jr2.config.ts"), `export default ${body};\n`);
+    return loadConfig(d);
+  };
+  assert.deepEqual(
+    await load(
+      `{ sandbox: { resources: { limits: { memory: "3Gi", cpu: "2" } } }, priorityClasses: { sandbox: "batch" } }`,
+    ),
+    { sandbox: { resources: { limits: { memory: "3Gi", cpu: "2" } } }, priorityClasses: { sandbox: "batch" } },
+  );
+  await assert.rejects(
+    load(`{ sandbox: { resources: { requests: { memory: "1Gi" }, limits: {} } } }`),
+    /at sandbox\.resources\.requests is not accepted/,
+  );
+  await assert.rejects(
+    load(`{ sandbox: { resources: { limits: { memory: "2Gi", "nvidia.com/gpu": "1" } } } }`),
+    /at sandbox\.resources\.limits\.nvidia\.com\/gpu is not accepted/,
+  );
+  await assert.rejects(
+    load(`{ sandbox: { resources: { limits: { cpu: "fast" } } } }`),
+    /sandbox\.resources\.limits\.cpu/,
+  );
+  await assert.rejects(load(`{ priorityClasses: { sandbox: "" } }`), /at priorityClasses\.sandbox/);
+  await assert.rejects(load(`{ priorityClasses: { batch: "x" } }`), /at priorityClasses/);
+});

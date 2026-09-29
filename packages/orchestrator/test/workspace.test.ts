@@ -11,8 +11,10 @@ import { agentActorWith } from "../src/actor.ts";
 import { customize } from "../src/customize.ts";
 import { open, sandboxPartsOf } from "../src/parts.ts";
 import {
+  leaseDelay,
   workspace,
   workspaceName,
+  type Continuity,
   type ProvisionedRepo,
   type SandboxPort,
   type WorkspaceSpec,
@@ -23,15 +25,42 @@ import { approveDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 class FakeSandbox implements SandboxPort {
   calls: string[] = [];
   provisioned = new Map<string, { runId: string; workflow: string }>();
-  /** What `renew()` answers — flip to false to simulate a reaped Sandbox. */
-  present = true;
+  /** Who is listening to the watch, per Sandbox name (ADR-0063). */
+  private listeners = new Map<string, Set<(seen: Continuity) => void>>();
+  private _present = true;
+  private _identity = "pod-1";
+  /** What the watch says — flip to false to simulate a reaped Sandbox; every listener hears it. */
+  get present(): boolean {
+    return this._present;
+  }
+  set present(v: boolean) {
+    this._present = v;
+    this.tell();
+  }
   /** The live pod's identity. Change it to simulate an eviction/node-loss replacement:
    * same CR, same name, same endpoint — different pod, empty `work` volume. */
-  identity = "pod-1";
-  /** Make the next `renew()` throw — an API error is "unknown", never "lost". */
+  get identity(): string {
+    return this._identity;
+  }
+  set identity(v: string) {
+    this._identity = v;
+    this.tell();
+  }
+  /** Make every `renew()` throw — a failed write is "unknown", never "lost". */
   failRenew = false;
   /** Fast enough that a test can observe several ticks without sleeping on wall clock. */
   leaseIntervalMs = 5;
+
+  private seen(): Continuity {
+    return this._present ? { present: true, identity: this._identity } : { present: false };
+  }
+  private tell(): void {
+    for (const set of this.listeners.values()) for (const l of set) l(this.seen());
+  }
+  /** How many listeners the watch has right now — a stopped lease must leave none. */
+  get listening(): number {
+    return [...this.listeners.values()].reduce((n, s) => n + s.size, 0);
+  }
 
   /** The Sandbox Image NAME each provision was asked for (ADR-0037) — resolution is the port's. */
   images: Array<string | undefined> = [];
@@ -39,6 +68,8 @@ class FakeSandbox implements SandboxPort {
   composition: Array<{ user?: string; workGroup?: number }> = [];
   /** The Repo Slots each provision resolved (ADR-0051), in declaration order. */
   repos: ProvisionedRepo[][] = [];
+  /** The Size each provision was handed, as the Machine states it (ADR-0060). */
+  sizes: Array<{ resources?: unknown; userResources?: unknown }> = [];
   /** What each attach was asked to attach — the persisted bindings, as the port sees them. */
   attached: Array<Array<{ slot: string; url: string; ref?: string }>> = [];
 
@@ -50,8 +81,14 @@ class FakeSandbox implements SandboxPort {
     user?: string;
     workGroup?: number;
     repos: ProvisionedRepo[];
+    resources?: unknown;
+    userResources?: unknown;
   }): Promise<{ endpoint: string; identity?: string }> {
     this.calls.push(`provision:${req.name}`);
+    this.sizes.push({
+      ...(req.resources !== undefined ? { resources: req.resources } : {}),
+      ...(req.userResources !== undefined ? { userResources: req.userResources } : {}),
+    });
     this.images.push(req.image);
     this.composition.push({ user: req.user, workGroup: req.workGroup });
     this.repos.push(req.repos);
@@ -68,10 +105,20 @@ class FakeSandbox implements SandboxPort {
     const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
     return { repos };
   }
-  async renew(name: string): Promise<{ present: false } | { present: true; identity?: string }> {
+  async renew(name: string): Promise<void> {
     this.calls.push(`renew:${name}`);
     if (this.failRenew) throw new Error("the API server is having a day");
-    return this.present ? { present: true, identity: this.identity } : { present: false };
+  }
+  continuity(name: string, listener: (seen: Continuity) => void): () => void {
+    let set = this.listeners.get(name);
+    if (!set) this.listeners.set(name, (set = new Set()));
+    set.add(listener);
+    // The watch has listed: what it holds is the first answer (the restore reconcile).
+    queueMicrotask(() => set.has(listener) && listener(this.seen()));
+    return () => set.delete(listener);
+  }
+  async memoryFault(): Promise<string | undefined> {
+    return undefined;
   }
   async destroy(name: string): Promise<void> {
     this.calls.push(`destroy:${name}`);
@@ -150,12 +197,14 @@ test("lifecycle: provision → attach → body(input+handles) → body final →
   );
   // Parking IS retention (ADR-0012): the body is holding its gate, the Sandbox must be alive.
   assert.ok(!sandbox.calls.some((c) => c.startsWith("destroy:")));
+  // The lease stamps while the body holds its gate. Waited for, not assumed: the first renewal is
+  // jittered (ADR-0021), so a loaded runner can reach the gate before it lands.
+  await waitFor(() => renews(sandbox) > 0);
 
   host.sendToGate(runId, "hold", { type: "approve" });
   await waitFor(() => host.status(runId) === undefined); // run settled + dropped from registry
 
   assert.deepEqual(lifecycle(sandbox), ["provision", "attach", "destroy"]);
-  assert.ok(renews(sandbox) > 0, "the lease stamped while the body held its gate");
   const final = await host.read(runId);
   assert.equal(final?.status, "done");
   const ctx = final?.context as { output?: { status: string; app?: string } };
@@ -342,11 +391,13 @@ test("the lease stops with the run — no process-global timer outlives the acto
   await waitFor(() => host.gates(runId).length === 1);
   await waitFor(() => renews(sandbox) > 0);
 
+  assert.equal(sandbox.listening, 1, "the lease listens to the watch for its Sandbox");
   await host.stop(runId);
   const settled = renews(sandbox);
   await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
 
   assert.equal(renews(sandbox), settled, "stopping the run stopped its lease");
+  assert.equal(sandbox.listening, 0, "…and its subscription");
 });
 
 test("live reap: the Sandbox goes while the run is UP → workspace.lost, no restart needed", async () => {
@@ -390,6 +441,29 @@ test("live replacement: same CR, new pod identity → workspace.lost (the emptyD
     1,
     "never silently re-provisioned into an inconsistent world",
   );
+});
+
+test("renewal is a write only: it never reads continuity, and loss arrives from the watch at once", async () => {
+  // ADR-0021/0063: the watch answers, the lease asserts. A lease interval of an HOUR proves the
+  // loss below cannot have come from a renewal.
+  const sandbox = new FakeSandbox();
+  sandbox.leaseIntervalMs = 60 * 60_000;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.gates(runId).length === 1);
+  sandbox.identity = "pod-2";
+  await waitFor(() => host.status(runId) === undefined);
+  assert.deepEqual(((await host.read(runId))?.context as { output?: unknown }).output, { status: "lost" });
+});
+
+test("renewals land at the interval ±20%, the first within a fifth of it (ADR-0021)", () => {
+  // At the extremes of the draw: never in lockstep, never outside the band.
+  assert.equal(Math.round(leaseDelay(1_000, "first", 0)), 0);
+  assert.equal(Math.round(leaseDelay(1_000, "first", 1)), 200);
+  assert.equal(Math.round(leaseDelay(1_000, "next", 0)), 800);
+  assert.equal(Math.round(leaseDelay(1_000, "next", 0.5)), 1_000);
+  assert.equal(Math.round(leaseDelay(1_000, "next", 1)), 1_200);
 });
 
 test("a failing renew is UNKNOWN, never lost — an API blip must not settle a live run", async () => {
@@ -728,4 +802,63 @@ test("workspace() keeps the Repo Slots in declaration order — the order the ha
   const spec = () => ({ branch: "b" });
   const w = workspace(body, { repos: { app: APP, infra: APP, "v2.x": APP }, spec });
   assert.deepEqual(Object.keys(sandboxPartsOf(w).repos), ["app", "infra", "v2.x"]);
+});
+
+test("the Size is a static option: the port gets it as stated, and the User Container's split beside it (ADR-0060)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  const sized = workspace(body, {
+    user: { image: "ghcr.io/acme/sshd:1", resources: { limits: { memory: "256Mi" } } },
+    resources: { limits: { memory: "3Gi", cpu: "2" } },
+    repos: { app: APP },
+    spec: () => ({ branch: "b" }),
+  });
+  host.register({ name: "sized", machine: sized, provide: () => ({}) });
+  const { runId } = await host.start("sized");
+  await waitFor(() => host.gates(runId).length === 1);
+  // The object form of `user` reaches the port as its two halves: the image where it always went,
+  // the split beside the Size. The port resolves the rest of the chain.
+  assert.deepEqual(sandbox.composition, [{ user: "ghcr.io/acme/sshd:1", workGroup: undefined }]);
+  assert.deepEqual(sandbox.sizes, [
+    { resources: { limits: { memory: "3Gi", cpu: "2" } }, userResources: { limits: { memory: "256Mi" } } },
+  ]);
+
+  // A Workspace that states none hands the port nothing: the Instance default and the kit's are
+  // the port's to apply, never baked into the Machine.
+  const bare = new FakeSandbox();
+  const host2 = new RunHost({ store: await mkStore(), sandbox: bare });
+  host2.register({
+    name: "bare",
+    machine: workspace(body, { repos: { app: APP }, spec: () => ({ branch: "b" }) }),
+    provide: () => ({}),
+  });
+  const second = await host2.start("bare");
+  await waitFor(() => host2.gates(second.runId).length === 1);
+  assert.deepEqual(bare.sizes, [{}]);
+});
+
+test("workspace() refuses requests, and any key beside limits.memory/limits.cpu, by field (ADR-0060)", () => {
+  const spec = () => ({ branch: "b" });
+  assert.throws(
+    () =>
+      workspace(body, {
+        repos: { app: APP },
+        spec,
+        resources: { limits: { memory: "3Gi" }, requests: { memory: "1Gi" } } as never,
+      }),
+    /workspace\(\): resources\.requests is not accepted/,
+  );
+  assert.throws(
+    () => workspace(body, { repos: { app: APP }, spec, resources: { limits: { gpu: "1" } } as never }),
+    /workspace\(\): resources\.limits\.gpu is not accepted/,
+  );
+  assert.throws(
+    () =>
+      workspace(body, {
+        repos: { app: APP },
+        spec,
+        user: { image: "x", resources: { requests: { cpu: "1" } } } as never,
+      }),
+    /workspace\(\) user\.resources\.requests is not accepted/,
+  );
 });

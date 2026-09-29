@@ -100,3 +100,25 @@ export const ANNOTATION_REPO_LAST_ATTACHED = "jr2.dev/last-attached";
  * that started before the ask does not satisfy it. The Lease's shape: an annotation, written by
  * the Orchestrator, read by the operator. */
 export const askedAnnotation = (key: string): string => `jr2.dev/asked-${key}`;
+
+/** The two PriorityClasses `jr2 up` creates, cluster-scoped, beside the CRDs (ADR-0060) — unless
+ * `priorityClasses` in jr2.config.ts names existing ones. `jr2-control` (100000,
+ * PreemptLowerPriority) is for the Orchestrator, the operator and the Repo cache agent: small, fixed,
+ * and needed by every Sandbox. `jr2-sandbox` (1000, preemptionPolicy Never) is for Sandboxes and the
+ * Instance Harness: an ordinary pod cannot preempt a live Workspace, and a waiting Sandbox evicts
+ * nobody. Both stay far below the system classes. */
+export const PRIORITY_CLASS_CONTROL = "jr2-control";
+export const PRIORITY_CLASS_SANDBOX = "jr2-sandbox";
+
+/** The voluntary-disruption opt-outs (ADR-0060) a Sandbox pod and the Instance Harness pod carry:
+ * moving either loses work (`/work`; live conversations). No PodDisruptionBudget — `maxUnavailable:
+ * 0` blocks node upgrades without end. */
+export const NO_DISRUPT_ANNOTATIONS = {
+  "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
+  "karpenter.sh/do-not-disrupt": "true",
+} as const;
+
+/** The API server's CA as the kubelet mounts it with the Pod's ServiceAccount. The Orchestrator
+ * Deployment points `NODE_EXTRA_CA_CERTS` at it, so the Orchestrator's own Kubernetes client
+ * (kube-client.ts, ADR-0063) trusts the API server with built-in `fetch` and no TLS code. */
+export const SERVICE_ACCOUNT_CA = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";

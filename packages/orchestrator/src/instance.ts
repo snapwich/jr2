@@ -62,7 +62,7 @@ export type InstanceOptions = {
   instanceHarness?: string;
   /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.jr2/secret`, minted on
    * first boot. Supply it when the instance folder must stay untouched (tests), or when the same
-   * key must reach a `kubectlSandbox` built before this call (it mints the tokens). */
+   * key must reach a `kubeSandbox` built before this call (it mints the tokens). */
   signingKey?: Buffer;
   /** The Instance token to authenticate with (ADR-0013/0019). Deployed, `jr2 up` materializes it in
    * the instance's Secret and the entrypoint passes it here, so a pod restart keeps the credential

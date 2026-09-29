@@ -38,9 +38,11 @@ import {
   INSTANCE_HARNESS_SERVICE,
 } from "./names.ts";
 import { partsOf, type CarriedRepo } from "./parts.ts";
-import { kubectlRepoFetches, type RepoFetches } from "./repo-fetch.ts";
-import { kubectlRepos, type RepoResources } from "./repos.ts";
-import { kubectlSandbox, type KubectlExec } from "./sandbox-kubectl.ts";
+import { kubeClient, type KubeClient } from "./kube-client.ts";
+import { kubeRepoFetches, type RepoFetches } from "./repo-fetch.ts";
+import { kubeRepos, type RepoResources } from "./repos.ts";
+import { kubeSandbox } from "./sandbox-kube.ts";
+import { watchSandboxes } from "./sandbox-watch.ts";
 import { loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 
@@ -51,9 +53,9 @@ export type ServerMainOptions = {
   env: Record<string, string | undefined>;
   /** Where the one-line JSON announcement goes (deployed: stdout). */
   announce: (line: string) => void;
-  /** The kubectl process seam behind the data plane's two ports, injectable for tests.
-   * Deployed: the `kubectl` on PATH. */
-  exec?: KubectlExec;
+  /** The Kubernetes client behind the data plane's ports (ADR-0063), injectable for tests.
+   * Deployed: the in-cluster client over the Pod's ServiceAccount. */
+  kube?: KubeClient;
 };
 
 /** Boot the instance the env describes; resolves once serving (the caller owns signals/exit). */
@@ -73,8 +75,8 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   const instanceToken = env.JR2_INSTANCE_TOKEN ?? mintInstanceToken();
 
   // The data-plane switch (ADR-0012/0031/0051): a registered Machine COMPOSES a Sandbox — read off
-  // the same walk `jr2 up` makes — and this process is deployed in a cluster → wire the kubectl
-  // Sandbox backend. Otherwise an instance without a data plane (workspace() invocations fault
+  // the same walk `jr2 up` makes — and this process is deployed in a cluster → wire the
+  // cluster's Sandbox backend. Otherwise an instance without a data plane (workspace() invocations fault
   // pointedly). The walk loads the same modules `startInstance` registers below; Node's module
   // cache makes them one import.
   const carried = partsOf((await loadWorkflows(opts.dir)).map((w) => w.machine));
@@ -82,6 +84,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   let sandbox: SandboxPort | undefined;
   let repos: RepoResources | undefined;
   let fetches: RepoFetches | undefined;
+  let stopWatch: (() => void) | undefined;
   // The Repo port hangs off DEPLOYED, not off the data plane: this boot's reconcile is the only
   // writer that ever REMOVES `jr2.dev/bound` (repos.ts), and an Instance that drops its last
   // `workspace()` still owns the Repos its earlier deploys bound. So the port is built whenever
@@ -90,18 +93,26 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
   // bound forever: uncollectable resources, with their node caches behind them.
   if (namespace !== undefined) {
     const credentials = config?.git?.credentials ?? [];
+    // ONE client for the process (ADR-0063): one write cap over every port that writes, and the
+    // token read fresh on every request. Nothing is dialed until a port first asks.
+    const client = opts.kube ?? kubeClient({ env });
     // The Repo resources (ADR-0051): created by this process, cloned by the operator's cache agent
     // on every node that needs them. The port resolves `git.credentials` into each resource's
     // `secretRef`, reading a token entry's env var off this process — the Instance Secret is
     // `envFrom` on the Deployment, so `jr2 up` is what put it there.
-    repos = kubectlRepos({ namespace, credentials, env, ...(opts.exec ? { exec: opts.exec } : {}) });
+    repos = kubeRepos({ namespace, credentials, env, client });
     if (dataPlane) {
+      // The one watch (ADR-0063): every Sandbox of this Instance, shared by the provision, the
+      // lease and the fetch ask. Started here, at boot, because its first list IS the restore
+      // reconcile (ADR-0012) — every restored lease is waiting on it.
+      const watch = watchSandboxes(client, { namespace });
+      stopWatch = () => watch.stop();
       // The ask a pod makes when something inside it fetches (ADR-0053): it marks the Sandbox CR
-      // and waits on the same status the provision waits on. Gated on the DATA PLANE, unlike the
+      // and waits on the same watch the provision waits on. Gated on the DATA PLANE, unlike the
       // Repo port above — there is nothing to ask for where no Sandbox is ever composed, and the
       // only caller is a pod that would have to exist to call it.
-      fetches = kubectlRepoFetches({ namespace, ...(opts.exec ? { exec: opts.exec } : {}) });
-      sandbox = kubectlSandbox({
+      fetches = kubeRepoFetches({ namespace, client, watch });
+      sandbox = kubeSandbox({
         // The fence (ADR-0051): a per-run url must match one of these, or the provision refuses it.
         credentials,
         // Where a provision records the Repos it names, before the CR names them.
@@ -128,9 +139,13 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
         caBundle: config?.harness?.caBundle !== undefined,
         // Which nodes are Sandbox nodes (ADR-0052) — the CR carries it, the operator reads no config.
         ...(config?.sandbox ? { placement: config.sandbox } : {}),
+        // The Size of a Workspace that states none (ADR-0060), and the class its pod runs under.
+        ...(config?.sandbox?.resources ? { defaultSize: config.sandbox.resources } : {}),
+        ...(config?.priorityClasses?.sandbox ? { priorityClassName: config.priorityClasses.sandbox } : {}),
         signingKey,
         namespace,
-        ...(opts.exec ? { exec: opts.exec } : {}),
+        client,
+        watch,
       });
     }
   }
@@ -156,6 +171,14 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
       ? `http://${INSTANCE_HARNESS_SERVICE}.${namespace}.svc:${INSTANCE_HARNESS_PORT}`
       : undefined,
   });
+  // The watch ends with the instance: its stream is the one thing here that never settles alone.
+  if (stopWatch) {
+    const close = inst.close;
+    inst.close = async () => {
+      stopWatch!();
+      await close();
+    };
+  }
   // Resumed runs are routine and stay quiet; runs this boot did NOT resume are not, so they ride
   // the announce line (ADR-0030) — the one thing every boot prints, whatever is reading it. Without
   // this, `drifted` is only reachable by asking after a run id nobody knows to ask about.

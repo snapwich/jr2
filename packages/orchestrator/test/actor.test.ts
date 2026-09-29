@@ -400,6 +400,60 @@ test("a failed settlement surfaces as agent.fault telemetry", async () => {
   assert.deepEqual(fault, { type: "agent.fault", instanceId: "inst-42", reason: "stream reset by peer" });
 });
 
+test("a lost conversation on a Harness the kernel OOM-killed is a fault NAMED `memory limit` (ADR-0061)", async () => {
+  const asked: Array<{ name: string; since: Date }> = [];
+  const sandbox = {
+    memoryFault: async (name: string, since: Date) => (
+      asked.push({ name, since }),
+      "memory limit (OOMKilled, limit 1920Mi): the kernel killed the container"
+    ),
+  } as unknown as RunBinding["sandbox"];
+  const lost = () =>
+    Object.assign(new Error('conversation lost: the harness answered 404 for submission "sub-1"'), { lost: true });
+
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, { sandbox });
+  await tick();
+  (mock as unknown as { pending: Array<{ reject: (e: unknown) => void }> }).pending.pop()!.reject(lost());
+  await tick();
+  await tick();
+
+  const fault = received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined;
+  assert.ok(fault?.reason?.startsWith("memory limit"), String(fault?.reason));
+  assert.match(fault!.reason!, /conversation lost/, "the lost conversation rides along beneath the name");
+  assert.equal(asked[0]!.name, "ws-7", "asked about THIS Turn's Sandbox");
+
+  // Any other fault is not asked about: only a lost conversation can hide a memory kill.
+  const other = new MockFlueClient();
+  const plain = harness(other, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, { sandbox });
+  await tick();
+  other.fault("stream reset by peer");
+  await tick();
+  assert.equal(asked.length, 1);
+  assert.deepEqual(
+    plain.received.find((e) => e.type === "agent.fault"),
+    {
+      type: "agent.fault",
+      instanceId: "inst-42",
+      reason: "stream reset by peer",
+    },
+  );
+
+  // And a lost conversation the Sandbox cannot name stays what it was.
+  const unnamed = new MockFlueClient();
+  const none = harness(unnamed, { ...baseInput, sandbox: "ws-8" }, undefined, undefined, {
+    sandbox: { memoryFault: async () => undefined } as unknown as RunBinding["sandbox"],
+  });
+  await tick();
+  (unnamed as unknown as { pending: Array<{ reject: (e: unknown) => void }> }).pending.pop()!.reject(lost());
+  await tick();
+  await tick();
+  assert.match(
+    String((none.received.find((e) => e.type === "agent.fault") as { reason?: string })?.reason),
+    /^conversation lost/,
+  );
+});
+
 test("every admission carries the SLOT's definition — the Harness holds no roster (ADR-0049)", async () => {
   const mock = new MockFlueClient();
   const definition: AgentDefinition = { model: "vllm/qwen", instructions: "be the coder", workspace: "read" };

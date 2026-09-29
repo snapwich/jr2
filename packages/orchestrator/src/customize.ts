@@ -17,7 +17,7 @@
 //   - A CHILD override is the same call one level down, recursing. Each level is exactly the
 //     one-level reach ADR-0015 found `provide` has — held by the composer who owns the child
 //     object, never host-side injection into somebody else's Machine.
-//   - The IMAGE and the REPOS are the parts `provide` cannot carry: xstate copies implementations
+//   - The IMAGE, the REPOS and the SIZE are the parts `provide` cannot carry: xstate copies implementations
 //     and passes the CONFIG through by reference, and every part a Machine carries is keyed on
 //     that config (parts.ts, vocabulary.ts). A new image or a bound slot therefore needs a new key
 //     — so those fields clone the wrapper's config and rebuild it with the same implementations,
@@ -25,8 +25,9 @@
 //
 // jr2's wrappers are TRANSPARENT: `agents`/`actors` route through `workspace()`'s `body` and
 // `pool()`'s `worker`, so a consumer customizing a Workspace-rooted workflow never writes `body`
-// and never has to know that jr2 wrapped anything. `image`/`user`/`repos` travel the same chain in
-// the other direction — down to the `workspace()` that owns the seats and the slots.
+// and never has to know that jr2 wrapped anything. `image`/`user`/`repos`/`resources` travel the same
+// chain in the other direction — down to the `workspace()` that owns the seats, the slots and the
+// Size.
 //
 // Both halves route on the wrapper's own RECORD of being one, never on a slot's spelling: the
 // runtime reads `wrapperBodyOf` and the types read `JR2Wrapper` (parts.ts), which the wrappers
@@ -56,6 +57,7 @@ import {
   type RepoSlot,
   type SandboxParts,
 } from "./parts.ts";
+import { assertSize, assertUserSeat, layerSize, type Size, type UserContainer } from "./size.ts";
 import { attachInputSchema, attachVocabulary, inputSchemaOf, vocabularyOf } from "./vocabulary.ts";
 
 // --- What a Machine declares, read at the TYPE level ---------------------------------------------
@@ -157,8 +159,12 @@ export type Customize<M extends AnyStateMachine> = {
   /** The Sandbox Image (ADR-0037): a `file:` URL to a docker context this module ships, or a
    * registry ref. */
   image?: string;
-  /** The User Container's image (ADR-0005), in the same two shapes. */
-  user?: string;
+  /** The User Container (ADR-0005): its image in the same two shapes, or `{ image, resources }`
+   * with its split of the Size (ADR-0060). Replaces the seat whole — split included. */
+  user?: string | UserContainer;
+  /** The Size (ADR-0060), layered field by field over the `workspace()`'s own: the composer's
+   * Repo may be bigger than the author's. `limits.memory` and `limits.cpu`, nothing else. */
+  resources?: Size;
   /** Bind the Repo Slots the reached `workspace()` declared (ADR-0051) — an open slot to a url,
    * or a bound or per-run one to a different Binding; any of the three forms, so a consumer can
    * also bind a mapper over the wrapper's door. A slot the Machine does not declare is a compile
@@ -173,8 +179,9 @@ type LooseParts = {
   agents?: Record<string, Partial<AgentDefinition> | undefined>;
   actors?: Record<string, LooseParts | undefined>;
   image?: string;
-  user?: string;
+  user?: string | UserContainer;
   repos?: Record<string, RepoSlot | undefined>;
+  resources?: Size;
 };
 
 /**
@@ -183,7 +190,7 @@ type LooseParts = {
  * `deep`/`quick`), and a run of either carries what it was given.
  */
 export function customize<M extends AnyStateMachine>(machine: M, parts: Customize<M>): M {
-  const { agents, actors, image, user, repos } = parts as LooseParts;
+  const { agents, actors, image, user, repos, resources } = parts as LooseParts;
   let out: AnyStateMachine = machine;
   // Order matters in one direction only: the Sandbox seats and slots REBUILD the wrapper, so they
   // go last and carry the retuned implementations with them.
@@ -192,14 +199,23 @@ export function customize<M extends AnyStateMachine>(machine: M, parts: Customiz
     ...(image !== undefined ? { image } : {}),
     ...(user !== undefined ? { user } : {}),
     ...(repos !== undefined ? { repos } : {}),
+    ...(resources !== undefined ? { resources } : {}),
   };
-  if (seats.image !== undefined || seats.user !== undefined || seats.repos !== undefined) out = reseat(out, seats);
+  // Refused where the composer wrote them, by field (ADR-0060), before any wrapper is rebuilt.
+  if (seats.user !== undefined) assertUserSeat("customize()", seats.user);
+  if (seats.resources !== undefined) assertSize("customize(): resources", seats.resources);
+  if (Object.keys(seats).length > 0) out = reseat(out, seats);
   return out as M;
 }
 
-/** What `reseat` carries down the chain: the two image seats and the slot overrides, each present
- * only when the composer named it. */
-type Seats = { image?: string; user?: string; repos?: Record<string, RepoSlot | undefined> };
+/** What `reseat` carries down the chain: the two image seats, the slot overrides and the Size, each
+ * present only when the composer named it. */
+type Seats = {
+  image?: string;
+  user?: string | UserContainer;
+  repos?: Record<string, RepoSlot | undefined>;
+  resources?: Size;
+};
 
 /** The slot keys whose logic answers `pred` — what an error names, so the message is the
  * Machine's own declaration rather than advice. */
@@ -263,9 +279,14 @@ function retune(machine: AnyStateMachine, parts: LooseParts): AnyStateMachine {
 /** The Sandbox seats and slots, applied to the `workspace()` the chain reaches. */
 function reseat(machine: AnyStateMachine, seats: Seats): AnyStateMachine {
   if (composesSandbox(machine)) {
-    const { repos: override, ...images } = seats;
+    const { repos: override, resources, ...images } = seats;
     const parts = sandboxPartsOf(machine);
-    if (parts.repos === open) return rebuild(machine, { ...parts, ...images, repos: nameSlots(machine, override) });
+    // The Size layers over the author's, field by field — a composer who raises memory keeps the
+    // author's cpu (ADR-0060).
+    const size = layerSize(parts.resources, resources);
+    const sized = size !== undefined ? { resources: size } : {};
+    if (parts.repos === open)
+      return rebuild(machine, { ...parts, ...images, ...sized, repos: nameSlots(machine, override) });
     const repos = { ...parts.repos };
     // Only DECLARED slots can be bound (ADR-0051): the Machine's own word for each Repo is the
     // key, and a key it never declared would attach a repository the body has no handle for.
@@ -285,15 +306,16 @@ function reseat(machine: AnyStateMachine, seats: Seats): AnyStateMachine {
       assertRepoSlot("customize()", slot, value);
       repos[slot] = value;
     }
-    return rebuild(machine, { ...parts, ...images, repos });
+    return rebuild(machine, { ...parts, ...images, ...sized, repos });
   }
   const inner = bodyOf(machine);
   if (!inner) {
-    const named = seats.repos !== undefined ? "`repos`" : "`image`/`user`";
+    const named =
+      seats.repos !== undefined ? "`repos`" : seats.resources !== undefined ? "`resources`" : "`image`/`user`";
     throw new Error(
-      `customize(): ${named} say what a SANDBOX is made of and which Repos it attaches, and machine ` +
-        `"${machine.id}" composes none — only a workspace() wrapper carries those seats and slots ` +
-        "(ADR-0049, ADR-0037, ADR-0051).",
+      `customize(): ${named} say what a SANDBOX is made of, how big it is and which Repos it attaches, and ` +
+        `machine "${machine.id}" composes none — only a workspace() wrapper carries those seats, that Size ` +
+        "and those slots (ADR-0049, ADR-0037, ADR-0051, ADR-0060).",
     );
   }
   return substitute(machine, { [inner.slot]: reseat(inner.body, seats) });

@@ -11,6 +11,7 @@
 export * from "@jr2/agent-protocol";
 export * from "./agent.ts";
 export * from "./parts.ts";
+export * from "./size.ts";
 export * from "./customize.ts";
 export * from "./ambient.ts";
 export * from "./config.ts";
@@ -28,7 +29,7 @@ export * from "./images.ts";
 export * from "./model-keys.ts";
 export * from "./held-secrets.ts";
 export * from "./custodian.ts";
-export * from "./sandbox-kubectl.ts";
+export * from "./sandbox-kube.ts";
 export * from "./repos.ts";
 export * from "./repo-fetch.ts";
 // Type-only: what a workflow event delivery looks like (the registration TABLE stays internal —

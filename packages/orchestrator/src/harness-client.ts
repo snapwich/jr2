@@ -114,10 +114,14 @@ export type HarnessClientOptions = {
 export class SettlementFault extends Error {
   /** The Settlement as the stream carried it; absent when the conversation itself was lost. */
   readonly settlement?: Settlement;
-  constructor(message: string, settlement?: Settlement) {
+  /** The conversation itself is gone (404): its Harness process ended (ADR-0027). The one fault
+   * the Agent actor asks the Sandbox about, to name a memory kill (ADR-0061). */
+  readonly lost: boolean;
+  constructor(message: string, settlement?: Settlement, opts: { lost?: boolean } = {}) {
     super(message);
     this.name = "SettlementFault";
     this.settlement = settlement;
+    this.lost = opts.lost === true;
   }
 }
 
@@ -138,11 +142,11 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
    * POST the admission, re-sending it while the request DEMONSTRABLY never left this host.
    *
    * This is `wait`'s reconnect rule, applied one step earlier and for the same reason: a request
-   * that could not connect is not a Harness that refused the prompt. It matters here because the
-   * admission is the FIRST thing jr2 ever sends over the Sandbox's Service — provisioning waits on
-   * the CR's `phase: Ready`, which the operator computes from the POD, and the attach reaches the
-   * pod through the API server, so nothing before this has proven the Service dialable. Ready is
-   * not routable: the EndpointSlice behind the ClusterIP is programmed after the pod passes its
+   * that could not connect is not a Harness that refused the prompt. It matters here because
+   * provisioning waits on the CR's `phase: Ready`, which the operator computes from the POD, and
+   * a Workspace-less Turn (the Instance Harness) has no attach before it — so this can be the first
+   * request ever sent over a Service. (A Sandbox's attach, `POST /attach` since ADR-0063, dials it
+   * first and retries the same way.) Ready is not routable: the EndpointSlice behind the ClusterIP is programmed after the pod passes its
    * probe, and until it is, kube-proxy REJECTs — which arrives here as a refused connection.
    * Un-retried, that single blip lost the whole turn (the actor calls an admission failure a
    * terminal `agent.fault`), which is exactly the flake that kept the `@kind` tier serial.
@@ -248,6 +252,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             throw new SettlementFault(
               `conversation lost: the harness answered 404 for submission "${admission.submissionId}" — ` +
                 `a conversation lives as long as its Harness process (ADR-0027)`,
+              undefined,
+              { lost: true },
             );
           }
           // Refused, not unreachable: the bearer is derived, so a Harness that rejects it now

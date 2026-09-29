@@ -30,8 +30,13 @@ class EchoSandbox implements SandboxPort {
     const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
     return { repos };
   }
-  async renew() {
-    return { present: true as const, identity: "pod-1" };
+  async renew() {}
+  continuity(_name: string, listener: (seen: { present: true; identity: string }) => void) {
+    queueMicrotask(() => listener({ present: true, identity: "pod-1" }));
+    return () => {};
+  }
+  async memoryFault(): Promise<string | undefined> {
+    return undefined;
   }
   async destroy() {}
   /** The echo target for one run's Workspace — derived the same way the endpoint was. */

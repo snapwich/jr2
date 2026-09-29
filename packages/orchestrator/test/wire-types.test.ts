@@ -38,6 +38,10 @@ const echoAdmission: Mutual<client.EchoAdmissionEvent, harness.EchoAdmissionEven
 const echoPick: Mutual<client.EchoPickEvent, harness.EchoPickEvent> = agree;
 const echo: Mutual<client.EchoEvent, harness.EchoEvent> = agree;
 const echoRequest: Mutual<client.EchoRequest, harness.EchoRequest> = agree;
+const attachSlot: Mutual<client.AttachSlot, harness.AttachSlot> = agree;
+const attachRequest: Mutual<client.AttachRequest, harness.AttachRequest> = agree;
+const attachResponse: Mutual<client.AttachResponse, harness.AttachResponse> = agree;
+const attachError: Mutual<client.AttachError, harness.AttachError> = agree;
 
 test("the client's wire shapes and the Harness's are one contract", () => {
   // The type-level claims above are already asserted by `tsc`; this reads them so the file has no
@@ -57,6 +61,10 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     echoPick,
     echo,
     echoRequest,
+    attachSlot,
+    attachRequest,
+    attachResponse,
+    attachError,
   ]) {
     assert.deepEqual(pair, [true, true]);
   }

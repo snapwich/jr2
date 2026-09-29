@@ -16,8 +16,9 @@
 //     Instance Harness converges when any of them declares `workspace: "none"`, every `file:`
 //     image context a Machine ships is built and content-tagged, every BOUND Repo is known before
 //     a run can ask for it, an OPEN part — a Repo Slot with no url, an Agent with no model
-//     (ADR-0054) — is refused before anything is built, and whether any registered Machine
-//     composes a Sandbox at all is the data-plane switch. None of these can read
+//     (ADR-0054) — is refused before anything is built, every Size a `workspace()` states is split
+//     and held to the Harness floor (ADR-0060), and whether any registered Machine composes a
+//     Sandbox at all is the data-plane switch. None of these can read
 //     an invoke's `input` (it is a function — dials are not statically recoverable), and none
 //     needs to: identity lives in the definition, the image and the slots are options, and all are
 //     values ON the Machine. A per-run slot is a function too, and the walk reports nothing for
@@ -44,6 +45,7 @@ import { isAgent, isOpenAgent, type AgentDeclaration } from "./agent.ts";
 import { isImageContext } from "./images.ts";
 import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
+import { userSeatOf, type Size, type UserContainer } from "./size.ts";
 
 // --- Repo Slots (ADR-0051) ---------------------------------------------------------------------
 // A `workspace()` names each Repo it attaches under a SLOT — the Machine's own word for it, the
@@ -146,11 +148,15 @@ export function assertRepoSlot(where: string, slot: string, value: unknown): ass
 export type SandboxParts = {
   /** The Sandbox Image. Absent → the Instance's `images/default`, then the stock Harness. */
   image?: string;
-  /** The User Container's image (ADR-0005). Absent → the pod has no third container. */
-  user?: string;
+  /** The User Container (ADR-0005): its image, or `{ image, resources }` when the Machine states
+   * its split of the Size (ADR-0060). Absent → the pod has no third container. */
+  user?: string | UserContainer;
   /** The Repo Slots, in declaration order — which the handles keep (ADR-0051) — or
    * {@link open} for a map the composer fills whole. */
   repos: Record<string, RepoSlot> | typeof open;
+  /** The Size the Machine states (ADR-0060) — the `workspace()`'s, with any `customize()` layered
+   * over it. Absent → the Instance's `sandbox.resources`, then the kit default. */
+  resources?: Size;
 };
 
 // The stamps below are written ON `machine.config` under `Symbol.for` keys, never held in a
@@ -343,6 +349,20 @@ export function actorSlotPath(actor: AnyActorRef | undefined): string[] | undefi
   return path;
 }
 
+/**
+ * One `workspace()` a Machine composes, and the Size it states (ADR-0060) — what `jr2 up` resolves
+ * against the Instance default and splits, so a split that leaves the Harness below its floor is
+ * refused at the converge rather than at the first provision, and a Size no Sandbox node could hold
+ * is warned about. Located like an {@link OpenSlot}: `path` is the `customize()` route to it.
+ */
+export type CarriedSize = {
+  path: readonly string[] | undefined;
+  /** The Machine's Size, as stated; absent when it states none. */
+  resources?: Size;
+  /** The User Container's split, as stated; absent when it states none. */
+  user?: Size;
+};
+
 /** Everything the registered Machines carry that a converge or a boot must act on. */
 export type CarriedParts = {
   agents: CarriedAgent[];
@@ -355,6 +375,8 @@ export type CarriedParts = {
   /** Every Agent whose model is still Open (ADR-0054), in walk order — the same refusal, by the
    * same route, and the reason these are two lists rather than one: the fix lines differ. */
   openAgents: OpenSlot[];
+  /** Every `workspace()` reached, with the Size it states, in walk order (ADR-0060). */
+  sizes: CarriedSize[];
   /** Whether any Machine reached, at any depth, composes a Sandbox — the data-plane switch. */
   composesSandbox: boolean;
 };
@@ -409,6 +431,7 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const repos: CarriedRepo[] = [];
   const openSlots: OpenSlot[] = [];
   const openAgents: OpenSlot[] = [];
+  const sizes: CarriedSize[] = [];
   let sandboxed = false;
   const seen = new Set<string>();
   // Cycle guard AND work saver: a Machine reached twice carries the same parts both times, and a
@@ -478,11 +501,17 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     if (walked.has(machine)) return;
     walked.add(machine);
     const parts = sandboxPartsOf(machine);
+    const user = userSeatOf(parts.user);
     collectImage(parts.image);
-    collectImage(parts.user);
+    collectImage(user.image);
     if (composesSandbox(machine)) {
       sandboxed = true;
       collectRepos(path, parts.repos);
+      sizes.push({
+        path,
+        ...(parts.resources !== undefined ? { resources: parts.resources } : {}),
+        ...(user.resources !== undefined ? { user: user.resources } : {}),
+      });
     }
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
@@ -496,5 +525,5 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   };
 
   for (const machine of machines) walk(machine, []);
-  return { agents, images, repos, openSlots, openAgents, composesSandbox: sandboxed };
+  return { agents, images, repos, openSlots, openAgents, sizes, composesSandbox: sandboxed };
 }

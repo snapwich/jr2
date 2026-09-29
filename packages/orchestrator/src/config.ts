@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { z } from "zod";
 import { repoIdentity } from "./repo-identity.ts";
+import { assertSize, type Size } from "./size.ts";
 
 // ------------------------------------------------------------------------------------------------
 // `git.credentials` (ADR-0051): how the cluster authenticates to a Repo, and the fence.
@@ -254,6 +255,36 @@ export type SandboxPlacement = {
   tolerations?: readonly Toleration[];
 };
 
+/**
+ * The Instance's Sandbox defaults (ADR-0052, ADR-0060): placement, and the Size for a Workspace
+ * that states none.
+ */
+export type SandboxConfig = SandboxPlacement & {
+  /**
+   * The Instance's default Size (ADR-0060) — `{ limits: { memory, cpu } }` and nothing else — for
+   * a Workspace that states none, field by field. NEVER an override of a Size a Machine states: a
+   * Size is a fact of the Machine, and its one override path is `customize(machine, { resources })`.
+   * Absent → the kit default, memory 2Gi and cpu 1. jr2 reserves the whole Size (every request
+   * equals its limit) and enforces the CPU limit.
+   */
+  resources?: Size;
+};
+
+/**
+ * The PriorityClasses jr2's pods run under (ADR-0060). Absent, `jr2 up` creates two, cluster-scoped,
+ * beside the CRDs: `jr2-control` (100000, PreemptLowerPriority) for the Orchestrator, the operator
+ * and the Repo cache agent, and `jr2-sandbox` (1000, preemptionPolicy Never) for Sandboxes and the
+ * Instance Harness — so an ordinary pod cannot preempt a live Workspace, and a waiting Sandbox
+ * evicts nobody. A cluster with its own scheme names existing classes here, and `jr2 up` then
+ * creates none for that key.
+ */
+export type PriorityClasses = {
+  /** An existing PriorityClass for the Orchestrator, the operator and the Repo cache agent. */
+  control?: string;
+  /** An existing PriorityClass for Sandboxes and the Instance Harness. */
+  sandbox?: string;
+};
+
 export type JR2Config = {
   /** The instance's identity (ADR-0019): its kube namespace defaults to this (`-n` overrides),
    * and `jr2 up` labels every object it owns with it. Default: the instance folder's name. */
@@ -264,9 +295,13 @@ export type JR2Config = {
   git?: GitConfig;
   /** Agent-runtime config for the stock Harness (see `HarnessConfig`). */
   harness?: HarnessConfig;
-  /** Which nodes are this Instance's Sandbox nodes (see `SandboxPlacement`, ADR-0052). Absent →
-   * wherever an ordinary pod lands. */
-  sandbox?: SandboxPlacement;
+  /** Which nodes are this Instance's Sandbox nodes (see `SandboxPlacement`, ADR-0052), and the
+   * Size of a Workspace that states none (see `SandboxConfig`, ADR-0060). Absent → wherever an
+   * ordinary pod lands, at the kit's Size. */
+  sandbox?: SandboxConfig;
+  /** Existing PriorityClasses to use instead of the two `jr2 up` creates (see `PriorityClasses`,
+   * ADR-0060). */
+  priorityClasses?: PriorityClasses;
   /** Image registry prefix (deployment-varying — resolve from env). Absent → images are
    * `kind load`-ed; present → pushed. A non-kind cluster without one fails loudly (ADR-0019). */
   registry?: string;
@@ -322,6 +357,8 @@ export async function loadConfig(dir: string): Promise<JR2Config | undefined> {
   if (!mod.default) throw new Error(`${file} has no default export (use \`export default defineConfig({…})\`)`);
   if (mod.default.git !== undefined) checkGit(mod.default.git, file);
   if (mod.default.harness !== undefined) checkHeld(mod.default.harness, file);
+  if (mod.default.sandbox !== undefined) checkSandbox(mod.default.sandbox, file);
+  if (mod.default.priorityClasses !== undefined) checkPriorityClasses(mod.default.priorityClasses, file);
   return mod.default;
 }
 
@@ -400,3 +437,27 @@ function checkHeld(harness: unknown, where: string): void {
 const HELD_HINT =
   "an entry is { name, value? | valueFrom?: { secretKeyRef: { name, key } }, hosts?, headers?, paths? } (ADR-0059)";
 const CATALOG_HINT = "an entry is <provider id>: { baseUrl } (ADR-0059)";
+
+/** `sandbox.resources`' SHAPE (ADR-0060), checked at load by field — `requests`, or any key beside
+ * the two limits, is refused naming itself (`sandbox.resources.requests`). */
+function checkSandbox(sandbox: unknown, where: string): void {
+  if (typeof sandbox !== "object" || sandbox === null || Array.isArray(sandbox)) {
+    throw new Error(`${where} at sandbox: expected an object — { nodeSelector?, tolerations?, resources? }`);
+  }
+  const { resources } = sandbox as { resources?: unknown };
+  if (resources !== undefined) assertSize(`${where} at sandbox.resources`, resources);
+}
+
+const PriorityClassesShape = z.object({ control: NonEmpty.optional(), sandbox: NonEmpty.optional() }).strict();
+
+/** `priorityClasses`' SHAPE (ADR-0060): two optional class names, nothing else. */
+function checkPriorityClasses(classes: unknown, where: string): void {
+  const parsed = PriorityClassesShape.safeParse(classes);
+  if (parsed.success) return;
+  const issue = parsed.error.issues[0];
+  const at = ["", ...(issue?.path ?? [])].map(String).join(".");
+  throw new Error(
+    `${where} at priorityClasses${at}: ${issue?.message ?? "invalid"} — { control?, sandbox? }, each the name of ` +
+      "an existing PriorityClass (ADR-0060)",
+  );
+}

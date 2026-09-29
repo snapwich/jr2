@@ -234,6 +234,46 @@ test("the door and the transparency survive the rebuild, and both parts can move
   assert.equal(definitionAt(slotAt(again, "body"), "reviewer").model, opus);
 });
 
+test("resources layer over the workspace()'s Size field by field; user replaces the seat whole (ADR-0060)", () => {
+  const stock = workspace(research(), {
+    repos,
+    spec,
+    resources: { limits: { memory: "3Gi", cpu: "2" } },
+    user: { image: "ghcr.io/acme/sshd:1", resources: { limits: { memory: "256Mi" } } },
+  });
+  const bigger = customize(stock, { resources: { limits: { memory: "6Gi" } } });
+  assert.deepEqual(sandboxPartsOf(bigger).resources, { limits: { memory: "6Gi", cpu: "2" } });
+  assert.deepEqual(
+    sandboxPartsOf(stock).resources,
+    { limits: { memory: "3Gi", cpu: "2" } },
+    "the original keeps its own",
+  );
+  assert.deepEqual(
+    sandboxPartsOf(bigger).user,
+    stock && sandboxPartsOf(stock).user,
+    "naming resources alone keeps the seat",
+  );
+
+  const reseated = customize(stock, { user: "ghcr.io/acme/sshd:2" });
+  assert.equal(sandboxPartsOf(reseated).user, "ghcr.io/acme/sshd:2", "the seat is replaced whole, split included");
+  assert.deepEqual(sandboxPartsOf(reseated).resources, { limits: { memory: "3Gi", cpu: "2" } });
+
+  // A Workspace that stated no Size takes the composer's as its own.
+  const unsized = workspace(research(), { repos, spec });
+  assert.deepEqual(sandboxPartsOf(customize(unsized, { resources: { limits: { cpu: "4" } } })).resources, {
+    limits: { cpu: "4" },
+  });
+  // Refused by field where the composer wrote it.
+  assert.throws(
+    () => customize(stock, { resources: { requests: { memory: "1Gi" } } as never }),
+    /customize\(\): resources\.requests is not accepted/,
+  );
+  assert.throws(
+    () => customize(research(), { resources: { limits: { memory: "4Gi" } } } as never),
+    /`resources` say what a SANDBOX/,
+  );
+});
+
 test("image/user/repos on a Machine that composes no Sandbox fails, because there is nothing to name", () => {
   assert.throws(() => customize(research(), { image: "ghcr.io/acme/tools:2" }), /composes none/);
   assert.throws(() => customize(research(), { repos: { app: APP } } as never), /`repos` say what a SANDBOX/);
