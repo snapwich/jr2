@@ -42,7 +42,8 @@ Two fault classes, deliberately not one knob ([ADR-0035](0035-a-runaway-turn-is-
 later adds the third: runaway):
 
 - **Infra faults** (stream drop, pod restart, provider error): provider-stream retry lives inside the turn in the
-  Harness, and `wait` reconnects indefinitely from the offset ledger; a dead Harness surfaces as a fault (ADR-0027).
+  Harness, and `wait` reconnects from the offset ledger without a deadline; a restarted Harness or a lost Workspace ends
+  the Turn through the Sandbox watch (ADR-0021), and a Harness that answers 404 is a lost conversation (ADR-0027).
 - **No-signal** (the agent ends its turn without calling a menu tool — jr's dominant failure mode): the wire treats that
   as a normal completed turn, so recovery is a jr2-owned budgeted re-prompt inside `agentRun` — absorbing ADR-0006's
   "forced final pick is a Machine-level re-prompt" into the actor.

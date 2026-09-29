@@ -37,8 +37,8 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
 - **The watch drives everything that polled.**
   - Placing and provisioning wait on watch events: an Unschedulable pod or a quota refusal is a wait with its reason
     (ADR-0064), a crash-looping Harness is seen as it happens.
-  - Continuity: a changed `podUID` or a gone Sandbox is `workspace.lost` within seconds (ADR-0021). A dropped watch is
-    unknown, never loss; the loop re-lists and reconciles.
+  - Continuity: a gone or `Lost` Sandbox is `workspace.lost` within seconds, and a Harness restart ends the Turns
+    waiting on it (ADR-0021). A dropped watch is unknown, never loss; the loop re-lists and reconciles.
   - A fetch ask (ADR-0053) is answered by the watch event that carries its landing.
   - Restore (ADR-0012): the first list after start is the reconcile.
 - **The Lease stays a write.** It is still the assertion that lets the operator reap an orphaned Sandbox (ADR-0001): one

@@ -281,10 +281,10 @@ heartbeat (one-directional, and it named a process-global timer this replaced), 
 concept)
 
 **Continuity**: Whether a Workspace is still the one its body attached to — the question the Sandbox watch answers.
-Distinct from existence: addresses are deterministic, so a replacement pod after an eviction or node loss keeps the CR,
-the name, and the endpoint while taking the clones, worktrees, and unpushed commits with it. Broken Continuity — reaped
-or replaced — is one `workspace.lost` event, and the body's policy decides (ADR-0021). _Avoid_: liveness (that is what
-the Lease asserts outward), health (a probe concept, about serving)
+Distinct from existence: an evicted pod can keep its name, its CR and even its object while the clones, worktrees and
+unpushed commits are gone. A Sandbox has one pod for its life; when that pod ends, the Sandbox is Lost and never
+recreated. Broken Continuity — reaped or Lost — is one `workspace.lost` event, and the body's policy decides (ADR-0021).
+_Avoid_: liveness (that is what the Lease asserts outward), health (a probe concept, about serving)
 
 **Repo**: A git repository, identified by its url — host plus path; scheme, user, and `.git` do not distinguish two
 spellings of one Repo. A Machine names one only through a Repo Slot; the cluster keeps one read-only cache of it per

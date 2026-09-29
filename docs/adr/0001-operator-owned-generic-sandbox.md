@@ -1,13 +1,14 @@
 # Sandboxes are provisioned by a Kubernetes operator via a generic CRD
 
 A `Sandbox` custom resource describes infrastructure only — a primary container, a generic list of additional sidecar
-container specs, volumes, resources, secrets, idle timeout — and a custom operator reconciles it into a Pod plus a
-Service, reporting a `status.endpoint` the Orchestrator uses to reach the Harness. The CRD names the Repos a Sandbox
-needs by identity — enough for the operator to place the pod and mount each node cache read-only (ADR-0051) — and knows
-nothing about clones, worktrees, or Agents; those are layered on by the Orchestrator after the Sandbox reaches `Ready`.
-The operator also publishes what the Orchestrator needs to know about the pod onto the Sandbox's status — `podUID`, a
-scheduling condition with the scheduler's message, the Harness container's restarts and last terminated reason — because
-the Orchestrator watches Sandboxes and never reads a Pod ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)).
+container specs, volumes, resources, secrets, idle timeout — and a custom operator reconciles it into one Pod — created
+once, never recreated: a pod that is gone or terminal makes the Sandbox `Lost` (ADR-0021) — plus a Service, reporting a
+`status.endpoint` the Orchestrator uses to reach the Harness. The CRD names the Repos a Sandbox needs by identity —
+enough for the operator to place the pod and mount each node cache read-only (ADR-0051) — and knows nothing about
+clones, worktrees, or Agents; those are layered on by the Orchestrator after the Sandbox reaches `Ready`. The operator
+also publishes what the Orchestrator needs to know about the pod onto the Sandbox's status — `podUID`, a scheduling
+condition with the scheduler's message, the Harness container's restarts and last terminated reason — because the
+Orchestrator watches Sandboxes and never reads a Pod ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)).
 
 We chose the operator over the Orchestrator calling the Kubernetes API directly because the custom resource _is_ the
 durable desired state: Sandboxes survive an Orchestrator restart, and garbage collection / readiness / retries live in
