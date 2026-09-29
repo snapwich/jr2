@@ -20,7 +20,7 @@
 #      baked on their own registry is runnable without jr2 ever touching it.
 #
 # So **/opt/jr2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/work-acl · bin/jr2-upload-pack · lib/*.so · src/ · node_modules/ ·
+#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/jr2-upload-pack · lib/*.so · src/ · node_modules/ ·
 #   package.json
 # — is mounted verbatim, this image's own layers, into a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
@@ -32,10 +32,11 @@
 #     the jr2-owned seats per container (ADR-0005); the User Container is exempt.
 #   - the serving port is TCP-probed for readiness: binding 0.0.0.0:8080 IS `phase: Ready` —
 #     and with no build step before listen, Ready no longer lags container start (ADR-0027).
-#   - git in the runtime image: the post-Ready attach execs `git clone --shared` + `git worktree
-#     add` INSIDE the primary container (ADR-0004), and the coder commits with it. It stays
-#     apt-installed HERE and remains a USER contract for a Sandbox Image (ADR-0037): relocating git
-#     means /usr/lib/git-core, the template dir, and git-remote-https → curl + openssl + a CA store.
+#   - git in the runtime image: the Harness runs the attach's `git clone --shared` + `git worktree
+#     add` INSIDE the primary container on `POST /attach` (ADR-0004, ADR-0063), and the coder
+#     commits with it. It stays apt-installed HERE and remains a USER contract for a Sandbox Image
+#     (ADR-0037): relocating git means /usr/lib/git-core, the template dir, and git-remote-https →
+#     curl + openssl + a CA store.
 #     jr2 vendors what is self-contained (a static rg, node's two C++ libs) and asks for the rest.
 #   - ripgrep in the runtime image: the grep Working tool shells out to `rg` (ADR-0027). It is no
 #     longer apt's — it is the vendored static-musl binary at /opt/jr2/bin/rg, reachable because the
@@ -55,6 +56,7 @@ FROM node:24-slim AS vendor
 # TARGETARCH is BuildKit's, and it is per-stage: declaring it in the final stage would not reach here.
 ARG TARGETARCH
 ARG RG_VERSION=15.2.0
+ARG TINI_VERSION=0.19.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates patchelf \
  && rm -rf /var/lib/apt/lists/*
@@ -79,6 +81,24 @@ RUN set -eux; \
     install -m 0755 "/tmp/ripgrep-${RG_VERSION}-${rg_arch}/rg" /opt/jr2/bin/rg; \
     /opt/jr2/bin/rg --version
 
+# tini, the OFFICIAL static release, as PID 1 of the Harness container (ADR-0061): the memory guard
+# kills every process but PID 1 and the Harness, and a killed tree's orphans reparent to PID 1 —
+# tini reaps them, so none lingers as a zombie, and it forwards SIGTERM to the Harness. Static for
+# rg's reason: it is PID 1 in whatever image the user brought. Not `shareProcessNamespace` — ADR-0005
+# keeps that off. Pinned version + literal per-arch sha256, the rg rule; an unhandled arch fails
+# the build naming itself.
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) tini_sha='c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee' ;; \
+      arm64) tini_sha='eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9' ;; \
+      *) echo "jr2: no static tini asset for TARGETARCH='${TARGETARCH}' — the Harness cannot vendor tini for this architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/tini "https://github.com/krallin/tini/releases/download/v${TINI_VERSION}/tini-static-${TARGETARCH}"; \
+    echo "${tini_sha}  /tmp/tini" | sha256sum -c -; \
+    mkdir -p /opt/jr2/bin; \
+    install -m 0755 /tmp/tini /opt/jr2/bin/tini; \
+    /opt/jr2/bin/tini --version
+
 # node, relocated. Two traps, both verified in docker rather than reasoned about:
 #   - `cp -L` is load-bearing: libstdc++.so.6 is a SYMLINK, and a plain `cp` copies a dangling link
 #     into an image where its target does not exist.
@@ -93,11 +113,11 @@ RUN set -eux; \
     patchelf --set-rpath '$ORIGIN/../lib' /opt/jr2/bin/node; \
     /opt/jr2/bin/node -e ''
 
-# work-acl, compiled here and STATIC for the same reason rg is vendored static: the attach script
-# runs it inside the USER'S image (it stamps ADR-0005's default ACL on each repo root), on a libc
-# jr2 does not control. It writes the ACL xattr itself, so there is no libacl to link and glibc's
-# `-static` is clean (nothing here touches NSS). The smoke test proves the hand-built blob is one
-# the KERNEL accepts — setxattr validates it — and that getfacl reads it back as ADR-0005's line;
+# work-acl, compiled here and STATIC for the same reason rg is vendored static: the attach
+# (attach.ts) runs it inside the USER'S image (it stamps ADR-0005's default ACL on each repo root),
+# on a libc jr2 does not control. It writes the ACL xattr itself, so there is no libacl to link and
+# glibc's `-static` is clean (nothing here touches NSS). The smoke test proves the hand-built blob is
+# one the KERNEL accepts — setxattr validates it — and that getfacl reads it back as ADR-0005's line;
 # `acl` is installed for that check alone and discarded with the stage.
 COPY deploy/harness/work-acl.c /tmp/work-acl.c
 RUN set -eux; \
@@ -221,5 +241,5 @@ WORKDIR /work
 
 # Absolute, so it never depends on WORKDIR — and byte-identical to the command the operator
 # overrides a Sandbox Image's primary container with, because both start the same process from the
-# same /opt/jr2.
-CMD ["/opt/jr2/bin/node", "/opt/jr2/src/main.ts"]
+# same /opt/jr2. tini is PID 1 and the Harness its one child (ADR-0061).
+CMD ["/opt/jr2/bin/tini", "--", "/opt/jr2/bin/node", "/opt/jr2/src/main.ts"]

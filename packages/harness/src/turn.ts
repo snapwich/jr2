@@ -27,6 +27,7 @@ import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./
 import { mapThinkingLevel, resolveModel } from "./provider.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage } from "./wire.ts";
+import type { MemoryGuard } from "./memory-guard.ts";
 import { workingToolsFor } from "./working-tools.ts";
 
 /** What one conversation's turn loop needs. `appendMessage` is the Conversation's stream seam —
@@ -45,6 +46,9 @@ export type TurnDeps = {
   maxRetries?: number;
   /** Where the conversation prints (ADR-0023). Default `process.stdout` (the pod log). */
   printerOut?: PrinterOut;
+  /** The process's memory guard (ADR-0061), watching every `bash` call. `main.ts` passes the one
+   * over this pod's cgroup; omitted, no guard watches. */
+  guard?: MemoryGuard;
   /** ADR-0035's runaway bounds — jr2-owned defaulted knobs (ADR-0016), no author surface. These
    * seams exist for the conformance suite alone, which cannot afford 128 provider rounds. */
   stepBudget?: number;
@@ -243,7 +247,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     }
 
     const harness = assembled.harness;
-    const tools = [...workingToolsFor(definition, definition.cwd), ...menuTools(menu)];
+    const tools = [...workingToolsFor(definition, definition.cwd, { guard: deps.guard }), ...menuTools(menu)];
     // The active names go explicitly: without them setTools KEEPS the previous active set, which
     // is empty on a harness constructed with no tools — every tool would ride to pi inactive.
     await harness.setTools(

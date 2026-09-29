@@ -144,3 +144,30 @@ export type EchoEvent = EchoStatusEvent | EchoEmitEvent | EchoAdmissionEvent | E
 /** What `POST /echo` accepts: feed events in feed order. The answer is `{ printed }` — how many
  * lines landed on stdout (an unrenderable event prints nothing; it never errors the batch). */
 export type EchoRequest = { events: EchoEvent[] };
+
+// ---- The attach (`POST /attach` — ADR-0063) ----------------------------------------------------
+// The post-Ready attach (ADR-0004, ADR-0051), run by the Harness in its own container instead of
+// by the Orchestrator over `kubectl exec`: no stream per Workspace crosses the API server, and a
+// pod already running can receive its Repos and branch late. Gated on the same bearer as every
+// route (ADR-0058). Idempotent: a second attach with the same body finds every checkout and
+// worktree present and answers the same paths.
+
+/** One Repo Slot to attach. The Orchestrator resolves the Repo's `identity` and cache `key`
+ * (repo-identity.ts) — the Harness never re-derives them, so the cache path this side clones from
+ * and the node cache the operator mounted agree by construction (ADR-0051). `url` is the Binding's
+ * own spelling, the push url (ADR-0005); `ref` is the base the branch starts from, omitted for the
+ * Repo's default branch. */
+export type AttachSlot = { slot: string; url: string; identity: string; key: string; ref?: string };
+
+/** What `POST /attach` accepts: the slots in declaration order, the Workspace's branch, and — for a
+ * reviewer's seat — the sha the detached review worktree is forced to (ADR-0028). */
+export type AttachRequest = { slots: AttachSlot[]; branch: string; reviewSha?: string };
+
+/** What `POST /attach` answers (200): the branch worktree per slot, and the review worktree per
+ * slot when the request named a `reviewSha`. Freshness (`stale`) is not here: it is the operator's
+ * verdict on the Sandbox, which the Orchestrator reads itself. */
+export type AttachResponse = { repos: Record<string, string>; review?: Record<string, string> };
+
+/** What a failed attach answers: 400 for a body that is not an `AttachRequest`, 500 when a step
+ * failed — `slot` names the Repo Slot, and `error` carries the step and git's own stderr. */
+export type AttachError = { error: string; slot?: string };

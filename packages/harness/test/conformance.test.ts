@@ -328,6 +328,23 @@ test("the Frame's cwd is re-read per Submission: two turns of one conversation w
   assert.ok(!afterSecond.includes("MARK_ALPHA"), "turn 2 did not stay rooted where turn 1 was");
 });
 
+test("a bash command killed by a signal reaches the model as an error naming the signal, never a pass (ADR-0061)", async () => {
+  // pi-agent-core 0.82.1 reports a signal death as `exitCode: code ?? 0`, so the model read a
+  // killed Playwright run — output stopped partway — as success. The wrapped tool (bash-tool.ts)
+  // is what the real turn loop hands pi; this is the canary for a pi bump that changes the seam.
+  provider.reset([
+    { toolCall: { id: "call_1", name: "bash", args: JSON.stringify({ command: "echo started; sh -c 'kill -9 $$'" }) } },
+    { text: "The command was killed." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/bash-signal";
+  const admission = await admit(iid, "Run the tests.", undefined, AGENT, app, { cwd: tmpdir() });
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  const result = JSON.stringify(provider.calls[1]?.messages.at(-1) ?? {});
+  assert.match(result, /started/);
+  assert.match(result, /Command killed by signal SIGKILL \(exit 137\)/);
+});
+
 test("a per-turn model dial reaches the wire, on the SAME conversation (ADR-0018)", async () => {
   provider.reset([{ text: "One." }, { text: "Two." }, { text: "Three." }]);
   sandbox.reset(surfaceWith("review_verdict"));

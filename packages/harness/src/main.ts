@@ -13,6 +13,8 @@
 import { createHash } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { harnessApp } from "./app.ts";
+import { attacher } from "./attach.ts";
+import { clearShm, podMemoryGuard } from "./memory-guard.ts";
 import { admissionFault, modelsFor } from "./provider.ts";
 import { loadHarnessSpec } from "./spec.ts";
 import { prepareProcess } from "./startup.ts";
@@ -26,6 +28,11 @@ import { runSubmissionFor } from "./turn.ts";
 // a child at module scope — they declare constants and schemas (verified). A module that ever needs
 // the conditioned environment at import time must read it inside a function, not at its top level.
 prepareProcess();
+
+// `/dev/shm` empty before any Working tool runs (ADR-0060): shm files outlive a container restart
+// and stay charged to the pod, so a Harness restarted after a memory kill would start against the
+// memory that killed it — the lab's crash loop.
+clearShm();
 
 function required(name: string, why: string): string {
   const value = process.env[name];
@@ -54,8 +61,14 @@ const bearerSha256 = required(
 );
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("base64url");
 
+// One guard for the process (ADR-0061): it reads this container's cgroup, so every conversation's
+// `bash` calls share it. Off where `memory.max` is `max` or unreadable (a host run).
+const guard = podMemoryGuard();
+
 const app = harnessApp({
-  runSubmissionFor: (seat) => runSubmissionFor({ models, menu, ...seat }),
+  runSubmissionFor: (seat) => runSubmissionFor({ models, menu, guard, ...seat }),
+  // The attach (ADR-0063): the Workspace's Repos into `/work`, on the Orchestrator's call.
+  attach: attacher(),
   checkAdmission: (resolved) => admissionFault(models, resolved),
   // Set on the Instance Harness Deployment alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code

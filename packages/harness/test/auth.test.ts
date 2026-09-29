@@ -95,3 +95,23 @@ test("echo takes the same bearer — the Instance token is not the echo's creden
   assert.equal((await echo(BEARER)).status, 200);
   assert.deepEqual(lines, ["[run] [emit] shipped\n"]);
 });
+
+test("the attach takes the same bearer, and a refused attach runs nothing (ADR-0063)", async () => {
+  const attached: unknown[] = [];
+  const app = harnessApp({
+    checkBearer: (bearer) => bearer === BEARER,
+    runSubmissionFor: () => () => new Promise<void>(() => {}),
+    attach: async (req) => (attached.push(req), { repos: { app: "/work/app/b" } }),
+  });
+  const attach = (bearer?: string) =>
+    app.request("/attach", {
+      method: "POST",
+      body: JSON.stringify({ branch: "b", slots: [{ slot: "app", url: "u", identity: "i", key: "k" }] }),
+      headers: { "content-type": "application/json", ...auth(bearer) },
+    });
+  assert.equal((await attach()).status, 401);
+  assert.equal((await attach("wrong")).status, 401);
+  assert.deepEqual(attached, []);
+  assert.equal((await attach(BEARER)).status, 200);
+  assert.equal(attached.length, 1);
+});

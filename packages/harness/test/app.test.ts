@@ -352,3 +352,55 @@ test("hierarchical iids travel URL-encoded as one segment", async () => {
   const body = (await history.json()) as { conversationId: string };
   assert.equal(body.conversationId, iid);
 });
+
+// ---- POST /attach (ADR-0063) -------------------------------------------------------------------
+
+const SLOT = { slot: "app", url: "https://example.test/app.git", identity: "example.test/app", key: "k" };
+const attachInit = (body: unknown): RequestInit => ({
+  method: "POST",
+  body: JSON.stringify(body),
+  headers: { "content-type": "application/json" },
+});
+
+test("attach hands a valid body to the attach and answers its paths", async () => {
+  const seen: unknown[] = [];
+  const { app } = scripted({
+    attach: async (req) => (seen.push(req), { repos: { app: "/work/app/b" } }),
+  });
+  const res = await app.request("/attach", attachInit({ branch: "b", slots: [SLOT] }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { repos: { app: "/work/app/b" } });
+  assert.deepEqual(seen, [{ branch: "b", slots: [SLOT] }]);
+});
+
+test("attach refuses a malformed body with 400, naming what is wrong, and runs nothing", async () => {
+  let runs = 0;
+  const { app } = scripted({ attach: async () => (runs++, { repos: {} }) });
+  const res = await app.request("/attach", attachInit({ branch: "b", slots: [] }));
+  assert.equal(res.status, 400);
+  assert.match(((await res.json()) as { error: string }).error, /names no Repo Slot/);
+  assert.equal(runs, 0);
+});
+
+test("a failed attach is 500 with the slot and git's own words", async () => {
+  const { AttachFault } = await import("../src/attach.ts");
+  const { app } = scripted({
+    attach: async () => {
+      throw new AttachFault('the attach of slot "app" failed at git clone --shared: fatal: no such repo', "app");
+    },
+  });
+  const res = await app.request("/attach", attachInit({ branch: "b", slots: [SLOT] }));
+  assert.equal(res.status, 500);
+  assert.deepEqual(await res.json(), {
+    error: 'the attach of slot "app" failed at git clone --shared: fatal: no such repo',
+    slot: "app",
+  });
+});
+
+test("the Instance Harness refuses the attach: it has no /work (ADR-0031)", async () => {
+  let runs = 0;
+  const { app } = scripted({ menuOnly: true, attach: async () => (runs++, { repos: {} }) });
+  const res = await app.request("/attach", attachInit({ branch: "b", slots: [SLOT] }));
+  assert.equal(res.status, 403);
+  assert.equal(runs, 0);
+});

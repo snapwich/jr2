@@ -6,19 +6,20 @@
 // fallback still covers a host run. The definition's `workspace` filters the set: `"read"` withholds
 // write and edit (ADR-0028) — bash stays, because the tool layer states intent and stops the
 // honest path; the worktree layer is the containment. `"none"` withholds the whole set — the
-// Menu-only Agent has no data plane at all.
+// Menu-only Agent has no data plane at all. `bash` is pi's, wrapped (bash-tool.ts, ADR-0061).
 
 import { execFile } from "node:child_process";
 import {
   type AgentHarnessTool,
   type AgentToolResult,
-  createBashTool,
   createEditTool,
   createReadTool,
   createWriteTool,
   type ExecutionToolContext,
 } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
+import { bashTool } from "./bash-tool.ts";
+import type { MemoryGuard } from "./memory-guard.ts";
 import type { AgentDefinition } from "./spec.ts";
 
 /** A Working tool, in the shape the harness assembly consumes (`setTools`). The built-in file
@@ -36,12 +37,18 @@ const MAX_LINES = 200;
  * `workspace: "read"` withholds write and edit; `workspace: "none"` withholds everything — the
  * Agent converses and picks from its Menu alone (ADR-0028). That field IS the definition's own
  * (`spec.ts`, mirroring the Orchestrator's `AgentDefinition`): what an Agent may do is identity.
+ * `guard` is the process's memory guard, which watches every `bash` call (ADR-0061).
  */
-export function workingToolsFor(definition: AgentDefinition, cwd: string): WorkingTool[] {
+export function workingToolsFor(
+  definition: AgentDefinition,
+  cwd: string,
+  opts: { guard?: MemoryGuard | undefined } = {},
+): WorkingTool[] {
   if (definition.workspace === "none") return [];
   const search: WorkingTool[] = [grepTool(cwd), globTool(cwd)];
-  if (definition.workspace === "read") return [createReadTool(), createBashTool(), ...search];
-  return [createReadTool(), createWriteTool(), createEditTool(), createBashTool(), ...search];
+  const bash = bashTool(opts.guard ? { guard: opts.guard } : {});
+  if (definition.workspace === "read") return [createReadTool(), bash, ...search];
+  return [createReadTool(), createWriteTool(), createEditTool(), bash, ...search];
 }
 
 const grepSchema = Type.Object({

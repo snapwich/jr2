@@ -7,12 +7,14 @@
 // (that is admission), abort answers `{ aborted: false }`: the stub is inert by design, but a
 // real Harness that answered a lost conversation with silence would park a re-attached wait
 // forever. Plus ADR-0023's echo (`POST /echo`): the run-narrative events the Orchestrator tees
-// here, rendered to this pod's stdout in the printer's idiom. Turn execution is injected, so this
-// module owns routing alone — wire tests drive it socket-free via `app.request()` and never touch
+// here, rendered to this pod's stdout in the printer's idiom. Plus ADR-0063's attach
+// (`POST /attach`): the Workspace's Repos into `/work`, run here instead of over `kubectl exec`.
+// Turn execution and the attach are injected, so this module owns routing alone — wire tests drive it socket-free via `app.request()` and never touch
 // pi.
 
 import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
+import { AttachFault, attachFault } from "./attach.ts";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
 import { renderEchoEvent, type PrinterOut } from "./printer.ts";
 import {
@@ -29,6 +31,9 @@ import {
   STREAM_UP_TO_DATE_HEADER,
   VIEW_HISTORY,
   type AdmissionRequest,
+  type AttachError,
+  type AttachRequest,
+  type AttachResponse,
   type HistoryMessage,
 } from "./wire.ts";
 
@@ -67,7 +72,7 @@ export type HarnessAppDeps = {
   menuOnly?: boolean;
   /**
    * Verify a request's bearer (ADR-0058) — every route but the unknown-route answers is gated on
-   * it: admit, stream, history, abort, and the echo. The bearer is the one the Orchestrator derives
+   * it: admit, stream, history, abort, the echo, and the attach. The bearer is the one the Orchestrator derives
    * for THIS placement, and it must never rest in this process — the Agent has code execution in
    * the Harness container — so the check is injected: `main.ts` compares sha256(bearer) against
    * `JR2_HARNESS_TOKEN_SHA256` from the env, a digest that verifies and mints nothing. Required: a
@@ -76,6 +81,9 @@ export type HarnessAppDeps = {
   checkBearer: (bearer: string | undefined) => boolean;
   /** Where echo lines land — the pod log (`process.stdout`) unless a test collects them. */
   echoOut?: PrinterOut;
+  /** Run the attach (ADR-0063) — `attach.ts`'s `attacher()` in production, a stub in wire tests.
+   * Omitted, `POST /attach` answers 501: this Harness does not attach. */
+  attach?: (req: AttachRequest) => Promise<AttachResponse>;
 };
 
 /** The bearer token on a request, if it carries one. */
@@ -105,6 +113,7 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   };
   app.use("/agents/*", gate);
   app.use("/echo", gate);
+  app.use("/attach", gate);
 
   app.post("/agents/:name/:id", async (c) => {
     const agentName = c.req.param("name");
@@ -200,6 +209,31 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
       }
     }
     return c.json({ printed });
+  });
+
+  // The attach (ADR-0063): the Workspace's Repos into `/work` — jr2's own work in the container
+  // ADR-0005 gives it, not a conversation. Validated here, so a malformed body runs no git; a step
+  // that fails answers 500 with the slot and git's own stderr, which the Orchestrator surfaces as
+  // the provision's error.
+  app.post("/attach", async (c) => {
+    // The Instance Harness has no `/work` and no Repos: a Menu-only placement (ADR-0031).
+    if (deps.menuOnly) {
+      return c.json<AttachError>(
+        { error: "this is the Instance Harness, which holds no Workspace — nothing attaches here (ADR-0031)" },
+        403,
+      );
+    }
+    if (!deps.attach) return c.json<AttachError>({ error: "this Harness does not attach (ADR-0063)" }, 501);
+    const body = await c.req.json().catch(() => undefined);
+    const fault = attachFault(body);
+    if (fault) return c.json<AttachError>({ error: fault }, 400);
+    try {
+      return c.json(await deps.attach(body as AttachRequest));
+    } catch (err) {
+      const slot = err instanceof AttachFault ? err.slot : undefined;
+      const error = err instanceof Error ? err.message : String(err);
+      return c.json<AttachError>({ error, ...(slot !== undefined ? { slot } : {}) }, 500);
+    }
   });
 
   // Registered after the handlers, so only methods the wire does not speak land here (the
