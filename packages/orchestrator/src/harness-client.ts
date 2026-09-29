@@ -34,13 +34,22 @@
 // (the actor is stopped by then; see actor.ts).
 
 import { agentActorWith } from "./actor.ts";
-import type { AgentAdmission, AgentAdmitOptions, AgentLogic, AgentRunInput, AgentRunPort } from "./actor.ts";
+import type {
+  AgentAdmission,
+  AgentAdmitOptions,
+  AgentLogic,
+  AgentRunInput,
+  AgentRunPort,
+  AgentSettleOptions,
+} from "./actor.ts";
 import type { AgentDeclaration, AgentDefinition, ThinkingLevel } from "./agent.ts";
 import {
   LIVE_LONG_POLL,
   STREAM_NEXT_OFFSET_HEADER,
+  VIEW_HISTORY,
   VIEW_UPDATES,
   type EchoEvent,
+  type Notice,
   type Settlement,
   type StreamEvent,
   type SubmissionSettledEvent,
@@ -67,12 +76,19 @@ export type HarnessClient = {
       definition: AgentDefinition;
       model?: string;
       thinkingLevel?: ThinkingLevel;
+      /** The pending notices in this admission's scope (ADR-0062). Omitted when there are none. */
+      notices?: Notice[];
       signal?: AbortSignal;
     },
   ): Promise<AgentAdmission>;
   /** Follow the stream to this Submission's Settlement: resolve on `completed`, reject with
-   * `SettlementFault` on `failed`/`aborted`/404. */
-  wait(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void>;
+   * `SettlementFault` on `failed`/`aborted`/404. A guard kill read on the way is handed to
+   * `onMemoryLimit` (ADR-0061). */
+  wait(admission: AgentAdmission, opts?: AgentSettleOptions): Promise<void>;
+  /** `GET /agents/:name/:id?view=history`: does the Harness still hold this conversation? Only a
+   * 404 says no (ADR-0027: a GET on an unknown conversation is 404); anything else — another
+   * status, a transport failure — says yes, because unknown is never loss (ADR-0062). */
+  holds(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<boolean>;
   /** `POST /agents/:name/:id/abort`. The `{ aborted }` answer is dropped (ADR-0024). */
   abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void>;
 };
@@ -219,6 +235,9 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
             // Omitted when unset, so an admission with no dials is byte-identical to before.
             ...(sendOptions.model ? { model: sendOptions.model } : {}),
             ...(sendOptions.thinkingLevel ? { thinkingLevel: sendOptions.thinkingLevel } : {}),
+            // The Briefing's news (ADR-0062): typed data, the Harness writes the words. Omitted
+            // when there is none, so an admission without notices is byte-identical to before.
+            ...(sendOptions.notices?.length ? { notices: sendOptions.notices } : {}),
           }),
           signal: sendOptions.signal,
         },
@@ -282,11 +301,30 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
         backoffMs = backoffInitialMs;
 
         for (const event of events) {
+          if (event.type === "memory-limit") {
+            const { peak, limit, conversationId, position } = event;
+            opts?.onMemoryLimit?.({ peak, limit, source: `${conversationId}@${position.batch}.${position.index}` });
+            continue;
+          }
           if (event.type !== "submission-settled" || event.submissionId !== admission.submissionId) continue;
           if (event.outcome === "completed") return;
           throw new SettlementFault(faultMessage(event), toSettlement(event));
         }
         if (nextOffset !== null) offset = nextOffset;
+      }
+    },
+
+    async holds(agentName, instanceId, opts) {
+      const url = new URL(conversationUrl(agentName, instanceId));
+      url.searchParams.set("view", VIEW_HISTORY);
+      try {
+        const res = await fetchImpl(url.toString(), { headers: authorization, signal: opts?.signal });
+        // Drain the body so the socket is released; the snapshot itself is not the question.
+        await res.body?.cancel().catch(() => undefined);
+        return res.status !== 404;
+      } catch (err) {
+        if (opts?.signal?.aborted) throw err;
+        return true;
       }
     },
 
@@ -330,12 +368,17 @@ export function harnessAgentRunPort(client: HarnessClient): AgentRunPort {
         definition: opts.definition,
         model: input.model,
         thinkingLevel: input.thinkingLevel,
+        ...(opts.notices?.length ? { notices: opts.notices } : {}),
         signal: opts.signal,
       });
     },
 
-    async settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void> {
-      await client.wait(admission, { signal: opts?.signal });
+    async settle(admission: AgentAdmission, opts?: AgentSettleOptions): Promise<void> {
+      await client.wait(admission, opts);
+    },
+
+    async holds(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<boolean> {
+      return await client.holds(agentName, instanceId, opts);
     },
 
     async abort(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<void> {

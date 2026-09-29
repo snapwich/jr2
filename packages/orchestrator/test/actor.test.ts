@@ -405,14 +405,23 @@ test("a lost conversation on a Harness the kernel OOM-killed is a fault NAMED `m
   const sandbox = {
     memoryFault: async (name: string, since: Date) => (
       asked.push({ name, since }),
-      "memory limit (OOMKilled, limit 1920Mi): the kernel killed the container"
+      {
+        reason: "memory limit (OOMKilled, limit 1920Mi): the kernel killed the container",
+        limit: "1920Mi",
+        at: "2026-09-28T10:03:00Z",
+      }
     ),
   } as unknown as RunBinding["sandbox"];
   const lost = () =>
     Object.assign(new Error('conversation lost: the harness answered 404 for submission "sub-1"'), { lost: true });
+  const raised: Array<{ notice: unknown; to: string; source?: string }> = [];
+  const raiseNotice: RunBinding["raiseNotice"] = (notice, to, source) => raised.push({ notice, to, source });
 
   const mock = new MockFlueClient();
-  const { received } = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, { sandbox });
+  const { received } = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, {
+    sandbox,
+    raiseNotice,
+  });
   await tick();
   (mock as unknown as { pending: Array<{ reject: (e: unknown) => void }> }).pending.pop()!.reject(lost());
   await tick();
@@ -422,6 +431,15 @@ test("a lost conversation on a Harness the kernel OOM-killed is a fault NAMED `m
   assert.ok(fault?.reason?.startsWith("memory limit"), String(fault?.reason));
   assert.match(fault!.reason!, /conversation lost/, "the lost conversation rides along beneath the name");
   assert.equal(asked[0]!.name, "ws-7", "asked about THIS Turn's Sandbox");
+  // The fault reaches the Machine, and the next Agent in the Workspace is told through the
+  // Briefing (ADR-0062) — a notice keyed by the kill itself, so two Turns lost to it raise one.
+  assert.deepEqual(raised, [
+    {
+      notice: { kind: "memory-limit", scope: "workspace", agent: "coder", limit: "1920Mi" },
+      to: "ws-7",
+      source: "ws-7@2026-09-28T10:03:00Z",
+    },
+  ]);
 
   // Any other fault is not asked about: only a lost conversation can hide a memory kill.
   const other = new MockFlueClient();
@@ -807,4 +825,56 @@ test("the next turn on the same iid waits for the pending abort (continue: true 
 
   assert.equal(mock.admits.length, 2, "…and is admitted once the abort is recorded");
   assert.equal(mock.admits[1]!.prompt, "and again");
+});
+
+// ---- Notices (ADR-0062) -------------------------------------------------------------------------
+
+test("each admission asks for the notices in ITS scope: a Menu-only Agent never hears a Workspace's", async () => {
+  const takeFor =
+    (asked: unknown[]): RunBinding["takeNotices"] =>
+    (to) => (asked.push(to), { ids: [], notices: [] });
+
+  // A continued Menu-only Agent on the Instance Harness: its conversation's notices, nothing else.
+  const advisorAsked: unknown[] = [];
+  harness(
+    new MockFlueClient(),
+    { ...baseInput, endpoint: undefined, instanceId: "run-1/root/coder", continuation: true },
+    undefined,
+    { model: "test/model", instructions: "i", workspace: "none" },
+    { instanceHarness: "http://ih.test", takeNotices: takeFor(advisorAsked) },
+  );
+  await tick();
+  assert.deepEqual(advisorAsked, [{ conversation: "run-1/root/coder" }]);
+
+  // A FRESH Turn in a Workspace: the Workspace's notices, and no conversation's — a fresh
+  // conversation is new by definition, and the notice waits for the `continue` that needs it.
+  const coderAsked: unknown[] = [];
+  harness(new MockFlueClient(), { ...baseInput, sandbox: "ws-7" }, undefined, undefined, {
+    takeNotices: takeFor(coderAsked),
+  });
+  await tick();
+  assert.deepEqual(coderAsked, [{ workspace: "ws-7" }]);
+});
+
+test("an admission that fails releases its notices for the next one; a ledgered one delivers them", async () => {
+  const released: Array<readonly string[]> = [];
+  const delivered: Array<readonly string[] | undefined> = [];
+  const notice = { kind: "memory-limit" as const, scope: "workspace" as const, agent: "coder", limit: "2Gi" };
+  const binding: Partial<RunBinding> = {
+    takeNotices: () => ({ ids: ["n1"], notices: [notice] }),
+    releaseNotices: (ids) => released.push(ids),
+    recordAdmission: (_iid, _admission, ids) => delivered.push(ids),
+  };
+
+  const failing = new MockFlueClient();
+  failing.admit = () => Promise.reject(new Error("harness admission failed (400): bad cwd"));
+  harness(failing, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
+  await tick();
+  assert.deepEqual(released, [["n1"]], "never reached a ledger, so it is pending again");
+
+  const ok = new MockFlueClient();
+  harness(ok, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, binding);
+  await tick();
+  assert.deepEqual(ok.notices, [[notice]], "the notices ride the admission");
+  assert.deepEqual(delivered, [["n1"]], "and are delivered by the SAME ledger write");
 });

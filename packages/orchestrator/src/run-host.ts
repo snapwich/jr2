@@ -22,7 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
-import type { EventSemantics } from "@jr2/agent-protocol";
+import type { EventDef, EventSemantics } from "@jr2/agent-protocol";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild } from "./wire.ts";
 import {
@@ -34,10 +34,12 @@ import {
   RegistrationTable,
   UnknownAddressError,
   wouldMove,
+  type Registration,
   type RetryTelemetry,
   type RunBinding,
   type TurnMarker,
 } from "./registration.ts";
+import { NoticeLedger, type NoticeLedgerState } from "./notices.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
@@ -155,6 +157,20 @@ export function observe(status: RunStatus): RunObservation {
   };
 }
 
+/** An Agent registration's Menu (ADR-0029): the one it registered, or — registered with none, by a
+ * plain `setup()` machine — its derived set. */
+function menuOf(reg: Registration): Map<string, EventDef> {
+  return reg.menu ?? reg.defs;
+}
+
+/** The Allowed picks (ADR-0029): the invoking state's derived set, narrowed to what its guards would
+ * accept now (`mayMove`), in Menu order — so the list reads in the order the tools block does. */
+function allowedOf(reg: Registration): string[] {
+  const ordered = new Set([...menuOf(reg).keys()].filter((name) => reg.defs.has(name)));
+  for (const name of reg.defs.keys()) ordered.add(name);
+  return [...ordered].filter((name) => mayMove(reg.invoker, name));
+}
+
 /** One open gate as external callers discover it (`GET /runs/:id` — ADR-0011): the accepted
  * events with their input schemas as JSON Schema (what drives a form or a `jr2 send` prompt),
  * plus the workflow-supplied `meta` (what a UI renders and a webhook translator matches on). */
@@ -168,12 +184,21 @@ export type GateView = {
   meta?: Record<string, unknown>;
 };
 
+/** One event on an Agent's Menu, as the surface serves it: a tool, its `input` schema the tool's
+ * parameters. `semantics` rides along so the Harness can tell an awaiting tool from a
+ * fire-and-forget one — the room ADR-0006's deferred results will land in, unbuilt today. */
+export type SurfaceEvent = { name: string; description?: string; input: unknown; semantics: EventSemantics };
+
 /**
  * One live agent surface, as the Harness reads it through its Custodian (`GET /agents/:iid/surface`
- * — ADR-0013). The Harness presents it to its model as the Menu: each accepted event becomes a
- * tool, its `input` schema the tool's parameters. `semantics` rides along so the Harness can tell
- * an awaiting tool from a fire-and-forget one — the room ADR-0006's deferred results will land in,
- * unbuilt today.
+ * — ADR-0013, ADR-0029). Two answers, because they change at different rates:
+ *
+ *   - `menu` is the Agent's MENU — every pick any state invoking this Agent offers, in a fixed
+ *     order. The Harness presents it as the tools block, which is then byte-identical for every
+ *     Turn of the conversation and never breaks the provider's prompt cache.
+ *   - `allowed` is this Turn's ALLOWED PICKS — the invoking state's derived set, narrowed to what its
+ *     guards would accept now, in Menu order. The Harness states it in the Briefing's Turn part,
+ *     after the Frame's prompt (ADR-0062). Enforced at delivery, not here.
  *
  * `sandbox` is the Sandbox that may deliver here. It is not a secret from that pod (the pod IS the
  * sandbox), and serving it lets a caller fail loudly on a surface that is not its own.
@@ -182,7 +207,8 @@ export type AgentSurfaceView = {
   instanceId: string;
   runId: string;
   sandbox?: string;
-  accepts: Array<{ name: string; description?: string; input: unknown; semantics: EventSemantics }>;
+  menu: SurfaceEvent[];
+  allowed: string[];
 };
 
 /**
@@ -213,6 +239,12 @@ export type AgentDeliveryReceipt = {
   moved: boolean;
   /** The invoking state stopped waiting: this Agent's turn is over. */
   turnComplete: boolean;
+  /**
+   * The Allowed picks read AFTER the delivery (ADR-0029): what this Turn may pick now — narrowed by
+   * a pick that moved the Machine within the invoking state, empty once the Turn is over. The
+   * Harness renders it ("Allowed now: `finish`"); it does not pre-check against it.
+   */
+  allowed: string[];
   deliveryId: string;
 };
 
@@ -353,6 +385,14 @@ type RunBlob = {
    * `<id>/<epoch>`), so one conversation has exactly one counter however often it burns.
    */
   epochs?: Record<string, number>;
+  /**
+   * The pending NOTICES (ADR-0062): what the next Turn in a scope must be told — a memory kill in
+   * its Workspace, a conversation that is new. The Orchestrator is their only keeper, so they ride
+   * this blob beside the two ledgers, for the same reasons: the run's exact lifetime, and the
+   * snapshot's atomicity. A notice leaves it in the save that ledgers the admission that carried
+   * it, so a restart before that save delivers it again and a restart after does not.
+   */
+  notices?: NoticeLedgerState;
   fault?: string;
 };
 
@@ -367,6 +407,8 @@ type LiveRun = {
   agents: Record<string, AgentAdmission>;
   /** The live epoch ledger (ADR-0057): persisted as `RunBlob.epochs`, seeded on restore. */
   epochs: Record<string, number>;
+  /** The pending notices (ADR-0062): persisted as `RunBlob.notices`, seeded on restore. */
+  notices: NoticeLedger;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
@@ -403,6 +445,7 @@ export class RunHost {
    * than a comment asking the next reader not to clear the wrong Set.
    */
   private readonly workflowListeners = new Map<string, Set<WorkflowListener>>();
+  #stopping = false;
 
   constructor(opts: RunHostOptions) {
     this.store = opts.store;
@@ -563,6 +606,9 @@ export class RunHost {
           // The burned conversations come back with the admissions (ADR-0057): a restored run's
           // next `continue` must land where this run's last one did, not on a dead conversation.
           blob.epochs ?? {},
+          // …and so do the undelivered notices (ADR-0062), reservations forgotten: a notice whose
+          // admission never reached the ledger is delivered again.
+          blob.notices,
         );
         actor.start();
         reattached.push(stored.runId);
@@ -583,12 +629,11 @@ export class RunHost {
    * the run settled, the iid is unknown) — the one catch point, and the reason the Harness never
    * has to learn which turn is live: it asks, per turn, and the answer IS the turn.
    *
-   * "Right now" is load-bearing (ADR-0029): the registered defs are the state's VOCABULARY, derived
-   * statically from its transitions, and the guards on those transitions are asked here — so an
-   * event the Machine cannot currently accept is not offered. The pick has not happened yet, so the
-   * question is `mayMove`, not `wouldMove`: a guard that would have judged the Agent's arguments is
-   * left on the menu and settled at delivery. The Harness reads this afresh per Submission, so the filter lands at turn boundaries and never moves under
-   * an Agent mid-turn.
+   * "Right now" is the Allowed picks' half (ADR-0029): the registered defs are the state's
+   * VOCABULARY, derived statically from its transitions, and the guards on those transitions are
+   * asked here. The pick has not happened yet, so the question is `mayMove`, not `wouldMove`: a
+   * guard that would have judged the Agent's arguments is left allowed and settled at delivery. The
+   * Menu does not move with them — it is the conversation's, fixed at the Machine's build.
    */
   agentSurface(instanceId: string): AgentSurfaceView | undefined {
     const reg = this.table.lookup(agentAddress(instanceId));
@@ -597,14 +642,13 @@ export class RunHost {
       instanceId,
       runId: reg.runId,
       sandbox: reg.sandbox,
-      accepts: [...reg.defs.values()]
-        .filter((def) => mayMove(reg.invoker, def.name))
-        .map((def) => ({
-          name: def.name,
-          description: def.description,
-          input: z.toJSONSchema(def.input),
-          semantics: def.semantics,
-        })),
+      menu: [...menuOf(reg).values()].map((def) => ({
+        name: def.name,
+        description: def.description,
+        input: z.toJSONSchema(def.input),
+        semantics: def.semantics,
+      })),
+      allowed: allowedOf(reg),
     };
   }
 
@@ -617,7 +661,7 @@ export class RunHost {
   sendToAgent(instanceId: string, event: { type?: unknown } & Record<string, unknown>): AgentDeliveryReceipt {
     const { type, ...payload } = event;
     if (typeof type !== "string" || !type) {
-      throw new EventValidationError(`event body must carry a string "type" (one of the surface's accepted names)`);
+      throw new EventValidationError(`event body must carry a string "type" (one of the surface's Allowed picks)`);
     }
     const address = agentAddress(instanceId);
     const invoking = this.table.lookup(address);
@@ -632,7 +676,15 @@ export class RunHost {
     const parsed = def?.input.safeParse(payload ?? {});
     const moved = wouldMove(invoking?.invoker, parsed?.success ? { type, ...parsed.data } : { type, ...payload });
 
-    this.table.deliver(address, type, payload);
+    try {
+      this.table.deliver(address, type, payload);
+    } catch (err) {
+      // A refused pick names the Allowed picks, read after the refusal (ADR-0029): one refusal
+      // naming them is what brings a wrong pick back — the statement in the Briefing carries the
+      // everyday case, and this is the net under it.
+      if (err instanceof EventValidationError && invoking) err.allowed = allowedOf(invoking);
+      throw err;
+    }
     // Read AFTER the delivery, off the SAME table the ADR-0024 guarantee uses — so the receipt
     // reports what happened rather than what was hoped. `deliver` reached the invoking state's
     // `sendBack` synchronously, so a pick that moved the Machine out of that state has already
@@ -640,11 +692,15 @@ export class RunHost {
     //
     // IDENTITY, not existence: under `continue: true` the next state re-registers the SAME
     // address for its own turn, and that is a new turn — this one still ended.
+    const turnComplete = this.table.lookup(address) !== invoking;
     return {
       delivered: true,
       event: type,
       moved,
-      turnComplete: this.table.lookup(address) !== invoking,
+      turnComplete,
+      // Read off the SAME registration, after the delivery: a pick that moved the Machine within
+      // the invoking state may have changed its guards. A Turn that is over may pick nothing.
+      allowed: turnComplete || !invoking ? [] : allowedOf(invoking),
       deliveryId: this.newId(),
     };
   }
@@ -805,6 +861,12 @@ export class RunHost {
       .map(observe);
   }
 
+  /** The host is going away (`close()` has begun): its Turns are not over, and the Agents' surface
+   * must not say they are (ADR-0026). */
+  get stopping(): boolean {
+    return this.#stopping;
+  }
+
   /**
    * End every open feed because the host is going away — the shutdown counterpart to `subscribe`.
    *
@@ -815,6 +877,9 @@ export class RunHost {
    * OBSERVATION, not the work — the snapshots are already durable, and `restore()` picks them up.
    */
   async close(): Promise<void> {
+    // From here on the Orchestrator is going away, not its Turns: `/agents/*` answers 503, which a
+    // Harness re-asks on ADR-0042's ladder, and never 404, which says a Turn is over (ADR-0026).
+    this.#stopping = true;
     for (const run of this.runs.values()) {
       for (const listener of run.listeners) listener({ kind: "closed" });
       run.listeners.clear();
@@ -960,7 +1025,9 @@ export class RunHost {
     def: WorkflowDef,
     agents: Record<string, AgentAdmission> = {},
     epochs: Record<string, number> = {},
+    noticeState?: NoticeLedgerState,
   ): AnyActor {
+    const notices = new NoticeLedger(noticeState, this.newId);
     let live: LiveRun | undefined;
     let scheduled = false;
     const schedule = () => {
@@ -982,22 +1049,37 @@ export class RunHost {
       // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
       // exactly like the persist scheduler's tracked-run guard.
-      recordAdmission: (instanceId, admission) => {
+      recordAdmission: (instanceId, admission, delivered = []) => {
         agents[instanceId] = admission;
+        // The notices this admission carried are delivered by THIS save (ADR-0062).
+        notices.delivered(delivered);
         const run = this.runs.get(record.runId);
         if (run && run.agents === agents) this.persist(run);
       },
+      admissionOf: (instanceId) => agents[instanceId],
       // The epoch ledger's two halves (ADR-0057). The read is what the input mapper mints from;
       // the write is the terminal `agent.fault` burning the conversation it ended, saved in the
       // same RunBlob as the admission ledger — and, like it, saved AT THE WRITE rather than
       // waiting for the next transition, because a crash between the fault and the next state's
       // invoke would otherwise restore into the burned conversation.
       epochOf: (conversation) => epochs[conversation] ?? 0,
-      bumpEpoch: (conversation) => {
+      bumpEpoch: (conversation, reason) => {
         epochs[conversation] = (epochs[conversation] ?? 0) + 1;
+        // The next `continue` lands on a virgin conversation and is told so, with the fault's own
+        // words (ADR-0062) — raised in the SAME save as the bump, so no restart can split them.
+        notices.raise({ kind: "conversation-new", scope: "conversation", reason }, conversation);
         const run = this.runs.get(record.runId);
         if (run && run.epochs === epochs) this.persist(run);
       },
+      // The notices' other halves (ADR-0062). A raise is saved at the write, like the ledgers; a
+      // take is a reservation in memory, delivered by `recordAdmission` or released on failure.
+      raiseNotice: (notice, to, source) => {
+        if (!notices.raise(notice, to, source)) return;
+        const run = this.runs.get(record.runId);
+        if (run && run.notices === notices) this.persist(run);
+      },
+      takeNotices: (scope) => notices.take(scope),
+      releaseNotices: (ids) => notices.release(ids),
       // Absorbed-retry attempts go straight to the run's observers (SSE/CLI watch) — they are
       // feed events, not machine events (ADR-0016: the workflow sees only the terminal fault).
       telemetry: (event) => {
@@ -1045,7 +1127,7 @@ export class RunHost {
         if (ev.type === "@xstate.snapshot") schedule();
       },
     });
-    live = this.track(record, actor, def, agents, epochs, binding);
+    live = this.track(record, actor, def, agents, epochs, notices, binding);
     return actor;
   }
 
@@ -1055,9 +1137,20 @@ export class RunHost {
     def: WorkflowDef,
     agents: Record<string, AgentAdmission>,
     epochs: Record<string, number>,
+    notices: NoticeLedger,
     binding: RunBinding,
   ): LiveRun {
-    const run: LiveRun = { record, actor, def, agents, epochs, binding, listeners: new Set(), feedSoFar: [] };
+    const run: LiveRun = {
+      record,
+      actor,
+      def,
+      agents,
+      epochs,
+      notices,
+      binding,
+      listeners: new Set(),
+      feedSoFar: [],
+    };
     this.runs.set(record.runId, run);
     // Ordinary persistence rides the inspection stream (see `spawn`); the subscription exists
     // for the ERROR channel: an errored actor (an invoke threw — e.g. ADR-0011's invoke-time
@@ -1113,6 +1206,7 @@ export class RunHost {
       snapshot: serialized,
       agents: run.agents,
       epochs: run.epochs,
+      notices: run.notices.state(),
       fault: run.fault,
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);

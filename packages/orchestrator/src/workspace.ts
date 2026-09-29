@@ -223,19 +223,29 @@ export interface SandboxPort {
   continuity(name: string, listener: (seen: Continuity) => void): () => void;
   /**
    * Name a memory kill (ADR-0061): when the Harness container of this Sandbox last ended
-   * `OOMKilled` at or after `since`, the fault reason — starting with the fixed prefix
-   * `memory limit` — else undefined. Asked when a Turn faults on a lost conversation; it may wait
-   * a moment for the operator's word, which can trail the Harness's restart. A backend that
-   * cannot see the container answers undefined, and every lost conversation stays lost — never
-   * an optional method (ADR-0021).
+   * `OOMKilled` at or after `since`, the kill — its fault reason, starting with the fixed prefix
+   * `memory limit`, and the data the next Turn's notice is made of (ADR-0062) — else undefined.
+   * Asked when a Turn faults on a lost conversation; it may wait a moment for the operator's word,
+   * which can trail the Harness's restart. A backend that cannot see the container answers
+   * undefined, and every lost conversation stays lost — never an optional method (ADR-0021).
    */
-  memoryFault(name: string, since: Date): Promise<string | undefined>;
+  memoryFault(name: string, since: Date): Promise<MemoryKill | undefined>;
   /** Delete the Sandbox CR. Absent is success. */
   destroy(name: string): Promise<void>;
   /** How often to renew. Must be well inside the backend's idle-timeout, since a lapsed lease is
    * what lets the operator reap. */
   readonly leaseIntervalMs?: number;
 }
+
+/** A kernel memory kill of a Sandbox's Harness container (ADR-0061, layer 5). */
+export type MemoryKill = {
+  /** The fault reason, starting with the fixed prefix `memory limit`. */
+  reason: string;
+  /** The limit the kernel enforced, as the Sandbox states it (`1920Mi`). */
+  limit?: string;
+  /** When the container ended — which kill this was, so every Turn it ended names the same one. */
+  at?: string;
+};
 
 /** Resolve the host's Sandbox backend, failing with a pointed message on a host without one. */
 export function sandboxOf(system: AnyActorSystem): SandboxPort {

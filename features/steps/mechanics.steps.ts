@@ -19,7 +19,9 @@ import { E2EWorld } from "./world.ts";
  * jr2 mints structurally ({@link coderIid}, ADR-0057). */
 type Status = { runId: string; instanceId: string; status: string; value: unknown };
 type Gate = { gate: string; accepts: Array<{ name: string }>; meta?: Record<string, unknown> };
-type Surface = { accepts: Array<{ name: string }> };
+/** The agent's surface (ADR-0029): the Menu — the tools block, fixed for the conversation — and
+ * this Turn's Allowed picks. */
+type Surface = { menu: Array<{ name: string }>; allowed: string[] };
 
 /**
  * Where this tier's Agent conversation lives (ADR-0057). Every fixture here invokes its `coder`
@@ -120,10 +122,17 @@ When(
       headers: { "content-type": "application/json", ...this.authHeaders() },
       body: JSON.stringify({ type: tool, summary }),
     });
-    const body = (await res.json()) as { moved?: boolean; turnComplete?: boolean; error?: string };
+    const body = (await res.json()) as {
+      moved?: boolean;
+      turnComplete?: boolean;
+      allowed?: string[];
+      error?: string;
+    };
     assert.equal(res.status, 200, `the delivery was accepted (got: ${body.error})`);
     assert.equal(body.moved, false, "no transition accepted it");
     assert.equal(body.turnComplete, false, "…which is not the same claim as the turn being over");
+    // …and the receipt says what the Turn may pick now, read after the delivery (ADR-0029).
+    assert.ok(body.allowed?.includes(tool), `still allowed: ${JSON.stringify(body.allowed)}`);
   },
 );
 
@@ -159,22 +168,30 @@ When("I deliver {string} to gate {string}", async function (this: E2EWorld, type
   this.last = { stdout: JSON.stringify(await res.json()), stderr: "", code: res.status };
 });
 
-Then("the agent's surface offers exactly {string}", async function (this: E2EWorld, tools: string) {
+const names = (list: string): string[] =>
+  list
+    .split(",")
+    .map((t) => t.trim())
+    .sort();
+
+Then("the agent's Allowed picks are exactly {string}", async function (this: E2EWorld, picks: string) {
   const res = await agentSurface(this);
   assert.equal(res.status, 200);
-  const listed = ((await res.json()) as Surface).accepts.map((a) => a.name).sort();
-  assert.deepEqual(
-    listed,
-    tools
-      .split(",")
-      .map((t) => t.trim())
-      .sort(),
-  );
+  assert.deepEqual([...((await res.json()) as Surface).allowed].sort(), names(picks));
+});
+
+Then("the agent's Menu is exactly {string}", async function (this: E2EWorld, tools: string) {
+  const res = await agentSurface(this);
+  assert.equal(res.status, 200);
+  const menu = ((await res.json()) as Surface).menu.map((a) => a.name);
+  assert.deepEqual(menu, [...menu].sort(), "the Menu comes in its fixed order");
+  assert.deepEqual(menu, names(tools));
 });
 
 Then("the agent's surface is gone", async function (this: E2EWorld): Promise<void> {
   // The invoking state exited, so the registration — and with it the whole surface — is gone. This
-  // is what the Harness reads when a turn is over — which it presents as an empty Menu (ADR-0026).
+  // is what the Harness reads when a turn is over — which it settles `aborted` without asking the
+  // model (ADR-0026).
   assert.equal((await agentSurface(this)).status, 404);
 });
 

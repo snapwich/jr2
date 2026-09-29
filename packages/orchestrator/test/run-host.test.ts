@@ -8,10 +8,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setup } from "xstate";
+import { doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
+import { agentActorWith } from "../src/actor.ts";
+import { agent } from "../src/harness-client.ts";
+import { jr2Setup } from "../src/setup.ts";
 import { RunHost, type RunStatus, type WorkflowDef } from "../src/run-host.ts";
+import { EventValidationError } from "../src/registration.ts";
 import {
   admittedIid,
   codingDef,
+  coderDefinition,
   continuedDef,
   continuedIidOf,
   mkStore,
@@ -90,31 +96,52 @@ test("a pick no transition accepts says so, instead of reading as a move (ADR-00
   assert.equal((host.status(runId)?.context as Ctx).summary, "PR up", "a rejected pick changes nothing");
 });
 
-test("the surface stops offering what the current state cannot accept (ADR-0029)", async () => {
+test("the surface serves the whole Menu, and the Allowed picks narrow as the guards do (ADR-0029)", async () => {
   const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
   host.register(codingDef(clients));
   const { runId, instanceId } = await host.start("coding");
   const iid = await admittedIid(clients.get(instanceId)!);
 
+  const before = host.agentSurface(iid)!;
   assert.deepEqual(
-    host
-      .agentSurface(iid)
-      ?.accepts.map((a) => a.name)
-      .sort(),
+    before.menu.map((e) => e.name),
     ["done", "request_review"],
+    "the Menu, in its fixed order",
   );
+  assert.deepEqual(before.allowed, ["done", "request_review"]);
 
   host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
   await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
 
-  // Same turn, same registration, same vocabulary — a narrower menu, because `review` handles only
-  // `done`. The Harness reads the Menu afresh per Submission, so this is what the next one sees.
-  assert.deepEqual(
-    host.agentSurface(iid)?.accepts.map((a) => a.name),
-    ["done"],
-  );
-  assert.ok(host.agentSurface(iid), "the surface still EXISTS — the turn did not end");
+  // Same turn, same registration — the guard now refuses a second review, so the Allowed picks
+  // narrow to `done`. The Menu does NOT: it is the tools block, and a tools block that changes
+  // bills the whole conversation again.
+  const after = host.agentSurface(iid)!;
+  assert.deepEqual(after.allowed, ["done"]);
+  assert.deepEqual(JSON.stringify(after.menu), JSON.stringify(before.menu), "byte-identical Menu");
+});
+
+test("the receipt carries the Allowed picks read AFTER the delivery (ADR-0029)", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(codingDef(clients));
+  const { runId, instanceId } = await host.start("coding");
+  const iid = await admittedIid(clients.get(instanceId)!);
+
+  // The pick moved the Machine within the invoking state, and closed its own guard behind it.
+  const moved = host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
+  assert.deepEqual(moved.allowed, ["done"], "what the Turn may pick NOW, not before the pick");
+  await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
+
+  const refused = host.sendToAgent(iid, { type: "request_review", summary: "again" });
+  assert.equal(refused.moved, false);
+  assert.deepEqual(refused.allowed, ["done"]);
+
+  // A Turn that is over may pick nothing.
+  const over = host.sendToAgent(iid, { type: "done" });
+  assert.equal(over.turnComplete, true);
+  assert.deepEqual(over.allowed, []);
 });
 
 test("one conversation, two turns: the abort is ordered ahead of the next turn's admission", async () => {
@@ -207,12 +234,12 @@ test("the agent surface IS the invoking state's registration, and dies with it",
   assert.equal(surface?.runId, runId);
   assert.equal(surface?.sandbox, "ws-1", "the surface records its Sandbox — what scopes its token");
   assert.deepEqual(
-    surface?.accepts.map((a) => a.name).sort(),
+    surface?.menu.map((a) => a.name),
     ["done", "request_review"],
     "exactly what the invoking state accepts — no more, no less",
   );
   assert.deepEqual(
-    surface?.accepts.map((a) => a.semantics),
+    surface?.menu.map((a) => a.semantics),
     ["done", "request_review"].map(() => "ack"),
   );
 
@@ -231,6 +258,12 @@ test("a delivery outside the turn's surface is refused, naming what IS accepted"
   const iid = await admittedIid(clients.get(instanceId)!);
 
   assert.throws(() => host.sendToAgent(iid, { type: "merge" }), /does not accept "merge".*accepts:/s);
+  // The out-of-set refusal names the Allowed picks, so the next call can be one of them (ADR-0029).
+  assert.throws(
+    () => host.sendToAgent(iid, { type: "merge" }),
+    (err: unknown) =>
+      err instanceof EventValidationError && JSON.stringify(err.allowed) === '["done","request_review"]',
+  );
   assert.throws(() => host.sendToAgent(iid, { type: "request_review" }), /invalid "request_review" payload/);
   assert.throws(() => host.sendToAgent("no-such-iid", { type: "done" }), /no live registration/);
 });
@@ -282,7 +315,8 @@ test("a burned conversation rides the RunBlob, and a restored run still avoids i
   const { runId, instanceId } = await host.start("continued");
   const conversation = continuedIidOf(runId);
   const flue = clients.get(instanceId)!;
-  await waitFor(() => flue.admits.length === 1);
+  // Settle-followed, not just admitted: the fault below lands on the settlement.
+  await waitFor(() => flue.settled.length === 1);
   assert.equal(flue.admits[0]!.instanceId, conversation, "turn one is the Machine instance's conversation");
 
   // An infra fault is terminal for a continuation — no reroll (ADR-0035) — so the conversation is
@@ -588,4 +622,147 @@ test("a run in BOTH halves is reported once", async () => {
   await tick(); // let persist() land it in the store too
 
   assert.deepEqual(await host.candidates("eeee", 10), [runId], "the union dedupes");
+});
+
+// ---- Notices (ADR-0062) -------------------------------------------------------------------------
+// The Orchestrator is their only keeper: pending notices ride the RunBlob beside the ledgers, go to
+// the next admission in their scope, and count as delivered when that admission is ledgered.
+
+const retryTemplate = jr2Setup({
+  types: {} as { context: Record<string, never>; input: Record<string, never> },
+  events: [doneEvent, requestReviewEvent],
+  actors: { coder: agent(coderDefinition) },
+}).createMachine({
+  id: "r",
+  context: {},
+  initial: "first",
+  states: {
+    first: {
+      invoke: { src: "coder", input: { continue: true, endpoint: "http://harness.invalid", prompt: "turn one" } },
+      on: { "agent.fault": "retry" },
+    },
+    retry: {
+      invoke: { src: "coder", input: { continue: true, endpoint: "http://harness.invalid", prompt: "the whole task" } },
+      on: { request_review: "again" },
+    },
+    again: {
+      invoke: { src: "coder", input: { continue: true, endpoint: "http://harness.invalid", prompt: "continue" } },
+      on: { done: "#r.done" },
+    },
+    done: { type: "final" },
+  },
+});
+
+function retryDef(clients: Map<string, MockFlueClient>, hold = false): WorkflowDef {
+  return {
+    name: "retry",
+    machine: retryTemplate,
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      client.holdAdmits = hold;
+      clients.set(instanceId, client);
+      return { actors: { coder: agentActorWith(() => client, coderDefinition) } };
+    },
+  };
+}
+
+async function blobOf(store: SnapshotStore, runId: string): Promise<Record<string, unknown>> {
+  return ((await store.load(runId))?.snapshot ?? {}) as Record<string, unknown>;
+}
+
+test("a burned conversation's next Turn is told it is new — once, and again only if a restart came first", async () => {
+  const store = await mkStore();
+  const clientsA = new Map<string, MockFlueClient>();
+  const hostA = new RunHost({ store });
+  hostA.register(retryDef(clientsA, true));
+  const { runId, instanceId } = await hostA.start("retry");
+  const conversation = continuedIidOf(runId);
+  const flueA = clientsA.get(instanceId)!;
+  await waitFor(() => flueA.admits.length === 1);
+  flueA.releaseAdmits();
+  await tick();
+  assert.deepEqual(flueA.notices[0], [], "a first conversation is not news");
+
+  // The fault burns the conversation; the fault route's `continue` lands on a virgin one, and is
+  // told so — with the fault's own words, because that is why the context is gone.
+  flueA.fault("the harness that held it went away");
+  await waitFor(() => flueA.admits.length === 2);
+  const notice = { kind: "conversation-new", scope: "conversation", reason: "the harness that held it went away" };
+  assert.equal(flueA.admits[1]!.instanceId, `${conversation}/1`);
+  assert.deepEqual(flueA.notices[1], [notice]);
+
+  // The admission is still unanswered — nothing is ledgered — when the Orchestrator goes away.
+  let pending: unknown[] = [];
+  await waitFor(() => {
+    void blobOf(store, runId).then((b) => (pending = (b.notices as { pending?: unknown[] })?.pending ?? []));
+    return pending.length === 1;
+  });
+  await hostA.stop(runId);
+
+  // Restart BEFORE the ledger write: the restored Turn is admitted again, and carries it again.
+  const clientsB = new Map<string, MockFlueClient>();
+  const hostB = new RunHost({ store });
+  hostB.register(retryDef(clientsB));
+  assert.deepEqual((await hostB.restore()).reattached, [runId]);
+  const flueB = clientsB.get(instanceId)!;
+  await waitFor(() => flueB.admits.length === 1);
+  assert.deepEqual(flueB.notices[0], [notice], "not yet delivered, so delivered again");
+
+  // The admission is ledgered now, and the notice with it: a restart AFTER does not repeat it.
+  await waitFor(() => {
+    void blobOf(store, runId).then((b) => (pending = (b.notices as { pending?: unknown[] })?.pending ?? []));
+    return pending.length === 0;
+  });
+  await hostB.stop(runId);
+  const clientsC = new Map<string, MockFlueClient>();
+  const hostC = new RunHost({ store });
+  hostC.register(retryDef(clientsC));
+  assert.deepEqual((await hostC.restore()).reattached, [runId]);
+  await tick();
+  const flueC = clientsC.get(instanceId)!;
+  assert.equal(flueC.admits.length, 0, "re-attached, not re-admitted");
+  hostC.sendToAgent(`${conversation}/1`, { type: "request_review", summary: "PR up" });
+  await waitFor(() => flueC.admits.length === 1);
+  assert.deepEqual(flueC.notices[0], [], "delivered once");
+  assert.deepEqual(flueC.heldAsked, [`${conversation}/1`], "a continued conversation asks whether it is still held");
+});
+
+test("a continued conversation the Harness no longer holds is told it is new", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(continuedDef(clients));
+  const { runId, instanceId } = await host.start("continued");
+  const flue = clients.get(instanceId)!;
+  await waitFor(() => flue.admits.length === 1);
+  assert.deepEqual(flue.heldAsked, [], "a conversation never admitted has nothing to lose");
+
+  // Between the Turns the Harness restarted: the conversation is gone, and no fault said so.
+  flue.held = false;
+  host.sendToAgent(continuedIidOf(runId), { type: "request_review", summary: "PR up" });
+  await waitFor(() => flue.admits.length === 2);
+  assert.deepEqual(flue.notices[1], [
+    { kind: "conversation-new", scope: "conversation", reason: "the Harness no longer holds it" },
+  ]);
+});
+
+test("a guard kill is told to the next Turn in that Workspace, and only once (ADR-0061, ADR-0062)", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(codingDef(clients));
+  const { instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  const flue = clients.get(instanceId)!;
+  await waitFor(() => flue.settled.length === 1);
+
+  // The Harness's guard killed the Agent's processes during this Turn and said so on its stream.
+  flue.guardKill({ peak: "1.8Gi", limit: "1920Mi", source: "c@7.0" });
+  flue.guardKill({ peak: "1.8Gi", limit: "1920Mi", source: "c@7.0" }); // a replayed read
+  // The Turn ends with no pick; the nudge is the next admission in the Workspace.
+  flue.complete();
+  await waitFor(() => flue.settled.length === 2);
+  assert.deepEqual(flue.notices[1], [
+    { kind: "memory-limit", scope: "workspace", agent: "coder", peak: "1.8Gi", limit: "1920Mi" },
+  ]);
+  flue.complete();
+  await waitFor(() => flue.admits.length === 3);
+  assert.deepEqual(flue.notices[2], [], "delivered once");
 });

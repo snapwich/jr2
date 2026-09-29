@@ -1,6 +1,9 @@
-// The Menu (ADR-0013/0027): one Submission's read of the turn's surface, and each accepted event
-// as a pick the model can make. This module knows the wire and nothing of the model's library:
-// `menu-tools.ts` presents the Menu to pi, with no MCP between them.
+// The Menu (ADR-0013/0027/0029): one Submission's read of the turn's surface — the Menu, fixed for
+// the conversation, and the Turn's Allowed picks — and each Menu event as a pick the model can make.
+// This module knows the wire and nothing of the model's library: `menu-tools.ts` presents the Menu
+// to pi, with no MCP between them. Every word the model reads about picks is written HERE — the
+// Allowed-picks text, each receipt, each refusal — so a presenter only maps items to its tool API
+// and places the text it is handed, and a second presenter reuses it (ADR-0029).
 //
 // The Harness reads the surface from the Orchestrator itself, through the Custodian on this pod's
 // loopback (`$JR2_CUSTODIAN_URL`, ADR-0059). It sends `Authorization: Bearer <Stand-in>`: its env
@@ -10,7 +13,9 @@
 // everything a pick is judged by is judged there: the token's scope, the live registration, the
 // event's name and payload (ADR-0013).
 //
-//   GET  /agents/<iid>/surface   → this turn's Menu (404: the turn is over — an EMPTY Menu, ADR-0026)
+//   GET  /agents/<iid>/surface   → the Menu and this Turn's Allowed picks (404: the turn is over —
+//                                  NO surface, and the Turn is never prompted, ADR-0026; 503: the
+//                                  Orchestrator is stopping — re-asked, ADR-0042)
 //   POST /agents/<iid>/events    → one pick, and the receipt, rendered as prose (ADR-0024/0029)
 //
 // Each Submission reads afresh, and the iid in the path is how the Orchestrator knows which turn is
@@ -31,8 +36,12 @@ export type MenuItem = {
   pick: (params: unknown, signal?: AbortSignal) => Promise<string>;
 };
 
-/** One turn's Menu. */
+/** One conversation's Menu (ADR-0029): the same items, in the same order, on every Turn. */
 export type Menu = MenuItem[];
+
+/** One Submission's read of a live surface: the Menu, presented as the tools block, and the Turn's
+ * Allowed picks — event names, stated in the Briefing's Turn part and enforced at delivery. */
+export type MenuRead = { menu: Menu; allowed: string[] };
 
 /** One event on an agent's live surface, as the Orchestrator serves it. */
 export type SurfaceEvent = {
@@ -43,8 +52,23 @@ export type SurfaceEvent = {
   semantics: "ack" | "deferred" | "poll";
 };
 
-/** `GET /agents/:iid/surface` — the turn's menu. */
-export type Surface = { instanceId: string; runId: string; sandbox?: string; accepts: SurfaceEvent[] };
+/**
+ * `GET /agents/:iid/surface` — the Menu and the Turn's Allowed picks (ADR-0029). An older
+ * Orchestrator sends neither, only `accepts` — its per-Turn narrowed list (ADR-0027's skew: the
+ * Harness is a stock image, the Orchestrator the instance image). That list is read as both the
+ * tools and the Allowed picks, which is what it was.
+ */
+export type Surface = {
+  instanceId: string;
+  runId: string;
+  sandbox?: string;
+  /** The Menu: the fixed union of every invoking state's derived set, in a fixed order. */
+  menu?: SurfaceEvent[];
+  /** The Allowed picks: the invoking state's derived set, narrowed by its guards. Event names. */
+  allowed?: string[];
+  /** Skew only: an Orchestrator from before ADR-0029's fixed Menu. */
+  accepts?: SurfaceEvent[];
+};
 
 /**
  * `POST /agents/:iid/events` — the answer to one pick, and the Agent's only way to learn what
@@ -63,6 +87,9 @@ export type DeliveryReceipt = {
   moved?: boolean;
   turnComplete: boolean;
   deliveryId: string;
+  /** The Allowed picks, read AFTER the delivery (ADR-0029): an in-state move can change the guards
+   * mid-Turn. Optional on the wire for the same skew — absent is not empty. */
+  allowed?: string[];
 };
 
 export type MenuOptions = {
@@ -81,6 +108,9 @@ export type MenuOptions = {
   attemptTimeoutMs?: number;
   /** Where the routability line goes when a surface read had to retry. Default `console.warn`. */
   log?: (line: string) => void;
+  /** How the presenter names a pick to its model (`menu-tools.ts`: `mcp__jr2__<name>`), so every
+   * text here names the tool the model actually sees. Default: the bare name. */
+  toolName?: (name: string) => string;
 };
 
 /**
@@ -93,6 +123,13 @@ const ROUTABILITY_MARKER = "jr2.routability";
 
 /** No live registration for this iid: the state exited, or the run settled. */
 class NoSurfaceError extends Error {}
+
+/** An Orchestrator that is stopping answers 503 (ADR-0026): not an answer about the Turn. */
+const UNAVAILABLE = 503;
+
+/** An answer that is not about the Turn — a stopping Orchestrator's 503 — carried to the ladder as
+ * the transport failure it stands for. */
+class UnavailableError extends Error {}
 
 /** The Custodian's own word that the Orchestrator never answered (custodian.ts) — a transport
  * failure one hop further out, told apart from an answer by the header it carries. */
@@ -110,41 +147,67 @@ function sanitizeToolNamePart(name: string): string {
 }
 
 /**
- * This turn's Menu. An empty one is valid (ADR-0026: a turn that is over has an empty Menu): no
- * items, no error. A surface read that fails for any other reason propagates: a turn that cannot
- * see its Menu settles `failed` (ADR-0027), and turn.ts owns that mapping. The Submission's `signal`
- * cancels a read in flight — an abort must promote the next admission promptly (ADR-0024).
+ * This Submission's Menu and Allowed picks, or `undefined` when the Turn is over (ADR-0026: 404, no
+ * registration — the state exited and the abort is on its way). turn.ts settles that `aborted`
+ * without prompting the model. A surface read that fails for any other reason propagates: a turn
+ * that cannot see its Menu settles `failed` (ADR-0027), and turn.ts owns that mapping. The
+ * Submission's `signal` cancels a read in flight — an abort must promote the next admission
+ * promptly (ADR-0024).
  */
-export async function readMenu(opts: MenuOptions, instanceId: string, signal?: AbortSignal): Promise<Menu> {
+export async function readMenu(
+  opts: MenuOptions,
+  instanceId: string,
+  signal?: AbortSignal,
+): Promise<MenuRead | undefined> {
   const surface = await readSurface(opts, instanceId, signal);
-  if (!surface) return [];
-  return surface.accepts.map((event) => {
-    if (event.semantics !== "ack") {
-      // ADR-0013: `deferred`/`poll` are reserved in the model and have room on the wire, but nothing
-      // answers a held call yet. Offering one as a plain tool would promise the Agent a result that
-      // never comes, so the whole turn is refused rather than served a lying contract.
-      throw new Error(
-        `event "${event.name}" is \`${event.semantics}\`, which the Harness does not implement ` +
-          `(ADR-0013: reserved, not built — an Agent must not be handed a tool whose contract is a lie)`,
-      );
-    }
-    return {
-      event: event.name,
-      name: sanitizeToolNamePart(event.name),
-      description: event.description ?? "",
-      parameters: parametersOf(event.input),
-      pick: async (params, pickSignal) =>
-        receiptProse(
-          await deliver(
-            opts,
-            instanceId,
-            // The name last: an argument called `type` cannot make this pick another event.
-            { ...((params ?? {}) as object), type: event.name },
-            pickSignal,
-          ),
+  if (!surface) return undefined;
+  // ADR-0029's skew: without `menu`, the older Orchestrator's `accepts` is the tools and the
+  // Allowed picks both. With `menu` and no `allowed`, all of it is allowed — absent is not empty,
+  // and a wrong "allowed" costs one refused pick where a wrong "not allowed" costs the Turn.
+  const events = surface.menu ?? surface.accepts ?? [];
+  const allowed = surface.allowed ?? events.map((event) => event.name);
+  return { menu: events.map((event) => menuItem(opts, instanceId, event)), allowed };
+}
+
+function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent): MenuItem {
+  if (event.semantics !== "ack") {
+    // ADR-0013: `deferred`/`poll` are reserved in the model and have room on the wire, but nothing
+    // answers a held call yet. Offering one as a plain tool would promise the Agent a result that
+    // never comes, so the whole turn is refused rather than served a lying contract.
+    throw new Error(
+      `event "${event.name}" is \`${event.semantics}\`, which the Harness does not implement ` +
+        `(ADR-0013: reserved, not built — an Agent must not be handed a tool whose contract is a lie)`,
+    );
+  }
+  return {
+    event: event.name,
+    name: sanitizeToolNamePart(event.name),
+    description: event.description ?? "",
+    parameters: parametersOf(event.input),
+    pick: async (params, pickSignal) =>
+      receiptProse(
+        await deliver(
+          opts,
+          instanceId,
+          // The name last: an argument called `type` cannot make this pick another event.
+          { ...((params ?? {}) as object), type: event.name },
+          pickSignal,
         ),
-    };
-  });
+        opts.toolName,
+      ),
+  };
+}
+
+/**
+ * The Allowed picks in words (ADR-0029), naming each as the presenter presents it. The Briefing's
+ * Turn part states it after the Frame's prompt, and every receipt and refusal that leaves the Turn
+ * open repeats it — measured, a model obeys it there, and one refusal naming it recovers the rest.
+ */
+export function allowedPicksText(allowed: string[], toolName: (name: string) => string = (name) => name): string {
+  if (allowed.length === 0) {
+    return "Allowed now: none — the workflow's current state accepts no pick yet, so any pick is refused or does nothing.";
+  }
+  return `Allowed now: ${allowed.map((event) => `\`${toolName(sanitizeToolNamePart(event))}\``).join(", ")}.`;
 }
 
 /**
@@ -163,20 +226,22 @@ function parametersOf(input: unknown): Record<string, unknown> {
  * and never say when finishing is finished — so it called again. Say the three things it needs: the
  * pick arrived, the workflow consumed it, the turn is over.
  */
-export function receiptProse(receipt: DeliveryReceipt): string {
+export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string) => string): string {
   const delivered = `Delivered "${receipt.event}" to the workflow (delivery ${receipt.deliveryId}).`;
+  // Read AFTER the delivery, so it is the Turn's answer now, not its Submission's (ADR-0029).
+  const allowed = receipt.allowed ? ` ${allowedPicksText(receipt.allowed, toolName)}` : "";
   // Order matters: a rejected pick is also `turnComplete: false`, and saying only that sends the
   // Agent back to do the same thing again (ADR-0029). Say what it can act on FIRST.
   if (receipt.moved === false) {
     return (
       `${delivered} The workflow did NOT act on it: no transition in its current state accepts ` +
       `"${receipt.event}" with these arguments. Your turn is not over. Do not repeat this call ` +
-      `unchanged — change the arguments, pick a different tool, or do more work first.`
+      `unchanged — change the arguments, pick a different tool, or do more work first.${allowed}`
     );
   }
   return receipt.turnComplete
     ? `${delivered} The workflow consumed it and moved on: your turn is over. Stop here — do not call this or any other tool again.`
-    : `${delivered} The workflow is still in the state that asked for this turn, so it is not over yet.`;
+    : `${delivered} The workflow is still in the state that asked for this turn, so it is not over yet.${allowed}`;
 }
 
 /**
@@ -188,7 +253,10 @@ export function receiptProse(receipt: DeliveryReceipt): string {
  * every time the Orchestrator restarts and for a moment after a fresh namespace converges. So a
  * read that never got an answer — this process's own transport failure, or the Custodian's word
  * that the Orchestrator never answered it — is asked again, on a jittered ladder, and what that
- * cost is logged once. An ANSWER is final: a 404 is ADR-0026's turn-is-over, a 403 a scope refusal.
+ * cost is logged once. So is a 503: a stopping Orchestrator's answer about ITSELF, not the Turn —
+ * the restarted one restores its runs before it listens, so the ladder, which outlasts a rollout,
+ * finds the live surface (ADR-0026). Every other ANSWER is final: a 404 is ADR-0026's turn-is-over,
+ * a 403 a scope refusal.
  *
  * Delivery deliberately does NOT retry: a failed pick reaches the model as a tool error it can act
  * on, and a POST that may have been delivered must not be re-sent — a duplicate pick is a duplicate
@@ -216,6 +284,7 @@ async function readSurface(opts: MenuOptions, instanceId: string, signal?: Abort
         signal: signal ? AbortSignal.any([signal, attempt]) : attempt,
       });
       await unreachable(res);
+      if (res.status === UNAVAILABLE) throw new UnavailableError(await errorOf(res));
       // Before the status is read: the measurement is about CONNECTING, and a 404 that took four
       // attempts to reach is the same routability cost as a 200 that did.
       if (attempts > 1) {
@@ -228,14 +297,23 @@ async function readSurface(opts: MenuOptions, instanceId: string, signal?: Abort
     } catch (err) {
       if (signal?.aborted) throw err;
       const timedOut = attempt.aborted;
-      if (!timedOut && !(err instanceof UnreachableError) && !isTransportFailure(err)) throw err;
-      lastCode = timedOut ? "timeout" : err instanceof UnreachableError ? err.code : transportCode(err);
+      const unavailable = err instanceof UnavailableError;
+      if (!timedOut && !unavailable && !(err instanceof UnreachableError) && !isTransportFailure(err)) throw err;
+      lastCode = timedOut
+        ? "timeout"
+        : unavailable
+          ? String(UNAVAILABLE)
+          : err instanceof UnreachableError
+            ? err.code
+            : transportCode(err);
       if (performance.now() >= deadline) {
         const detail = timedOut
           ? `no answer within ${attemptMs} ms`
-          : err instanceof UnreachableError
-            ? err.message
-            : transportDetail(err);
+          : unavailable
+            ? `HTTP ${UNAVAILABLE} (${err.message})`
+            : err instanceof UnreachableError
+              ? err.message
+              : transportDetail(err);
         throw new Error(`the Orchestrator never answered ${url}: ${detail}`, { cause: err });
       }
       await sleep((backoffMs * (1 + Math.random())) / 2, signal);
@@ -244,8 +322,9 @@ async function readSurface(opts: MenuOptions, instanceId: string, signal?: Abort
   }
 }
 
-/** One pick, delivered. A pick against a turn nobody waits on any more fails LOUDLY: an empty Menu
- * is not a permissive one (ADR-0026). */
+/** One pick, delivered. A pick against a turn nobody waits on any more fails LOUDLY (ADR-0026). A
+ * stopping Orchestrator's 503 fails as a transport failure does — "try it again", never re-sent
+ * here (ADR-0042). A refusal names the Allowed picks when the Orchestrator sent them (ADR-0029). */
 async function deliver(
   opts: MenuOptions,
   instanceId: string,
@@ -266,7 +345,12 @@ async function deliver(
   }
   await unreachable(res);
   if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}" — this turn is over`);
-  return (await answered(res)) as DeliveryReceipt;
+  if (res.status === UNAVAILABLE) {
+    throw new Error(
+      `the Orchestrator is unavailable (${await errorOf(res)}), so the pick was not taken — try it again`,
+    );
+  }
+  return (await answered(res, (allowed) => allowedPicksText(allowed, opts.toolName))) as DeliveryReceipt;
 }
 
 function base(opts: MenuOptions): string {
@@ -288,17 +372,30 @@ async function unreachable(res: Response): Promise<void> {
 }
 
 /** A non-2xx `{ error }` becomes a throw — including 401/403, which must be LOUD: a silently
- * swallowed auth failure would look to the Agent exactly like a Machine that ignored it. */
-async function answered(res: Response): Promise<unknown> {
-  const text = await res.text();
-  let body: { error?: string } | undefined;
-  try {
-    body = text ? (JSON.parse(text) as { error?: string }) : undefined;
-  } catch {
-    body = { error: text.trim() };
+ * swallowed auth failure would look to the Agent exactly like a Machine that ignored it. A refusal
+ * that carries `allowed` (ADR-0029) says it, through `allowedText`. */
+async function answered(res: Response, allowedText?: (allowed: string[]) => string): Promise<unknown> {
+  const body = await bodyOf(res);
+  if (!res.ok) {
+    const error = body?.error ?? `the Orchestrator answered HTTP ${res.status}`;
+    const allowed = Array.isArray(body?.allowed) && allowedText ? ` ${allowedText(body.allowed)}` : "";
+    throw new Error(`${error}${allowed}`);
   }
-  if (!res.ok) throw new Error(body?.error ?? `the Orchestrator answered HTTP ${res.status}`);
   return body;
+}
+
+async function bodyOf(res: Response): Promise<{ error?: string; allowed?: string[] } | undefined> {
+  const text = await res.text();
+  try {
+    return text ? (JSON.parse(text) as { error?: string; allowed?: string[] }) : undefined;
+  } catch {
+    return { error: text.trim() };
+  }
+}
+
+/** What an error answer says about itself — its `{ error }`, or its status. */
+async function errorOf(res: Response): Promise<string> {
+  return (await bodyOf(res))?.error ?? `HTTP ${res.status}`;
 }
 
 /**

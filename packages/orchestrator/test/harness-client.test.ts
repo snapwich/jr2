@@ -488,3 +488,67 @@ test("a stream the Harness refuses (401) is a fault, not a reconnect — a wrong
   });
   assert.equal(calls.length, 1);
 });
+
+// ---- Notices, the guard kill, and whether a conversation is still held (ADR-0061, ADR-0062) ----
+
+test("the admission's notices ride the admit body; with none, the body is as it was (ADR-0062)", async () => {
+  const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify(admission), { status: 200 })]);
+  const port = harnessAgentRunPort(client(fetch));
+  const notices = [
+    { kind: "memory-limit" as const, scope: "workspace" as const, agent: "coder", peak: "1.8Gi", limit: "1920Mi" },
+    { kind: "conversation-new" as const, scope: "conversation" as const, reason: "the last Turn faulted" },
+  ];
+
+  await port.admit(baseInput, { definition: coder, notices });
+  await port.admit(baseInput, { definition: coder, notices: [] });
+
+  assert.deepEqual(JSON.parse(calls[0]!.init?.body as string), {
+    message: "do the thing",
+    definition: coder,
+    notices,
+  });
+  assert.deepEqual(JSON.parse(calls[1]!.init?.body as string), { message: "do the thing", definition: coder });
+});
+
+test("a guard kill on the updates stream is handed to the settle's listener, named by its place (ADR-0061)", async () => {
+  const { fetch } = scriptedFetch([
+    () =>
+      streamResponse(
+        [
+          {
+            type: "memory-limit",
+            conversationId: "inst-1",
+            position: { batch: 4, index: 0 },
+            peak: "1.8Gi",
+            limit: "1920Mi",
+          },
+          settledChunk("sub-1", "completed"),
+        ],
+        "5",
+      ),
+  ]);
+  const kills: unknown[] = [];
+  await client(fetch).wait(admission, { onMemoryLimit: (kill) => kills.push(kill) });
+  // The source is where the event sits on the conversation's stream, so a replayed read of the
+  // same event is recognizable as the same kill.
+  assert.deepEqual(kills, [{ peak: "1.8Gi", limit: "1920Mi", source: "inst-1@4.0" }]);
+});
+
+test("holds: 404 on the conversation says the Harness no longer has it; anything else says nothing", async () => {
+  const answers = [404, 200, 500];
+  for (const status of answers) {
+    const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify({}), { status })]);
+    const held = await client(fetch).holds("coder", "run/root/coder");
+    assert.equal(calls[0]!.url.pathname, "/agents/coder/run%2Froot%2Fcoder");
+    assert.equal(calls[0]!.url.searchParams.get("view"), "history");
+    assert.equal(held, status !== 404, `${status}`);
+  }
+  // Unreachable is not "gone": unknown is never loss.
+  const unreachable = createHarnessClient({
+    baseUrl: "http://h.test",
+    fetch: (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch,
+  });
+  assert.equal(await unreachable.holds("coder", "run/root/coder"), true);
+});

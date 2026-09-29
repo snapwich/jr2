@@ -1045,8 +1045,12 @@ const killed = (finishedAt: string, reason = "OOMKilled") => ({
 });
 
 test("memoryFaultOf: OOMKilled since the Turn began → the fixed prefix `memory limit`, with the limit", () => {
-  const reason = memoryFaultOf(killed("2026-09-28T10:03:00Z"), TURN)!;
+  const kill = memoryFaultOf(killed("2026-09-28T10:03:00Z"), TURN)!;
+  const { reason } = kill;
   assert.ok(reason.startsWith("memory limit"), reason);
+  // The data the next Turn's notice is made of (ADR-0062): the limit, and which kill it was.
+  assert.equal(kill.limit, "1920Mi");
+  assert.equal(kill.at, "2026-09-28T10:03:00Z");
   assert.match(reason, /^memory limit \(OOMKilled, limit 1920Mi\)/);
   assert.match(reason, /larger Size/);
   // Not a memory kill, not this Turn's, or not a kill at all → nothing to name.
@@ -1063,7 +1067,7 @@ test("memoryFault(): waits a moment for the operator's word, which can trail the
   await waitFor(() => api.openWatches === 1);
   const named = port.memoryFault("sb-1", TURN);
   setTimeout(() => api.setStatus("sandboxes", "sb-1", killed("2026-09-28T10:03:00Z").status), 5);
-  assert.match((await named)!, /^memory limit \(OOMKilled/);
+  assert.match((await named)!.reason, /^memory limit \(OOMKilled/);
   // A name the watch does not hold (the Instance Harness is a Deployment) answers at once.
   assert.equal(await port.memoryFault("jr2-instance-harness", TURN), undefined);
 });

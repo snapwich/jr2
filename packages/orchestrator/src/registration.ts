@@ -26,6 +26,8 @@
 import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
 import type { EventDef } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
+import type { NoticeScope, TakenNotices } from "./notices.ts";
+import type { Notice } from "./wire.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
 
@@ -45,8 +47,17 @@ export type Registration = {
   kind: "gate" | "agent";
   /** The caller-facing id within its dialect (the gate id, or the agent's instance id). */
   id: string;
-  /** Accepted events, name→def — the validation scope AND the discovery listing. */
+  /** Accepted events, name→def — the validation scope AND the discovery listing. For an Agent,
+   * the invoking state's derived set: what its Allowed picks are narrowed from (ADR-0029). */
   defs: Map<string, EventDef>;
+  /**
+   * An Agent's MENU (ADR-0029), in its fixed order: the union of the derived sets of every state
+   * that invokes an Agent of this name, and the tools block the Harness presents — byte-stable for
+   * the conversation, so it never breaks the provider's prompt cache. A superset of {@link defs};
+   * a pick on it that {@link defs} lacks is refused at delivery, naming the Allowed picks. Absent
+   * on gates, and on an Agent registered with no Menu, which serves its `defs` as the Menu.
+   */
+  menu?: Map<string, EventDef>;
   /** Serializable caller/integration context (PR URL, title …) — rides the discovery listing. */
   meta?: Record<string, unknown>;
   /**
@@ -140,8 +151,12 @@ export function mayMove(invoker: AnyActorRef | undefined, type: string): boolean
 
 /** Delivery target absent (unknown address, settled run, exited state) — the one catch point. */
 export class UnknownAddressError extends Error {}
-/** Delivery body rejected (unaccepted name, or payload failing the named schema). */
-export class EventValidationError extends Error {}
+/** Delivery body rejected (unaccepted name, or payload failing the named schema). An Agent's
+ * refusal carries its Allowed picks, read after the refusal (ADR-0029), so the Harness can say
+ * what the Turn may pick instead. */
+export class EventValidationError extends Error {
+  allowed?: string[];
+}
 
 /**
  * The actor path below the run's root: every id from the root's children down to `ref` itself,
@@ -259,7 +274,13 @@ export type RunBinding = {
    * flat). Optional so a bare unit-test binding can omit it — then admissions simply are not
    * durable.
    */
-  recordAdmission?: (instanceId: string, admission: AgentAdmission) => void;
+  recordAdmission?: (instanceId: string, admission: AgentAdmission, delivered?: readonly string[]) => void;
+  /**
+   * The admission ledger's READ half (ADR-0016): the last admission ledgered under this iid. A
+   * continued Turn asks it whether its conversation was ever admitted — only then can the Harness
+   * have lost it (ADR-0062).
+   */
+  admissionOf?: (instanceId: string) => AgentAdmission | undefined;
   /**
    * The epoch ledger's READ half (ADR-0057): the current epoch of a continued conversation,
    * keyed by its base Instance ID ({@link continuedIid}). The input mapper reads it AT MINT TIME,
@@ -273,9 +294,21 @@ export type RunBinding = {
    * it ended, and the next `continue` on that Agent mints `<conversation>/<epoch>` — a virgin
    * conversation. No fault leaves a conversation worth continuing (ADR-0035): a runaway either
    * had its reroll or holds a poisoned context, and infra and no-signal mean the Harness that
-   * held it is unreachable. Persisted beside the snapshot with the admission ledger.
+   * held it is unreachable. Persisted beside the snapshot with the admission ledger. `reason` is
+   * the fault's: the host raises it as the next `continue`'s `conversation-new` notice (ADR-0062).
    */
-  bumpEpoch?: (conversation: string) => void;
+  bumpEpoch?: (conversation: string, reason: string) => void;
+  /**
+   * The notices' write half (ADR-0062): keep a notice for the next admission in scope — `to` is a
+   * continued conversation's base id or a Sandbox name, as the notice's `scope` says. Persisted at
+   * the write, like the ledgers. `source` names the event, so one event raised twice is one notice.
+   * A burned conversation's notice is raised by `bumpEpoch` itself, in the same save.
+   */
+  raiseNotice?: (notice: Notice, to: string, source?: string) => void;
+  /** Reserve the pending notices in one admission's scope. They are delivered by the
+   * `recordAdmission` that ledgers it (its `delivered` ids), or released if the admission fails. */
+  takeNotices?: (scope: NoticeScope) => TakenNotices;
+  releaseNotices?: (ids: readonly string[]) => void;
   /**
    * Surface absorbed-retry telemetry on the run feed (ADR-0016): attempts are observable, but
    * as `{ child, attempt }` — state-key-class data, never iids (ADR-0014's line holds on the

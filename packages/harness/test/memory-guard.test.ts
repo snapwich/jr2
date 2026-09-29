@@ -181,3 +181,25 @@ test("sizes read the way a Size is written", () => {
   assert.equal(formatBytes(Math.floor(1.9 * Gi)), "1.9Gi");
   assert.equal(formatBytes(512 * Mi), "512Mi");
 });
+
+test("a kill is reported to every listener, with the peak and limit as a Size is written (ADR-0062)", () => {
+  const { guard } = rig(2 * Gi, [Math.floor(1.9 * Gi), 200 * Mi]);
+  const kills: unknown[] = [];
+  const off = guard.onKill((kill) => kills.push(kill));
+  guard.check();
+  assert.deepEqual(kills, [{ peak: "1.9Gi", limit: "2Gi" }]);
+  off();
+  guard.check();
+  assert.equal(kills.length, 1, "an unsubscribed listener hears nothing more");
+});
+
+test("a pass that finds nothing of the Agent's to kill reports nothing", () => {
+  const guard = new MemoryGuard(
+    { limit: () => 2 * Gi, usage: () => Math.floor(1.9 * Gi) },
+    { killAgentProcesses: () => 0, clearShm: () => {}, log: () => {} },
+  );
+  const kills: unknown[] = [];
+  guard.onKill((kill) => kills.push(kill));
+  guard.check();
+  assert.deepEqual(kills, []);
+});

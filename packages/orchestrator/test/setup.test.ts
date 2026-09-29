@@ -244,6 +244,64 @@ test("agent menus and gate accepts derive from transitions, routed by audience",
   actor.stop();
 });
 
+test("the Menu is the union of every state that invokes that Agent, sorted — fixed for the conversation (ADR-0029)", async () => {
+  const finish = defineEvent({ name: "finish", input: z.object({}) });
+  const dispute = defineEvent({ name: "dispute", input: z.object({}) });
+  const verdict = defineEvent({ name: "verdict", input: z.object({}) });
+  const humanOnly = defineEvent({ name: "merge", audience: "external", input: z.object({}) });
+  const coder = new MockFlueClient();
+  const reviewer = new MockFlueClient();
+  const machine = jr2Setup({
+    types: {} as { context: Record<string, never> },
+    events: [finish, dispute, verdict, humanOnly],
+    actors: { coder: slot(coder), reviewer: slot(reviewer) },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    initial: "implement",
+    states: {
+      implement: {
+        invoke: { src: "coder", input: { prompt: "go", continue: true, endpoint: "http://x" } },
+        on: { finish: "review", merge: "done" },
+      },
+      review: {
+        invoke: { src: "reviewer", input: { prompt: "look", endpoint: "http://x" } },
+        on: { verdict: "fix" },
+      },
+      fix: {
+        invoke: { src: "coder", input: { prompt: "fix it", continue: true, endpoint: "http://x" } },
+        on: { finish: "review", dispute: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+
+  const { actor, table } = hostless(machine);
+  await tick();
+  const first = coder.admits[0]!;
+  // The state's own derived set is still what delivery validates against…
+  assert.deepEqual([...first.tools], ["finish"]);
+  // …and the Menu is every pick ANY state invoking `coder` derives, in a fixed order, so the
+  // tools block of `implement` is byte-identical to the tools block of `fix`. Never another
+  // Agent's picks, never an external-audience event.
+  assert.deepEqual(first.menu, ["dispute", "finish"]);
+  const reg = table.lookup(`agent/${first.instanceId}`)!;
+  assert.deepEqual(
+    [...(reg.menu?.keys() ?? [])],
+    ["dispute", "finish"],
+    "the registration carries the Menu beside the defs",
+  );
+
+  table.deliver(`agent/${first.instanceId}`, "finish", {});
+  await tick();
+  assert.deepEqual(reviewer.admits[0]!.menu, ["verdict"], "each Agent name has its own Menu");
+  table.deliver(`agent/${reviewer.admits[0]!.instanceId}`, "verdict", {});
+  await tick();
+  assert.deepEqual(coder.admits[1]!.tools, ["finish", "dispute"]);
+  assert.deepEqual(coder.admits[1]!.menu, first.menu, "the same Menu in every state of the conversation");
+  actor.stop();
+});
+
 // An EMPTY Menu is legitimate — a state moved by a Gate or a timer asks its Agent for text and
 // nothing else — so it cannot be refused on sight. What is refused is the shape that LOOKS like
 // a Menu and is not one: picks written in the invoking state's SUBSTATES, which the derivation

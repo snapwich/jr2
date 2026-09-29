@@ -32,6 +32,7 @@
 
 import { createServer } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
+import type { Notice } from "./wire.ts";
 
 /** One admission of an Agent: which slot, which durable exchange, this Turn's FRAME (the prompt
  * and where it works — ADR-0057), the DEFINITION the Machine's slot carried here (ADR-0049), and
@@ -49,6 +50,8 @@ export type Admission = {
   definition?: Record<string, unknown>;
   model?: string;
   thinkingLevel?: string;
+  /** The notices the admission carried (ADR-0062). Absent when it carried none. */
+  notices?: Notice[];
 };
 
 /** One settled submission, in the shape `history()` reports it. The stub settles submissions for
@@ -133,6 +136,7 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
               definition?: Record<string, unknown>;
               model?: string;
               thinkingLevel?: string;
+              notices?: Notice[];
             }
           | undefined;
         const admission: Admission = {
@@ -145,6 +149,7 @@ export async function startStubHarness(opts: StubHarnessOptions = {}): Promise<R
           ...(sent?.definition ? { definition: sent.definition } : {}),
           ...(sent?.model ? { model: sent.model } : {}),
           ...(sent?.thinkingLevel ? { thinkingLevel: sent.thinkingLevel } : {}),
+          ...(sent?.notices?.length ? { notices: sent.notices } : {}),
         };
         admissions.push(admission);
         const submissionId = `stub-${++submissionSeq}`;

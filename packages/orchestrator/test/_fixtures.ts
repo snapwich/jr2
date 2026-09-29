@@ -18,11 +18,13 @@ import type {
   AgentRunPort,
   AgentTurnInput,
   AgentTurnPlacement,
+  GuardKill,
 } from "../src/actor.ts";
 import type { AgentDefinition } from "../src/agent.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import type { WorkflowDef } from "../src/run-host.ts";
+import type { Notice } from "../src/wire.ts";
 
 /** An AgentRunPort the test drives by hand: capture admissions/attaches, settle or fault them. */
 export class MockFlueClient implements AgentRunPort {
@@ -31,6 +33,17 @@ export class MockFlueClient implements AgentRunPort {
   /** The DEFINITION each of those admits carried (ADR-0049) — the actor reads it off its own
    * slot's closure, so this is where a test sees that it left the Orchestrator with the Turn. */
   definitions: AgentDefinition[] = [];
+  /** The notices each of those admits carried (ADR-0062) — `[]` for an admit that carried none. */
+  notices: Notice[][] = [];
+  /** Hold admits unanswered, so a test can restart the host BEFORE an admission is ledgered. */
+  holdAdmits = false;
+  private heldAdmits: Array<() => void> = [];
+  /** What `holds()` answers: whether the Harness still has the conversation. */
+  held = true;
+  /** Every conversation `holds()` was asked about. */
+  heldAsked: string[] = [];
+  /** The guard-kill listener of the settle in flight (ADR-0061), for `guardKill()`. */
+  private onMemoryLimit: ((kill: GuardKill) => void) | undefined;
   /** The admission minted on the LATEST admit. Distinct per admit so ledgers are assertable. */
   minted: AgentAdmission | undefined;
   /** Every admission `settle()` was asked to follow (fresh AND re-attached). */
@@ -53,16 +66,38 @@ export class MockFlueClient implements AgentRunPort {
   admit(input: AgentRunInput, opts: AgentAdmitOptions): Promise<AgentAdmission> {
     this.admits.push(input);
     this.definitions.push(opts.definition);
-    this.minted = {
+    this.notices.push(opts.notices ?? []);
+    const minted: AgentAdmission = {
       streamUrl: `http://mock/agents/${input.agentName}/${input.instanceId}`,
       offset: `adm-${++this.seq}`,
       submissionId: `sub-${this.seq}`,
     };
-    return Promise.resolve(this.minted);
+    this.minted = minted;
+    if (!this.holdAdmits) return Promise.resolve(minted);
+    return new Promise((resolve) => this.heldAdmits.push(() => resolve(minted)));
   }
 
-  settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void> {
+  /** Answer the held admits (see {@link holdAdmits}). */
+  releaseAdmits(): void {
+    for (const resolve of this.heldAdmits.splice(0)) resolve();
+  }
+
+  holds(_agentName: string, instanceId: string): Promise<boolean> {
+    this.heldAsked.push(instanceId);
+    return Promise.resolve(this.held);
+  }
+
+  /** The Harness's memory guard killed the Agent's processes during the settle in flight. */
+  guardKill(kill: GuardKill): void {
+    this.onMemoryLimit?.(kill);
+  }
+
+  settle(
+    admission: AgentAdmission,
+    opts?: { signal?: AbortSignal; onMemoryLimit?: (kill: GuardKill) => void },
+  ): Promise<void> {
     this.settled.push(admission);
+    this.onMemoryLimit = opts?.onMemoryLimit;
     // Stays live until completed, faulted, or abandoned (the mechanics-tier default is "admitted,
     // never settles").
     return new Promise<void>((resolve, reject) => {

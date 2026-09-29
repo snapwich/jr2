@@ -15,6 +15,7 @@ import {
   workspace,
   workspaceName,
   type Continuity,
+  type MemoryKill,
   type ProvisionedRepo,
   type SandboxPort,
   type WorkspaceSpec,
@@ -117,7 +118,7 @@ class FakeSandbox implements SandboxPort {
     queueMicrotask(() => set.has(listener) && listener(this.seen()));
     return () => set.delete(listener);
   }
-  async memoryFault(): Promise<string | undefined> {
+  async memoryFault(): Promise<MemoryKill | undefined> {
     return undefined;
   }
   async destroy(name: string): Promise<void> {

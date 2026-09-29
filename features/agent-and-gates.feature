@@ -18,7 +18,8 @@ Feature: Agents and gates drive a run from outside
 
     Scenario: the agent surface serves exactly the invoking state's tools
       When I start the "review" workflow against the stub harness
-      Then the agent's surface offers exactly "request_review"
+      Then the agent's Menu is exactly "request_review"
+      And the agent's Allowed picks are exactly "request_review"
 
     Scenario: an agent tool call moves the run
       When I start the "review" workflow against the stub harness
@@ -29,32 +30,35 @@ Feature: Agents and gates drive a run from outside
       # keeps the Workspace, so nothing else would ever stop the Agent generating.
       And the stub Harness reports the Agent's turn settled as "aborted"
 
-  Rule: a menu offers only what the Machine will currently accept
-    ADR-0029. The VOCABULARY a state declares is static — it is what delivery validates against —
-    but the guards on those transitions decide what the turn is actually offered. What a guard
-    cannot answer before the Agent has picked its arguments is left on the menu and judged exactly
-    on delivery, so a pick is never silently unavailable and never silently ignored.
+  Rule: the Menu is fixed, and the Allowed picks are only what the Machine will currently accept
+    ADR-0029. The Menu is the tools block, fixed for the conversation, so it never breaks the
+    provider's prompt cache. The guards on the invoking state's transitions decide what the Turn
+    may pick — its Allowed picks. What a guard cannot answer before the Agent has picked its
+    arguments is left allowed and judged exactly on delivery, so a pick is never silently
+    unavailable and never silently ignored.
 
     Background:
       Given a fresh instance
       And the instance also has the "guarded" workflow
       And the orchestrator is serving
 
-    Scenario: a guard the menu can answer removes the tool
+    Scenario: a guard the surface can answer removes the pick, not the tool
       When I start the "guarded" workflow against the stub harness with 0 attempts
-      Then the agent's surface offers exactly "request_review"
+      Then the agent's Allowed picks are exactly "request_review"
+      And the agent's Menu is exactly "escalate, request_review"
 
-    Scenario: the same workflow offers it once the guard is satisfiable
+    Scenario: the same workflow allows it once the guard is satisfiable
       When I start the "guarded" workflow against the stub harness with 1 attempts
-      Then the agent's surface offers exactly "escalate, request_review"
+      Then the agent's Allowed picks are exactly "escalate, request_review"
+      And the agent's Menu is exactly "escalate, request_review"
 
     Scenario: a guard on the PICK is offered, then answered by the receipt
       When I start the "guarded" workflow against the stub harness with 0 attempts
-      # Offered, because the guard reads arguments that do not exist until the Agent picks.
-      Then the agent's surface offers exactly "request_review"
+      # Allowed, because the guard reads arguments that do not exist until the Agent picks.
+      Then the agent's Allowed picks are exactly "request_review"
       When the agent calls "request_review" with summary " " and is told it moved nothing
       Then the run's status shows state "working"
-      And the agent's surface offers exactly "request_review"
+      And the agent's Allowed picks are exactly "request_review"
 
     Scenario: the same tool with arguments the guard accepts does move the run
       When I start the "guarded" workflow against the stub harness with 0 attempts
@@ -125,7 +129,7 @@ Feature: Agents and gates drive a run from outside
       And the instance also has the "review" workflow
       And the orchestrator is serving
       And I start the "review" workflow against the stub harness
-      Then the agent's surface offers exactly "request_review"
+      Then the agent's Allowed picks are exactly "request_review"
       When I cancel the run
       Then the run's status shows "cancelled"
       And the agent's surface is gone

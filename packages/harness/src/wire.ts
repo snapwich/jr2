@@ -20,7 +20,28 @@ import type { AgentDefinition, TurnDials, TurnFrame } from "./spec.ts";
  * definition's own values. A definition that cannot run (missing fields, an unresolvable `model`)
  * or a Frame that cannot frame (a `cwd` that is not a path) is rejected at admission (400, naming
  * the slot), not settled `failed` mid-run. */
-export type AdmissionRequest = { definition: AgentDefinition } & TurnFrame & TurnDials;
+export type AdmissionRequest = { definition: AgentDefinition } & TurnFrame & TurnDials & TurnNotices;
+
+/** What the Orchestrator keeps for the next Turn in a scope (ADR-0062), typed — the Harness writes
+ * every word of the Briefing, so the wire carries facts, never text. Delivered once: the admission
+ * that carries a notice is the one that clears it. */
+export type TurnNotices = { notices?: Notice[] };
+
+/** The Sandbox's processes were killed at its memory limit (ADR-0061) during `agent`'s Turn —
+ * stated to the next Turn of ANY Agent in that Workspace. `peak` is known when the Harness's guard
+ * fired, not when the kernel did. Sizes are written the way a Size is (`2Gi`, `1.9Gi`). */
+export type MemoryLimitNotice = {
+  kind: "memory-limit";
+  scope: "workspace";
+  agent: string;
+  peak?: string;
+  limit: string;
+};
+
+/** This conversation is new and earlier context is gone — stated to that Agent's next Turn. */
+export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversation"; reason: string };
+
+export type Notice = MemoryLimitNotice | ConversationNewNotice;
 
 /** The Admission: what `POST /agents/:name/:id` answers with (200, immediately — accept
  * and queue). The serializable three-string handle the host ledger persists (ADR-0016) and a
@@ -32,7 +53,8 @@ export type AdmissionResponse = {
 };
 
 /** How a Submission ends (ADR-0024/0027): `completed` (the prompt resolved), `failed` (the turn
- * threw — provider failure after retries, or the Menu connect/list failed), `aborted` (swept). */
+ * threw — provider failure after retries, or the Menu connect/list failed), `aborted` (swept, or
+ * over before it started — ADR-0026). */
 export type SettlementOutcome = "completed" | "failed" | "aborted";
 
 /** The error payload a non-`completed` Settlement carries. */
@@ -79,8 +101,14 @@ export type MessageAppendedEvent = StreamChunk<"message-appended"> & {
  * a parked long-poll. */
 export type SubmissionSettledEvent = StreamChunk<"submission-settled"> & Settlement;
 
+/** The Harness's guard killed the Agent's processes at the memory limit (ADR-0061, layer 4) while
+ * this conversation's Submission ran. The Orchestrator reads it off the stream it already waits on
+ * and keeps a workspace notice (ADR-0062) — the pod did not restart, so nothing else would tell it.
+ * Sizes as `formatBytes` writes them (`1.9Gi`). */
+export type MemoryLimitEvent = StreamChunk<"memory-limit"> & { peak: string; limit: string };
+
 /** One event on the durable stream (`GET ?offset=…&view=updates` → 200 JSON array). */
-export type StreamEvent = MessageAppendedEvent | SubmissionSettledEvent;
+export type StreamEvent = MessageAppendedEvent | SubmissionSettledEvent | MemoryLimitEvent;
 
 /** The conversation snapshot (`GET ?view=history` → 200). `settlements` is the contract;
  * `messages` is observability. */

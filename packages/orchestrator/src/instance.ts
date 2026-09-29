@@ -190,6 +190,8 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     close: async () => {
       // Before `server.close()`, not after: it waits for in-flight requests, and an observation
       // feed is in-flight until its watcher goes away. `host.close()` is what makes them go away.
+      // From that call on, `/agents/*` answers 503 until the listener closes: the Turns are parked
+      // for the next boot's restore, not over, so no Harness may read a 404 here (ADR-0026).
       await host.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await store.close();

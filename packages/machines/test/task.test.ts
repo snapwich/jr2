@@ -26,6 +26,7 @@ import {
   type AgentDefinition,
   type AgentRunInput,
   type AgentRunPort,
+  type MemoryKill,
   type ProvisionedRepo,
   type SandboxPort,
   type WorkflowDef,
@@ -62,6 +63,9 @@ class MockPort implements AgentRunPort {
   }
   abort(): Promise<void> {
     return Promise.resolve();
+  }
+  holds(): Promise<boolean> {
+    return Promise.resolve(true);
   }
   /** Settle the nth (0-based) admission FAILED — an infra fault after the turn's own retries, which
    * the actor absorbs into the one terminal `agent.fault` (ADR-0016/0027). */
@@ -100,7 +104,7 @@ class FakeSandbox implements SandboxPort {
     queueMicrotask(() => listener({ present: this.present }));
     return () => {};
   }
-  async memoryFault(): Promise<string | undefined> {
+  async memoryFault(): Promise<MemoryKill | undefined> {
     return undefined;
   }
   async destroy(name: string): Promise<void> {

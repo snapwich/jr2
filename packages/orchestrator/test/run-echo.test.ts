@@ -13,7 +13,7 @@ import { doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import type { AgentRunInput } from "../src/actor.ts";
-import { workspace, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
+import { workspace, type MemoryKill, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
 import { RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts";
 import { mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
@@ -35,7 +35,7 @@ class EchoSandbox implements SandboxPort {
     queueMicrotask(() => listener({ present: true, identity: "pod-1" }));
     return () => {};
   }
-  async memoryFault(): Promise<string | undefined> {
+  async memoryFault(): Promise<MemoryKill | undefined> {
     return undefined;
   }
   async destroy() {}

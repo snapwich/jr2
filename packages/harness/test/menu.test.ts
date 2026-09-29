@@ -1,16 +1,18 @@
-// Menu tests (ADR-0013/0027/0059): `readMenu` against the surface the Orchestrator serves, as the
-// Custodian relays it — no pi here (menu-tools.test.ts). Asserted: the bare name (sanitized like
+// Menu tests (ADR-0013/0027/0029/0059): `readMenu` against the surface the Orchestrator serves, as
+// the Custodian relays it — no pi here (menu-tools.test.ts). Asserted: the bare name (sanitized like
 // flue did), the encoded-iid path, the Stand-in as the bearer on both routes, the event's schema as
-// the item's parameters, a pick as one delivery whose receipt reads as prose, that an empty Menu is
-// no items and no error (ADR-0026), that a pick against a settled turn fails, that a deferred event refuses
-// the turn, and the surface read's retry ladder (ADR-0042) — including the Custodian's own word
-// that the Orchestrator never answered.
+// the item's parameters, the Menu and the Allowed picks read apart — and an older Orchestrator's
+// `accepts` read as both (ADR-0029's skew) — a pick as one delivery whose receipt reads as prose and
+// names the Allowed picks, that a turn that is over reads as NO surface rather than an empty Menu
+// (ADR-0026), that a pick against a settled turn fails, that a deferred event refuses the turn, and
+// the surface read's retry ladder (ADR-0042) — including the Custodian's own word that the
+// Orchestrator never answered, and a stopping Orchestrator's 503 — while a pick is never retried.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { readMenu, receiptProse, type DeliveryReceipt, type Surface } from "../src/menu.ts";
+import { allowedPicksText, readMenu, receiptProse, type DeliveryReceipt, type Surface } from "../src/menu.ts";
 
 const STAND_IN = "jr2-held-JR2_SANDBOX_TOKEN";
 
@@ -18,7 +20,8 @@ const SURFACE: Surface = {
   instanceId: "run-1/reviewer",
   runId: "run-1",
   sandbox: "ws-1",
-  accepts: [
+  allowed: ["review_verdict"],
+  menu: [
     {
       name: "review_verdict",
       description: "Record the verdict.",
@@ -57,9 +60,16 @@ function fakeFetch(answer: (call: Call) => Response | Promise<Response>): { fetc
 
 const opts = (f: typeof fetch) => ({ url: "http://127.0.0.1:8081/", token: STAND_IN, fetch: f, log: () => {} });
 
+/** The items of a read that found a live surface — every read here but the turn-is-over ones. */
+async function menuOf(...args: Parameters<typeof readMenu>) {
+  const read = await readMenu(...args);
+  assert.ok(read, "a live surface");
+  return read.menu;
+}
+
 test("the surface becomes the Menu: the bare name, sanitized, the event's schema as parameters", async () => {
   const { fetch, calls } = fakeFetch(() => Response.json(SURFACE));
-  const menu = await readMenu(opts(fetch), "run-1/reviewer");
+  const menu = await menuOf(opts(fetch), "run-1/reviewer");
   assert.deepEqual(
     menu.map((item) => [item.name, item.event]),
     [
@@ -89,7 +99,7 @@ test("a pick is one delivery with the Stand-in, and the receipt comes back as pr
     deliveryId: "d-1",
   };
   const { fetch, calls } = fakeFetch((call) => Response.json(call.method === "GET" ? SURFACE : receipt));
-  const menu = await readMenu(opts(fetch), "run-1/reviewer");
+  const menu = await menuOf(opts(fetch), "run-1/reviewer");
   const prose = await menu[0]!.pick({ verdict: "approved" });
   const post = calls[1]!;
   assert.equal(post.method, "POST");
@@ -106,7 +116,7 @@ test("an argument named `type` cannot make a pick another event", async () => {
       call.method === "GET" ? SURFACE : { delivered: true, event: "note.add", turnComplete: false, deliveryId: "d" },
     ),
   );
-  const menu = await readMenu(opts(fetch), "run-1/reviewer");
+  const menu = await menuOf(opts(fetch), "run-1/reviewer");
   await menu[1]!.pick({ type: "review_verdict", verdict: "approved" });
   assert.equal(JSON.parse(calls[1]!.body!).type, "note.add");
 });
@@ -117,16 +127,131 @@ test("the receipt says a rejected pick was rejected, and reads an absent `moved`
   assert.match(receiptProse(base), /still in the state that asked for this turn/);
 });
 
-test("a turn that is over has an EMPTY Menu, not an error (ADR-0026); a pick against it fails loudly", async () => {
+test("a turn that is over has NO surface — not an empty Menu (ADR-0026); a pick against it fails loudly", async () => {
   let live = true;
   const { fetch } = fakeFetch((call) => {
     if (!live) return Response.json({ error: "no live agent surface" }, { status: 404 });
     return call.method === "GET" ? Response.json(SURFACE) : Response.json({});
   });
-  const menu = await readMenu(opts(fetch), "run-1/reviewer");
+  const menu = await menuOf(opts(fetch), "run-1/reviewer");
   live = false;
-  assert.deepEqual(await readMenu(opts(fetch), "run-1/reviewer"), []);
+  assert.equal(await readMenu(opts(fetch), "run-1/reviewer"), undefined);
   await assert.rejects(() => menu[0]!.pick({ verdict: "approved" }), /this turn is over/);
+});
+
+test("the Menu and the Allowed picks are read apart: the tools are the Menu, whatever is allowed (ADR-0029)", async () => {
+  const { fetch } = fakeFetch(() => Response.json({ ...SURFACE, allowed: ["note.add"] }));
+  const read = await readMenu(opts(fetch), "run-1/reviewer");
+  assert.deepEqual(
+    read?.menu.map((item) => item.event),
+    ["review_verdict", "note.add"],
+  );
+  assert.deepEqual(read?.allowed, ["note.add"]);
+});
+
+test("an older Orchestrator's `accepts` is read as both the tools and the Allowed picks (ADR-0029 skew)", async () => {
+  const { menu: events, allowed: _allowed, ...rest } = SURFACE;
+  const { fetch } = fakeFetch(() => Response.json({ ...rest, accepts: events }));
+  const read = await readMenu(opts(fetch), "run-1/reviewer");
+  assert.deepEqual(
+    read?.menu.map((item) => item.event),
+    ["review_verdict", "note.add"],
+  );
+  assert.deepEqual(read?.allowed, ["review_verdict", "note.add"]);
+});
+
+test("a Menu with no `allowed` beside it allows all of it — absent is not empty (ADR-0029)", async () => {
+  const { allowed: _allowed, ...rest } = SURFACE;
+  const { fetch } = fakeFetch(() => Response.json(rest));
+  assert.deepEqual((await readMenu(opts(fetch), "run-1/reviewer"))?.allowed, ["review_verdict", "note.add"]);
+});
+
+test("the Allowed-picks text names each pick as the presenter names it, and says so when none is allowed", () => {
+  assert.equal(allowedPicksText(["finish"]), "Allowed now: `finish`.");
+  assert.equal(
+    allowedPicksText(["finish", "note.add"], (name) => `mcp__jr2__${name}`),
+    "Allowed now: `mcp__jr2__finish`, `mcp__jr2__note_add`.",
+  );
+  assert.match(allowedPicksText([]), /^Allowed now: none\b/);
+});
+
+test("a pick the workflow did not act on, or that left the turn open, says what is allowed now (ADR-0029)", async () => {
+  const receipt: DeliveryReceipt = {
+    delivered: true,
+    event: "review_verdict",
+    moved: false,
+    turnComplete: false,
+    deliveryId: "d-3",
+    allowed: ["note.add"],
+  };
+  assert.match(receiptProse(receipt), /did NOT act on it.*Allowed now: `note_add`\./s);
+  assert.match(receiptProse({ ...receipt, moved: true }), /not over yet.*Allowed now: `note_add`\./s);
+  // An older Orchestrator sends no `allowed`: nothing is said, rather than "none".
+  const { allowed: _a, ...old } = receipt;
+  assert.doesNotMatch(receiptProse(old), /Allowed now/);
+  // A pick that ended the turn says nothing of picks: there are none left to make.
+  assert.doesNotMatch(receiptProse({ ...receipt, moved: true, turnComplete: true }), /Allowed now/);
+
+  // The presenter's names reach the receipt a pick answers with.
+  const { fetch } = fakeFetch((call) => Response.json(call.method === "GET" ? SURFACE : receipt));
+  const menu = await menuOf({ ...opts(fetch), toolName: (name) => `mcp__jr2__${name}` }, "run-1/reviewer");
+  assert.match(await menu[0]!.pick({ verdict: "x" }), /Allowed now: `mcp__jr2__note_add`\./);
+});
+
+test("a pick outside the Allowed picks is refused, and the refusal names them (ADR-0029)", async () => {
+  const { fetch } = fakeFetch((call) =>
+    call.method === "GET"
+      ? Response.json(SURFACE)
+      : Response.json(
+          { error: 'event "review_verdict" is not accepted by the invoking state', allowed: ["note.add"] },
+          { status: 400 },
+        ),
+  );
+  const menu = await menuOf(opts(fetch), "run-1/reviewer");
+  await assert.rejects(
+    () => menu[0]!.pick({ verdict: "approved" }),
+    /not accepted by the invoking state.*Allowed now: `note_add`\./s,
+  );
+});
+
+test("a stopping Orchestrator's 503 is re-asked on the surface read (ADR-0026/0042)", async () => {
+  let n = 0;
+  const lines: string[] = [];
+  const { fetch } = fakeFetch(() => {
+    n += 1;
+    if (n <= 2) return Response.json({ error: "the Orchestrator is stopping" }, { status: 503 });
+    return Response.json(SURFACE);
+  });
+  const menu = await menuOf(
+    { ...opts(fetch), retryInitialMs: 1, retryMaxMs: 2, log: (l) => lines.push(l) },
+    "run-1/reviewer",
+  );
+  assert.equal(menu.length, 2);
+  assert.equal(n, 3);
+  assert.match(lines[0]!, /attempts=3 ms=\d+ last=503 /);
+});
+
+test("a surface read that only ever gets 503 fails when the window closes, and says the Orchestrator was unavailable", async () => {
+  const { fetch } = fakeFetch(() => Response.json({ error: "the Orchestrator is stopping" }, { status: 503 }));
+  await assert.rejects(
+    () => readMenu({ ...opts(fetch), retryInitialMs: 1, retryMaxMs: 1, retryWindowMs: 5 }, "run-1/reviewer"),
+    /the Orchestrator never answered .*: HTTP 503 .*the Orchestrator is stopping/,
+  );
+});
+
+test("a pick that gets 503 says try it again, and is NOT re-sent (ADR-0026/0042)", async () => {
+  const { fetch, calls } = fakeFetch((call) =>
+    call.method === "GET"
+      ? Response.json(SURFACE)
+      : Response.json({ error: "the Orchestrator is stopping" }, { status: 503 }),
+  );
+  const menu = await menuOf(opts(fetch), "run-1/reviewer");
+  await assert.rejects(() => menu[0]!.pick({ verdict: "approved" }), /try it again/);
+  assert.equal(
+    calls.filter((c) => c.method === "POST").length,
+    1,
+    "one POST — a duplicate pick is a duplicate transition",
+  );
 });
 
 test("an Orchestrator refusal is loud — a 403 is not an empty Menu", async () => {
@@ -135,7 +260,7 @@ test("an Orchestrator refusal is loud — a 403 is not an empty Menu", async () 
 });
 
 test("a deferred event refuses the turn — a tool whose result never comes is a lie (ADR-0013)", async () => {
-  const deferred = { ...SURFACE, accepts: [{ ...SURFACE.accepts[0]!, semantics: "deferred" as const }] };
+  const deferred = { ...SURFACE, menu: [{ ...SURFACE.menu![0]!, semantics: "deferred" as const }] };
   const { fetch } = fakeFetch(() => Response.json(deferred));
   await assert.rejects(() => readMenu(opts(fetch), "run-1/reviewer"), /`deferred`.*reserved, not built/);
 });
@@ -159,7 +284,7 @@ test("a surface read that never got an answer is retried, and what it cost is lo
     }
     return Response.json(SURFACE);
   });
-  const menu = await readMenu(
+  const menu = await menuOf(
     { ...opts(fetch), retryInitialMs: 1, retryMaxMs: 2, log: (l) => lines.push(l) },
     "run-1/reviewer",
   );
@@ -169,7 +294,7 @@ test("a surface read that never got an answer is retried, and what it cost is lo
 
   // A first-time read stays silent.
   lines.length = 0;
-  await readMenu({ ...opts(fakeFetch(() => Response.json(SURFACE)).fetch), log: (l) => lines.push(l) }, "x");
+  await menuOf({ ...opts(fakeFetch(() => Response.json(SURFACE)).fetch), log: (l) => lines.push(l) }, "x");
   assert.deepEqual(lines, []);
 });
 
@@ -190,7 +315,7 @@ test("a surface read with no answer is ended and retried; a window that closes o
           init?.signal?.addEventListener("abort", () => reject(init.signal!.reason as Error), { once: true }),
         ),
       ])) as typeof fetch;
-  const menu = await readMenu(
+  const menu = await menuOf(
     { ...opts(hanging(fetch)), attemptTimeoutMs: 20, retryInitialMs: 1, retryMaxMs: 1, log: (l) => lines.push(l) },
     "run-1/reviewer",
   );
@@ -248,7 +373,7 @@ test("over a real socket: the Menu reads and delivers through whatever answers a
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
-    const menu = await readMenu({ url, token: STAND_IN }, "run-1/reviewer");
+    const menu = await menuOf({ url, token: STAND_IN }, "run-1/reviewer");
     await menu[1]!.pick({});
     assert.deepEqual(seen, [
       `GET /agents/run-1%2Freviewer/surface Bearer ${STAND_IN}`,

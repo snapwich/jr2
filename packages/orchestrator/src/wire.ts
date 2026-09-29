@@ -51,14 +51,47 @@ export type MessageAppendedEvent = StreamChunk<"message-appended"> & {
  * a parked long-poll. */
 export type SubmissionSettledEvent = StreamChunk<"submission-settled"> & Settlement;
 
+/**
+ * The Harness's memory guard killed the Agent's processes (ADR-0061, layer 4), on the stream of the
+ * conversation whose Turn was running. The Agent heard it in its `bash` answer; this is how the
+ * Orchestrator hears it, so the next Turn in the Workspace is told (ADR-0062). `peak` and `limit`
+ * are the guard's own spellings — carried to the notice as they are, never parsed.
+ */
+export type MemoryLimitEvent = StreamChunk<"memory-limit"> & { peak: string; limit: string };
+
 /** One event on the durable stream (`GET ?offset=…&view=updates` → 200 JSON array). */
-export type StreamEvent = MessageAppendedEvent | SubmissionSettledEvent;
+export type StreamEvent = MessageAppendedEvent | SubmissionSettledEvent | MemoryLimitEvent;
+
+// ---- Notices (ADR-0062) ------------------------------------------------------------------------
+// What happened that the next Turn cannot find out for itself, as DATA: the Orchestrator keeps
+// them and attaches the pending ones in scope to an admission (`AdmissionRequest.notices`); the
+// Harness writes every word of the Briefing's Turn part from them.
+
+/** The Sandbox's processes were killed at its memory limit during `agent`'s Turn — by the
+ * Harness's guard (`peak` known) or by the kernel (`peak` unknown). Workspace scope: the next Turn
+ * of any Agent in that Workspace. */
+export type MemoryLimitNotice = {
+  kind: "memory-limit";
+  scope: "workspace";
+  agent: string;
+  peak?: string;
+  limit: string;
+};
+
+/** This conversation is new; earlier context is gone. Conversation scope: that Agent's next
+ * continued Turn. `reason` says why — the fault that burned the last one, or that the Harness no
+ * longer holds it. */
+export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversation"; reason: string };
+
+export type Notice = MemoryLimitNotice | ConversationNewNotice;
 
 /** Response header: the offset to resume the stream from (every stream read carries it). */
 export const STREAM_NEXT_OFFSET_HEADER = "stream-next-offset";
 
-/** `?view=` value the client reads. A read with neither view is `updates`. */
+/** `?view=` values the client reads. A read with neither view is `updates`; `history` is the
+ * conversation snapshot, read only to learn whether the Harness still holds it (ADR-0062). */
 export const VIEW_UPDATES = "updates";
+export const VIEW_HISTORY = "history";
 
 /** `?live=` value: park until a new event or timeout (204 + the same headers). Long-poll is the
  * ONLY wait transport (ADR-0027) — no SSE, no `?wait=result`. */

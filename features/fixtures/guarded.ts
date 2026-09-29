@@ -2,16 +2,17 @@
 // delivery receipt have something to disagree about.
 //
 // The Menu is DERIVED, never written (ADR-0057 retired the override): the two transitions below
-// are the Menu, so what this fixture exercises over the wire is the guard FILTER, not the
-// derivation — derivation is `setup.test.ts`'s job. The filter reads whatever is registered, which
-// is what makes that split sound. The Turn says `continue`, so the surface the steps drive sits at
+// are the Menu — fixed, whatever the guards say (ADR-0029) — so what this fixture exercises over
+// the wire is the guard FILTER that narrows it to the Allowed picks, not the derivation —
+// derivation is `setup.test.ts`'s job. The filter reads whatever is registered, which is what
+// makes that split sound. The Turn says `continue`, so the surface the steps drive sits at
 // the structural id `<runId>/root/coder` (ADR-0057): this Machine is the run's root.
 //
 // Two guard shapes on purpose, because they are handled differently:
-//   `escalate`       — guarded on CONTEXT. Answerable before the Agent picks, so it is filtered off
-//                      the menu when illegal, and appears when `attempts` makes it legal.
+//   `escalate`       — guarded on CONTEXT. Answerable before the Agent picks, so it is left out of
+//                      the Allowed picks when illegal, and allowed when `attempts` makes it legal.
 //   `request_review` — guarded on the PAYLOAD. Unanswerable before the Agent picks (there are no
-//                      arguments yet), so it stays on the menu and is judged exactly on delivery.
+//                      arguments yet), so it stays allowed and is judged exactly on delivery.
 //
 // Filename `guarded.ts` → workflow "guarded".
 

@@ -92,7 +92,7 @@ import {
 } from "./sandbox-watch.ts";
 import { harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
 import type { AttachError, AttachRequest, AttachResponse } from "./wire.ts";
-import type { Continuity, ProvisionedRepo, SandboxPort } from "./workspace.ts";
+import type { Continuity, MemoryKill, ProvisionedRepo, SandboxPort } from "./workspace.ts";
 
 /** Where jr2's runtime lands in every container that gets it (ADR-0037). `/opt/jr2` and not `/app`
  * because a stranger's base may already use `/app`, and one layout must serve both the stock
@@ -165,7 +165,9 @@ const FALLBACK_HOME = "/home/jr2";
  * `PYTHON_CPU_COUNT` and `GOMAXPROCS` speak for their runtimes. `os.cpus()` still reports the node —
  * a Machine that runs Playwright passes `--workers=$JR2_CPUS`.
  *
- * TODO(ADR-0062): the Agent is told its CPU count and Size by the Briefing, never by the Frame.
+ * The Agent is told its CPU count and Size by the Briefing's standing part, never by the Frame
+ * (ADR-0060, ADR-0062) — and that needs no wire: the Harness reads `JR2_CPUS` from this env and its
+ * Size from its own cgroup, so the Orchestrator sends neither.
  */
 const CPU_HINTS = ["JR2_CPUS", "OMP_NUM_THREADS", "PYTHON_CPU_COUNT", "GOMAXPROCS"] as const;
 const cpuHintEnv = (): HarnessEnvVar[] =>
@@ -984,7 +986,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       const now = judge(sandboxes().get(name));
       if (now !== undefined) return now;
       // The operator's word can trail the Harness's restart; give it a moment, then call it lost.
-      return waitFor<string>(name, judge, () => ({
+      return waitFor<MemoryKill>(name, judge, () => ({
         deadline: Date.now() + MEMORY_FAULT_GRACE_MS,
         expire: () => new Error("no memory kill"),
       })).catch(() => undefined);
@@ -1010,23 +1012,24 @@ function continuityOf(sandbox: SandboxObject | undefined): Continuity {
 }
 
 /**
- * The memory fault's reason (ADR-0061), or undefined: the Harness container's last run ended
+ * The memory kill (ADR-0061), or undefined: the Harness container's last run ended
  * `OOMKilled`, at or after `since` (less the skew a node's clock may carry). The prefix is FIXED —
  * `memory limit` — so a Machine, `jr2 status` and the feed can tell a memory kill from a
  * conversation lost any other way; the limit named is the Harness container's own, the one the
- * kernel enforced.
+ * kernel enforced. `limit` and `at` ride beside the reason as data: the next Turn's notice is made
+ * of them (ADR-0062), and `at` tells two Turns ended by one kill that it was one.
  */
-export function memoryFaultOf(sandbox: SandboxObject | undefined, since: Date): string | undefined {
+export function memoryFaultOf(sandbox: SandboxObject | undefined, since: Date): MemoryKill | undefined {
   const last = sandbox?.status?.harness?.lastTerminated;
   if (last?.reason !== OOM_KILLED) return undefined;
   const finished = last.finishedAt === undefined ? NaN : Date.parse(last.finishedAt);
   if (Number.isNaN(finished) || finished < since.getTime() - MEMORY_FAULT_SKEW_MS) return undefined;
   const limit = sandbox?.spec?.resources?.limits?.memory;
-  return (
+  const reason =
     `memory limit (${OOM_KILLED}${limit ? `, limit ${limit}` : ""}): the Workspace's processes passed the ` +
     "Harness container's memory limit and the kernel killed the container, the conversation with it. " +
-    "Use fewer workers, or give the Workspace a larger Size (ADR-0060, ADR-0061)."
-  );
+    "Use fewer workers, or give the Workspace a larger Size (ADR-0060, ADR-0061).";
+  return { reason, ...(limit ? { limit } : {}), at: last.finishedAt! };
 }
 
 /** The pod volume the operator defines for one Repo's node cache, and where it lands in the

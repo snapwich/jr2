@@ -275,6 +275,49 @@ test("a Frame cwd that is not an absolute path is a 400 — never a silent /work
   assert.equal((await app.request("/agents/coder/i1")).status, 404);
 });
 
+test("the notices ride the admit body to the turn, typed; one this Harness cannot word is dropped (ADR-0062)", async () => {
+  const { app, runs } = scripted();
+  const memory = { kind: "memory-limit", scope: "workspace", agent: "coder", peak: "1.9Gi", limit: "2Gi" };
+  const fresh = { kind: "conversation-new", scope: "conversation", reason: "the last one was lost" };
+  const res = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({
+      message: "go",
+      definition: CODER,
+      // A newer Orchestrator's kind, and a known kind missing its facts: neither can be worded.
+      notices: [memory, { kind: "disk-full", scope: "workspace" }, { kind: "memory-limit", agent: "x" }, fresh],
+    }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(runs[0]!.submission, { definition: CODER, message: "go", notices: [memory, fresh] });
+  // Garbage in the slot is no notices, as a garbage dial is no dial.
+  await app.request("/agents/coder/i2", {
+    method: "POST",
+    body: JSON.stringify({ message: "go", definition: CODER, notices: "memory" }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.deepEqual(runs[1]!.submission, { definition: CODER, message: "go" });
+});
+
+test("a guard kill lands on the stream of the conversation whose Submission runs (ADR-0061/0062)", async () => {
+  let report: ((kill: { peak: string; limit: string }) => void) | undefined;
+  const { app, runs } = scripted({
+    memoryKills: (listener) => {
+      report = listener;
+      return () => {};
+    },
+  });
+  await admit(app, "/agents/coder/i1");
+  report!({ peak: "1.9Gi", limit: "2Gi" });
+  const events = (await (await app.request("/agents/coder/i1?offset=0")).json()) as StreamEvent[];
+  assert.deepEqual(
+    events.map((event) => event.type === "memory-limit" && { peak: event.peak, limit: event.limit }),
+    [{ peak: "1.9Gi", limit: "2Gi" }],
+  );
+  runs[0]!.resolve();
+});
+
 test("a dial-less admission is unchanged — no keys invented for the turn", async () => {
   const { app, runs } = scripted();
   await admit(app, "/agents/coder/i1");

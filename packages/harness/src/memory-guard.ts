@@ -53,10 +53,14 @@ export type GuardEffects = {
  * when the guard fired while it ran. */
 export type GuardWatch = { end(): void; verdict(): string | undefined };
 
+/** One kill, as the updates stream reports it (ADR-0062): sizes written the way a Size is. */
+export type GuardKill = { peak: string; limit: string };
+
 export class MemoryGuard {
   readonly #read: CgroupRead;
   readonly #effects: GuardEffects;
   readonly #active = new Set<{ verdict?: string }>();
+  readonly #listeners = new Set<(kill: GuardKill) => void>();
   #timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(read: CgroupRead, effects: GuardEffects) {
@@ -86,6 +90,14 @@ export class MemoryGuard {
     return { end: () => void this.#active.delete(call), verdict: () => call.verdict };
   }
 
+  /** Hear every kill — how the conversations whose Submissions run put it on their streams, so
+   * the Orchestrator keeps a workspace notice for the next Agent (ADR-0062). Returns the
+   * unsubscribe. */
+  onKill(listener: (kill: GuardKill) => void): () => void {
+    this.#listeners.add(listener);
+    return () => void this.#listeners.delete(listener);
+  }
+
   /** One poll: read, and fire when usage is near the limit. */
   check(): void {
     const limit = this.#read.limit();
@@ -107,6 +119,8 @@ export class MemoryGuard {
     const verdict = `${MEMORY_LIMIT_KILLED} (peak ${formatBytes(peak)} of ${formatBytes(limit)}); use fewer workers or a larger Size`;
     this.#effects.log(`jr2 harness: ${verdict} — killed the Agent's processes and cleared /dev/shm (ADR-0061)`);
     for (const call of this.#active) call.verdict ??= verdict;
+    const kill = { peak: formatBytes(peak), limit: formatBytes(limit) };
+    for (const listener of this.#listeners) listener(kill);
   }
 }
 

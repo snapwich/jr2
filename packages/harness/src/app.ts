@@ -35,6 +35,7 @@ import {
   type AttachRequest,
   type AttachResponse,
   type HistoryMessage,
+  type Notice,
 } from "./wire.ts";
 
 /** One conversation's identity and stream seam, as the app hands it to the turn factory. */
@@ -84,6 +85,10 @@ export type HarnessAppDeps = {
   /** Run the attach (ADR-0063) — `attach.ts`'s `attacher()` in production, a stub in wire tests.
    * Omitted, `POST /attach` answers 501: this Harness does not attach. */
   attach?: (req: AttachRequest) => Promise<AttachResponse>;
+  /** Hear the memory guard's kills (ADR-0061, layer 4) — `MemoryGuard.onKill` in production. Each
+   * lands on the stream of every conversation whose Submission is running, where the Orchestrator
+   * reads it and keeps a workspace notice (ADR-0062). Omitted, no kill is reported. */
+  memoryKills?: (listener: (kill: { peak: string; limit: string }) => void) => () => void;
 };
 
 /** The bearer token on a request, if it carries one. */
@@ -101,6 +106,11 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   const conversations = new Map<string, Conversation>();
   const key = (agentName: string, instanceId: string) =>
     `${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
+  // One guard per process, one subscription per app: a kill is the whole container's, so every
+  // conversation hears it, and each says it only if its Submission was running.
+  deps.memoryKills?.((kill) => {
+    for (const conversation of conversations.values()) conversation.reportMemoryLimit(kill);
+  });
 
   const app = new Hono();
 
@@ -260,7 +270,25 @@ function admissionRequest(body: unknown, definition: AgentDefinition): Admission
     ...(typeof sent.thinkingLevel === "string"
       ? { thinkingLevel: sent.thinkingLevel as TurnDials["thinkingLevel"] }
       : {}),
+    ...noticesOf(sent.notices),
   };
+}
+
+/** The admission's notices (ADR-0062), kept where this Harness can word them. A kind it does not
+ * know is a newer Orchestrator's — skew (ADR-0027) — and a notice missing its facts cannot be said
+ * truly; both are dropped rather than rendered as half a sentence. Garbage in the slot is none. */
+function noticesOf(value: unknown): { notices?: Notice[] } {
+  if (!Array.isArray(value)) return {};
+  const str = (v: unknown) => typeof v === "string";
+  const notices = value.filter((n: unknown): n is Notice => {
+    if (typeof n !== "object" || n === null) return false;
+    const { kind, scope, agent, peak, limit, reason } = n as Record<string, unknown>;
+    if (kind === "memory-limit") {
+      return scope === "workspace" && str(agent) && str(limit) && (peak === undefined || str(peak));
+    }
+    return kind === "conversation-new" && scope === "conversation" && str(reason);
+  });
+  return notices.length > 0 ? { notices } : {};
 }
 
 function streamHeaders(view: UpdatesView): Record<string, string> {

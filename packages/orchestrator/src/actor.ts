@@ -8,9 +8,9 @@
 //      pod's Custodian (`/agents/<iid>/events` — ADR-0013), are validated by the table, and land on the
 //      state that invoked the agent — at any nesting depth, no routing, no `instanceId` on
 //      domain events (the closure IS the provenance). `/agents/<iid>/surface` serves exactly
-//      this registration, so menus are state-scoped by lifecycle (ADR-0006's dynamic
-//      advertisement, for free — and, per ADR-0013, with no `list_changed` needed: the
-//      Harness re-lists per Submission).
+//      this registration: the Agent's Menu, fixed for the conversation, and the Allowed picks,
+//      state-scoped by lifecycle (ADR-0029 — with no `list_changed` needed, per ADR-0013: the
+//      Harness re-reads per Submission).
 //
 //   2. ADMITS the run over the Harness at `input.endpoint` — the port is constructed
 //      per-invocation from serializable input (ADR-0007/0011 doctrine), and a dev stub is just
@@ -51,8 +51,11 @@ import {
   type WorkspaceAccess,
 } from "./agent.ts";
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
+import type { MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { agentAddress, continuedIid, resolveAccepts, runBindingOf } from "./registration.ts";
+import type { NoticeScope } from "./notices.ts";
+import type { Notice } from "./wire.ts";
 
 /**
  * One admitted Submission — the durable re-attach handle (ADR-0016). The wire fields are
@@ -202,8 +205,16 @@ export type AgentRunInput = {
    *     fresh invocation, which already mints its own conversation.
    */
   continuation?: boolean;
-  /** Event names (from the invoking Machine's vocabulary) this invocation accepts over MCP. */
+  /** Event names (from the invoking Machine's vocabulary) this invocation accepts: the invoking
+   * state's derived set, which delivery validates against and the Allowed picks narrow. */
   tools: readonly string[];
+  /**
+   * The Agent's MENU (ADR-0029): the union of `tools` over every state of this Machine that invokes
+   * an Agent of this name, in a fixed order — what the surface serves as the tools block, the same
+   * for every Turn of the conversation. `jr2Setup` always sets it; absent (a plain `setup()`
+   * machine passing finalized input), `tools` is the Menu.
+   */
+  menu?: readonly string[];
 };
 
 /** Telemetry sent up when the run is out of options: the Submission settled failed/aborted
@@ -240,7 +251,14 @@ export interface AgentRunPort {
    * Follow an admitted submission until it settles. Resolving means the submission completed;
    * rejecting means it settled failed/aborted (or the conversation is gone).
    */
-  settle(admission: AgentAdmission, opts?: { signal?: AbortSignal }): Promise<void>;
+  settle(admission: AgentAdmission, opts?: AgentSettleOptions): Promise<void>;
+  /**
+   * Does the Harness still hold this conversation (ADR-0062)? Asked before a continued Turn whose
+   * conversation was admitted before: a Harness that restarted between the Turns lost it with no
+   * fault to say so, and the Turn is told its conversation is new. Answers `true` whenever it
+   * cannot tell — unknown is never loss.
+   */
+  holds(agentName: string, instanceId: string, opts?: { signal?: AbortSignal }): Promise<boolean>;
   /**
    * End the instance's in-flight (and queued) work — the turn is over (ADR-0024). Resolving means
    * the intent is RECORDED, not that the submission has settled; jr2 never observes that outcome,
@@ -255,7 +273,25 @@ export interface AgentRunPort {
  * plus the local abandon signal. Not part of {@link AgentRunInput} on purpose — that shape is
  * PERSISTED as the child's input, and a definition frozen into a snapshot would outlive the
  * Machine edit that changed it. */
-export type AgentAdmitOptions = { definition: AgentDefinition; signal?: AbortSignal };
+export type AgentAdmitOptions = {
+  definition: AgentDefinition;
+  signal?: AbortSignal;
+  /** The pending notices in this admission's scope (ADR-0062), for the Briefing's Turn part. Not
+   * on the persisted input either: they are the Orchestrator's, and delivered once. */
+  notices?: Notice[];
+};
+
+/** A memory kill by the Harness's own guard (ADR-0061, layer 4), as the updates stream reports it:
+ * the guard's `peak` and `limit`, and `source` — where on which conversation's stream the event
+ * sits, so a replayed read of it is the same kill. */
+export type GuardKill = { peak: string; limit: string; source: string };
+
+/** What following a settlement may be told beside the settlement itself. */
+export type AgentSettleOptions = {
+  signal?: AbortSignal;
+  /** The Harness's guard killed the Agent's processes during this Submission (ADR-0061). */
+  onMemoryLimit?: (kill: GuardKill) => void;
+};
 
 /** Build a port for one invocation from its serializable input (ADR-0011 static-import doctrine),
  * plus the Harness bearer for the placement that input resolved to (ADR-0058) — absent where no
@@ -482,6 +518,8 @@ export function agentActorWith(
     // already ended.
     let currentIid = input.attach?.instanceId ?? instanceId;
     const defs = resolveAccepts(self, input.tools);
+    // The Menu (ADR-0029): resolved against the same vocabulary, and served as the tools block.
+    const menu = resolveAccepts(self, input.menu ?? input.tools);
     const disposers: Array<() => void> = [];
     const registerSurface = (iid: string) =>
       disposers.push(
@@ -491,6 +529,7 @@ export function agentActorWith(
           kind: "agent",
           id: iid,
           defs,
+          menu,
           sandbox,
           deliver: (event) => {
             signaled = true;
@@ -523,7 +562,7 @@ export function agentActorWith(
     // (ADR-0061). Undefined from a backend that cannot see the container — and never throws:
     // naming the fault is a courtesy, the fault itself lands either way.
     const turnStarted = new Date();
-    const memoryFault = (name: string): Promise<string | undefined> =>
+    const memoryFault = (name: string): Promise<MemoryKill | undefined> =>
       binding.sandbox?.memoryFault(name, turnStarted).catch(() => undefined) ?? Promise.resolve(undefined);
     const controller = new AbortController();
     // Shared per run, created on demand so the ordering guarantee holds for any binding.
@@ -531,9 +570,54 @@ export function agentActorWith(
     let stopped = false;
     // Ledgered under the ORIGINAL iid — the persisted input's key, like a nudge's — with the
     // LIVE conversation stamped on the record, so a restore settle-follows the live submission
-    // AND re-addresses it (see `currentIid` above).
-    const ledger = (admission: AgentAdmission) =>
-      binding.recordAdmission?.(instanceId, { ...admission, instanceId: currentIid });
+    // AND re-addresses it (see `currentIid` above). The notices the admission carried are
+    // delivered by this same write (ADR-0062).
+    const ledger = (admission: AgentAdmission, delivered: readonly string[]) =>
+      binding.recordAdmission?.(instanceId, { ...admission, instanceId: currentIid }, delivered);
+
+    // Where this Turn hears notices (ADR-0062). Its continued conversation's — the base id the
+    // epoch ledger burns — only when it CONTINUES one: a fresh Turn is new by definition, and the
+    // notice waits for the `continue` whose context is gone. Its Workspace's only when it works in
+    // one: a Menu-only Agent hears conversation notices alone.
+    const conversation = continuedIid(self._parent, binding.runId, input.agentName);
+    const noticeWorkspace = workspace !== "none" ? sandbox : undefined;
+    const noticeScope: NoticeScope = {
+      ...(input.continuation ? { conversation } : {}),
+      ...(noticeWorkspace !== undefined ? { workspace: noticeWorkspace } : {}),
+    };
+    const memoryLimit = (limit: string, peak?: string): Notice => ({
+      kind: "memory-limit",
+      scope: "workspace",
+      agent: input.agentName,
+      ...(peak === undefined ? {} : { peak }),
+      limit,
+    });
+    // The Harness's guard killed this Workspace's processes during the Turn (ADR-0061, layer 4):
+    // the Agent heard it in its `bash` answer; the next Turn in the Workspace hears it here.
+    const onMemoryLimit = (kill: GuardKill): void => {
+      if (noticeWorkspace === undefined) return;
+      binding.raiseNotice?.(memoryLimit(kill.limit, kill.peak), noticeWorkspace, kill.source);
+    };
+
+    // Every admission — the Turn's, a reroll's, a nudge's — carries the pending notices in scope.
+    // Reserved first, so no concurrent admission carries them too; delivered by the ledger write;
+    // released when the admission fails, for the next one to carry.
+    const admitTurn = async (turn: AgentRunInput): Promise<AgentAdmission> => {
+      const taken = binding.takeNotices?.(noticeScope) ?? { ids: [], notices: [] };
+      let admission: AgentAdmission;
+      try {
+        admission = await client.admit(turn, {
+          definition,
+          signal: controller.signal,
+          ...(taken.notices.length ? { notices: taken.notices } : {}),
+        });
+      } catch (err) {
+        binding.releaseNotices?.(taken.ids);
+        throw err;
+      }
+      ledger(admission, taken.ids);
+      return admission;
+    };
 
     const abandon = () => {
       if (stopped) return;
@@ -585,7 +669,8 @@ export function agentActorWith(
         // may invoke this Agent again in the same macrostep, and its mapper must already read the
         // bumped epoch. Continuations only — a fresh invocation mints its own conversation, so
         // there is nothing to burn.
-        if (input.continuation) binding.bumpEpoch?.(continuedIid(self._parent, binding.runId, input.agentName));
+        // The fault's reason is the next Turn's news: it is why that conversation starts empty.
+        if (input.continuation) binding.bumpEpoch?.(conversation, reason);
         sendBack({ type: "agent.fault", instanceId, reason } satisfies FaultTelemetry);
       };
       try {
@@ -596,8 +681,20 @@ export function agentActorWith(
         await pendingAborts.get(instanceId);
         let admission = input.attach;
         if (!admission) {
-          admission = await client.admit(framed, { definition, signal: controller.signal });
-          ledger(admission);
+          // A continued conversation admitted before may be gone with no fault to say so: its
+          // Harness restarted between the Turns. Then this Turn lands on a new one, and is told
+          // (ADR-0062). A conversation never admitted has nothing to lose, so nothing is asked.
+          if (
+            input.continuation &&
+            binding.admissionOf?.(instanceId) !== undefined &&
+            !(await client.holds(input.agentName, instanceId, { signal: controller.signal }))
+          ) {
+            binding.raiseNotice?.(
+              { kind: "conversation-new", scope: "conversation", reason: "the Harness no longer holds it" },
+              conversation,
+            );
+          }
+          admission = await admitTurn(framed);
           // The admission marker (ADR-0023): the Turn and its framing, once — a re-attach
           // continues a Turn already announced, and a nudge (below) is mechanism, not narrative
           // (its telemetry already rides the feed).
@@ -607,7 +704,7 @@ export function agentActorWith(
         let rerolls = 0;
         for (;;) {
           try {
-            await client.settle(admission, { signal: controller.signal });
+            await client.settle(admission, { signal: controller.signal, onMemoryLimit });
           } catch (err) {
             // The reroll gate closes on `signaled` like the nudge gate below: a delivered pick
             // means the workflow already holds this turn's signal, so replaying the identical
@@ -630,11 +727,7 @@ export function agentActorWith(
             // `/mcp/<currentIid>`, so its address must be live before the Harness can run it.
             currentIid = `${instanceId}-r${rerolls}`;
             registerSurface(currentIid);
-            admission = await client.admit(
-              { ...framed, attach: undefined, instanceId: currentIid },
-              { definition, signal: controller.signal },
-            );
-            ledger(admission);
+            admission = await admitTurn({ ...framed, attach: undefined, instanceId: currentIid });
             continue;
           }
           if (stopped || signaled || input.tools.length === 0) return; // the turn ended as intended
@@ -649,11 +742,12 @@ export function agentActorWith(
             attempt: nudges,
             reason: "no-signal nudge",
           });
-          admission = await client.admit(
-            { ...framed, attach: undefined, instanceId: currentIid, prompt: nudgePrompt(input.tools) },
-            { definition, signal: controller.signal },
-          );
-          ledger(admission);
+          admission = await admitTurn({
+            ...framed,
+            attach: undefined,
+            instanceId: currentIid,
+            prompt: nudgePrompt(input.tools),
+          });
         }
       } catch (err) {
         if (stopped) return;
@@ -663,11 +757,20 @@ export function agentActorWith(
         // the Sandbox, so the fault is NAMED — the fixed prefix `memory limit` — instead of
         // "conversation lost", and the Machine's policy can tell the two apart.
         //
-        // TODO(ADR-0062): the next Agent in this Workspace is told of the memory kill through
-        // the Briefing, never through the Frame (ADR-0057).
-        const named = isLostConversation(err) && sandbox !== undefined ? await memoryFault(sandbox) : undefined;
+        // The fault reaches the Machine (ADR-0016); the next Agent in this Workspace is told
+        // through the Briefing, never through the Frame (ADR-0057, ADR-0062) — a notice raised
+        // BEFORE the fault, because the state it routes to may admit in the same macrostep. Keyed
+        // by the kill itself, so every Turn the one kill ended raises one notice between them.
+        const kill = isLostConversation(err) && sandbox !== undefined ? await memoryFault(sandbox) : undefined;
         if (stopped) return;
-        fault(named !== undefined ? `${named}\n  ${message}` : message);
+        if (kill !== undefined && noticeWorkspace !== undefined) {
+          binding.raiseNotice?.(
+            memoryLimit(kill.limit ?? "unknown"),
+            noticeWorkspace,
+            kill.at === undefined ? undefined : `${noticeWorkspace}@${kill.at}`,
+          );
+        }
+        fault(kill !== undefined ? `${kill.reason}\n  ${message}` : message);
       }
     })();
 

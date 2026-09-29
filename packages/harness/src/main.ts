@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { harnessApp } from "./app.ts";
 import { attacher } from "./attach.ts";
+import { seatFacts, standingBriefing } from "./briefing.ts";
 import { clearShm, podMemoryGuard } from "./memory-guard.ts";
 import { admissionFault, modelsFor } from "./provider.ts";
 import { loadHarnessSpec } from "./spec.ts";
@@ -68,8 +69,15 @@ const sha256 = (value: string): string => createHash("sha256").update(value).dig
 const guard = podMemoryGuard();
 guard.start();
 
+// The Briefing's standing part (ADR-0062), composed once for the pod: its CPUs from the Downward API
+// (`JR2_CPUS`, ADR-0060) and its Size from the cgroup — read here, not per Turn, so every Turn of
+// every conversation sends the same bytes. Unknown where this is not a Sandbox, and then unsaid.
+const standing = standingBriefing(seatFacts(process.env));
+
 const app = harnessApp({
-  runSubmissionFor: (seat) => runSubmissionFor({ models, menu, guard, ...seat }),
+  runSubmissionFor: (seat) => runSubmissionFor({ models, menu, guard, standing, ...seat }),
+  // A guard kill lands on the running conversations' streams, for the Orchestrator's notice (ADR-0062).
+  memoryKills: (listener) => guard.onKill(listener),
   // The attach (ADR-0063): the Workspace's Repos into `/work`, on the Orchestrator's call.
   attach: attacher(),
   checkAdmission: (resolved) => admissionFault(models, resolved),

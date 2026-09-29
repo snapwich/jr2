@@ -2,9 +2,12 @@
 // Per Submission the definition is read off the ADMISSION that queued it (ADR-0049: the Agent
 // definition rides the Turn; model, instructions and thinkingLevel resolve when the turn starts,
 // with the Frame's cwd beside them — ADR-0057 — so a later Submission on the same conversation may
-// carry a retuned one and a different worktree), the Menu is read afresh through the Custodian
-// (menu.ts), and the same pi session carries the conversation: a later Submission is the next
-// `prompt()` on the same AgentHarness. Settlement mapping: a throw settles `failed` (the Menu
+// carry a retuned one and a different worktree), the surface is read afresh through the Custodian
+// (menu.ts) — the Menu, fixed for the conversation, becomes the tools block, and the Turn's Allowed
+// picks go into the Briefing's Turn part after the prompt (ADR-0029/0062) — and the same pi session
+// carries the conversation: a later Submission is the next `prompt()` on the same AgentHarness.
+// Settlement mapping: a surface read that finds the Turn over throws `TurnOverError`, which settles
+// `aborted` with the model never asked (ADR-0026); any other throw settles `failed` (the Menu
 // read, or a provider failure after pi's retries — pi RESOLVES `prompt()` even then,
 // with the outcome on the message's `stopReason`, so this module inspects and throws); the
 // signal aborts pi's run, and the prompt winding down rejects promptly so the pump can promote.
@@ -19,10 +22,11 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { Api, AssistantMessage, Model, Models, UserMessage } from "@earendil-works/pi-ai";
+import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
-import { RunawayError, type RunSubmission } from "./conversation.ts";
+import { RunawayError, TurnOverError, type RunSubmission } from "./conversation.ts";
 import { readMenu, type MenuOptions } from "./menu.ts";
-import { menuTools } from "./menu-tools.ts";
+import { menuToolName, menuTools } from "./menu-tools.ts";
 import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
 import { mapThinkingLevel, resolveModel } from "./provider.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
@@ -49,6 +53,10 @@ export type TurnDeps = {
   /** The process's memory guard (ADR-0061), watching every `bash` call. `main.ts` passes the one
    * over this pod's cgroup; omitted, no guard watches. */
   guard?: MemoryGuard;
+  /** The Briefing's standing part for this pod (ADR-0062), composed once from its seat's facts so
+   * every Turn sends the same bytes. `main.ts` passes the pod's; omitted, a seat that knows no
+   * CPUs and no Size — a host run. */
+  standing?: StandingBriefing;
   /** ADR-0035's runaway bounds — jr2-owned defaulted knobs (ADR-0016), no author surface. These
    * seams exist for the conformance suite alone, which cannot afford 128 provider rounds. */
   stepBudget?: number;
@@ -101,6 +109,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
    * so the printer's destination is resolved once here rather than only inside `attachPrinter`. */
   const out = deps.printerOut ?? process.stdout;
   const summaryRetry = summaryRetryPolicy(deps.maxRetries);
+  const standing = deps.standing ?? standingBriefing({});
+  // The presenter's naming reaches every text `menu.ts` writes (ADR-0029).
+  const menuOptions: MenuOptions = { ...deps.menu, toolName: menuToolName };
   /** The runaway watch (ADR-0035), per Submission — reset when each turn starts. The
    * once-per-conversation `tool_call` hook reads it through this seat, like `current.definition`. */
   const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
@@ -125,8 +136,15 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
 
     // A turn that cannot see its Menu settles `failed` — the throw propagates to the pump. The
     // signal rides along so an abort landing mid read cancels it: promotion of the next admission
-    // (the ADR-0024 hot path) must not park behind a retry ladder.
-    const menu = await readMenu(deps.menu, deps.instanceId, signal);
+    // (the ADR-0024 hot path) must not park behind a retry ladder. Read BEFORE the harness is
+    // assembled or touched, so a Turn that is over leaves nothing behind: no model call, no
+    // history entry, and no tools block that differs from the conversation's Menu (ADR-0026).
+    const read = await readMenu(menuOptions, deps.instanceId, signal);
+    if (!read) {
+      throw new TurnOverError(
+        "the Turn was over before it started: its state exited, so the surface is gone (ADR-0026)",
+      );
+    }
 
     if (!assembled) {
       const current = { definition, model, thinkingLevel, signal };
@@ -138,7 +156,8 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         models: deps.models,
         model,
         thinkingLevel,
-        systemPrompt: () => current.definition.instructions,
+        // The instructions, then the Briefing's standing part — byte-stable for the seat (ADR-0062).
+        systemPrompt: () => standing(current.definition.instructions, current.definition.workspace),
         toolContext: () => ({ env: new NodeExecutionEnv({ cwd: current.definition.cwd }) }),
         ...(deps.maxRetries === undefined ? {} : { streamOptions: { maxRetries: deps.maxRetries } }),
       });
@@ -247,7 +266,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     }
 
     const harness = assembled.harness;
-    const tools = [...workingToolsFor(definition, definition.cwd, { guard: deps.guard }), ...menuTools(menu)];
+    // The whole Menu, never the Allowed picks: the tools lead the provider's prefix cache, so they
+    // are the same bytes on every Turn of the conversation (ADR-0029). What this Turn may pick is
+    // said in the Turn part below, and enforced at delivery.
+    const tools = [...workingToolsFor(definition, definition.cwd, { guard: deps.guard }), ...menuTools(read.menu)];
     // The active names go explicitly: without them setTools KEEPS the previous active set, which
     // is empty on a harness constructed with no tools — every tool would ride to pi inactive.
     await harness.setTools(
@@ -267,7 +289,20 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     signal.addEventListener("abort", onAbort, { once: true });
     try {
       if (signal.aborted) throw new Error("swept before its turn started");
-      const answer = await harness.prompt(message);
+      // The Briefing's Turn part FOLLOWS the Frame's prompt (ADR-0062): the author's task reads
+      // first, and the Allowed picks last, where a model obeys them (ADR-0029, measured).
+      const answer = await harness.prompt(
+        briefedPrompt(
+          message,
+          turnPart({
+            workspace: definition.workspace,
+            cwd: definition.cwd,
+            allowed: read.allowed,
+            toolName: menuToolName,
+            ...(submission.notices ? { notices: submission.notices } : {}),
+          }),
+        ),
+      );
       // The watch's SELF-abort (ADR-0035): pi resolved with stopReason `aborted`, but the pump's
       // signal never fired. Checked first so the runaway reason wins over the generic mapping
       // below; a sweep that raced the trip still settles `aborted` — the pump's own signal check

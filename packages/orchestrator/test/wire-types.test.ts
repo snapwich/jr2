@@ -31,6 +31,10 @@ const position: Mutual<client.StreamPosition, harness.StreamPosition> = agree;
 const appended: Mutual<client.MessageAppendedEvent, harness.MessageAppendedEvent> = agree;
 const settled: Mutual<client.SubmissionSettledEvent, harness.SubmissionSettledEvent> = agree;
 const stream: Mutual<client.StreamEvent, harness.StreamEvent> = agree;
+const memoryLimit: Mutual<client.MemoryLimitEvent, harness.MemoryLimitEvent> = agree;
+const notice: Mutual<client.Notice, harness.Notice> = agree;
+const memoryLimitNotice: Mutual<client.MemoryLimitNotice, harness.MemoryLimitNotice> = agree;
+const conversationNew: Mutual<client.ConversationNewNotice, harness.ConversationNewNotice> = agree;
 const echoStatus: Mutual<client.EchoStatusEvent, harness.EchoStatusEvent> = agree;
 const echoChild: Mutual<client.EchoStatusChild, harness.EchoStatusChild> = agree;
 const echoEmit: Mutual<client.EchoEmitEvent, harness.EchoEmitEvent> = agree;
@@ -54,6 +58,10 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     appended,
     settled,
     stream,
+    memoryLimit,
+    notice,
+    memoryLimitNotice,
+    conversationNew,
     echoStatus,
     echoChild,
     echoEmit,
@@ -78,5 +86,6 @@ test("the wire's settlement-error literals are the ones the Harness stamps", () 
   assert.equal(client.SUBMISSION_RUNAWAY, harness.SUBMISSION_RUNAWAY);
   assert.equal(client.STREAM_NEXT_OFFSET_HEADER, harness.STREAM_NEXT_OFFSET_HEADER);
   assert.equal(client.VIEW_UPDATES, harness.VIEW_UPDATES);
+  assert.equal(client.VIEW_HISTORY, harness.VIEW_HISTORY);
   assert.equal(client.LIVE_LONG_POLL, harness.LIVE_LONG_POLL);
 });

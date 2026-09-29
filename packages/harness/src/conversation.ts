@@ -31,6 +31,12 @@ export type RunSubmission = (submission: AdmissionRequest, signal: AbortSignal) 
  * construction: the pump's signal never fired, so `aborted` stays ADR-0024's word. */
 export class RunawayError extends Error {}
 
+/** A Turn that was over before it started (ADR-0026): its surface read answered 404, so the state
+ * that asked for it has exited and the abort is on its way. `turn.ts` throws it before the model is
+ * asked and before anything is written to the conversation; the pump settles it `aborted`, the
+ * sweep's word — nothing is wrong, and a `failed` here would cry wolf. */
+export class TurnOverError extends Error {}
+
 /** One stream read, resolved to the end of the log. The HTTP layer carries `nextOffset` and
  * `upToDate` as the stream headers and `events` as the body. */
 export type UpdatesView = {
@@ -118,6 +124,24 @@ export class Conversation {
     });
   }
 
+  /**
+   * The Harness's guard killed the Agent's processes at the memory limit (ADR-0061, layer 4). Put
+   * on the stream only while a Submission runs: the Orchestrator reads a stream from an Admission's
+   * offset, so a running Submission's wait is the one reader that can see it, and the notice it
+   * keeps names THIS conversation's Agent as the one whose Turn it was (ADR-0062). Not history:
+   * the history view is what was said.
+   */
+  reportMemoryLimit(kill: { peak: string; limit: string }): void {
+    if (!this.active) return;
+    this.append({
+      type: "memory-limit",
+      conversationId: this.instanceId,
+      position: this.nextPosition(),
+      peak: kill.peak,
+      limit: kill.limit,
+    });
+  }
+
   /** `GET ?view=updates`: every event from `offset` to the end of the log. */
   updatesView(offset: string): UpdatesView {
     const from = this.parseOffset(offset);
@@ -169,6 +193,8 @@ export class Conversation {
         // sweep normally settled it already; this arm only matters if the run rejected first.
         if (controller.signal.aborted) {
           this.settle(record, "aborted", { type: SUBMISSION_ABORTED });
+        } else if (err instanceof TurnOverError) {
+          this.settle(record, "aborted", { type: SUBMISSION_ABORTED, message: err.message });
         } else if (err instanceof RunawayError) {
           this.settle(record, "failed", { type: SUBMISSION_RUNAWAY, message: err.message });
         } else {

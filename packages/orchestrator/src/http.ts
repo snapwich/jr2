@@ -685,6 +685,15 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   /** Guard: the surface must exist, and this principal must be allowed to speak for it. */
   const agentRegistration = (c: Context<JR2Env, "/agents/:instanceId/surface" | "/agents/:instanceId/events">) => {
     const instanceId = c.req.param("instanceId");
+    // Only a Turn that is over answers 404 (ADR-0026). While the host is stopping its runs are
+    // parked for restore, not over, so every `/agents/*` call answers 503: the Harness re-asks a
+    // surface read on ADR-0042's ladder and tells a pick to try again. BEFORE the lookup, because
+    // a stopping host may already have lost the registration the question is about.
+    if (host.stopping) {
+      return {
+        error: c.json({ error: `the Orchestrator is stopping — ask again for instance "${instanceId}"` }, 503),
+      };
+    }
     const surface = host.agentSurface(instanceId);
     // The one catch point (ADR-0011): no live registration (settled run, exited state, unknown
     // iid) → there is no surface to serve. 404 BEFORE the scope check — a caller with a valid
@@ -698,9 +707,10 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return { surface };
   };
 
-  // This turn's menu: the events the invoking state accepts, their input schemas, their semantics.
-  // A transition swaps the registration, which swaps this — so the Harness gets a state-scoped
-  // toolset for free, and needs no `list_changed` to know it (flue re-lists on every submission).
+  // The Agent's Menu — every pick it can be offered in this Machine, with input schemas and
+  // semantics, fixed for the conversation — and this Turn's Allowed picks (ADR-0029). A transition
+  // swaps the registration, which swaps the Allowed picks, never the Menu; the Harness reads both
+  // per Submission and needs no `list_changed`.
   app.get("/agents/:instanceId/surface", authenticated, (c) => {
     const { surface, error } = agentRegistration(c);
     return error ?? c.json(surface);
@@ -718,7 +728,10 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       return c.json(host.sendToAgent(c.req.param("instanceId"), body));
     } catch (err) {
       if (err instanceof UnknownAddressError) return c.json({ error: errMessage(err) }, 404);
-      if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
+      if (err instanceof EventValidationError) {
+        // The Allowed picks ride the refusal (ADR-0029), so "Allowed now: …" can follow it.
+        return c.json({ error: errMessage(err), ...(err.allowed ? { allowed: err.allowed } : {}) }, 400);
+      }
       throw err;
     }
   });

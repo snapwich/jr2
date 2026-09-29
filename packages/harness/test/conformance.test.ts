@@ -33,8 +33,19 @@ const AGENT = "reviewer";
 /** The Menu-only persona (ADR-0028 `workspace: "none"`): picks from its Menu, nothing else. */
 const DECISIONER = "decisioner";
 
-/** One Menu of `ack` events, as the Orchestrator would register it (ADR-0013). */
+/** One Menu of `ack` events, all of it allowed, as the Orchestrator would register it
+ * (ADR-0013/0029). */
 function surfaceWith(...names: string[]): Surface {
+  return surfaceAllowing(names, names);
+}
+
+/** A Menu and the part of it this Turn may pick (ADR-0029). */
+function surfaceAllowing(names: string[], allowed: string[]): Surface {
+  return { ...surfaceFrom(names), menu: surfaceFrom(names).accepts!, accepts: undefined, allowed };
+}
+
+/** The same events as an Orchestrator from before ADR-0029 serves them: `accepts` alone. */
+function surfaceFrom(names: string[]): Surface {
   return {
     instanceId: "run-1/machine.reviewing/reviewer/s1",
     runId: "run-1",
@@ -228,32 +239,145 @@ function carriesSummary(call: { messages: Array<Record<string, unknown>> } | und
   return JSON.stringify(call?.messages ?? []).includes(SUMMARY_MARK);
 }
 
-test("the Menu is listed fresh per Submission: a surface change lands on the next turn (ADR-0013)", async () => {
-  provider.reset([{ text: "Looked." }, { text: "Looked again." }]);
-  sandbox.reset(surfaceWith("review_verdict"));
-  const iid = "conf/menu";
+/** The newest user message of a request — where the Briefing's Turn part rides (ADR-0062). */
+function lastUserText(call: { messages: Array<Record<string, unknown>> } | undefined): string {
+  const user = (call?.messages ?? []).filter((m) => m.role === "user").at(-1);
+  const content = user?.content;
+  if (typeof content === "string") return content;
+  // pi sends a user message as text parts.
+  return ((content ?? []) as Array<{ type?: string; text?: string }>)
+    .flatMap((part) => (part.type === "text" && part.text !== undefined ? [part.text] : []))
+    .join("");
+}
 
-  const first = await admit(iid, "Review the diff.");
+function systemText(call: { messages: Array<Record<string, unknown>> } | undefined): string {
+  return String((call?.messages ?? []).find((m) => m.role === "system")?.content ?? "");
+}
+
+test("the Menu is fixed for a conversation: two Submissions with different Allowed picks send a BYTE-IDENTICAL tools block (ADR-0029)", async () => {
+  // A continued conversation changes state by design (ADR-0057): a coder in `implement` may
+  // `finish`, the same coder in `fix` may `finish` or `dispute`. The tools lead the provider's
+  // prefix cache, so the tools block — and the system prompt behind it — must not move.
+  provider.reset([{ text: "Implemented." }, { text: "Fixed." }]);
+  sandbox.reset(surfaceAllowing(["dispute", "finish"], ["finish"]));
+  const iid = "conf/fixed-menu";
+
+  const first = await admit(iid, "Implement it.");
   assert.equal((await settled(iid, first)).outcome, "completed");
-  sandbox.setSurface(surfaceWith("submit_summary"));
-  const second = await admit(iid, "Summarize.");
+  sandbox.setSurface(surfaceAllowing(["dispute", "finish"], ["dispute", "finish"]));
+  const second = await admit(iid, "Fix it.");
   assert.equal((await settled(iid, second)).outcome, "completed");
 
-  const menus = provider.calls.map((call) => (call.tools ?? []).map((tool) => tool.function?.name));
-  assert.ok(menus[0]?.includes("mcp__jr2__review_verdict"), `turn 1 sees its Menu (got: ${menus[0]})`);
-  assert.ok(!menus[0]?.includes("mcp__jr2__submit_summary"), "turn 1 cannot see the next state's Menu");
-  assert.ok(menus[1]?.includes("mcp__jr2__submit_summary"), `turn 2 sees the NEW Menu (got: ${menus[1]})`);
-  assert.ok(!menus[1]?.includes("mcp__jr2__review_verdict"), "turn 2 no longer sees the exited state's Menu");
+  const [one, two] = provider.calls;
+  assert.ok(one?.tools && two?.tools);
+  assert.equal(JSON.stringify(two.tools), JSON.stringify(one.tools), "the tools block is byte-identical");
+  const names = one.tools.map((tool) => tool.function?.name);
+  assert.ok(names.includes("mcp__jr2__dispute") && names.includes("mcp__jr2__finish"), `the whole Menu: ${names}`);
   for (const working of ["read", "write", "edit", "bash", "grep", "glob"]) {
-    assert.ok(menus[0]?.includes(working), `the Working tools ride along (missing: ${working})`);
+    assert.ok(names.includes(working), `the Working tools ride along (missing: ${working})`);
   }
+  assert.equal(systemText(two), systemText(one), "the system prompt — instructions and standing part — is too");
+
+  // What moved is the Turn part, after each Turn's prompt (ADR-0062).
+  assert.match(
+    lastUserText(one),
+    /^Implement it\.\n\n<jr2-turn>\n[\s\S]*Allowed now: `mcp__jr2__finish`\.\n<\/jr2-turn>$/,
+  );
+  assert.match(
+    lastUserText(two),
+    /^Fix it\.\n\n<jr2-turn>\n[\s\S]*Allowed now: `mcp__jr2__dispute`, `mcp__jr2__finish`\.\n<\/jr2-turn>$/,
+  );
+  // …and the first Turn's part is still in the history the second one sent, unchanged.
+  assert.ok(JSON.stringify(two.messages).includes("Allowed now: `mcp__jr2__finish`.\\n</jr2-turn>"));
+});
+
+test("the Briefing: the standing part follows the instructions; the Turn part names the working directory and the notices (ADR-0062)", async () => {
+  provider.reset([{ text: "Looked." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/briefing";
+  const cwd = await mkdtemp(join(tmpdir(), "conf-briefing-"));
+
+  const res = await app.request(conversationPath(iid), {
+    method: "POST",
+    body: JSON.stringify({
+      message: "Carry on.",
+      cwd,
+      definition: definitions[AGENT],
+      notices: [
+        { kind: "memory-limit", scope: "workspace", agent: "tester", peak: "1.9Gi", limit: "2Gi" },
+        { kind: "conversation-new", scope: "conversation", reason: "the last one was lost" },
+      ],
+    }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 200);
+  assert.equal(
+    (await settled(iid, (await res.json()) as { offset: string; submissionId: string })).outcome,
+    "completed",
+  );
+
+  const system = systemText(provider.calls[0]);
+  assert.ok(system.startsWith(`${definitions[AGENT]!.instructions}\n\n<jr2-briefing>\n`), system);
+  assert.doesNotMatch(system, /review_verdict/, "no Menu names in the standing part");
+  const turn = lastUserText(provider.calls[0]);
+  assert.ok(turn.startsWith("Carry on.\n\n<jr2-turn>\n"), turn);
+  assert.ok(turn.includes(`Working directory: ${cwd}`), turn);
+  assert.match(turn, /killed at its memory limit \(peak 1\.9Gi of 2Gi\) during `tester`'s Turn/);
+  assert.match(turn, /This conversation is new; earlier context is gone \(the last one was lost\)/);
+});
+
+test("an older Orchestrator's surface still runs: its `accepts` is the tools and the Allowed picks (ADR-0029 skew)", async () => {
+  provider.reset([{ text: "Looked." }]);
+  sandbox.reset(surfaceFrom(["review_verdict"]));
+  const iid = "conf/skew";
+
+  const admission = await admit(iid, "Review the diff.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  const names = (provider.calls[0]?.tools ?? []).map((tool) => tool.function?.name);
+  assert.ok(names.includes("mcp__jr2__review_verdict"), `the accepts are the tools: ${names}`);
+  assert.match(lastUserText(provider.calls[0]), /Allowed now: `mcp__jr2__review_verdict`\./);
+});
+
+test("a Turn that is over before it starts is never prompted: settled aborted, nothing written (ADR-0026)", async () => {
+  provider.reset([{ text: "never reached" }, { text: "Resumed." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  sandbox.killSurface();
+  const iid = "conf/over-at-start";
+
+  const admission = await admit(iid, "Review the diff.");
+  const settlement = await settled(iid, admission);
+  assert.equal(settlement.outcome, "aborted", "nothing is wrong — the state exited, so the Turn is over");
+  assert.equal(settlement.error?.type, "submission_aborted");
+  assert.equal(provider.calls.length, 0, "the model was never asked");
+  assert.deepEqual((await history(iid)).messages, [], "nothing was written to the conversation");
+
+  // The conversation is not poisoned: its next live Turn runs, and carries no dead prompt.
+  sandbox.reviveSurface();
+  const next = await admit(iid, "Now summarize.");
+  assert.equal((await settled(iid, next)).outcome, "completed");
+  assert.ok(
+    !JSON.stringify(provider.calls[0]?.messages).includes("Review the diff."),
+    "the dead prompt is not history",
+  );
+});
+
+test("a stopping Orchestrator's 503 is waited out: the surface read re-asks, and the Turn runs (ADR-0026/0042)", async () => {
+  provider.reset([{ text: "Looked." }]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  sandbox.stopFor(2);
+  const iid = "conf/stopping";
+
+  const admission = await admit(iid, "Review the diff.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.equal(sandbox.reads(), 3, "two 503s, then the live surface");
+  assert.equal(provider.calls.length, 1);
 });
 
 test("a Menu read the Orchestrator cannot answer fails the turn before the model is ever asked", async () => {
   provider.reset([{ text: "never reached" }]);
   sandbox.reset(surfaceWith("review_verdict"));
-  // Not a 404 (that is ADR-0026's empty menu, and a turn still runs): the Orchestrator answered
-  // the Menu read with a fault.
+  // Not a 404 (that is ADR-0026's turn-is-over, settled `aborted`) and not a 503 (a stopping
+  // Orchestrator, re-asked): the Orchestrator answered the Menu read with a fault.
   sandbox.faultSurface();
   const iid = "conf/menu-fault";
 
@@ -291,6 +415,9 @@ test('workspace "none" is the Menu-only shape: no Working tools offered, settled
       "a Menu-only turn offers the Menu alone",
     );
   }
+  // Its standing part says so, and its Turn part names no directory it has no tools to use.
+  assert.match(systemText(provider.calls[0]), /<jr2-briefing>[\s\S]*no Working tools[\s\S]*<\/jr2-briefing>$/);
+  assert.doesNotMatch(lastUserText(provider.calls[0]), /Working directory/);
   // …and the pick alone is what settled the turn: it reached the Orchestrator as a delivery.
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).

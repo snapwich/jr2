@@ -38,7 +38,7 @@ export type Turn = {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
-/** One request body, as the provider received it. `tools` is where the per-turn Menu is visible. */
+/** One request body, as the provider received it. `tools` is where the Menu is visible — the same bytes on every Turn (ADR-0029). */
 export type RecordedCall = {
   messages: Array<Record<string, unknown>>;
   tools?: Array<{ function?: { name?: string } }>;
@@ -176,20 +176,26 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
 
 export type FakeSandbox = {
   url: string;
-  /** The Menu the next surface read serves — a Machine state change, between two Submissions. */
+  /** What the next surface read serves — a Machine state change, or a guard that changed its
+   * answer, between two Submissions (ADR-0029: the Allowed picks move, the Menu does not). */
   setSurface: (surface: Surface) => void;
   /** What a state exit does to the registration: every later surface read is a 404. */
   killSurface: () => void;
   reviveSurface: () => void;
   /**
    * What a BLIP does to it, which is a different claim (ADR-0026): a 404 means "this turn is
-   * over", and the Harness answers it with an empty Menu; anything else is a Menu it could not
-   * read at all. Only this lever produces the second — the leg of a turn that runs BEFORE the
-   * model is ever asked.
+   * over", and the Harness settles it `aborted` without asking the model; anything else is a Menu
+   * it could not read at all. Only this lever produces the second — the leg of a turn that runs
+   * BEFORE the model is ever asked.
    */
   faultSurface: (status?: number) => void;
+  /** A stopping Orchestrator (ADR-0026): the next `reads` surface reads answer 503, then it is
+   * back — what a rollout looks like from the Harness. */
+  stopFor: (reads: number) => void;
   /** Every pick delivered since the last `reset`, in order. */
   delivered: Array<Record<string, unknown>>;
+  /** Every surface read since the last `reset`. */
+  reads: () => number;
   /** Every bearer the Harness presented, in order — the Stand-in, never a token. */
   bearers: string[];
   /** Park every LATER delivery after recording it — the abort-mid-tool-call lever. */
@@ -204,6 +210,8 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
   let live = true;
   let holding = false;
   let surfaceFault: number | undefined;
+  let stopping = 0;
+  let surfaceReads = 0;
   const delivered: Array<Record<string, unknown>> = [];
   const bearers: string[] = [];
   const server: Server = createServer((req, res) => {
@@ -211,6 +219,7 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     req.on("data", (c: Buffer) => (raw += c));
     req.on("end", () => {
       bearers.push(req.headers.authorization ?? "");
+      if (req.url?.endsWith("/surface")) surfaceReads += 1;
       const json = (status: number, body: unknown) => {
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(body));
@@ -218,6 +227,10 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
       if (!live) return json(404, { error: "no live agent surface" });
       if (req.url?.endsWith("/surface")) {
         if (surfaceFault !== undefined) return json(surfaceFault, { error: "scripted orchestrator failure" });
+        if (stopping > 0) {
+          stopping -= 1;
+          return json(503, { error: "the Orchestrator is stopping" });
+        }
         return json(200, surface);
       }
       const event = JSON.parse(raw) as Record<string, unknown>;
@@ -233,7 +246,9 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     killSurface: () => (live = false),
     reviveSurface: () => (live = true),
     faultSurface: (status = 500) => (surfaceFault = status),
+    stopFor: (reads) => (stopping = reads),
     delivered,
+    reads: () => surfaceReads,
     bearers,
     holdDeliveries: () => (holding = true),
     reset: (next) => {
@@ -241,6 +256,8 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
       live = true;
       holding = false;
       surfaceFault = undefined;
+      stopping = 0;
+      surfaceReads = 0;
       delivered.length = 0;
       bearers.length = 0;
     },

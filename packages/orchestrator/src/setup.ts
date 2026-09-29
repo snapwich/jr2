@@ -214,12 +214,14 @@ export function jr2Setup<
   >;
 }
 
-// --- Menu derivation (ADR-0015) ------------------------------------------------------------------
-// A state that invokes an AGENT SLOT gets, as its Agent's tool menu, the workflow events its
-// transitions handle — own + bubbled ancestors, per statechart semantics — filtered to audience
-// ∈ {agent, any}; a `gate` gets the same set filtered to {external, any}. The invoking actor
-// kind is the primary router; `audience` on the def exists to RESTRICT (tag the security-
-// sensitive events). Explicit `tools:`/`accepts:` on the invoke input remain as escape hatches.
+// --- Menu derivation (ADR-0015, ADR-0029) --------------------------------------------------------
+// A state that invokes an AGENT SLOT derives the workflow events its transitions handle — own +
+// bubbled ancestors, per statechart semantics — filtered to audience ∈ {agent, any}: what that
+// Turn may pick, before its guards narrow it to the Allowed picks. The Agent's MENU — its tools
+// block — is the union of those sets over every state that invokes it, fixed for the conversation.
+// A `gate` gets the same set filtered to {external, any}. The invoking actor kind is the primary
+// router; `audience` on the def exists to RESTRICT (tag the security-sensitive events). An
+// explicit `accepts:` on a gate's input remains an escape hatch.
 //
 // An agent invoke is identified by its LOGIC, not by a reserved src name: the walk looks the
 // invoke's `src` up in the setup's own `actors` map and asks `isAgent` (ADR-0049). That is also
@@ -240,13 +242,20 @@ type LooseState = {
 };
 type InputArgs = { context: unknown; event: unknown; self: AnyActorRef };
 
-/** Rewrite a machine config, wrapping every Agent-slot/`gate` invoke input (immutably). */
+/** Rewrite a machine config, wrapping every Agent-slot/`gate` invoke input (immutably).
+ *
+ * The same walk derives each Agent name's MENU (ADR-0029): the union of the derived sets of every
+ * state that invokes an Agent of that name in this Machine — the scope of its continued
+ * conversation's id (ADR-0057) — sorted, so it is byte-stable for every Turn of the conversation
+ * and for every fresh one. The wrapped inputs read it at invoke time, when the walk is long done. */
 function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Record<string, UnknownActorLogic>): unknown {
   const pick = (names: Set<string>, kind: "agent" | "external"): string[] =>
     [...names].filter((name) => {
       const d = defs.get(name);
       return !!d && (d.audience === kind || d.audience === "any");
     });
+  const menus = new Map<string, Set<string>>();
+  const menuOf = (agentName: string): string[] => [...(menus.get(agentName) ?? [])].sort();
 
   const walk = (node: LooseState, inherited: Set<string>, path: readonly string[]): LooseState => {
     const names = new Set(inherited);
@@ -266,7 +275,10 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
         if (typeof inv?.src === "string" && isAgent(actors[inv.src])) {
           const derived = pick(names, "agent");
           if (derived.length === 0) refuseBuriedPicks(node, inv.src, path, pick);
-          return { ...inv, input: wrapAgentInput(inv.input, derived, inv.src) };
+          const menu = menus.get(inv.src) ?? new Set<string>();
+          for (const name of derived) menu.add(name);
+          menus.set(inv.src, menu);
+          return { ...inv, input: wrapAgentInput(inv.input, derived, inv.src, menuOf) };
         }
         if (inv?.src === "gate") {
           const wrapped: LooseInvoke = { ...inv, input: wrapGateInput(inv.input, pick(names, "external")) };
@@ -367,9 +379,9 @@ function refuseUnknownKeys(consumer: object, agentName: string): void {
   );
 }
 
-/** Wrap an Agent slot's invoke input: name the Agent (the slot key), append the derived menu, and
- * finalize the mechanism fields. */
-function wrapAgentInput(orig: unknown, derived: string[], agentName: string) {
+/** Wrap an Agent slot's invoke input: name the Agent (the slot key), append the state's derived set
+ * and the Agent's Menu, and finalize the mechanism fields. */
+function wrapAgentInput(orig: unknown, derived: string[], agentName: string, menuOf: (agentName: string) => string[]) {
   return (args: InputArgs): AgentRunInput => {
     const consumer = resolveInput(orig, args) as Partial<AgentTurnInput & AgentRunInput>;
     refuseUnknownKeys(consumer, agentName);
@@ -391,8 +403,11 @@ function wrapAgentInput(orig: unknown, derived: string[], agentName: string) {
       // ADR-0035's reroll gate: closed to `continue: true`, which names an EXISTING conversation
       // while the runaway's one recovery is a fresh one — exactly what it opted out of.
       ...(consumer.continue === true ? { continuation: true } : {}),
-      // The Menu (ADR-0015): always the derived one, since ADR-0057 retired the override.
+      // The state's derived set (ADR-0015): always the derived one, since ADR-0057 retired the
+      // override. What delivery validates against, and what the Allowed picks narrow.
       tools: derived,
+      // The Menu (ADR-0029): every pick any state invoking this Agent derives — the tools block.
+      menu: menuOf(agentName),
     };
   };
 }

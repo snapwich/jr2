@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Conversation } from "../src/conversation.ts";
+import { Conversation, TurnOverError } from "../src/conversation.ts";
 import type { TurnDials } from "../src/spec.ts";
 import { SUBMISSION_ABORTED, type AdmissionRequest, type Settlement } from "../src/wire.ts";
 
@@ -218,4 +218,31 @@ test("stream chunks carry the flue-lineage envelope the retiring SDK validates (
       outcome: "completed",
     },
   ]);
+});
+
+test("a Turn that was over before it started settles aborted, never failed (ADR-0026)", async () => {
+  const { conversation, runs, admit } = scripted();
+  const { offset, submissionId } = admit("one");
+  runs[0]!.reject(new TurnOverError("no live surface"));
+  await flush();
+  assert.deepEqual(settlementEvents(conversation, offset), [
+    { submissionId, outcome: "aborted", error: { type: SUBMISSION_ABORTED, message: "no live surface" } },
+  ]);
+});
+
+test("a guard kill lands on the stream of a conversation whose Submission is running, and no other (ADR-0062)", async () => {
+  const { conversation, runs, admit } = scripted();
+  const kill = { peak: "1.9Gi", limit: "2Gi" };
+  // Idle: nobody's Turn was running, and no wait could read it — nothing is appended.
+  conversation.reportMemoryLimit(kill);
+  assert.deepEqual(conversation.updatesView("0").events, []);
+  const { offset } = admit("one");
+  conversation.reportMemoryLimit(kill);
+  assert.deepEqual(conversation.updatesView(offset).events, [
+    { type: "memory-limit", conversationId: "iid-1", position: { batch: 0, index: 0 }, peak: "1.9Gi", limit: "2Gi" },
+  ]);
+  runs[0]!.resolve();
+  await flush();
+  // …and it is not in the history view: that view is what was SAID, and the settlement.
+  assert.deepEqual(conversation.historyView().messages, []);
 });

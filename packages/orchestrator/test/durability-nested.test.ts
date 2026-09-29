@@ -40,6 +40,9 @@ function recordingAgent(log: Log) {
       log.settled.push(admission);
       return new Promise<void>(() => {}); // stays live until abandoned
     },
+    holds() {
+      return Promise.resolve(true);
+    },
   };
   return agentActorWith(() => port, { model: "test/model", instructions: "i" });
 }

@@ -90,11 +90,16 @@ test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, t
   assert.equal(surface.status, 200);
   const menu = (await surface.json()) as {
     sandbox: string;
-    accepts: Array<{ name: string; semantics: string; input: { properties?: Record<string, unknown> } }>;
+    menu: Array<{ name: string; semantics: string; input: { properties?: Record<string, unknown> } }>;
+    allowed: string[];
   };
   assert.equal(menu.sandbox, "ws-1");
-  assert.deepEqual(menu.accepts.map((a) => a.name).sort(), ["done", "request_review"]);
-  const review = menu.accepts.find((a) => a.name === "request_review");
+  assert.deepEqual(
+    menu.menu.map((a) => a.name),
+    ["done", "request_review"],
+  );
+  assert.deepEqual(menu.allowed, ["done", "request_review"], "the Allowed picks beside the Menu (ADR-0029)");
+  const review = menu.menu.find((a) => a.name === "request_review");
   assert.equal(review?.semantics, "ack");
   assert.ok(review?.input.properties?.summary, "the input schema is what the Harness offers as the tool's parameters");
 
@@ -110,8 +115,10 @@ test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, t
     event: string;
     turnComplete: boolean;
     deliveryId: string;
+    allowed: string[];
   };
   assert.ok(receipt.deliveryId);
+  assert.deepEqual(receipt.allowed, ["done"], "the receipt carries the Allowed picks after the delivery");
   assert.equal(receipt.delivered, true);
   assert.equal(receipt.event, "request_review");
   assert.equal(receipt.turnComplete, false, "the invoking state is still waiting — the turn continues");
@@ -120,11 +127,31 @@ test("the agent surface (ADR-0013): GET lists the turn's tools, POST delivers, t
   // A name this turn does not accept → 400 naming what it does. (Validation is the table's.)
   const bad = await app.request(`/agents/${encodeURIComponent(iid)}/events`, jsonPost({ type: "merge" }));
   assert.equal(bad.status, 400);
+  // …and names the Allowed picks, read after the refusal (ADR-0029): the guard closed on review.
+  assert.deepEqual(((await bad.json()) as { allowed?: string[] }).allowed, ["done"]);
 
   // The run settles → the registration goes → the surface 404s. The one catch point.
   await app.request(`/agents/${encodeURIComponent(iid)}/events`, jsonPost({ type: "done" }));
   await waitFor(() => host.status(runId) === undefined);
   assert.equal((await app.request(`/agents/${encodeURIComponent(iid)}/surface`)).status, 404);
+});
+
+test("while the host is stopping, /agents/* answers 503 — only a Turn that is over answers 404 (ADR-0026)", async () => {
+  const { host, app, clients } = await mkApp();
+  const { instanceId } = await host.start("coding", { sandbox: "ws-1" });
+  const iid = await admittedIid(clients.get(instanceId)!);
+  const unknown = "no-such-turn";
+  assert.equal((await app.request(`/agents/${unknown}/surface`)).status, 404, "before: a Turn that is over");
+
+  // The Orchestrator is going away, not the Turn: the Harness re-asks a surface read on 503, and a
+  // pick in the window is told to try again — never "this turn is over".
+  await host.close();
+  const surface = await app.request(`/agents/${encodeURIComponent(iid)}/surface`);
+  assert.equal(surface.status, 503);
+  assert.match(((await surface.json()) as { error: string }).error, /stopping/);
+  const pick = await app.request(`/agents/${encodeURIComponent(iid)}/events`, jsonPost({ type: "done" }));
+  assert.equal(pick.status, 503);
+  assert.equal((await app.request(`/agents/${unknown}/surface`)).status, 503, "no registration reads as 404 no more");
 });
 
 test("POST /runs/:id/events takes CANCEL, and nothing else", async () => {

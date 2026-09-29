@@ -39,6 +39,23 @@ test("the stub records the Frame's cwd off the wire — the Turn's directory lef
   }
 });
 
+test("the stub records an admission's notices off the wire (ADR-0062)", async () => {
+  const stub = await startStubHarness({ longPollMs: 50 });
+  try {
+    const port = createHarnessAgentRunClient({ baseUrl: stub.url });
+    const notices = [{ kind: "conversation-new" as const, scope: "conversation" as const, reason: "a fault" }];
+    const turn = { agentName: "coder", instanceId: "iid-1", endpoint: stub.url, prompt: "hello", tools: [] };
+    await port.admit(turn, { definition: coder, notices });
+    await port.admit(turn, { definition: coder });
+    assert.deepEqual(
+      stub.admissions.map((a) => a.notices),
+      [notices, undefined],
+    );
+  } finally {
+    await stub.close();
+  }
+});
+
 test("the real wire port admits against the stub, gets its admission, and parks in settle", async () => {
   const stub = await startStubHarness({ longPollMs: 200 });
   try {
