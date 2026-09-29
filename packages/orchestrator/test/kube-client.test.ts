@@ -5,6 +5,7 @@
 // and re-lists on any ERROR event (410 arrives inside an HTTP 200); and a dropped watch tells a
 // subscriber nothing.
 
+import { getEventListeners } from "node:events";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { REPOS, SANDBOXES, SECRETS, KubeError, inClusterBaseUrl, kubeClient } from "../src/kube-client.ts";
@@ -269,4 +270,23 @@ test("a dropped watch tells a subscriber NOTHING — unknown is never loss", asy
   assert.ok(watch.get("a"), "the cache keeps the last word");
   down = false;
   await waitFor(() => api.openWatches === 1);
+});
+
+test("a back-off leaves no listener behind on the loop's signal", async (t) => {
+  // A watch the server closes at once with nothing said: the loop beats (a sleep) and resumes, over
+  // and over. Each sleep must take its abort listener with it, or a long outage grows them unbounded.
+  let signal: AbortSignal | undefined;
+  let watches = 0;
+  const client = {
+    list: async () => ({ items: [], resourceVersion: "1" }),
+    watch: (_plural: unknown, _ns: unknown, o: { signal: AbortSignal }) => {
+      signal = o.signal;
+      watches++;
+      return (async function* () {})();
+    },
+  } as unknown as Parameters<typeof watchSandboxes>[0];
+  const watch = watchSandboxes(client, { namespace: NS, backoffMs: 1 });
+  t.after(() => watch.stop());
+  await waitFor(() => watches >= 30);
+  assert.ok(getEventListeners(signal!, "abort").length <= 1, "one sleep's listener at most, never one per back-off");
 });

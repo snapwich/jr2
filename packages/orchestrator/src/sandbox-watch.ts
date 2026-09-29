@@ -216,8 +216,17 @@ function isBodyTimeout(err: unknown): boolean {
   );
 }
 
+/** Wait `ms`, or less if the loop stops. The abort listener goes when the timer fires: the loop's
+ * signal lives as long as the process, and one listener per back-off would pile up on it. */
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => (clearTimeout(timer), resolve()), { once: true });
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
