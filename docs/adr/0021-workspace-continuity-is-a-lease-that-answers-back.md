@@ -30,10 +30,12 @@ inconsistent world" ADR-0012 exists to prevent.
   only — one merge patch every 5 minutes, ±20% jitter — the assertion that keeps the operator from reaping (ADR-0001). A
   dropped watch is unknown, never loss: fabricating loss would settle live runs holding real work the first time the API
   server hiccuped, so the loop re-lists and reconciles instead.
-- **The lease is an invoked actor in `running`**, one per workspace, owning both halves: it renews, and it subscribes to
-  the watch for its Sandbox. Its lifetime is the state's lifetime, which xstate already manages: it re-invokes on
-  snapshot restore, so restore-reconcile stops being a special case and becomes the first tick of the normal loop; and
-  it stops on every exit — body final, run stopped, run faulted.
+- **The lease is an invoked actor**, one per workspace, owning both halves: it renews, and it subscribes to the watch
+  for its Sandbox. Renewal covers the Sandbox from its write to its teardown, `placing` included, so a Sandbox that
+  waits for capacity is never reaped as abandoned ([ADR-0064](0064-a-workspace-waits-for-capacity.md)); Continuity is
+  judged from `running`, once there is an attached pod to compare. Its lifetime is the state's lifetime, which xstate
+  already manages: it re-invokes on snapshot restore, so restore-reconcile stops being a special case and becomes the
+  first tick of the normal loop; and it stops on every exit — body final, run stopped, run faulted.
 
 That last point deletes machinery rather than adding it. Three mechanisms with three different owners and lifetimes —
 the process-global heartbeat map, the one-shot probe, and `release(runId)` (which label-queried the cluster to stop
@@ -59,9 +61,8 @@ idle timeout on its own. The behavior `release()` was written to produce is emer
 
 - Detection latency for a lost workspace is the watch's: milliseconds (ADR-0063). The lease interval (default 5m, well
   inside the 30m idle timeout) now bounds only how long an orphan waits to be reaped.
-- **Nothing stamps between provision and `running`.** A run that faults during attach never leases its CR at all, so the
-  operator reaps it at creation + `idleTimeout` — `lastKeepalive` is `max(creation, annotation)`, so creation is the
-  initial lease. This is correct and needs no code, but it means attach must stay well inside the idle timeout.
+- A run that faults after its Sandbox was placed stops its lease; the operator reaps the CR one `idleTimeout` after the
+  last renewal. A Sandbox that was never placed is deleted at once (ADR-0064).
 - A backend that cannot report identity (or an operator too old to publish `podUID`) degrades to presence-only
   continuity — the pre-0021 behavior, minus the edge-triggering.
 - The lease is per-workspace, not per-run: a workflow with concurrent workspaces gets one actor each, and each is lost

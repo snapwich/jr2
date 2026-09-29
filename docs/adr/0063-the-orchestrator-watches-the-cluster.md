@@ -31,10 +31,12 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
   Sandbox it provisions carries. Observed: event latency p50 11ms, p95 92ms, max 186ms; 0 events lost across a
   200-object burst and a CRD run; about 75 MiB and 3% CPU for the watcher. **It never reads a Pod.** The operator owns
   the pod (ADR-0001) and already reads it on every reconcile, so it publishes what the Orchestrator needs onto the
-  Sandbox's status: a scheduling condition with the scheduler's message, the Harness container's restarts and last
-  terminated reason, and `podUID`.
+  Sandbox's status: a scheduling condition with the scheduler's message — or a quota's refusal of the pod create
+  ([ADR-0064](0064-a-workspace-waits-for-capacity.md)) — the Harness container's restarts and last terminated reason,
+  and `podUID`.
 - **The watch drives everything that polled.**
-  - Provisioning waits for `Ready` on watch events, and sees Unschedulable or a crash-looping Harness as it happens.
+  - Placing and provisioning wait on watch events: an Unschedulable pod or a quota refusal is a wait with its reason
+    (ADR-0064), a crash-looping Harness is seen as it happens.
   - Continuity: a changed `podUID` or a gone Sandbox is `workspace.lost` within seconds (ADR-0021). A dropped watch is
     unknown, never loss; the loop re-lists and reconciles.
   - A fetch ask (ADR-0053) is answered by the watch event that carries its landing.

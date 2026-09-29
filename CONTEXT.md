@@ -269,10 +269,16 @@ Sandbox and its worktree; the child Machine's states manage what happens inside 
 its final state cleans up the Sandbox. Coder and reviewer Agents share one Workspace (per-feature isolation, not
 per-Agent-run). _Avoid_: workspace pod
 
-**Lease**: The assertion that a Workspace is still wanted — an annotation one actor renews for as long as its Workspace
-runs. Nothing in the cluster represents a run, so liveness is asserted, not referenced: a lapsed lease is what lets the
-operator reap (ADR-0001). It only asserts; the run learns about Continuity from the Sandbox watch. _Avoid_: heartbeat
-(one-directional, and it named a process-global timer this replaced), keepalive (the annotation, not the concept)
+**Placing**: The Workspace state in which its Sandbox waits for capacity — a node from the scheduler, or room under the
+cluster owner's quota. jr2 sets no deadline on it; the state is visible, and its reason is the scheduler's or the
+quota's own words (ADR-0064). _Avoid_: pending (a Pod phase, and the Gate's word), queued, parked (a Gate's), admission
+(the Harness's)
+
+**Lease**: The assertion that a Workspace is still wanted — an annotation one actor renews from its Sandbox's write to
+its teardown. Nothing in the cluster represents a run, so liveness is asserted, not referenced: a lapsed lease is what
+lets the operator reap (ADR-0001). It only asserts; the run learns about Continuity from the Sandbox watch. _Avoid_:
+heartbeat (one-directional, and it named a process-global timer this replaced), keepalive (the annotation, not the
+concept)
 
 **Continuity**: Whether a Workspace is still the one its body attached to — the question the Sandbox watch answers.
 Distinct from existence: addresses are deterministic, so a replacement pod after an eviction or node loss keeps the CR,

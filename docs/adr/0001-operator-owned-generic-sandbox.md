@@ -43,12 +43,11 @@ own teardown (ADR-0012). "Abandoned" is defined by a lease: each live workspace 
 lease is still renewing — while a `kill -9`'d Orchestrator's Sandboxes reap one idle-timeout later. An Orchestrator that
 restarts within the timeout re-attaches and resumes renewing; one that stays down longer finds the CR gone and delivers
 `workspace.lost` to the restored body. Creation counts as the initial lease, so a CR whose run faults before it ever
-reaches `running` is still reaped on schedule, unleased from birth.
+renews is still reaped on schedule. The lease is renewed from the CR's write, so a Sandbox that waits for a node or for
+quota is never taken for abandoned (ADR-0064).
 
 There are no ownerReferences in this scheme — nothing in the cluster represents a run, so liveness has to be asserted,
-not referenced. Because the Orchestrator must hold that conversation open anyway, it is also where it _learns_: the
-renewal returns the patched CR, so the same call that asserts liveness reports whether the workspace is still there and
-still the same pod (ADR-0021). One exchange, both directions.
+not referenced. The lease only asserts; the Orchestrator learns from its watch of the Sandboxes (ADR-0021, ADR-0063).
 
 ## Known limitations
 

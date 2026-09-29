@@ -7,7 +7,8 @@ worktrees, runs the author's **body** Machine inside it, and tears the Sandbox d
 CONTEXT.md's "Workspace = child Machine bound to a unit of work" concrete.
 
 ```
-provisioning:  create Sandbox CR → await phase: Ready (watched, ADR-0063) → Harness /attach repos/worktrees (ADR-0004)
+placing:       create Sandbox CR → await the pod scheduled, no deadline (ADR-0064)
+provisioning:  await phase: Ready (watched, ADR-0063) → Harness /attach repos/worktrees (ADR-0004)
 running:       invoke body; input = parent input + { workspace: { repos, branch } }
 teardown:      destroy the CR
 done:          final; workspace output = body output
