@@ -83,7 +83,13 @@ import { SANDBOXES, SECRETS, kubeClient, type KubeClient } from "./kube-client.t
 import { repoIdentity } from "./repo-identity.ts";
 import type { RepoResources } from "./repos.ts";
 import { resolveSize, splitSize, type Size, type SizeSplit } from "./size.ts";
-import { watchSandboxes, type Condition, type SandboxObject, type SandboxWatch } from "./sandbox-watch.ts";
+import {
+  watchSandboxes,
+  type Condition,
+  type ContainerWaiting,
+  type SandboxObject,
+  type SandboxWatch,
+} from "./sandbox-watch.ts";
 import { harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
 import type { AttachError, AttachRequest, AttachResponse } from "./wire.ts";
 import type { Continuity, ProvisionedRepo, SandboxPort } from "./workspace.ts";
@@ -174,6 +180,21 @@ const cpuHintEnv = (): HarnessEnvVar[] =>
  * on the way up (a memory kill during a heavy start, ADR-0061) is a pod that may still come up.
  */
 const CRASH_LOOP_RESTARTS = 2;
+
+/**
+ * The kubelet's verdict on a container whose image resolves to root, or to a non-numeric user,
+ * under `runAsNonRoot` (ADR-0005). A BUILT image is judged at converge from its recorded USER; a
+ * brought registry ref is never inspected (ADR-0037), so this waiting reason is the only place
+ * its USER is known. Reason AND message: the reason alone also covers a missing Secret or
+ * ConfigMap key, a different fault with a different fix.
+ */
+const ROOT_IMAGE_REASON = "CreateContainerConfigError";
+const ROOT_IMAGE_MESSAGE = /runAsNonRoot/i;
+
+/** Waiting reasons that no retry mends: the kubelet will never start the container. A failing
+ * pull is not here — it may recover (a registry blip, node credentials), so the pod budget
+ * decides, and its expiry names it. */
+const TERMINAL_WAITING = new Set(["InvalidImageName", "ErrImageNeverPull"]);
 
 /** The kubelet's reason for a container the kernel killed at its memory limit (ADR-0061). */
 const OOM_KILLED = "OOMKilled";
@@ -323,10 +344,14 @@ export type KubeSandboxOptions = {
   harnessFetch?: typeof fetch;
   /** How long an attach re-sends a request that never reached the Harness. Default 90s. */
   attachWindowMs?: number;
+  /** Where a provision's progress line goes (a Sandbox waiting on the scheduler). Default
+   * `console.warn`. */
+  log?: (line: string) => void;
 };
 
 export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const ns = opts.namespace ?? "default";
+  const log = opts.log ?? ((line: string) => console.warn(line));
   const imagesPath = opts.imagesPath ?? join(IMAGES_MOUNT, IMAGES_KEY);
   const heldPath = opts.heldPath ?? join(HELD_MOUNT, HELD_KEY);
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
@@ -849,11 +874,27 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // and what remains is a clone or a fetch on the node. Sticky: a pod that came up once is not
       // a pod that will never come up, whatever it does afterwards.
       let held = false;
+      let unplacedSaid = false;
       return waitFor(
         req.name,
         (sandbox) => {
           const status = sandbox?.status;
           const ready = conditionOf(sandbox, "Ready");
+          if (status?.phase !== "Ready") {
+            // A container the kubelet will never start (ADR-0063): no log, no termination — its
+            // waiting reason, published by the operator, is the only evidence. Named at once.
+            const fault = waitingFault(req.name, status?.waiting);
+            if (fault) throw new Error(fault);
+            // Waiting on the scheduler is said when it first appears, in the scheduler's words, and
+            // the wait goes on under the pod budget.
+            // TODO(R4): capacity waiting decides how long an Unschedulable Sandbox waits, and where
+            // it is said (the feed, `jr2 status`); today it is the pod budget and the log.
+            const scheduled = conditionOf(sandbox, "Scheduled");
+            if (!unplacedSaid && scheduled?.status === "False" && scheduled.reason === "Unschedulable") {
+              unplacedSaid = true;
+              log(`jr2: Sandbox "${req.name}" is not scheduled yet: ${scheduled.message ?? "no message"} (ADR-0063)`);
+            }
+          }
           // Terminal for THIS provision: the cache agent tried to clone onto the pod's node and git
           // refused. The operator's message carries the key, the node, and git's own words; the
           // agent keeps retrying on its own, so `jr2 status` will show the same error until it is fixed.
@@ -1055,6 +1096,42 @@ function crashLoopError(name: string, harness: NonNullable<NonNullable<SandboxOb
 }
 
 /**
+ * The provision's verdict on a waiting container, or undefined to keep waiting (ADR-0063). Init
+ * containers come first in the list, and they run first: the `preflight` step runs the Sandbox
+ * Image before the Harness container exists, so that is where a root image dies.
+ */
+function waitingFault(name: string, waiting: ContainerWaiting[] | undefined): string | undefined {
+  for (const w of waiting ?? []) {
+    if (w.reason === ROOT_IMAGE_REASON && w.message && ROOT_IMAGE_MESSAGE.test(w.message)) {
+      return rootImageError(name, `container "${w.container}": ${w.message}`);
+    }
+    if (w.reason !== undefined && TERMINAL_WAITING.has(w.reason)) {
+      return `Sandbox "${name}" cannot start: container "${w.container}" ${w.reason}${w.message ? `: ${w.message}` : ""}`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The fix, not the symptom. The kubelet's message says what it refused; it cannot say that the
+ * image is a Sandbox Image, that jr2 declined to patch a uid onto it, or where the one-line edit
+ * goes. Only a brought ref reaches here: a built image's USER was judged at converge, and one that
+ * declares none gets the uid fallback.
+ */
+function rootImageError(name: string, fault: string): string {
+  return (
+    `Sandbox "${name}" cannot start: its image runs as ROOT, and every jr2-owned seat is hardened ` +
+    `with runAsNonRoot (ADR-0005). The kubelet refused it — ${fault}\n` +
+    `  - the fix is one line in the image: a NUMERIC non-root \`USER <uid>\` (e.g. \`USER 1000\`)\n` +
+    `  - numeric because the kubelet does not read the image's /etc/passwd, so \`USER app\` is ` +
+    `refused too — it cannot prove that name is non-root\n` +
+    `  - jr2 does not supply a uid for a brought registry ref: it is never inspected and never ` +
+    `modified, which is what "bring your own image" means (ADR-0037). Only an image jr2 BUILDS, ` +
+    `and only one that declares no USER at all, gets the uid-${FALLBACK_UID} fallback.`
+  );
+}
+
+/**
  * The pod budget ran out. The most likely cause is an image that misses ADR-0037's floor, and that
  * failure is an INIT container's — invisible in the phase alone. A musl or git-less base dies
  * INSIDE the preflight, on jr2's own message; a root image never starts it. The operator's words
@@ -1065,6 +1142,12 @@ function notReadyError(name: string, last: SandboxObject | undefined): string {
   const ready = said(last?.status?.conditions?.find((c) => c.type === "Ready"));
   const scheduled = last?.status?.conditions?.find((c) => c.type === "Scheduled");
   const unplaced = scheduled && scheduled.status !== "True" ? said(scheduled) : undefined;
+  // Routine waits (the init step still running) say nothing; anything else is what the kubelet
+  // was stuck on — a failing pull, a config error.
+  const stuck = (last?.status?.waiting ?? [])
+    .filter((w) => w.reason && w.reason !== "PodInitializing" && w.reason !== "ContainerCreating")
+    .map((w) => `\n  container "${w.container}" is waiting: ${w.reason}${w.message ? `: ${w.message}` : ""}`)
+    .join("");
   return (
     `Sandbox "${name}" never reached Ready (last phase: ${last?.status?.phase ?? "absent"}) — if its ` +
     "Sandbox Image is new, check the preflight: `kubectl logs " +
@@ -1072,6 +1155,7 @@ function notReadyError(name: string, last: SandboxObject | undefined): string {
     " -c preflight` (ADR-0037's floor: glibc, git, a writable HOME, a numeric non-root USER — an image " +
     "that runs as root never starts it, and `kubectl describe pod` says so)." +
     (unplaced ? `\n  the scheduler says: ${unplaced}` : "") +
+    stuck +
     (ready ? `\n  the operator's Ready condition says: ${ready}` : "")
   );
 }

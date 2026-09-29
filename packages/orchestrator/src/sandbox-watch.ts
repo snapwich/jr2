@@ -45,7 +45,13 @@ export type SandboxStatus = {
     restartCount?: number;
     lastTerminated?: { reason?: string; exitCode?: number; finishedAt?: string };
   };
+  /** Every waiting container of the current pod, init containers first, in the kubelet's words
+   * (ADR-0063) — the only evidence of a container that never starts. */
+  waiting?: ContainerWaiting[];
 };
+
+/** One waiting container, as the operator copies it off the pod. */
+export type ContainerWaiting = { container: string; reason?: string; message?: string };
 
 /** One entry of a Sandbox CR's `status.conditions`, as the operator writes it. */
 export type Condition = { type: string; status: string; reason?: string; message?: string };

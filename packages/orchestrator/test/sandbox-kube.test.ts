@@ -568,6 +568,96 @@ test("a Harness that keeps dying before Ready fails the provision BY NAME, with 
   );
 });
 
+test("a brought image that runs as root fails the provision at once, BY NAME, with the USER fix (ADR-0063)", async () => {
+  // A registry ref is never inspected (ADR-0037), so a root or non-numeric USER is knowable only
+  // from the cluster: the kubelet refuses the preflight with CreateContainerConfigError and it never
+  // starts — no log, no termination. The operator publishes the waiting reason; the judge reads it.
+  const root = 'container has runAsNonRoot and image will run as root (pod: "sb-root_default", container: preflight)';
+  const { exec } = cluster([
+    PENDING,
+    { phase: "Pending", waiting: [{ container: "preflight", reason: "CreateContainerConfigError", message: root }] },
+  ]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 60_000, ...exec });
+  const started = Date.now();
+  await assert.rejects(
+    () => port.provision({ name: "sb-root", runId: "r", workflow: "w", ...withApp }),
+    (err: Error) => {
+      assert.match(err.message, /Sandbox "sb-root" cannot start: its image runs as ROOT/);
+      assert.match(err.message, /runAsNonRoot and image will run as root/, "the kubelet's words");
+      assert.match(err.message, /USER 1000/, "the one-line fix");
+      return true;
+    },
+  );
+  assert.ok(Date.now() - started < 5_000, "at once, not the rest of the budget");
+
+  // The same reason for another cause (a missing Secret key) is not the root fault: no false name.
+  const other = cluster([
+    {
+      phase: "Pending",
+      waiting: [{ container: "harness", reason: "CreateContainerConfigError", message: 'secret "x" not found' }],
+    },
+    READY,
+  ]);
+  const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...other.exec });
+  assert.equal(
+    (await port2.provision({ name: "sb-2", runId: "r", workflow: "w", ...withApp })).endpoint,
+    READY.endpoint,
+  );
+});
+
+test("an image name the kubelet cannot use fails at once; a failing pull is named when the budget runs out (ADR-0063)", async () => {
+  const bad = cluster([
+    {
+      phase: "Pending",
+      waiting: [
+        { container: "preflight", reason: "InvalidImageName", message: 'Failed to apply default image tag "x:"' },
+      ],
+    },
+  ]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 60_000, ...bad.exec });
+  await assert.rejects(
+    () => port.provision({ name: "sb-bad", runId: "r", workflow: "w", ...withApp }),
+    /Sandbox "sb-bad" cannot start: container "preflight" InvalidImageName: Failed to apply default image tag/,
+  );
+
+  // A pull may recover (a registry blip, node credentials); the pod budget decides, and the
+  // expiry says what the kubelet was waiting on instead of guessing at the preflight.
+  const pull = cluster([
+    {
+      phase: "Pending",
+      waiting: [{ container: "preflight", reason: "ImagePullBackOff", message: "Back-off pulling image" }],
+    },
+  ]);
+  const port2 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 200, ...pull.exec });
+  await assert.rejects(
+    () => port2.provision({ name: "sb-pull", runId: "r", workflow: "w", ...withApp }),
+    /never reached Ready[\s\S]*container "preflight" is waiting: ImagePullBackOff: Back-off pulling image/,
+  );
+});
+
+test("an Unschedulable Sandbox is said as it happens, with the scheduler's words, and the wait goes on (ADR-0063)", async () => {
+  const unplaced = {
+    phase: "Pending",
+    conditions: [
+      {
+        type: "Scheduled",
+        status: "False",
+        reason: "Unschedulable",
+        message: "0/3 nodes are available: 3 Insufficient memory.",
+      },
+    ],
+  };
+  const lines: string[] = [];
+  const { exec } = cluster([unplaced, { ...unplaced, podUID: "x" }, READY]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, log: (l) => lines.push(l), ...exec });
+  assert.equal(
+    (await port.provision({ name: "sb-wait", runId: "r", workflow: "w", ...withApp })).endpoint,
+    READY.endpoint,
+  );
+  assert.equal(lines.length, 1, "once, when it first appears — not every event");
+  assert.match(lines[0]!, /Sandbox "sb-wait" is not scheduled yet: 0\/3 nodes are available: 3 Insufficient memory\./);
+});
+
 test("the map is re-read PER provision, so a converge reaches the next Sandbox without a roll", async () => {
   // The whole reason the refs arrive as a mounted ConfigMap rather than Deployment env (ADR-0038):
   // a rebuilt image must reach FUTURE Sandboxes without bouncing every live run through restore.
