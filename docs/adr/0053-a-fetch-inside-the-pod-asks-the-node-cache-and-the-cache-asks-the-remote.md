@@ -42,8 +42,9 @@ a fetch inside a pod reaches the remote, and who may ask** is one decision.
 - **The landing is reported on the Sandbox, standing and per key.** The verdict the operator already computes on the way
   to `Ready` — fresh, stale with git's error, or still cloning, per Repo, against the CR's creation — becomes a standing
   entry on the Sandbox status computed against the later of creation and the ask. `Ready` itself stays as it was:
-  sticky, once per pod life. The Orchestrator's route waits on that entry, then answers the Custodian, which answers the
-  program. One wait, and it is the wait an attach already makes.
+  sticky, once per pod life. The Orchestrator's route waits on that entry — a Sandbox watch event, never a poll
+  ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)) — then answers the Custodian, which answers the program.
+  One wait, and it is the wait an attach already makes.
 - **The scope is the Sandbox token's scope, and no seat gains a credential.** A Sandbox may ask for the caches it mounts
   and nothing else; the remote is reached by the cache agent with the Repo CR's `secretRef`, the credential that cloned
   the cache. The pod holds none before and none after. The Menu is untouched — a fetch is not something the Agent

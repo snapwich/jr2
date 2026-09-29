@@ -7,7 +7,7 @@ worktrees, runs the author's **body** Machine inside it, and tears the Sandbox d
 CONTEXT.md's "Workspace = child Machine bound to a unit of work" concrete.
 
 ```
-provisioning:  create Sandbox CR → await phase: Ready → attach repos/worktrees (post-Ready, ADR-0004)
+provisioning:  create Sandbox CR → await phase: Ready (watched, ADR-0063) → Harness /attach repos/worktrees (ADR-0004)
 running:       invoke body; input = parent input + { workspace: { repos, branch } }
 teardown:      destroy the CR
 done:          final; workspace output = body output
@@ -70,10 +70,11 @@ the same contract as a temp directory.
 - The workspace labels the CR with its run (`jr2.dev/run`, `jr2.dev/workflow`), which is what `jr2 ls` groups by
   (ADR-0009).
 - **Lost workspace: the wrapper emits, the body decides.** While the body runs, a lease actor beside it renews the
-  Sandbox's keepalive and reads back whether the workspace it attached to is still there (ADR-0021) — continuously, and
-  on snapshot restore as the first tick of that same loop rather than a separate restore-time path. Intact → carry on
-  (same endpoint — deterministic per Sandbox name; in-flight turns re-attach from the host ledger, ADR-0016). Lost —
-  reaped, deleted, or a replacement pod after an eviction or node loss — → the pod-local clone and any unpushed commits
-  are gone, so silently re-provisioning would resume into an inconsistent world (tickets closed, commits vanished);
-  instead the wrapper delivers a **`workspace.lost`** event into the body — same channel as `agent.fault` — and the
-  body's policy decides (route it to escalation, settle as lost, or choose to re-provision and restart).
+  Sandbox's keepalive and follows the Sandbox watch for whether the workspace it attached to is still there (ADR-0021,
+  ADR-0063) — continuously, and on snapshot restore as the first tick of that same loop rather than a separate
+  restore-time path. Intact → carry on (same endpoint — deterministic per Sandbox name; in-flight turns re-attach from
+  the host ledger, ADR-0016). Lost — reaped, deleted, or a replacement pod after an eviction or node loss — → the
+  pod-local clone and any unpushed commits are gone, so silently re-provisioning would resume into an inconsistent world
+  (tickets closed, commits vanished); instead the wrapper delivers a **`workspace.lost`** event into the body — same
+  channel as `agent.fault` — and the body's policy decides (route it to escalation, settle as lost, or choose to
+  re-provision and restart).

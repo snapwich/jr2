@@ -5,6 +5,9 @@ container specs, volumes, resources, secrets, idle timeout — and a custom oper
 Service, reporting a `status.endpoint` the Orchestrator uses to reach the Harness. The CRD names the Repos a Sandbox
 needs by identity — enough for the operator to place the pod and mount each node cache read-only (ADR-0051) — and knows
 nothing about clones, worktrees, or Agents; those are layered on by the Orchestrator after the Sandbox reaches `Ready`.
+The operator also publishes what the Orchestrator needs to know about the pod onto the Sandbox's status — `podUID`, a
+scheduling condition with the scheduler's message, the Harness container's restarts and last terminated reason — because
+the Orchestrator watches Sandboxes and never reads a Pod ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)).
 
 We chose the operator over the Orchestrator calling the Kubernetes API directly because the custom resource _is_ the
 durable desired state: Sandboxes survive an Orchestrator restart, and garbage collection / readiness / retries live in
@@ -66,9 +69,8 @@ deferral.
   Custodian is up, or outlive it during shutdown. Start-up is covered without ordering: the Custodian's readiness probe
   holds the pod's Ready, which holds the Sandbox's, so no Turn is admitted before it serves (ADR-0059). Revisit if
   ordering becomes load-bearing.
-- **`reconcileStatus` writes status unconditionally.** Every reconcile issues a `Status().Update`, even when nothing
-  changed. Harmless today (reconciles are event-driven, not hot-looping), but add an equality guard before the write if
-  a status busy-loop ever appears.
+- **`reconcileStatus` writes status only when it changed.** Every status write is a watch event at the Orchestrator
+  (ADR-0063), so an unconditional `Status().Update` per reconcile would wake it for nothing.
 - **Consumers must gate on `phase: Ready`, not endpoint presence.** `status.endpoint` is populated as soon as the
   Service exists, before the Harness is reachable; only `phase: Ready` (backed by a readiness probe) means "serving".
   The `Terminating` phase is best-effort — there is no finalizer, so a fast delete may GC the Pod/Service before the

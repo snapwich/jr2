@@ -1,4 +1,4 @@
-# Workspace continuity is a lease that answers back
+# Workspace continuity is watched; the lease asserts
 
 Two Sandboxes were deleted by hand under a live Orchestrator (2026-07-19); `jr2 runs` and the visualizer both kept
 reporting the runs as active, parked on their gates, indefinitely. The gap was structural rather than a bug: the
@@ -24,15 +24,16 @@ inconsistent world" ADR-0012 exists to prevent.
 - **Identity, not address.** The operator publishes `status.podUID`; the workspace captures it at provision and persists
   it in context (plain serializable data — ADR-0007). Every address a run holds is deterministic and therefore survives
   replacement; only the UID changes when the filesystem does.
-- **`SandboxPort.exists()` becomes `renew()`**, returning `Continuity = {present: false} | {present: true, identity?}`.
-  It stamps the lease and reports what it found in **one call** — `kubectl annotate --overwrite -o json` returns the
-  patched object with status included, so asserting liveness and learning the truth cost one round trip, not two. A
-  renewal that _fails_ rejects; it never resolves `{present: false}`. Unknown is not loss, and fabricating loss would
-  settle live runs holding real work the first time the API server hiccuped.
-- **The lease is an invoked actor in `running`**, one per workspace, owning the whole exchange. Its lifetime is the
-  state's lifetime, which xstate already manages: it re-invokes on snapshot restore, so restore-reconcile stops being a
-  special case and becomes the first tick of the normal loop; and it stops on every exit — body final, run stopped, run
-  faulted.
+- **The watch answers; the lease asserts.** The Orchestrator watches its Sandboxes
+  ([ADR-0063](0063-the-orchestrator-watches-the-cluster.md)), and Continuity is read from that watch: a Sandbox gone, or
+  a `podUID` that is not the one the body attached to, is `workspace.lost` within seconds. The lease renewal is a write
+  only — one merge patch every 5 minutes, ±20% jitter — the assertion that keeps the operator from reaping (ADR-0001). A
+  dropped watch is unknown, never loss: fabricating loss would settle live runs holding real work the first time the API
+  server hiccuped, so the loop re-lists and reconciles instead.
+- **The lease is an invoked actor in `running`**, one per workspace, owning both halves: it renews, and it subscribes to
+  the watch for its Sandbox. Its lifetime is the state's lifetime, which xstate already manages: it re-invokes on
+  snapshot restore, so restore-reconcile stops being a special case and becomes the first tick of the normal loop; and
+  it stops on every exit — body final, run stopped, run faulted.
 
 That last point deletes machinery rather than adding it. Three mechanisms with three different owners and lifetimes —
 the process-global heartbeat map, the one-shot probe, and `release(runId)` (which label-queried the cluster to stop
@@ -42,11 +43,10 @@ idle timeout on its own. The behavior `release()` was written to produce is emer
 
 ## Considered options
 
-- **Watch Sandboxes.** The orchestrator's Role already grants it, and it would cut detection latency from a lease
-  interval to seconds. Rejected for now: it needs a real Kubernetes client (the port is a `kubectl` shell-out), plus
-  relist/reconnect handling, and it would be a _second_ channel alongside the lease the operator still requires. The
-  poll is not extra work — it is the lease, which has to happen anyway. Revisit if something needs sub-minute loss
-  detection.
+- **The renewal answers back** (the first form of this decision): `kubectl annotate --overwrite -o json` returned the
+  patched object, so asserting and learning cost one round trip. Replaced: detection then ran only at the lease interval
+  (an eviction or drain surfaced 4.6–4.7 minutes late in the chaos tests), and it rode a `kubectl` process the
+  Orchestrator no longer starts (ADR-0063).
 - **Keep the probe, just run it on a timer.** Simplest diff: the probe is already a `fromCallback` with teardown, so it
   is a `.then` → `setInterval`. Rejected because it leaves the heartbeat map, `release()`, and the write/read split all
   standing, and doubles the API traffic against the same object — the debt, untouched, plus a timer.
@@ -57,8 +57,8 @@ idle timeout on its own. The behavior `release()` was written to produce is emer
 
 ## Consequences
 
-- Detection latency for a lost workspace is the lease interval (default 5m, well inside the 30m idle timeout). Tunable
-  per backend via `leaseIntervalMs`; the tests drive it at 5ms.
+- Detection latency for a lost workspace is the watch's: milliseconds (ADR-0063). The lease interval (default 5m, well
+  inside the 30m idle timeout) now bounds only how long an orphan waits to be reaped.
 - **Nothing stamps between provision and `running`.** A run that faults during attach never leases its CR at all, so the
   operator reaps it at creation + `idleTimeout` — `lastKeepalive` is `max(creation, annotation)`, so creation is the
   initial lease. This is correct and needs no code, but it means attach must stay well inside the idle timeout.

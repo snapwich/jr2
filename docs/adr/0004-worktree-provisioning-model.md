@@ -85,8 +85,8 @@ fast setup.
 
 Worktree provisioning is a post-`Ready` step owned by the Orchestrator: the Sandbox CRD names repositories by identity
 so the operator can place and mount them, but it knows nothing about clones or worktrees (ADR-0001, ADR-0051).
-`workspace()`'s attach runs one idempotent in-pod script over `kubectl exec` (ADR-0012, `attachScript` in
-`sandbox-kubectl.ts`), once `Ready` says every cache is present and fetched.
+`workspace()`'s attach is one idempotent in-pod script the Harness runs on `POST /attach` (ADR-0012,
+[ADR-0063](0063-the-orchestrator-watches-the-cluster.md)), once `Ready` says every cache is present and fetched.
 
 ## In-Sandbox layout: worktrees off the per-Sandbox clone (gwtmux convention)
 
