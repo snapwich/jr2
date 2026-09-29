@@ -133,7 +133,9 @@ type BodyContext = BodyInput & {
   turns: number;
   /** The coder's own account of the last finished Turn — the Gate's `summary`. */
   summary?: string;
-  /** Why the run is parked without a summary: the reason the fault carried — the Gate's `reason`. */
+  /** Why the run is parked without a summary: the reason the fault carried — the Gate's `reason`.
+   * Kept into the re-briefed Turn that follows, which tells the coder of a memory kill (ADR-0061);
+   * the next `finish` clears it. */
   reason?: string;
   /** The human's last notes, which are the next Turn's prompt. */
   notes?: string;
@@ -246,7 +248,7 @@ export const body = jr2Setup({
         // next one starts, so a count jr2 chose would only ever interrupt them.
         request_changes: {
           target: "working",
-          actions: assign({ notes: ({ event }) => event.notes, summary: undefined, reason: undefined }),
+          actions: assign({ notes: ({ event }) => event.notes, summary: undefined }),
         },
       },
     },
@@ -321,6 +323,8 @@ function branchOf(input: TaskInput): string {
 function coderPrompt(context: BodyContext): string {
   const notes = context.notes ? `\n\nThe human reviewed your work and asks for changes:\n${context.notes}` : "";
   if (context.turns > 0) return notes.trimStart() || "Continue.";
+  const fault = memoryKill(context.reason);
+  const ended = fault ? `\n\nThe last attempt ended: ${fault}` : "";
   const { branch, repos } = context.workspace;
   const worktree = worktreeOf(context);
   const beside = Object.entries(repos)
@@ -328,11 +332,23 @@ function coderPrompt(context: BodyContext): string {
     .map(([slot, path]) => `\n- ${slot}: ${path}`)
     .join("");
   return (
-    `${context.prompt}${notes}\n\n` +
+    `${context.prompt}${ended}${notes}\n\n` +
     `Work in ${worktree.path}, on branch ${branch} — your tools are rooted there, so a relative ` +
     `path lands inside it. Commit what you do there, then call finish.` +
     (beside ? `\n\nAlso checked out beside it, for you to read:${beside}` : "")
   );
+}
+
+/**
+ * A memory kill's named line (ADR-0061, layer 5), or undefined for any other fault. The one fault
+ * the coder can act on — fewer workers, smaller steps — so the retry Turn carries it: the example
+ * for authors. The Orchestrator names it with the fixed prefix `memory limit` on the first line;
+ * the lines after it are the transport's words, not the coder's business. Any other fault (a
+ * provider down, a runaway rerolled) is the human's, and stays on the Gate alone.
+ */
+function memoryKill(reason: string | undefined): string | undefined {
+  const line = reason?.split("\n")[0]?.trim();
+  return line?.startsWith("memory limit") ? line : undefined;
 }
 
 /**

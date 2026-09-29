@@ -371,6 +371,30 @@ test("a terminal agent.fault parks at the same Gate, and the NEXT Turn is a fres
   assert.match(second.prompt ?? "", /try again, smaller steps/);
 });
 
+test("a memory kill's reason reaches the retry Turn; another fault's does not (ADR-0061)", async () => {
+  // The kit's Machines pass a memory kill into their retry Turn as the example for authors: without
+  // it, the re-briefed coder repeats the same work at the same size and dies the same way.
+  const oom =
+    "memory limit (OOMKilled, limit 2Gi): the Workspace's processes passed the Harness container's memory limit. Use fewer workers, or give the Workspace a larger Size (ADR-0060, ADR-0061).";
+  const { port, host, runId } = await startRun({ prompt: PROMPT, branch: "wip" });
+  port.fail(0, `${oom}\n  conversation lost`);
+  await waitFor(() => host.gates(runId).length === 1);
+  const gate = host.gates(runId)[0]!;
+  host.sendToGate(runId, gate.gate, { type: "request_changes", notes: "retry" });
+  await waitFor(() => port.admits.length === 2);
+  const retry = port.admits[1]!.prompt ?? "";
+  assert.match(retry, new RegExp(PROMPT), "still the whole re-brief");
+  assert.ok(retry.includes(`The last attempt ended: ${oom}`), retry);
+  assert.ok(!retry.includes("conversation lost"), "the named line, not the transport's words");
+
+  const other = await startRun({ prompt: PROMPT, branch: "wip" });
+  other.port.fail(0, "submission settled failed: provider unavailable");
+  await waitFor(() => other.host.gates(other.runId).length === 1);
+  other.host.sendToGate(other.runId, other.host.gates(other.runId)[0]!.gate, { type: "request_changes", notes: "x" });
+  await waitFor(() => other.port.admits.length === 2);
+  assert.ok(!(other.port.admits[1]!.prompt ?? "").includes("The last attempt ended"), "not the coder's to act on");
+});
+
 test("the door's Dials reach the Turn, and never touch the Agent's identity (ADR-0018)", async () => {
   const { port } = await startRun({ prompt: PROMPT, model: "openai/gpt-5", thinkingLevel: "xhigh" });
   const first = port.admits[0]!;
