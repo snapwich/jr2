@@ -51,6 +51,7 @@ function mkKube(listing: Listing): KubeAdmin & { queries: string[] } {
     logs: async () => assert.fail("the sweep reads no logs") as never,
     runOneShot: async () => assert.fail("the sweep probes nothing") as never,
     serverVersion: async () => assert.fail("the sweep reads no version") as never,
+    dryRunCreate: async () => assert.fail("the sweep dry-runs nothing") as never,
     listJson: async <T>(o: { kind: string; selector?: string; fieldSelector?: string; allNamespaces?: boolean }) => {
       kube.queries.push(`${o.kind}${o.selector ? ` -l ${o.selector}` : ""}${o.allNamespaces ? " -A" : ""}`);
       const which = o.kind.startsWith("sandboxes") ? "sandboxes" : o.kind;

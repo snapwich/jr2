@@ -109,6 +109,7 @@ function mkKube(opts: {
     waitRollout: async () => assert.fail("the wait already failed"),
     runOneShot: async () => assert.fail("a diagnosis runs no pods") as never,
     serverVersion: async () => assert.fail("a diagnosis reads no version") as never,
+    dryRunCreate: async () => assert.fail("a diagnosis dry-runs nothing") as never,
     getJson: async <T>(o: { kind: string; name: string }): Promise<T | undefined> => {
       assert.equal(o.kind, "node");
       const architecture = opts.arch?.[o.name];

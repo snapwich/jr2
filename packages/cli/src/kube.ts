@@ -142,6 +142,9 @@ export type KubeAdmin = {
    * ADR-0037's Kubernetes floor is judged against. THROWS when the server does not answer, like
    * `listJson`: a floor check that passed because it could not look is no check at all. */
   serverVersion(opts: { context?: string }): Promise<string>;
+  /** `kubectl create --dry-run=server -o json -f -`: the object as admission would store it,
+   * stored nowhere. THROWS on a refusal, with kubectl's reason. */
+  dryRunCreate(opts: { manifest: string; context?: string }): Promise<{ spec?: { resources?: unknown } }>;
   /** Run a one-shot node script IN the cluster (`kubectl run --rm`) and return its output — the
    * provider-preflight seam (ADR-0019: reachability must be probed from where pods live).
    * `caPem` makes the probe trust a private CA the same way the Harness does (ADR-0020):
@@ -326,6 +329,14 @@ export const kubectlAdmin: KubeAdmin = {
     } catch (e) {
       throw new Error(unreachable(e));
     }
+  },
+
+  async dryRunCreate({ manifest, context }) {
+    const out = await execStdinOut(
+      ["kubectl", ...ctxArgs(context), "create", "--dry-run=server", "-o", "json", "-f", "-"],
+      manifest,
+    );
+    return JSON.parse(out) as { spec?: { resources?: unknown } };
   },
 
   async runOneShot({ namespace, name, script, caPem, context }) {
@@ -770,6 +781,50 @@ function execStdin(cmd: string[], stdin: string): Promise<void> {
     child.stdin.write(stdin);
     child.stdin.end();
   });
+}
+
+/** `execStdin`, keeping stdout. */
+function execStdinOut(cmd: string[], stdin: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd[0]!, cmd.slice(1));
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
+    child.stderr.on("data", (d: Buffer) => (err += d.toString()));
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0 ? resolve(out) : reject(new Error(`${cmd.join(" ")} exited (${code}): ${err.trim()}`)),
+    );
+    child.stdin.write(stdin);
+    child.stdin.end();
+  });
+}
+
+/**
+ * The pod ADR-0060's check dry-runs: one that states pod-level resources (KEP-2837). A server
+ * whose PodLevelResources gate is off drops `spec.resources` at admission without a word, and
+ * every Sandbox then runs Burstable — a User Container with no split unbounded, against "jr2
+ * reserves the whole Size". On by default from 1.34, below KUBE_FLOOR, so only an owner who turned
+ * it off trips this. Shaped for the `restricted` Pod Security level, so a namespace that enforces
+ * it does not refuse the probe for another reason. Never scheduled, never pulled.
+ */
+export function podResourcesProbe(namespace: string): object {
+  return {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "jr2-pod-resources-probe", namespace },
+    spec: {
+      resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { cpu: "10m", memory: "16Mi" } },
+      securityContext: { runAsNonRoot: true, runAsUser: 65532, seccompProfile: { type: "RuntimeDefault" } },
+      containers: [
+        {
+          name: "probe",
+          image: "registry.k8s.io/pause:3.10",
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+        },
+      ],
+    },
+  };
 }
 
 /** The real kube port, over `kubectl` subprocesses. */

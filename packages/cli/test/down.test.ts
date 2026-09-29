@@ -70,6 +70,7 @@ function mkKube(
     logs: async () => assert.fail("down reads no logs") as never,
     runOneShot: async () => assert.fail("down probes nothing") as never,
     serverVersion: async () => assert.fail("down reads no version") as never,
+    dryRunCreate: async () => assert.fail("down dry-runs nothing") as never,
   };
   return fake;
 }

@@ -125,6 +125,7 @@ import {
 import { resolveRoot } from "../instance.ts";
 import {
   kubeFloorRefusal,
+  podResourcesProbe,
   kubectlAdmin,
   rolloutFailure,
   KUBE_FLOOR,
@@ -306,6 +307,22 @@ export async function up(args: string[], io: Io): Promise<number> {
     }),
     ...ctx,
   });
+
+  // --- pod-level resources (ADR-0060): the whole Size is one pod-level ceiling (KEP-2837) ------
+  // A server with the PodLevelResources gate off drops `spec.resources` silently, and every
+  // Sandbox runs Burstable. A server-side dry-run shows it; it needs the namespace, so it runs here.
+  try {
+    const admitted = await kube.dryRunCreate({ manifest: JSON.stringify(podResourcesProbe(namespace)), ...ctx });
+    if (admitted.spec?.resources === undefined) {
+      activity(
+        io,
+        `refusing: ${context} (Kubernetes ${serverVersion}) drops pod-level resources — the PodLevelResources feature gate is off, and a Workspace's Size cannot hold (ADR-0060). Enable the gate on the API server and kubelets. The namespace was created; nothing else was applied.`,
+      );
+      return 1;
+    }
+  } catch (e) {
+    activity(io, `warning: could not confirm pod-level resources on ${context}: ${(e as Error).message}`);
+  }
 
   // --- image resolution (ADR-0038): decide every ref BEFORE any layer spends a build -----------
   const build = io.build ?? pnpmDockerBuild;

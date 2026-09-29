@@ -160,6 +160,19 @@ class FakeCluster implements KubeAdmin {
     if (this.versionFails) throw new Error("no answer after 10s");
     return this.version;
   }
+  /** Every server-side dry-run create, as sent. The honest server answers with what it was sent;
+   * `podResourcesDropped` plays one whose PodLevelResources gate is off — it drops `spec.resources`
+   * at admission and says nothing (ADR-0060). */
+  dryRuns: string[] = [];
+  podResourcesDropped = false;
+  dryRunFails = false;
+  async dryRunCreate(opts: { manifest: string }): Promise<{ spec?: { resources?: unknown } }> {
+    this.dryRuns.push(opts.manifest);
+    if (this.dryRunFails) throw new Error('pods "jr2-probe" is forbidden: cannot create');
+    const pod = JSON.parse(opts.manifest);
+    if (this.podResourcesDropped) delete pod.spec.resources;
+    return pod;
+  }
   probes: string[] = [];
   probeCaPems: Array<string | undefined> = [];
   probeFails = false;
@@ -472,6 +485,37 @@ test("the typecheck gate: a folder that does not compile converges nothing (ADR-
   const ok = mkWorld(root);
   assert.equal(await up(["--yes"], ok.io), 0);
   assert.match(ok.err.join("\n"), /typecheck: tsc --noEmit/, "the layer narrates itself either way");
+});
+
+test("up refuses a cluster that drops pod-level resources, naming the version (ADR-0060)", async () => {
+  // A Workspace's whole Size is one pod-level ceiling (KEP-2837). A server whose PodLevelResources
+  // gate is off drops `spec.resources` at admission and says nothing: every Sandbox would run
+  // Burstable, a User Container with no split unbounded. A server-side dry-run of a pod that states
+  // them is the one read that shows it.
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const off = mkWorld(root);
+  off.kube.podResourcesDropped = true;
+  assert.equal(await up(["--yes"], off.io), 1);
+  const said = off.err.join("\n");
+  assert.match(said, /refusing: .*kind-test.*drops pod-level resources/);
+  assert.match(said, /v1\.35\.0/, "the version the server reported");
+  assert.match(said, /PodLevelResources/, "and the gate the owner turned off");
+  assert.deepEqual(off.built, [], "nothing built");
+  const probe = JSON.parse(off.kube.dryRuns[0]!);
+  assert.equal(probe.kind, "Pod");
+  assert.ok(probe.spec.resources?.limits?.memory, "the probe states pod-level limits");
+
+  const on = mkWorld(root);
+  assert.equal(await up(["--yes"], on.io), 0);
+  assert.equal(on.kube.dryRuns.length, 1, "one dry-run per converge");
+});
+
+test("a pod-level resources probe that cannot answer is said, and the converge goes on (ADR-0060)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  const w = mkWorld(root);
+  w.kube.dryRunFails = true;
+  assert.equal(await up(["--yes"], w.io), 0);
+  assert.match(w.err.join("\n"), /could not confirm pod-level resources.*forbidden/);
 });
 
 test("up refuses a cluster whose API server does not answer the version read, naming the context", async () => {
