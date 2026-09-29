@@ -49,14 +49,20 @@ test("a Size is limits.memory and limits.cpu ONLY — requests and every other k
   assert.throws(() => assertSize("workspace(): resources", {}), /resources\.limits: expected an object/);
 });
 
-test("the chain resolves field by field: the Machine, then the Instance default, then the kit", () => {
+test("the chain resolves whole Sizes: the Machine's, else the Instance default, then the kit", () => {
   assert.deepEqual(resolveSize(undefined, undefined), {
     memory: { bytes: 2 * 2 ** 30, from: "kit" },
     cpu: { millis: 1000, from: "kit" },
   });
-  // The Instance default reaches only what the Machine left out — never a stated field.
+  // The Instance default applies only to a Workspace that states NO Size (ADR-0060): a Machine
+  // that states memory alone takes the kit's cpu, so its Size resolves the same on every Instance.
   assert.deepEqual(resolveSize({ limits: { memory: "4Gi" } }, { limits: { memory: "3Gi", cpu: "2" } }), {
     memory: { bytes: 4 * 2 ** 30, from: "machine" },
+    cpu: { millis: 1000, from: "kit" },
+  });
+  // A Workspace with no Size takes the Instance default, and the kit fills what that leaves out.
+  assert.deepEqual(resolveSize(undefined, { limits: { cpu: "2" } }), {
+    memory: { bytes: 2 * 2 ** 30, from: "kit" },
     cpu: { millis: 2000, from: "instance" },
   });
   // A customize() layers over the workspace(), field by field.

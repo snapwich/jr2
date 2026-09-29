@@ -262,7 +262,7 @@ export type SandboxPlacement = {
 export type SandboxConfig = SandboxPlacement & {
   /**
    * The Instance's default Size (ADR-0060) — `{ limits: { memory, cpu } }` and nothing else — for
-   * a Workspace that states none, field by field. NEVER an override of a Size a Machine states: a
+   * a Workspace that states no Size at all; the kit fills what it leaves out. NEVER an override of a Size a Machine states: a
    * Size is a fact of the Machine, and its one override path is `customize(machine, { resources })`.
    * Absent → the kit default, memory 2Gi and cpu 1. jr2 reserves the whole Size (every request
    * equals its limit) and enforces the CPU limit.

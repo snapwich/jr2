@@ -260,8 +260,8 @@ export type KubeSandboxOptions = {
    * `sandbox.tolerations`, written on the CR verbatim and copied onto the pod by the operator, which
    * merges nothing with them. Absent → wherever an ordinary pod lands. */
   placement?: SandboxPlacement;
-  /** The Instance's default Size (`sandbox.resources`, ADR-0060): applied field by field to a
-   * Workspace that states none, never over a stated one. Absent → the kit default. */
+  /** The Instance's default Size (`sandbox.resources`, ADR-0060): applied only to a Workspace
+   * that states no Size, never under or over a stated one. Absent → the kit default. */
   defaultSize?: Size;
   /** The Sandbox pod's PriorityClass (ADR-0060): `priorityClasses.sandbox`, or the `jr2-sandbox`
    * class `jr2 up` creates. */

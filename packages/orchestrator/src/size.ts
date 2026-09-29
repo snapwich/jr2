@@ -184,18 +184,21 @@ export type ResolvedSize = {
 };
 
 /**
- * The chain (ADR-0060), one field at a time: the Machine's Size (its `workspace()`, with any
- * `customize()` already layered over it), then the Instance's `sandbox.resources`, then the kit.
- * The Instance default reaches only a field the Machine left out — it never overrides a stated one,
- * so each fact has one override path, and that path is `customize()`.
+ * The chain (ADR-0060): the Machine's Size (its `workspace()`, with any `customize()` already
+ * layered over it), else the Instance's `sandbox.resources`, then the kit for a field neither
+ * states. The Instance default applies only to a Workspace that states NO Size — never field by
+ * field under a stated one — so a Machine's Size resolves the same on every Instance, and each
+ * fact has one override path, `customize()`.
  */
 export function resolveSize(machine: Size | undefined, instance: Size | undefined): ResolvedSize {
+  const stated = (size: Size | undefined) =>
+    size !== undefined && (size.limits.memory !== undefined || size.limits.cpu !== undefined);
+  const [chosen, source]: [Size | undefined, SizeSource] = stated(machine)
+    ? [machine, "machine"]
+    : [instance, "instance"];
   const pick = (field: "memory" | "cpu"): { q: Quantity; from: SizeSource } => {
-    const m = machine?.limits[field];
-    if (m !== undefined) return { q: m, from: "machine" };
-    const i = instance?.limits[field];
-    if (i !== undefined) return { q: i, from: "instance" };
-    return { q: KIT_SIZE[field], from: "kit" };
+    const q = chosen?.limits[field];
+    return q !== undefined ? { q, from: source } : { q: KIT_SIZE[field], from: "kit" };
   };
   const memory = pick("memory");
   const cpu = pick("cpu");

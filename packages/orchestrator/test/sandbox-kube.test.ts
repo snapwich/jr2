@@ -1469,7 +1469,7 @@ test("the CR carries the whole Size: pod-level ceiling, per-container split, req
   assert.equal(spec.priorityClassName, "jr2-sandbox");
 });
 
-test("the chain: a stated field wins, the Instance default fills the rest, the kit fills what is left (ADR-0060)", async () => {
+test("the chain: a stated Size wins whole, the Instance default serves a Workspace that states none, the kit fills the rest (ADR-0060)", async () => {
   const run = async (resources: unknown, defaultSize?: unknown) => {
     const { exec, calls } = cluster();
     await kubeSandbox({
@@ -1493,7 +1493,11 @@ test("the chain: a stated field wins, the Instance default fills the rest, the k
   const instance = await run(undefined, { limits: { memory: "4Gi", cpu: "2" } });
   assert.deepEqual(instance.podResources.limits, { cpu: "2", memory: "4Gi" });
   const stated = await run({ limits: { memory: "3Gi" } }, { limits: { memory: "4Gi", cpu: "2" } });
-  assert.deepEqual(stated.podResources.limits, { cpu: "2", memory: "3Gi" }, "never an override of a stated field");
+  assert.deepEqual(
+    stated.podResources.limits,
+    { cpu: "1", memory: "3Gi" },
+    "a stated Size takes nothing from the Instance: the kit fills its unstated cpu",
+  );
 });
 
 test("a stated User Container split lands on the user sidecar and comes out of the Harness share (ADR-0060)", async () => {
