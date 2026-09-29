@@ -250,14 +250,19 @@ test("the agent surface IS the invoking state's registration, and dies with it",
   assert.equal(host.agentSurface(iid), undefined);
 });
 
-test("a delivery outside the turn's surface is refused, naming what IS accepted", async () => {
+test("a delivery outside the turn's surface is refused, and the Allowed picks ride beside the refusal (ADR-0029)", async () => {
   const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
   host.register(codingDef(clients));
   const { instanceId } = await host.start("coding");
   const iid = await admittedIid(clients.get(instanceId)!);
 
-  assert.throws(() => host.sendToAgent(iid, { type: "merge" }), /does not accept "merge".*accepts:/s);
+  // The refusal names no list of its own: the Allowed picks ride beside it, and the Harness writes
+  // the one list the model reads (ADR-0029, ADR-0062) — a second, in other names, contradicts it.
+  assert.throws(
+    () => host.sendToAgent(iid, { type: "merge" }),
+    (err: Error) => /"merge"/.test(err.message) && !/accepts:/.test(err.message),
+  );
   // The out-of-set refusal names the Allowed picks, so the next call can be one of them (ADR-0029).
   assert.throws(
     () => host.sendToAgent(iid, { type: "merge" }),

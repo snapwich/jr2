@@ -498,7 +498,10 @@ test("no-signal: a completed turn with no menu call is re-prompted on the SAME i
 
   assert.equal(mock.admits.length, 2, "a nudge is a fresh admission");
   assert.equal(mock.admits[1]!.instanceId, "inst-42", "same iid — the conversation continues");
-  assert.match(mock.admits[1]!.prompt ?? "", /calling exactly one of: ping/);
+  // The nudge names no picks: the Harness's Turn part after it states the Allowed picks, narrowed
+  // by the guards and in the model's own tool names (ADR-0029, ADR-0062).
+  assert.doesNotMatch(mock.admits[1]!.prompt ?? "", /ping/);
+  assert.match(mock.admits[1]!.prompt ?? "", /allowed/i);
   assert.deepEqual(
     ledger["inst-42"],
     { ...mock.minted, instanceId: "inst-42" },

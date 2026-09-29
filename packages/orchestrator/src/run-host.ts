@@ -665,6 +665,16 @@ export class RunHost {
     }
     const address = agentAddress(instanceId);
     const invoking = this.table.lookup(address);
+    // A name the invoking state does not handle is refused HERE, in the Agent's own terms: the
+    // table's refusal lists the derived set, bare and unnarrowed, where the Harness is about to write
+    // the Allowed picks in the model's tool names (ADR-0029, ADR-0062) — two lists that disagree.
+    // With the Menu holding other states' picks, this is the everyday recovery path, so the one
+    // list the model reads is the Harness's.
+    if (invoking && !invoking.defs.has(type)) {
+      const refused = new EventValidationError(`the workflow's current state does not accept "${type}"`);
+      refused.allowed = allowedOf(invoking);
+      throw refused;
+    }
 
     // Ask the guard question BEFORE delivering, and ask it with the VALIDATED payload — this is the
     // exact form of the check the surface build can only approximate payload-blind (ADR-0029).

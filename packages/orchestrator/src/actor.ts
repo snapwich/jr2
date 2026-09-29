@@ -341,15 +341,16 @@ function isLostConversation(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { lost?: unknown }).lost === true;
 }
 
-/** The forced-final-pick re-prompt (ADR-0006, absorbed here by ADR-0016). */
-function nudgePrompt(tools: readonly string[]): string {
-  return (
-    `Your previous turn ended without calling one of the required workflow tools. ` +
-    `You MUST end your turn by calling exactly one of: ${tools.join(", ")}. ` +
-    `Pick the one that matches the true state of your work and call it now.`
-  );
-}
-
+/**
+ * The forced-final-pick re-prompt (ADR-0006, absorbed here by ADR-0016). It names no picks: the
+ * Harness writes the Turn part after it, stating the Allowed picks in the model's own tool names and
+ * narrowed by the guards (ADR-0029, ADR-0062) — a list here would be a second one, in other names,
+ * that a closed guard makes wrong.
+ */
+const NUDGE_PROMPT =
+  `Your previous turn ended without calling one of the required workflow tools. ` +
+  `You MUST end your turn by calling exactly one of the workflow tools allowed below. ` +
+  `Pick the one that matches the true state of your work and call it now.`;
 /**
  * Where this Turn works — the Frame's other half (ADR-0057), resolved before admission.
  *
@@ -746,7 +747,7 @@ export function agentActorWith(
             ...framed,
             attach: undefined,
             instanceId: currentIid,
-            prompt: nudgePrompt(input.tools),
+            prompt: NUDGE_PROMPT,
           });
         }
       } catch (err) {
