@@ -16,11 +16,13 @@ A Sandbox pod composes up to three containers around one shared worktree volume 
   Agent cannot read them, and the Harness container's env holds only their Stand-ins.
 - **User Container** — opt-in third seat, composed only when the `workspace()` names its image (a `file:` docker context
   the Machine ships or a registry ref, the same resolution as the Sandbox Image, no default —
-  [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)). The whole authoring surface is that one
-  string — `user?: string` among `workspace()`'s options, beside `image` — and deliberately no more: env, resources, and
-  ports are not forwarded, because every key jr2 forwarded would be a crack in "jr2 puts nothing in it"; widening the
-  string to an object stays compatible if a concrete need ever argues its own way in (the routable-port follow-up below
-  is the known candidate). In the pod it is the container named `user` (`kubectl exec -c user`). It runs its **own
+  [ADR-0049](0049-a-machine-carries-its-parts-and-composes-by-invoke.md)). The authoring surface is that string —
+  `user?: string` among `workspace()`'s options, beside `image` — or the object it widens to,
+  `{ image, resources?: { limits: { memory?, cpu? } } }`, whose only other key is the seat's split of the Workspace's
+  Size ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)): a budget is the pod's business, not
+  the process's, so it puts nothing in the container. Env and ports are not forwarded, because every key jr2 forwarded
+  into the process would be a crack in "jr2 puts nothing in it"; a routable port (the follow-up below) is the known
+  candidate for the next key. In the pod it is the container named `user` (`kubectl exec -c user`). It runs its **own
   entrypoint, untouched**: jr2 injects nothing into its process — no env, no command, no probe — and overrides nothing;
   it mounts only what the checkouts need to be checkouts (below). The zero-contract seat, which is exactly why it
   exists. Two jobs no other seat can do:
@@ -121,8 +123,9 @@ The seat is zero-_contract_, not zero-_physics_. What an image brought here must
 - **Image ownership** — the Sandbox Image is the user's (ADR-0037), the Custodian is a pinned upstream image, and the
   User Container is whatever its owner wants, contract-free because jr2 puts nothing in it. None bloats or constrains
   the others.
-- **Independent resource limits** — the agent loop and a heavy interactive session get separate cpu/memory limits, so a
-  runaway build in the User Container can't starve the agent (and vice-versa).
+- **Independent resource limits** — the Workspace's Size is one ceiling for the pod, and a Machine may split it so the
+  User Container gets a limit of its own (ADR-0060); then a runaway build there can't starve the agent (and vice-versa).
+  Without a split the User Container shares the pod budget.
 - **Lifecycle independence** — a Harness crash restarts only the Harness; an interactive session in the User Container
   survives, and vice-versa.
 
@@ -178,6 +181,9 @@ Container offers a human session — with its edges stated plainly:
 - The generic `Sandbox` CRD composes all of this as plain container specs
   ([ADR-0001](0001-operator-owned-generic-sandbox.md) holds — the operator stays agent-agnostic); the Orchestrator's
   `kubectlSandbox` supplies the images. Absent a `user` entry in the spec, the pod runs two containers.
+- Every container carries a limit from the Workspace's Size (ADR-0060): the Custodian a fixed kit slice, the User
+  Container its split if stated, the Harness the rest. The Harness container alone mounts a memory-backed `/dev/shm`
+  (`sizeLimit` 25% of its share); the User Container keeps the pod's default.
 - jr2 does not gate readiness on the User Container and never restarts the pod for it; it lives and dies by the pod's
   own policy.
 - **Operator**: `runAsNonRoot` moves from the pod level to the two jr2-owned containers (the Custodian states its own

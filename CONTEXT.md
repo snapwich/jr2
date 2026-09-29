@@ -143,6 +143,12 @@ required. The Repo cache agent runs on exactly the Sandbox nodes. The set moves 
 it and warns when empty, never refuses. _Avoid_: worker, candidate node, eligible node, data-plane node, schedulable
 node (ADR-0045's wider set: any node not cordoned)
 
+**Size**: The ceiling a Workspace states for its whole Sandbox — memory and cpu, nothing else — which jr2 reserves in
+full. A fact of the Machine, like its Sandbox Image: the `workspace()` states it and its composer retunes it; an
+Instance sets only the default for a Workspace that states none, and the kit sets the default below that. Never per run.
+The shape of an Agent Substrate template's size, so a Workspace moves to one unchanged. _Avoid_: resources, requests,
+limits (the Kubernetes fields it becomes), class (ADR-0052's placement word), quota (the cluster owner's cap)
+
 **User Container**: The optional third container in a Sandbox pod — a user-owned image a `workspace()` names statically,
 in the same two shapes as the Sandbox Image and beside it (`user`, ADR-0049), running its own entrypoint with `/work`
 mounted read-write, the checkouts' two read-only halves (`/repos`, `/opt/jr2`) beside it, and nothing injected into its
@@ -209,6 +215,13 @@ ids and nesting, invoke ids and srcs, transition targets — as a digest stamped
 (ADR-0030). Deliberately excludes guard and action bodies: those change what a run does next, not whether its snapshot
 is interpretable. A mismatch is **drift**, and a drifted run is refused and kept, never resumed. _Avoid_: version (this
 is a content address, not an ordering), schema
+
+**Briefing**: jr2's own text to the model — facts about the Agent's seat and the mechanism that a correct Agent needs
+and cannot observe for itself (how a Turn ends, its CPUs and Size, its working directory, what happened to its last
+Turn), and nothing about the task. A standing part, the same on every Turn, follows the Agent's `instructions`; a Turn
+part rides ahead of the Frame's prompt and carries its **notices**. Always on: no author can turn it off. _Avoid_:
+system prompt (the mechanism, and the Turn part is not in it), preamble, header, instructions (identity's word), nudge
+(a re-prompt after a Turn ended with no pick)
 
 **Working tools**: The file and shell tools (read, write, edit, bash, grep, glob) the Harness executes in its own
 container — what the Agent may **do**; filtered by the definition's `workspace` access (ADR-0028; `"none"` withholds

@@ -26,6 +26,11 @@ ADR-0018 and CONTEXT.md said `cwd` is identity, never per Turn. The decided thin
   can name it, and a directory is not a property of a persona any more than a prompt is. `cwd` leaves `AgentDefinition`.
   The Harness roots the Working tools at the Frame's `cwd`, which rides the admit body beside the prompt and the Dials.
 
+- **The Briefing is not the Frame.** jr2's Turn part
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)) rides ahead of the prompt — the resolved
+  working directory and any notices — in a block of its own. The prompt stays the Machine state's words alone; jr2 never
+  writes into it.
+
 - **Under a Workspace, an absent `cwd` resolves to the only Repo Slot's Worktree, and is refused when there is more than
   one.** With one slot there is no choice, so no convention is being smuggled in (ADR-0051: the kit gives no slot a
   meaning). With two or more, the state must say which — `cwd: context.workspace.repos.target` — and the actor refuses

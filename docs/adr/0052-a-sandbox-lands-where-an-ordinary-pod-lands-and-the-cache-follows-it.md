@@ -45,7 +45,10 @@ use. **Which nodes are an Instance's Sandbox nodes, and who follows that set** i
   `sandbox: { classes: { gpu: { nodeSelector, tolerations } } }`, refused by `jr2 up`'s walk when unmapped — the Repo
   Slot pattern. `sandbox.nodeSelector` and `sandbox.tolerations` are that shape's default class, so the extension adds
   `classes` beside them and renames nothing; and because placement rides the CR, a per-Machine class needs no new
-  plumbing.
+  plumbing. A class is placement only: how big a Sandbox is belongs to the Machine, not the cluster, and rides the
+  `workspace()` as its Size ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)).
+  `sandbox.resources` sits beside `nodeSelector` and `tolerations` as the Instance's default Size, for a Workspace that
+  states none.
 
 ## Considered options
 
