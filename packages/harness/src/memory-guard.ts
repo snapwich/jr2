@@ -1,10 +1,12 @@
 // The memory guard (ADR-0061, layer 4): the Harness guards its own cgroup, so a memory spike
 // ends the Agent's processes and not the Harness. On cgroup v2 the kubelet sets
 // `memory.oom.group`, and a kernel OOM in the Harness container kills the whole container — the
-// Harness and its conversation with it. The guard gets there first: while any `bash` call runs, it
-// reads anon + shmem from `memory.stat` against `memory.max` every few milliseconds, and near the
-// limit it kills every process in the container except PID 1 (tini) and the Harness, checks usage
-// again, clears `/dev/shm`, and the running `bash` calls answer
+// Harness and its conversation with it. The guard gets there first: from the Harness's start it
+// reads anon + shmem from `memory.stat` against `memory.max` every few milliseconds — with or
+// without a `bash` call running, since the Agent's processes include a dev server left from an
+// earlier call and a human's exec session — and near the limit it kills every process in the
+// container except PID 1 (tini) and the Harness, checks usage again, clears `/dev/shm`, and the
+// running `bash` calls, if any, answer
 // `killed: memory limit (peak X of Y); use fewer workers or a larger Size` — in the same Turn and
 // conversation, so the Agent can retry smaller.
 //
@@ -19,7 +21,7 @@
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
-/** How often the guard reads the cgroup while a `bash` call runs. The lab won 6/6 on amd64 at
+/** How often the guard reads the cgroup. The lab won 6/6 on amd64 at
  * 10 ms (0.8% of a core) and only half at 50 ms (ADR-0061). Turn mechanics, not an author dial. */
 const POLL_MS = 15;
 
@@ -40,7 +42,8 @@ export type CgroupRead = {
 
 /** What the guard does when it fires. */
 export type GuardEffects = {
-  killAgentProcesses(): void;
+  /** Returns how many processes it signalled. */
+  killAgentProcesses(): number;
   clearShm(): void;
   /** The pod log. */
   log(line: string): void;
@@ -53,35 +56,34 @@ export type GuardWatch = { end(): void; verdict(): string | undefined };
 export class MemoryGuard {
   readonly #read: CgroupRead;
   readonly #effects: GuardEffects;
-  readonly #autoPoll: boolean;
   readonly #active = new Set<{ verdict?: string }>();
   #timer: ReturnType<typeof setInterval> | undefined;
 
-  /** `autoPoll: false` is a seam for the tests, which drive `check()` themselves. */
-  constructor(read: CgroupRead, effects: GuardEffects, opts: { autoPoll?: boolean } = {}) {
+  constructor(read: CgroupRead, effects: GuardEffects) {
     this.#read = read;
     this.#effects = effects;
-    this.#autoPoll = opts.autoPoll ?? true;
   }
 
-  /** Watch one `bash` call. The poll runs while at least one call is watched, and only then. */
+  /** Start polling, at the Harness's start. Only where `memory.max` is a number: no limit, no
+   * guard (a host run). Returns whether the guard is on. */
+  start(): boolean {
+    if (this.#timer !== undefined) return true;
+    if (this.#read.limit() === undefined) return false;
+    this.#timer = setInterval(() => this.check(), POLL_MS);
+    this.#timer.unref();
+    return true;
+  }
+
+  stop(): void {
+    clearInterval(this.#timer);
+    this.#timer = undefined;
+  }
+
+  /** Watch one `bash` call, for its verdict alone — the poll does not depend on it. */
   watch(): GuardWatch {
     const call: { verdict?: string } = {};
     this.#active.add(call);
-    if (this.#autoPoll && this.#timer === undefined) {
-      this.#timer = setInterval(() => this.check(), POLL_MS);
-      this.#timer.unref();
-    }
-    return {
-      end: () => {
-        this.#active.delete(call);
-        if (this.#active.size === 0 && this.#timer !== undefined) {
-          clearInterval(this.#timer);
-          this.#timer = undefined;
-        }
-      },
-      verdict: () => call.verdict,
-    };
+    return { end: () => void this.#active.delete(call), verdict: () => call.verdict };
   }
 
   /** One poll: read, and fire when usage is near the limit. */
@@ -89,7 +91,13 @@ export class MemoryGuard {
     const limit = this.#read.limit();
     const peak = this.#read.usage();
     if (limit === undefined || peak === undefined || peak < limit * THRESHOLD) return;
-    this.#effects.killAgentProcesses();
+    const killed = this.#effects.killAgentProcesses();
+    if (killed === 0) {
+      // Nothing of the Agent's runs: the memory is the Harness's own, or shm left behind. Clear
+      // shm and say nothing — a log line every poll would bury the pod log.
+      this.#effects.clearShm();
+      return;
+    }
     // Checked again: a process forked between the list and the kill escapes the first pass. A
     // second pass catches it; memory the kernel is still freeing reads below the line already.
     const after = this.#read.usage();
@@ -148,14 +156,17 @@ export function agentPids(root = CGROUP): number[] {
     .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid);
 }
 
-function killAgentProcesses(root = CGROUP): void {
+function killAgentProcesses(root = CGROUP): number {
+  let killed = 0;
   for (const pid of agentPids(root)) {
     try {
       process.kill(pid, "SIGKILL");
+      killed++;
     } catch {
       // Gone already — it exited between the list and the kill.
     }
   }
+  return killed;
 }
 
 /** Empty `/dev/shm`, keeping the directory (the pod's memory-backed emptyDir, ADR-0060). Absent

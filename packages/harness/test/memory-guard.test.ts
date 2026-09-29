@@ -30,11 +30,10 @@ function rig(limit: number | undefined, usage: Array<number | undefined>) {
       usage: () => usage[Math.min(i++, usage.length - 1)],
     },
     {
-      killAgentProcesses: () => void effects.push("kill"),
+      killAgentProcesses: () => (effects.push("kill"), 1),
       clearShm: () => void effects.push("clear-shm"),
-      log: () => {},
+      log: (line) => void effects.push(`log: ${line}`),
     },
-    { autoPoll: false },
   );
   return { guard, effects };
 }
@@ -53,7 +52,7 @@ test("near the limit it kills the Agent's processes, checks again, clears /dev/s
   const watch = guard.watch();
   guard.check();
   watch.end();
-  assert.deepEqual(effects, ["kill", "clear-shm"]);
+  assert.deepEqual(effects.slice(0, 2), ["kill", "clear-shm"]);
   assert.equal(watch.verdict(), `${MEMORY_LIMIT_KILLED} (peak 1.9Gi of 2Gi); use fewer workers or a larger Size`);
   assert.match(watch.verdict() ?? "", /^killed: memory limit \(peak /);
 });
@@ -62,7 +61,7 @@ test("usage still near the limit after the kill is killed again — a fork raced
   const { guard, effects } = rig(2 * Gi, [Math.floor(1.95 * Gi), Math.floor(1.9 * Gi), 100 * Mi]);
   guard.watch();
   guard.check();
-  assert.deepEqual(effects, ["kill", "kill", "clear-shm"]);
+  assert.deepEqual(effects.slice(0, 3), ["kill", "kill", "clear-shm"]);
 });
 
 test("every running bash call hears the verdict; a call that started after it does not", () => {
@@ -92,21 +91,59 @@ test("the guard is off when memory.max is `max` or unreadable, or memory.stat is
   }
 });
 
-test("the guard polls only while a bash call runs", async () => {
+test("the guard polls from the Harness's start, with or without a bash call — a leftover dev server is guarded too", async () => {
   let reads = 0;
   const guard = new MemoryGuard(
     { limit: () => 1 * Gi, usage: () => (reads++, 0) },
-    { killAgentProcesses: () => {}, clearShm: () => {}, log: () => {} },
+    { killAgentProcesses: () => 0, clearShm: () => {}, log: () => {} },
   );
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(reads, 0, "no call, no poll");
-  const watch = guard.watch();
+  assert.equal(guard.start(), true);
   await new Promise((r) => setTimeout(r, 80));
-  watch.end();
   const polled = reads;
-  assert.ok(polled >= 2, `polled ${polled} times in 80ms`);
+  assert.ok(polled >= 2, `polled ${polled} times in 80ms with no call`);
+  const watch = guard.watch();
+  watch.end();
   await new Promise((r) => setTimeout(r, 50));
-  assert.equal(reads, polled, "the last call ended, the poll stopped");
+  assert.ok(reads > polled, "the last call ended, the poll goes on");
+  guard.stop();
+  const stopped = reads;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(reads, stopped);
+});
+
+test("with no memory.max the guard does not start", async () => {
+  let reads = 0;
+  const guard = new MemoryGuard(
+    { limit: () => undefined, usage: () => (reads++, 0) },
+    { killAgentProcesses: () => 0, clearShm: () => {}, log: () => {} },
+  );
+  assert.equal(guard.start(), false);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(reads, 0);
+});
+
+test("a fire with no bash call running still kills the Agent's processes, clears /dev/shm and logs", () => {
+  const { guard, effects } = rig(2 * Gi, [Math.floor(1.9 * Gi), 100 * Mi]);
+  guard.check();
+  assert.deepEqual(effects.slice(0, 2), ["kill", "clear-shm"]);
+  assert.match(effects[2] ?? "", /^log: .*killed: memory limit \(peak 1\.9Gi of 2Gi\)/);
+});
+
+test("near the limit with nothing of the Agent's to kill, the guard clears /dev/shm and says nothing", () => {
+  const effects: string[] = [];
+  const guard = new MemoryGuard(
+    { limit: () => 1 * Gi, usage: () => Gi },
+    {
+      killAgentProcesses: () => (effects.push("kill"), 0),
+      clearShm: () => void effects.push("clear-shm"),
+      log: (line) => void effects.push(`log: ${line}`),
+    },
+  );
+  const watch = guard.watch();
+  guard.check();
+  watch.end();
+  assert.deepEqual(effects, ["kill", "clear-shm"], "no log line every poll for memory that is the Harness's own");
+  assert.equal(watch.verdict(), undefined);
 });
 
 test("the cgroup reader takes anon + shmem from memory.stat and memory.max, never memory.current", async () => {

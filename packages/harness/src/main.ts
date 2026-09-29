@@ -62,8 +62,11 @@ const bearerSha256 = required(
 const sha256 = (value: string): string => createHash("sha256").update(value).digest("base64url");
 
 // One guard for the process (ADR-0061): it reads this container's cgroup, so every conversation's
-// `bash` calls share it. Off where `memory.max` is `max` or unreadable (a host run).
+// `bash` calls share it. It polls from here on, not only while a `bash` call runs — a dev server
+// left from an earlier call or a human's exec session is one of the Agent's processes too. Off
+// where `memory.max` is `max` or unreadable (a host run).
 const guard = podMemoryGuard();
+guard.start();
 
 const app = harnessApp({
   runSubmissionFor: (seat) => runSubmissionFor({ models, menu, guard, ...seat }),
