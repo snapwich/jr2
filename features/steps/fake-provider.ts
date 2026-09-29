@@ -42,9 +42,10 @@ import { createServer } from "node:https";
 import type { AddressInfo, Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 
-/** One request body as the provider received it. `tools` is where the per-turn Menu is visible:
- * the Menu the invoking state derived (as `mcp__jr2__<name>`, the model-facing name
- * `menu-tools.ts` mints) plus the Working tools the definition's `workspace` left in place (ADR-0028). */
+/** One request body as the provider received it. `tools` is where the Menu is visible: the whole
+ * Menu, the same on every Turn of the conversation (ADR-0029; as `mcp__jr2__<name>`, the
+ * model-facing name `menu-tools.ts` mints), plus the Working tools the definition's `workspace` left
+ * in place (ADR-0028). The Turn's Allowed picks are in the prompt's Turn part, not here (ADR-0062). */
 export type RecordedCall = {
   /** Model-facing tool names, in the order the Harness offered them. */
   tools: string[];

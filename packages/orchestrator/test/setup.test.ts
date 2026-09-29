@@ -302,12 +302,12 @@ test("the Menu is the union of every state that invokes that Agent, sorted — f
   actor.stop();
 });
 
-// An EMPTY Menu is legitimate — a state moved by a Gate or a timer asks its Agent for text and
-// nothing else — so it cannot be refused on sight. What is refused is the shape that LOOKS like
-// a Menu and is not one: picks written in the invoking state's SUBSTATES, which the derivation
+// An EMPTY derived set is legitimate — a state moved by a Gate or a timer asks its Agent for text
+// and nothing else — so it cannot be refused on sight. What is refused is the shape that LOOKS
+// like picks and is not: picks written in the invoking state's SUBSTATES, which the derivation
 // (own + ancestor handlers, per statechart semantics) cannot see. Retiring the `tools:` override
 // (ADR-0057) left no way to say it by hand, so the kit says it here, at build.
-test("picks written BELOW the invoking state are refused at build — the Menu cannot see them (ADR-0015/0057)", () => {
+test("picks written BELOW the invoking state are refused at build — the derived set cannot see them (ADR-0015/0057)", () => {
   const finish = defineEvent({ name: "finish", input: z.object({}) });
   const build = () =>
     jr2Setup({
@@ -333,6 +333,9 @@ test("picks written BELOW the invoking state are refused at build — the Menu c
     assert.match(err.message, /active/, "names the state that holds the Turn");
     assert.match(err.message, /finish/, "names the pick the Menu could not see");
     assert.match(err.message, /ADR-0015/);
+    // The invoking state's picks are its DERIVED SET; the Menu is the union over every state that
+    // invokes the Agent, so it may well be non-empty here (ADR-0029, CONTEXT.md).
+    assert.doesNotMatch(err.message, /menu/i, "names the derived set, not the Menu");
     return true;
   });
 });

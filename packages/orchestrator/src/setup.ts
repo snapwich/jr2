@@ -306,18 +306,18 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
 }
 
 /**
- * Refuse the one shape that LOOKS like a Menu and is not one (ADR-0015, ADR-0057): an Agent
+ * Refuse the one shape that LOOKS like a Turn's picks and is not (ADR-0015, ADR-0057): an Agent
  * invoked on a state whose picks are written in its SUBSTATES.
  *
- * A Menu derives from the invoking state's own + ANCESTOR transitions, per statechart semantics,
- * so a pick written below that state is one the Turn is never offered — the model is handed a
- * Menu it cannot end its turn with, and the actor reads an empty Menu as a Turn that ended as
- * intended, so nothing nudges and nothing faults: the run parks. Until ADR-0057 the `tools:`
- * override papered over it; with the override gone the kit says it here, at build, where `jr2 up`
- * walks every registered Machine.
+ * A state's derived set is its own + ANCESTOR transitions, per statechart semantics, so a pick
+ * written below that state is one the Turn is never allowed — the model is offered it in the Menu
+ * (the union over every state that invokes the Agent — ADR-0029) and refused whenever it takes it,
+ * and the actor reads an empty derived set as a Turn that ended as intended, so nothing nudges and
+ * nothing faults: the run parks. Until ADR-0057 the `tools:` override papered over it; with the
+ * override gone the kit says it here, at build, where `jr2 up` walks every registered Machine.
  *
- * An EMPTY Menu is not itself wrong — a state moved by a Gate or a timer asks its Agent for text
- * and nothing else — so only the contradiction is refused: no Menu here, and picks below.
+ * An EMPTY derived set is not itself wrong — a state moved by a Gate or a timer asks its Agent for
+ * text and nothing else — so only the contradiction is refused: no picks here, and picks below.
  */
 function refuseBuriedPicks(
   node: LooseState,
@@ -336,12 +336,12 @@ function refuseBuriedPicks(
   if (buried.length === 0) return;
   const state = path.length ? path.join(".") : "(the machine root)";
   throw new Error(
-    `agent "${agentName}" is invoked on state "${state}", which derives an EMPTY Menu while the ` +
-      `states BELOW it handle ${buried.join(", ")} — a Menu is the invoking state's own plus its ` +
-      `ancestors' transitions (ADR-0015), so a pick written below is one the Turn can never be ` +
-      `offered, and a Turn with no Menu ends with no pick at all. Move it onto "${state}" (guard ` +
-      `it if it must not always be offered — ADR-0029), or, if this Turn is deliberately ` +
-      `menu-less, the pick belongs to another invoke.`,
+    `agent "${agentName}" is invoked on state "${state}", which derives no picks while the ` +
+      `states BELOW it handle ${buried.join(", ")} — a state's picks are its own plus its ` +
+      `ancestors' transitions (ADR-0015), so a pick written below is one the Turn is never ` +
+      `allowed, and a Turn that derives no picks ends with no pick at all. Move it onto "${state}" ` +
+      `(guard it if it must not always be allowed — ADR-0029), or, if this Turn deliberately ` +
+      `takes no pick, the pick belongs to another invoke.`,
   );
 }
 
