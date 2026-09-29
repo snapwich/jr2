@@ -27,9 +27,9 @@ ADR-0018 and CONTEXT.md said `cwd` is identity, never per Turn. The decided thin
   The Harness roots the Working tools at the Frame's `cwd`, which rides the admit body beside the prompt and the Dials.
 
 - **The Briefing is not the Frame.** jr2's Turn part
-  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)) rides ahead of the prompt — the resolved
-  working directory and any notices — in a block of its own. The prompt stays the Machine state's words alone; jr2 never
-  writes into it.
+  ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)) follows the prompt — the resolved working
+  directory, the Allowed picks and any notices — in a block of its own. The prompt stays the Machine state's words
+  alone; jr2 never writes into it.
 
 - **Under a Workspace, an absent `cwd` resolves to the only Repo Slot's Worktree, and is refused when there is more than
   one.** With one slot there is no choice, so no convention is being smuggled in (ADR-0051: the kit gives no slot a
@@ -87,9 +87,9 @@ ADR-0018 and CONTEXT.md said `cwd` is identity, never per Turn. The decided thin
   moves nothing (ADR-0029). It was also hiding one real shape — a fixture whose picks sat in SUBSTATES of the invoking
   state, where ADR-0015's derivation (own plus ancestors) cannot see them, so the derived Menu was empty and the
   override supplied what the state could not. That shape is now refused at build, naming the state, the Agent and the
-  buried picks; an empty Menu with nothing below it stays legal, because a state a Gate or a timer moves asks its Agent
-  for text and nothing else. A real run never sets any of them: a Sandbox Agent resolves ambiently (ADR-0016), a
-  `workspace: "none"` Agent lands on the Instance Harness (ADR-0031).
+  buried picks; a state that allows no picks with nothing below it stays legal, because a state a Gate or a timer moves
+  asks its Agent for text and nothing else. A real run never sets any of them: a Sandbox Agent resolves ambiently
+  (ADR-0016), a `workspace: "none"` Agent lands on the Instance Harness (ADR-0031).
 
 ## Considered options
 

@@ -3,7 +3,7 @@
 A workflow should be able to run an Agent whose whole job is a decision — read some inputs, pick the next event — with
 no Workspace, no worktree, and no per-run pod: the statelyai/agent shape, at conversational latency, on any configured
 model. jr2's Menu already _is_ that decision surface (the invoking state derives what the Agent may say —
-[ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)/[ADR-0029](0029-a-menu-offers-what-the-machine-will-accept-and-a-pick-that-moves-nothing-says-so.md)),
+[ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)/[ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)),
 and the mechanism was already Sandbox-agnostic: `agentRun` needs only an endpoint URL, a registration may carry no
 Sandbox (`tokens.ts`), and the stub Harness proved a Harness is "only a different URL". What was missing was the
 hosting: the only real Harness anywhere was the one inside a Sandbox pod, so a Turn without a `workspace()` had nowhere

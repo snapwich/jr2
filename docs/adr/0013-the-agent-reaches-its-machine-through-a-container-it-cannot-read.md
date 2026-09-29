@@ -13,12 +13,14 @@ no MCP, and keeps one HTTP surface over the registration table it already has
 
 ## The enabling fact: the Harness reads its Menu per Submission
 
-Each Submission, the Harness reads `GET /agents/<iid>/surface` and presents the answer to its model as the turn's Menu,
-as tools named `mcp__jr2__<event>` (shipped instructions and the printer's prefix-stripping depend on that name;
+Each Submission, the Harness reads `GET /agents/<iid>/surface`: the Agent's Menu, which it presents to its model as
+tools named `mcp__jr2__<event>` (shipped instructions and the printer's prefix-stripping depend on that name;
 [ADR-0027](0027-the-harness-is-jr2s-own-server-flue-retires-the-wire-stays.md) states it as explicit jr2 code, never
 written by users). The Harness names the iid itself, so nothing has to _learn_ which turn is live — no push channel, no
-long-poll, no `sandbox → active turn` index, no second inbound port on the pod. And because the Harness re-reads per
-Submission while a jr2 menu only changes at turn boundaries, no `list_changed` push is needed either (ADR-0006).
+long-poll, no `sandbox → active turn` index, no second inbound port on the pod. The same read carries the Turn's Allowed
+picks, which the Harness states in the Briefing; the Menu itself is fixed for a conversation
+([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)), so no `list_changed` push
+is needed either (ADR-0006).
 
 ## Decision
 
@@ -43,8 +45,8 @@ Submission while a jr2 menu only changes at turn boundaries, no `list_changed` p
   accepted event into a Menu item, with the event's JSON Schema as its parameters, and turns a pick into one
   `POST …/events`. It imports nothing from pi: `menu-tools.ts` gives each item to pi as a tool. A harness that only
   speaks MCP would get a second presenter over the same `menu.ts`, not a second Menu. The receipt comes back as prose
-  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A 404 on the surface is an empty Menu
-  ([ADR-0026](0026-a-turn-that-is-over-has-an-empty-menu.md)).
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A 404 on the surface is a Turn that is
+  over, and it is never prompted ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)).
 - **The Orchestrator hosts no MCP, and judges every pick.** The registration table stays the one internal primitive; it
   keeps two thin HTTP surfaces, neither of them MCP:
 
@@ -54,7 +56,7 @@ Submission while a jr2 menu only changes at turn boundaries, no `list_changed` p
   POST /runs/:id/gates/:gate/events    → validate + deliver                       [Instance token]
 
   # the Agent's, through its pod's Custodian
-  GET  /agents/:iid/surface            → accepts + schemas + semantics            [Sandbox token]
+  GET  /agents/:iid/surface            → Menu + Allowed picks + schemas + semantics [Sandbox token]
   POST /agents/:iid/events             → validate + deliver → the receipt          [Sandbox token]
   ```
 

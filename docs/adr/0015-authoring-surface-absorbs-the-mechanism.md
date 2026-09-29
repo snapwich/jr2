@@ -30,18 +30,19 @@ casts). It:
 
 ## Agent menus and gate accepts derive from the machine
 
-A state that invokes `agentRun` gets, as its Agent's tool menu, the workflow events its transitions handle (own +
-bubbled ancestors, per statechart semantics); a state that invokes `gate` gets its accepted set the same way. The
-consumer names neither; MCP appears nowhere in workflow code. Mechanics: the **vocabulary** derivation is static, in
-`jr2Setup.createMachine` — a config walk wraps each invoke's `input` to append the derived names, so names still ride
-serializable input and the ADR-0007 restore path and invoke-time validation are unchanged. The walk reads transition
-_keys_ and so cannot see guards, which is why the **surface** is not static on top of it: `agentSurface` asks the
-invoking machine's guards before listing, so an event whose every transition is guarded false is never offered — the
-menu offers only what the machine will accept
-([ADR-0029](0029-a-menu-offers-what-the-machine-will-accept-and-a-pick-that-moves-nothing-says-so.md) owns the
-rationale). Authoring is untouched by the split: a workflow names no tools in either leg. The same walk feeds
-`jr2 visualize` ("this state's agent can call X, Y"). Dotted names (`agent.*`, `workspace.lost`, `xstate.*`, `after`)
-are mechanically excluded.
+A state that invokes `agentRun` derives the workflow events its transitions handle (own + bubbled ancestors, per
+statechart semantics); a state that invokes `gate` gets its accepted set the same way. The consumer names neither; MCP
+appears nowhere in workflow code. Mechanics: the **vocabulary** derivation is static, in `jr2Setup.createMachine` — a
+config walk wraps each invoke's `input` to append the derived names, so names still ride serializable input and the
+ADR-0007 restore path and invoke-time validation are unchanged. The same walk unions the derived sets of every state
+that invokes an Agent of one name into that Agent's **Menu** — its tools, fixed for a conversation so the provider's
+prompt cache survives a change of state. The walk reads transition _keys_ and so cannot see guards, which is why what a
+Turn may pick is not static on top of it: `agentSurface` asks the invoking machine's guards, and the Turn is told its
+**Allowed picks** — the derived set, less every event whose every transition is guarded false
+([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md) owns the rationale).
+Authoring is untouched by the split: a workflow names no tools in either leg. The same walk feeds `jr2 visualize` ("this
+state's agent can call X, Y"). Dotted names (`agent.*`, `workspace.lost`, `xstate.*`, `after`) are mechanically
+excluded.
 
 **The invoking actor kind is the primary router; `audience` on the def is an optional restriction.**
 `defineEvent({ audience?: "agent" | "external" | "any" })`, default `"any"`: an `agentRun` menu draws audience ∈ {agent,

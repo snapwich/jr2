@@ -196,13 +196,18 @@ tail — taken by the Harness mid-Turn at a step boundary when the context cross
 recorded: the history view is what was said. _Avoid_: summarization (one step of taking a Compaction, and the LLM call
 is not the decision), truncation (the failure Compaction exists to prevent), pruning
 
-**Menu**: The current Turn's control-plane tools — the workflow events the invoking state derived (ADR-0015), narrowed
-to those its guards would currently accept (ADR-0029), read by the Harness through the Custodian and presented to its
-model as tools named `mcp__jr2__<event>` (ADR-0013). What the Agent may **say**. The derived set is the state's
-vocabulary and the scope delivery validates against; the Menu is what a given turn is offered, so one state can offer
-different Menus as its context changes. It derives from the INVOKING state and its ancestors, never from the states
-below it, so a pick written in a substate is one the Turn can never be offered — and a Machine shaped that way is
-refused at build (ADR-0057 retired the hand-written Menu that used to hide it). _Avoid_: tools (unqualified), tool list
+**Menu**: An Agent's control-plane tools — every workflow event that any state invoking it derives (ADR-0015), presented
+to its model as tools named `mcp__jr2__<event>` (ADR-0013). What the Agent may **say**. Fixed for a conversation: the
+tools lead the model provider's cached prefix, so a Menu that changed between Turns would bill the whole history again
+(ADR-0029). What one Turn may actually pick is a part of it, its Allowed picks. _Avoid_: tools (unqualified), tool list
+
+**Allowed picks**: The part of the Menu one Turn may pick — the invoking state's derived set (ADR-0015), narrowed to
+those its guards would currently accept (ADR-0029). Stated to the model in the Briefing's Turn part and enforced at the
+pick: a pick outside them is refused, and the refusal names them. One state can allow different picks as its context
+changes; the Menu does not change. The derived set comes from the INVOKING state and its ancestors, never from the
+states below it, so a pick written in a substate is one the Turn can never be allowed — and a Machine shaped that way is
+refused at build (ADR-0057 retired the hand-written Menu that used to hide it). _Avoid_: menu (the fixed set), open
+picks, active tools, legal moves
 
 **Vocabulary**: The workflow events a Machine accepts — each a `defineEvent` def: a name, a payload schema, an optional
 audience — taken as values by its `jr2Setup` and scoped to that Machine alone (ADR-0011). What a Gate's accepted set and
@@ -218,10 +223,10 @@ is a content address, not an ordering), schema
 
 **Briefing**: jr2's own text to the model — facts about the Agent's seat and the mechanism that a correct Agent needs
 and cannot observe for itself (how a Turn ends, its CPUs and Size, its working directory, what happened to its last
-Turn), and nothing about the task. A standing part, the same on every Turn, follows the Agent's `instructions`; a Turn
-part rides ahead of the Frame's prompt and carries its **notices**. Always on: no author can turn it off. _Avoid_:
-system prompt (the mechanism, and the Turn part is not in it), preamble, header, instructions (identity's word), nudge
-(a re-prompt after a Turn ended with no pick)
+Turn, which of its Menu it may pick), and nothing about the task. A standing part, the same on every Turn, follows the
+Agent's `instructions`; a Turn part follows the Frame's prompt and carries its Allowed picks and its **notices**. Always
+on: no author can turn it off. _Avoid_: system prompt (the mechanism, and the Turn part is not in it), preamble, header,
+instructions (identity's word), nudge (a re-prompt after a Turn ended with no pick)
 
 **Working tools**: The file and shell tools (read, write, edit, bash, grep, glob) the Harness executes in its own
 container — what the Agent may **do**; filtered by the definition's `workspace` access (ADR-0028; `"none"` withholds
@@ -266,10 +271,10 @@ per-Agent-run). _Avoid_: workspace pod
 
 **Lease**: The assertion that a Workspace is still wanted — an annotation one actor renews for as long as its Workspace
 runs. Nothing in the cluster represents a run, so liveness is asserted, not referenced: a lapsed lease is what lets the
-operator reap (ADR-0001). The renewal answers back, which is how the run learns about Continuity. _Avoid_: heartbeat
+operator reap (ADR-0001). It only asserts; the run learns about Continuity from the Sandbox watch. _Avoid_: heartbeat
 (one-directional, and it named a process-global timer this replaced), keepalive (the annotation, not the concept)
 
-**Continuity**: Whether a Workspace is still the one its body attached to — the question a Lease renewal answers.
+**Continuity**: Whether a Workspace is still the one its body attached to — the question the Sandbox watch answers.
 Distinct from existence: addresses are deterministic, so a replacement pod after an eviction or node loss keeps the CR,
 the name, and the endpoint while taking the clones, worktrees, and unpushed commits with it. Broken Continuity — reaped
 or replaced — is one `workspace.lost` event, and the body's policy decides (ADR-0021). _Avoid_: liveness (that is what
