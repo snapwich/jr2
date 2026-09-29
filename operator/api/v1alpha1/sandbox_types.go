@@ -272,6 +272,17 @@ type SandboxStatus struct {
 	// +optional
 	Harness *SandboxHarnessStatus `json:"harness,omitempty"`
 
+	// Waiting is every container of the current Pod that is waiting, init
+	// containers first, with the kubelet's reason and message (ADR-0063). A
+	// container that never starts — a root image under runAsNonRoot, a bad
+	// image name, a pull that keeps failing — leaves no log and no
+	// termination, so this is the Orchestrator's only evidence of it. Copied,
+	// not judged: the Orchestrator decides which reasons end a provision.
+	// +listType=map
+	// +listMapKey=container
+	// +optional
+	Waiting []SandboxContainerWaiting `json:"waiting,omitempty"`
+
 	// Conditions represent the current state of the Sandbox resource: Ready
 	// (the gate), ReposFresh (the Repo gate's verdict), and Scheduled — the
 	// Pod's PodScheduled condition restated with the scheduler's own reason
@@ -295,6 +306,21 @@ type SandboxHarnessStatus struct {
 	// `lastState.terminated`. Absent while the container has never restarted.
 	// +optional
 	LastTerminated *SandboxTermination `json:"lastTerminated,omitempty"`
+}
+
+// SandboxContainerWaiting is one waiting container, in the kubelet's words.
+type SandboxContainerWaiting struct {
+	// Container is the container's name, e.g. `preflight`, `harness`.
+	Container string `json:"container"`
+
+	// Reason is the kubelet's reason, e.g. `CreateContainerConfigError`,
+	// `ImagePullBackOff`, `PodInitializing`.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
+	// Message is the kubelet's message, when it gives one.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // SandboxTermination is one ended run of a container, in the kubelet's words.

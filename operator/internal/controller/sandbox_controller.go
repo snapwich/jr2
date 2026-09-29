@@ -663,6 +663,7 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 	// Harness container's restarts and last end (a memory kill is named from
 	// it, ADR-0061), and the scheduler's words on placement.
 	sandbox.Status.Harness = harnessStatus(pod)
+	sandbox.Status.Waiting = containerWaiting(pod)
 	meta.SetStatusCondition(&sandbox.Status.Conditions, scheduledCondition(pod, sandbox.Generation))
 
 	cond := metav1.Condition{
@@ -746,6 +747,21 @@ func harnessStatus(pod *corev1.Pod) *corev1alpha1.SandboxHarnessStatus {
 		return out
 	}
 	return nil
+}
+
+// containerWaiting copies every waiting container of the Pod, init containers
+// first (they run first), in the kubelet's words (ADR-0063). Nil when none
+// waits. The operator reads no meaning into the reasons.
+func containerWaiting(pod *corev1.Pod) []corev1alpha1.SandboxContainerWaiting {
+	var out []corev1alpha1.SandboxContainerWaiting
+	for _, group := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
+		for _, c := range group {
+			if w := c.State.Waiting; w != nil {
+				out = append(out, corev1alpha1.SandboxContainerWaiting{Container: c.Name, Reason: w.Reason, Message: w.Message})
+			}
+		}
+	}
+	return out
 }
 
 // scheduledCondition restates the Pod's PodScheduled condition (ADR-0063):

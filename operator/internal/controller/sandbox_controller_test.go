@@ -208,6 +208,9 @@ var _ = Describe("Sandbox Controller", func() {
 				{Name: "agent", Image: "agent", ImageID: "agent", Ready: true},
 				{
 					Name: "harness", Image: "harness", ImageID: "harness", RestartCount: 1,
+					State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+						Reason: "CrashLoopBackOff", Message: "back-off 10s restarting failed container",
+					}},
 					LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
 						Reason: "OOMKilled", ExitCode: 137,
 						StartedAt: metav1.NewTime(time.Now().Add(-time.Minute)), FinishedAt: metav1.Now(),
@@ -226,6 +229,9 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(sandbox.Status.Harness.LastTerminated).NotTo(BeNil())
 			Expect(sandbox.Status.Harness.LastTerminated.Reason).To(Equal("OOMKilled"))
 			Expect(sandbox.Status.Harness.LastTerminated.ExitCode).To(Equal(int32(137)))
+			Expect(sandbox.Status.Waiting).To(Equal([]corev1alpha1.SandboxContainerWaiting{{
+				Container: "harness", Reason: "CrashLoopBackOff", Message: "back-off 10s restarting failed container",
+			}}), "a waiting container, in the kubelet's words")
 		})
 
 		It("writes status only when it changed — every write is a watch event (ADR-0063)", func() {

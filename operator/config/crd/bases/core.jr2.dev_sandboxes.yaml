@@ -6138,6 +6138,38 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              waiting:
+                description: |-
+                  Waiting is every container of the current Pod that is waiting, init
+                  containers first, with the kubelet's reason and message (ADR-0063). A
+                  container that never starts — a root image under runAsNonRoot, a bad
+                  image name, a pull that keeps failing — leaves no log and no
+                  termination, so this is the Orchestrator's only evidence of it. Copied,
+                  not judged: the Orchestrator decides which reasons end a provision.
+                items:
+                  description: SandboxContainerWaiting is one waiting container, in
+                    the kubelet's words.
+                  properties:
+                    container:
+                      description: Container is the container's name, e.g. `preflight`,
+                        `harness`.
+                      type: string
+                    message:
+                      description: Message is the kubelet's message, when it gives
+                        one.
+                      type: string
+                    reason:
+                      description: |-
+                        Reason is the kubelet's reason, e.g. `CreateContainerConfigError`,
+                        `ImagePullBackOff`, `PodInitializing`.
+                      type: string
+                  required:
+                  - container
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - container
+                x-kubernetes-list-type: map
             type: object
         required:
         - spec

@@ -67,6 +67,47 @@ func TestHarnessStatus(t *testing.T) {
 	}
 }
 
+// TestContainerWaiting: every container of the Pod that is waiting, init
+// containers first, in the kubelet's words (ADR-0063). A container that never
+// starts — a root image under runAsNonRoot, a bad image name, a pull that
+// keeps failing — leaves no log and no termination; its waiting reason is the
+// only evidence, and the Orchestrator never reads a Pod.
+func TestContainerWaiting(t *testing.T) {
+	root := "container has runAsNonRoot and image will run as root (pod: \"sb_ns\", container: preflight)"
+	cases := []struct {
+		name string
+		init []corev1.ContainerStatus
+		main []corev1.ContainerStatus
+		want []corev1alpha1.SandboxContainerWaiting
+	}{
+		{name: "no report yet", want: nil},
+		{
+			name: "all running",
+			main: []corev1.ContainerStatus{{Name: "harness", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}},
+			want: nil,
+		},
+		{
+			name: "a root image refused at the preflight",
+			init: []corev1.ContainerStatus{{Name: "preflight", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{
+				Reason: "CreateContainerConfigError", Message: root,
+			}}}},
+			main: []corev1.ContainerStatus{{Name: "harness", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}}},
+			want: []corev1alpha1.SandboxContainerWaiting{
+				{Container: "preflight", Reason: "CreateContainerConfigError", Message: root},
+				{Container: "harness", Reason: "PodInitializing"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &corev1.Pod{Status: corev1.PodStatus{InitContainerStatuses: tc.init, ContainerStatuses: tc.main}}
+			if got := containerWaiting(pod); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("containerWaiting = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestScheduledCondition: the Pod's PodScheduled condition, restated on the
 // Sandbox with the scheduler's own reason and message (ADR-0063). A Pod the
 // scheduler has not yet looked at is Unknown — never a True carried over from
