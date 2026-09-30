@@ -560,9 +560,18 @@ test("a Harness restart that was a memory kill is named `memory limit` (ADR-0021
 test("a Settlement `failed` by a Harness restart is `Turn lost`, and a memory kill behind it is still named (ADR-0021, ADR-0031)", async () => {
   // The rebuilt stream settles the cut Submission `failed` (ADR-0031) — possibly before the watch
   // hears the restart, and always on the Instance Harness, which the watch does not see.
+  // The Settlement exactly as `@jr2/harness` writes it: the actor keys on the TYPE; the message is
+  // what the fault quotes.
   const restartSettlement = () =>
-    Object.assign(new Error("submission settled failed: Harness restarted"), {
-      settlement: { submissionId: "sub-1", outcome: "failed", error: { message: "Harness restarted" } },
+    Object.assign(new Error("submission settled failed: Harness restarted before this Submission settled (ADR-0031)"), {
+      settlement: {
+        submissionId: "sub-1",
+        outcome: "failed",
+        error: {
+          type: "harness_restarted",
+          message: "Harness restarted before this Submission settled (ADR-0031)",
+        },
+      },
     });
 
   const onInstance = new MockFlueClient();
@@ -586,7 +595,7 @@ test("a Settlement `failed` by a Harness restart is `Turn lost`, and a memory ki
     {
       type: "agent.fault",
       instanceId: "inst-42",
-      reason: "Turn lost (Harness restarted)",
+      reason: "Turn lost (Harness restarted before this Submission settled (ADR-0031))",
     },
   );
 
@@ -609,7 +618,36 @@ test("a Settlement `failed` by a Harness restart is `Turn lost`, and a memory ki
   await tick();
   const fault = named.received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined;
   assert.match(fault?.reason ?? "", /^memory limit \(OOMKilled/);
-  assert.match(fault?.reason ?? "", /Turn lost \(Harness restarted\)/);
+  assert.match(fault?.reason ?? "", /Turn lost \(Harness restarted before this Submission settled/);
+});
+
+test("a `failed` Settlement that only MENTIONS a restart is not one — the type is the signal (ADR-0031)", async () => {
+  // A provider error whose prose happens to say "harness restart" is the provider's failure, and
+  // reported as such; only the Harness's typed `harness_restarted` error is a lost Turn.
+  const mock = new MockFlueClient();
+  const run = harness(
+    mock,
+    baseInput,
+    undefined,
+    { model: "test/model", instructions: "i", workspace: "none" },
+    {
+      instanceHarness: "http://jr2-instance-harness:8080",
+    },
+  );
+  await tick();
+  (mock as unknown as { pending: Array<{ reject: (e: unknown) => void }> }).pending.pop()!.reject(
+    Object.assign(new Error("submission settled failed: upstream says harness restarted"), {
+      settlement: {
+        submissionId: "sub-1",
+        outcome: "failed",
+        error: { type: "provider_error", message: "upstream says harness restarted" },
+      },
+    }),
+  );
+  await tick();
+  await tick();
+  const fault = run.received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined;
+  assert.equal(fault?.reason, "submission settled failed: upstream says harness restarted");
 });
 
 test("a re-attached Turn is held to its ledgered mark; the Instance Harness is not watched (ADR-0021)", async () => {

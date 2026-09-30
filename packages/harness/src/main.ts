@@ -81,7 +81,7 @@ const harnessWire = harnessServer({
   // The attach (ADR-0063): the Workspace's Repos into `/work`, on the Orchestrator's call.
   attach: attacher(),
   checkAdmission: (resolved) => admissionFault(models, resolved),
-  // Set on the Instance Harness Deployment alone (deploy.ts, ADR-0031): this placement admits
+  // Set on the Instance Harness StatefulSet alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code
   // execution in this pod" a property, not a comment.
   ...(process.env.JR2_MENU_ONLY ? { menuOnly: true } : {}),

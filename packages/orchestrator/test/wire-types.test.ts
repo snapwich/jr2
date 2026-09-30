@@ -46,6 +46,14 @@ const attachSlot: Mutual<client.AttachSlot, harness.AttachSlot> = agree;
 const attachRequest: Mutual<client.AttachRequest, harness.AttachRequest> = agree;
 const attachResponse: Mutual<client.AttachResponse, harness.AttachResponse> = agree;
 const attachError: Mutual<client.AttachError, harness.AttachError> = agree;
+const liveConversation: Mutual<client.LiveConversation, harness.LiveConversation> = agree;
+const liveSetRequest: Mutual<client.LiveSetRequest, harness.LiveSetRequest> = agree;
+const liveSetResponse: Mutual<client.LiveSetResponse, harness.LiveSetResponse> = agree;
+// The Settlement types the Agent actor switches on are literals, so they are held the same way: a
+// renamed type on either side would otherwise read as an unknown failure, not a restart.
+const runawayType: Mutual<typeof client.SUBMISSION_RUNAWAY, typeof harness.SUBMISSION_RUNAWAY> = agree;
+const restartedType: Mutual<typeof client.SUBMISSION_HARNESS_RESTARTED, typeof harness.SUBMISSION_HARNESS_RESTARTED> =
+  agree;
 
 test("the client's wire shapes and the Harness's are one contract", () => {
   // The type-level claims above are already asserted by `tsc`; this reads them so the file has no
@@ -73,6 +81,11 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     attachRequest,
     attachResponse,
     attachError,
+    liveConversation,
+    liveSetRequest,
+    liveSetResponse,
+    runawayType,
+    restartedType,
   ]) {
     assert.deepEqual(pair, [true, true]);
   }

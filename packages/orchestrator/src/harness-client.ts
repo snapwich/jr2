@@ -52,6 +52,9 @@ import {
   VIEW_HISTORY,
   VIEW_UPDATES,
   type EchoEvent,
+  type LiveConversation,
+  type LiveSetRequest,
+  type LiveSetResponse,
   type Notice,
   type Settlement,
   type StreamEvent,
@@ -180,6 +183,11 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
    * Harness restart that ends the Turn — ADR-0021).
    * Nothing is admitted yet here, so there is no turn for a lease to be about: an address that
    * never answers is a fault this call has to name itself.
+   *
+   * A draining Harness's 503 is re-sent on the same ladder (ADR-0031): the Harness answers it
+   * before it reads the body, so it queued nothing, and it closes the connection with it, so the
+   * next attempt dials the Service again — which reaches the replacement once it serves. It is the
+   * one answer re-sent: every other status is the Harness's word about this admission.
    */
   const postAdmission = async (url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> => {
     const startedAt = Date.now();
@@ -189,12 +197,9 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
     let lastCode = "?";
     for (;;) {
       attempts += 1;
+      let res: Response;
       try {
-        const res = await fetchImpl(url, init);
-        // Only when it actually cost something. A window that is never approached should be silent,
-        // so that a line appearing at all is already the signal (see `routabilityLine`).
-        if (attempts > 1) log(routabilityLine("admission", url, attempts, Date.now() - startedAt, lastCode));
-        return res;
+        res = await fetchImpl(url, init);
       } catch (err) {
         lastCode = transportCode(err);
         // A local abandon propagates untranslated, exactly as in `wait` — the stopped actor
@@ -210,7 +215,19 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
         }
         await sleep(jittered(backoffMs), signal);
         backoffMs = Math.min(backoffMs * 2, backoffMaxMs);
+        continue;
       }
+      if (res.status === DRAINING && Date.now() < deadline) {
+        lastCode = `HTTP${DRAINING}`;
+        await res.body?.cancel();
+        await sleep(jittered(backoffMs), signal);
+        backoffMs = Math.min(backoffMs * 2, backoffMaxMs);
+        continue;
+      }
+      // Only when it actually cost something. A window that is never approached should be silent,
+      // so that a line appearing at all is already the signal (see `routabilityLine`).
+      if (attempts > 1) log(routabilityLine("admission", url, attempts, Date.now() - startedAt, lastCode));
+      return res;
     }
   };
 
@@ -439,10 +456,6 @@ export function createEchoPush(options: {
   };
 }
 
-/** One conversation the Orchestrator's live runs hold on the Instance Harness (ADR-0031): the
- * `(Agent name, instance id)` pair the Harness keys a conversation by. */
-export type LiveConversation = { agent: string; instanceId: string };
-
 /**
  * Build the live-set statement for the Instance Harness (ADR-0031): `PUT /agents
  * { live: [{ agent, instanceId }] }` → `{ freed }`, and the Harness frees memory and files of every
@@ -455,7 +468,7 @@ export function createLiveSetPush(options: {
   token?: string;
   /** Injectable for socket-free tests. Default: global `fetch`. */
   fetch?: typeof fetch;
-}): (live: LiveConversation[]) => Promise<{ freed: number }> {
+}): (live: LiveConversation[]) => Promise<LiveSetResponse> {
   const fetchImpl = options.fetch ?? fetch;
   return async (live) => {
     const url = new URL("/agents", options.baseUrl).toString();
@@ -465,14 +478,14 @@ export function createLiveSetPush(options: {
         "content-type": "application/json",
         ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
       },
-      body: JSON.stringify({ live }),
+      body: JSON.stringify({ live } satisfies LiveSetRequest),
     }).catch((err: unknown) => {
       throw new Error(`live-set statement to ${url} failed: ${transportDetail(err)}`, { cause: err });
     });
     if (!res.ok) {
       throw new Error(`live-set statement failed (${res.status}): ${await errorDetail(res)}`);
     }
-    const { freed } = (await res.json().catch(() => ({}))) as { freed?: unknown };
+    const { freed } = (await res.json().catch(() => ({}))) as Partial<Record<keyof LiveSetResponse, unknown>>;
     return { freed: typeof freed === "number" ? freed : 0 };
   };
 }
@@ -499,6 +512,9 @@ export function agent(declaration: AgentDeclaration): AgentLogic {
     declaration,
   );
 }
+
+/** What a draining Harness answers an admission (ADR-0031): refused before anything is queued. */
+const DRAINING = 503;
 
 /** A stream read worth retrying (server hiccup) — internal to the reconnect loop, never thrown out. */
 class ReconnectableError extends Error {}

@@ -215,9 +215,11 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
 
   app.post("/agents/:name/:id", async (c) => {
     // The drain (ADR-0031): a Submission admitted now would outlive the process. Refused before
-    // anything is read or created, so a 503 guarantees nothing was queued — the caller may send the
-    // same admission to the replacement. The readiness probe is the socket (deploy.ts, the
-    // operator), so the pod stays Ready while it drains: this 503 is the signal, not readiness.
+    // anything is read or created, so a 503 guarantees nothing was queued — the Orchestrator sends
+    // the same admission again (harness-client.ts). The readiness probe is the socket (deploy.ts,
+    // the operator), so the pod stays Ready while it drains: this 503 is the signal, not readiness.
+    // It closes the connection, so the re-sent admission dials the Service anew rather than
+    // reaching this Harness again over a kept-alive socket.
     if (draining) {
       return c.json(
         {
@@ -226,6 +228,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
             "are settling (ADR-0031) — admit again once its replacement serves",
         },
         503,
+        { connection: "close" },
       );
     }
     const agentName = c.req.param("name");

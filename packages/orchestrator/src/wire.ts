@@ -28,6 +28,11 @@ export const SUBMISSION_ABORTED = "submission_aborted";
  * on the class (one fresh-conversation reroll) without parsing prose. */
 export const SUBMISSION_RUNAWAY = "runaway";
 
+/** `SettlementError.type` for a Submission the Harness admitted but had not settled when it
+ * restarted (ADR-0031): the rebuilt stream settles it `failed`, so a re-attached `wait` reads a
+ * Settlement, not a 404. The Agent actor switches on this type, never on the message's prose. */
+export const SUBMISSION_HARNESS_RESTARTED = "harness_restarted";
+
 /** One settled Submission, in the shape `?view=history`'s `settlements` reports. */
 export type Settlement = {
   submissionId: string;
@@ -96,6 +101,20 @@ export const VIEW_HISTORY = "history";
 /** `?live=` value: park until a new event or timeout (204 + the same headers). Long-poll is the
  * ONLY wait transport (ADR-0027) — no SSE, no `?wait=result`. */
 export const LIVE_LONG_POLL = "long-poll";
+
+// ---- The live set (`PUT /agents` — ADR-0031) ----------------------------------------------------
+// The Orchestrator states which conversations its live runs hold on the Instance Harness, and the
+// Harness frees every other one that is not busy. The whole set every time (level-triggered), so a
+// missed statement costs nothing.
+
+/** One conversation a live run holds: the `:name` and `:id` of its `/agents/:name/:id` route. */
+export type LiveConversation = { agent: string; instanceId: string };
+
+/** What `PUT /agents` accepts: every conversation the Orchestrator's live runs hold. */
+export type LiveSetRequest = { live: LiveConversation[] };
+
+/** What `PUT /agents` answers (200): how many conversations this statement freed. */
+export type LiveSetResponse = { freed: number };
 
 // ---- The run-narrative echo (`POST /echo` — ADR-0023) ------------------------------------------
 // "Print these events": the Orchestrator — the observation feed's one subscriber (ADR-0022) — tees

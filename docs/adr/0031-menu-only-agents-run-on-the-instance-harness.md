@@ -13,8 +13,8 @@ built.
 
 ## Decision
 
-- **One Instance Harness per instance, deployed by convention.** `jr2 up` converges a Harness Deployment + Service —
-  stock `jr2-harness:<kitversion>` image, same wire — whenever any Agent slot carried by a registered Machine
+- **One Instance Harness per instance, deployed by convention.** `jr2 up` converges a Harness StatefulSet + headless
+  Service — stock `jr2-harness:<kitversion>` image, same wire — whenever any Agent slot carried by a registered Machine
   (ADR-0049's walk) declares `workspace: "none"`
   ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)). The scan is static and
   definition-level, deliberately not workflow-level (workflow internals are not statically recoverable — the same line
@@ -64,8 +64,8 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   engine's state as an opaque, engine-named part (pi's session through its file-backed session repo today). Rebuilding
   reads jr2's record first; an engine that cannot read the engine part (another engine, another version) continues from
   the history messages. The record is the contract; the engine part is not. A Submission in flight at the restart
-  settles `failed` ("Harness restarted") on the rebuilt stream, so the Orchestrator reads a Settlement, not a 404, and
-  the conversation's next Turn continues it.
+  settles `failed` (the typed error `harness_restarted`, which the Agent actor reads as "Turn lost") on the rebuilt
+  stream, so the Orchestrator reads a Settlement, not a 404, and the conversation's next Turn continues it.
 - **Both placements persist, to different volumes.** The Instance Harness to a PersistentVolumeClaim of its own; a
   Sandbox's Harness to an emptyDir mounted into the Harness container alone (the User Container must not read it), so a
   Harness container that restarts inside a living pod keeps its conversations. A pod that is gone takes the emptyDir
@@ -76,9 +76,13 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   on a replica that never saw it. A rollout at N = 1 has no surge, so admissions are refused while the new pod starts;
   the Orchestrator already absorbs an admission refused at the connection (ADR-0042), so a rollout delays a Turn and
   faults nothing.
-- **A rollout drains Turns.** On SIGTERM the Harness stops admitting (readiness drops), finishes the Turns it holds,
-  then exits; the termination grace is a Turn's worst case. A deploy loses no Turn and, with the volume, no
-  conversation.
+- **A rollout drains Turns.** On SIGTERM the Harness stops admitting, finishes the Turns it holds (the queued ones too),
+  then exits; the termination grace is a Turn's worst case. It refuses an admission with a 503 before it reads or queues
+  anything, and closes that connection, so the Orchestrator re-sends it on ADR-0042's ladder and the re-send dials the
+  Service anew. Readiness stays up (the probe is the socket), so reads keep answering and a `wait` on the draining pod
+  still reads its Settlement. A deploy loses no Turn and, with the volume, no conversation — as long as the drain and
+  the replacement's start fit ADR-0042's window; a longer one faults the waiting admission with the Harness's own 503
+  words.
 - **The Orchestrator states the live set; the Harness frees the rest.** After every restore and every 5 minutes (the
   Lease's cadence) the Orchestrator tells the Instance Harness which conversations its live runs hold — from the
   admission ledgers in memory, never from the store — and the Harness frees memory and files of every other one.

@@ -24,7 +24,7 @@ import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
 import type { EventDef, EventSemantics } from "@jr2/agent-protocol";
 import { inputSchemaOf } from "./vocabulary.ts";
-import type { EchoEvent, EchoStatusChild } from "./wire.ts";
+import type { EchoEvent, EchoStatusChild, LiveConversation } from "./wire.ts";
 import {
   agentAddress,
   bindRun,
@@ -48,7 +48,6 @@ import {
   type SandboxPort,
   type WorkspaceWait,
 } from "./workspace.ts";
-import type { LiveConversation } from "./harness-client.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { composesSandbox } from "./parts.ts";
 import { fingerprintOf } from "./fingerprint.ts";

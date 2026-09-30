@@ -248,6 +248,52 @@ test("a transport failure that may have reached the Harness is NOT retried — a
   assert.equal(calls.length, 1);
 });
 
+test("a draining Harness's 503 is re-sent — it queued nothing, and its replacement admits (ADR-0031)", async () => {
+  const lines: string[] = [];
+  const draining = () =>
+    new Response(JSON.stringify({ error: "the Harness is draining for shutdown" }), {
+      status: 503,
+      headers: { connection: "close" },
+    });
+  const { calls, fetch } = scriptedFetch([
+    draining,
+    () => Promise.reject(transportError("ECONNREFUSED", "connect")),
+    () => new Response(JSON.stringify(admission), { status: 200 }),
+  ]);
+  const measured = createHarnessClient({
+    baseUrl: "http://h.test",
+    fetch,
+    backoffInitialMs: 1,
+    backoffMaxMs: 2,
+    log: (line) => lines.push(line),
+  });
+
+  const adm = await measured.send("coder", "inst-1", { message: "do the thing", definition: coder });
+
+  assert.equal(calls.length, 3, "the drain's 503, then the gap before the replacement, then the replacement");
+  assert.deepEqual(adm, admission);
+  assert.match(lines[0]!, /attempts=3 .* last=ECONNREFUSED/);
+});
+
+test("a drain longer than the admission window faults with the Harness's own words", async () => {
+  const { calls, fetch } = scriptedFetch([
+    () => new Response(JSON.stringify({ error: "the Harness is draining for shutdown" }), { status: 503 }),
+  ]);
+  const bounded = createHarnessClient({
+    baseUrl: "http://h.test",
+    fetch,
+    backoffInitialMs: 1,
+    backoffMaxMs: 2,
+    admitWindowMs: 20,
+  });
+
+  await assert.rejects(
+    () => bounded.send("coder", "inst-1", { message: "do the thing", definition: coder }),
+    /harness admission failed \(503\): the Harness is draining for shutdown/,
+  );
+  assert.ok(calls.length > 1, "it kept re-sending for the whole window");
+});
+
 test("an endpoint that never answers faults with the address it kept trying", async () => {
   const { calls, fetch } = scriptedFetch([() => Promise.reject(transportError("ECONNREFUSED", "connect"))]);
   const bounded = createHarnessClient({

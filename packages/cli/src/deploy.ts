@@ -132,7 +132,7 @@ type KubeManifest = Record<string, unknown>;
  */
 export const KIT_POD_SIZES = {
   orchestrator: { requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "1Gi" } },
-  /** Its conversations are never freed yet. */
+  /** It holds the conversations its live runs hold, and frees the rest on the live set (ADR-0031). */
   instanceHarness: { requests: { cpu: "250m", memory: "1Gi" }, limits: { memory: "1Gi" } },
   /** The Instance Harness pod's Custodian: the same 64Mi/50m slice a Sandbox's takes, kit-sized. */
   instanceCustodian: { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } },

@@ -374,17 +374,18 @@ function harnessRestartReason(seen: HarnessRestarts): string {
 /**
  * A Submission the Harness settled `failed` because it restarted under it (ADR-0031): the rebuilt
  * stream says so, so the Orchestrator reads a Settlement, not a 404. Read STRUCTURALLY off the
- * Settlement's own message, like {@link providerLimitReason}. It can reach the actor BEFORE the
- * watch's restart count does, and it is the only restart signal an Instance Harness gives — the
- * watch does not see that pod.
+ * Settlement's typed error, like {@link runawayReason} — the literal is restated
+ * (`SUBMISSION_HARNESS_RESTARTED` in `./wire.ts`), and the message is only what the fault quotes.
+ * It can reach the actor BEFORE the watch's restart count does, and it is the only restart signal
+ * an Instance Harness gives — the watch does not see that pod.
  */
 function settledByRestart(err: unknown): string | undefined {
   if (typeof err !== "object" || err === null) return undefined;
-  const settlement = (err as { settlement?: { outcome?: unknown; error?: { message?: unknown } } }).settlement;
-  const message = settlement?.error?.message;
-  return settlement?.outcome === "failed" && typeof message === "string" && /harness restart/i.test(message)
-    ? message
-    : undefined;
+  const settlement = (err as { settlement?: { outcome?: unknown; error?: { type?: unknown; message?: unknown } } })
+    .settlement;
+  if (settlement?.outcome !== "failed" || settlement.error?.type !== "harness_restarted") return undefined;
+  const message = settlement.error.message;
+  return typeof message === "string" ? message : "Harness restarted";
 }
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -633,9 +634,9 @@ export function agentActorWith(
     const pendingAborts = (binding.pendingAborts ??= new Map<string, Promise<void>>());
     let stopped = false;
 
-    // A Harness restart ends its Turns (ADR-0021): a conversation lives as long as its Harness
-    // process (ADR-0027), and a Harness that crash-loops only ever refuses connections, so `wait`
-    // would reconnect forever. The watch sees the restart count pass its value at this Turn's
+    // A Harness restart ends its Turns (ADR-0021): the Submission it held is cut (ADR-0031 keeps
+    // the conversation, not the Turn), and a Harness that crash-loops only ever refuses
+    // connections, so `wait` would reconnect forever. The watch sees the restart count pass its value at this Turn's
     // admission, and the Turn fails at once — not its Workspace: the pod and `/work` survive.
     // Sandbox Workspaces only: the Instance Harness is a StatefulSet the watch does not see, and
     // its rebuilt stream settles the Turn `failed` instead (ADR-0031, `settledByRestart`).

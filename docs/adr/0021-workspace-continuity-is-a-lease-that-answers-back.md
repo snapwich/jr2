@@ -87,9 +87,11 @@ behavior `release()` was written to produce is emergent.
   inside the 30m idle timeout) now bounds only how long an orphan waits to be reaped.
 - A run that faults after its Sandbox was placed stops its lease; the operator reaps the CR one `idleTimeout` after the
   last renewal. A Sandbox that was never placed is deleted at once (ADR-0064).
-- A Menu-only Agent's Turn on the Instance Harness is outside the watch: its Deployment recreates the pod, and the new
-  process answers 404, which is "conversation lost". An Instance Harness that crash-loops without end still leaves such
-  a Turn waiting.
+- A Menu-only Agent's Turn on the Instance Harness is outside the watch: its StatefulSet recreates the pod, the new
+  process rebuilds the conversation from its volume, and the cut Submission settles `failed` with the typed
+  `harness_restarted` error ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)) — the Agent actor reads
+  that as "Turn lost", the same fault the watch gives a Sandbox. An Instance Harness that crash-loops without end still
+  leaves such a Turn waiting.
 - The lease is per-workspace, not per-run: a workflow with concurrent workspaces gets one actor each, and each is lost
   independently. This falls out of invoking it beside the body rather than owning it at the host.
 - `SandboxPort` has no optional method: `renew` is a write, `continuity` is a subscription to the watch, and

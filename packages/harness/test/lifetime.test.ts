@@ -299,6 +299,8 @@ test("the drain: a new admission is 503, and the Submissions it holds settle bef
   const refused = await admit(harness.app, "/agents/decider/i2");
   assert.equal(refused.status, 503);
   assert.match(((await refused.json()) as { error: string }).error, /draining/);
+  // The Orchestrator re-sends it; closing the socket sends that retry to the Service, not here.
+  assert.equal(refused.headers.get("connection"), "close");
   // A 503 queued nothing: no conversation was created for it.
   assert.equal((await harness.app.request("/agents/decider/i2")).status, 404);
   // Reads still answer while it drains — the Orchestrator's `wait` reads its Settlement here.

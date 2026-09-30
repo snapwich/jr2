@@ -62,9 +62,9 @@ unchanged.
   without end. A drain ends in `workspace.lost`, and the body's policy decides (ADR-0021).
 - **jr2's own pods are kit-sized, with no config key**: memory request = limit, a CPU request, no CPU limit (a
   provisioning burst needs CPU, and no Substrate move applies to them). Orchestrator 500m / 1Gi. Instance Harness 250m /
-  1Gi (its conversations are never freed yet). Operator 50m / 256Mi (it caches every Pod in the cluster). Repo cache
-  agent 50m, memory request 128Mi and limit 1Gi — the one exception, since `git index-pack` spikes and its OOM costs
-  only a refetch.
+  1Gi (it frees every conversation no live run holds — ADR-0031). Operator 50m / 256Mi (it caches every Pod in the
+  cluster). Repo cache agent 50m, memory request 128Mi and limit 1Gi — the one exception, since `git index-pack` spikes
+  and its OOM costs only a refetch.
 
 ## Considered options
 

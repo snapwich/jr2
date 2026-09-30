@@ -46,6 +46,11 @@ windows more often. That is why the flake was degree-independent and serial runs
   losing it. The test is therefore the narrow structural question "did any byte reach the wire" (the errno's
   `syscall`/`code`, read down the `cause` chain), never the broad "does this look transient". A reset connection is not
   retried.
+- **One answer is re-sent too: a draining Harness's 503.** A Harness that received SIGTERM refuses an admission before
+  it reads or queues anything, and closes the connection
+  ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), so that 503 is as undelivered as a refused
+  connection — nothing ran, and the re-send dials the Service anew. It rides the same ladder and window. Every other
+  status is the Harness's word about this admission, and stays a fault.
 - **The window is bounded, where `wait`'s is not.** `wait` may reconnect forever because its Submission is already
   admitted, so the lease owns the reporting ([ADR-0021](0021-workspace-continuity-is-a-lease-that-answers-back.md)'s
   `workspace.lost`). Nothing is admitted yet at this seat, so there is no turn for a lease to be about: an address that
