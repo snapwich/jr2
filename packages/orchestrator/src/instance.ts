@@ -169,13 +169,16 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   const restored = await host.restore();
 
   // Right after restore, not before: restore reads live rows only, and a row it marks `lost` or
-  // `drifted` here is written now, so its week starts now (ADR-0065). The timer holds no process
-  // alive — a sweep is housekeeping, never a reason to stay up.
-  const sweep = () => store.sweep(new Date(Date.now() - RETAIN_MS));
+  // `drifted` here is written now, so its week starts now (ADR-0065). A sweep is housekeeping,
+  // never a reason to stay up — nor to fail a boot that has already resumed runs: a failed sweep,
+  // at boot or on the hour, is logged, and the next hour sweeps again. The timer holds no process
+  // alive.
+  const sweep = () =>
+    store
+      .sweep(new Date(Date.now() - RETAIN_MS))
+      .catch((err) => console.error(`sweep failed: ${err instanceof Error ? err.message : err}`));
   await sweep();
-  const sweeper = setInterval(() => {
-    sweep().catch((err) => console.error(`sweep failed: ${err instanceof Error ? err.message : err}`));
-  }, SWEEP_EVERY_MS);
+  const sweeper = setInterval(() => void sweep(), SWEEP_EVERY_MS);
   sweeper.unref();
 
   // 4. Serve, authenticated (ADR-0013) — the token and key resolved above.

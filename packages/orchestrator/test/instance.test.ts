@@ -404,3 +404,35 @@ test("the sweep runs again every hour while the Orchestrator is up (ADR-0065)", 
     await rm(dbDir, { recursive: true, force: true });
   }
 });
+
+test("a failed sweep, at boot or on the hour, is logged and never fails the Orchestrator (ADR-0065)", async (t) => {
+  const dbDir = await mkdtemp(join(tmpdir(), "jr2-sweep-"));
+  const store = new SqliteSnapshotStore(join(dbDir, "state.db"));
+  const sweep = store.sweep.bind(store);
+  let sweeps = 0;
+  store.sweep = async (olderThan) => {
+    if (++sweeps <= 2) throw new Error("SQLITE_BUSY");
+    return sweep(olderThan);
+  };
+  const logged = t.mock.method(console, "error", () => {});
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    // The boot has resumed runs by the time it sweeps: a failure there is logged, not thrown.
+    const inst = await startInstance({ dir: fixtureDir, store, signingKey: KEY });
+    try {
+      assert.equal(sweeps, 1);
+      for (const _ of [1, 2]) {
+        mock.timers.tick(60 * 60 * 1000);
+        await new Promise((r) => setImmediate(r));
+      }
+      assert.equal(sweeps, 3, "the hour after a failure sweeps again");
+      const failed = logged.mock.calls.filter((c) => String(c.arguments[0]) === "sweep failed: SQLITE_BUSY");
+      assert.equal(failed.length, 2);
+    } finally {
+      await inst.close();
+    }
+  } finally {
+    mock.timers.reset();
+    await rm(dbDir, { recursive: true, force: true });
+  }
+});
