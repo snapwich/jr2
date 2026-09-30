@@ -9,13 +9,20 @@ export const ORCHESTRATOR_PORT = 4000;
 /** The instance-owned Secret: Instance token + signing key (+ orchestrator-side creds). */
 export const INSTANCE_SECRET = "jr2-instance";
 
-/** The Instance Harness's Deployment + Service name (ADR-0031): converged by `jr2 up` whenever any
+/** The Instance Harness's StatefulSet + headless Service name (ADR-0031): converged by `jr2 up` whenever any
  * Agent definition declares `workspace: "none"`, and the deterministic Service DNS the Agent actor
  * resolves such a Turn to. Doubles as the delivery scope a Menu-only registration records — the
  * name the placement's Sandbox token is signed for (tokens.ts, ADR-0013), which its Custodian holds. The port is the
  * Harness's own listen port (`PORT` default). */
 export const INSTANCE_HARNESS_SERVICE = "jr2-instance-harness";
 export const INSTANCE_HARNESS_PORT = 8080;
+
+/** Where a Harness persists its conversations, and the env var that tells it so (ADR-0031): one
+ * fixed path in both placements — the Instance Harness's PersistentVolumeClaim (deploy.ts) and a
+ * Sandbox's emptyDir (sandbox-kube.ts), each mounted into the Harness container alone. */
+export const CONVERSATIONS_DIR = "/conversations";
+export const CONVERSATIONS_DIR_ENV = "JR2_CONVERSATIONS_DIR";
+export const CONVERSATIONS_VOLUME = "conversations";
 
 /** The harness config ConfigMap the stock Harness boots from (ADR-0018): what this instance can
  * REACH — the custom model provider minus its key, and the catalog providers' gateways (ADR-0059). No Agents ride it: a Machine carries its own

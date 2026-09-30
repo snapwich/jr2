@@ -345,6 +345,12 @@ type SandboxTermination struct {
 	// FinishedAt is when the run ended.
 	// +optional
 	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
+
+	// Message is the kubelet's termination message. For the Harness container
+	// it is the run's last log lines (`FallbackToLogsOnError`, ADR-0063), so a
+	// Harness that dies before Ready is named in its own words.
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // SandboxRepoStatus is what one Repo cache this Sandbox mounts has done about

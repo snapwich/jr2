@@ -59,6 +59,22 @@ func TestHarnessStatus(t *testing.T) {
 				LastTerminated: &corev1alpha1.SandboxTermination{Reason: "OOMKilled", ExitCode: 137, FinishedAt: &finished},
 			},
 		},
+		{
+			// FallbackToLogsOnError (ADR-0063): the message is the Harness's last
+			// log lines, carried verbatim.
+			name: "died before Ready, in its own words",
+			statuses: []corev1.ContainerStatus{{
+				Name:         "harness",
+				RestartCount: 3,
+				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Reason: "Error", ExitCode: 1, Message: "Error: listen EADDRINUSE :8080\n",
+				}},
+			}},
+			want: &corev1alpha1.SandboxHarnessStatus{
+				RestartCount:   3,
+				LastTerminated: &corev1alpha1.SandboxTermination{Reason: "Error", ExitCode: 1, Message: "Error: listen EADDRINUSE :8080\n"},
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

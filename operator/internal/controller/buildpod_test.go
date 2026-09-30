@@ -573,6 +573,25 @@ func TestBuildPodMountsShmInTheHarnessOnly(t *testing.T) {
 	}
 }
 
+// TestBuildPodHarnessSaysWhyItDied: the Harness container's termination
+// message falls back to its last log lines (ADR-0063), so a Harness that dies
+// before Ready is named in its own words. The Harness alone: a sidecar is a
+// fragment scheduled as written.
+func TestBuildPodHarnessSaysWhyItDied(t *testing.T) {
+	r := &SandboxReconciler{}
+	pod := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{
+		Image:    testHarnessImage,
+		Port:     8080,
+		Sidecars: []corev1.Container{{Name: "custodian", Image: "envoy"}},
+	}), nil)
+	if got := pod.Spec.Containers[0].TerminationMessagePolicy; got != corev1.TerminationMessageFallbackToLogsOnError {
+		t.Fatalf("harness terminationMessagePolicy = %q, want FallbackToLogsOnError", got)
+	}
+	if got := pod.Spec.Containers[1].TerminationMessagePolicy; got != "" {
+		t.Fatalf("a sidecar is scheduled as written, but its terminationMessagePolicy = %q", got)
+	}
+}
+
 // TestBuildPodPriorityAndDisruption: the priority class is the CR's, copied
 // verbatim, and every Sandbox pod tells both autoscalers not to move it — a
 // move loses `/work` (ADR-0060).
