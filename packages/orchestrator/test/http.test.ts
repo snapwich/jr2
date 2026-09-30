@@ -349,3 +349,21 @@ test("GET /repos serves the data-plane switch and the Repos as the cluster repor
   const none = await (await mkApp()).app.request("/repos");
   assert.deepEqual(await none.json(), { dataPlane: false, repos: [] });
 });
+
+test("SSE: GET /runs/:id/events on a PARKED run streams its status, then `gone` (ADR-0022, ADR-0025)", async () => {
+  const { host, app } = await mkApp();
+  const { runId } = await host.start("coding");
+  // Stopped, not settled: the stored row stays `live` for the next restore, the live registry
+  // drops it, and the read-through answers the Machine's `active` — which says nothing about the
+  // feed. `gone` does: this end is the run's own, so a re-attaching reader stops here.
+  await host.stop(runId);
+  assert.equal(host.status(runId), undefined);
+
+  const res = await app.request(`/runs/${runId}/events`);
+  assert.equal(res.status, 200);
+  const body = await res.text();
+  const events = [...body.matchAll(/^event: (\w+)$/gm)].map((m) => m[1]);
+  assert.deepEqual(events, ["status", "gone"]);
+  assert.match(body, /event: status\ndata: .*"status":"active"/);
+  assert.match(body, new RegExp(`event: gone\\ndata: \\{"runId":"${runId}"\\}`));
+});

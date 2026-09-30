@@ -135,3 +135,24 @@ test("candidates() returns the ids sharing a prefix, live and settled", async ()
   });
   assert.deepEqual((await client.candidates("zzzzzzzz")).runIds, []);
 });
+
+test("events() ends on `gone`: a parked run's feed is its own end, not one to re-attach (ADR-0022, ADR-0025)", async () => {
+  const { host, app } = await mkHarness();
+  let attaches = 0;
+  const client = new JR2Client("http://test", async (url, init) => {
+    if (/\/runs\/[^/]+\/events$/.test(String(url))) attaches++;
+    return app.request(url, init);
+  });
+  const { runId } = await client.start("gated");
+  // Stopped, not settled: the row stays `live` for the next boot's restore, and the run is no
+  // longer in the live registry — the read-through answers `active`.
+  await host.stop(runId);
+  assert.equal(host.status(runId), undefined);
+
+  const statuses: string[] = [];
+  for await (const ev of client.events(runId)) {
+    if (ev.kind === "status") statuses.push(ev.status.status);
+  }
+  assert.deepEqual(statuses, ["active"], "the parked run's status came once");
+  assert.equal(attaches, 1, "and the feed was NOT re-attached: `gone` ended it");
+});

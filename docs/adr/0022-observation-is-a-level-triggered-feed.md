@@ -61,9 +61,10 @@ can get away with fetching once, because a person can press a button; an API can
   tick, and a reader that keeps up drains them before any ping judges it. Closing is safe because the feed is
   level-triggered: the client reconnects and receives the whole current truth, having missed no state — only activity
   (Emits, retries) that fell in the gap. A page reconnects with EventSource's own retry; the CLI (`jr2 run`,
-  `jr2 logs -f`) re-attaches any feed that ends before a terminal status, and never reads such an end as the run's. The
-  server keeps no per-client queue and no slow-client accounting beyond counting the subscriber's writes (scaling review
-  R10, 2026-09-30).
+  `jr2 logs -f`) re-attaches any feed that ends before a terminal status, and never reads such an end as the run's —
+  except `gone`: a run stopped before it settled (parked, ADR-0025) reads through as `active`, so its one-shot feed says
+  `gone` after the status, and the CLI ends there instead of re-attaching in a loop. The server keeps no per-client
+  queue and no slow-client accounting beyond counting the subscriber's writes (scaling review R10, 2026-09-30).
 - **Shutdown ends feeds explicitly.** `RunHost.close()` delivers `closed` to every listener. `server.close()` waits for
   in-flight requests and an observation feed has no end of its own, so without this a single attached watcher wedges
   `jr2 dev` shutdown indefinitely.

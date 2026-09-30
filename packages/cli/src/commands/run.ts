@@ -62,9 +62,13 @@ export async function run(args: string[], io: Io): Promise<number> {
         return ev.status.status === "error" ? 1 : 0;
       }
     }
-    // `events()` re-attaches until the run settles (ADR-0022), so reaching here means no terminal
-    // status ever came: never a success, and nothing on stdout to be mistaken for a result.
-    activity(io, `run ${runId}: the feed ended before the run settled — \`jr2 logs -f ${runId}\` re-attaches`);
+    // `events()` re-attaches until the run settles (ADR-0022), so reaching here means the run left
+    // the live set without settling: stopped, parked for the next boot's restore (ADR-0025). Never
+    // a success, and nothing on stdout to be mistaken for a result.
+    activity(
+      io,
+      `run ${runId} is parked: stopped before it settled — \`jr2 logs -f ${runId}\` follows it once restored`,
+    );
     return 1;
   } finally {
     target.close?.();

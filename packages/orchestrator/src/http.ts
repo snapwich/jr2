@@ -45,7 +45,7 @@ import { EventValidationError, UnknownAddressError } from "./registration.ts";
 import type { RepoStatus } from "./repos.ts";
 import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
 import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
-import { observe, type RunFeedEvent, type RunHost, type WorkflowFeedEvent } from "./run-host.ts";
+import { observe, type RunFeedEvent, type RunHost, type RunStatus, type WorkflowFeedEvent } from "./run-host.ts";
 import { KIT_VERSION } from "./config.ts";
 
 /** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
@@ -278,6 +278,21 @@ const BACKLOG_FRAMES = 64;
  */
 function sseFrame(event: string, data: unknown, retry?: number): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n${retry ? `retry: ${retry}\n` : ""}\n`;
+}
+
+/**
+ * A run that left the live set WITHOUT settling — stopped, so parked for the next boot's restore
+ * (ADR-0025) — reads through as `active`, which is the truth about the Machine and says nothing
+ * about the feed. `gone` is a fact, not an inference (ADR-0022): stated here, so a reader that
+ * re-attaches whenever a feed ends before a terminal status (the CLI) knows this end is the run's
+ * own and does not re-attach in a loop.
+ */
+async function sayGoneIfParked(
+  stream: { writeSSE: (m: { event: string; data: string }) => Promise<unknown> },
+  status: RunStatus,
+): Promise<void> {
+  if (status.status !== "active") return;
+  await stream.writeSSE({ event: "gone", data: JSON.stringify({ runId: status.runId }) });
 }
 
 /**
@@ -696,6 +711,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       if (!finalStatus) return c.json({ error: `no run "${runId}"` }, 404);
       return streamSSE(c, async (stream) => {
         await stream.writeSSE({ event: "status", data: JSON.stringify(finalStatus) });
+        await sayGoneIfParked(stream, finalStatus);
       });
     }
     return streamSSE(c, async (stream) => {
@@ -718,8 +734,11 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
         // which then attaches to nothing and never fires. Fall back to the terminal read-through.
         if (host.status(runId) === undefined) {
           exit.release();
-          void host.read(runId).then((s) => {
-            if (s) void stream.writeSSE({ event: "status", data: JSON.stringify(s) });
+          void host.read(runId).then(async (s) => {
+            if (s) {
+              await stream.writeSSE({ event: "status", data: JSON.stringify(s) });
+              await sayGoneIfParked(stream, s);
+            }
             exit.done();
           });
           return;

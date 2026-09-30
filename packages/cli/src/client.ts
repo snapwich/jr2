@@ -176,7 +176,8 @@ export class JR2Client {
    * A feed that ends BEFORE a terminal status is re-attached, never read as the run's end: the
    * server closes a reader that fell behind (a paused pager on `jr2 run | less`), and the feed is
    * level-triggered, so the re-attach opens with where the run stands now (ADR-0022). What falls in
-   * the gap is activity — Emits, retries — never state.
+   * the gap is activity — Emits, retries — never state. The one end that IS the run's own without
+   * a terminal status is `gone`: the run was stopped and is parked (ADR-0025); the generator ends.
    */
   async *events(runId: string): AsyncGenerator<RunFeedEvent> {
     for (;;) {
@@ -200,6 +201,10 @@ export class JR2Client {
         } else if (frame.event === "placing" || frame.event === "placed") {
           // A wait for capacity starting and ending (ADR-0064) — activity, never a status.
           yield { ...(JSON.parse(frame.data) as object), kind: frame.event } as PlacingMarker;
+        } else if (frame.event === "gone") {
+          // The run left the live set without settling — stopped, parked for the next boot's
+          // restore (ADR-0025). This end is the run's own (ADR-0022): nothing to re-attach to.
+          return;
         }
         // Any other frame (a Turn marker — ADR-0023 — or a kind this CLI predates) is skipped, not
         // misread as a status: `jr2 logs -f` decides "settled" off `status.status`, and a marker
