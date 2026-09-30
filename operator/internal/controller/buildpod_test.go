@@ -177,18 +177,18 @@ func TestBuildPodCarriesFSGroupRuntimeVolumeAndInitContainers(t *testing.T) {
 	}
 }
 
-// TestBuildPodReadinessProbe checks the default TCPSocket probe on the serving
+// TestBuildPodReadinessProbe checks the default /healthz probe on the serving
 // port, and that an explicit spec.readinessProbe is honored verbatim.
 func TestBuildPodReadinessProbe(t *testing.T) {
 	r := &SandboxReconciler{}
 
 	def := r.buildPod(sandboxFor(corev1alpha1.SandboxSpec{Image: testHarnessImage, Port: 9000}), nil)
 	probe := def.Spec.Containers[0].ReadinessProbe
-	if probe == nil || probe.TCPSocket == nil {
-		t.Fatalf("expected a default TCPSocket readiness probe, got %+v", probe)
+	if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Path != "/healthz" {
+		t.Fatalf("expected a default /healthz readiness probe (ADR-0063), got %+v", probe)
 	}
-	if probe.TCPSocket.Port.IntValue() != 9000 {
-		t.Fatalf("default probe should target the serving port 9000, got %v", probe.TCPSocket.Port)
+	if probe.HTTPGet.Port.IntValue() != 9000 {
+		t.Fatalf("default probe should target the serving port 9000, got %v", probe.HTTPGet.Port)
 	}
 	// The kubelet's 10s default adds up to 10s to every provision for nothing
 	// (the scaling review's R12): a TCP connect each second is free.

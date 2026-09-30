@@ -227,11 +227,19 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   app.use("/echo", gate);
   app.use("/attach", gate);
 
+  // Readiness (ADR-0063): the probe asks THIS route, not the port. A pod has one network
+  // namespace, so another container that takes the Harness's port answers a socket probe and
+  // the pod goes Ready with no Harness in it (the scaling review's R16: an nginx on :8080 turned
+  // the attach into its 404 page). Ungated and content-free — it says only "the Harness is
+  // serving", which a bearer-less caller may know — and a draining Harness still answers it, so
+  // the pod stays Ready while it finishes its Turns (ADR-0031).
+  app.get("/healthz", (c) => c.body(null, 204));
+
   app.post("/agents/:name/:id", async (c) => {
     // The drain (ADR-0031): a Submission admitted now would outlive the process. Refused before
     // anything is read or created, so a 503 guarantees nothing was queued — the Orchestrator sends
-    // the same admission again (harness-client.ts). The readiness probe is the socket (deploy.ts,
-    // the operator), so the pod stays Ready while it drains: this 503 is the signal, not readiness.
+    // the same admission again (harness-client.ts). `/healthz` keeps answering, so the pod stays
+    // Ready while it drains: this 503 is the signal, not readiness.
     // It closes the connection, so the re-sent admission dials the Service anew rather than
     // reaching this Harness again over a kept-alive socket.
     if (draining) {

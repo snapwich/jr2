@@ -820,15 +820,18 @@ func shmVolumeFor(sandbox *corev1alpha1.Sandbox) ([]corev1.Volume, []corev1.Volu
 }
 
 // readinessProbeFor returns the primary container's readiness probe: the
-// Sandbox's override when set, otherwise a TCPSocket probe on the serving port
+// Sandbox's override when set, otherwise a GET of the Harness's own `/healthz` on the serving port
 // so phase Ready means the Harness accepts connections (not just "started").
 func readinessProbeFor(sandbox *corev1alpha1.Sandbox) *corev1.Probe {
 	if sandbox.Spec.ReadinessProbe != nil {
 		return sandbox.Spec.ReadinessProbe
 	}
 	return &corev1.Probe{
+		// The Harness's own route, not the port (ADR-0063): the pod has one
+		// network namespace, so a sidecar that takes the port would answer
+		// a socket probe and the pod would go Ready with no Harness in it.
 		ProbeHandler: corev1.ProbeHandler{
-			TCPSocket: &corev1.TCPSocketAction{Port: intstrFromInt32(portFor(sandbox))},
+			HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstrFromInt32(portFor(sandbox))},
 		},
 		// Every second, not the kubelet's 10: the default period adds up to
 		// 10s to every provision (the scaling review's R12).

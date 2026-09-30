@@ -507,3 +507,11 @@ test("any other listen error is not dressed up as a taken port", () => {
     /^port 8080 is taken/,
   );
 });
+
+test("GET /healthz answers 204 with no bearer, and still answers while the Harness drains (ADR-0063, ADR-0031)", async () => {
+  const { app, drain } = harnessOver(undefined, { checkBearer: () => false });
+  assert.equal((await app.request("/healthz")).status, 204);
+  const draining = drain();
+  assert.equal((await app.request("/healthz")).status, 204, "a draining Harness is still the Harness");
+  await draining;
+});

@@ -811,8 +811,10 @@ export function instanceHarnessObjects(opts: {
     // Period and threshold as reasoned on the Orchestrator above: the default 10s period is the
     // rollout wait rather than the boot, and the threshold then has to carry the stall tolerance
     // the period used to supply. This pod is single-replica too.
+    // The Harness's own route, not the port (ADR-0063): a socket probe would pass for whatever
+    // listens there. A draining Harness still answers it (ADR-0031).
     readinessProbe: {
-      tcpSocket: { port: INSTANCE_HARNESS_PORT },
+      httpGet: { path: "/healthz", port: INSTANCE_HARNESS_PORT },
       initialDelaySeconds: 1,
       periodSeconds: 2,
       failureThreshold: 15,

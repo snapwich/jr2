@@ -110,8 +110,9 @@ var _ = Describe("Sandbox Controller", func() {
 			By("injecting a readiness probe on the primary port so Ready means serving")
 			probe := pod.Spec.Containers[0].ReadinessProbe
 			Expect(probe).NotTo(BeNil())
-			Expect(probe.TCPSocket).NotTo(BeNil())
-			Expect(probe.TCPSocket.Port.IntValue()).To(Equal(8080))
+			Expect(probe.HTTPGet).NotTo(BeNil())
+			Expect(probe.HTTPGet.Path).To(Equal("/healthz"))
+			Expect(probe.HTTPGet.Port.IntValue()).To(Equal(8080))
 
 			By("reporting phase Pending with an endpoint and refs")
 			sandbox := &corev1alpha1.Sandbox{}
