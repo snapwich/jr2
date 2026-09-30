@@ -859,7 +859,12 @@ export function instanceHarnessObjects(opts: {
             // The Sandbox tier's class (ADR-0060): it holds live conversations, as a Sandbox holds
             // `/work`, and it may wait rather than preempt.
             priorityClassName: priorityClassNames(opts.priorityClasses).sandbox,
-            containers: [harnessContainer, custodian.custodianContainer],
+            // The Custodian is a native sidecar, so it outlives the drain (ADR-0031): the kubelet
+            // stops a pod's sidecars only after its main containers exit, and the draining Harness
+            // needs its Custodian to the end — its one route to the Menu and to the model. As a
+            // plain container Envoy took SIGTERM with the Harness and quit at once.
+            initContainers: [{ ...custodian.custodianContainer, restartPolicy: "Always" }],
+            containers: [harnessContainer],
             // The operator's isolation baseline (sandbox_controller.go), mirrored: same Harness
             // image, same "never reach the Kubernetes API" north star — JR2_MENU_ONLY makes code
             // execution here unlikely, not unimaginable. No `shareProcessNamespace`: the Harness

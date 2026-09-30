@@ -2165,7 +2165,13 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   const podSpec = statefulSet.spec.template.spec;
   assert.deepEqual(
     podSpec.containers.map((c: { name: string }) => c.name),
-    ["harness", "custodian"],
+    ["harness"],
+  );
+  // The Custodian as a native sidecar: the kubelet stops it only after the Harness exits, so the
+  // drain keeps its route to the Menu and the model to the end (ADR-0031).
+  assert.deepEqual(
+    podSpec.initContainers.map((c: { name: string; restartPolicy?: string }) => [c.name, c.restartPolicy]),
+    [["custodian", "Always"]],
   );
   assert.deepEqual(
     podSpec.volumes.map((v: { name: string }) => v.name),
@@ -2364,7 +2370,8 @@ test("the Instance Harness is a StatefulSet of one: its conversations on a claim
   // The drain: a Turn's worst case, so a deploy loses no Turn.
   assert.equal(pod.terminationGracePeriodSeconds, 600);
   assert.equal(pod.securityContext.fsGroup, 2000, "the claim is writable by the Harness's group");
-  const [harness, custodian] = pod.containers;
+  const [harness] = pod.containers;
+  const [custodian] = pod.initContainers;
   assert.deepEqual(harness.volumeMounts[0], { name: "conversations", mountPath: "/conversations" });
   assert.ok(
     harness.env.some(
@@ -2439,7 +2446,7 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
   assert.match(images.harness, /^jr2-harness:[0-9a-f]{12}-amd64$/);
   const { statefulSet } = findInstanceHarness(w);
   assert.equal(statefulSet!.spec.template.spec.containers[0].image, images.harness);
-  assert.equal(statefulSet!.spec.template.spec.containers[1].image, images.custodian);
+  assert.equal(statefulSet!.spec.template.spec.initContainers[0].image, images.custodian);
 });
 
 // --- the post-converge sweep (ADR-0039) ----------------------------------------------------------
@@ -2824,7 +2831,8 @@ test("the Instance Harness: kit-sized, the sandbox class, and the two disruption
   assert.equal(pod.spec.priorityClassName, "batch-low");
   assert.equal(pod.metadata.annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"], "false");
   assert.equal(pod.metadata.annotations["karpenter.sh/do-not-disrupt"], "true");
-  const [harness, custodian] = pod.spec.containers;
+  const [harness] = pod.spec.containers;
+  const [custodian] = pod.spec.initContainers;
   assert.deepEqual(harness.resources, { requests: { cpu: "250m", memory: "1Gi" }, limits: { memory: "1Gi" } });
   assert.deepEqual(custodian.resources, { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } });
 });
