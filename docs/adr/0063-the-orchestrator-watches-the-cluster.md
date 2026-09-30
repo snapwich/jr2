@@ -40,7 +40,9 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
     falls back to its last log lines (`terminationMessagePolicy: FallbackToLogsOnError`), so the fault that ends the
     provision carries the Harness's own last words, and the Harness says them plainly at startup (a port another
     container in the pod took: `EADDRINUSE` names the port and the cause). No reason is invented for what a log line
-    already says (scaling review R16, 2026-09-30).
+    already says. And readiness proves the Harness, not the port: the probe is a GET of the Harness's own `/healthz`,
+    because a pod has one network namespace and a socket probe passes for whatever listens there — the nginx that took
+    `:8080` made the pod Ready and the attach met its 404 page (scaling review R16, 2026-09-30).
   - Continuity: a gone or `Lost` Sandbox is `workspace.lost` within seconds, and a Harness restart ends the Turns
     waiting on it (ADR-0021). A dropped watch is unknown, never loss; the loop re-lists and reconciles.
   - A fetch ask (ADR-0053) is answered by the watch event that carries its landing.
