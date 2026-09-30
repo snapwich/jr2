@@ -158,7 +158,7 @@ type WsStatus = {
    * conversation address: jr2 mints those structurally (ADR-0057, {@link continuedIid}). */
   instanceId: string;
   context: { endpoint?: string; output?: { outcome?: string } };
-  /** The body lives here: a wrapper's own `value` is only ever provisioning/attaching/running. */
+  /** The body lives here: a wrapper's own `value` is only ever placing/provisioning/attaching/running. */
   children: RunChild[];
   /** The run's OPEN GATES, as `GET /runs/:id` lists them (ADR-0011) — the discovery listing a
    * human acts on, and the one `jr2 send --gate` names. Settled run → []. */
