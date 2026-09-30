@@ -1,7 +1,10 @@
-// Persistence for durable Machine snapshots (ADR-0007). A `SnapshotStore` is keyed by `runId`;
-// `SqliteSnapshotStore` is the default backing for a deployed Orchestrator, with `:memory:` for
-// tests. `markLost` records a run whose live state could not be re-hydrated (e.g. its flue
-// handle is gone) without deleting its history.
+// Persistence for durable Machine snapshots (ADR-0007). A `SnapshotStore` is keyed by `runId`, one
+// blob per run: the snapshot is a tree xstate restores from its root, and one row keeps it atomic
+// (ADR-0065). `SqliteSnapshotStore` on the Instance's volume is the one implementation — no other
+// store is owed — with `:memory:` for tests. A persist survives a process crash, not a power loss
+// (WAL, `synchronous=NORMAL`), and the write stays synchronous so the row is on disk before the
+// Machine's next side effect runs. `markLost` records a run whose live state could not be
+// re-hydrated (e.g. its flue handle is gone); a non-live row lives a week, then `sweep` deletes it.
 
 import { DatabaseSync } from "node:sqlite";
 import type { StoredSnapshot } from "./durability.ts";
@@ -9,8 +12,16 @@ import type { StoredSnapshot } from "./durability.ts";
 export interface SnapshotStore {
   init(): Promise<void>;
   load(runId: string): Promise<StoredSnapshot | null>;
-  /** Every persisted run, in insertion order. The host filters by `status` on restore. */
-  list(): Promise<StoredSnapshot[]>;
+  /** The `live` runs, in insertion order — what `restore()` reads (ADR-0065). Terminal rows are
+   * filtered by the store, not the host, so a boot never parses a week of finished runs. */
+  live(): Promise<StoredSnapshot[]>;
+  /**
+   * Delete every non-live row last written before `olderThan`, and answer how many (ADR-0065). A
+   * `live` row is never swept, whatever its age: a run parked on a Gate for a month is restored.
+   * A swept id is gone as if it never ran — `read()` answers undefined, and its abbreviations are
+   * free again (ADR-0009).
+   */
+  sweep(olderThan: Date): Promise<number>;
   /**
    * Persisted run ids sharing a prefix, sorted, capped at `limit` — the store half of abbreviated
    * run ids (ADR-0009). Includes `lost` rows: the ambiguity set is the ids that EXIST, not the ones
@@ -49,6 +60,10 @@ export class SqliteSnapshotStore implements SnapshotStore {
   }
 
   async init(): Promise<void> {
+    // A persist survives a process crash, not a power loss (ADR-0065): a write is durable once the
+    // OS holds it, and sqlite fsyncs only at a checkpoint. FULL cost 4.5 ms a persist, all fsync.
+    this.db.exec(`PRAGMA journal_mode = WAL`);
+    this.db.exec(`PRAGMA synchronous = NORMAL`);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS machine_snapshots (
         run_id TEXT PRIMARY KEY,
@@ -75,9 +90,12 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return stored;
   }
 
-  async list(): Promise<StoredSnapshot[]> {
+  async live(): Promise<StoredSnapshot[]> {
     const rows = this.db
-      .prepare(`SELECT run_id, status, snapshot, reason, updated_at FROM machine_snapshots ORDER BY rowid`)
+      .prepare(
+        `SELECT run_id, status, snapshot, reason, updated_at FROM machine_snapshots
+         WHERE status = 'live' ORDER BY rowid`,
+      )
       .all() as Row[];
     return rows.map((row) => {
       const stored: StoredSnapshot = {
@@ -95,8 +113,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
    * SQLite's `LIKE` is ASCII-case-insensitive by default, so the planner declines the index range
    * and falls back to a full scan. `GLOB` would seek correctly but obliges every caller to escape
    * `*?[]` first — a store shouldn't have to trust that. The `CHAR(0x10FFFF)` sentinel as the upper
-   * bound also avoids incrementing the prefix's last character, which has edge cases. `>=`/`<`
-   * carries to Postgres unchanged, where `LIKE 'x%'` would need `text_pattern_ops` to use an index.
+   * bound also avoids incrementing the prefix's last character, which has edge cases.
    */
   async findIdsByPrefix(prefix: string, limit: number): Promise<string[]> {
     const rows = this.db
@@ -142,6 +159,15 @@ export class SqliteSnapshotStore implements SnapshotStore {
     this.db
       .prepare(`UPDATE machine_snapshots SET status = 'drifted', reason = ?, updated_at = ? WHERE run_id = ?`)
       .run(reason, new Date().toISOString(), runId);
+  }
+
+  /** `updated_at` is an ISO-8601 UTC string, so a string comparison is a time comparison. A
+   * terminal row's `updated_at` is its terminal write — the age the week counts from. */
+  async sweep(olderThan: Date): Promise<number> {
+    const result = this.db
+      .prepare(`DELETE FROM machine_snapshots WHERE status != 'live' AND updated_at < ?`)
+      .run(olderThan.toISOString());
+    return Number(result.changes);
   }
 
   async close(): Promise<void> {

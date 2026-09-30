@@ -6,7 +6,8 @@
 //   2. filename-discover `workflows/*.ts` (workflow name = filename, mirroring flue's
 //      `agents/<name>.ts`; module contract, ADR-0011 revised by ADR-0015: `export const machine`
 //      — the vocabulary rides the machine object via jr2Setup); register on the RunHost;
-//   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007);
+//   3. `restore()` in-flight runs from the store (reconcile against the live world — ADR-0007),
+//      then sweep finished runs older than a week, and again every hour (ADR-0065);
 //   4. serve the hono HTTP surface (`createApp`) so the CLI / humans can push + control + observe.
 //
 // The one design point worth stating (ADR-0011 static-import doctrine): a workflow module is
@@ -101,6 +102,14 @@ export type RunningInstance = {
   close: () => Promise<void>;
 };
 
+/**
+ * How long a finished run's row lives, and how often the sweep looks (ADR-0065). Fixed, not config,
+ * like the Sandbox idle timeout: jr2 is not the record of a run's results, and `jr2 status` on an
+ * old run is a debugging act. A week is the time a human has to read it.
+ */
+const RETAIN_MS = 7 * 24 * 60 * 60 * 1000;
+const SWEEP_EVERY_MS = 60 * 60 * 1000;
+
 /** Boot an instance folder into a running orchestrator (discover → restore → serve). */
 export async function startInstance(opts: InstanceOptions): Promise<RunningInstance> {
   const hostname = opts.hostname ?? "127.0.0.1";
@@ -159,6 +168,16 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
   // discoverable by asking after a specific run id nobody knows to ask about.
   const restored = await host.restore();
 
+  // Right after restore, not before: restore reads live rows only, and a row it marks `lost` or
+  // `drifted` here is written now, so its week starts now (ADR-0065). The timer holds no process
+  // alive — a sweep is housekeeping, never a reason to stay up.
+  const sweep = () => store.sweep(new Date(Date.now() - RETAIN_MS));
+  await sweep();
+  const sweeper = setInterval(() => {
+    sweep().catch((err) => console.error(`sweep failed: ${err instanceof Error ? err.message : err}`));
+  }, SWEEP_EVERY_MS);
+  sweeper.unref();
+
   // 4. Serve, authenticated (ADR-0013) — the token and key resolved above.
   const auth = createAuthenticator({ instanceToken, signingKey });
   // The Repos are read PER REQUEST, never snapshotted here: a cache the agent cloned minutes
@@ -192,6 +211,7 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
       // feed is in-flight until its watcher goes away. `host.close()` is what makes them go away.
       // From that call on, `/agents/*` answers 503 until the listener closes: the Turns are parked
       // for the next boot's restore, not over, so no Harness may read a 404 here (ADR-0026).
+      clearInterval(sweeper);
       await host.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await store.close();
