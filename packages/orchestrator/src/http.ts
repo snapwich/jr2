@@ -239,14 +239,21 @@ const PING_MS = 15_000;
  * errors (hono's `StreamingApi`), so a failed write is indistinguishable from a good one. A peer
  * that goes away is detected by `stream.onAbort`, which is what every handler here wires to its
  * exit. The tick checks `aborted`/`closed` only so a ping that fires between the abort and the
- * teardown does not write into a dead stream. The ping goes through the subscriber's `send`, so
- * it counts against the backlog like any frame: a reader stalled on a quiet feed is closed too.
- * Returns its own clear fn.
+ * teardown does not write into a dead stream.
+ *
+ * The tick is also where a subscriber is judged (ADR-0022): a reader {@link Subscriber.behind} is
+ * closed here, and the ping itself goes out through the subscriber, so a reader stalled on a quiet
+ * feed falls behind too. Returns its own clear fn.
  */
-function pinger(stream: SseStream, send: (frame: string) => Promise<void>, done: () => void, everyMs = PING_MS) {
+function pinger(stream: SseStream, sub: Subscriber, done: () => void, everyMs = PING_MS): () => void {
   const timer = setInterval(() => {
     if (stream.aborted || stream.closed) return done();
-    void send(":\n\n");
+    if (sub.behind()) {
+      // Aborted, not drained: the frames it would never read are dropped with it.
+      stream.abort();
+      return done();
+    }
+    void sub.send(":\n\n");
   }, everyMs);
   return () => clearInterval(timer);
 }
@@ -257,10 +264,11 @@ function pinger(stream: SseStream, send: (frame: string) => Promise<void>, done:
 type SseStream = { write: (s: string) => Promise<unknown>; aborted: boolean; closed: boolean; abort: () => void };
 
 /**
- * How many writes one subscriber may have pending before it is closed (ADR-0022). A reader this far
- * behind is not catching up, and holding frames for it is a per-client queue the server does not
- * keep: the feeds are level-triggered, so closing it loses nothing — EventSource reconnects on its
- * own retry and the opening frame is the whole current truth.
+ * How many writes one subscriber may leave unread across a whole ping interval before it is closed
+ * (ADR-0022). A reader this far behind is not catching up, and holding frames for it is a per-client
+ * queue the server does not keep: the feeds are level-triggered, so closing it loses no state — the
+ * reader reconnects (EventSource on its own retry, the CLI on the stream's end) and the opening
+ * frame is the whole current truth.
  */
 const BACKLOG_FRAMES = 64;
 
@@ -287,24 +295,38 @@ function renderOnce<E extends object, F>(render: (event: E) => F): (event: E) =>
   };
 }
 
+/** One subscriber's writes, and the one question asked of them at each ping. */
+type Subscriber = {
+  /** Write a shared frame as-is. */
+  send: (frame: string) => Promise<void>;
+  /** Whether {@link BACKLOG_FRAMES} writes sent before the previous ping are still unread. */
+  behind: () => boolean;
+};
+
 /**
- * One subscriber's writes (ADR-0022): the shared frame goes out as-is, and the only state kept per
- * client is a count of the writes still pending. Past {@link BACKLOG_FRAMES} the reader is closed —
- * aborted, not drained, so the frames it would never read are dropped with it.
+ * One subscriber (ADR-0022): the only state kept per client is a count of its writes. A reader is
+ * judged on LAG, never on burst size — one transition's Emits, or a Pool's statuses, reach every
+ * subscriber in one tick, and a reader that keeps up drains them long before the next ping. What is
+ * still unread a whole interval after it was sent is a reader that fell behind.
  */
-function subscriber(stream: SseStream, done: () => void): (frame: string) => Promise<void> {
-  let pending = 0;
-  return async (frame) => {
-    if (pending >= BACKLOG_FRAMES) {
-      stream.abort();
-      return done();
-    }
-    pending++;
-    try {
-      await stream.write(frame);
-    } finally {
-      pending--;
-    }
+function subscriber(stream: SseStream): Subscriber {
+  let sent = 0;
+  let read = 0;
+  let sentByLastPing = 0;
+  return {
+    async send(frame) {
+      sent++;
+      try {
+        await stream.write(frame);
+      } finally {
+        read++; // a stream's writes settle in order, so this counts a prefix
+      }
+    },
+    behind() {
+      const unread = sentByLastPing - read;
+      sentByLastPing = sent;
+      return unread >= BACKLOG_FRAMES;
+    },
   };
 }
 
@@ -484,19 +506,19 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
         const exit = closer(resolve);
-        const send = subscriber(stream, exit.done);
+        const sub = subscriber(stream);
         // Subscribe and snapshot in one call, then write the snapshot in the same tick: nothing can
         // start, move or finish in between, so the client's first frame is a complete picture.
         const { runs, unsubscribe } = host.observeWorkflow(name, (ev) => {
           if (ev.kind === "closed") return exit.done();
-          void send(workflowFrame(ev));
+          void sub.send(workflowFrame(ev));
         });
         exit.onExit(unsubscribe);
         // `retry` steers the browser's own EventSource backoff. This feed never ends on its own, so
         // every close is a fault worth reconnecting from — the client does not decide that. The
         // snapshot is this subscriber's own, so it is the one frame rendered per client.
-        void send(sseFrame("runs", runs.map(observe), 2000));
-        exit.onExit(pinger(stream, send, exit.done, pingMs));
+        void sub.send(sseFrame("runs", runs.map(observe), 2000));
+        exit.onExit(pinger(stream, sub, exit.done, pingMs));
         stream.onAbort(exit.done);
       });
     });
@@ -529,7 +551,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
         const exit = closer(resolve);
-        const send = subscriber(stream, exit.done);
+        const sub = subscriber(stream);
         exit.onExit(
           host.subscribe(runId, (ev) => {
             // The host is shutting down under a feed that has no end of its own.
@@ -539,7 +561,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
             // Terminal frame must flush before the handler returns and closes the stream (see the
             // guarded feed below for why the exit is chained off the write).
             const terminal = ev.kind === "status" && ev.status.status !== "active";
-            void send(frame).then(() => {
+            void sub.send(frame).then(() => {
               if (terminal) exit.done();
             });
           }),
@@ -547,7 +569,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
         // Race guard: settled between the liveness check and the subscribe, which then attached to
         // nothing. No read-through on this route, so there is nothing to fall back to — just close.
         if (host.status(runId) === undefined) return exit.done();
-        exit.onExit(pinger(stream, send, exit.done, pingMs));
+        exit.onExit(pinger(stream, sub, exit.done, pingMs));
         stream.onAbort(exit.done);
       });
     });
@@ -679,7 +701,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
         const exit = closer(resolve);
-        const send = subscriber(stream, exit.done);
+        const sub = subscriber(stream);
         exit.onExit(
           host.subscribe(runId, (ev) => {
             if (ev.kind === "closed") return exit.done();
@@ -687,7 +709,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
             // must wait for the write to flush first, or a fire-and-forget write races the close and the
             // final status is dropped (the very frame `jr2 run` blocks on). Chain the exit off the write.
             const terminal = ev.kind === "status" && ev.status.status !== "active";
-            void send(runFrame(ev)).then(() => {
+            void sub.send(runFrame(ev)).then(() => {
               if (terminal) exit.done();
             });
           }),
@@ -702,7 +724,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
           });
           return;
         }
-        exit.onExit(pinger(stream, send, exit.done, pingMs));
+        exit.onExit(pinger(stream, sub, exit.done, pingMs));
         stream.onAbort(exit.done);
       });
     });

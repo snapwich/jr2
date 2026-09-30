@@ -1,9 +1,9 @@
 // The feeds' fan-out (ADR-0022, "a frame is rendered once, and a slow reader is closed, not
 // queued"), driven through the real HTTP app over a real RunHost. Two claims: every subscriber of a
 // feed is written the SAME wire string, rendered once per event however many are attached; and a
-// subscriber whose backlog of pending writes passes the bound is closed while the others read on.
-// The feeds are level-triggered, so the closed reader loses nothing: it reconnects to the whole
-// current truth.
+// subscriber that leaves the bound's worth of writes unread across a ping interval is closed while
+// the others read on — judged on lag, never on burst size. The feeds are level-triggered, so the
+// closed reader loses no state: it reconnects to the whole current truth.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -68,6 +68,38 @@ function tickerDef(): WorkflowDef {
   });
   return { name: "ticker", machine, provide: () => ({}) };
 }
+
+/** One transition that emits `BURST` Emits — far more than the backlog bound, all in one tick —
+ * then parks. */
+const BURST = 200;
+function burstDef(): WorkflowDef {
+  const machine = setup({
+    types: {} as {
+      context: Record<string, never>;
+      input: { instanceId: string };
+      emitted: { type: "burst"; n: number };
+    },
+  }).createMachine({
+    id: "burst",
+    context: {},
+    initial: "waiting",
+    states: {
+      waiting: {
+        after: {
+          5: {
+            target: "parked",
+            actions: Array.from({ length: BURST }, (_, n) => emit({ type: "burst" as const, n })),
+          },
+        },
+      },
+      parked: {},
+    },
+  });
+  return { name: "burst", machine, provide: () => ({}) };
+}
+
+/** Short enough that a stalled reader is judged within a test; long next to a reader that keeps up. */
+const PING = { pingMs: 20 };
 
 /** Read an SSE body until `until` holds or the stream ends; `ended` says which. */
 async function read(res: Response, until: (buf: string) => boolean = () => false) {
@@ -151,7 +183,7 @@ test("a run's feed renders each event once, in both bands", async (t) => {
 test("a page that stops reading is closed past its backlog; the others read on", { timeout: 10_000 }, async () => {
   const host = new RunHost({ store: await mkStore() });
   host.register(tickerDef());
-  const app = createApp(host);
+  const app = createApp(host, undefined, PING);
 
   const stalled = await app.request("/workflows/ticker/events"); // never read while the run ticks
   const reading = await app.request("/workflows/ticker/events");
@@ -172,19 +204,64 @@ test("a page that stops reading is closed past its backlog; the others read on",
   assert.equal(host.list().length, 1);
 });
 
-test("the Instance's run feed closes a stalled reader the same way", { timeout: 10_000 }, async () => {
+for (const [band, route] of [
+  ["the Instance's run feed", (runId: string) => `/runs/${runId}/events`],
+  ["the open band's run feed", (runId: string) => `/workflows/ticker/runs/${runId}/events`],
+] as const) {
+  test(`${band} closes a stalled reader the same way`, { timeout: 10_000 }, async () => {
+    const host = new RunHost({ store: await mkStore() });
+    host.register(tickerDef());
+    const app = createApp(host, undefined, PING);
+    const { runId } = await host.start("ticker");
+
+    const stalled = await app.request(route(runId));
+    const reading = await app.request(route(runId));
+    const live = await read(reading, (b) => b.includes(`"value":"parked"`));
+    assert.ok(!live.ended);
+
+    const late = await read(stalled);
+    assert.ok(late.ended, "closed, though the run has not settled");
+    assert.ok(!late.buf.includes(`"value":"parked"`));
+    assert.ok(host.status(runId), "the run is untouched");
+  });
+}
+
+test(
+  "one transition's burst reaches every reader that keeps up whole, on every feed",
+  { timeout: 10_000 },
+  async () => {
+    const host = new RunHost({ store: await mkStore() });
+    host.register(burstDef());
+    const app = createApp(host, undefined, PING);
+
+    const page = await app.request("/workflows/burst/events");
+    const { runId } = await host.start("burst");
+    const runFeeds = [`/runs/${runId}/events`, `/workflows/burst/runs/${runId}/events`];
+    const feeds = [page, ...(await Promise.all(runFeeds.map((route) => app.request(route))))];
+
+    // A burst is not lag: every write is pending in the same tick, and a reader that keeps up
+    // drains it before any ping judges it.
+    for (const res of feeds) {
+      const { buf, ended } = await read(res, (b) => b.includes(`"value":"parked"`));
+      assert.ok(!ended, "still attached after the burst");
+      assert.equal(buf.match(/event: emit\n/g)?.length, BURST, "and missed nothing");
+    }
+  },
+);
+
+test("a reader stalled on a quiet feed is closed by its own pings", { timeout: 10_000 }, async () => {
   const host = new RunHost({ store: await mkStore() });
-  host.register(tickerDef());
-  const app = createApp(host);
-  const { runId } = await host.start("ticker");
+  host.register(burstDef());
+  const app = createApp(host, undefined, { pingMs: 2 });
+  const { runId } = await host.start("burst");
+  while (host.status(runId)?.value !== "parked") await new Promise((r) => setTimeout(r, 5));
 
-  const stalled = await app.request(`/runs/${runId}/events`);
-  const reading = await app.request(`/runs/${runId}/events`);
-  const live = await read(reading, (b) => b.includes(`"value":"parked"`));
-  assert.ok(!live.ended);
-
-  const late = await read(stalled);
-  assert.ok(late.ended, "closed, though the run has not settled");
-  assert.ok(!late.buf.includes(`"value":"parked"`));
-  assert.ok(host.status(runId), "the run is untouched");
+  // Parked: nothing moves, so nothing but pings is written — and unread, they pass the bound.
+  const stalled = await app.request("/workflows/burst/events");
+  assert.equal(host.observerCount("burst"), 1);
+  const deadline = Date.now() + 5_000;
+  while (host.observerCount("burst") > 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(host.observerCount("burst"), 0, "the stalled page's observer is gone");
+  assert.ok((await read(stalled)).ended);
+  assert.equal(host.status(runId)?.value, "parked", "the run is untouched");
 });

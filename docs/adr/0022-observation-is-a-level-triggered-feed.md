@@ -55,10 +55,13 @@ can get away with fetching once, because a person can press a button; an API can
   of value, the opaque-states warning, moves onto the page as `MachineDoc.opaqueStates`, where the person looking at the
   diagram can read it.
 - **A frame is rendered once, and a slow reader is closed, not queued.** Every subscriber of a feed receives the same
-  wire string, rendered once per event, never once per subscriber. A subscriber has a bounded backlog of pending writes;
-  one that falls behind it is closed. That is safe because the feed is level-triggered: the client reconnects with
-  EventSource's own retry and receives the whole current truth, having missed nothing it needs. The server keeps no
-  per-client queue and no slow-client accounting beyond a counter (scaling review R10, 2026-09-30).
+  wire string, rendered once per event, never once per subscriber. A subscriber has a bounded backlog of unread writes,
+  judged at each ping: one that still leaves the bound's worth of writes unread a whole ping interval after they were
+  sent has fallen behind, and is closed. Lag, not burst size — one transition's Emits reach every subscriber in the same
+  tick, and a reader that keeps up drains them before any ping judges it. Closing is safe because the feed is
+  level-triggered: the client reconnects with EventSource's own retry and receives the whole current truth, having
+  missed nothing it needs. The server keeps no per-client queue and no slow-client accounting beyond counting the
+  subscriber's writes (scaling review R10, 2026-09-30).
 - **Shutdown ends feeds explicitly.** `RunHost.close()` delivers `closed` to every listener. `server.close()` waits for
   in-flight requests and an observation feed has no end of its own, so without this a single attached watcher wedges
   `jr2 dev` shutdown indefinitely.
