@@ -16,8 +16,8 @@
 // Orchestrator was ever handed. A Harness writes a line per event, not per token, so the cost is
 // small next to a Turn.
 
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { HistoryMessage, Settlement, StreamEvent } from "./wire.ts";
 
 /** What the Conversation writes as it goes (`conversation.ts`) — one call per record line. */
@@ -129,9 +129,15 @@ export function readRecord(dir: string): RecordedConversation {
   };
 }
 
-/** Remove a conversation's directory — record and engine part together. */
+/** Remove a conversation's directory — record and engine part together — and its Agent's, once
+ * that holds no other conversation. */
 export function freeDir(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
+  try {
+    rmdirSync(dirname(dir));
+  } catch {
+    // Another conversation of the same Agent is still held.
+  }
 }
 
 function entries(dir: string): string[] {

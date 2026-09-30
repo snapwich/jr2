@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -258,7 +258,7 @@ test("PUT /agents frees the directory the boot could not read", async () => {
   writeFileSync(join(conversationDir(dir, "decider", "bad"), "conversation.json"), "[]\n");
   const after = harnessOver(dir);
   assert.deepEqual(await (await statement(after.app, { live: [] })).json(), { freed: 1 });
-  assert.deepEqual(readdirSync(join(dir, "decider")), []);
+  assert.equal(existsSync(join(dir, "decider")), false, "an Agent with no conversation left has no directory");
 });
 
 test("a live set that cannot be read whole frees nothing: 400", async () => {
