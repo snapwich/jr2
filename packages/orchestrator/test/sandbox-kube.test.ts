@@ -102,8 +102,9 @@ function cluster(script: object[] = [READY], harness?: (req: AttachRequest, auth
   return { api, calls: api.writes, attaches, exec: { client, watch, harnessFetch } };
 }
 
-/** Every provision applies a token Secret first (the Custodian is unconditional — ADR-0013), so
- * "the CR" is the apply of a Sandbox, never simply the first write. */
+/** Every provision writes more than its CR — its token Secret after it (the Custodian is
+ * unconditional — ADR-0013; owned from birth — ADR-0001), so "the CR" is the apply of a Sandbox,
+ * never simply a write. */
 const applies = (calls: FakeCall[], plural: string): any[] =>
   calls
     .filter((c) => c.contentType === "application/apply-patch+yaml" && c.target.startsWith(`${plural}/`))
@@ -885,7 +886,7 @@ test("each Sandbox's Harness gets the DIGEST of its own placement's bearer, last
 });
 
 test("the Custodian is UNCONDITIONAL and is the pod's only credential holder (ADR-0013, ADR-0059)", async () => {
-  const { exec, calls } = cluster();
+  const { api, exec, calls } = cluster();
   const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
@@ -925,12 +926,50 @@ test("the Custodian is UNCONDITIONAL and is the pod's only credential holder (AD
   // `data`, not `stringData`: a server-side apply owns the fields it names (ADR-0063).
   assert.ok(Buffer.from(secret.data.JR2_SANDBOX_TOKEN, "base64").toString().length > 0);
   assert.equal(secret.stringData, undefined);
-  // …and it is the CR's child, by the uid the apply answered with — no read in between.
-  const own = calls.find(
-    (c) => c.target === "secrets/sb-env2-token" && c.contentType === "application/merge-patch+json",
-  )!;
-  assert.equal(own.body.metadata.ownerReferences[0].kind, "Sandbox");
-  assert.match(own.body.metadata.ownerReferences[0].uid, /^uid-/);
+  // …and it is the CR's child from birth, by the uid the CR's apply answered with (ADR-0001).
+  assert.deepEqual(secret.metadata.ownerReferences, [
+    {
+      apiVersion: "core.jr2.dev/v1alpha1",
+      kind: "Sandbox",
+      name: "sb-env2",
+      uid: api.object("sandboxes", "sb-env2").metadata.uid,
+      controller: true,
+      blockOwnerDeletion: false,
+    },
+  ]);
+});
+
+test("the token Secret is written AFTER the CR, owned from birth, and a re-apply writes the same (ADR-0001)", async () => {
+  const { api, exec, calls } = cluster();
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  await port.provision({ name: "sb-own", runId: "r", workflow: "w", ...withApp });
+
+  const writes = calls.map((c) => c.target);
+  const cr = writes.indexOf("sandboxes/sb-own");
+  const secret = writes.indexOf("secrets/sb-own-token");
+  assert.ok(cr >= 0 && secret > cr, `the CR first, then its Secret: ${writes.join(", ")}`);
+  assert.equal(
+    calls.filter((c) => c.target.startsWith("secrets/") && c.contentType !== "application/apply-patch+yaml").length,
+    0,
+    "one write makes the Secret whole: no owner patched on after",
+  );
+
+  // An Orchestrator restart re-provisions by name: the CR keeps its uid, so the Secret re-applies
+  // the SAME token and the SAME owner — a no-op for the Custodian holding it.
+  await port.provision({ name: "sb-own", runId: "r", workflow: "w", ...withApp });
+  const [first, again] = applies(calls, "secrets");
+  assert.deepEqual(again, first);
+  assert.equal(first.metadata.ownerReferences[0].uid, api.object("sandboxes", "sb-own").metadata.uid);
+});
+
+test("a CR apply that fails writes no token Secret (ADR-0001)", async () => {
+  const { api, exec, calls } = cluster();
+  api.refuse((call) =>
+    call.target === "sandboxes/sb-refused" ? Response.json({ message: "no" }, { status: 500 }) : undefined,
+  );
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  await assert.rejects(port.provision({ name: "sb-refused", runId: "r", workflow: "w", ...withApp }));
+  assert.deepEqual(applies(calls, "secrets"), [], "no Secret without the CR that owns it");
 });
 
 test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alone mounts values and leaves (ADR-0059)", async () => {

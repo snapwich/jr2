@@ -80,7 +80,7 @@ import { custodianComposition, type CustodianComposition } from "./custodian.ts"
 import { readHeldManifest } from "./held-secrets.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
 import { HELD_KEY, HELD_MOUNT, IMAGES_KEY, IMAGES_MOUNT, PRIORITY_CLASS_SANDBOX, REPOS_MOUNT } from "./names.ts";
-import { SANDBOXES, SECRETS, kubeClient, type KubeClient } from "./kube-client.ts";
+import { SANDBOXES, SECRETS, kubeClient, type KubeClient, type KubeObject } from "./kube-client.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import type { RepoResources } from "./repos.ts";
 import { resolveSize, splitSize, type Size, type SizeSplit } from "./size.ts";
@@ -652,38 +652,43 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     sandbox?.status?.conditions?.find((c) => c.type === type);
 
   /**
-   * Mint this Sandbox's token into a Secret, BEFORE the CR exists — the operator creates the pod
-   * the moment it sees the CR, and a pod whose volume names an absent Secret never starts.
-   * Idempotent by construction: the token is the Sandbox's name, signed (tokens.ts), so a
-   * re-provision after an orchestrator restart re-applies the SAME value, and the Custodian that has
-   * been holding it all along stays valid. `data`, not `stringData`: a server-side apply owns the
-   * fields it names, and `stringData` is write-only — it never reads back as the field applied.
+   * Mint this Sandbox's token into a Secret, AFTER the CR exists and owned by it from birth
+   * (ADR-0001): the owner is the uid the CR's apply answered with, so Kubernetes reaps the Secret
+   * whenever the CR goes — the operator's idle-timeout GC, a `kubectl delete sandbox` by hand — and
+   * no path (an owner patch that fails, an Orchestrator that dies between two writes) leaves a
+   * token behind. The operator creates the pod the moment it sees the CR, so the pod may reach its
+   * mount first; kubelet retries the mount, and the Secret lands one API round trip after the CR,
+   * well before the scheduler and kubelet get there. Idempotent by construction: the token is the
+   * Sandbox's name, signed (tokens.ts), so a re-provision after an Orchestrator restart re-applies
+   * the SAME value and owner, and the Custodian that has been holding it all along stays valid.
+   * `data`, not `stringData`: a server-side apply owns the fields it names, and `stringData` is
+   * write-only — it never reads back as the field applied.
    */
-  const applyTokenSecret = async (name: string): Promise<void> => {
+  const applyTokenSecret = async (name: string, owner: KubeObject): Promise<void> => {
     if (!opts.signingKey) throw new Error("kubeSandbox: a Custodian needs a signingKey to mint its Sandbox token");
+    const uid = owner.metadata?.uid;
+    if (!uid) throw new Error(`Sandbox "${name}": the CR's apply answered with no uid to own its token Secret`);
     await kube().apply(SECRETS, ns, {
       apiVersion: "v1",
       kind: "Secret",
-      metadata: { name: secretName(name), namespace: ns, labels: { "jr2.dev/sandbox": name } },
+      metadata: {
+        name: secretName(name),
+        namespace: ns,
+        labels: { "jr2.dev/sandbox": name },
+        ownerReferences: [
+          {
+            apiVersion: "core.jr2.dev/v1alpha1",
+            kind: "Sandbox",
+            name,
+            uid,
+            controller: true,
+            blockOwnerDeletion: false,
+          },
+        ],
+      },
       type: "Opaque",
       data: { JR2_SANDBOX_TOKEN: Buffer.from(sandboxToken(opts.signingKey, name)).toString("base64") },
     });
-  };
-
-  /**
-   * Make the Secret a child of the Sandbox CR, so Kubernetes reaps it whenever the CR goes — including
-   * the paths no jr2 code observes (the operator's idle-timeout GC, a `kubectl delete sandbox` by hand).
-   * Needs the CR's uid, which the apply answered with; a failure here leaks a Secret, never a pod,
-   * so it is not worth failing the provision over.
-   */
-  const ownSecret = async (name: string, uid: string | undefined): Promise<void> => {
-    if (!uid) return;
-    const ownerReferences = [
-      { apiVersion: "core.jr2.dev/v1alpha1", kind: "Sandbox", name, uid, controller: true, blockOwnerDeletion: false },
-    ];
-    await kube()
-      .patch(SECRETS, ns, secretName(name), { metadata: { ownerReferences } })
-      .catch(() => {});
   };
 
   /**
@@ -879,8 +884,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // the boot stated; a per-run one is created here, at its first attach, and every later
       // attach anywhere finds it and restates its credential, so the `git.credentials` fix
       // `repoCloneError` names reaches the cache at the next run. After the image resolution, so
-      // a refused image still costs nothing; before the token Secret, so no Secret is minted for
-      // a Sandbox whose Repo could not be recorded.
+      // a refused image still costs nothing; before the CR and its token Secret, so neither exists
+      // for a Sandbox whose Repo could not be recorded.
       for (const repo of repos) await opts.repos.ensure(repo);
 
       // The watch is started before the write (on first use), and it is level-based: whatever it
@@ -888,10 +893,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // Sandbox can fall between the write and the wait. Not awaited: an API server that cannot
       // be reached fails the apply below at once, rather than hanging on a list.
       sandboxes();
-      await applyTokenSecret(req.name); // before the CR: the pod's Custodian mounts it at start
       const applied = await kube().apply(SANDBOXES, ns, cr);
-      // The apply answered with the CR's uid, so the Secret's owner is known at once.
-      await ownSecret(req.name, applied.metadata?.uid);
+      await applyTokenSecret(req.name, applied); // after the CR: its uid is the Secret's owner
 
       // The wait for a node, with no deadline (ADR-0064): jr2 cannot tell "full now" from "never
       // fits", so a bound is the Machine's `after`. Its reason — the scheduler's, or a quota's
@@ -1048,12 +1051,8 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
 
     async destroy(name) {
       staleByName.delete(name);
-      // The Secret is an owned child of the CR, so deleting the CR reaps it — this is belt and
-      // braces for the case where the ownerRef patch didn't land.
+      // The token Secret is the CR's child from birth, so deleting the CR reaps it (ADR-0001).
       await kube().delete(SANDBOXES, ns, name);
-      await kube()
-        .delete(SECRETS, ns, secretName(name))
-        .catch(() => {});
     },
   };
 }

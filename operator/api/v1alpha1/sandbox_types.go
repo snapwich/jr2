@@ -251,10 +251,10 @@ type SandboxStatus struct {
 	// Node is the node the Pod was scheduled onto, once it was — the node
 	// whose Repo caches this Sandbox mounts, and so the key into each named
 	// Repo's `status.nodes[]` for whoever reads the Sandbox — a human at
-	// `kubectl get`. Nothing in the control plane reads it back:
-	// the operator places and gates on the Pod's own `spec.nodeName`, and the
-	// cache agent takes demand off the pods on its node, never off a Sandbox
-	// (ADR-0051).
+	// `kubectl get`. The operator reads it back only to choose which
+	// Sandboxes a Repo's status write wakes (ADR-0001); it places and gates
+	// on the Pod's own `spec.nodeName`, and the cache agent takes demand off
+	// the pods on its node, never off a Sandbox (ADR-0051).
 	// +optional
 	Node string `json:"node,omitempty"`
 

@@ -20,11 +20,13 @@ const (
 	reposMount = "/repos"
 )
 
-// sandboxLabels are the pod labels the Sandbox's Service selects on.
+// sandboxLabels are the pod labels the Sandbox's Service selects on, and the
+// Pod's and Service's own: the managed-by label is what the manager caches
+// them by (CacheOptions).
 func sandboxLabels(sandbox *corev1alpha1.Sandbox) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/managed-by": "jr2-operator",
-		"sandbox.jr2.dev/name":         sandbox.Name,
+		ManagedByLabel:         ManagedByValue,
+		"sandbox.jr2.dev/name": sandbox.Name,
 	}
 }
 

@@ -31,6 +31,13 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
+// The manager's client rate limit, a kit value (ADR-0001): the API server's
+// own priority and fairness still governs.
+const (
+	clientQPS   = 100
+	clientBurst = 200
+)
+
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
@@ -151,8 +158,15 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	// A burst of CRs is placed in a fraction of a second instead of one API
+	// round trip at a time (ADR-0001).
+	restConfig := ctrl.GetConfigOrDie()
+	restConfig.QPS = clientQPS
+	restConfig.Burst = clientBurst
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
+		Cache:                  controller.CacheOptions(),
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,

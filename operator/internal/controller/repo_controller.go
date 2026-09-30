@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
@@ -95,10 +96,13 @@ func syncedCondition(repo *corev1alpha1.Repo) metav1.Condition {
 	return cond
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// SetupWithManager sets up the controller with the Manager. RepoWorkers
+// reconcile in parallel (ADR-0001): each reconcile reads and patches only its
+// own Repo.
 func (r *RepoReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.Repo{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: RepoWorkers}).
 		Named("repo").
 		Complete(r)
 }

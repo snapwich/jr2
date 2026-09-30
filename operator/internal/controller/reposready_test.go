@@ -211,7 +211,7 @@ func TestSandboxesNamingRepo(t *testing.T) {
 	r := &SandboxReconciler{Client: c, Scheme: scheme}
 
 	repo := &corev1alpha1.Repo{ObjectMeta: metav1.ObjectMeta{Name: "app-0a1b2c3d", Namespace: "jr2-acme"}}
-	requests := r.sandboxesNamingRepo(context.Background(), repo)
+	requests := r.sandboxesNamingRepo(context.Background(), repo, nil)
 	if len(requests) != 1 || requests[0].Name != "waits" || requests[0].Namespace != "jr2-acme" {
 		t.Fatalf("want exactly the Sandbox naming the key in the Repo's namespace, got %+v", requests)
 	}
