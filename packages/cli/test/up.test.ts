@@ -2344,14 +2344,14 @@ test("the Orchestrator carries a liveness probe that restarts only a process sil
   assert.equal(container.readinessProbe.periodSeconds * container.readinessProbe.failureThreshold, 30);
 });
 
-test("the Instance Harness is a StatefulSet of one: its conversations on a claim, a drain for a grace, a headless Service (ADR-0031)", async () => {
+test("the Instance Harness is a StatefulSet of one: its conversations on a claim, a drain for a grace, a ClusterIP to dial (ADR-0031)", async () => {
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
   const { statefulSet, service } = findInstanceHarness(w);
 
   assert.equal(statefulSet!.spec.replicas, 1, "N is 1 until a measured need");
-  assert.equal(statefulSet!.spec.serviceName, "jr2-instance-harness", "governed by the headless Service");
+  assert.equal(statefulSet!.spec.serviceName, "jr2-instance-harness-pods", "governed by the headless Service");
   // The volume is the value: one claim per ordinal, and it goes with the StatefulSet, not a scale.
   assert.deepEqual(
     statefulSet!.spec.volumeClaimTemplates.map((t: Record<string, any>) => [
@@ -2384,33 +2384,16 @@ test("the Instance Harness is a StatefulSet of one: its conversations on a claim
     "the Custodian never reads an Agent's history",
   );
 
-  // Headless, under the SAME name: the endpoint DNS and the NetworkPolicy selector are unchanged.
-  assert.equal(service!.spec.clusterIP, "None");
+  // The dialed name is a ClusterIP Service: kube-proxy still routes it to the draining pod while
+  // no other is ready, where a headless name stops resolving the moment the pod terminates.
+  assert.equal(service!.spec.clusterIP, undefined);
   assert.deepEqual(service!.spec.selector, { app: "jr2-instance-harness" });
+  const governing = appliedObjects(w).get("Service/jr2-instance-harness-pods")!;
+  assert.equal(governing.spec.clusterIP, "None");
+  assert.deepEqual(governing.spec.selector, { app: "jr2-instance-harness" });
 
   // `jr2 up` waits out a rollout as long as the old pod may drain, then its start.
   assert.equal(w.kube.rolloutTimeouts["myinst/jr2-instance-harness"], 600 + 180);
-});
-
-test("`jr2 up` converges the Instance Harness from the Deployment it once was (ADR-0031)", async () => {
-  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
-  const w = mkWorld(root);
-  // What an earlier converge left: a Deployment and a ClusterIP Service of the same name.
-  w.kube.set("myinst", "deployment", "jr2-instance-harness", {});
-  w.kube.set("myinst", "service", "jr2-instance-harness", { spec: { clusterIP: "10.96.0.7" } } as never);
-  assert.equal(await up(["--yes"], w.io), 0);
-
-  // `clusterIP` is immutable, so the ClusterIP Service is deleted for the headless one; the
-  // Deployment goes before the StatefulSet comes, so two Harnesses never answer one name.
-  assert.ok(w.kube.deleted.includes("myinst/service/jr2-instance-harness"));
-  assert.ok(w.kube.deleted.includes("myinst/deployment/jr2-instance-harness"));
-  assert.ok(findInstanceHarness(w).statefulSet, "then the StatefulSet is applied");
-
-  // Converged once, a headless Service is left alone: nothing is deleted that the apply keeps.
-  const again = mkWorld(root);
-  again.kube.set("myinst", "service", "jr2-instance-harness", { spec: { clusterIP: "None" } } as never);
-  assert.equal(await up(["--yes"], again.io), 0);
-  assert.ok(!again.kube.deleted.includes("myinst/service/jr2-instance-harness"));
 });
 
 test('no "none" definitions → nothing new deploys, and a stale Instance Harness is deleted on converge', async () => {
@@ -2425,11 +2408,11 @@ test('no "none" definitions → nothing new deploys, and a stale Instance Harnes
   assert.equal(statefulSet, undefined);
   assert.equal(service, undefined);
   // Idempotent converge: a definition that dropped its "none" must not leave a stale StatefulSet —
-  // nor its conversations (ADR-0031), nor the Deployment this layer once was.
+  // nor its conversations (ADR-0031), nor either Service.
   assert.ok(w.kube.deleted.includes("myinst/statefulset/jr2-instance-harness"));
   assert.ok(w.kube.deleted.includes("myinst/persistentvolumeclaim/conversations-jr2-instance-harness-0"));
-  assert.ok(w.kube.deleted.includes("myinst/deployment/jr2-instance-harness"));
   assert.ok(w.kube.deleted.includes("myinst/service/jr2-instance-harness"));
+  assert.ok(w.kube.deleted.includes("myinst/service/jr2-instance-harness-pods"));
 });
 
 test("the Instance Harness runs the refs THIS converge resolved — the same ones the map names", async () => {

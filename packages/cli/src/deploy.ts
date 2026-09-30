@@ -83,6 +83,11 @@ export const INSTANCE_HARNESS_DRAIN_SECONDS = 600;
  * PVC ordinal 0 gets from it — `<claim>-<statefulset>-<ordinal>`. */
 export const INSTANCE_HARNESS_PVC = `${CONVERSATIONS_VOLUME}-${INSTANCE_HARNESS_SERVICE}-0`;
 
+/** The Instance Harness StatefulSet's governing Service (ADR-0031): headless, and dialed by no one
+ * today — it is what gives each ordinal the stable name N > 1 would pin a conversation to. The
+ * Orchestrator dials the ClusterIP Service `INSTANCE_HARNESS_SERVICE`, never this one. */
+export const INSTANCE_HARNESS_PODS_SERVICE = `${INSTANCE_HARNESS_SERVICE}-pods`;
+
 /** The two ingress NetworkPolicies (ADR-0058) — see `harnessIngressPolicies`. */
 export const SANDBOX_INGRESS_POLICY = "jr2-sandbox-ingress";
 export const INSTANCE_HARNESS_INGRESS_POLICY = "jr2-instance-harness-ingress";
@@ -704,7 +709,7 @@ export function trustObject(opts: {
 }
 
 /**
- * The Instance Harness (ADR-0031): the per-instance Harness StatefulSet + headless Service `jr2 up`
+ * The Instance Harness (ADR-0031): the per-instance Harness StatefulSet + Service `jr2 up`
  * converges whenever an Agent a registered Machine CARRIES declares `workspace: "none"`
  * (ADR-0049's walk) — the placement for every Menu-only Agent's Turn, regardless of any enclosing
  * Workspace. The one Harness shape, minus the Workspace: the stock Harness image plus the Custodian,
@@ -829,7 +834,7 @@ export function instanceHarnessObjects(opts: {
         // so admissions are refused while the new pod starts, which the Orchestrator absorbs
         // (ADR-0042).
         replicas: 1,
-        serviceName: INSTANCE_HARNESS_SERVICE,
+        serviceName: INSTANCE_HARNESS_PODS_SERVICE,
         selector: { matchLabels: { app: INSTANCE_HARNESS_SERVICE } },
         // The conversations go with the StatefulSet, never with a scale-down: an instance whose
         // Machines dropped every `"none"` Agent keeps no history for them.
@@ -886,9 +891,21 @@ export function instanceHarnessObjects(opts: {
       kind: "Service",
       metadata: meta(),
       spec: {
-        // Headless — the StatefulSet's governing Service. The name still resolves (to the ready
-        // pod's address) at the same DNS the Agent actor dials, so the endpoint and the
-        // NetworkPolicy's selector are unchanged; the port is the pod's own.
+        // The address the Agent actor dials: a ClusterIP Service, deliberately not the headless
+        // one below. A draining pod is terminating, so DNS stops naming it, but kube-proxy still
+        // routes a ClusterIP to a terminating pod that serves while no other is ready — and at
+        // N = 1 none is until it exits. So during the drain reads, waits and aborts keep reaching
+        // it (ADR-0031), and a refused admission meets its 503, not a name that resolves to nothing.
+        selector: { app: INSTANCE_HARNESS_SERVICE },
+        ports: [{ port: INSTANCE_HARNESS_PORT, targetPort: INSTANCE_HARNESS_PORT }],
+      },
+    },
+    {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: { ...meta(), name: INSTANCE_HARNESS_PODS_SERVICE },
+      spec: {
+        // Headless — the StatefulSet's governing Service (`serviceName`), for the per-ordinal names.
         clusterIP: "None",
         selector: { app: INSTANCE_HARNESS_SERVICE },
         ports: [{ port: INSTANCE_HARNESS_PORT, targetPort: INSTANCE_HARNESS_PORT }],

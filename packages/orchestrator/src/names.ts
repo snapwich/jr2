@@ -9,7 +9,7 @@ export const ORCHESTRATOR_PORT = 4000;
 /** The instance-owned Secret: Instance token + signing key (+ orchestrator-side creds). */
 export const INSTANCE_SECRET = "jr2-instance";
 
-/** The Instance Harness's StatefulSet + headless Service name (ADR-0031): converged by `jr2 up` whenever any
+/** The Instance Harness's StatefulSet + Service name (ADR-0031): converged by `jr2 up` whenever any
  * Agent definition declares `workspace: "none"`, and the deterministic Service DNS the Agent actor
  * resolves such a Turn to. Doubles as the delivery scope a Menu-only registration records — the
  * name the placement's Sandbox token is signed for (tokens.ts, ADR-0013), which its Custodian holds. The port is the

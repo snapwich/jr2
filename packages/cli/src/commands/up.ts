@@ -106,6 +106,7 @@ import {
   ANNOTATION_IMAGES,
   compareVersions,
   INSTANCE_HARNESS_DRAIN_SECONDS,
+  INSTANCE_HARNESS_PODS_SERVICE,
   INSTANCE_HARNESS_PVC,
   INSTANCE_HARNESS_SERVICE,
   instanceHarnessObjects,
@@ -897,20 +898,6 @@ export async function up(args: string[], io: Io): Promise<number> {
       `instance harness: converging (${menuOnly.join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none")`,
     );
     const harnessImage = refs.harness;
-    // Converging from the Deployment this layer once was (ADR-0031): a Service's `clusterIP` is
-    // immutable, so a ClusterIP one is deleted before the headless one is applied under its name,
-    // and the Deployment goes before the StatefulSet comes, so no two Harnesses ever answer one
-    // conversation's DNS. Both are gone after the first converge; `--ignore-not-found` then.
-    const service = await kube.getJson<{ spec?: { clusterIP?: string } }>({
-      kind: "service",
-      name: INSTANCE_HARNESS_SERVICE,
-      namespace,
-      ...ctx,
-    });
-    if (service !== undefined && service.spec?.clusterIP !== "None") {
-      await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
-    }
-    await kube.deleteObject({ kind: "deployment", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
     await kube.apply({
       manifest: instanceHarnessObjects({
         name,
@@ -951,8 +938,8 @@ export async function up(args: string[], io: Io): Promise<number> {
     // The claim's retention policy deletes it with the StatefulSet; deleted here too, so the
     // conversations go even from a StatefulSet the controller never got to.
     await kube.deleteObject({ kind: "persistentvolumeclaim", name: INSTANCE_HARNESS_PVC, namespace, ...ctx });
-    await kube.deleteObject({ kind: "deployment", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
+    await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_PODS_SERVICE, namespace, ...ctx });
   }
 
   await reportOlderWorkspaces(io, kube, namespace, ctx, converged);
