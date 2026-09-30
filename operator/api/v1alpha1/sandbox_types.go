@@ -198,7 +198,7 @@ type SandboxRepo struct {
 }
 
 // SandboxPhase is a coarse lifecycle summary of a Sandbox.
-// +kubebuilder:validation:Enum=Pending;Ready;Terminating
+// +kubebuilder:validation:Enum=Pending;Ready;Lost;Terminating
 type SandboxPhase string
 
 const (
@@ -209,13 +209,21 @@ const (
 	// created when the pod passed that gate (ADR-0051) — a verdict taken once
 	// per pod, which the Repo's later state never revokes.
 	SandboxReady SandboxPhase = "Ready"
+	// SandboxLost means the one Pod this Sandbox had is gone (deleted, its node
+	// lost) or terminal (evicted, shut down with its node), and with it the
+	// `work` emptyDir (ADR-0021). It is terminal: the operator never gives the
+	// Sandbox a second Pod, and the phase never returns to Pending or Ready. The
+	// Lost condition carries the reason and the Pod's own words; the CR stays so
+	// `jr2 status` can say why, until teardown or the idle GC.
+	SandboxLost SandboxPhase = "Lost"
 	// SandboxTerminating means the Sandbox is being deleted.
 	SandboxTerminating SandboxPhase = "Terminating"
 )
 
 // SandboxStatus is the observed state of a Sandbox.
 type SandboxStatus struct {
-	// Phase is a coarse lifecycle summary: Pending -> Ready -> Terminating.
+	// Phase is a coarse lifecycle summary: Pending -> Ready -> Terminating,
+	// or Lost from Pending or Ready once the Pod is gone or terminal (ADR-0021).
 	// +optional
 	Phase SandboxPhase `json:"phase,omitempty"`
 
@@ -228,12 +236,11 @@ type SandboxStatus struct {
 	// +optional
 	PodRef *corev1.LocalObjectReference `json:"podRef,omitempty"`
 
-	// PodUID is the identity of the Pod backing this Sandbox. Pod names are
-	// deterministic, so a name alone cannot distinguish the Pod a client
-	// attached to from a replacement scheduled after an eviction or node loss —
-	// and a replacement comes up with an empty `work` volume, so every clone,
-	// worktree, and unpushed commit is gone. The UID changes exactly when that
-	// happens, which is what lets a client detect it (ADR-0021).
+	// PodUID is the identity of the one Pod the operator created for this
+	// Sandbox (ADR-0021). Set once, when that Pod is created, and never
+	// changed: it is how the operator knows, across its own restarts, that the
+	// Pod was already created once — so a Pod that is later absent is Lost, never
+	// created again. Clients read phase Lost, not a UID comparison.
 	// +optional
 	PodUID types.UID `json:"podUID,omitempty"`
 
@@ -284,9 +291,12 @@ type SandboxStatus struct {
 	Waiting []SandboxContainerWaiting `json:"waiting,omitempty"`
 
 	// Conditions represent the current state of the Sandbox resource: Ready
-	// (the gate), ReposFresh (the Repo gate's verdict), and Scheduled — the
-	// Pod's PodScheduled condition restated with the scheduler's own reason
-	// and message, so a Pending Sandbox says why it waits (ADR-0063).
+	// (the gate), ReposFresh (the Repo gate's verdict), Scheduled — the Pod's
+	// PodScheduled condition restated with the scheduler's own reason and
+	// message, or QuotaExceeded with the API server's words while a
+	// ResourceQuota refuses the Pod, so a Pending Sandbox says why it waits
+	// (ADR-0063, ADR-0064) — and Lost, True with the reason and the Pod's own
+	// words once the phase is Lost (ADR-0021).
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -297,8 +307,7 @@ type SandboxStatus struct {
 // the kubelet reports them on the Pod (ADR-0063). The operator copies them; it
 // reads no meaning into them.
 type SandboxHarnessStatus struct {
-	// RestartCount is the container's restartCount on the current Pod. A
-	// replacement Pod (new podUID) starts again at zero.
+	// RestartCount is the container's restartCount on the Sandbox's Pod.
 	// +optional
 	RestartCount int32 `json:"restartCount"`
 

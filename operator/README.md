@@ -22,7 +22,10 @@ reader of the Sandbox — the key into each Repo's `status.nodes[]`; the cache a
 failed is `Ready` with `ReposFresh=False`, a cold node whose `Clone` failed is held with `RepoCloneFailed` (a failed
 `Probe` is not that: the pod's arrival makes the agent clone). That gate is asked until it passes for the pod, and its
 verdict then stands for that pod's life: the `Repo` resource's later state, or its absence once `jr2 gc` evicted it
-under a pod still mounting the cache, never moves a serving Sandbox off `Ready`; a replacement pod is asked afresh.
+under a pod still mounting the cache, never moves a serving Sandbox off `Ready`. A Sandbox has one pod for its life
+(ADR-0021): a pod that is gone or terminal makes it `Lost`, with a `Lost` condition carrying the pod's own reason, and no
+second pod is made. A pod create a ResourceQuota refuses is published as `Scheduled=False` with reason `QuotaExceeded`
+and retried (ADR-0064).
 That list of keys is the whole of what the Sandbox CRD knows about git; clone and worktree stay the Orchestrator's
 post-Ready step (ADR-0004).
 
@@ -104,7 +107,7 @@ make run                           # run the operator against the current kubeco
 
 # in another shell
 kubectl apply -f config/samples/core_v1alpha1_sandbox.yaml
-kubectl get sandbox -w             # watch Pending -> Ready, endpoint populated
+kubectl get sandbox -w             # watch Pending -> Ready (or Lost), endpoint populated
 kubectl delete sandbox sandbox-sample   # owner-ref GC of Pod + Service
 ```
 

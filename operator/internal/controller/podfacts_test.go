@@ -7,12 +7,15 @@ SPDX-License-Identifier: MIT
 package controller
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	corev1alpha1 "github.com/snapwich/jr2/operator/api/v1alpha1"
 )
@@ -150,5 +153,126 @@ func TestScheduledCondition(t *testing.T) {
 				t.Fatalf("message = %q, want the scheduler's %q", got.Message, tc.message)
 			}
 		})
+	}
+}
+
+// TestPodLost: a Sandbox has one Pod for its life (ADR-0021). The Pod the
+// operator created is lost when it is gone, replaced, being deleted, or
+// terminal — with the Pod's own words when it has any. A Pod never created is
+// not lost; it is created.
+func TestPodLost(t *testing.T) {
+	const uid = "uid-1"
+	recorded := &corev1alpha1.Sandbox{
+		ObjectMeta: metav1.ObjectMeta{Name: "sb"},
+		Status:     corev1alpha1.SandboxStatus{PodUID: uid},
+	}
+	now := metav1.Now()
+	pod := func(mutate func(*corev1.Pod)) *corev1.Pod {
+		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "sb", UID: uid}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+		if mutate != nil {
+			mutate(p)
+		}
+		return p
+	}
+	cases := []struct {
+		name    string
+		sandbox *corev1alpha1.Sandbox
+		pod     *corev1.Pod
+		reason  string // "" = not lost
+		message string // checked when set
+	}{
+		{name: "never created", sandbox: &corev1alpha1.Sandbox{}, pod: nil},
+		{name: "running", sandbox: recorded, pod: pod(nil)},
+		{name: "pending", sandbox: recorded, pod: pod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodPending })},
+		{name: "running, first seen before status recorded it", sandbox: &corev1alpha1.Sandbox{}, pod: pod(nil)},
+		{name: "gone", sandbox: recorded, pod: nil, reason: "PodDeleted"},
+		{
+			name: "another pod under the name", sandbox: recorded,
+			pod: pod(func(p *corev1.Pod) { p.UID = "uid-2" }), reason: "PodDeleted",
+		},
+		{
+			name: "evicted for node pressure", sandbox: recorded,
+			pod: pod(func(p *corev1.Pod) {
+				p.Status.Phase, p.Status.Reason, p.Status.Message = corev1.PodFailed, "Evicted", "The node was low on resource: memory."
+			}),
+			reason: "Evicted", message: "The node was low on resource: memory.",
+		},
+		{
+			name: "shut down with its node", sandbox: recorded,
+			pod: pod(func(p *corev1.Pod) {
+				p.Status.Phase, p.Status.Reason, p.Status.Message = corev1.PodSucceeded, "Terminated", "Pod was terminated in response to imminent node shutdown."
+			}),
+			reason: "Terminated", message: "Pod was terminated in response to imminent node shutdown.",
+		},
+		{
+			name: "failed, no reason", sandbox: recorded,
+			pod:    pod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodFailed }),
+			reason: "PodFailed",
+		},
+		{
+			name: "succeeded, no reason", sandbox: recorded,
+			pod:    pod(func(p *corev1.Pod) { p.Status.Phase = corev1.PodSucceeded }),
+			reason: "PodSucceeded",
+		},
+		{
+			name: "drained", sandbox: recorded,
+			pod: pod(func(p *corev1.Pod) {
+				p.DeletionTimestamp = &now
+				p.Status.Conditions = []corev1.PodCondition{{
+					Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue,
+					Reason: "EvictionByEvictionAPI", Message: "Eviction API: evicting",
+				}}
+			}),
+			reason: "PodDeleted", message: "Eviction API: evicting",
+		},
+		{
+			name: "its node is gone", sandbox: recorded,
+			pod: pod(func(p *corev1.Pod) {
+				p.DeletionTimestamp = &now
+				p.Status.Conditions = []corev1.PodCondition{{
+					Type: corev1.DisruptionTarget, Status: corev1.ConditionTrue,
+					Reason: "DeletionByTaintManager", Message: "Taint manager: deleting due to NoExecute taint",
+				}}
+			}),
+			reason: "NodeLost", message: "Taint manager: deleting due to NoExecute taint",
+		},
+		{
+			name: "deleted, no disruption condition", sandbox: recorded,
+			pod:    pod(func(p *corev1.Pod) { p.DeletionTimestamp = &now }),
+			reason: "PodDeleted",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := podLost(tc.sandbox, tc.pod)
+			if tc.reason == "" {
+				if got != nil {
+					t.Fatalf("podLost = %+v, want not lost", got)
+				}
+				return
+			}
+			if got == nil || got.reason != tc.reason || got.message == "" {
+				t.Fatalf("podLost = %+v, want reason %q and a message", got, tc.reason)
+			}
+			if tc.message != "" && got.message != tc.message {
+				t.Fatalf("message = %q, want the pod's own %q", got.message, tc.message)
+			}
+		})
+	}
+}
+
+// TestQuotaRefusal: only a ResourceQuota's refusal is the wait ADR-0064
+// names; any other Forbidden stays an error.
+func TestQuotaRefusal(t *testing.T) {
+	gr := schema.GroupResource{Resource: "pods"}
+	words := `pods "sb" is forbidden: exceeded quota: ceiling, requested: requests.cpu=500m, used: requests.cpu=2, limited: requests.cpu=2`
+	if msg, ok := quotaRefusal(apierrors.NewForbidden(gr, "sb", errors.New("exceeded quota: ceiling, requested: requests.cpu=500m, used: requests.cpu=2, limited: requests.cpu=2"))); !ok || msg != words {
+		t.Fatalf("quotaRefusal = %q, %v; want the API server's words %q", msg, ok, words)
+	}
+	if _, ok := quotaRefusal(apierrors.NewForbidden(gr, "sb", errors.New(`violates PodSecurity "restricted:latest"`))); ok {
+		t.Fatal("a PodSecurity refusal is not a quota wait")
+	}
+	if _, ok := quotaRefusal(apierrors.NewInternalError(errors.New("exceeded quota"))); ok {
+		t.Fatal("only a Forbidden is a refusal")
 	}
 }

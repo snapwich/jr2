@@ -241,12 +241,12 @@ var _ = Describe("Sandbox Controller", func() {
 			counting := &SandboxReconciler{Scheme: k8sClient.Scheme(), Client: statusWriteCounter{k8sClient, &writes}}
 			_, err := counting.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(writes).To(Equal(1), "the first reconcile publishes status")
+			Expect(writes).To(Equal(2), "the first reconcile records the Pod it created, then publishes status")
 
 			By("reconciling again with nothing changed, as a lease renewal does")
 			_, err = counting.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(writes).To(Equal(1), "an unchanged status must not be written")
+			Expect(writes).To(Equal(2), "an unchanged status must not be written")
 
 			By("writing once the pod's facts move")
 			pod := &corev1.Pod{}
@@ -256,42 +256,122 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 			_, err = counting.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(writes).To(Equal(2))
+			Expect(writes).To(Equal(3))
 			sandbox := &corev1alpha1.Sandbox{}
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
 		})
 
-		It("republishes a new podUID when the Pod is replaced under the same Sandbox", func() {
-			// The divergence this field exists for: an eviction or node loss takes the Pod
-			// but not the CR, and the replacement comes up with an empty `work` volume — so
-			// the Orchestrator's clones and unpushed commits are gone while every name it
-			// holds still resolves. Only the identity changes (ADR-0021).
+		It("goes Lost for good when its Pod is deleted, and never makes a second (ADR-0021)", func() {
+			// `work` is an emptyDir: a second Pod could continue nothing, would hold a
+			// whole Size for nobody, and would hide the loss behind a name that still
+			// resolves. So the Sandbox has one Pod for its life.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
 			original := &corev1.Pod{}
 			Expect(k8sClient.Get(ctx, key, original)).To(Succeed())
-
 			sandbox := &corev1alpha1.Sandbox{}
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
 			Expect(sandbox.Status.PodUID).To(Equal(original.UID))
 
 			By("losing the Pod out from under the Sandbox")
-			Expect(k8sClient.Delete(ctx, original)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, original, client.GracePeriodSeconds(0))).To(Succeed())
+			Eventually(func() bool {
+				return errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Pod{}))
+			}).Should(BeTrue())
+
+			// A fresh reconciler: "created once" is read from the CR, so it holds
+			// across an operator restart.
+			restarted := &SandboxReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err = restarted.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Pod{}))).To(BeTrue(), "no second Pod")
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxLost))
+			lost := meta.FindStatusCondition(sandbox.Status.Conditions, conditionLost)
+			Expect(lost).NotTo(BeNil())
+			Expect(lost.Status).To(Equal(metav1.ConditionTrue))
+			Expect(lost.Reason).To(Equal("PodDeleted"))
+			Expect(lost.Message).To(ContainSubstring("was deleted"))
+			ready := meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("PodDeleted"))
+			Expect(sandbox.Status.PodUID).To(Equal(original.UID), "the identity it had is kept")
+
+			By("staying Lost, with no Pod, on every later reconcile — a lease renewal included")
+			sandbox.Annotations = map[string]string{keepaliveAnnotation: metav1.Now().UTC().Format(time.RFC3339)}
+			Expect(k8sClient.Update(ctx, sandbox)).To(Succeed())
+			_, err = restarted.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Pod{}))).To(BeTrue())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxLost))
+		})
+
+		It("goes Lost with the Pod's own words when the Pod ends in place, and leaves it there (ADR-0021)", func() {
+			// A node-pressure eviction leaves the Pod object Failed, with the same UID:
+			// no deletion, no replacement. Only the phase says the workspace is gone.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodFailed
+			pod.Status.Reason = "Evicted"
+			pod.Status.Message = "The node was low on resource: memory."
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-
-			By("recreating it under the same name, with a new identity")
-			replacement := &corev1.Pod{}
-			Expect(k8sClient.Get(ctx, key, replacement)).To(Succeed())
-			Expect(replacement.Name).To(Equal(original.Name))
-			Expect(replacement.UID).NotTo(Equal(original.UID))
-
+			sandbox := &corev1alpha1.Sandbox{}
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
-			Expect(sandbox.Status.PodUID).To(Equal(replacement.UID))
-			Expect(sandbox.Status.PodRef.Name).To(Equal(original.Name), "the name cannot reveal the swap — only the UID can")
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxLost))
+			lost := meta.FindStatusCondition(sandbox.Status.Conditions, conditionLost)
+			Expect(lost).NotTo(BeNil())
+			Expect(lost.Reason).To(Equal("Evicted"))
+			Expect(lost.Message).To(Equal("The node was low on resource: memory."))
+
+			By("leaving the terminal Pod in place — teardown deletes the CR, owner refs reap it")
+			left := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, left)).To(Succeed())
+			Expect(left.UID).To(Equal(pod.UID))
+			Expect(left.DeletionTimestamp).To(BeNil())
+
+			By("never returning to Ready, whatever the Pod later says")
+			left.Status.Phase = corev1.PodRunning
+			left.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, left)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxLost))
+		})
+
+		It("goes Lost as soon as its bound Pod is being deleted — a drain, a lost node (ADR-0021)", func() {
+			// A Pod on a node that is gone stays Terminating until someone forces it;
+			// NotFound may never come.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			pod := &corev1.Pod{}
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			binding := &corev1.Binding{
+				ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
+				Target:     corev1.ObjectReference{Kind: "Node", Name: "node-a"},
+			}
+			Expect(k8sClient.SubResource("binding").Create(ctx, pod, binding)).To(Succeed())
+			// Bound, and envtest has no kubelet: a graceful delete leaves it Terminating.
+			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+			Expect(k8sClient.Get(ctx, key, pod)).To(Succeed())
+			Expect(pod.DeletionTimestamp).NotTo(BeNil())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			sandbox := &corev1alpha1.Sandbox{}
+			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxLost))
+			Expect(meta.FindStatusCondition(sandbox.Status.Conditions, conditionLost).Reason).To(Equal("PodDeleted"))
 		})
 
 		It("carries an ask onto the pod and answers it on status.repos, leaving Ready alone (ADR-0053)", func() {
@@ -548,9 +628,7 @@ var _ = Describe("Sandbox Controller", func() {
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
 			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxReady))
 
-			By("asking the gate afresh for a replacement pod, which mounts whatever its node holds now")
-			// A new Pod identity (ADR-0021) is a new set of mounts: the verdict the
-			// lost pod passed with says nothing about them.
+			By("going Lost, not back to the gate, when that pod is deleted (ADR-0021)")
 			Expect(k8sClient.Delete(ctx, pod, client.GracePeriodSeconds(0))).To(Succeed())
 			Eventually(func() bool {
 				return errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Pod{}))
@@ -558,30 +636,9 @@ var _ = Describe("Sandbox Controller", func() {
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			replacement := &corev1.Pod{}
-			Expect(k8sClient.Get(ctx, key, replacement)).To(Succeed())
-			Expect(replacement.UID).NotTo(Equal(pod.UID))
+			Expect(errors.IsNotFound(k8sClient.Get(ctx, key, &corev1.Pod{}))).To(BeTrue(), "no second Pod")
 			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
-			Expect(sandbox.Status.PodUID).To(Equal(replacement.UID))
-			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
-			Expect(meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh)).To(BeNil(), "the lost pod's verdict is not this pod's")
-
-			binding = &corev1.Binding{
-				ObjectMeta: metav1.ObjectMeta{Name: replacement.Name, Namespace: replacement.Namespace},
-				Target:     corev1.ObjectReference{Kind: "Node", Name: "node-a"},
-			}
-			Expect(k8sClient.SubResource("binding").Create(ctx, replacement, binding)).To(Succeed())
-			Expect(k8sClient.Get(ctx, key, replacement)).To(Succeed())
-			replacement.Status.Phase = corev1.PodRunning
-			replacement.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
-			Expect(k8sClient.Status().Update(ctx, replacement)).To(Succeed())
-
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Get(ctx, key, sandbox)).To(Succeed())
-			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxPending))
-			ready = meta.FindStatusCondition(sandbox.Status.Conditions, conditionReady)
-			Expect(ready.Reason).To(Equal("RepoPending"), "the recreated resource has no entry for the node yet")
+			Expect(sandbox.Status.Phase).To(Equal(corev1alpha1.SandboxLost))
 		})
 	})
 })
@@ -604,4 +661,9 @@ type countingStatusWriter struct {
 func (w countingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 	*w.writes++
 	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+func (w countingStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+	*w.writes++
+	return w.SubResourceWriter.Patch(ctx, obj, patch, opts...)
 }

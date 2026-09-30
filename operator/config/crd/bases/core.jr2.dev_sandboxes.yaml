@@ -5925,9 +5925,12 @@ spec:
               conditions:
                 description: |-
                   Conditions represent the current state of the Sandbox resource: Ready
-                  (the gate), ReposFresh (the Repo gate's verdict), and Scheduled — the
-                  Pod's PodScheduled condition restated with the scheduler's own reason
-                  and message, so a Pending Sandbox says why it waits (ADR-0063).
+                  (the gate), ReposFresh (the Repo gate's verdict), Scheduled — the Pod's
+                  PodScheduled condition restated with the scheduler's own reason and
+                  message, or QuotaExceeded with the API server's words while a
+                  ResourceQuota refuses the Pod, so a Pending Sandbox says why it waits
+                  (ADR-0063, ADR-0064) — and Lost, True with the reason and the Pod's own
+                  words once the phase is Lost (ADR-0021).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -6019,9 +6022,8 @@ spec:
                         type: string
                     type: object
                   restartCount:
-                    description: |-
-                      RestartCount is the container's restartCount on the current Pod. A
-                      replacement Pod (new podUID) starts again at zero.
+                    description: RestartCount is the container's restartCount on the
+                      Sandbox's Pod.
                     format: int32
                     type: integer
                 type: object
@@ -6036,11 +6038,13 @@ spec:
                   (ADR-0051).
                 type: string
               phase:
-                description: 'Phase is a coarse lifecycle summary: Pending -> Ready
-                  -> Terminating.'
+                description: |-
+                  Phase is a coarse lifecycle summary: Pending -> Ready -> Terminating,
+                  or Lost from Pending or Ready once the Pod is gone or terminal (ADR-0021).
                 enum:
                 - Pending
                 - Ready
+                - Lost
                 - Terminating
                 type: string
               podRef:
@@ -6059,12 +6063,11 @@ spec:
                 x-kubernetes-map-type: atomic
               podUID:
                 description: |-
-                  PodUID is the identity of the Pod backing this Sandbox. Pod names are
-                  deterministic, so a name alone cannot distinguish the Pod a client
-                  attached to from a replacement scheduled after an eviction or node loss —
-                  and a replacement comes up with an empty `work` volume, so every clone,
-                  worktree, and unpushed commit is gone. The UID changes exactly when that
-                  happens, which is what lets a client detect it (ADR-0021).
+                  PodUID is the identity of the one Pod the operator created for this
+                  Sandbox (ADR-0021). Set once, when that Pod is created, and never
+                  changed: it is how the operator knows, across its own restarts, that the
+                  Pod was already created once — so a Pod that is later absent is Lost, never
+                  created again. Clients read phase Lost, not a UID comparison.
                 type: string
               repos:
                 description: |-

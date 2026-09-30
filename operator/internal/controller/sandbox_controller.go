@@ -54,6 +54,27 @@ const (
 	// before it has looked at the Pod there is no condition at all.
 	reasonScheduled         = "Scheduled"
 	reasonSchedulingPending = "SchedulingPending"
+	// reasonQuotaExceeded is the Scheduled (and Ready) reason while a
+	// ResourceQuota refuses the Pod's create (ADR-0064): the same wait as
+	// Unschedulable, in the API server's words, and the create is retried.
+	reasonQuotaExceeded = "QuotaExceeded"
+	// quotaRetryMax caps the wait between create retries under a quota
+	// refusal. Nothing in this controller watches quota, so the retry is the
+	// only way a freed quota is noticed; the cap bounds how late.
+	quotaRetryMax = 30 * time.Second
+
+	// conditionLost is True once the phase is Lost (ADR-0021), with the reason
+	// and the Pod's own words. Absent before: a Sandbox that is not Lost says
+	// nothing about loss.
+	conditionLost = "Lost"
+	// The Lost reasons the operator supplies itself. A terminal Pod's own
+	// status.reason (`Evicted`, `Terminated`, `NodeShutdown`, ...) is used
+	// when it gives one; these are for when it gives none, and for a Pod that
+	// is gone.
+	reasonPodDeleted   = "PodDeleted"
+	reasonNodeLost     = "NodeLost"
+	reasonPodFailed    = "PodFailed"
+	reasonPodSucceeded = "PodSucceeded"
 
 	// Ready reasons a Repo cache can hold a Sandbox at, and the two ReposFresh
 	// reasons. The Orchestrator's port keys on RepoCloneFailed to fail a
@@ -93,6 +114,12 @@ var noDisruption = map[string]string{
 type SandboxReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// APIReader reads the API server past the informer cache. A Pod absent
+	// from the cache is not yet a lost Pod — the cache can lag the create it
+	// follows — and loss is terminal (ADR-0021), so it is confirmed here
+	// before it is declared. Nil reads through Client (the tests' client has
+	// no cache).
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=core.jr2.dev,resources=sandboxes,verbs=get;list;watch;create;update;patch;delete
@@ -141,6 +168,12 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
+	// Lost is terminal (ADR-0021): no second Pod, no status but what the loss
+	// wrote. The idle GC above still reaps the CR once the lease lapses.
+	if sandbox.Status.Phase == corev1alpha1.SandboxLost {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
 	if err := r.reconcileService(ctx, &sandbox); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile service: %w", err)
 	}
@@ -150,9 +183,26 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("read repos: %w", err)
 	}
 
-	pod, err := r.reconcilePod(ctx, &sandbox, repos)
+	pod, loss, refusal, err := r.reconcilePod(ctx, &sandbox, repos)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile pod: %w", err)
+	}
+	if loss != nil {
+		log.Info("sandbox lost its pod", "reason", loss.reason, "message", loss.message)
+		if err := r.markLost(ctx, &sandbox, loss); err != nil {
+			return ctrl.Result{}, fmt.Errorf("mark lost: %w", err)
+		}
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+	if refusal != "" {
+		retry, err := r.reconcileRefused(ctx, &sandbox, refusal)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile status: %w", err)
+		}
+		if requeueAfter == 0 || retry < requeueAfter {
+			requeueAfter = retry
+		}
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	if err := r.reconcileAsks(ctx, &sandbox, pod); err != nil {
@@ -290,8 +340,7 @@ func (r *SandboxReconciler) reconcileAsks(ctx context.Context, sandbox *corev1al
 // on every reconcile, unlike the Ready gate, which is taken once per Pod life.
 //
 // Nothing is reported before the Pod has a node: there is no cache to report
-// on yet, and an entry left from a Pod this one replaced would describe
-// another node's disk.
+// on yet.
 func repoStatuses(ctx context.Context, sandbox *corev1alpha1.Sandbox, node string, repos map[string]*corev1alpha1.Repo) []corev1alpha1.SandboxRepoStatus {
 	if node == "" || len(sandbox.Spec.Repos) == 0 {
 		return nil
@@ -353,31 +402,232 @@ func askedFor(ctx context.Context, sandbox *corev1alpha1.Sandbox, key string) me
 	return created
 }
 
-// reconcilePod ensures the Sandbox's Pod exists. Pods are largely immutable, so
-// this creates the Pod when absent and otherwise returns the existing one;
-// changing the spec of a running Sandbox is out of scope for this operator.
-func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *corev1alpha1.Sandbox, repos map[string]*corev1alpha1.Repo) (*corev1.Pod, error) {
-	pod := &corev1.Pod{}
-	err := r.Get(ctx, client.ObjectKey{Name: sandbox.Name, Namespace: sandbox.Namespace}, pod)
-	if err == nil {
-		return pod, nil
+// reconcilePod ensures the Sandbox's one Pod (ADR-0021). The operator creates
+// it once, when the Sandbox has never had one, and otherwise returns it; Pods
+// are largely immutable, and changing the spec of a running Sandbox is out of
+// scope for this operator. It answers in exactly one of three ways besides an
+// error: the Pod; a loss, when the Pod it created is gone or terminal; or a
+// refusal, the API server's words when a ResourceQuota refused the create
+// (ADR-0064) — a wait, retried, never a failure.
+func (r *SandboxReconciler) reconcilePod(ctx context.Context, sandbox *corev1alpha1.Sandbox, repos map[string]*corev1alpha1.Repo) (pod *corev1.Pod, loss *podLoss, refusal string, err error) {
+	key := client.ObjectKey{Name: sandbox.Name, Namespace: sandbox.Namespace}
+	pod = &corev1.Pod{}
+	err = r.Get(ctx, key, pod)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, nil, "", err
 	}
-	if !apierrors.IsNotFound(err) {
-		return nil, err
+	if err == nil {
+		return pod, podLost(sandbox, pod), "", nil
+	}
+
+	// Not in the cache. Whether the Sandbox ever had a Pod is decided from the
+	// API server, not the cache: the cache can lag both the Pod's create and
+	// the status write that recorded it, and a wrong answer either way is
+	// terminal — a Sandbox declared Lost for nothing, or a second Pod.
+	fresh := &corev1alpha1.Sandbox{}
+	if err := r.apiReader().Get(ctx, key, fresh); err != nil {
+		return nil, nil, "", err
+	}
+	if fresh.Status.Phase == corev1alpha1.SandboxLost {
+		// Already Lost; the cached copy had not caught up. Restate, not rejudge.
+		*sandbox = *fresh
+		c := meta.FindStatusCondition(fresh.Status.Conditions, conditionLost)
+		if c == nil {
+			return nil, &podLoss{reasonPodDeleted, fmt.Sprintf("pod %s is gone", sandbox.Name)}, "", nil
+		}
+		return nil, &podLoss{c.Reason, c.Message}, "", nil
+	}
+	if fresh.Status.PodUID != "" {
+		live := &corev1.Pod{}
+		err := r.apiReader().Get(ctx, key, live)
+		if err == nil {
+			return live, podLost(fresh, live), "", nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return nil, nil, "", err
+		}
+		*sandbox = *fresh
+		return nil, podLost(fresh, nil), "", nil
 	}
 
 	pod = r.buildPod(sandbox, repos)
 	if err := controllerutil.SetControllerReference(sandbox, pod, r.Scheme); err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	if err := r.Create(ctx, pod); err != nil {
 		if apierrors.IsAlreadyExists(err) {
 			// Lost a race; re-read.
-			return pod, r.Get(ctx, client.ObjectKey{Name: sandbox.Name, Namespace: sandbox.Namespace}, pod)
+			if err := r.apiReader().Get(ctx, key, pod); err != nil {
+				return nil, nil, "", err
+			}
+			return pod, podLost(sandbox, pod), "", nil
 		}
-		return nil, err
+		if message, ok := quotaRefusal(err); ok {
+			return nil, nil, message, nil
+		}
+		return nil, nil, "", err
 	}
-	return pod, nil
+	// Record the creation at once, on its own: status.podUID is what says,
+	// across an operator restart, that this Sandbox already had its Pod. The
+	// full status write at the end of the reconcile can conflict and be
+	// retried; this one cannot be lost to that retry.
+	base := client.MergeFrom(sandbox.DeepCopy())
+	sandbox.Status.PodUID = pod.UID
+	sandbox.Status.PodRef = &corev1.LocalObjectReference{Name: pod.Name}
+	if err := r.Status().Patch(ctx, sandbox, base); err != nil {
+		return nil, nil, "", err
+	}
+	return pod, nil, "", nil
+}
+
+// apiReader is the uncached reader loss is confirmed through.
+func (r *SandboxReconciler) apiReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
+// quotaRefusal reports whether a create was refused by a ResourceQuota
+// (ADR-0064), and the API server's words when it was: they name the quota,
+// what was requested, what is used and what is limited.
+func quotaRefusal(err error) (string, bool) {
+	if !apierrors.IsForbidden(err) {
+		return "", false
+	}
+	message := err.Error()
+	if status, ok := err.(apierrors.APIStatus); ok && status.Status().Message != "" {
+		message = status.Status().Message
+	}
+	if !strings.Contains(message, "exceeded quota") {
+		return "", false
+	}
+	return message, true
+}
+
+// podLoss is why a Sandbox's one Pod is gone for good (ADR-0021): the reason
+// the Lost condition carries, and its message — the Pod's own words when it
+// has any, else a plain sentence.
+type podLoss struct {
+	reason, message string
+}
+
+// podLost decides whether the Sandbox has lost the one Pod the operator
+// created for it (ADR-0021). pod is the Pod under the Sandbox's name, or nil
+// when there is none. It is pure. A Pod is lost when:
+//
+//   - it is gone after status.podUID recorded it → PodDeleted;
+//   - the Pod under the name is not the one recorded → PodDeleted: the one
+//     created is gone, and whatever stands in its place is not this Sandbox's;
+//   - it is being deleted → NodeLost when the control plane is deleting it
+//     for its node (the taint manager, or pod GC for a node that is gone),
+//     otherwise PodDeleted, with the DisruptionTarget condition's words. A Pod
+//     on a node that is gone stays Terminating until someone forces it, so
+//     waiting for NotFound would wait without end;
+//   - it is terminal — Failed after a node-pressure eviction, Succeeded or
+//     Failed after a node shutdown → the Pod's own reason and message.
+//
+// A Pod the Sandbox has never had is not lost: nil means create it.
+func podLost(sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) *podLoss {
+	recorded := sandbox.Status.PodUID
+	if pod == nil {
+		if recorded == "" {
+			return nil
+		}
+		return &podLoss{reasonPodDeleted, fmt.Sprintf("pod %s was deleted; its work volume went with it", sandbox.Name)}
+	}
+	if recorded != "" && pod.UID != recorded {
+		return &podLoss{reasonPodDeleted, fmt.Sprintf("pod %s (uid %s) was deleted; its work volume went with it", pod.Name, recorded)}
+	}
+	if pod.DeletionTimestamp != nil {
+		loss := &podLoss{reasonPodDeleted, fmt.Sprintf("pod %s is being deleted; its work volume goes with it", pod.Name)}
+		for _, c := range pod.Status.Conditions {
+			if c.Type != corev1.DisruptionTarget || c.Status != corev1.ConditionTrue {
+				continue
+			}
+			switch c.Reason {
+			case "DeletionByTaintManager", "DeletionByPodGC":
+				loss.reason = reasonNodeLost
+			}
+			if c.Message != "" {
+				loss.message = c.Message
+			}
+		}
+		return loss
+	}
+	switch pod.Status.Phase {
+	case corev1.PodFailed, corev1.PodSucceeded:
+		loss := &podLoss{reason: pod.Status.Reason, message: pod.Status.Message}
+		if loss.reason == "" {
+			loss.reason = reasonPodFailed
+			if pod.Status.Phase == corev1.PodSucceeded {
+				loss.reason = reasonPodSucceeded
+			}
+		}
+		if loss.message == "" {
+			loss.message = fmt.Sprintf("pod %s ended (%s); its work volume went with it", pod.Name, pod.Status.Phase)
+		}
+		return loss
+	}
+	return nil
+}
+
+// markLost moves the Sandbox to its terminal phase (ADR-0021): Lost, with a
+// Lost condition True carrying the reason and message, and Ready False with
+// the same. Every other status field stays as last published — for a Pod that
+// is gone, the last the operator saw. The Pod object, when one is left, is
+// left in place: teardown deletes the CR, and owner references reap the rest.
+func (r *SandboxReconciler) markLost(ctx context.Context, sandbox *corev1alpha1.Sandbox, loss *podLoss) error {
+	observed := sandbox.Status.DeepCopy()
+	sandbox.Status.Phase = corev1alpha1.SandboxLost
+	meta.SetStatusCondition(&sandbox.Status.Conditions, metav1.Condition{
+		Type:               conditionLost,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: sandbox.Generation,
+		Reason:             loss.reason,
+		Message:            loss.message,
+	})
+	meta.SetStatusCondition(&sandbox.Status.Conditions, metav1.Condition{
+		Type:               conditionReady,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: sandbox.Generation,
+		Reason:             loss.reason,
+		Message:            loss.message,
+	})
+	if equality.Semantic.DeepEqual(observed, &sandbox.Status) {
+		return nil
+	}
+	return r.Status().Update(ctx, sandbox)
+}
+
+// reconcileRefused publishes a quota refusal (ADR-0064) — Scheduled False and
+// Ready False, both QuotaExceeded with the API server's words — and returns
+// when to retry the create. There is no Pod, so there are no pod facts. The
+// retry doubles with the time already spent refused (the Scheduled
+// condition's transition time, which survives an operator restart), from one
+// second up to quotaRetryMax.
+func (r *SandboxReconciler) reconcileRefused(ctx context.Context, sandbox *corev1alpha1.Sandbox, message string) (time.Duration, error) {
+	observed := sandbox.Status.DeepCopy()
+	sandbox.Status.Phase = corev1alpha1.SandboxPending
+	sandbox.Status.Endpoint = endpointFor(sandbox)
+	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
+	for _, t := range []string{conditionScheduled, conditionReady} {
+		meta.SetStatusCondition(&sandbox.Status.Conditions, metav1.Condition{
+			Type:               t,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: sandbox.Generation,
+			Reason:             reasonQuotaExceeded,
+			Message:            message,
+		})
+	}
+	retry := time.Second
+	if c := meta.FindStatusCondition(sandbox.Status.Conditions, conditionScheduled); c != nil {
+		retry = min(max(time.Since(c.LastTransitionTime.Time), time.Second), quotaRetryMax)
+	}
+	if equality.Semantic.DeepEqual(observed, &sandbox.Status) {
+		return retry, nil
+	}
+	return retry, r.Status().Update(ctx, sandbox)
 }
 
 // buildPod assembles the Pod: the primary container from the Sandbox's image and
@@ -638,17 +888,17 @@ func hardenedContainerSecurityContext() *corev1.SecurityContext {
 // the Pod's node and fetched since this Sandbox was created (ADR-0051). The
 // Repo half is a gate on the way to Ready, not a standing check: it is asked
 // until it passes for the Pod, and its verdict then stands for that Pod's
-// life (reposAdmitted). A replacement Pod is asked afresh.
+// life (reposAdmitted) — which is the Sandbox's life, since it has one Pod
+// (ADR-0021).
 func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1alpha1.Sandbox, pod *corev1.Pod, repos map[string]*corev1alpha1.Repo) error {
 	// Read before status.podUID is overwritten below: the latch is keyed on the
 	// Pod the last status named.
 	admitted := reposAdmitted(sandbox, pod)
 	observed := sandbox.Status.DeepCopy()
-	sandbox.Status.Endpoint = fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
+	sandbox.Status.Endpoint = endpointFor(sandbox)
 	sandbox.Status.PodRef = &corev1.LocalObjectReference{Name: pod.Name}
-	// Identity, not just address: a replacement Pod reuses the name but never the
-	// UID, and it comes up with an empty `work` volume. Publishing the UID is what
-	// lets the owning Orchestrator notice its workspace was replaced (ADR-0021).
+	// The Pod this Sandbox has for its life (ADR-0021), recorded when it was
+	// created; restated here for a Pod created before the operator recorded it.
 	sandbox.Status.PodUID = pod.UID
 	sandbox.Status.ServiceRef = &corev1.LocalObjectReference{Name: sandbox.Name}
 	// The node whose caches this Sandbox mounts — published for whoever reads
@@ -719,8 +969,7 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 		meta.SetStatusCondition(&sandbox.Status.Conditions, *fresh)
 	case !admitted:
 		// Freshness is a verdict about the caches a Pod passed the gate with;
-		// before that there is nothing to be fresh, and one taken for a Pod this
-		// one replaced would be a lie about the caches this one mounts.
+		// before that there is nothing to be fresh.
 		meta.RemoveStatusCondition(&sandbox.Status.Conditions, conditionReposFresh)
 	}
 
@@ -728,6 +977,12 @@ func (r *SandboxReconciler) reconcileStatus(ctx context.Context, sandbox *corev1
 		return nil
 	}
 	return r.Status().Update(ctx, sandbox)
+}
+
+// endpointFor is the in-cluster Service address the Orchestrator reaches the
+// Harness at.
+func endpointFor(sandbox *corev1alpha1.Sandbox) string {
+	return fmt.Sprintf("http://%s.%s.svc:%d", sandbox.Name, sandbox.Namespace, portFor(sandbox))
 }
 
 // harnessStatus copies the Harness container's restarts and last end off the
@@ -766,8 +1021,7 @@ func containerWaiting(pod *corev1.Pod) []corev1alpha1.SandboxContainerWaiting {
 
 // scheduledCondition restates the Pod's PodScheduled condition (ADR-0063):
 // its status, the scheduler's reason and message. Unknown until the scheduler
-// has written one — a replacement Pod must never inherit its predecessor's
-// True.
+// has written one.
 func scheduledCondition(pod *corev1.Pod, generation int64) metav1.Condition {
 	cond := metav1.Condition{
 		Type:               conditionScheduled,
@@ -801,8 +1055,7 @@ func scheduledCondition(pod *corev1.Pod, generation int64) metav1.Condition {
 // it (ADR-0051) — so the Repo resource's later state, or its absence once
 // `jr2 gc` evicted it, says nothing about this Pod, and re-deriving the verdict
 // from it would flip a serving Sandbox to Pending on the next lease renewal.
-// A replacement Pod (new UID) mounts whatever its node holds now, and is asked
-// afresh. A Sandbox naming no Repo writes no verdict and has no gate to pass.
+// A Sandbox naming no Repo writes no verdict and has no gate to pass.
 func reposAdmitted(sandbox *corev1alpha1.Sandbox, pod *corev1.Pod) bool {
 	return sandbox.Status.PodUID == pod.UID && meta.FindStatusCondition(sandbox.Status.Conditions, conditionReposFresh) != nil
 }

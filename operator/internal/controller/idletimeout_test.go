@@ -131,3 +131,42 @@ func TestIdleTimeoutKeepsYoungSandbox(t *testing.T) {
 		t.Fatalf("expected a requeue at the creation-based deadline, got %v", res.RequeueAfter)
 	}
 }
+
+// TestIdleTimeoutReapsLostSandbox: Lost is terminal, not exempt (ADR-0021).
+// The CR stays so `jr2 status` can say why, and ages out on the lease like
+// any other: kept while renewed, with no Pod made for it, reaped once lapsed.
+func TestIdleTimeoutReapsLostSandbox(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		keepalive time.Duration
+		survives  bool
+	}{
+		{name: "renewed", keepalive: time.Minute, survives: true},
+		{name: "lapsed", keepalive: time.Hour, survives: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sandbox := leasedSandbox("lost-"+tc.name, 2*time.Hour, time.Now().Add(-tc.keepalive).Format(time.RFC3339))
+			sandbox.Status = corev1alpha1.SandboxStatus{Phase: corev1alpha1.SandboxLost, PodUID: "uid-1"}
+			s := newScheme(t)
+			c := fake.NewClientBuilder().WithScheme(s).
+				WithStatusSubresource(&corev1alpha1.Sandbox{}).
+				WithObjects(sandbox).Build()
+			r := &SandboxReconciler{Client: c, Scheme: s}
+			key := types.NamespacedName{Name: sandbox.Name, Namespace: nsDefault}
+			res, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+			if err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			err = c.Get(context.Background(), key, &corev1alpha1.Sandbox{})
+			if survived := err == nil; survived != tc.survives {
+				t.Fatalf("survived = %v, want %v (err %v)", survived, tc.survives, err)
+			}
+			if !apierrors.IsNotFound(c.Get(context.Background(), key, &corev1.Pod{})) {
+				t.Fatal("a Lost Sandbox is never given a Pod")
+			}
+			if tc.survives && res.RequeueAfter <= 0 {
+				t.Fatalf("expected a requeue at the lease deadline, got %v", res.RequeueAfter)
+			}
+		})
+	}
+}
