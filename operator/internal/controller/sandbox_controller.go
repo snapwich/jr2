@@ -20,10 +20,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -1141,19 +1144,24 @@ func nodeEntry(repo *corev1alpha1.Repo, node string) *corev1alpha1.RepoNodeStatu
 	return nil
 }
 
-// sandboxesNamingRepo maps a Repo event to the Sandboxes in its namespace that
-// name its key, so a cache landing on a node (or failing to) re-evaluates
-// their Ready without polling.
-func (r *SandboxReconciler) sandboxesNamingRepo(ctx context.Context, obj client.Object) []reconcile.Request {
+// sandboxesNamingRepo maps a Repo to the Sandboxes in its namespace that name
+// its key, so a cache landing on a node (or failing to) re-evaluates their
+// Ready without polling. A non-nil nodes narrows that to the Sandboxes whose
+// status.node it holds, and to those not yet placed: a Sandbox with no node
+// builds its Pod's affinity from every node's entry (ADR-0001).
+func (r *SandboxReconciler) sandboxesNamingRepo(ctx context.Context, repo client.Object, nodes map[string]bool) []reconcile.Request {
 	var list corev1alpha1.SandboxList
-	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
-		logf.FromContext(ctx).Error(err, "Could not list Sandboxes for Repo", "repo", obj.GetName())
+	if err := r.List(ctx, &list, client.InNamespace(repo.GetNamespace())); err != nil {
+		logf.FromContext(ctx).Error(err, "Could not list Sandboxes for Repo", "repo", repo.GetName())
 		return nil
 	}
 	var requests []reconcile.Request
 	for _, sandbox := range list.Items {
+		if nodes != nil && sandbox.Status.Node != "" && !nodes[sandbox.Status.Node] {
+			continue
+		}
 		for _, ref := range sandbox.Spec.Repos {
-			if ref.Key == obj.GetName() {
+			if ref.Key == repo.GetName() {
 				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&sandbox)})
 				break
 			}
@@ -1162,19 +1170,83 @@ func (r *SandboxReconciler) sandboxesNamingRepo(ctx context.Context, obj client.
 	return requests
 }
 
+// changedRepoNodes is the set of nodes whose status.nodes entry a Repo update
+// added, removed or changed. A Sandbox reads only its own node's entry of each
+// Repo it names (ADR-0051, ADR-0053), so these are the only nodes a status
+// write can matter to.
+func changedRepoNodes(old, updated *corev1alpha1.Repo) map[string]bool {
+	before := make(map[string]*corev1alpha1.RepoNodeStatus, len(old.Status.Nodes))
+	for i := range old.Status.Nodes {
+		before[old.Status.Nodes[i].Node] = &old.Status.Nodes[i]
+	}
+	changed := map[string]bool{}
+	for i := range updated.Status.Nodes {
+		entry := &updated.Status.Nodes[i]
+		if prev, ok := before[entry.Node]; !ok || !equality.Semantic.DeepEqual(prev, entry) {
+			changed[entry.Node] = true
+		}
+		delete(before, entry.Node)
+	}
+	for node := range before {
+		changed[node] = true
+	}
+	return changed
+}
+
+// repoEvents is the Repo watch's handler (ADR-0001). A create, a delete and a
+// spec change wake every Sandbox naming the Repo; a status write wakes only
+// the Sandboxes on the nodes it changed. Mapping every write to every naming
+// Sandbox woke each of them on every node's per-fetch write: S×N per
+// interval, S² on a burst of asks.
+func (r *SandboxReconciler) repoEvents() handler.EventHandler {
+	type queue = workqueue.TypedRateLimitingInterface[reconcile.Request]
+	enqueue := func(ctx context.Context, q queue, repo client.Object, nodes map[string]bool) {
+		for _, req := range r.sandboxesNamingRepo(ctx, repo, nodes) {
+			q.Add(req)
+		}
+	}
+	return handler.Funcs{
+		CreateFunc: func(ctx context.Context, e event.CreateEvent, q queue) {
+			enqueue(ctx, q, e.Object, nil)
+		},
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q queue) {
+			old, okOld := e.ObjectOld.(*corev1alpha1.Repo)
+			updated, okNew := e.ObjectNew.(*corev1alpha1.Repo)
+			if !okOld || !okNew || old.Generation != updated.Generation {
+				enqueue(ctx, q, e.ObjectNew, nil)
+				return
+			}
+			if nodes := changedRepoNodes(old, updated); len(nodes) > 0 {
+				enqueue(ctx, q, updated, nodes)
+			}
+		},
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q queue) {
+			enqueue(ctx, q, e.Object, nil)
+		},
+		GenericFunc: func(ctx context.Context, e event.GenericEvent, q queue) {
+			enqueue(ctx, q, e.Object, nil)
+		},
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 //
 // The Sandbox is watched without a predicate, deliberately: an ask is an
 // annotation, so a GenerationChangedPredicate here would drop the very event
-// this controller exists to carry onto the Pod (ADR-0053). The Repo watch is
-// bare for the same reason from the other side — a cache landing is a status
-// write, and the standing per-key entry is computed from it.
+// this controller exists to carry onto the Pod (ADR-0053). The Repo watch
+// takes no predicate for the same reason from the other side — a cache
+// landing is a status write, and the standing per-key entry is computed from
+// it — and narrows by node in its handler instead (repoEvents).
+//
+// SandboxWorkers reconcile in parallel (ADR-0001): controller-runtime never
+// reconciles one Sandbox twice at once, and a reconcile holds no shared state.
 func (r *SandboxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1alpha1.Sandbox{}).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.Service{}).
-		Watches(&corev1alpha1.Repo{}, handler.EnqueueRequestsFromMapFunc(r.sandboxesNamingRepo)).
+		Watches(&corev1alpha1.Repo{}, r.repoEvents()).
+		WithOptions(controller.Options{MaxConcurrentReconciles: SandboxWorkers}).
 		Named("sandbox").
 		Complete(r)
 }
