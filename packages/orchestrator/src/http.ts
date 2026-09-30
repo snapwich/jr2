@@ -45,7 +45,7 @@ import { EventValidationError, UnknownAddressError } from "./registration.ts";
 import type { RepoStatus } from "./repos.ts";
 import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
 import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
-import { observe, type RunHost } from "./run-host.ts";
+import { observe, type RunFeedEvent, type RunHost, type WorkflowFeedEvent } from "./run-host.ts";
 import { KIT_VERSION } from "./config.ts";
 
 /** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
@@ -239,19 +239,74 @@ const PING_MS = 15_000;
  * errors (hono's `StreamingApi`), so a failed write is indistinguishable from a good one. A peer
  * that goes away is detected by `stream.onAbort`, which is what every handler here wires to its
  * exit. The tick checks `aborted`/`closed` only so a ping that fires between the abort and the
- * teardown does not write into a dead stream. Returns its own clear fn.
+ * teardown does not write into a dead stream. The ping goes through the subscriber's `send`, so
+ * it counts against the backlog like any frame: a reader stalled on a quiet feed is closed too.
+ * Returns its own clear fn.
  */
-function pinger(stream: SseStream, done: () => void, everyMs = PING_MS): () => void {
+function pinger(stream: SseStream, send: (frame: string) => Promise<void>, done: () => void, everyMs = PING_MS) {
   const timer = setInterval(() => {
     if (stream.aborted || stream.closed) return done();
-    void stream.write(":\n\n");
+    void send(":\n\n");
   }, everyMs);
   return () => clearInterval(timer);
 }
 
-/** The slice of hono's `StreamingApi` the ping needs: the raw write (`writeSSE` cannot express a
- *  comment frame) plus the two flags that say the peer is gone. */
-type SseStream = { write: (s: string) => Promise<unknown>; aborted: boolean; closed: boolean };
+/** The slice of hono's `StreamingApi` the feeds need: the raw write (a frame is rendered here, and
+ *  `writeSSE` cannot express a comment frame), the two flags that say the peer is gone, and the
+ *  abort that closes a reader that fell behind. */
+type SseStream = { write: (s: string) => Promise<unknown>; aborted: boolean; closed: boolean; abort: () => void };
+
+/**
+ * How many writes one subscriber may have pending before it is closed (ADR-0022). A reader this far
+ * behind is not catching up, and holding frames for it is a per-client queue the server does not
+ * keep: the feeds are level-triggered, so closing it loses nothing — EventSource reconnects on its
+ * own retry and the opening frame is the whole current truth.
+ */
+const BACKLOG_FRAMES = 64;
+
+/**
+ * One SSE frame, spelled as hono's `writeSSE` spells it. JSON has no raw newline, so the payload is
+ * always one `data:` line.
+ */
+function sseFrame(event: string, data: unknown, retry?: number): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n${retry ? `retry: ${retry}\n` : ""}\n`;
+}
+
+/**
+ * Render each feed event ONCE, however many subscribers share it (ADR-0022). The host hands every
+ * listener of a feed the same event object, so the object is the key, and the frame is released
+ * with it. `undefined` is a rendering too — "this band does not carry it" — and is cached alike.
+ */
+function renderOnce<E extends object, F>(render: (event: E) => F): (event: E) => F {
+  const frames = new WeakMap<E, F>();
+  return (event) => {
+    if (frames.has(event)) return frames.get(event) as F;
+    const frame = render(event);
+    frames.set(event, frame);
+    return frame;
+  };
+}
+
+/**
+ * One subscriber's writes (ADR-0022): the shared frame goes out as-is, and the only state kept per
+ * client is a count of the writes still pending. Past {@link BACKLOG_FRAMES} the reader is closed —
+ * aborted, not drained, so the frames it would never read are dropped with it.
+ */
+function subscriber(stream: SseStream, done: () => void): (frame: string) => Promise<void> {
+  let pending = 0;
+  return async (frame) => {
+    if (pending >= BACKLOG_FRAMES) {
+      stream.abort();
+      return done();
+    }
+    pending++;
+    try {
+      await stream.write(frame);
+    } finally {
+      pending--;
+    }
+  };
+}
 
 export type CreateAppOptions = {
   /** Ping interval for the SSE feeds. Tests shorten it; nothing in production sets it. */
@@ -396,6 +451,18 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
 
   app.get("/workflows/:name/runs", (c) => c.json(host.observations(c.req.param("name"))));
 
+  // The workflow feed, rendered once per event for every page attached to it (ADR-0022): the
+  // `observe()` projection and its JSON happen once, not once per open page.
+  const workflowFrame = renderOnce((ev: Exclude<WorkflowFeedEvent, { kind: "closed" }>) => {
+    if (ev.kind === "gone") return sseFrame("gone", { runId: ev.runId });
+    // The TYPE alone: an emit's payload is author data, the same class of thing as context.
+    if (ev.kind === "emit") return sseFrame("emit", { runId: ev.runId, type: ev.event.type });
+    // `{ child, attempt }` only — `reason` is mechanism/error text, which stays behind the
+    // Instance token like `fault` (ADR-0014/0016).
+    if (ev.kind === "retry") return sseFrame("retry", { runId: ev.runId, child: ev.child, attempt: ev.attempt });
+    return sseFrame("status", observe(ev.status));
+  });
+
   /**
    * SSE: a whole WORKFLOW's activity (ADR-0022) — every run of it appearing, moving, emitting and
    * leaving, on one connection that outlives all of them.
@@ -417,38 +484,39 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
         const exit = closer(resolve);
+        const send = subscriber(stream, exit.done);
         // Subscribe and snapshot in one call, then write the snapshot in the same tick: nothing can
         // start, move or finish in between, so the client's first frame is a complete picture.
         const { runs, unsubscribe } = host.observeWorkflow(name, (ev) => {
           if (ev.kind === "closed") return exit.done();
-          if (ev.kind === "gone") {
-            void stream.writeSSE({ event: "gone", data: JSON.stringify({ runId: ev.runId }) });
-            return;
-          }
-          if (ev.kind === "emit") {
-            // The TYPE alone: an emit's payload is author data, the same class of thing as context.
-            void stream.writeSSE({ event: "emit", data: JSON.stringify({ runId: ev.runId, type: ev.event.type }) });
-            return;
-          }
-          if (ev.kind === "retry") {
-            // `{ child, attempt }` only — `reason` is mechanism/error text, which stays behind the
-            // Instance token like `fault` (ADR-0014/0016).
-            void stream.writeSSE({
-              event: "retry",
-              data: JSON.stringify({ runId: ev.runId, child: ev.child, attempt: ev.attempt }),
-            });
-            return;
-          }
-          void stream.writeSSE({ event: "status", data: JSON.stringify(observe(ev.status)) });
+          void send(workflowFrame(ev));
         });
         exit.onExit(unsubscribe);
         // `retry` steers the browser's own EventSource backoff. This feed never ends on its own, so
-        // every close is a fault worth reconnecting from — the client does not decide that.
-        void stream.writeSSE({ event: "runs", data: JSON.stringify(runs.map(observe)), retry: 2000 });
-        exit.onExit(pinger(stream, exit.done, pingMs));
+        // every close is a fault worth reconnecting from — the client does not decide that. The
+        // snapshot is this subscriber's own, so it is the one frame rendered per client.
+        void send(sseFrame("runs", runs.map(observe), 2000));
+        exit.onExit(pinger(stream, send, exit.done, pingMs));
         stream.onAbort(exit.done);
       });
     });
+  });
+
+  // The per-run feed in the OPEN band, rendered once per event for all its subscribers (ADR-0022).
+  // `undefined` = this band does not carry it.
+  const openRunFrame = renderOnce((ev: Exclude<RunFeedEvent, { kind: "closed" }>) => {
+    // The TYPE alone: an emit's payload is author data, the same class of thing as context.
+    if (ev.kind === "emit") return sseFrame("emit", { type: ev.event.type });
+    // `{ child, attempt }` only — `reason` is mechanism/error text, which stays behind the
+    // Instance token like `fault` (ADR-0014/0016).
+    if (ev.kind === "retry") return sseFrame("retry", { child: ev.child, attempt: ev.attempt });
+    // Turn markers (ADR-0023) carry an Agent's framing and pick payload — Instance-token class, so
+    // the OPEN band never sees them (not even their types).
+    if (ev.kind === "admission" || ev.kind === "pick") return undefined;
+    // A wait for capacity's lines carry the scheduler's words (ADR-0064): behind the token. The
+    // open band sees `placing` lit in the status's children, and nothing more.
+    if (ev.kind === "placing" || ev.kind === "placed") return undefined;
+    return sseFrame("status", observe(ev.status));
   });
 
   app.get("/workflows/:name/runs/:runId/events", async (c) => {
@@ -461,31 +529,17 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
         const exit = closer(resolve);
+        const send = subscriber(stream, exit.done);
         exit.onExit(
           host.subscribe(runId, (ev) => {
             // The host is shutting down under a feed that has no end of its own.
             if (ev.kind === "closed") return exit.done();
-            if (ev.kind === "emit") {
-              // The TYPE alone: an emit's payload is author data, the same class of thing as context.
-              void stream.writeSSE({ event: "emit", data: JSON.stringify({ type: ev.event.type }) });
-              return;
-            }
-            if (ev.kind === "retry") {
-              // `{ child, attempt }` only — `reason` is mechanism/error text, which stays behind
-              // the Instance token like `fault` (ADR-0014/0016).
-              void stream.writeSSE({ event: "retry", data: JSON.stringify({ child: ev.child, attempt: ev.attempt }) });
-              return;
-            }
-            // Turn markers (ADR-0023) carry an Agent's framing and pick payload — Instance-token
-            // class, so the OPEN band never sees them (not even their types).
-            if (ev.kind === "admission" || ev.kind === "pick") return;
-            // A wait for capacity's lines carry the scheduler's words (ADR-0064): behind the token.
-            // The open band sees `placing` lit in the status's children, and nothing more.
-            if (ev.kind === "placing" || ev.kind === "placed") return;
+            const frame = openRunFrame(ev);
+            if (frame === undefined) return;
             // Terminal frame must flush before the handler returns and closes the stream (see the
             // guarded feed below for why the exit is chained off the write).
-            const terminal = ev.status.status !== "active";
-            void stream.writeSSE({ event: "status", data: JSON.stringify(observe(ev.status)) }).then(() => {
+            const terminal = ev.kind === "status" && ev.status.status !== "active";
+            void send(frame).then(() => {
               if (terminal) exit.done();
             });
           }),
@@ -493,7 +547,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
         // Race guard: settled between the liveness check and the subscribe, which then attached to
         // nothing. No read-through on this route, so there is nothing to fall back to — just close.
         if (host.status(runId) === undefined) return exit.done();
-        exit.onExit(pinger(stream, exit.done, pingMs));
+        exit.onExit(pinger(stream, send, exit.done, pingMs));
         stream.onAbort(exit.done);
       });
     });
@@ -595,6 +649,21 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     }
   });
 
+  // The per-run feed in the Instance band, rendered once per event for all its subscribers
+  // (ADR-0022).
+  const runFrame = renderOnce((ev: Exclude<RunFeedEvent, { kind: "closed" }>) => {
+    if (ev.kind === "emit") return sseFrame("emit", ev.event);
+    // The Instance's own feed: the full telemetry, reason included (same trust class as `fault`).
+    if (ev.kind === "retry") return sseFrame("retry", ev);
+    // Turn markers (ADR-0023) — Instance-token band, so the framing/payload ride whole. These stay
+    // OFF the open workflow feed entirely (run-host.ts feeds them per-run).
+    if (ev.kind === "admission" || ev.kind === "pick") return sseFrame(ev.kind, ev);
+    // A wait for capacity starting and ending (ADR-0064) — Instance-token band too: the message is
+    // the scheduler's or the quota's own words.
+    if (ev.kind === "placing" || ev.kind === "placed") return sseFrame(ev.kind, ev);
+    return sseFrame("status", ev.status);
+  });
+
   // SSE: a live run streams its status deltas + author `emit`s (current status replayed on attach,
   // then live until the terminal transition or client abort). A run that has already settled streams
   // its final status once and closes (so `jr2 logs -f` works on a finished run). Unknown run → 404.
@@ -610,36 +679,15 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     return streamSSE(c, async (stream) => {
       await new Promise<void>((resolve) => {
         const exit = closer(resolve);
+        const send = subscriber(stream, exit.done);
         exit.onExit(
           host.subscribe(runId, (ev) => {
             if (ev.kind === "closed") return exit.done();
-            if (ev.kind === "emit") {
-              void stream.writeSSE({ event: "emit", data: JSON.stringify(ev.event) });
-              return;
-            }
-            if (ev.kind === "retry") {
-              // The Instance's own feed: the full telemetry, reason included (same trust class as
-              // `fault`).
-              void stream.writeSSE({ event: "retry", data: JSON.stringify(ev) });
-              return;
-            }
-            if (ev.kind === "admission" || ev.kind === "pick") {
-              // Turn markers (ADR-0023) — Instance-token band, so the framing/payload ride whole.
-              // These stay OFF the open workflow feed entirely (run-host.ts feeds them per-run).
-              void stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) });
-              return;
-            }
-            if (ev.kind === "placing" || ev.kind === "placed") {
-              // A wait for capacity starting and ending (ADR-0064) — Instance-token band too: the
-              // message is the scheduler's or the quota's own words.
-              void stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) });
-              return;
-            }
             // Exiting lets the handler return, which CLOSES the stream — so on the terminal frame we
             // must wait for the write to flush first, or a fire-and-forget write races the close and the
             // final status is dropped (the very frame `jr2 run` blocks on). Chain the exit off the write.
-            const terminal = ev.status.status !== "active";
-            void stream.writeSSE({ event: "status", data: JSON.stringify(ev.status) }).then(() => {
+            const terminal = ev.kind === "status" && ev.status.status !== "active";
+            void send(runFrame(ev)).then(() => {
               if (terminal) exit.done();
             });
           }),
@@ -654,7 +702,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
           });
           return;
         }
-        exit.onExit(pinger(stream, exit.done, pingMs));
+        exit.onExit(pinger(stream, send, exit.done, pingMs));
         stream.onAbort(exit.done);
       });
     });
