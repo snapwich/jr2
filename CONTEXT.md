@@ -18,9 +18,9 @@ shipped by the kit — the kit ships Machines (`@jr2/machines`), and a packaged 
 workflows file exports it, its Open parts bound. _Avoid_: app, pipeline
 
 **Orchestrator**: The runtime that executes Machines. A single-writer daemon (`replicas: 1`, always in-cluster —
-ADR-0019) persisting run snapshots to its store (sqlite by default, Postgres opt-in). `replicas: 1` means single
-_writer_ (no split-brain on the snapshot), not one workflow per process — one Orchestrator hosts **many** Workflows and
-many runs, fed by both Sources (pull) and the HTTP API (push). _Avoid_: runner, engine
+ADR-0019) persisting run snapshots to sqlite on its volume (ADR-0065). `replicas: 1` means single _writer_ (no
+split-brain on the snapshot), not one workflow per process — one Orchestrator hosts **many** Workflows and many runs,
+fed by both Sources (pull) and the HTTP API (push). _Avoid_: runner, engine
 
 **Instance**: A user-owned folder scaffolded by `jr2 init` — `jr2.config.ts` (reach and credentials: the deployment
 facts a Machine cannot carry, ADR-0050/0051) + the discovered `workflows/` directory + manifests. `jr2 up` bakes the

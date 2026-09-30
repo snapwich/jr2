@@ -64,9 +64,9 @@ export default defineConfig({
 - **`registry`** (deployment-varying, resolve from env): absent → images are `kind load`-ed; present → pushed
   (ADR-0019). **`kitRegistry`** (also env) re-homes the published Kit image refs for self-hosted, air-gapped, or
   mirror-only clusters ([ADR-0044](0044-kit-images-live-at-a-canonical-home-a-self-host-mirrors-it.md)).
-- **The snapshot store defaults to sqlite** on a PVC in the instance's namespace (zero setup); **Postgres** is opt-in
-  via `DATABASE_URL` — jr2 points at a database you provide, it never deploys or operates one (the single-table,
-  single-writer snapshot fits sqlite, and `replicas: 1` keeps it single-writer).
+- **The snapshot store is sqlite** on a PVC in the instance's namespace (zero setup); no other store is owed
+  ([ADR-0065](0065-a-persist-survives-a-crash-and-history-is-a-week.md)) — the single-table, single-writer snapshot fits
+  sqlite, and `replicas: 1` keeps it single-writer.
 - Git credentials for private repos: an HTTPS token from `.env`, or a `jr2-git-ssh` Secret holding the key `jr2 up`
   asked the user to choose — a generated in-cluster deploy keypair (the recommended default), a local key, or one pasted
   on stdin (ADR-0019, [ADR-0047](0047-the-git-ssh-key-source-is-the-users-choice.md)). Kube target: the current

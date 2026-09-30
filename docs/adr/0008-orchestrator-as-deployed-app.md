@@ -16,12 +16,11 @@ kit.
 ## The Orchestrator instance
 
 An instance is a **stateful, single-writer daemon**: it holds the live in-memory xstate actors, so it runs `replicas: 1`
-and persists its snapshots to its store (sqlite by default, Postgres opt-in — ADR-0009). `replicas: 1` means single
-_writer_ (no split-brain on the snapshot) — **not** one workflow per process. One instance registers N workflows and
-**hosts many runs** of any of them. Work arrives two ways that both reduce to injecting events into an actor: a
-**Source** (pull, ADR-0017) and the **HTTP API** (push) — so push/pull coexist with no special machinery. Isolation or
-independent scaling is achieved by running **another instance**, not by replicating one run; the default is one
-instance, many workflows.
+and persists its snapshots to sqlite on its volume (ADR-0009, ADR-0065). `replicas: 1` means single _writer_ (no
+split-brain on the snapshot) — **not** one workflow per process. One instance registers N workflows and **hosts many
+runs** of any of them. Work arrives two ways that both reduce to injecting events into an actor: a **Source** (pull,
+ADR-0017) and the **HTTP API** (push) — so push/pull coexist with no special machinery. Isolation or independent scaling
+is achieved by running **another instance**, not by replicating one run; the default is one instance, many workflows.
 
 ## The Harness stays on the Agent side
 
@@ -39,9 +38,9 @@ and an HTTP API shaped as "durable run addressed by id" (`POST` to start/feed, `
   pattern (instance code → image; manifests → GitOps) is expected, and the instance folder carries both.
 - Concrete workflows do **not** live in the jr2 source repo — only the kit, the Machines it ships (`@jr2/machines`,
   ADR-0054), and the `templates/default` model instance do. A user's workflows live in their `jr2 init` instance folder.
-- jr2 ships and deploys only its **`Sandbox` operator** (its own CRD), deployed once per cluster. The snapshot store and
-  the model backend are **dependencies you provide** — jr2 points at them (`DATABASE_URL`, model env), it does not own
-  or operate them. Instances are deployed per user/project.
+- jr2 ships and deploys only its **`Sandbox` operator** (its own CRD), deployed once per cluster. The snapshot store is
+  sqlite on the Instance's own volume (ADR-0065); the model backend is a **dependency you provide** — jr2 points at it
+  (model env), it does not own or operate it. Instances are deployed per user/project.
 - Users interact through the **`jr2` CLI** far more than raw HTTP; the HTTP API is the machine-to-machine surface (push
   work, human-in-the-loop, status) the CLI itself sits on top of.
 - Dynamic third-party workflow/plugin loading stays **deferred**; build-time-bake of the instance's code keeps full
