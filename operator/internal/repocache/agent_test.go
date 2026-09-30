@@ -181,6 +181,11 @@ func podMounting(name, on string, created time.Time, keys ...string) *corev1.Pod
 
 func ts(t time.Time) *metav1.Time { v := metav1.NewTime(t); return &v }
 
+// aJitteredInterval reports a wait inside interval ±20% (ADR-0051).
+func aJitteredInterval(got, interval time.Duration) bool {
+	return got >= interval*4/5 && got <= interval*6/5
+}
+
 func reconcile1(t *testing.T, a *Agent) (reconcile.Result, error) {
 	t.Helper()
 	return a.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: key, Namespace: ns}})
@@ -248,7 +253,7 @@ func TestClonesWhenASandboxOnThisNodeNamesTheRepo(t *testing.T) {
 	if !e.LastFetched.Time.Equal(fixedNow) {
 		t.Fatalf("lastFetched should be the attempt's instant, got %v", e.LastFetched)
 	}
-	if res.RequeueAfter != defaultRefreshInterval {
+	if !aJitteredInterval(res.RequeueAfter, defaultRefreshInterval) {
 		t.Fatalf("expected a requeue at the refresh interval, got %v", res.RequeueAfter)
 	}
 	if !slices.Contains(git.envs[0], "GIT_TERMINAL_PROMPT=0") {
@@ -653,7 +658,7 @@ func TestFetchesOnDemandWhenAPodWasCreatedSinceTheLastAttempt(t *testing.T) {
 	if !e.LastFetched.Time.Equal(fixedNow) || !e.Synced || !e.Present || e.Attempted != corev1alpha1.RepoAttemptFetch {
 		t.Fatalf("expected lastFetched advanced to now by a fetch, got %+v", e)
 	}
-	if res.RequeueAfter != defaultRefreshInterval {
+	if !aJitteredInterval(res.RequeueAfter, defaultRefreshInterval) {
 		t.Fatalf("expected a requeue at the refresh interval, got %v", res.RequeueAfter)
 	}
 }
@@ -795,7 +800,7 @@ func TestAnAskInsideTheAttemptsOwnSecondWaitsForTheTopOfTheNextAndFetchesOnce(t 
 	if e := entry(t, a); !e.LastFetched.Time.Equal(fixedNow.Add(time.Second)) {
 		t.Fatalf("the stamp is the attempt's start, at the ask's second, got %+v", e)
 	}
-	if result.RequeueAfter != defaultRefreshInterval {
+	if !aJitteredInterval(result.RequeueAfter, defaultRefreshInterval) {
 		t.Fatalf("an answered ask owes no second fetch; the next wake is the interval, got %s", result.RequeueAfter)
 	}
 }
@@ -858,7 +863,7 @@ func TestAnAnsweredAskSleepsTheInterval(t *testing.T) {
 	if !git.has("fetch", "origin") {
 		t.Fatalf("an ask marked since the last attempt is demand, got %v", git.calls)
 	}
-	if result.RequeueAfter != defaultRefreshInterval {
+	if !aJitteredInterval(result.RequeueAfter, defaultRefreshInterval) {
 		t.Fatalf("an answered ask owes no second fetch; the next wake is the interval, got %s", result.RequeueAfter)
 	}
 }
@@ -899,8 +904,9 @@ func TestFetchesOnTheIntervalAndWaitsOtherwise(t *testing.T) {
 	if git.has("fetch", "origin") {
 		t.Fatalf("a cache fetched a minute ago with nobody asking must wait, got %v", git.calls)
 	}
-	if res.RequeueAfter != 4*time.Minute {
-		t.Fatalf("expected a requeue for the rest of the interval (4m), got %v", res.RequeueAfter)
+	// The rest of a jittered interval: 5m ±20%, less the minute gone.
+	if res.RequeueAfter < 3*time.Minute || res.RequeueAfter > 5*time.Minute {
+		t.Fatalf("expected a requeue for the rest of a jittered interval (3m–5m), got %v", res.RequeueAfter)
 	}
 
 	// Past the interval: fetch.
@@ -964,7 +970,7 @@ func TestFetchFailureKeepsLastFetchedAndDegradesToStale(t *testing.T) {
 	if !present(a.dir(key)) {
 		t.Fatal("a stale cache is still a cache")
 	}
-	if res.RequeueAfter != defaultRefreshInterval {
+	if !aJitteredInterval(res.RequeueAfter, defaultRefreshInterval) {
 		t.Fatalf("expected the next look at the interval, got %v", res.RequeueAfter)
 	}
 }
@@ -1202,5 +1208,90 @@ func TestReposOfPodMapsOnlyThisNodesCacheMounts(t *testing.T) {
 	}
 	if got := a.reposOfPod(context.Background(), other); len(got) != 0 {
 		t.Fatalf("no volume over a cache leaf, so no request, got %v", got)
+	}
+}
+
+func TestEveryCacheSpeaksProtocolV2(t *testing.T) {
+	// ADR-0051: a fetch advertises only the refs it asks for — on a cache the
+	// agent clones, on one it refreshes, and on one it adopts.
+	v2 := pinned(wirePins[0])
+	if !slices.Equal(v2, []string{gitConfig, "protocol.version", "2"}) {
+		t.Fatalf("the wire pin must be protocol.version=2, got %v", v2)
+	}
+
+	cloned := &fakeGit{}
+	a := newAgent(t, cloned, repo(1), podOn("sb", node, fixedNow.Add(-time.Minute)))
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if !cloned.has(v2...) {
+		t.Errorf("a cloned cache must speak protocol v2, got %v", cloned.calls)
+	}
+
+	refreshed := &fakeGit{}
+	fresh := fixedNow.Add(-time.Minute)
+	b := newAgent(t, refreshed,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(fresh), LastFetched: ts(fresh), ObservedGeneration: 1}),
+	)
+	makePresent(t, b)
+	if _, err := reconcile1(t, b); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if !refreshed.has(v2...) {
+		t.Errorf("a refreshed cache must speak protocol v2, got %v", refreshed.calls)
+	}
+
+	adopted := &fakeGit{}
+	c := newAgent(t, adopted, podOn("sb", node, fixedNow.Add(-time.Minute)))
+	makePresent(t, c)
+	if err := c.Sweep(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if !adopted.has(v2...) {
+		t.Errorf("an adopted cache must speak protocol v2, got %v", adopted.calls)
+	}
+}
+
+func TestTheRefreshIntervalCarriesTwentyPercentJitter(t *testing.T) {
+	// ADR-0051: R Repos on N nodes do not hit a remote on one beat.
+	interval := 5 * time.Minute
+	seen := map[time.Duration]bool{}
+	for range 1000 {
+		got := jittered(interval)
+		if !aJitteredInterval(got, interval) {
+			t.Fatalf("a jittered wait must stay within ±20%% of %v, got %v", interval, got)
+		}
+		seen[got] = true
+	}
+	if len(seen) < 100 {
+		t.Fatalf("the waits must spread, got %d distinct of 1000", len(seen))
+	}
+	if earliest(interval) != 4*time.Minute {
+		t.Fatalf("the earliest a jittered interval ends is 80%% of it, got %v", earliest(interval))
+	}
+}
+
+func TestAnIntervalIsDueFromTheEarliestAJitteredWaitEnds(t *testing.T) {
+	// A wait drawn short must land on a fetch, not on another wait for the
+	// rest of the plain interval — that would put every Repo back on one beat.
+	git := &fakeGit{}
+	last := fixedNow.Add(-4 * time.Minute)
+	a := newAgent(t, git,
+		repo(1, corev1alpha1.RepoNodeStatus{Node: node, Present: true, Synced: true, LastAttempt: ts(last), LastFetched: ts(last), ObservedGeneration: 1}),
+	)
+	makePresent(t, a)
+	if _, err := reconcile1(t, a); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !git.has("fetch", "origin") {
+		t.Fatalf("80%% of the interval is gone; the fetch is due, got %v", git.calls)
+	}
+}
+
+func TestTheAgentWorksFourReposAtOnce(t *testing.T) {
+	// ADR-0051: a kit value, so one Repo's cold clone never holds another's
+	// on-demand fetch.
+	if concurrentRepos != 4 {
+		t.Fatalf("the agent works four Repos at once on a node, got %d", concurrentRepos)
 	}
 }
