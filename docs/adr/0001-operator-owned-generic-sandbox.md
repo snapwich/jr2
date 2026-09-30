@@ -50,6 +50,35 @@ quota is never taken for abandoned (ADR-0064).
 There are no ownerReferences in this scheme — nothing in the cluster represents a run, so liveness has to be asserted,
 not referenced. The lease only asserts; the Orchestrator learns from its watch of the Sandboxes (ADR-0021, ADR-0063).
 
+## The operator scales with Sandboxes, not with the cluster
+
+The operator is deployed once per cluster (ADR-0008), so its cost must follow what jr2 runs, not what the cluster runs.
+The scaling review (R7, 2026-09-30) found it fine at 40 Sandboxes and predicted the breaks at hundreds, or on a busy
+cluster; these are the rules.
+
+- **The operator caches only what it labels.** controller-runtime keeps an in-memory copy of every object a controller
+  watches; the Pod and Service informers take the selector `app.kubernetes.io/managed-by=jr2-operator`, which every
+  object the operator creates carries, so memory and watch traffic are O(Sandboxes) whatever cluster the operator lands
+  in. Sandboxes and Repos are jr2's own kinds and are cached whole. The one read that must not trust the cache — the
+  confirmation before a pod is declared lost (ADR-0021) — goes past it through the API reader.
+- **Reconciles run in parallel, at fixed numbers.** controller-runtime never reconciles one Sandbox twice at once and a
+  reconcile holds no shared state, so the Sandbox controller runs 16 workers, the Repo controller 4, and the client's
+  rate limit is 100 QPS with a burst of 200, so a burst of CRs is placed in a fraction of a second instead of one API
+  round trip at a time. Kit values, not config: nobody has a reading to tune them by, and the API server's own priority
+  and fairness still governs.
+- **A Repo event wakes only the Sandboxes it changes.** A Sandbox reads only its own node's entry of each Repo it names
+  (ADR-0051, ADR-0053), so the Repo watch diffs `status.nodes` and enqueues the Sandboxes naming the Repo whose
+  `status.node` changed; a spec change wakes them all. Without this a cache agent's per-fetch status write woke every
+  Sandbox naming the Repo on every node, S×N per interval and S² on a burst of asks.
+- **The token Secret is owned from birth.** The Orchestrator writes the CR first, then the Secret with the CR as its
+  owner, so no path — an ownerRef patch that fails, an Orchestrator that dies between the two writes — leaves a token
+  behind on the cluster. The pod is created the moment the CR is seen and may reach its mount before the Secret lands;
+  kubelet retries the mount, and the Secret arrives one API round trip after the CR, well before the scheduler and
+  kubelet get there.
+
+Not taken (R14): a headless Service. A ClusterIP Service programs kube-proxy rules on every node per Sandbox; a headless
+one keeps the name and the endpoint and costs no node anything. Deferred until a cluster with many nodes measures it.
+
 ## Known limitations
 
 These are accepted gaps in the current operator, recorded so they aren't silently forgotten. Each is a deliberate

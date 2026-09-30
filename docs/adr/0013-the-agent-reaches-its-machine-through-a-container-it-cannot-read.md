@@ -109,8 +109,8 @@ is needed either (ADR-0006).
 ## Consequences
 
 - **The operator needs no change.** ADR-0001 made sidecars generic container fragments the operator schedules without
-  understanding; the Custodian is exactly that. `kubectlSandbox` composes it (plus the token Secret, minted before the
-  CR so the pod never waits on it, and owner-ref'd to the CR so Kubernetes reaps it with the Sandbox).
+  understanding; the Custodian is exactly that. `kubeSandbox` composes it (plus the token Secret, written right after
+  the CR with the CR as its owner from birth, so Kubernetes reaps it with the Sandbox and no path leaks it — ADR-0001).
 - **Nothing in jr2 speaks MCP.** The Orchestrator, the Harness and the CLI carry no MCP dependency.
 - **One container holds the Sandbox token and every model key.** A fault in the Custodian's engine is a fault in the one
   container that holds both. ADR-0059 records the trade.
