@@ -16,7 +16,16 @@
 // Orchestrator was ever handed. A Harness writes a line per event, not per token, so the cost is
 // small next to a Turn.
 
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  truncateSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { HistoryMessage, Settlement, StreamEvent } from "./wire.ts";
 
@@ -75,8 +84,14 @@ export function startRecord(root: string, agentName: string, instanceId: string)
   return recorderAt(dir);
 }
 
-/** Append to an existing record — the one a boot rebuilt. */
+/** The record's files, each one JSONL. */
+const RECORD_FILES = ["admitted.jsonl", "stream.jsonl", "messages.jsonl", "settlements.jsonl"];
+
+/** Append to an existing record — the one a boot rebuilt. The torn write a restart may have left
+ * at a file's end is cut first: the read dropped it, and a line appended onto it would join the
+ * two into a middle line that does not parse, so the NEXT boot could not read the conversation. */
 export function recorderAt(dir: string): ConversationRecorder {
+  for (const file of RECORD_FILES) cutTornTail(join(dir, "record", file));
   const line = (file: string, value: unknown) =>
     appendFileSync(join(dir, "record", file), `${JSON.stringify(value)}\n`);
   return {
@@ -138,6 +153,20 @@ export function freeDir(dir: string): void {
   } catch {
     // Another conversation of the same Agent is still held.
   }
+}
+
+/** Truncate a JSONL file to its last newline — every line is written whole with its newline, so
+ * whatever follows the last one is a torn write (see `jsonl`). A missing file has no tail. */
+function cutTornTail(path: string): void {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  const kept = bytes.lastIndexOf(0x0a) + 1;
+  if (kept < bytes.length) truncateSync(path, kept);
 }
 
 function entries(dir: string): string[] {

@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,6 +212,28 @@ test("a write the restart cut short is dropped, not fatal", async () => {
   writeFileSync(file, `${JSON.stringify({ role: "user", text: "go" })}\n{"role":"assis`);
   const after = harnessOver(dir);
   assert.deepEqual((await history(after.app, "/agents/decider/i1")).messages, [{ role: "user", text: "go" }]);
+});
+
+test("a torn write is cut before the rebuilt record appends, so the boot after that reads it too", async () => {
+  const dir = scratch();
+  const before = harnessOver(dir);
+  await admitted(before.app, "/agents/decider/i1", "one");
+  await flush();
+  // The process dies mid-line: the Submission is running, and its stream holds a torn write.
+  const file = join(conversationDir(dir, "decider", "i1"), "record", "stream.jsonl");
+  writeFileSync(file, `${readFileSync(file, "utf8")}{"type":"message-app`);
+
+  // Boot 1 rebuilds, and at once appends the restart's Settlement to that same stream.
+  const after = harnessOver(dir);
+  await admitted(after.app, "/agents/decider/i1", "two");
+  await flush();
+  // Boot 2 still reads the conversation — the tail went before the append, not into it.
+  const third = harnessOver(dir);
+  assert.deepEqual(third.boot, [], "nothing unreadable");
+  assert.deepEqual(
+    (await history(third.app, "/agents/decider/i1")).settlements.map((s) => s.error?.type),
+    [SUBMISSION_HARNESS_RESTARTED, SUBMISSION_HARNESS_RESTARTED],
+  );
 });
 
 // ---- the live set ---------------------------------------------------------------------------------
