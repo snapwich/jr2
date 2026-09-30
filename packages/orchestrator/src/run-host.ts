@@ -600,6 +600,13 @@ export class RunHost {
   private readonly workflowDefs = new Map<string, WorkflowDef>();
   private readonly runs = new Map<string, LiveRun>();
   /**
+   * The admission ledgers of the runs restore could not host this boot (a `reconcile` that threw).
+   * Their rows stay `live` for the next boot to retry, so their conversations on the Instance
+   * Harness are still held: the live set names them from here (ADR-0031), or the retry would find
+   * nothing to re-attach to.
+   */
+  private readonly unhosted = new Map<string, Record<string, AgentAdmission>>();
+  /**
    * Workflow name → its observers. Deliberately on the HOST and not on `LiveRun`: a workflow's
    * watcher outlives every individual run it watches, and `persist()` clears a settled run's own
    * listener set. Keeping it here is what makes that structurally impossible to get wrong, rather
@@ -782,6 +789,7 @@ export class RunHost {
         // again; what must not happen is this taking the remaining runs down with it.
         this.onRestoreError?.(stored.runId, err);
         failed.push(stored.runId);
+        this.unhosted.set(stored.runId, blob.agents ?? {});
       }
     }
 
@@ -798,13 +806,15 @@ export class RunHost {
    * The conversations the live runs hold on the Instance Harness (ADR-0031): every admission in
    * their ledgers whose endpoint is the Instance Harness, as the `(agent, instanceId)` pair it runs
    * under. From MEMORY, never the store: the store also holds runs this process does not host, and
-   * a run this process hosts is exactly one that may still continue its conversation. A Sandbox's
-   * Harness is not in it — its Workspace's teardown frees everything there.
+   * a run this process hosts is exactly one that may still continue its conversation — and so is a
+   * run restore left `live` to retry (`unhosted`). A Sandbox's Harness is not in it — its
+   * Workspace's teardown frees everything there.
    */
   liveConversations(): LiveConversation[] {
     const live = new Map<string, LiveConversation>();
-    for (const run of this.runs.values()) {
-      for (const [iid, admission] of Object.entries(run.agents)) {
+    const ledgers = [...[...this.runs.values()].map((run) => run.agents), ...this.unhosted.values()];
+    for (const agents of ledgers) {
+      for (const [iid, admission] of Object.entries(agents)) {
         if (admission.endpoint !== this.instanceHarness || admission.agent === undefined) continue;
         const instanceId = admission.instanceId ?? iid;
         live.set(JSON.stringify([admission.agent, instanceId]), { agent: admission.agent, instanceId });

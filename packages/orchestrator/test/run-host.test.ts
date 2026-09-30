@@ -853,6 +853,31 @@ test("after restore, the live set names the conversations live runs hold on the 
   await other.close();
 });
 
+test("a run restore left live to retry still holds its conversations: the live set names them (ADR-0030, ADR-0031)", async () => {
+  const store = await mkStore();
+  const { runId, iid } = await ledgeredRun(store);
+
+  // A kubectl blip at boot: this run is not hosted, but its row stays `live` for the next boot —
+  // which must find its conversation still on the Instance Harness.
+  const { stated, liveSet } = liveSetRecorder();
+  const host = new RunHost({
+    store,
+    instanceHarness: "http://harness.invalid",
+    liveSet,
+    reconcile: () => {
+      throw new Error("kubectl: connection refused");
+    },
+    onRestoreError: () => {},
+  });
+  host.register(codingDef(new Map()));
+  assert.deepEqual((await host.restore()).failed, [runId]);
+  assert.deepEqual(
+    stated.map((s) => s.live),
+    [[{ agent: "coder", instanceId: iid }]],
+  );
+  await host.close();
+});
+
 test("the live set is stated again on the Lease's cadence, and not after close (ADR-0031)", async () => {
   const store = await mkStore();
   const { stated, liveSet } = liveSetRecorder();
