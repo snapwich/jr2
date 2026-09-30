@@ -36,7 +36,11 @@ Decisions since then need pod facts at once: the scheduler's reason for a Pendin
   and `podUID`.
 - **The watch drives everything that polled.**
   - Placing and provisioning wait on watch events: an Unschedulable pod or a quota refusal is a wait with its reason
-    (ADR-0064), a crash-looping Harness is seen as it happens.
+    (ADR-0064), a crash-looping Harness is seen as it happens — and named: the Harness container's termination message
+    falls back to its last log lines (`terminationMessagePolicy: FallbackToLogsOnError`), so the fault that ends the
+    provision carries the Harness's own last words, and the Harness says them plainly at startup (a port another
+    container in the pod took: `EADDRINUSE` names the port and the cause). No reason is invented for what a log line
+    already says (scaling review R16, 2026-09-30).
   - Continuity: a gone or `Lost` Sandbox is `workspace.lost` within seconds, and a Harness restart ends the Turns
     waiting on it (ADR-0021). A dropped watch is unknown, never loss; the loop re-lists and reconciles.
   - A fetch ask (ADR-0053) is answered by the watch event that carries its landing.
