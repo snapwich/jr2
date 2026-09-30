@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -34,6 +35,10 @@ const metricsServiceName = "jr2-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "jr2-metrics-binding"
+
+// controlPriorityClass is the PriorityClass the manager names (ADR-0060). `jr2 up` creates it
+// beside the CRDs; `make deploy` does not, so this suite stands in for `jr2 up` here.
+const controlPriorityClass = "jr2-control"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -58,6 +63,19 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
+		By("creating the control PriorityClass the manager names")
+		cmd = exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(fmt.Sprintf(`apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: %s
+value: 100000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+`, controlPriorityClass))
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create the control PriorityClass")
+
 		By("deploying the controller-manager")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
 		_, err = utils.Run(cmd)
@@ -81,6 +99,10 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("removing manager namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", namespace)
+		_, _ = utils.Run(cmd)
+
+		By("removing the control PriorityClass")
+		cmd = exec.Command("kubectl", "delete", "priorityclass", controlPriorityClass, "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 	})
 
