@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"slices"
@@ -46,8 +47,8 @@ const (
 	// defaultCloneTimeout bounds one `git clone`; defaultFetchTimeout bounds
 	// one interval `git fetch` or `git ls-remote`. A git child that hangs — a
 	// black-holed network, a remote that never answers — would otherwise hold
-	// this node's one reconcile worker, and with it every other Repo's
-	// on-demand fetch, for as long as it hangs. ADR-0051's "freshness
+	// one of this node's reconcile workers for as long as it hangs, and a few
+	// such Repos every other Repo's on-demand fetch. ADR-0051's "freshness
 	// degrades, absence does not" assumes a fetch FAILS; the budget is what
 	// turns a hang into a failure.
 	//
@@ -79,12 +80,26 @@ const (
 	// configured. A directory found with its marker is a half clone — never
 	// present — and is removed before anything reads it.
 	cloningSuffix = ".cloning"
+	// concurrentRepos is how many Repos one node's agent works at once
+	// (ADR-0051): enough that one Repo's cold clone never holds another's
+	// on-demand fetch, few enough that a fetch — network and CPU — stays a
+	// small share of the node beside the Sandboxes it serves. A kit value, not
+	// a knob. The queue keys by Repo, so the workers always hold different
+	// caches.
+	concurrentRepos = 4
+	// refreshJitter is the spread on every refresh-interval wait (ADR-0051):
+	// ±20%, like the Lease, so R Repos on N nodes do not hit a remote on one
+	// beat.
+	refreshJitter = 0.2
 )
 
 // Agent is one node's cache agent. Reconciles are keyed by Repo and driven by
 // the Repo itself and by every pod on this node that mounts its cache, so
-// controller-runtime's per-object queue is the single writer per key: no
-// reconcile of one cache overlaps another.
+// controller-runtime's per-object queue is the single writer per key: up to
+// concurrentRepos reconciles run at once, never two of one cache. Every field
+// is set before the manager starts and only read after, so the workers share
+// no mutable state and need no lock; on disk each writes its own key's
+// directory and marker, and under Home its own key's ssh files.
 type Agent struct {
 	client.Client
 	// Git runs one git invocation; the real one execs the binary.
@@ -322,7 +337,7 @@ func (a *Agent) clone(ctx context.Context, repo *corev1alpha1.Repo, key string) 
 		return ctrl.Result{}, err
 	}
 	log.Info("Cloned", "key", key, "url", repo.Spec.URL)
-	return ctrl.Result{RequeueAfter: refreshInterval(repo)}, nil
+	return ctrl.Result{RequeueAfter: jittered(refreshInterval(repo))}, nil
 }
 
 // probe checks a Repo nobody on this node has asked for yet, once per spec
@@ -425,11 +440,15 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 	if entry != nil && entry.LastAttempt != nil {
 		last = entry.LastAttempt.Time
 	}
+	// The interval is due from the earliest instant a jittered wait can end
+	// (ADR-0051): a wait drawn short then lands on a fetch, not on one more
+	// wait for the rest of the plain interval, which would pull every Repo
+	// back onto one beat.
 	stale := entry == nil || !entry.Present || entry.ObservedGeneration < repo.Generation
 	onDemand := asked.After(last)
-	dueAnyway := last.IsZero() || stale || !now.Time.Before(last.Add(interval))
+	dueAnyway := last.IsZero() || stale || !now.Time.Before(last.Add(earliest(interval)))
 	if !dueAnyway && !onDemand {
-		return ctrl.Result{RequeueAfter: last.Add(interval).Sub(now.Time)}, nil
+		return ctrl.Result{RequeueAfter: last.Add(jittered(interval)).Sub(now.Time)}, nil
 	}
 	// The ask is the only reason to fetch, and the stamp this attempt would
 	// leave — `now`, at the second — sits below the bar the ask raised. Fetching
@@ -475,6 +494,12 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 	if err := a.report(ctx, repo, next); err != nil {
 		return ctrl.Result{}, err
 	}
+	// After the report, so a Sandbox waiting on this fetch is not held on the
+	// repack too. The queue gives this key one worker at a time, so no fetch
+	// of this cache runs beside its consolidation (ADR-0004).
+	if next.Synced {
+		a.consolidate(ctx, repo.Name, dir)
+	}
 	// A fetch that was due anyway may have begun inside an ask's own second, so
 	// its stamp sits below that ask's bar and settles nothing for it (ADR-0053).
 	// Come back at the top of that second for one more, rather than sleep out
@@ -483,16 +508,17 @@ func (a *Agent) refresh(ctx context.Context, repo *corev1alpha1.Repo, dir string
 	if asked.After(now.Time) {
 		return ctrl.Result{RequeueAfter: asked.Sub(now.Time)}, nil
 	}
-	return ctrl.Result{RequeueAfter: interval}, nil
+	return ctrl.Result{RequeueAfter: jittered(interval)}, nil
 }
 
 // pin makes object deletion impossible from inside the cache (ADR-0004): no
 // automatic gc, no pruning, no maintenance — for the agent's own fetches and
-// for any human running git in the directory. Idempotent and cheap, so it runs
-// on every reconcile of a present cache, which is how an adopted checkout gets
-// pinned too.
+// for any human running git in the directory — and fixes the protocol every
+// fetch from it speaks (ADR-0051). Idempotent and cheap, so it runs on every
+// reconcile of a present cache, which is how an adopted checkout gets pinned
+// too.
 func (a *Agent) pin(ctx context.Context, dir string) error {
-	for _, kv := range gcPins {
+	for _, kv := range slices.Concat(gcPins, wirePins) {
 		if err := a.config(ctx, dir, kv[0], kv[1]); err != nil {
 			return err
 		}
@@ -506,6 +532,13 @@ var gcPins = [][2]string{
 	{"gc.auto", "0"},
 	{"gc.pruneExpire", "never"},
 	{"maintenance.auto", "false"},
+}
+
+// wirePins are the config keys that fix how a cache talks to its remote:
+// protocol v2, so a fetch advertises only the refs it asks for, whatever the
+// node's git defaults to (ADR-0051).
+var wirePins = [][2]string{
+	{"protocol.version", "2"},
 }
 
 // fetchRefspecKey is the remote's fetch refspec list; the cache mirrors
@@ -681,6 +714,18 @@ func refreshInterval(repo *corev1alpha1.Repo) time.Duration {
 	return defaultRefreshInterval
 }
 
+// jittered draws one refresh wait from interval ±refreshJitter (ADR-0051).
+// Unseeded: the point is that nodes and Repos disagree.
+func jittered(interval time.Duration) time.Duration {
+	spread := 2 * refreshJitter * float64(interval)
+	return earliest(interval) + time.Duration(rand.Float64()*spread)
+}
+
+// earliest is the shortest wait jittered can draw for interval.
+func earliest(interval time.Duration) time.Duration {
+	return time.Duration((1 - refreshJitter) * float64(interval))
+}
+
 // reposOfPod maps a pod event on this node to the Repos whose caches it
 // mounts, so a pod landing here (or leaving) reconciles exactly those caches —
 // and so does an ask the operator copies onto a pod already here (ADR-0053),
@@ -711,7 +756,7 @@ func repoEvents() predicate.Predicate {
 }
 
 // SetupWithManager registers the reconciler — keyed by Repo, woken by the
-// pods on this node — with a failure backoff between minBackoff and
+// pods on this node, concurrentRepos at once — with a failure backoff between minBackoff and
 // maxBackoff, and the sweep as a runnable that starts once the cache is synced.
 func (a *Agent) SetupWithManager(mgr ctrl.Manager, minBackoff, maxBackoff time.Duration) error {
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
@@ -738,7 +783,8 @@ func (a *Agent) SetupWithManager(mgr ctrl.Manager, minBackoff, maxBackoff time.D
 		For(&corev1alpha1.Repo{}, builder.WithPredicates(repoEvents())).
 		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(a.reposOfPod)).
 		WithOptions(controller.Options{
-			RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](minBackoff, maxBackoff),
+			MaxConcurrentReconciles: concurrentRepos,
+			RateLimiter:             workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](minBackoff, maxBackoff),
 		}).
 		Named("repo-cache").
 		Complete(a)
