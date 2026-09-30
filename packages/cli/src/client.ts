@@ -6,7 +6,7 @@
 // `fetchImpl` is injectable so tests drive it with a hono `app.request` (no socket) the same way the
 // orchestrator's own http tests do; in production it defaults to the global `fetch`.
 
-import type { MachineDoc, RepoStatus } from "@jr2/orchestrator";
+import type { MachineDoc, PlacingMarker, RepoStatus, RunChild, RunWaiting } from "@jr2/orchestrator";
 import { parseSSE } from "./sse.ts";
 
 /** A run's current observable state — mirrors the orchestrator's `RunStatus` (run-host.ts). */
@@ -17,6 +17,11 @@ export type RunStatus = {
   status: string;
   value: unknown;
   context: unknown;
+  /** The live child machines beneath the root, context-free — where most of a run is. */
+  children?: RunChild[];
+  /** Every Workspace waiting for capacity, and why (ADR-0064). Optional: an orchestrator older
+   * than ADR-0064 does not send it. */
+  waiting?: RunWaiting[];
   /** Why the host set this status, for statuses the Machine did not choose — `drifted` says the
    * workflow changed shape since the run was saved, and names both fingerprints (ADR-0030). */
   reason?: string;
@@ -26,7 +31,8 @@ export type RunStatus = {
 export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
   | { kind: "emit"; event: { type: string } & Record<string, unknown> }
-  | { kind: "retry"; child: string; attempt: number; reason: string };
+  | { kind: "retry"; child: string; attempt: number; reason: string }
+  | PlacingMarker;
 
 /** A run-control event posted to a live run (ADR-0013): CANCEL is the vocabulary that is left. */
 export type RunEvent = { type: string };
@@ -181,6 +187,9 @@ export class JR2Client {
         yield { kind: "retry", ...(JSON.parse(frame.data) as { child: string; attempt: number; reason: string }) };
       } else if (frame.event === "status") {
         yield { kind: "status", status: JSON.parse(frame.data) as RunStatus };
+      } else if (frame.event === "placing" || frame.event === "placed") {
+        // A wait for capacity starting and ending (ADR-0064) — activity, never a status.
+        yield { ...(JSON.parse(frame.data) as object), kind: frame.event } as PlacingMarker;
       }
       // Any other frame (a Turn marker — ADR-0023 — or a kind this CLI predates) is skipped, not
       // misread as a status: `jr2 logs -f` decides "settled" off `status.status`, and a marker

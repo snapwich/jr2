@@ -5,7 +5,7 @@
 
 import { h, type JSX } from "preact";
 import { useEffect, useRef } from "preact/hooks";
-import type { GateCard, ObservedRun } from "../store.ts";
+import type { GateCard, ObservedRun, WaitingLine } from "../store.ts";
 import {
   clearCanvas,
   initCanvas,
@@ -21,9 +21,10 @@ export function MachinePane(props: {
   run: ObservedRun | null;
   selectedNodeId: string | null;
   gates: GateCard[];
+  waiting: WaitingLine[];
   api: AppApi;
 }): JSX.Element {
-  const { view, run, selectedNodeId, gates, api } = props;
+  const { view, run, selectedNodeId, gates, waiting, api } = props;
   const canvasRef = useRef<HTMLElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -57,6 +58,7 @@ export function MachinePane(props: {
     h("div", { id: "placeholder", hidden: !view.placeholder }, view.placeholder ?? ""),
     h("div", { id: "error", hidden: !view.note, class: view.note?.notice ? "notice" : "" }, view.note?.text ?? ""),
     rootTransitionStrip(view.doc),
+    waitingStrip(waiting),
     h("svg", { id: "machine-svg", ref: svgRef }),
   );
 }
@@ -81,5 +83,28 @@ function rootTransitionStrip(doc: MachineDoc | null): JSX.Element {
       const target = t.targets.length ? ` → ${t.targets.map((id) => keyOf.get(id) ?? id).join(", ")}` : "";
       return h("span", { key: i }, `on ${t.label}${guard}${target}`);
     }),
+  );
+}
+
+/** Why the selected run's Workspaces in `placing` wait (ADR-0064), one line each, in the
+ *  scheduler's or the quota's own words. The diagram lights `placing` for every viewer; this reason
+ *  is guarded, so it is here only with a live token. */
+function waitingStrip(waiting: WaitingLine[]): JSX.Element {
+  return h(
+    "ul",
+    { id: "waiting" },
+    waiting.map((w) =>
+      h(
+        "li",
+        { key: w.child },
+        h(
+          "span",
+          { class: "waiting-head" },
+          `${w.child || "Workspace"} waits for ${w.on === "quota" ? "quota" : "a node"}`,
+        ),
+        h("span", { class: "dim", title: w.since }, ` since ${new Date(w.since).toLocaleTimeString()}`),
+        h("div", { class: "waiting-message" }, w.message),
+      ),
+    ),
   );
 }

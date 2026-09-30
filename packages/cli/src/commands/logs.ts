@@ -8,6 +8,7 @@ import { JR2Client } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
+import { placingActivity } from "./run.ts";
 
 export async function logs(args: string[], io: Io): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -37,6 +38,10 @@ export async function logs(args: string[], io: Io): Promise<number> {
       }
       if (ev.kind === "retry") {
         activity(io, `retry ${ev.child} attempt ${ev.attempt} (${ev.reason})`);
+        continue;
+      }
+      if (ev.kind === "placing" || ev.kind === "placed") {
+        activity(io, placingActivity(ev));
         continue;
       }
       result(io, ev.status);

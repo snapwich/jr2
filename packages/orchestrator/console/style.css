@@ -162,6 +162,36 @@ main {
   display: none;
 }
 
+/* A wait for capacity (ADR-0064): the selected run's Workspaces in "placing", and why. Amber like
+   the notice — the run is not wrong, it is waiting on the cluster. */
+#waiting {
+  list-style: none;
+  margin: 0 28px 16px;
+  padding: 0;
+  max-width: 720px;
+}
+
+#waiting:empty {
+  display: none;
+}
+
+#waiting li {
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+
+#waiting .waiting-head {
+  color: var(--amber);
+}
+
+#waiting .waiting-message {
+  margin-top: 4px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+}
+
 /* ---- Machine (SVG) ---- */
 
 /* Every box is click-to-select (outline only — the click is reserved beyond that). */

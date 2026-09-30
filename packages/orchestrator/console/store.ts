@@ -34,6 +34,10 @@ export type GateCard = {
   meta?: Record<string, unknown>;
 };
 
+/** One Workspace waiting for capacity as `GET /runs/:id` reports it (ADR-0064) — mirrors
+ *  `RunWaiting` in run-host.ts. Guarded: `message` is the scheduler's or the quota's own words. */
+export type WaitingLine = { child: string; on: "node" | "quota"; message: string; since: string };
+
 /** The credential's state — never its value, which stays in sessionStorage (ADR-0032). */
 export type TokenState = "none" | "checking" | "live" | "invalid";
 
@@ -53,6 +57,7 @@ export type Frame =
   | { kind: "toggleWorkflow"; workflow: string }
   | { kind: "token"; state: TokenState }
   | { kind: "gates"; runId: string; workflow: string; gates: GateCard[] }
+  | { kind: "waiting"; runId: string; workflow: string; waiting: WaitingLine[] }
   | { kind: "inboxScope"; all: boolean }
   | { kind: "startForm"; workflow: string | null };
 
@@ -76,6 +81,9 @@ export type Frame =
  *            "invalid". Anything but "live" means observer mode.
  * `gates`    the gate inbox: runId -> { workflow, gates } from `GET /runs/:id` re-fetches. Guarded
  *            data (Instance band), so it cannot outlive the credential that read it.
+ * `waiting`  why each run's Workspaces in `placing` wait (ADR-0064): runId -> { workflow, waiting },
+ *            off the SAME `GET /runs/:id` re-fetch as `gates`, under the same rules — guarded, whole
+ *            per run, gone with the credential. The open band sees `placing` lit and nothing more.
  * `inboxAll` the widen control: false = the inbox follows the selection, true = every workflow.
  * `startFormFor` which workflow's start-run form is open, if any.
  * `selectedNodeId` the diagram node the reader clicked — an elk node id (scope + state id), one at
@@ -97,6 +105,7 @@ export type Store = {
   expanded: Set<string>;
   token: TokenState;
   gates: Map<string, { workflow: string; gates: GateCard[] }>;
+  waiting: Map<string, { workflow: string; waiting: WaitingLine[] }>;
   inboxAll: boolean;
   startFormFor: string | null;
 };
@@ -123,6 +132,7 @@ export function emptyStore(): Store {
     expanded: new Set(),
     token: "none",
     gates: new Map(),
+    waiting: new Map(),
     inboxAll: false,
     startFormFor: null,
   };
@@ -141,6 +151,7 @@ export function applyFrame(store: Store, frame: Frame): Store {
         ...store,
         runs: new Map(frame.runs.map((r): [string, ObservedRun] => [r.runId, r])),
         gates: dropAbsent(store.gates, store.workflow, new Set(frame.runs.map((r) => r.runId))),
+        waiting: dropAbsent(store.waiting, store.workflow, new Set(frame.runs.map((r) => r.runId))),
       });
 
     case "status":
@@ -152,13 +163,14 @@ export function applyFrame(store: Store, frame: Frame): Store {
       // a reconnect window, which is ordinary. Its inbox card goes either way: a gate exists exactly
       // while its invoking state is entered (ADR-0011), and this run has no entered states left.
       const gates = mapWithout(store.gates, frame.runId);
+      const waiting = mapWithout(store.waiting, frame.runId);
       const departing = store.runs.get(frame.runId);
-      if (!departing) return store.gates === gates ? store : { ...store, gates };
+      if (!departing) return store.gates === gates && store.waiting === waiting ? store : { ...store, gates, waiting };
       const runs = new Map(store.runs);
       runs.delete(frame.runId);
       const settled = new Map(store.settled).set(frame.runId, departing);
       while (settled.size > SETTLED_CAP) settled.delete(settled.keys().next().value!);
-      return select({ ...store, runs, settled, gates });
+      return select({ ...store, runs, settled, gates, waiting });
     }
 
     case "emit":
@@ -206,8 +218,9 @@ export function applyFrame(store: Store, frame: Frame): Store {
       // so it settles that workflow's inbox cards the same way (a run the snapshot does not carry
       // will never be re-fetched again).
       const fleet = new Map(store.fleet).set(frame.workflow, frame.runs);
-      const gates = dropAbsent(store.gates, frame.workflow, new Set(frame.runs.map((r) => r.runId)));
-      return { ...store, fleet, gates };
+      const present = new Set(frame.runs.map((r) => r.runId));
+      const gates = dropAbsent(store.gates, frame.workflow, present);
+      return { ...store, fleet, gates, waiting: dropAbsent(store.waiting, frame.workflow, present) };
     }
 
     case "toggleWorkflow": {
@@ -221,7 +234,7 @@ export function applyFrame(store: Store, frame: Frame): Store {
       // "invalid" (the any-later-401 drop of ADR-0032) empties the inbox. "checking" keeps it — a
       // re-validation of a token that turns out fine should not flash the inbox empty.
       if (frame.state === "none" || frame.state === "invalid") {
-        return { ...store, token: frame.state, gates: new Map() };
+        return { ...store, token: frame.state, gates: new Map(), waiting: new Map() };
       }
       return { ...store, token: frame.state };
 
@@ -236,6 +249,18 @@ export function applyFrame(store: Store, frame: Frame): Store {
       const gates = new Map(store.gates);
       gates.set(frame.runId, { workflow: frame.workflow, gates: frame.gates });
       return { ...store, gates };
+    }
+
+    case "waiting": {
+      // The same guarded re-fetch's other half (ADR-0064), folded the same way: whole per run, and
+      // nothing folded without the credential that read it.
+      if (store.token !== "live") return store;
+      if (!frame.waiting.length) {
+        const waiting = mapWithout(store.waiting, frame.runId);
+        return waiting === store.waiting ? store : { ...store, waiting };
+      }
+      const waiting = new Map(store.waiting).set(frame.runId, { workflow: frame.workflow, waiting: frame.waiting });
+      return { ...store, waiting };
     }
 
     case "inboxScope":
@@ -258,15 +283,20 @@ function mapWithout<K, V>(map: Map<K, V>, key: K): Map<K, V> {
   return next;
 }
 
-/** Drop `workflow`'s inbox entries for runs a whole-set frame did not mention. Those runs will
- *  never be re-fetched again (frames and snapshots are per-run triggers), so a card kept here would
- *  be stale forever — this is the level-triggered idiom applied to the inbox, not bookkeeping. */
-function dropAbsent(gates: Store["gates"], workflow: string | null, present: Set<string>): Store["gates"] {
-  if (!workflow) return gates;
-  let next = gates;
-  for (const [runId, entry] of gates) {
+/** Drop `workflow`'s guarded entries (inbox cards, waits) for runs a whole-set frame did not
+ *  mention. Those runs will never be re-fetched again (frames and snapshots are per-run triggers),
+ *  so an entry kept here would be stale forever — this is the level-triggered idiom applied to the
+ *  guarded maps, not bookkeeping. */
+function dropAbsent<V extends { workflow: string }>(
+  entries: Map<string, V>,
+  workflow: string | null,
+  present: Set<string>,
+): Map<string, V> {
+  if (!workflow) return entries;
+  let next = entries;
+  for (const [runId, entry] of entries) {
     if (entry.workflow !== workflow || present.has(runId)) continue;
-    if (next === gates) next = new Map(gates);
+    if (next === entries) next = new Map(entries);
     next.delete(runId);
   }
   return next;
@@ -325,6 +355,13 @@ export function visibleGates(store: Store): Array<{ runId: string; workflow: str
 export function selectedRunGates(store: Store): GateCard[] {
   if (store.selectedRunId === null) return [];
   return store.gates.get(store.selectedRunId)?.gates ?? [];
+}
+
+/** Why the SELECTED run's Workspaces wait for capacity (ADR-0064) — empty in observer mode, where
+ *  the diagram still lights `placing` but the reason is not the page's to know. */
+export function selectedRunWaiting(store: Store): WaitingLine[] {
+  if (store.selectedRunId === null) return [];
+  return store.waiting.get(store.selectedRunId)?.waiting ?? [];
 }
 
 /** What the nav badge counts: every open gate everywhere — attention is global even when the

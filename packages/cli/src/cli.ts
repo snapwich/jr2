@@ -31,7 +31,8 @@ usage: jr2 <command> [args]
   kit push <registry>               mirror the published kit images into a registry (ADR-0044)
   run <workflow> [--input <json>]   start a run; stream activity, print terminal result
        [--detach]                   ...or just print the runId and return
-  runs                              list live runs
+  runs                              list live runs; "placing" names the Workspaces that wait for
+                                    capacity (ADR-0064), and "status <runId>" says why
   status [runId]                    print a run's current status (read-through),
          [--json]                   or the instance's Repos, per node, when given none (ADR-0048/0051)
   logs <runId> [-f]                 replay a run's status; -f to follow until it settles

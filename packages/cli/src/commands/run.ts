@@ -9,6 +9,7 @@
 // going server-side.
 
 import { parseArgs } from "node:util";
+import type { PlacingMarker } from "@jr2/orchestrator";
 import { JR2Client } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
@@ -51,6 +52,10 @@ export async function run(args: string[], io: Io): Promise<number> {
         activity(io, `  retry ${ev.child} attempt ${ev.attempt} (${ev.reason})`);
         continue;
       }
+      if (ev.kind === "placing" || ev.kind === "placed") {
+        activity(io, `  ${placingActivity(ev)}`);
+        continue;
+      }
       activity(io, `  → ${ev.status.status} ${JSON.stringify(ev.status.value)}`);
       if (ev.status.status !== "active") {
         result(io, ev.status);
@@ -61,4 +66,15 @@ export async function run(args: string[], io: Io): Promise<number> {
   } finally {
     target.close?.();
   }
+}
+
+/**
+ * A wait for capacity as one activity line (ADR-0064): the Workspace, what it waits for, and the
+ * scheduler's or the quota's own words — then, once it has a node, how long it waited. The run's
+ * root Workspace has no child path, so its line names none.
+ */
+export function placingActivity(ev: PlacingMarker): string {
+  const who = ev.child ? ` ${ev.child}` : "";
+  if (ev.kind === "placed") return `placed${who} after ${Math.round(ev.after / 1000)}s`;
+  return `placing${who}: waits for ${ev.on === "quota" ? "quota" : "a node"} — ${ev.message}`;
 }

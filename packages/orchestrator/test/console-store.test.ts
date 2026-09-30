@@ -16,10 +16,12 @@ import {
   fleetRuns,
   gateCount,
   selectedRunGates,
+  selectedRunWaiting,
   visibleGates,
   SETTLED_CAP,
   type Frame,
   type GateCard,
+  type WaitingLine,
 } from "../console/store.ts";
 
 const run = (runId: string, status = "active", workflow = "wf") => ({
@@ -439,4 +441,77 @@ test("selectedRunGates follows the selected run — the pin is a view over facts
   );
   store = applyFrame(store, { kind: "gates", runId: "b", workflow: "wf", gates: [] });
   assert.deepEqual(selectedRunGates(store), [], "an emptied card takes the pin with it");
+});
+
+// ---- A wait for capacity (ADR-0064) -------------------------------------------------------------
+// The diagram lights `placing` off the open observation like any state. WHY it waits is guarded —
+// the scheduler's or the quota's own words — so it rides the same `GET /runs/:id` re-fetch as the
+// gates, folded under the same rules.
+
+const wait = (child = "F-1", on: WaitingLine["on"] = "node"): WaitingLine => ({
+  child,
+  on,
+  message: "0/3 nodes are available: 3 Insufficient memory.",
+  since: "2026-09-29T10:00:00.000Z",
+});
+
+test("a `placing` Workspace lights from the open observation alone — no token, no reason", () => {
+  const placing = {
+    ...run("a"),
+    children: [{ id: "F-1", src: "ws", status: "active", value: "placing", children: [] }],
+  };
+  let store = fold({ kind: "select", workflow: "wf" }, { kind: "status", status: placing });
+  assert.equal((store.runs.get("a")!.children[0] as { value: unknown }).value, "placing");
+  // Observer mode: a `waiting` frame (a re-fetch still in flight as the token dropped) folds nothing.
+  store = applyFrame(store, { kind: "waiting", runId: "a", workflow: "wf", waiting: [wait()] });
+  assert.deepEqual(selectedRunWaiting(store), []);
+});
+
+test("`waiting` follows the selected run, is whole per run, and an empty re-fetch clears it", () => {
+  let store = fold(
+    { kind: "select", workflow: "wf" },
+    { kind: "token", state: "live" },
+    { kind: "runs", runs: [run("a"), run("b")] },
+    { kind: "waiting", runId: "a", workflow: "wf", waiting: [wait("F-1"), wait("F-2", "quota")] },
+  );
+  assert.deepEqual(
+    selectedRunWaiting(store).map((w) => [w.child, w.on]),
+    [
+      ["F-1", "node"],
+      ["F-2", "quota"],
+    ],
+  );
+  store = applyFrame(store, { kind: "selectRun", runId: "b" });
+  assert.deepEqual(selectedRunWaiting(store), [], "b waits for nothing");
+
+  store = applyFrame(store, { kind: "selectRun", runId: "a" });
+  store = applyFrame(store, { kind: "waiting", runId: "a", workflow: "wf", waiting: [wait("F-2", "quota")] });
+  assert.deepEqual(
+    selectedRunWaiting(store).map((w) => w.child),
+    ["F-2"],
+    "a re-fetch replaces wholesale",
+  );
+  store = applyFrame(store, { kind: "waiting", runId: "a", workflow: "wf", waiting: [] });
+  assert.equal(store.waiting.size, 0, "placed: the next re-fetch says nothing waits");
+});
+
+test("the reason cannot outlive the credential, the run, or a whole-set frame that dropped it", () => {
+  const live = (): Frame[] => [
+    { kind: "select", workflow: "wf" },
+    { kind: "status", status: run("a") },
+    { kind: "token", state: "live" },
+    { kind: "waiting", runId: "a", workflow: "wf", waiting: [wait()] },
+  ];
+  assert.equal(fold(...live(), { kind: "token", state: "invalid" }).waiting.size, 0, "a 401 drops it");
+  assert.equal(fold(...live(), { kind: "token", state: "none" }).waiting.size, 0, "clearing the token drops it");
+  assert.equal(fold(...live(), { kind: "token", state: "checking" }).waiting.size, 1, "re-validation keeps it");
+  assert.equal(fold(...live(), { kind: "gone", runId: "a" }).waiting.size, 0, "the run left");
+  assert.equal(fold(...live(), { kind: "runs", runs: [run("b")] }).waiting.size, 0, "the live set dropped it");
+
+  const other = fold(
+    { kind: "token", state: "live" },
+    { kind: "waiting", runId: "x", workflow: "other", waiting: [wait()] },
+    { kind: "fleet", workflow: "other", runs: [] },
+  );
+  assert.equal(other.waiting.size, 0, "a fleet snapshot settles its own workflow's the same way");
 });

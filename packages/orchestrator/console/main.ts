@@ -27,7 +27,15 @@
 // diagram's own working state (fold set, viewport, what is shown) lives in canvas.ts.
 
 import { h, render } from "preact";
-import { applyFrame, emptyStore, type Frame, type GateCard, type ObservedRun, type Store } from "./store.ts";
+import {
+  applyFrame,
+  emptyStore,
+  type Frame,
+  type GateCard,
+  type ObservedRun,
+  type Store,
+  type WaitingLine,
+} from "./store.ts";
 import { zoomFit, zoomIn, zoomOut, zoomReset, type MachineDoc } from "./canvas.ts";
 import { App, type AppApi, type MachineView } from "./components/app.ts";
 
@@ -98,7 +106,7 @@ async function validateToken(): Promise<void> {
   dispatch({ kind: "token", state: "live" });
   const runs = (await res.json()) as Array<{ runId: string; workflow: string }>;
   if (serial !== tokenSerial) return;
-  for (const r of runs) void refreshGates(r.runId, r.workflow);
+  for (const r of runs) void refreshRun(r.runId, r.workflow);
 }
 
 function setToken(value: string): void {
@@ -112,7 +120,7 @@ function setToken(value: string): void {
   void validateToken();
 }
 
-// ---- Gate discovery (frame-triggered — ADR-0032) ------------------------------------------------
+// ---- Gate discovery and waits (frame-triggered — ADR-0032, ADR-0064) ----------------------------
 
 /** Per-run re-fetch serials — fetch bookkeeping like `docs`, not belief. The browser runs these
  *  requests on parallel connections, so answers can land out of ORDER: a re-fetch triggered by the
@@ -121,21 +129,25 @@ function setToken(value: string): void {
  *  emptied — pinning the ⚑ and inviting a second delivery until the run's next frame, which a run
  *  parked in a long agent step may not land for minutes. Only the latest-STARTED re-fetch may
  *  speak for a run; superseded answers are dropped before they reach the store. */
-const gateFetchSerial = new Map<string, number>();
+const runFetchSerial = new Map<string, number>();
 
 /** Re-read one run's open gates off the guarded surface and fold the WHOLE answer in. Called on
  *  every frame that touches the run — that is the synchronization: a gate opens with a state entry
  *  and closes with its exit, and every entry/exit lands a frame. A delivery's success is the next
- *  re-fetch coming back empty; nothing here concludes anything on its own. */
-async function refreshGates(runId: string, workflow: string): Promise<void> {
+ *  re-fetch coming back empty; nothing here concludes anything on its own. The same answer carries
+ *  why the run's Workspaces in `placing` wait (ADR-0064), folded as its own frame by the same rules:
+ *  a Workspace enters and leaves `placing` with a frame too. */
+async function refreshRun(runId: string, workflow: string): Promise<void> {
   if (store.token !== "live") return; // observer mode: the inbox does not exist
-  const serial = (gateFetchSerial.get(runId) ?? 0) + 1;
-  gateFetchSerial.set(runId, serial);
+  const serial = (runFetchSerial.get(runId) ?? 0) + 1;
+  runFetchSerial.set(runId, serial);
   const res = await gfetch(`/runs/${encodeURIComponent(runId)}`);
   if (!res) return; // 401 already dropped the page to observer
-  const gates = res.ok ? (((await res.json()) as { gates?: GateCard[] }).gates ?? []) : []; // !ok: settled + evicted
-  if (gateFetchSerial.get(runId) !== serial) return; // superseded — a newer re-fetch owns the answer
-  dispatch({ kind: "gates", runId, workflow, gates });
+  // !ok: settled + evicted — no gates, and nothing waits.
+  const body = res.ok ? ((await res.json()) as { gates?: GateCard[]; waiting?: WaitingLine[] }) : {};
+  if (runFetchSerial.get(runId) !== serial) return; // superseded — a newer re-fetch owns the answer
+  dispatch({ kind: "gates", runId, workflow, gates: body.gates ?? [] });
+  dispatch({ kind: "waiting", runId, workflow, waiting: body.waiting ?? [] });
 }
 
 // ---- The two writes (start-run + gate delivery — ADR-0033) --------------------------------------
@@ -282,12 +294,12 @@ function connectFeed(name: string): void {
   feed.addEventListener("runs", (e) => {
     const runs = JSON.parse((e as MessageEvent<string>).data) as ObservedRun[];
     dispatch({ kind: "runs", runs });
-    for (const r of runs) void refreshGates(r.runId, name);
+    for (const r of runs) void refreshRun(r.runId, name);
   });
   feed.addEventListener("status", (e) => {
     const status = JSON.parse((e as MessageEvent<string>).data) as ObservedRun;
     dispatch({ kind: "status", status });
-    void refreshGates(status.runId, name);
+    void refreshRun(status.runId, name);
   });
   feed.addEventListener("gone", (e) => {
     const { runId } = JSON.parse((e as MessageEvent<string>).data) as { runId: string };
@@ -295,7 +307,7 @@ function connectFeed(name: string): void {
     // The reducer already dropped the card (a gate exists only while its state is entered —
     // ADR-0011); the re-fetch is the same frame-triggered discipline as `runs`/`status`, and its
     // 404 converges on the same empty answer.
-    void refreshGates(runId, name);
+    void refreshRun(runId, name);
   });
   feed.addEventListener("emit", (e) => {
     const { runId, type } = JSON.parse((e as MessageEvent<string>).data) as { runId: string; type: string };
@@ -318,7 +330,7 @@ async function snapshotWorkflow(name: string): Promise<void> {
     if (!res.ok) return;
     const runs = (await res.json()) as ObservedRun[];
     dispatch({ kind: "fleet", workflow: name, runs });
-    for (const r of runs) void refreshGates(r.runId, name);
+    for (const r of runs) void refreshRun(r.runId, name);
   } catch {
     // transient — the next tick tries again
   }
