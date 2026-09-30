@@ -8,10 +8,15 @@
 // definition. Since ADR-0049 there is only one moment a model reaches this process — the Turn
 // carries its Agent's definition and the invocation's dials together — so the retired boot-time
 // sweep of a mounted roster has nothing left to sweep.
+//
+// `providerLimit` names a Turn's end when the provider still refused the load after pi's retries
+// (ADR-0064): the fixed prefix `provider limit`, as a memory kill has `memory limit` (ADR-0061).
 
 import {
   createProvider,
+  isRetryableAssistantError,
   type Api,
+  type AssistantMessage,
   type Model,
   type Models,
   type MutableModels,
@@ -138,6 +143,32 @@ export function mapThinkingLevel(level: ThinkingLevel): PiThinkingLevel {
     );
   }
   return mapped;
+}
+
+/** The fixed prefix of a fault reason for a provider that still refused the load after pi's
+ * retries (ADR-0064) — so `jr2 status` and the Machine can tell provider pressure from a bug. */
+export const PROVIDER_LIMIT = "provider limit";
+
+/** The load signals inside pi's retryable set (pi-ai `RETRYABLE_PROVIDER_ERROR_PATTERN`): a rate
+ * limit, 429, 503/529 and overload. pi's set also retries a 500, a timeout and a refused
+ * connection, which can be a bug or a wrong `baseUrl`, so those keep their own words. */
+const PROVIDER_PRESSURE =
+  /overloaded|rate.?limit|too many requests|\b429\b|\b503\b|\b529\b|service.?unavailable|ResourceExhausted/i;
+
+/**
+ * The fault reason for a Turn that ended on a provider's refusal after pi's retries, else
+ * undefined. pi decides "retryable" first: quota or billing exhaustion is not retryable, so it is
+ * never a provider limit (ADR-0064). A retryable error on a Turn's final message means the
+ * retries ran out, so no retry count is read here.
+ */
+export function providerLimit(answer: AssistantMessage): string | undefined {
+  if (!isRetryableAssistantError(answer)) return undefined;
+  const error = answer.errorMessage ?? "";
+  if (!PROVIDER_PRESSURE.test(error)) return undefined;
+  return (
+    `${PROVIDER_LIMIT} (${answer.provider}/${answer.model}): ${error} — the provider still refused the load ` +
+    "after pi's retries; this is provider pressure, not a fault in the Turn"
+  );
 }
 
 const PI_LEVELS: Record<ThinkingLevel, PiThinkingLevel> = {

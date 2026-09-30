@@ -32,6 +32,9 @@ export type Turn = {
   /** Answer this HTTP status with an error body instead of a stream — the provider-failure lever
    * (with `maxRetries: 0` the turn settles `failed` on the first attempt). */
   status?: number;
+  /** The error body's message with `status` — what a provider says, which is what tells a rate
+   * limit from quota exhaustion (ADR-0064). Default "scripted provider failure". */
+  errorMessage?: string;
   /** The usage this response reports — Compaction's only lever (ADR-0036), since a scripted
    * transcript can never fill a real window. pi DERIVES its total from the parts rather than
    * reading `total_tokens`, so the fabricated context size goes in `prompt_tokens`. */
@@ -115,7 +118,7 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
 
       if (turn.status !== undefined) {
         res.writeHead(turn.status, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: { message: "scripted provider failure" } }));
+        res.end(JSON.stringify({ error: { message: turn.errorMessage ?? "scripted provider failure" } }));
         return;
       }
 

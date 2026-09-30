@@ -9,7 +9,8 @@
 // Settlement mapping: a surface read that finds the Turn over throws `TurnOverError`, which settles
 // `aborted` with the model never asked (ADR-0026); any other throw settles `failed` (the Menu
 // read, or a provider failure after pi's retries — pi RESOLVES `prompt()` even then,
-// with the outcome on the message's `stopReason`, so this module inspects and throws); the
+// with the outcome on the message's `stopReason`, so this module inspects and throws, and a
+// provider's refusal of the load reads `provider limit …`, ADR-0064); the
 // signal aborts pi's run, and the prompt winding down rejects promptly so the pump can promote.
 
 import {
@@ -28,7 +29,7 @@ import { RunawayError, TurnOverError, type RunSubmission } from "./conversation.
 import { readMenu, type MenuOptions } from "./menu.ts";
 import { menuToolName, menuTools } from "./menu-tools.ts";
 import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
-import { mapThinkingLevel, resolveModel } from "./provider.ts";
+import { mapThinkingLevel, providerLimit, resolveModel } from "./provider.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage } from "./wire.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
@@ -313,8 +314,10 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       if (signal.aborted || answer.stopReason === "aborted") {
         throw new Error(answer.errorMessage ?? "the run aborted");
       }
+      // A provider that still refused the load after pi's retries is NAMED (ADR-0064): the fixed
+      // prefix `provider limit`, so the fault reason tells provider pressure from a bug.
       if (answer.stopReason === "error") {
-        throw new Error(answer.errorMessage ?? "provider failure");
+        throw new Error(providerLimit(answer) ?? answer.errorMessage ?? "provider failure");
       }
     } finally {
       signal.removeEventListener("abort", onAbort);

@@ -5,7 +5,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { admissionFault, modelsFor, resolveModel, mapThinkingLevel } from "../src/provider.ts";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
+import {
+  admissionFault,
+  modelsFor,
+  resolveModel,
+  mapThinkingLevel,
+  providerLimit,
+  PROVIDER_LIMIT,
+} from "../src/provider.ts";
 import { resolveDefinition, type HarnessSpec, type ThinkingLevel } from "../src/spec.ts";
 
 const vllm: HarnessSpec = {
@@ -146,4 +154,64 @@ test("catalog: an id pi's catalog does not have, or the custom provider's own, i
     () => modelsFor({ ...vllm, catalog: { vllm: { baseUrl: "https://x.example" } } }, {}),
     /also the custom provider's id/,
   );
+});
+
+/** A Turn's final message as pi resolves it after a provider error. */
+function failed(
+  errorMessage: string | undefined,
+  stopReason: AssistantMessage["stopReason"] = "error",
+): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [],
+    api: "openai-completions",
+    provider: "vllm",
+    model: "Qwen/Qwen3-32B",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason,
+    ...(errorMessage === undefined ? {} : { errorMessage }),
+    timestamp: 0,
+  };
+}
+
+test("providerLimit: a refusal of the load after pi's retries is named, with the fixed prefix (ADR-0064)", () => {
+  for (const error of [
+    "429 Too Many Requests",
+    "Rate limit reached for requests",
+    "503 Service Unavailable",
+    "529 overloaded_error: Overloaded",
+    "ResourceExhausted: try later",
+  ]) {
+    const reason = providerLimit(failed(error));
+    assert.ok(reason?.startsWith(`${PROVIDER_LIMIT} (vllm/Qwen/Qwen3-32B): ${error}`), `${error} → ${reason}`);
+  }
+  assert.equal(PROVIDER_LIMIT, "provider limit");
+});
+
+test("providerLimit: quota exhaustion is not a provider limit — pi does not retry it (ADR-0064)", () => {
+  for (const error of [
+    "429 You exceeded your current quota: insufficient_quota",
+    "429 Monthly usage limit reached",
+    "429 quota exceeded for this billing period",
+  ]) {
+    assert.equal(providerLimit(failed(error)), undefined, error);
+  }
+});
+
+test("providerLimit: a retryable error that is not load keeps its own words", () => {
+  // pi retries these too, but a 500, a timeout or a refused connection can be a bug or a wrong
+  // `baseUrl` — naming them provider pressure would hide exactly what the prefix is for.
+  for (const error of ["500 Internal Server Error", "Connection error.", "fetch failed", "Request timed out."]) {
+    assert.equal(providerLimit(failed(error)), undefined, error);
+  }
+  assert.equal(providerLimit(failed("400 invalid request")), undefined, "not retryable");
+  assert.equal(providerLimit(failed(undefined)), undefined, "no words to read");
+  assert.equal(providerLimit(failed("429 Too Many Requests", "aborted")), undefined, "an abort is the sweep's");
 });

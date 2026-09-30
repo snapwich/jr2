@@ -683,6 +683,27 @@ test("history settlements from the real loop match the wire contract: outcomes a
   );
 });
 
+test('a provider that refuses the load is named: the failed settlement reads "provider limit" (ADR-0064)', async () => {
+  // With `maxRetries: 0` the first refusal is the one left after pi's retries. Quota exhaustion is
+  // the same 429 status, but pi does not retry it, so it keeps its own words.
+  provider.reset([
+    { status: 429, errorMessage: "Rate limit reached for requests" },
+    { status: 429, errorMessage: "You exceeded your current quota: insufficient_quota" },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const iid = "conf/provider-limit";
+
+  const limited = await settled(iid, await admit(iid, "one"));
+  assert.equal(limited.outcome, "failed");
+  assert.equal(limited.error?.type, "submission_failed", "an infra fault, not a new class (ADR-0016)");
+  assert.match(limited.error?.message ?? "", /^provider limit \(fake\/model-x\): 429\b.*Rate limit reached/);
+
+  const quota = await settled(iid, await admit(iid, "two"));
+  assert.equal(quota.outcome, "failed");
+  assert.doesNotMatch(quota.error?.message ?? "", /provider limit/);
+  assert.match(quota.error?.message ?? "", /insufficient_quota/);
+});
+
 test("the printer wrote the conversation: prompts, text, tool calls — results never (ADR-0023)", async () => {
   provider.reset([
     {
