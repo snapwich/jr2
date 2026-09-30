@@ -31,6 +31,16 @@ discovered `workflows/` dir — the Agents ride the Machines it holds, ADR-0049)
 and an HTTP API shaped as "durable run addressed by id" (`POST` to start/feed, `GET /…/:id` for status, SSE for events)
 — so both sides of the system speak one protocol without sharing a runtime.
 
+## The Orchestrator pod
+
+It is sized and prioritised like the other control pods (ADR-0060: requests 500m and 1Gi, memory limit 1Gi, CPU
+unlimited, the `jr2-control` PriorityClass), keeps its store on its own volume (ADR-0065), and carries two probes on
+`/healthz`. Readiness (2s period, 15 failures) takes a stalled process out of its Service after 30s and does nothing
+else: a `replicas: 1` writer that is restarted is an outage plus a restore, so a GC pause or a busy node must never
+trigger one. Liveness (10s period, 30 failures) restarts a process that has answered nothing for five minutes: a process
+silent that long is not stalled but dead, and without it the pod would sit NotReady until a human deleted it, while a
+process that exits is restarted by the container's restart policy regardless.
+
 ## Consequences
 
 - The deployable unit is an **instance image** (engine + the instance's workflow modules), built and delivered by

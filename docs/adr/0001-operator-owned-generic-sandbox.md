@@ -76,6 +76,10 @@ cluster; these are the rules.
   kubelet retries the mount, and the Secret arrives one API round trip after the CR, well before the scheduler and
   kubelet get there.
 
+Not taken (R15): a parked Workspace releasing its pod. A run parked on a Gate for hours holds a pod for hours; that is
+the problem Agent Substrate exists for, and upstream Kubernetes has no production checkpoint/restore to build it on. The
+one constraint kept: the Sandbox CRD stays close to `agent-sandbox`'s shape, so a backend swap stays possible.
+
 Not taken (R14): a headless Service. A ClusterIP Service programs kube-proxy rules on every node per Sandbox; a headless
 one keeps the name and the endpoint and costs no node anything. Deferred until a cluster with many nodes measures it.
 

@@ -47,6 +47,12 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   where the Turn ran); **fire and forget** — a failed echo never fails anything, the feed remains the record and the log
   is a courtesy view; **Emit is the only author API** — a workflow that wants prose in the log Emits it (ADR-0011's
   vocabulary discipline holds; no `log()` primitive exists or will).
+- **A status is a level, so the echo coalesces it.** In an echo's queue, pending statuses collapse to the latest;
+  markers and Emits keep their order. A Harness that answers slowly holds at most one status plus the markers since its
+  last push, and a burst of transitions across a Pool's workers costs each Harness one push per flush, not one per
+  transition. The replay buffer follows the same rule: it keeps the markers and Emits (bounded) and the latest status,
+  so the preamble reads "the story so far, and where the run stands now" — old statuses are not interleaved between old
+  markers; the live tail keeps the interleaving (scaling review R10, 2026-09-30).
 - **Live-only, and jr2 promises nothing beyond the pod.** A conversation lives exactly as long as its Harness process
   (ADR-0027), so a Sandbox teardown (ADR-0012) or a lost Workspace (ADR-0021) takes it with it — the same contract
   ADR-0012 already set for the pod-local clone. A cluster that ships logs will outlive the pod anyway; that is the log
