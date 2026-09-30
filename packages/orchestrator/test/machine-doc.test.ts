@@ -456,8 +456,12 @@ test("a workspace() body joins on the stable slot name `body`, not a generated k
   assert.equal(child.machine?.id, "body");
   // And every one of the wrapper's own actors is named too, so a reader sees what each state does.
   assert.deepEqual(
+    findState(doc.root, "workspace.placing")!.invoke.map((i) => i.src),
+    ["place", "lease"],
+  );
+  assert.deepEqual(
     findState(doc.root, "workspace.provisioning")!.invoke.map((i) => i.src),
-    ["provision"],
+    ["provision", "lease"],
   );
   assert.deepEqual(
     running.invoke.map((i) => i.src),

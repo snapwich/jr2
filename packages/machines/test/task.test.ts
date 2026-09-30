@@ -84,8 +84,10 @@ class FakeSandbox implements SandboxPort {
   /** Every spec the wrapper attached with — the branch the Machine chose. */
   specs: WorkspaceSpec[] = [];
   readonly leaseIntervalMs = 60_000;
-  async provision(req: { repos: ProvisionedRepo[] }): Promise<{ endpoint: string }> {
+  async place(req: { repos: ProvisionedRepo[] }): Promise<void> {
     this.provisioned.push(req.repos);
+  }
+  async provision(): Promise<{ endpoint: string }> {
     return { endpoint: "http://sandbox.test" };
   }
   async attach(req: {
@@ -102,6 +104,9 @@ class FakeSandbox implements SandboxPort {
   async renew(): Promise<void> {}
   continuity(_name: string, listener: (seen: { present: boolean }) => void): () => void {
     queueMicrotask(() => listener({ present: this.present }));
+    return () => {};
+  }
+  harnessRestarts(): () => void {
     return () => {};
   }
   async memoryFault(): Promise<MemoryKill | undefined> {

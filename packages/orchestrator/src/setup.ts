@@ -54,7 +54,15 @@ import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
  * union. Dotted names by construction (`NAME_RE` forbids dots in workflow event names), so they
  * can never collide with a def.
  */
-export type MechanismEvent = FaultTelemetry | { type: "workspace.lost" };
+export type MechanismEvent = FaultTelemetry | WorkspaceLost;
+
+/**
+ * A Workspace's Continuity broke (ADR-0021): its Sandbox is gone, or Lost. `reason` and `message`
+ * say why — the pod's own reason (`Evicted`, `NodeShutdown`, ...) or the operator's (`PodDeleted`,
+ * `NodeLost`), or `Deleted` for a Sandbox that is gone — for a body whose policy tells them apart,
+ * or only reports them. Optional: the body's policy never needs them to act.
+ */
+export type WorkspaceLost = { type: "workspace.lost"; reason?: string; message?: string };
 
 /** The full event union a jr2Setup machine sees: the defs' derived types plus the mechanism's. */
 export type WorkflowEvent<TDefs extends readonly EventDef[]> = EventFrom<TDefs[number]> | MechanismEvent;

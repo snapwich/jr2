@@ -15,15 +15,16 @@
 // (`{ streamUrl, offset, submissionId }` — jr2's durable re-attach handle, stored in the host
 // ledger), and `wait(admission)` follows the durable stream from the admission offset to the
 // Submission's Settlement — a long-poll loop that advances by the `stream-next-offset` header and
-// reconnects from the SAME offset on network failure (capped backoff, indefinitely: pod death is
-// `workspace.lost`'s job to report, not this loop's to guess). Re-attach after a restart is `wait`
+// reconnects from the SAME offset on network failure (capped backoff, indefinitely: a lost pod is
+// `workspace.lost`'s to report and a restarted Harness the Agent actor's, both off the watch —
+// ADR-0021 — never this loop's to guess). Re-attach after a restart is `wait`
 // with the SAME persisted admission; replay cost is bounded by one Submission's chunks. A 404 is a
 // LOST conversation (ADR-0027: a conversation lives as long as its Harness process) — a
 // `SettlementFault`, never an endless poll.
 //
 // Both verbs re-send on a network failure, for one reason stated twice: an unanswered request is
 // not an answer. They differ in bound, and the difference is where the Submission is — `wait`'s is
-// already admitted, so the lease may report a dead pod and this loop need never give up, while
+// already admitted, so the watch may report a dead pod or Harness and this loop need never give up, while
 // `send`'s does not exist yet, so its window closes and faults. `send` also re-sends ONLY what
 // provably never left this host (`postAdmission` — ADR-0042: it is the first thing ever to dial a
 // Sandbox's Service, and a CR at `phase: Ready` is not yet routable).
@@ -173,7 +174,8 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
    * question "did this reach the wire at all", never "does this look transient".
    *
    * And the window is BOUNDED where `wait`'s is not. `wait` may reconnect forever because its
-   * Submission is already admitted, so the lease owns the reporting (`workspace.lost` — ADR-0021).
+   * Submission is already admitted, so the watch owns the reporting (`workspace.lost`, or the
+   * Harness restart that ends the Turn — ADR-0021).
    * Nothing is admitted yet here, so there is no turn for a lease to be about: an address that
    * never answers is a fault this call has to name itself.
    */

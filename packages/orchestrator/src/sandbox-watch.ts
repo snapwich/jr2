@@ -34,9 +34,19 @@ export type SandboxObject = KubeObject & {
 /** The status the operator publishes (ADR-0001, ADR-0063) — pod facts included, so the
  * Orchestrator never reads a Pod. */
 export type SandboxStatus = {
-  phase?: string;
+  /** `Pending`, `Ready`, `Terminating` — or `Lost` (ADR-0021): the Sandbox's one pod is gone or
+   * terminal, and the operator never creates another. Terminal: a Lost Sandbox is never Pending or
+   * Ready again. */
+  phase?: SandboxPhase;
   endpoint?: string;
+  /** The pod the operator created for this Sandbox — its once-only record that it did. The
+   * Orchestrator judges no identity from it: Lost is the operator's verdict (ADR-0021). */
   podUID?: string;
+  /** `Ready`, `ReposFresh`; `Scheduled` — the pod's scheduling restated, `False` with the
+   * scheduler's reason (`Unschedulable`) or a quota's refusal of the create (`QuotaExceeded`) and
+   * their own words (ADR-0063, ADR-0064); and `Lost`, `True` once the phase is Lost, with the pod's
+   * reason (`Evicted`, `NodeShutdown`, ...) or the operator's (`PodDeleted`, `NodeLost`,
+   * `PodFailed`, `PodSucceeded`) and the pod's message. */
   conditions?: Condition[];
   /** Per Repo key, what the node cache did about the latest ask (ADR-0053). */
   repos?: SandboxRepoStatus[];
@@ -49,6 +59,9 @@ export type SandboxStatus = {
    * (ADR-0063) — the only evidence of a container that never starts. */
   waiting?: ContainerWaiting[];
 };
+
+/** A Sandbox's phase as the operator publishes it. `Lost` is terminal (ADR-0021). */
+export type SandboxPhase = "Pending" | "Ready" | "Terminating" | "Lost" | (string & {});
 
 /** One waiting container, as the operator copies it off the pod. */
 export type ContainerWaiting = { container: string; reason?: string; message?: string };

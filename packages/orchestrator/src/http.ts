@@ -478,6 +478,9 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
             // Turn markers (ADR-0023) carry an Agent's framing and pick payload — Instance-token
             // class, so the OPEN band never sees them (not even their types).
             if (ev.kind === "admission" || ev.kind === "pick") return;
+            // A wait for capacity's lines carry the scheduler's words (ADR-0064): behind the token.
+            // The open band sees `placing` lit in the status's children, and nothing more.
+            if (ev.kind === "placing" || ev.kind === "placed") return;
             // Terminal frame must flush before the handler returns and closes the stream (see the
             // guarded feed below for why the exit is chained off the write).
             const terminal = ev.status.status !== "active";
@@ -622,6 +625,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
             if (ev.kind === "admission" || ev.kind === "pick") {
               // Turn markers (ADR-0023) — Instance-token band, so the framing/payload ride whole.
               // These stay OFF the open workflow feed entirely (run-host.ts feeds them per-run).
+              void stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) });
+              return;
+            }
+            if (ev.kind === "placing" || ev.kind === "placed") {
+              // A wait for capacity starting and ending (ADR-0064) — Instance-token band too: the
+              // message is the scheduler's or the quota's own words.
               void stream.writeSSE({ event: ev.kind, data: JSON.stringify(ev) });
               return;
             }

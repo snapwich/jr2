@@ -102,7 +102,20 @@ export class MockFlueClient implements AgentRunPort {
     // never settles").
     return new Promise<void>((resolve, reject) => {
       this.pending.push({ resolve, reject });
-      opts?.signal?.addEventListener("abort", () => (this.abandoned = true), { once: true });
+      // A real wire client's wait rejects with the signal's reason (harness-client.ts `sleep`) —
+      // at once, for a signal that was aborted before the wait began.
+      if (opts?.signal?.aborted) {
+        this.abandoned = true;
+        return reject(opts.signal.reason);
+      }
+      opts?.signal?.addEventListener(
+        "abort",
+        () => {
+          this.abandoned = true;
+          reject(opts.signal!.reason);
+        },
+        { once: true },
+      );
     });
   }
 

@@ -323,7 +323,7 @@ export type RunBinding = {
    * settlement pick, so the run's narrative can name what a Turn hosted elsewhere decided.
    * Host-supplied; absent (bare unit-test bindings), turns leave no markers.
    */
-  marker?: (event: TurnMarker) => void;
+  marker?: (event: RunMarker) => void;
   /**
    * Attach the run-narrative echo to a Workspace's Harness (ADR-0023): the host replays the
    * run's feed-so-far to `endpoint` — the Harness in `placement`'s pod, pushed with that
@@ -365,6 +365,21 @@ export type RetryTelemetry = { kind: "retry"; child: string; attempt: number; re
 export type TurnMarker =
   | { kind: "admission"; agent: string; endpoint: string; prompt: string }
   | { kind: "pick"; agent: string; endpoint: string; event: string; payload?: Record<string, unknown> };
+
+/**
+ * ADR-0064's two feed lines per wait for capacity: a Workspace's Sandbox has no node — `placing`,
+ * with the reason (`on`) and the scheduler's or the quota's own words — and then it has one —
+ * `placed`, `after` milliseconds since `since`. A changed reason adds no line: `RunStatus.waiting`
+ * carries the latest. `child` is the Workspace's actor path below the run root, its ids joined by
+ * `/` (`""` for a run whose root IS the Workspace). Instance-token class like the Turn markers: the
+ * message can name nodes and taints, so these ride the per-run feed alone.
+ */
+export type PlacingMarker =
+  | { kind: "placing"; child: string; on: "node" | "quota"; message: string; since: string }
+  | { kind: "placed"; child: string; since: string; after: number };
+
+/** Every marker a run's mechanism puts on its per-run feed. */
+export type RunMarker = TurnMarker | PlacingMarker;
 
 const bindings = new WeakMap<AnyActorSystem, RunBinding>();
 

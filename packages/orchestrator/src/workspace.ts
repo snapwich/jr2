@@ -16,13 +16,17 @@
 // tests bind a fake port. Every port operation is invoked from a state that RE-RUNS on restore
 // (invoked actors re-execute from persisted input), so every operation must be idempotent.
 //
-// Restore-reconcile (ADR-0012, ADR-0021): the `running` state co-invokes the lease beside the
-// body, and the lease subscribes to the Orchestrator's watch for its Sandbox (ADR-0063). Invoked
-// callback actors restart on every (re)entry — including snapshot restore — so after an
-// orchestrator restart the watch's first list is the reconcile: present and the same pod →
-// nothing (agent admissions re-attach — ADR-0016); gone or replaced → the pod-local clone and any
-// unpushed commits are gone, so it delivers `workspace.lost` INTO the restored body (same channel
-// as `agent.fault`) and the body's policy decides. Never silently re-provision.
+// The lifecycle (ADR-0012, ADR-0064): `placing` writes the Sandbox and waits, with no deadline,
+// for its pod to be scheduled; `provisioning` waits for Ready under a budget that starts there;
+// `attaching` runs the Harness's attach; `running` runs the body; `teardown` destroys.
+//
+// Restore-reconcile (ADR-0012, ADR-0021): every state from `placing` to `running` co-invokes the
+// lease, and in `running` the lease judges Continuity from the Orchestrator's watch for its
+// Sandbox (ADR-0063). Invoked callback actors restart on every (re)entry — including snapshot
+// restore — so after an orchestrator restart the watch's first list is the reconcile: present and
+// not Lost → nothing (agent admissions re-attach — ADR-0016); gone or Lost → the pod-local clone
+// and any unpushed commits are gone, so it delivers `workspace.lost` INTO the restored body (same
+// channel as `agent.fault`) and the body's policy decides. Never silently re-provision.
 
 import {
   assign,
@@ -53,7 +57,7 @@ import {
   type SandboxParts,
   type WrapperActors,
 } from "./parts.ts";
-import { runBindingOf, type AnyActorSystem } from "./registration.ts";
+import { actorPath, runBindingOf, type AnyActorSystem } from "./registration.ts";
 import { assertSize, assertUserSeat, userSeatOf, type Size, type UserContainer } from "./size.ts";
 import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInput } from "./vocabulary.ts";
 
@@ -148,16 +152,43 @@ export type WorkspaceHandles<TSlots extends string> = {
 export type Workspaced<TInput, TSlots extends string> = TInput & { workspace: WorkspaceHandles<TSlots> };
 
 /**
- * What the watch says about a workspace (ADR-0021, ADR-0063).
- *
- * `identity` is the backing pod's identity, NOT its address. Addresses are deterministic — the
- * CR name, the Service DNS, the worktree paths are all derived from the run — so every name a
- * live run holds still resolves after an eviction or a node loss, while the pod behind them is
- * a replacement with an empty `work` volume: clones, worktrees, and unpushed commits gone.
- * Presence cannot see that; identity can. A backend with no such notion may omit it, and its
- * workspaces are then reconciled on presence alone.
+ * What the watch says about a workspace (ADR-0021, ADR-0063): gone, or present — and, once the
+ * operator has judged its one pod gone or terminal, `lost` with the operator's reason and the pod's
+ * own words. A Sandbox has one pod for its life, so a Lost Sandbox never comes back; the operator
+ * judges identity because it knows which pod it created, and nothing here compares pod UIDs.
  */
-export type Continuity = { present: false } | { present: true; identity?: string };
+export type Continuity = { present: false } | { present: true; lost?: SandboxLoss };
+
+/** Why a Sandbox is Lost (ADR-0021): the pod's own reason (`Evicted`, `NodeShutdown`, ...) or the
+ * operator's (`PodDeleted`, `NodeLost`, `PodFailed`, `PodSucceeded`), and its message. */
+export type SandboxLoss = { reason: string; message: string };
+
+/**
+ * Why a Sandbox with no node waits (ADR-0064): the scheduler found no node for it, or a
+ * ResourceQuota refused its pod. `message` is the scheduler's or the API server's own words, which
+ * can name nodes and taints — so it rides the authenticated status and the per-run feed only.
+ */
+export type PlacingWait = { on: "node" | "quota"; message: string };
+
+/** The Harness container's restarts on the Sandbox's one pod, and how it last ended — as the
+ * operator publishes them (ADR-0021, ADR-0063). The signal that ends the Turns a restart took. */
+export type HarnessRestarts = {
+  restartCount: number;
+  lastTerminated?: { reason?: string; exitCode?: number; finishedAt?: string };
+};
+
+/** What the port writes when a Workspace is placed (ADR-0012, ADR-0064). */
+export type PlaceRequest = {
+  name: string;
+  runId: string;
+  workflow: string;
+  image?: string;
+  user?: string;
+  workGroup?: number;
+  repos: ProvisionedRepo[];
+  resources?: Size;
+  userResources?: Size;
+};
 
 /** One Repo Slot as the port receives it at provision (ADR-0051): resolved to a Binding, and
  * flagged when the run — not the Machine — chose the url, because that is what the credentials
@@ -170,28 +201,30 @@ export type ProvisionedRepo = { slot: string; url: string; ref?: string; perRun:
  * states re-run on snapshot restore (create-if-absent, attach-if-absent, delete-if-present).
  */
 export interface SandboxPort {
-  /** Ensure the Sandbox CR exists (labeled with its run for `jr2 ls`) and await `phase: Ready`;
-   * resolve with the Harness endpoint the orchestrator can reach, and the identity the lease
-   * will hold this workspace to. `image`/`user` are the wrapper's static image options
-   * (ADR-0037/0005/0049) — a `file:` context or a registry ref, the port resolves both, and a
-   * context the last converge did not build fails here rather than converge-time. `repos` are the
-   * wrapper's slots, resolved, in declaration order (ADR-0051): the port names each Repo on the
-   * CR so the cluster mounts its cache, and refuses a per-run url no `git.credentials` entry
-   * admits. `workGroup` is the pod's `fsGroup`; the port owns the default. `resources` is the Size
-   * the Machine states and `userResources` the User Container's split of it (ADR-0060), both as
-   * stated — the port resolves the rest of the chain (the Instance default, the kit's) and splits
-   * the Size inside the pod. */
-  provision(req: {
-    name: string;
-    runId: string;
-    workflow: string;
-    image?: string;
-    user?: string;
-    workGroup?: number;
-    repos: ProvisionedRepo[];
-    resources?: Size;
-    userResources?: Size;
-  }): Promise<{ endpoint: string; identity?: string }>;
+  /**
+   * Write the Sandbox (its token Secret, then the CR, labeled with its run for `jr2 ls`) and wait,
+   * with NO deadline, until the operator says its pod is scheduled (ADR-0064). `image`/`user` are
+   * the wrapper's static image options (ADR-0037/0005/0049) — a `file:` context or a registry ref,
+   * the port resolves both, and a context the last converge did not build fails here rather than
+   * converge-time. `repos` are the wrapper's slots, resolved, in declaration order (ADR-0051): the
+   * port names each Repo on the CR so the cluster mounts its cache, and refuses a per-run url no
+   * `git.credentials` entry admits. `workGroup` is the pod's `fsGroup`; the port owns the default.
+   * `resources` is the Size the Machine states and `userResources` the User Container's split of it
+   * (ADR-0060), both as stated — the port resolves the rest of the chain and splits the Size inside
+   * the pod.
+   *
+   * While the pod has no node, `onWait` hears why, each time the reason changes. A Sandbox that is
+   * Lost, or deleted, before it is placed rejects. `signal` ends the wait: the promise rejects once
+   * any write in flight has settled, so a caller that deletes after it never races the apply.
+   */
+  place(req: PlaceRequest, opts: { onWait: (wait: PlacingWait) => void; signal?: AbortSignal }): Promise<void>;
+  /**
+   * Wait for the placed Sandbox's `phase: Ready` under the port's budget, which starts NOW — the
+   * pod is scheduled, so it measures only what jr2 controls: the image pull, the Harness start, the
+   * Repos (ADR-0064). Resolves with the Harness endpoint the orchestrator can reach. Lost, or gone,
+   * rejects naming why.
+   */
+  provision(name: string): Promise<{ endpoint: string }>;
   /** Post-Ready attach (ADR-0004): per slot, `git clone --shared` off the node's read-only
    * cache (the `default/` checkout), then a branch worktree sibling — and, with `spec.reviewSha`, the detached
    * review worktree (ADR-0028). Resolves with the worktree paths by slot; `stale` names the slots
@@ -216,11 +249,18 @@ export interface SandboxPort {
   renew(name: string): Promise<void>;
   /**
    * Hear this workspace's Continuity from the watch (ADR-0021, ADR-0063): once the watch has
-   * listed, what it holds now, then again on every change the cluster reports — a Sandbox gone,
-   * or one whose pod is a different pod. A dropped watch reports NOTHING: unknown is never loss,
-   * and the listener never hears a fabricated `{present: false}`. Returns the unsubscribe.
+   * listed, what it holds now, then again on every change the cluster reports — a Sandbox gone, or
+   * one the operator has made Lost. A dropped watch reports NOTHING: unknown is never loss, and the
+   * listener never hears a fabricated `{present: false}`. Returns the unsubscribe.
    */
   continuity(name: string, listener: (seen: Continuity) => void): () => void;
+  /**
+   * Hear the Harness container's restarts on this Sandbox's pod (ADR-0021): once the watch has
+   * listed, then on every change. A Turn records the count at its admission, and a count above it
+   * means the conversation it waits on is gone. Silent for a name the watch does not hold — the
+   * Instance Harness is a Deployment, not a Sandbox. Returns the unsubscribe.
+   */
+  harnessRestarts(name: string, listener: (seen: HarnessRestarts) => void): () => void;
   /**
    * Name a memory kill (ADR-0061): when the Harness container of this Sandbox last ended
    * `OOMKilled` at or after `since`, the kill — its fault reason, starting with the fixed prefix
@@ -285,6 +325,17 @@ type MechanismHandles = AmbientHandles;
  * mapper is not re-evaluated against an input that may since have been re-parsed. */
 export type ResolvedBinding = { url: string; ref?: string; perRun: boolean };
 
+/**
+ * A Workspace's wait for capacity as its context holds it (ADR-0064): the reason as the port last
+ * heard it, and when the wait began. `since` survives a changed reason and a restart — it is how
+ * long the Workspace has waited, which is what the feed's closing line reports.
+ */
+export type WorkspaceWait = PlacingWait & { since: string };
+
+/** The context key the wait rides under — what `RunStatus.waiting` reads off a Workspace's
+ * snapshot, live or persisted. */
+export const WORKSPACE_WAIT_KEY = "wait";
+
 type WsContext = {
   /** The wrapper's own input, passed through to the body untouched (plus `workspace`). */
   runInput: Record<string, unknown>;
@@ -295,10 +346,9 @@ type WsContext = {
   /** Every slot's resolved Binding, by slot, in declaration order — assigned at provision. */
   bindings?: Record<string, ResolvedBinding>;
   endpoint?: string;
-  /** The pod identity this workspace attached to, captured at provision and persisted so the
-   * lease can hold the workspace to it across a restart (ADR-0021). Plain serializable data,
-   * exactly like `endpoint` — ADR-0007's rule about what may ride context. */
-  identity?: string;
+  /** Why the Sandbox waits for a node, while `placing` (ADR-0064) — persisted, so a restart keeps
+   * when the wait began and `RunStatus.waiting` reads it off the snapshot. Cleared once placed. */
+  wait?: WorkspaceWait;
   /** Persisted in context so the registrar can re-publish them on restore. */
   handles?: MechanismHandles;
   output?: unknown;
@@ -327,7 +377,7 @@ export type WorkspaceMachine<TInput, TOutput, TBody extends AnyStateMachine, TSl
   any,
   any,
   any,
-  WrapperActors<"body", TBody, "provision" | "attach" | "registrar" | "lease" | "destroy">,
+  WrapperActors<"body", TBody, "place" | "provision" | "attach" | "registrar" | "lease" | "destroy">,
   any,
   any,
   any,
@@ -683,10 +733,30 @@ function attachedRepos(bindings: Record<string, ResolvedBinding>): Array<{ slot:
 }
 
 function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any }) => WorkspaceSpec): AnyStateMachine {
-  const provision = fromPromise<
-    { endpoint: string; identity?: string; bindings: Record<string, ResolvedBinding> },
+  /**
+   * `placing` (ADR-0064): write the Sandbox and wait, with no deadline, for its pod to be
+   * scheduled. jr2 cannot tell "full now" from "never fits", so a bound is the Machine's own
+   * `after` on the state that holds the Workspace.
+   *
+   * The wait is said, never sent to the body: each reason the port hears is assigned into this
+   * wrapper's context (`workspace.waiting`, where `RunStatus.waiting` reads it), and the feed gets
+   * two lines — the wait starting, with its reason, and the wait ending ("placed after …"). A
+   * changed reason updates the context and adds no line. A restart re-enters here: the apply is
+   * idempotent, the watch's first list answers at once, and `since` is read back off the
+   * wrapper's context, so neither line is said twice.
+   *
+   * Delete what never ran: stopped before its pod has a node — a parent `after`, a cancelled run, a
+   * run faulted elsewhere — this Sandbox is deleted at once, because nothing on it can be inspected
+   * and left alone it could take a node later for nobody. xstate's stop is synchronous, so the
+   * delete rides the abort, after any write in flight has settled. A wait that fails on its own —
+   * the Sandbox Lost before its node, a write that half landed — is the same end: the delete comes
+   * before the fault, and the fault carries the reason. The host stopping the run for a restart is
+   * not an end: the restored run re-enters `placing` and keeps its place.
+   */
+  const place = fromPromise<
+    { bindings: Record<string, ResolvedBinding> },
     { wsId: string; spec: WorkspaceSpec; runInput: unknown }
-  >(async ({ input, self, system }) => {
+  >(async ({ input, self, system, signal }) => {
     assertSpec(input.spec); // before the port: a bad spec must never cost a pod
     const binding = runBindingOf(system);
     // The images and the slots come off the WRAPPER, at invoke time, not out of context and not
@@ -702,30 +772,101 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
       parts.repos,
       input.runInput,
     );
-    const provisioned = await sandboxOf(system).provision({
-      name: workspaceName(binding.runId, input.wsId),
-      runId: binding.runId,
-      workflow: binding.workflow,
-      // The image strings straight through (ADR-0037/0005) — the port owns resolution, and the
-      // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
-      ...(parts.image !== undefined ? { image: parts.image } : {}),
-      ...(user.image !== undefined ? { user: user.image } : {}),
-      ...(input.spec.workGroup !== undefined ? { workGroup: input.spec.workGroup } : {}),
-      repos: Object.entries(bindings).map(([slot, b]) => ({ slot, ...b })),
-      // The Size as the Machine states it, re-read here like the images (ADR-0060): a redeploy
-      // that retuned it reaches the next provision, and no snapshot holds it.
-      ...(parts.resources !== undefined ? { resources: parts.resources } : {}),
-      ...(user.resources !== undefined ? { userResources: user.resources } : {}),
-    });
-    return { ...provisioned, bindings };
+    const port = sandboxOf(system);
+    const name = workspaceName(binding.runId, input.wsId);
+    const wrapper = self._parent;
+    const child = wrapper ? actorPath(wrapper).join("/") : "";
+    // A wait opened before a restart is the same wait: its start is in the wrapper's persisted
+    // context, never in this actor's input, which a restore replays as it was first invoked.
+    const opened = (): string | undefined =>
+      ((wrapper?.getSnapshot() as { context?: WsContext } | undefined)?.context?.wait as WorkspaceWait | undefined)
+        ?.since;
+    let since: string | undefined;
+    let heard: PlacingWait | undefined;
+    const onWait = (wait: PlacingWait) => {
+      if (signal.aborted || (heard?.on === wait.on && heard.message === wait.message)) return;
+      heard = wait;
+      since ??= opened();
+      if (since === undefined) {
+        since = new Date().toISOString();
+        binding.marker?.({ kind: "placing", child, on: wait.on, message: wait.message, since });
+      }
+      wrapper?.send({ type: "workspace.waiting", wait: { ...wait, since } });
+    };
+    const placed = port.place(
+      {
+        name,
+        runId: binding.runId,
+        workflow: binding.workflow,
+        // The image strings straight through (ADR-0037/0005) — the port owns resolution, and the
+        // work group's default (ADR-0005 puts it in pod composition, where the pod is built).
+        ...(parts.image !== undefined ? { image: parts.image } : {}),
+        ...(user.image !== undefined ? { user: user.image } : {}),
+        ...(input.spec.workGroup !== undefined ? { workGroup: input.spec.workGroup } : {}),
+        repos: Object.entries(bindings).map(([slot, b]) => ({ slot, ...b })),
+        // The Size as the Machine states it, re-read here like the images (ADR-0060): a redeploy
+        // that retuned it reaches the next provision, and no snapshot holds it.
+        ...(parts.resources !== undefined ? { resources: parts.resources } : {}),
+        ...(user.resources !== undefined ? { userResources: user.resources } : {}),
+      },
+      { onWait, signal },
+    );
+    signal.addEventListener(
+      "abort",
+      () => {
+        if (binding.hostStopping) return;
+        void placed
+          .catch(() => {})
+          .then(() => port.destroy(name))
+          .catch(() => {}); // a delete that fails leaves the CR to the idle GC, as ever
+      },
+      { once: true },
+    );
+    try {
+      await placed;
+    } catch (err) {
+      // An abort is the listener's to delete; a failure of the wait itself is deleted here.
+      if (!signal.aborted && !binding.hostStopping) await port.destroy(name).catch(() => {});
+      throw err;
+    }
+    since ??= opened();
+    if (since !== undefined) {
+      binding.marker?.({ kind: "placed", child, since, after: Date.now() - Date.parse(since) });
+    }
+    return { bindings };
   });
+
+  /** `provisioning`: the placed pod's Ready, under the port's budget, which starts here (ADR-0064). */
+  const provision = fromPromise<{ endpoint: string }, { wsId: string }>(async ({ input, system }) =>
+    sandboxOf(system).provision(workspaceName(runBindingOf(system).runId, input.wsId)),
+  );
 
   const attach = fromPromise<
     { repos: Record<string, string>; review?: Record<string, string>; stale?: Record<string, string> },
     { wsId: string; spec: WorkspaceSpec; bindings: Record<string, ResolvedBinding> }
-  >(async ({ input, system }) => {
+  >(async ({ input, system, signal }) => {
+    const port = sandboxOf(system);
     const name = workspaceName(runBindingOf(system).runId, input.wsId);
-    const out = await sandboxOf(system).attach({ name, spec: input.spec, repos: attachedRepos(input.bindings) });
+    // The attach is loss-aware (ADR-0021): a Sandbox gone or Lost under it fails the attach at
+    // once and by name, as it fails the placing and the provisioning — never a transport error
+    // one attach window later. Only the cluster's word: a dropped watch says nothing.
+    let unsubscribe = (): void => {};
+    const loss = new Promise<never>((_, reject) => {
+      unsubscribe = port.continuity(name, (seen) => {
+        const lost = !seen.present ? GONE : seen.lost;
+        if (lost === undefined) return;
+        const what = seen.present ? "is Lost" : "is gone";
+        reject(new Error(`Sandbox "${name}" ${what} while it attached: ${lost.reason}: ${lost.message} (ADR-0021)`));
+      });
+    });
+    loss.catch(() => {});
+    signal.addEventListener("abort", () => unsubscribe(), { once: true });
+    let out: Awaited<ReturnType<typeof port.attach>>;
+    try {
+      out = await Promise.race([port.attach({ name, spec: input.spec, repos: attachedRepos(input.bindings) }), loss]);
+    } finally {
+      unsubscribe();
+    }
     // Announced, never persisted (ADR-0051): a stale cache is a degraded attach the run proceeds
     // through on the objects the node holds. The pod cannot heal it — the worktree's `origin`
     // fetches from the cache, not the remote (ADR-0005: the pod holds no credential) — so stale
@@ -765,72 +906,87 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
    * Orchestrator must keep saying "still mine" or the operator's idle GC reaps — ADR-0001), and it
    * LISTENS to the watch for whether what the body attached to is still there (ADR-0063).
    *
-   * Being an INVOKED actor is the whole design. Its lifetime IS `running`'s lifetime, which
-   * xstate already manages: it re-invokes on snapshot restore (so a restart reconciles for free:
-   * the watch's first list is the first thing it hears), and it stops on every exit — body
-   * final, run stopped, run faulted. That last one is why there is no `release()`: a faulted run
-   * stops its actors, the lease stops with them, and the abandoned pod ages out of the idle
-   * timeout on its own.
+   * Being an INVOKED actor is the whole design. It is invoked beside the work of every state from
+   * `placing` to `running`, so the renewal covers the Sandbox from its write to its teardown — a
+   * Sandbox that waits for capacity is never reaped as abandoned (ADR-0064) — and there is one at
+   * a time, because a state's invocations stop when it exits. It re-invokes on snapshot restore (so
+   * a restart reconciles for free: the watch's first list is the first thing it hears), and it
+   * stops on every exit — body final, run stopped, run faulted. That last one is why there is no
+   * `release()`: a faulted run stops its actors, the lease stops with them, and the abandoned pod
+   * ages out of the idle timeout on its own.
    *
-   * The two halves no longer share a call. Loss arrives within seconds of the cluster saying so;
-   * the renewal is a merge patch every interval ±20%, whose only job is to keep the Sandbox from
-   * being reaped.
+   * Continuity is JUDGED only in `running`, once there is an attached pod: before that, a Sandbox
+   * that is Lost or gone fails the placing, the provisioning or the attach, by name, on its own. The two halves
+   * share no call: loss arrives within seconds of the cluster saying so; the renewal is a merge
+   * patch every interval ±20%, whose only job is to keep the Sandbox from being reaped.
    */
-  const lease = fromCallback<{ type: string }, { wsId: string; identity?: string }>(({ input, system, sendBack }) => {
-    const port = sandboxOf(system);
-    const name = workspaceName(runBindingOf(system).runId, input.wsId);
-    let stopped = false;
-    let lost = false;
+  const lease = fromCallback<{ type: string }, { wsId: string; judging: boolean }>(
+    ({ input, self, system, sendBack }) => {
+      const port = sandboxOf(system);
+      const name = workspaceName(runBindingOf(system).runId, input.wsId);
+      let stopped = false;
+      let lost = false;
 
-    const unsubscribe = port.continuity(name, (seen) => {
-      if (stopped || lost) return;
-      // Two ways to lose a workspace, one event. Gone: reaped, deleted, namespace cleared.
-      // Replaced: the CR survived an eviction or node loss but the pod behind it did not, so
-      // every name still resolves over an empty `work` volume. Re-provisioning either silently
-      // would resume into an inconsistent world — the body decides (ADR-0012). An identity the
-      // operator has not published yet (a pod being recreated) is not evidence either way.
-      const replaced =
-        seen.present && input.identity !== undefined && seen.identity !== undefined
-          ? seen.identity !== input.identity
-          : false;
-      if (!seen.present || replaced) {
-        lost = true; // once: the body has been told, and the workspace does not come back
-        sendBack({ type: "workspace.lost" });
-      }
-    });
+      const unsubscribe = input.judging
+        ? port.continuity(name, (seen) => {
+            if (stopped || lost) return;
+            // Two ways to lose a workspace, one event. Gone: reaped, deleted, namespace cleared. Lost:
+            // the CR survived but its one pod did not — evicted, its node lost or shut down — so
+            // every name still resolves over an empty `work` volume, and the operator never gives it
+            // a second pod. Re-provisioning either silently would resume into an inconsistent world
+            // — the body decides (ADR-0012).
+            const loss: SandboxLoss | undefined = !seen.present ? GONE : seen.lost;
+            if (loss !== undefined) {
+              lost = true; // once: the body has been told, and the workspace does not come back
+              sendBack({ type: "workspace.lost", reason: loss.reason, message: loss.message });
+            }
+          })
+        : () => {};
 
-    // The assertion, jittered from the first renewal on (see `leaseDelay`).
-    const interval = port.leaseIntervalMs ?? DEFAULT_LEASE_INTERVAL_MS;
-    let timer: ReturnType<typeof setTimeout>;
-    const schedule = (ms: number) => {
-      timer = setTimeout(() => {
-        if (stopped) return;
-        // A failed renewal is unknown, never lost: the next one is an interval away, well inside
-        // the idle timeout, and loss is the watch's to report.
-        port.renew(name).catch(() => {});
-        schedule(leaseDelay(interval, "next", Math.random()));
-      }, ms);
-      timer.unref?.(); // a lease never holds the process open; it matters only while the run runs
-    };
-    schedule(leaseDelay(interval, "first", Math.random()));
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-      unsubscribe();
-    };
-  });
+      // The assertion, jittered from the first renewal on (see `leaseDelay`).
+      const interval = port.leaseIntervalMs ?? DEFAULT_LEASE_INTERVAL_MS;
+      let timer: ReturnType<typeof setTimeout>;
+      const schedule = (ms: number) => {
+        timer = setTimeout(() => {
+          // A Workspace that ended in error stopped processing without stopping its children (xstate
+          // does not), and a parent that handled the error only stops what still processes: the
+          // lease asks, and asserts nothing for a Workspace that is over.
+          if (stopped || self._parent?.getSnapshot().status !== "active") return;
+          // A failed renewal is unknown, never lost: the next one is an interval away, well inside
+          // the idle timeout, and loss is the watch's to report. Before the CR's write lands it is a
+          // 404, and the same shrug.
+          port.renew(name).catch(() => {});
+          schedule(leaseDelay(interval, "next", Math.random()));
+        }, ms);
+        timer.unref?.(); // a lease never holds the process open; it matters only while the run runs
+      };
+      schedule(leaseDelay(interval, "first", Math.random()));
+      return () => {
+        stopped = true;
+        clearTimeout(timer);
+        unsubscribe();
+      };
+    },
+  );
 
   const destroy = fromPromise<void, { wsId: string }>(async ({ input, system }) =>
     sandboxOf(system).destroy(workspaceName(runBindingOf(system).runId, input.wsId)),
   );
 
+  /** The lease beside a state's own work — renewing everywhere, judging in `running` alone. */
+  const leaseInvoke = (judging: boolean) => ({
+    id: "lease",
+    src: "lease" as const,
+    input: ({ context }: { context: unknown }) => ({ wsId: (context as WsContext).wsId, judging }),
+  });
+
   // Every actor this wrapper runs is a NAMED SLOT (ADR-0049), the body first among them: a Machine
   // composes by invoking a declared `src`, and `body` is what `provide()`, `customize()`, Stately,
-  // the Console's join key and the `jr2 up` parts walk all reach it by. The mechanism's own four —
-  // provision, attach, registrar, lease, destroy — are named for the same price, and the Console
-  // now shows what each state is doing instead of "inline".
+  // the Console's join key and the `jr2 up` parts walk all reach it by. The mechanism's own six —
+  // place, provision, attach, registrar, lease, destroy — are named for the same price, and the
+  // Console shows what each state is doing instead of "inline".
   return setup({
-    actors: { body, provision, attach, registrar, lease, destroy },
+    actors: { body, place, provision, attach, registrar, lease, destroy },
   }).createMachine({
     id: "workspace",
     context: ({ input, self }: { input: unknown; self: { id: string } }): WsContext => ({
@@ -838,60 +994,90 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
       wsId: self.id,
       spec: spec({ input }),
     }),
-    initial: "provisioning",
+    initial: "placing",
     states: {
-      provisioning: {
-        invoke: {
-          src: "provision",
-          input: ({ context }) => ({
-            wsId: (context as unknown as WsContext).wsId,
-            spec: (context as unknown as WsContext).spec,
-            runInput: (context as unknown as WsContext).runInput,
-          }),
-          onDone: {
-            target: "attaching",
-            actions: assign({
-              endpoint: ({ event }) => (event as unknown as { output: { endpoint: string } }).output.endpoint,
-              identity: ({ event }) => (event as unknown as { output: { identity?: string } }).output.identity,
-              bindings: ({ event }) =>
-                (event as unknown as { output: { bindings: Record<string, ResolvedBinding> } }).output.bindings,
+      placing: {
+        invoke: [
+          {
+            id: "place",
+            src: "place",
+            input: ({ context }) => ({
+              wsId: (context as unknown as WsContext).wsId,
+              spec: (context as unknown as WsContext).spec,
+              runInput: (context as unknown as WsContext).runInput,
             }),
+            onDone: {
+              target: "provisioning",
+              actions: assign({
+                bindings: ({ event }) =>
+                  (event as unknown as { output: { bindings: Record<string, ResolvedBinding> } }).output.bindings,
+                wait: undefined,
+              }),
+            },
+          },
+          leaseInvoke(false),
+        ],
+        // The wait's reason, into context and nowhere else: scheduling detail is not the body's
+        // concern (ADR-0064), and a bound is the parent's `after`.
+        on: {
+          "workspace.waiting": {
+            actions: assign({ wait: ({ event }) => (event as unknown as { wait: WorkspaceWait }).wait }),
           },
         },
       },
-      attaching: {
-        invoke: {
-          src: "attach",
-          input: ({ context }) => ({
-            wsId: (context as unknown as WsContext).wsId,
-            spec: (context as unknown as WsContext).spec,
-            bindings: (context as unknown as WsContext).bindings!,
-          }),
-          onDone: {
-            target: "running",
-            actions: assign({
-              handles: ({ context, event, system }): MechanismHandles => {
-                const ctx = context as WsContext;
-                const out = (
-                  event as unknown as {
-                    output: { repos: Record<string, string>; review?: Record<string, string> };
-                  }
-                ).output;
-                return {
-                  endpoint: ctx.endpoint!,
-                  // Derived, not remembered: the same function every port operation names the CR
-                  // with, so the Sandbox the registrar publishes — and the Agent actor records on its
-                  // registration — is the one the Custodian's token is scoped to, by construction
-                  // (ADR-0013).
-                  sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),
-                  repos: out.repos,
-                  branch: ctx.spec.branch,
-                  ...(out.review ? { review: out.review } : {}),
-                };
-              },
-            }),
+      provisioning: {
+        invoke: [
+          {
+            id: "provision",
+            src: "provision",
+            input: ({ context }) => ({ wsId: (context as unknown as WsContext).wsId }),
+            onDone: {
+              target: "attaching",
+              actions: assign({
+                endpoint: ({ event }) => (event as unknown as { output: { endpoint: string } }).output.endpoint,
+              }),
+            },
           },
-        },
+          leaseInvoke(false),
+        ],
+      },
+      attaching: {
+        invoke: [
+          {
+            id: "attach",
+            src: "attach",
+            input: ({ context }) => ({
+              wsId: (context as unknown as WsContext).wsId,
+              spec: (context as unknown as WsContext).spec,
+              bindings: (context as unknown as WsContext).bindings!,
+            }),
+            onDone: {
+              target: "running",
+              actions: assign({
+                handles: ({ context, event, system }): MechanismHandles => {
+                  const ctx = context as WsContext;
+                  const out = (
+                    event as unknown as {
+                      output: { repos: Record<string, string>; review?: Record<string, string> };
+                    }
+                  ).output;
+                  return {
+                    endpoint: ctx.endpoint!,
+                    // Derived, not remembered: the same function every port operation names the CR
+                    // with, so the Sandbox the registrar publishes — and the Agent actor records on its
+                    // registration — is the one the Custodian's token is scoped to, by construction
+                    // (ADR-0013).
+                    sandbox: workspaceName(runBindingOf(system as AnyActorSystem).runId, ctx.wsId),
+                    repos: out.repos,
+                    branch: ctx.spec.branch,
+                    ...(out.review ? { review: out.review } : {}),
+                  };
+                },
+              }),
+            },
+          },
+          leaseInvoke(false),
+        ],
       },
       running: {
         invoke: [
@@ -920,17 +1106,11 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
               actions: assign({ output: ({ event }) => (event as unknown as { output: unknown }).output }),
             },
           },
-          {
-            id: "lease",
-            src: "lease",
-            input: ({ context }) => ({
-              wsId: (context as unknown as WsContext).wsId,
-              identity: (context as unknown as WsContext).identity,
-            }),
-          },
+          leaseInvoke(true),
         ],
-        // The wrapper emits, the body decides (ADR-0012): forward loss into the body's policy.
-        on: { "workspace.lost": { actions: sendTo("body", { type: "workspace.lost" }) } },
+        // The wrapper emits, the body decides (ADR-0012): forward loss, with its reason, into the
+        // body's policy.
+        on: { "workspace.lost": { actions: sendTo("body", ({ event }) => event) } },
       },
       teardown: {
         invoke: {
@@ -948,3 +1128,10 @@ function buildWorkspaceMachine(body: AnyStateMachine, spec: (args: { input: any 
     output: ({ context }) => (context as unknown as WsContext).output,
   });
 }
+
+/** A Sandbox the watch says is gone — reaped by the idle GC, deleted by hand, its namespace
+ * cleared — as the loss `workspace.lost` carries. */
+const GONE: SandboxLoss = {
+  reason: "Deleted",
+  message: "the Sandbox is gone: deleted, or reaped by the operator's idle GC (ADR-0001)",
+};

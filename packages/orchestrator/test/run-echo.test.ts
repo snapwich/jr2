@@ -22,17 +22,22 @@ import { mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 class EchoSandbox implements SandboxPort {
   provisioned = new Map<string, { runId: string }>();
   leaseIntervalMs = 60_000;
-  async provision(req: { name: string; runId: string; workflow: string }) {
+  async place(req: { name: string; runId: string; workflow: string }) {
     this.provisioned.set(req.name, { runId: req.runId });
-    return { endpoint: `http://${req.name}.test`, identity: "pod-1" };
+  }
+  async provision(name: string) {
+    return { endpoint: `http://${name}.test` };
   }
   async attach(req: { name: string; spec: WorkspaceSpec; repos: Array<{ slot: string }> }) {
     const repos = Object.fromEntries(req.repos.map((r) => [r.slot, `/work/${r.slot}/${req.spec.branch}`]));
     return { repos };
   }
   async renew() {}
-  continuity(_name: string, listener: (seen: { present: true; identity: string }) => void) {
-    queueMicrotask(() => listener({ present: true, identity: "pod-1" }));
+  continuity(_name: string, listener: (seen: { present: true }) => void) {
+    queueMicrotask(() => listener({ present: true }));
+    return () => {};
+  }
+  harnessRestarts() {
     return () => {};
   }
   async memoryFault(): Promise<MemoryKill | undefined> {

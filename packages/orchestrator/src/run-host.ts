@@ -37,10 +37,11 @@ import {
   type Registration,
   type RetryTelemetry,
   type RunBinding,
-  type TurnMarker,
+  type RunMarker,
 } from "./registration.ts";
 import { NoticeLedger, type NoticeLedgerState } from "./notices.ts";
-import type { SandboxPort } from "./workspace.ts";
+import { WORKSPACE_WAIT_KEY, type SandboxPort, type WorkspaceWait } from "./workspace.ts";
+import { composesSandbox } from "./parts.ts";
 import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
@@ -103,6 +104,58 @@ function runChildren(snapshot: unknown): RunChild[] {
   return out;
 }
 
+/**
+ * One Workspace of a run waiting for capacity (ADR-0064): its Sandbox has no node. `child` is the
+ * Workspace's actor path below the run root — the {@link RunChild} ids down to it, joined by `/`,
+ * and `""` when the run's root IS the Workspace. `on` is what it waits for: a node from the
+ * scheduler, or room under the cluster owner's quota; `message` is the scheduler's or the API
+ * server's own words; `since` (ISO) is when the wait began, kept across a changed reason and a
+ * restart.
+ */
+export type RunWaiting = { child: string; on: "node" | "quota"; message: string; since: string };
+
+/**
+ * Every Workspace in `placing` with a reason, at any depth, read off the snapshot tree in the two
+ * shapes {@link runChildren} walks — the wait rides each Workspace's own persisted context, so a
+ * restored run reports it before its watch has said a word. A live child is held to being a
+ * `workspace()` by its logic; a persisted one has none, and the state key and the context's shape
+ * are the test. Only an ACTIVE run and an active Workspace wait: a run that ended — faulted,
+ * cancelled, done — has deleted what never ran, so a `placing` left in its snapshot waits for nothing.
+ */
+function runWaiting(snapshot: unknown, logic?: unknown, path: string[] = []): RunWaiting[] {
+  const out: RunWaiting[] = [];
+  const snap = snapshot as { status?: unknown; value?: unknown; context?: Record<string, unknown> } | undefined;
+  if (snap?.status !== undefined && snap.status !== "active") return out;
+  const wait = snap?.context?.[WORKSPACE_WAIT_KEY] as WorkspaceWait | undefined;
+  const isWorkspace = logic == null || composesSandbox(logic as AnyStateMachine);
+  if (isWorkspace && snap?.value === "placing" && (wait?.on === "node" || wait?.on === "quota")) {
+    out.push({ child: path.join("/"), on: wait.on, message: String(wait.message), since: String(wait.since) });
+  }
+  const children = (snapshot as { children?: Record<string, unknown> } | undefined)?.children ?? {};
+  for (const [id, entry] of Object.entries(children)) {
+    const child = entry as { snapshot?: unknown; getSnapshot?: () => unknown; logic?: unknown };
+    const live = typeof child.getSnapshot === "function";
+    const childSnap = live ? child.getSnapshot!() : child.snapshot;
+    if ((childSnap as { value?: unknown } | undefined)?.value === undefined) continue;
+    out.push(...runWaiting(childSnap, live ? child.logic : undefined, [...path, id]));
+  }
+  return out;
+}
+
+/**
+ * Stop every actor under `actor`, at any depth, deepest first. A machine that ended in `error` has
+ * stopped processing — its own stop is a no-op — so its children are reached through its snapshot
+ * rather than asked to stop through it.
+ */
+function stopTree(actor: AnyActorRef): void {
+  const children = (actor.getSnapshot() as { children?: Record<string, AnyActorRef> } | undefined)?.children ?? {};
+  for (const child of Object.values(children)) {
+    stopTree(child);
+    // `_stop` is what xstate's own `stopChild` calls: a child cannot be stopped through `stop()`.
+    (child as AnyActorRef & { _stop?: () => void })._stop?.();
+  }
+}
+
 /** A run's current observable state. `fault` carries the error message when status is "error"
  * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). */
 export type RunStatus = RunRecord & {
@@ -111,6 +164,10 @@ export type RunStatus = RunRecord & {
   context: unknown;
   /** The live child machines beneath the root — where most of a run actually is. */
   children: RunChild[];
+  /** Every Workspace waiting for capacity, and why (ADR-0064). Behind the token: the reason is
+   * the scheduler's or the quota's own words, which can name nodes and taints, so {@link observe}
+   * never carries it — the open band sees only that a Workspace is in `placing`. */
+  waiting: RunWaiting[];
   fault?: string;
   /**
    * Why the HOST set this status, for the statuses the Machine did not choose — today `drifted`
@@ -259,7 +316,7 @@ export type AgentDeliveryReceipt = {
 export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
   | { kind: "emit"; event: { type: string } & Record<string, unknown> }
-  | TurnMarker
+  | RunMarker
   // Absorbed-retry telemetry (ADR-0016): `{ child, attempt }` is state-key-class data — no iids
   // ride the feed (ADR-0014). `reason` is mechanism text, guarded like `fault`.
   | RetryTelemetry
@@ -835,17 +892,19 @@ export class RunHost {
     const blob = stored?.snapshot as RunBlob | null | undefined;
     if (!stored || !blob) return undefined;
     const snap = (blob.snapshot ?? {}) as { status?: string; value?: unknown; context?: unknown };
+    // The STORE row is the authority on the run's lifecycle, the snapshot on the Machine's: a
+    // cancelled run's actor reports xstate's "stopped", which is mechanism, not an outcome
+    // (ADR-0025). While the row still says "live", the Machine's own status is the answer.
+    const status = stored.status === "live" ? (snap.status ?? stored.status) : stored.status;
     return {
       runId,
       workflow: blob.workflow,
       instanceId: blob.instanceId,
-      // The STORE row is the authority on the run's lifecycle, the snapshot on the Machine's: a
-      // cancelled run's actor reports xstate's "stopped", which is mechanism, not an outcome
-      // (ADR-0025). While the row still says "live", the Machine's own status is the answer.
-      status: stored.status === "live" ? (snap.status ?? stored.status) : stored.status,
+      status,
       value: snap.value,
       context: snap.context,
       children: runChildren(snap), // the persisted `children` map — same tree, off the store
+      waiting: status === "active" ? runWaiting(snap) : [],
       fault: blob.fault,
       reason: stored.reason,
     };
@@ -1016,6 +1075,7 @@ export class RunHost {
       value: snap.value,
       context: snap.context,
       children: runChildren(snap),
+      waiting: runWaiting(snap, run.actor.logic),
       fault: run.fault,
     };
   }
@@ -1176,9 +1236,13 @@ export class RunHost {
       error: (err) => {
         run.fault = err instanceof Error ? err.message : String(err);
         this.persist(run);
-        // Nothing to release: a faulted run stops its actors, and each workspace's lease is one
-        // of them (ADR-0021). The pod stays up for inspection (ADR-0012's destroy-less terminal)
-        // and ages out of the operator's idle timeout on its own.
+        // A faulted run stops its actors — each workspace's lease among them (ADR-0021), and a
+        // Workspace still `placing` deletes the Sandbox that never ran (ADR-0064). Said here, not
+        // assumed: xstate ends a machine on an unhandled child error WITHOUT stopping its other
+        // children, so a lease beside the actor that failed would renew for nobody, forever. The
+        // pod that was placed stays up for inspection (ADR-0012's destroy-less terminal) and ages
+        // out of the operator's idle timeout on its own.
+        stopTree(actor);
       },
     });
     // (The author's `emit({...})` forwarding lives in `spawn`'s inspect handler — per actor,

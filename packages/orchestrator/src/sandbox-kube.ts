@@ -1,10 +1,11 @@
 // The canonical SandboxPort (ADR-0012 / GAP(3)): drives the operator's Sandbox CRD through the
 // Orchestrator's own Kubernetes client (kube-client.ts, ADR-0063) — plain REST on built-in
 // `fetch`, no dependency — and reads it back through the one watch (sandbox-watch.ts). Every wait
-// that polled is now a watch event: the provision's Ready, and Continuity (ADR-0021). The
-// Orchestrator never reads a Pod: the operator owns it (ADR-0001) and publishes what this port
-// needs on the Sandbox's status — `podUID`, the scheduler's word, the Harness container's restarts
-// and last end. The client and the watch are injectable, so the mapping is unit-testable against a
+// that polled is now a watch event: the placing's node (ADR-0064), the provision's Ready,
+// Continuity and the Harness's restarts (ADR-0021). The Orchestrator never reads a Pod: the
+// operator owns it (ADR-0001) and publishes what this port needs on the Sandbox's status — the
+// scheduler's word or a quota's refusal, `Lost` with the pod's reason, the Harness container's
+// restarts and last end. The client and the watch are injectable, so the mapping is unit-testable against a
 // fake API server; the kind e2e tier exercises the real thing.
 //
 // Reachability: the orchestrator always runs in-cluster (ADR-0019), so it dials
@@ -92,7 +93,7 @@ import {
 } from "./sandbox-watch.ts";
 import { harnessToken, harnessTokenDigest, sandboxToken } from "./tokens.ts";
 import type { AttachError, AttachRequest, AttachResponse } from "./wire.ts";
-import type { Continuity, MemoryKill, ProvisionedRepo, SandboxPort } from "./workspace.ts";
+import type { Continuity, MemoryKill, PlacingWait, ProvisionedRepo, SandboxLoss, SandboxPort } from "./workspace.ts";
 
 /** Where jr2's runtime lands in every container that gets it (ADR-0037). `/opt/jr2` and not `/app`
  * because a stranger's base may already use `/app`, and one layout must serve both the stock
@@ -302,7 +303,8 @@ export type KubeSandboxOptions = {
    * `jr2.dev/keepalive` is re-stamped, ±20%. Must be ≪ idleTimeout, since a lapsed lease is what
    * lets the operator reap. Default 5m. */
   leaseIntervalMs?: number;
-  /** Await-Ready budget for the POD: from the CR apply until the operator reports the pod Ready.
+  /** Await-Ready budget for the POD: from the pod's scheduling until the operator reports it Ready
+   * (ADR-0064) — the wait for a node is `placing`'s, with no deadline, and spends none of it.
    * Default 120s, measured against watch events. A pod that never comes up (an image that misses
    * ADR-0037's floor) is what this bounds; a pod that is up and waiting on its Repos is
    * `repoTimeoutMs`'s. */
@@ -310,11 +312,11 @@ export type KubeSandboxOptions = {
   /**
    * Await-Ready budget for the REPOS (ADR-0051): once the operator holds a Sandbox whose pod is
    * Ready on a Repo reason — the node's cache agent is cloning a cold node, or fetching before the
-   * attach — the wait is measured against this, from the same CR apply. Sized for a clone, not a
-   * pod: the agent's clone budget is 20m, and this must exceed it so a clone that runs out of
-   * time fails BY NAME (`RepoCloneFailed`, git's words) instead of as this port's timeout; and it
-   * must stay inside `idleTimeout` (30m), because the lease starts after provision, so the operator
-   * reaps a Sandbox that waits longer than that. Default 25m.
+   * attach — the wait is measured against this, from the same instant as the pod's. Sized for a
+   * clone, not a pod: the agent's clone budget is 20m, and this must exceed it so a clone that
+   * runs out of time fails BY NAME (`RepoCloneFailed`, git's words) instead of as this port's
+   * timeout. The Lease renews from the CR's write (ADR-0064), so the idle timeout does not bound
+   * it. Default 25m.
    */
   repoTimeoutMs?: number;
   /**
@@ -346,14 +348,10 @@ export type KubeSandboxOptions = {
   harnessFetch?: typeof fetch;
   /** How long an attach re-sends a request that never reached the Harness. Default 90s. */
   attachWindowMs?: number;
-  /** Where a provision's progress line goes (a Sandbox waiting on the scheduler). Default
-   * `console.warn`. */
-  log?: (line: string) => void;
 };
 
 export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   const ns = opts.namespace ?? "default";
-  const log = opts.log ?? ((line: string) => console.warn(line));
   const imagesPath = opts.imagesPath ?? join(IMAGES_MOUNT, IMAGES_KEY);
   const heldPath = opts.heldPath ?? join(HELD_MOUNT, HELD_KEY);
   const readyTimeoutMs = opts.readyTimeoutMs ?? 120_000;
@@ -728,47 +726,6 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
    */
   const staleByName = new Map<string, string>();
 
-  /**
-   * The provision's wait, as watch events (ADR-0063): every change the operator publishes on this
-   * Sandbox is judged as it lands, and a timer holds the budget. `judge` answers a result, throws a
-   * named failure, or answers undefined to keep waiting; `budget` is re-read after every judgement,
-   * because the Repo budget replaces the pod's the moment the operator holds the Sandbox on its
-   * Repos.
-   */
-  const waitFor = <T>(
-    name: string,
-    judge: (sandbox: SandboxObject | undefined) => T | undefined,
-    budget: () => { deadline: number; expire: (last: SandboxObject | undefined) => Error },
-  ): Promise<T> =>
-    new Promise<T>((resolve, reject) => {
-      let settled = false;
-      let last: SandboxObject | undefined;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const finish = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        unsubscribe();
-        fn();
-      };
-      const arm = () => {
-        clearTimeout(timer);
-        const { deadline, expire } = budget();
-        timer = setTimeout(() => finish(() => reject(expire(last))), Math.max(0, deadline - Date.now()));
-      };
-      const unsubscribe = sandboxes().subscribe(name, (sandbox) => {
-        last = sandbox;
-        try {
-          const out = judge(sandbox);
-          if (out !== undefined) return finish(() => resolve(out));
-        } catch (err) {
-          return finish(() => reject(err));
-        }
-        arm();
-      });
-      arm();
-    });
-
   /** The Harness's `POST /attach` (ADR-0063), re-sent while it demonstrably never reached the
    * Harness. Idempotent on the Harness's side (every step guarded, calls serialized), so a re-send
    * after a request that DID land is harmless too — but only a transport failure is retried: an
@@ -811,8 +768,75 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     }
   };
 
+  /**
+   * A wait, as watch events (ADR-0063): every change the operator publishes on this Sandbox is
+   * judged as it lands. `judge` answers a result, throws a named failure, or answers undefined to
+   * keep waiting. `budget`, when given, is a timer re-read after every judgement, because the Repo
+   * budget replaces the pod's the moment the operator holds the Sandbox on its Repos; without one
+   * the wait has no deadline (ADR-0064's `placing`). `signal` ends it early, rejecting with its
+   * reason.
+   */
+  const waitFor = <T>(
+    name: string,
+    judge: (sandbox: SandboxObject | undefined) => T | undefined,
+    budget?: () => { deadline: number; expire: (last: SandboxObject | undefined) => Error },
+    signal?: AbortSignal,
+  ): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      let settled = false;
+      let last: SandboxObject | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        signal?.removeEventListener("abort", onAbort);
+        fn();
+      };
+      const onAbort = () => finish(() => reject(signal!.reason));
+      const arm = () => {
+        if (!budget) return;
+        clearTimeout(timer);
+        const { deadline, expire } = budget();
+        timer = setTimeout(() => finish(() => reject(expire(last))), Math.max(0, deadline - Date.now()));
+      };
+      const unsubscribe = sandboxes().subscribe(name, (sandbox) => {
+        last = sandbox;
+        try {
+          const out = judge(sandbox);
+          if (out !== undefined) return finish(() => resolve(out));
+        } catch (err) {
+          return finish(() => reject(err));
+        }
+        arm();
+      });
+      arm();
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+    });
+
+  /**
+   * A Sandbox the operator made Lost, or one the watch saw and then lost, fails the wait at once and
+   * by name (ADR-0021): it never comes back. `seen` is the caller's: a wait that began with the
+   * write may hear nothing before the watch lists the new CR, and that is not a deletion.
+   */
+  const judgeLoss = (name: string, sandbox: SandboxObject | undefined, seen: boolean, doing: string): void => {
+    if (sandbox === undefined) {
+      if (seen) throw new Error(`Sandbox "${name}" was deleted while it ${doing} (ADR-0021)`);
+      return;
+    }
+    const lost = lossOf(sandbox);
+    if (lost) {
+      throw new Error(
+        `Sandbox "${name}" is Lost while it ${doing}: ${lost.reason}: ${lost.message} — a Sandbox has one pod ` +
+          "for its life and the operator never gives it another (ADR-0021)",
+      );
+    }
+  };
+
   return {
-    async provision(req) {
+    async place(req, { onWait, signal }) {
       // The fence first: a refused url costs nothing — no map read, no Secret, no CR.
       const repos = fencedRepos(req.name, req.repos);
       // The Size next (ADR-0060), for the same price: the Machine's, then the Instance default, then
@@ -869,60 +893,76 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // The apply answered with the CR's uid, so the Secret's owner is known at once.
       await ownSecret(req.name, applied.metadata?.uid);
 
-      const at = Date.now();
-      // Two budgets from one instant (see the options): the pod's until the operator has seen the
-      // pod Ready, the Repos' from the first event that finds the Sandbox held on a Repo reason —
-      // which the operator reports only once the pod IS Ready, so the preflight has already passed
-      // and what remains is a clone or a fetch on the node. Sticky: a pod that came up once is not
-      // a pod that will never come up, whatever it does afterwards.
-      let held = false;
-      let unplacedSaid = false;
-      return waitFor(
+      // The wait for a node, with no deadline (ADR-0064): jr2 cannot tell "full now" from "never
+      // fits", so a bound is the Machine's `after`. Its reason — the scheduler's, or a quota's
+      // refusal of the pod create, which the operator keeps retrying — is said each time it changes.
+      let seen = false;
+      let said: PlacingWait | undefined;
+      await waitFor<true>(
         req.name,
         (sandbox) => {
+          judgeLoss(req.name, sandbox, seen, "waited for a node");
+          if (sandbox === undefined) return undefined;
+          seen = true;
+          // Scheduled, or an operator too old to say so that already reports Ready.
+          if (conditionOf(sandbox, "Scheduled")?.status === "True" || sandbox.status?.phase === "Ready") return true;
+          const wait = placingWaitOf(sandbox);
+          if (wait && (wait.on !== said?.on || wait.message !== said.message)) {
+            said = wait;
+            onWait(wait);
+          }
+          return undefined;
+        },
+        undefined,
+        signal,
+      );
+    },
+
+    async provision(name) {
+      // Two budgets from one instant — NOW, the pod scheduled (ADR-0064), so neither is spent on a
+      // wait for capacity: the pod's until the operator has seen the pod Ready, the Repos' from the
+      // first event that finds the Sandbox held on a Repo reason — which the operator reports only
+      // once the pod IS Ready, so the preflight has already passed and what remains is a clone or a
+      // fetch on the node. Sticky: a pod that came up once is not a pod that will never come up,
+      // whatever it does afterwards.
+      const at = Date.now();
+      let held = false;
+      return waitFor(
+        name,
+        (sandbox) => {
+          // The pod was placed, so the watch has held this Sandbox: absent now is deleted.
+          judgeLoss(name, sandbox, true, "provisioned");
           const status = sandbox?.status;
           const ready = conditionOf(sandbox, "Ready");
           if (status?.phase !== "Ready") {
             // A container the kubelet will never start (ADR-0063): no log, no termination — its
             // waiting reason, published by the operator, is the only evidence. Named at once.
-            const fault = waitingFault(req.name, status?.waiting);
+            const fault = waitingFault(name, status?.waiting);
             if (fault) throw new Error(fault);
-            // Waiting on the scheduler is said when it first appears, in the scheduler's words, and
-            // the wait goes on under the pod budget.
-            // TODO(R4): capacity waiting decides how long an Unschedulable Sandbox waits, and where
-            // it is said (the feed, `jr2 status`); today it is the pod budget and the log.
-            const scheduled = conditionOf(sandbox, "Scheduled");
-            if (!unplacedSaid && scheduled?.status === "False" && scheduled.reason === "Unschedulable") {
-              unplacedSaid = true;
-              log(`jr2: Sandbox "${req.name}" is not scheduled yet: ${scheduled.message ?? "no message"} (ADR-0063)`);
-            }
           }
           // Terminal for THIS provision: the cache agent tried to clone onto the pod's node and git
           // refused. The operator's message carries the key, the node, and git's own words; the
           // agent keeps retrying on its own, so `jr2 status` will show the same error until it is fixed.
           if (status?.phase !== "Ready" && ready?.reason === REPO_CLONE_FAILED) {
-            throw new Error(repoCloneError(req.name, ready.message ?? ready.reason));
+            throw new Error(repoCloneError(name, ready.message ?? ready.reason));
           }
           // A Harness that keeps dying before it is ever Ready (ADR-0063): the kubelet's reason and
           // exit code, published by the operator, instead of the rest of the budget.
           const harness = status?.harness;
           if (status?.phase !== "Ready" && (harness?.restartCount ?? 0) >= CRASH_LOOP_RESTARTS) {
-            throw new Error(crashLoopError(req.name, harness!));
+            throw new Error(crashLoopError(name, harness!));
           }
           if (ready?.reason !== undefined && REPO_HELD.has(ready.reason)) held = true;
           if (status?.phase !== "Ready") return undefined;
           // Only `phase: Ready` means serving — status.endpoint appears earlier (ADR-0001).
-          if (!status.endpoint) throw new Error(`Sandbox "${req.name}" is Ready but reports no endpoint`);
+          if (!status.endpoint) throw new Error(`Sandbox "${name}" is Ready but reports no endpoint`);
           // Freshness degrades, absence does not (ADR-0051): Ready with `ReposFresh=False` is a
           // Sandbox whose caches exist but could not be fetched since it asked. Remembered for the
           // attach, which is where a slot can be named; forgotten when the caches are fresh.
           const fresh = conditionOf(sandbox, "ReposFresh");
-          if (fresh?.status === "False" && fresh.message) staleByName.set(req.name, fresh.message);
-          else staleByName.delete(req.name);
-          // The identity the lease will hold this workspace to (ADR-0021). Ready means the pod
-          // is up, so the operator has published it; an operator too old to do so leaves it
-          // undefined and the lease falls back to presence.
-          return { endpoint: status.endpoint, identity: status.podUID };
+          if (fresh?.status === "False" && fresh.message) staleByName.set(name, fresh.message);
+          else staleByName.delete(name);
+          return { endpoint: status.endpoint };
         },
         () => ({
           deadline: at + (held ? repoTimeoutMs : readyTimeoutMs),
@@ -931,7 +971,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           // operator's own verdict — which Repo, on which node — and that the agent is still at it.
           expire: (last) =>
             new Error(
-              held ? repoWaitError(req.name, repoTimeoutMs, conditionOf(last, "Ready")) : notReadyError(req.name, last),
+              held ? repoWaitError(name, repoTimeoutMs, conditionOf(last, "Ready")) : notReadyError(name, last),
             ),
         }),
       );
@@ -978,6 +1018,20 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       return sandboxes().subscribe(name, (sandbox) => listener(continuityOf(sandbox)));
     },
 
+    harnessRestarts(name, listener) {
+      // The same watch (ADR-0021): the operator publishes the Harness container's restarts and
+      // its last end on the Sandbox's status. A name the watch does not hold says nothing — that is
+      // Continuity's news, or the Instance Harness, which is not a Sandbox.
+      return sandboxes().subscribe(name, (sandbox) => {
+        const harness = sandbox?.status?.harness;
+        if (sandbox === undefined) return;
+        listener({
+          restartCount: harness?.restartCount ?? 0,
+          ...(harness?.lastTerminated ? { lastTerminated: harness.lastTerminated } : {}),
+        });
+      });
+    },
+
     async memoryFault(name, since) {
       // Only a Sandbox the watch knows: the Instance Harness is a Deployment, not a Sandbox, and
       // waiting on a name that will never appear would only delay its fault (ADR-0031).
@@ -1004,12 +1058,44 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
   };
 }
 
-/** A Sandbox as Continuity (ADR-0021): gone, or present with the pod the operator last published. */
+/** A Sandbox as Continuity (ADR-0021): gone, or present — and Lost, when the operator says so. */
 function continuityOf(sandbox: SandboxObject | undefined): Continuity {
   if (!sandbox) return { present: false };
-  const identity = sandbox.status?.podUID;
-  return identity ? { present: true, identity } : { present: true };
+  const lost = lossOf(sandbox);
+  return lost ? { present: true, lost } : { present: true };
 }
+
+/**
+ * The operator's verdict that this Sandbox's one pod is gone or terminal (ADR-0021): phase `Lost`,
+ * with the `Lost` condition's reason and the pod's own words. Terminal — the operator never gives
+ * the Sandbox another pod, so nothing here waits for one.
+ */
+export function lossOf(sandbox: SandboxObject | undefined): SandboxLoss | undefined {
+  if (sandbox?.status?.phase !== "Lost") return undefined;
+  const condition = sandbox.status.conditions?.find((c) => c.type === "Lost");
+  return {
+    reason: condition?.reason || "Lost",
+    message: condition?.message || "the operator reports its pod gone or ended",
+  };
+}
+
+/**
+ * Why a Sandbox with no node waits (ADR-0064), off the operator's `Scheduled` condition: `False`
+ * with `QuotaExceeded` is a ResourceQuota refusing the pod create, any other `False` the scheduler
+ * finding no node. `Unknown` (the scheduler has not looked yet) is no reason at all: most pods are
+ * placed in milliseconds, and a wait worth a feed line is one the cluster has explained.
+ */
+export function placingWaitOf(sandbox: SandboxObject | undefined): PlacingWait | undefined {
+  const scheduled = sandbox?.status?.conditions?.find((c) => c.type === "Scheduled");
+  if (scheduled?.status !== "False") return undefined;
+  return {
+    on: scheduled.reason === QUOTA_EXCEEDED ? "quota" : "node",
+    message: scheduled.message || scheduled.reason || "no reason given",
+  };
+}
+
+/** The operator's `Scheduled` reason while a ResourceQuota refuses the pod create (ADR-0064). */
+const QUOTA_EXCEEDED = "QuotaExceeded";
 
 /**
  * The memory kill (ADR-0061), or undefined: the Harness container's last run ended
@@ -1137,14 +1223,12 @@ function rootImageError(name: string, fault: string): string {
 /**
  * The pod budget ran out. The most likely cause is an image that misses ADR-0037's floor, and that
  * failure is an INIT container's — invisible in the phase alone. A musl or git-less base dies
- * INSIDE the preflight, on jr2's own message; a root image never starts it. The operator's words
- * ride along: a pod the scheduler could not place reads very differently from a preflight death.
+ * INSIDE the preflight, on jr2's own message; a root image never starts it. The budget starts once
+ * the pod is scheduled (ADR-0064), so the scheduler is never the answer here.
  */
 function notReadyError(name: string, last: SandboxObject | undefined): string {
   const said = (c: Condition | undefined) => (c?.message ? `${c.reason ?? "?"}: ${c.message}` : undefined);
   const ready = said(last?.status?.conditions?.find((c) => c.type === "Ready"));
-  const scheduled = last?.status?.conditions?.find((c) => c.type === "Scheduled");
-  const unplaced = scheduled && scheduled.status !== "True" ? said(scheduled) : undefined;
   // Routine waits (the init step still running) say nothing; anything else is what the kubelet
   // was stuck on — a failing pull, a config error.
   const stuck = (last?.status?.waiting ?? [])
@@ -1157,7 +1241,6 @@ function notReadyError(name: string, last: SandboxObject | undefined): string {
     name +
     " -c preflight` (ADR-0037's floor: glibc, git, a writable HOME, a numeric non-root USER — an image " +
     "that runs as root never starts it, and `kubectl describe pod` says so)." +
-    (unplaced ? `\n  the scheduler says: ${unplaced}` : "") +
     stuck +
     (ready ? `\n  the operator's Ready condition says: ${ready}` : "")
   );

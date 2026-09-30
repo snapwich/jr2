@@ -16,6 +16,7 @@ import { open } from "../src/open.ts";
 import { registerAmbientHandles, type AmbientHandles } from "../src/ambient.ts";
 import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry, type RunBinding } from "../src/registration.ts";
 import { attachVocabulary } from "../src/vocabulary.ts";
+import type { HarnessRestarts } from "../src/workspace.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
 const pingEvent = defineEvent({ name: "ping", input: z.object({}) });
@@ -403,6 +404,7 @@ test("a failed settlement surfaces as agent.fault telemetry", async () => {
 test("a lost conversation on a Harness the kernel OOM-killed is a fault NAMED `memory limit` (ADR-0061)", async () => {
   const asked: Array<{ name: string; since: Date }> = [];
   const sandbox = {
+    harnessRestarts: () => () => {},
     memoryFault: async (name: string, since: Date) => (
       asked.push({ name, since }),
       {
@@ -460,7 +462,10 @@ test("a lost conversation on a Harness the kernel OOM-killed is a fault NAMED `m
   // And a lost conversation the Sandbox cannot name stays what it was.
   const unnamed = new MockFlueClient();
   const none = harness(unnamed, { ...baseInput, sandbox: "ws-8" }, undefined, undefined, {
-    sandbox: { memoryFault: async () => undefined } as unknown as RunBinding["sandbox"],
+    sandbox: {
+      harnessRestarts: () => () => {},
+      memoryFault: async () => undefined,
+    } as unknown as RunBinding["sandbox"],
   });
   await tick();
   (unnamed as unknown as { pending: Array<{ reject: (e: unknown) => void }> }).pending.pop()!.reject(lost());
@@ -470,6 +475,124 @@ test("a lost conversation on a Harness the kernel OOM-killed is a fault NAMED `m
     String((none.received.find((e) => e.type === "agent.fault") as { reason?: string })?.reason),
     /^conversation lost/,
   );
+});
+
+/** A Sandbox port that plays the watch's word on its Harness (ADR-0021): `restart()` publishes a
+ * new restart count to every listener, as the operator's status write does. */
+function restartingSandbox(kill?: { reason: string; limit: string; at: string }) {
+  const listeners = new Set<(seen: HarnessRestarts) => void>();
+  let seen: HarnessRestarts = { restartCount: 0 };
+  const port = {
+    harnessRestarts: (_name: string, listener: (seen: HarnessRestarts) => void) => {
+      listeners.add(listener);
+      queueMicrotask(() => listeners.has(listener) && listener(seen));
+      return () => listeners.delete(listener);
+    },
+    memoryFault: async () => kill,
+  } as unknown as RunBinding["sandbox"];
+  return {
+    port,
+    get listening() {
+      return listeners.size;
+    },
+    restart(lastTerminated: HarnessRestarts["lastTerminated"]) {
+      seen = { restartCount: seen.restartCount + 1, lastTerminated };
+      for (const l of listeners) l(seen);
+    },
+  };
+}
+
+test("a Harness restart ends the Turn at once, in the kubelet's words — the mark is stamped on the ledger (ADR-0021)", async () => {
+  const sandbox = restartingSandbox();
+  const mock = new MockFlueClient();
+  const { received, ledger } = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, {
+    sandbox: sandbox.port,
+  });
+  await tick();
+  await tick();
+  // The mark is the count once the Harness answered the admission, and it rides the ledger, so a
+  // restored Turn is held to the same one.
+  assert.equal(ledger["inst-42"]?.harnessRestarts, 0);
+  assert.equal(
+    received.find((e) => e.type === "agent.fault"),
+    undefined,
+  );
+
+  sandbox.restart({ reason: "Error", exitCode: 1, finishedAt: "2026-09-29T10:00:00Z" });
+  await tick();
+  await tick();
+  assert.deepEqual(
+    received.find((e) => e.type === "agent.fault"),
+    {
+      type: "agent.fault",
+      instanceId: "inst-42",
+      reason: "conversation lost (Harness restarted: Error, exit 1)",
+    },
+  );
+});
+
+test("a Harness restart that was a memory kill is named `memory limit` (ADR-0021, ADR-0061)", async () => {
+  const sandbox = restartingSandbox({
+    reason: "memory limit (OOMKilled, limit 1920Mi): the kernel killed the container",
+    limit: "1920Mi",
+    at: "2026-09-29T10:00:00Z",
+  });
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, {
+    sandbox: sandbox.port,
+  });
+  await tick();
+  await tick();
+  sandbox.restart({ reason: "OOMKilled", exitCode: 137, finishedAt: "2026-09-29T10:00:00Z" });
+  await tick();
+  await tick();
+  const fault = received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined;
+  assert.match(fault?.reason ?? "", /^memory limit \(OOMKilled/);
+  assert.match(fault?.reason ?? "", /conversation lost \(Harness restarted: OOMKilled, exit 137\)/);
+});
+
+test("a re-attached Turn is held to its ledgered mark; the Instance Harness is not watched (ADR-0021)", async () => {
+  // Restored: the Harness had restarted once before this Turn was admitted, and once since.
+  const sandbox = restartingSandbox();
+  sandbox.restart(undefined);
+  sandbox.restart({ reason: "Error", exitCode: 2 });
+  const mock = new MockFlueClient();
+  const attach = {
+    streamUrl: "http://mock/agents/coder/inst-42",
+    offset: "adm-9",
+    submissionId: "sub-9",
+    harnessRestarts: 1,
+  };
+  const { received } = harness(
+    mock,
+    { ...baseInput, sandbox: "ws-7", prompt: undefined, attach },
+    undefined,
+    undefined,
+    {
+      sandbox: sandbox.port,
+    },
+  );
+  await tick();
+  await tick();
+  assert.equal(
+    (received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined)?.reason,
+    "conversation lost (Harness restarted: Error, exit 2)",
+  );
+
+  // A Menu-only Agent's Turn runs on the Instance Harness, a Deployment: nothing to watch.
+  const other = restartingSandbox();
+  harness(
+    new MockFlueClient(),
+    { ...baseInput, sandbox: "ws-7" },
+    undefined,
+    { model: "test/model", instructions: "i", workspace: "none" },
+    {
+      sandbox: other.port,
+      instanceHarness: "http://jr2-instance-harness:8080",
+    },
+  );
+  await tick();
+  assert.equal(other.listening, 0);
 });
 
 test("every admission carries the SLOT's definition — the Harness holds no roster (ADR-0049)", async () => {
@@ -667,6 +790,19 @@ test("a typed settlement failure that is NOT runaway keeps its terminal behavior
   const faults = received.filter((e) => e.type === "agent.fault");
   assert.equal(faults.length, 1);
   assert.match(String(faults[0]!.reason), /the provider gave up/);
+});
+
+test("a provider limit faults with the fixed prefix FIRST, unwrapped from the settlement (ADR-0064)", async () => {
+  const mock = new MockFlueClient();
+  const { received } = harness(mock, baseInput);
+  await tick();
+  mock.faultSettled("submission_failed", "provider limit (p/m): 429 rate_limit_error");
+  await tick();
+
+  assert.equal(mock.admits.length, 1, "no reroll: the provider's pressure is the Machine's to route");
+  const faults = received.filter((e) => e.type === "agent.fault");
+  assert.equal(faults.length, 1);
+  assert.match(String(faults[0]!.reason), /^provider limit \(p\/m\): 429/);
 });
 
 test("a CANCEL after a reroll aborts the REROLL conversation and destroys both surfaces", async () => {

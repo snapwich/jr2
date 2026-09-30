@@ -3,7 +3,8 @@
 // speaks — get, list, create, delete, merge patch (status included), server-side apply, and a
 // streaming watch — over an in-memory store with a real resourceVersion counter, and it lets a
 // test play the cluster: publish a status, delete an object, send a bookmark, close every watch,
-// answer a resume with ERROR 410, stall a stream into fetch's body timeout, or refuse a token.
+// answer a resume with ERROR 410, stall a stream into fetch's body timeout, refuse a token, or make
+// a Sandbox Lost the way the operator does (ADR-0021).
 
 type Obj = {
   apiVersion?: string;
@@ -287,6 +288,23 @@ export function fakeKube(opts: { token?: string } = {}) {
       const obj = bucket(plural).get(name);
       if (!obj) throw new Error(`no ${plural}/${name} to set a status on`);
       put(plural, { ...obj, status: s } as Obj, "MODIFIED");
+    },
+    /**
+     * Make a Sandbox Lost, as the operator does once its one pod is gone or terminal (ADR-0021):
+     * phase `Lost`, `Ready` False, and a `Lost` condition with the pod's reason and words — on top
+     * of the status it had, so the endpoint and the pod facts stay. One MODIFIED event.
+     */
+    lose(name: string, reason: string, message: string) {
+      const obj = bucket("sandboxes").get(name);
+      if (!obj) throw new Error(`no sandboxes/${name} to lose`);
+      const was = (obj.status ?? {}) as { conditions?: Array<{ type: string }> };
+      const kept = (was.conditions ?? []).filter((c) => c.type !== "Ready" && c.type !== "Lost");
+      const conditions = [
+        ...kept,
+        { type: "Ready", status: "False", reason: "Lost", message },
+        { type: "Lost", status: "True", reason, message },
+      ];
+      put("sandboxes", { ...obj, status: { ...was, phase: "Lost", conditions } } as Obj, "MODIFIED");
     },
     /** Delete an object as another writer — one DELETED event. */
     remove(plural: string, name: string) {

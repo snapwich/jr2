@@ -6,6 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { assign, fromPromise, setup } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import { customize } from "../src/customize.ts";
@@ -16,11 +17,14 @@ import {
   workspaceName,
   type Continuity,
   type MemoryKill,
+  type PlaceRequest,
+  type PlacingWait,
   type ProvisionedRepo,
+  type SandboxLoss,
   type SandboxPort,
   type WorkspaceSpec,
 } from "../src/workspace.ts";
-import { RunHost, type WorkflowDef } from "../src/run-host.ts";
+import { observe, RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { approveDef, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 class FakeSandbox implements SandboxPort {
@@ -29,7 +33,7 @@ class FakeSandbox implements SandboxPort {
   /** Who is listening to the watch, per Sandbox name (ADR-0063). */
   private listeners = new Map<string, Set<(seen: Continuity) => void>>();
   private _present = true;
-  private _identity = "pod-1";
+  private _lost: SandboxLoss | undefined;
   /** What the watch says — flip to false to simulate a reaped Sandbox; every listener hears it. */
   get present(): boolean {
     return this._present;
@@ -38,13 +42,13 @@ class FakeSandbox implements SandboxPort {
     this._present = v;
     this.tell();
   }
-  /** The live pod's identity. Change it to simulate an eviction/node-loss replacement:
-   * same CR, same name, same endpoint — different pod, empty `work` volume. */
-  get identity(): string {
-    return this._identity;
+  /** The operator's Lost verdict (ADR-0021): set it to simulate an eviction or a node loss — same
+   * CR, same name, same endpoint, and a pod that ended with the `work` volume on it. */
+  get lost(): SandboxLoss | undefined {
+    return this._lost;
   }
-  set identity(v: string) {
-    this._identity = v;
+  set lost(v: SandboxLoss | undefined) {
+    this._lost = v;
     this.tell();
   }
   /** Make every `renew()` throw — a failed write is "unknown", never "lost". */
@@ -52,8 +56,38 @@ class FakeSandbox implements SandboxPort {
   /** Fast enough that a test can observe several ticks without sleeping on wall clock. */
   leaseIntervalMs = 5;
 
+  /**
+   * Hold every `place()` until {@link schedule} — a Sandbox with no node (ADR-0064). While held,
+   * {@link waitFor} plays the operator's reason for the wait.
+   */
+  holdPlacing = false;
+  private placing = new Set<{
+    onWait: (wait: PlacingWait) => void;
+    resolve: () => void;
+    reject: (err: unknown) => void;
+  }>();
+  /** Say why the held Sandboxes wait, as the operator does on its status. */
+  waitFor(wait: PlacingWait): void {
+    for (const p of this.placing) p.onWait(wait);
+  }
+  /** The scheduler found a node: every held `place()` resolves. */
+  schedule(): void {
+    for (const p of [...this.placing]) p.resolve();
+    this.placing.clear();
+  }
+  /** A Sandbox that is Lost before it is placed: every held `place()` rejects, by name. */
+  loseWhilePlacing(reason: string): void {
+    for (const p of [...this.placing]) p.reject(new Error(`Sandbox is Lost while it waited for a node: ${reason}`));
+    this.placing.clear();
+  }
+  /** How many `place()` calls are waiting right now. */
+  get waiting(): number {
+    return this.placing.size;
+  }
+
   private seen(): Continuity {
-    return this._present ? { present: true, identity: this._identity } : { present: false };
+    if (!this._present) return { present: false };
+    return this._lost ? { present: true, lost: this._lost } : { present: true };
   }
   private tell(): void {
     for (const set of this.listeners.values()) for (const l of set) l(this.seen());
@@ -74,18 +108,8 @@ class FakeSandbox implements SandboxPort {
   /** What each attach was asked to attach — the persisted bindings, as the port sees them. */
   attached: Array<Array<{ slot: string; url: string; ref?: string }>> = [];
 
-  async provision(req: {
-    name: string;
-    runId: string;
-    workflow: string;
-    image?: string;
-    user?: string;
-    workGroup?: number;
-    repos: ProvisionedRepo[];
-    resources?: unknown;
-    userResources?: unknown;
-  }): Promise<{ endpoint: string; identity?: string }> {
-    this.calls.push(`provision:${req.name}`);
+  async place(req: PlaceRequest, opts: { onWait: (wait: PlacingWait) => void; signal?: AbortSignal }): Promise<void> {
+    this.calls.push(`place:${req.name}`);
     this.sizes.push({
       ...(req.resources !== undefined ? { resources: req.resources } : {}),
       ...(req.userResources !== undefined ? { userResources: req.userResources } : {}),
@@ -94,7 +118,19 @@ class FakeSandbox implements SandboxPort {
     this.composition.push({ user: req.user, workGroup: req.workGroup });
     this.repos.push(req.repos);
     this.provisioned.set(req.name, { runId: req.runId, workflow: req.workflow });
-    return { endpoint: "http://sandbox.test", identity: this.identity };
+    if (!this.holdPlacing) return;
+    await new Promise<void>((resolve, reject) => {
+      const entry = { onWait: opts.onWait, resolve, reject };
+      this.placing.add(entry);
+      opts.signal?.addEventListener("abort", () => {
+        this.placing.delete(entry);
+        reject(opts.signal!.reason);
+      });
+    });
+  }
+  async provision(name: string): Promise<{ endpoint: string }> {
+    this.calls.push(`provision:${name}`);
+    return { endpoint: "http://sandbox.test" };
   }
   async attach(req: {
     name: string;
@@ -118,6 +154,9 @@ class FakeSandbox implements SandboxPort {
     queueMicrotask(() => set.has(listener) && listener(this.seen()));
     return () => set.delete(listener);
   }
+  harnessRestarts(): () => void {
+    return () => {};
+  }
   async memoryFault(): Promise<MemoryKill | undefined> {
     return undefined;
   }
@@ -137,7 +176,7 @@ const renews = (sandbox: FakeSandbox): number => sandbox.calls.filter((c) => c.s
  * the wrapper PROPAGATES this vocabulary onto the exported machine (ADR-0015). */
 const body = jr2Setup({
   types: {} as {
-    context: { handles?: { repos: Record<string, string>; branch: string } };
+    context: { handles?: { repos: Record<string, string>; branch: string }; loss?: string };
     // Body-facing handles only (ADR-0016): endpoint/sandbox never reach workflow code.
     input: { workspace: { repos: Record<string, string>; branch: string } };
   },
@@ -149,13 +188,17 @@ const body = jr2Setup({
   states: {
     working: {
       invoke: { src: "gate", input: { gate: "hold", accepts: ["approve"] } },
-      on: { approve: "done", "workspace.lost": "lost" },
+      on: {
+        approve: "done",
+        // The loss carries why (ADR-0021): the body's policy may tell a reap from an eviction.
+        "workspace.lost": { target: "lost", actions: assign({ loss: ({ event }) => event.reason }) },
+      },
     },
     done: {
       type: "final",
       output: ({ context }) => ({ status: "done", app: context.handles?.repos.app }),
     },
-    lost: { type: "final", output: () => ({ status: "lost" }) },
+    lost: { type: "final", output: ({ context }) => ({ status: "lost", reason: context.loss }) },
   },
   // xstate v5: a machine's output is its ROOT `output`; final-state outputs ride the done event.
   output: ({ event }) => (event as { output?: unknown }).output,
@@ -179,7 +222,7 @@ test("workspaceName is deterministic, DNS-1123, and distinct per (run, wsId)", (
   }
 });
 
-test("lifecycle: provision → attach → body(input+handles) → body final → destroy; output = body output", async () => {
+test("lifecycle: place → provision → attach → body(input+handles) → body final → destroy; output = body output", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   host.register(wsDef());
@@ -205,7 +248,7 @@ test("lifecycle: provision → attach → body(input+handles) → body final →
   host.sendToGate(runId, "hold", { type: "approve" });
   await waitFor(() => host.status(runId) === undefined); // run settled + dropped from registry
 
-  assert.deepEqual(lifecycle(sandbox), ["provision", "attach", "destroy"]);
+  assert.deepEqual(lifecycle(sandbox), ["place", "provision", "attach", "destroy"]);
   const final = await host.read(runId);
   assert.equal(final?.status, "done");
   const ctx = final?.context as { output?: { status: string; app?: string } };
@@ -232,8 +275,8 @@ test("restore-reconcile: Sandbox CR gone → workspace.lost lands in the restore
   await waitFor(() => second.status(runId) === undefined);
   const final = await second.read(runId);
   assert.equal(final?.status, "done");
-  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost" });
-  assert.ok(sandbox.calls.filter((c) => c.startsWith("provision:")).length === 1, "never silently re-provisioned");
+  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost", reason: "Deleted" });
+  assert.ok(sandbox.calls.filter((c) => c.startsWith("place:")).length === 1, "never silently re-provisioned");
 });
 
 test("restore-reconcile: Sandbox present → the body resumes parked, nothing is delivered", async () => {
@@ -270,7 +313,7 @@ test("a branch named `default` faults BEFORE any pod exists — that directory i
   const final = await host.read(runId);
   assert.equal(final?.status, "error");
   assert.match(final?.fault ?? "", /workspace spec invalid: branch "default"/);
-  assert.ok(!sandbox.calls.some((c) => c.startsWith("provision:")), "faulted before the port");
+  assert.ok(!sandbox.calls.some((c) => c.startsWith("place:")), "faulted before the port");
 });
 
 test("a spec deriving undefined fields (missing run input) faults BEFORE any pod exists", async () => {
@@ -291,7 +334,7 @@ test("a spec deriving undefined fields (missing run input) faults BEFORE any pod
   assert.match(final?.fault ?? "", /workspace spec invalid: branch/);
   assert.match(final?.fault ?? "", /run input/, "the fault points back at `jr2 run --input`");
   assert.ok(
-    !sandbox.calls.some((c) => c.startsWith("provision:")),
+    !sandbox.calls.some((c) => c.startsWith("place:")),
     "faulted before the port — a bad spec never costs a pod",
   );
 });
@@ -363,7 +406,7 @@ test("pod composition: `user` is a static option too, `workGroup` stays per-run 
   assert.deepEqual(bad.calls, [], "a bad spec never costs a pod");
 });
 
-test("a terminal fault leaves the pod inspectable and stamps no lease (idle GC reaps it)", async () => {
+test("a terminal fault after placing leaves the pod inspectable, and its lease stops (idle GC reaps it)", async () => {
   const sandbox = new FakeSandbox();
   sandbox.attach = async () => {
     throw new Error("attach exploded");
@@ -375,12 +418,14 @@ test("a terminal fault leaves the pod inspectable and stamps no lease (idle GC r
   await waitFor(() => host.status(runId) === undefined);
 
   assert.equal((await host.read(runId))?.status, "error");
-  // Provisioned, then faulted: no destroy (the pod stays inspectable — ADR-0012). Nothing
-  // releases anything, because the lease lives in `running` and this run never got there —
-  // so the CR is unleased from birth and the operator's idle GC reaps it on schedule.
-  assert.ok(sandbox.calls.some((c) => c.startsWith("provision:")));
+  // Placed, then faulted: no destroy (the pod stays inspectable — ADR-0012, ADR-0064). Nothing
+  // releases anything: the lease is one of the run's actors, so it stopped with them, and the
+  // operator's idle GC reaps the CR one idle timeout after its last renewal.
+  assert.ok(sandbox.calls.some((c) => c.startsWith("place:")));
   assert.ok(!sandbox.calls.some((c) => c.startsWith("destroy:")));
-  assert.equal(renews(sandbox), 0);
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no renewal after the fault");
 });
 
 test("the lease stops with the run — no process-global timer outlives the actor", async () => {
@@ -414,14 +459,14 @@ test("live reap: the Sandbox goes while the run is UP → workspace.lost, no res
   await waitFor(() => host.status(runId) === undefined);
   const final = await host.read(runId);
   assert.equal(final?.status, "done"); // settled through the body's own policy, not a fault
-  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost" });
+  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost", reason: "Deleted" });
   assert.ok(
     sandbox.calls.some((c) => c.startsWith("destroy:")),
     "tore down through the normal path",
   );
 });
 
-test("live replacement: same CR, new pod identity → workspace.lost (the emptyDir went with it)", async () => {
+test("live Lost: same CR, its one pod ended → workspace.lost carrying the pod's reason (ADR-0021)", async () => {
   const sandbox = new FakeSandbox();
   const host = new RunHost({ store: await mkStore(), sandbox });
   host.register(wsDef());
@@ -429,16 +474,16 @@ test("live replacement: same CR, new pod identity → workspace.lost (the emptyD
   const { runId } = await host.start("ws");
   await waitFor(() => host.gates(runId).length === 1);
 
-  // Eviction or node loss: the operator recreates the Pod under the same name, so the CR is
-  // present and the endpoint still resolves — but `work` is a fresh emptyDir, so every clone,
-  // worktree, and unpushed commit is gone. Presence alone cannot see this; identity can.
-  sandbox.identity = "pod-2";
+  // Eviction or node loss: the CR is present and the endpoint still resolves — but the pod that
+  // held `work` ended, and the operator never gives the Sandbox another (ADR-0021). Presence alone
+  // cannot see this; the operator's Lost verdict can.
+  sandbox.lost = { reason: "Evicted", message: "The node was low on resource: memory." };
 
   await waitFor(() => host.status(runId) === undefined);
   const final = await host.read(runId);
-  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost" });
+  assert.deepEqual((final?.context as { output?: unknown }).output, { status: "lost", reason: "Evicted" });
   assert.equal(
-    sandbox.calls.filter((c) => c.startsWith("provision:")).length,
+    sandbox.calls.filter((c) => c.startsWith("place:")).length,
     1,
     "never silently re-provisioned into an inconsistent world",
   );
@@ -453,9 +498,12 @@ test("renewal is a write only: it never reads continuity, and loss arrives from 
   host.register(wsDef());
   const { runId } = await host.start("ws");
   await waitFor(() => host.gates(runId).length === 1);
-  sandbox.identity = "pod-2";
+  sandbox.lost = { reason: "NodeLost", message: "the node is gone" };
   await waitFor(() => host.status(runId) === undefined);
-  assert.deepEqual(((await host.read(runId))?.context as { output?: unknown }).output, { status: "lost" });
+  assert.deepEqual(((await host.read(runId))?.context as { output?: unknown }).output, {
+    status: "lost",
+    reason: "NodeLost",
+  });
 });
 
 test("renewals land at the interval ±20%, the first within a fifth of it (ADR-0021)", () => {
@@ -862,4 +910,220 @@ test("workspace() refuses requests, and any key beside limits.memory/limits.cpu,
       }),
     /workspace\(\) user\.resources\.requests is not accepted/,
   );
+});
+
+// --- placing (ADR-0064) -------------------------------------------------------------------------
+
+/** Every placing line a run's feed carries, in order. */
+function placingLines(host: RunHost, runId: string): Array<Record<string, unknown>> {
+  const lines: Array<Record<string, unknown>> = [];
+  host.subscribe(runId, (ev) => {
+    if (ev.kind === "placing" || ev.kind === "placed") lines.push(ev);
+  });
+  return lines;
+}
+
+const NODE = { on: "node" as const, message: "0/3 nodes are available: 3 Insufficient memory." };
+const QUOTA = { on: "quota" as const, message: "exceeded quota: jr2, requested: requests.cpu=500m" };
+
+test("placing: the wait has no deadline, its reason rides RunStatus.waiting, and the feed says it twice", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+  const { runId } = await host.start("ws");
+  const lines = placingLines(host, runId);
+  await waitFor(() => sandbox.waiting === 1);
+  assert.equal(host.status(runId)?.value, "placing");
+  // A pod the scheduler has not explained yet is no wait worth a line.
+  assert.deepEqual(host.status(runId)?.waiting, []);
+
+  sandbox.waitFor(NODE);
+  await waitFor(() => host.status(runId)!.waiting.length === 1);
+  const [first] = host.status(runId)!.waiting;
+  assert.deepEqual({ ...first, since: undefined }, { child: "", ...NODE, since: undefined });
+  assert.ok(!Number.isNaN(Date.parse(first!.since)));
+
+  // A changed reason updates the status and adds no line; `since` is when the wait began.
+  sandbox.waitFor(QUOTA);
+  await waitFor(() => host.status(runId)!.waiting[0]?.on === "quota");
+  assert.deepEqual(host.status(runId)!.waiting, [{ child: "", ...QUOTA, since: first!.since }]);
+  assert.deepEqual(lines.slice(), [{ kind: "placing", child: "", ...NODE, since: first!.since }]);
+  // Behind the token: the open band sees `placing` lit, never the scheduler's words.
+  const open = observe(host.status(runId)!);
+  assert.equal("waiting" in open, false);
+  assert.doesNotMatch(JSON.stringify(open), /Insufficient|quota/);
+
+  // The lease renews while it waits (ADR-0064): the idle GC must never take it for abandoned.
+  const before = renews(sandbox);
+  await waitFor(() => renews(sandbox) > before);
+
+  sandbox.schedule();
+  await waitFor(() => host.gates(runId).length === 1);
+  assert.deepEqual(host.status(runId)!.waiting, []);
+  assert.equal(lines.length, 2);
+  assert.equal(lines[1]!.kind, "placed");
+  assert.equal(lines[1]!.since, first!.since);
+  assert.ok(typeof lines[1]!.after === "number" && (lines[1]!.after as number) >= 0);
+  assert.deepEqual(lifecycle(sandbox), ["place", "provision", "attach"]);
+});
+
+test("placing: a restart re-enters placing — same CR, same `since`, no second opening line", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const first = new RunHost({ store, sandbox });
+  first.register(wsDef());
+  const { runId } = await first.start("ws");
+  await waitFor(() => sandbox.waiting === 1);
+  sandbox.waitFor(NODE);
+  await waitFor(() => first.status(runId)!.waiting.length === 1);
+  const since = first.status(runId)!.waiting[0]!.since;
+  await first.stop(runId);
+  assert.ok(!sandbox.calls.some((c) => c.startsWith("destroy:")), "a host stop is not an end: it keeps its place");
+  // The persisted snapshot still says why, before any watch has spoken.
+  assert.deepEqual((await first.read(runId))?.waiting, [{ child: "", ...NODE, since }]);
+
+  const second = new RunHost({ store, sandbox });
+  second.register(wsDef());
+  await second.restore();
+  const lines = placingLines(second, runId);
+  await waitFor(() => sandbox.waiting === 1);
+  sandbox.waitFor(NODE);
+  sandbox.schedule();
+  await waitFor(() => second.gates(runId).length === 1);
+  assert.equal(sandbox.calls.filter((c) => c.startsWith("place:")).length, 2, "the apply re-ran, idempotently");
+  assert.equal(new Set(sandbox.calls.map((c) => c.split(":")[1])).size, 1, "one CR");
+  assert.deepEqual(
+    lines.map((l) => l.kind),
+    ["placed"],
+    "the wait was opened before the restart; only its end is new",
+  );
+  assert.equal(lines[0]!.since, since);
+});
+
+test("placing: a Workspace nested under a parent reports its path; the parent's `after` deletes what never ran", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  // The body's bound is the Machine's own `after` (ADR-0064): jr2 sets none.
+  const bounded = setup({ actors: { feature: wrapped } }).createMachine({
+    id: "bounded",
+    initial: "working",
+    states: {
+      working: { invoke: { id: "F-1", src: "feature" }, after: { 80: "gaveUp" } },
+      gaveUp: { type: "final" },
+    },
+  });
+  host.register({ name: "bounded", machine: bounded, provide: () => ({}) });
+  const { runId } = await host.start("bounded");
+  await waitFor(() => sandbox.waiting === 1);
+  sandbox.waitFor(NODE);
+  await waitFor(() => host.status(runId)?.waiting.length === 1);
+  assert.equal(host.status(runId)!.waiting[0]!.child, "F-1");
+
+  await waitFor(() => host.status(runId) === undefined);
+  assert.equal((await host.read(runId))?.status, "done");
+  // Stopped with no node: nothing on it to inspect, and left alone it could take a node for nobody.
+  await waitFor(() => sandbox.calls.some((c) => c.startsWith("destroy:")));
+  assert.deepEqual(lifecycle(sandbox), ["place", "destroy"]);
+});
+
+test("placing: a cancelled run deletes its Sandbox that never ran", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+  const { runId } = await host.start("ws");
+  await waitFor(() => sandbox.waiting === 1);
+  sandbox.waitFor(NODE);
+  await waitFor(() => host.status(runId)?.waiting.length === 1);
+  await host.cancel(runId);
+  await waitFor(() => sandbox.calls.some((c) => c.startsWith("destroy:")));
+  assert.deepEqual(lifecycle(sandbox), ["place", "destroy"]);
+  assert.deepEqual((await host.read(runId))?.waiting, [], "a cancelled run waits for nothing");
+});
+
+test("placing: a Sandbox Lost before its node faults the run by name, and is deleted — it never ran", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+  const { runId } = await host.start("ws");
+  await waitFor(() => sandbox.waiting === 1);
+  sandbox.loseWhilePlacing("PodDeleted: the pod was deleted");
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.equal(final?.status, "error");
+  assert.match(final?.fault ?? "", /Lost while it waited for a node: PodDeleted/);
+  // ADR-0064: a wait that ends without a node — a faulted run too — deletes its Sandbox; the fault keeps the why.
+  assert.deepEqual(lifecycle(sandbox), ["place", "destroy"]);
+});
+
+test("attaching: a Sandbox Lost under the attach faults the run at once, naming the operator's reason", async () => {
+  const sandbox = new FakeSandbox();
+  let attaching!: () => void;
+  const entered = new Promise<void>((r) => (attaching = r));
+  sandbox.attach = () => {
+    attaching();
+    return new Promise(() => {}); // an attach that would otherwise hang for its whole window
+  };
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+  const { runId } = await host.start("ws");
+  await entered;
+  sandbox.lost = { reason: "Evicted", message: "The node was low on resource: memory." };
+  await waitFor(() => host.status(runId) === undefined);
+  const final = await host.read(runId);
+  assert.equal(final?.status, "error");
+  assert.match(final?.fault ?? "", /is Lost while it attached: Evicted: The node was low on resource: memory\./);
+  assert.equal(sandbox.listening, 0, "the attach's subscription ends with it");
+});
+
+test("the lease judges Continuity in `running` alone: a loss before it is the provision's to name", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+  const { runId } = await host.start("ws");
+  await waitFor(() => sandbox.waiting === 1);
+  assert.equal(sandbox.listening, 0, "placing renews, and listens to nothing");
+  sandbox.schedule();
+  await waitFor(() => host.gates(runId).length === 1);
+  assert.equal(sandbox.listening, 1, "running listens");
+});
+
+test("placing: a run that faults elsewhere deletes its Sandbox that never ran — and stops every lease", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.holdPlacing = true;
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  // A sibling's unhandled error faults the run. xstate ends the root WITHOUT stopping its other
+  // children, so this is the host's to do (run-host.ts `stopTree`).
+  const faulty = setup({
+    actors: {
+      feature: wrapped,
+      boom: fromPromise(async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        throw new Error("a sibling exploded");
+      }),
+    },
+  }).createMachine({
+    id: "faulty",
+    type: "parallel",
+    states: {
+      a: { invoke: { id: "F-1", src: "feature" } },
+      b: { invoke: { id: "boom", src: "boom" } },
+    },
+  });
+  host.register({ name: "faulty", machine: faulty, provide: () => ({}) });
+  const { runId } = await host.start("faulty");
+  await waitFor(() => sandbox.waiting === 1);
+  sandbox.waitFor(NODE);
+  await waitFor(() => host.status(runId) === undefined);
+  assert.match((await host.read(runId))?.fault ?? "", /a sibling exploded/);
+  assert.deepEqual((await host.read(runId))?.waiting, [], "a faulted run waits for nothing");
+  await waitFor(() => sandbox.calls.some((c) => c.startsWith("destroy:")));
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "the lease stopped with the run");
 });

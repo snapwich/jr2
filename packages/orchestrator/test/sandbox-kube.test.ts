@@ -21,21 +21,51 @@ import { EMPTY_HELD, leafStem, standIn, type HeldManifest } from "../src/held-se
 import { imageContextDigest } from "../src/images.ts";
 import { kubeClient } from "../src/kube-client.ts";
 import { repoKey } from "../src/repo-identity.ts";
-import { kubeSandbox, memoryFaultOf } from "../src/sandbox-kube.ts";
+import { kubeSandbox as kubePort, memoryFaultOf, type KubeSandboxOptions } from "../src/sandbox-kube.ts";
 import { watchSandboxes } from "../src/sandbox-watch.ts";
 import { harnessToken, harnessTokenDigest } from "../src/tokens.ts";
 import type { RepoResources } from "../src/repos.ts";
 import type { AttachRequest } from "../src/wire.ts";
-import type { Continuity, ProvisionedRepo } from "../src/workspace.ts";
+import type { Continuity, PlaceRequest, PlacingWait, ProvisionedRepo } from "../src/workspace.ts";
 import { fakeKube, type FakeCall } from "./_fake-kube.ts";
 import { waitFor } from "./_fixtures.ts";
 
+/** The operator's word that the pod has a node (ADR-0063, ADR-0064). */
+const SCHEDULED = { type: "Scheduled", status: "True", reason: "Scheduled" };
 /** The status the operator publishes once a Sandbox is serving. */
 const READY = { phase: "Ready", endpoint: "http://sb-1.default.svc:8080", podUID: "pod-uid-1" };
+/** A pod with a node that is not serving yet — what the Ready budget measures. */
 const PENDING = { phase: "Pending" };
+
+/**
+ * The port, with `provision` taking the whole request and running the two waits in sequence, as a
+ * Workspace does — `placing`, then `provisioning` (ADR-0064) — so a test about what the CR carries
+ * or how Ready is judged reads as one call. The tests of the waits themselves use `kubePort`.
+ */
+function kubeSandbox(opts: KubeSandboxOptions = {}) {
+  const port = kubePort(opts);
+  return {
+    ...port,
+    async provision(req: PlaceRequest) {
+      await port.place(req, { onWait: () => {} });
+      return port.provision(req.name);
+    },
+  };
+}
 
 const stops: Array<() => void> = [];
 after(() => stops.forEach((stop) => stop()));
+
+/**
+ * A scripted status the way the operator writes it for a pod that has a node: a script that says
+ * nothing about scheduling is about what comes AFTER it (the Ready wait, ADR-0064), so it gets
+ * `Scheduled=True` — the placing tests script their own `Scheduled`.
+ */
+function placed(status: object): object {
+  const conditions = (status as { conditions?: Array<{ type: string }> }).conditions ?? [];
+  if (conditions.some((c) => c.type === "Scheduled")) return status;
+  return { ...status, conditions: [...conditions, SCHEDULED] };
+}
 
 /**
  * The fake API server with the operator played: every Sandbox APPLIED is answered by each status
@@ -54,7 +84,7 @@ function cluster(script: object[] = [READY], harness?: (req: AttachRequest, auth
     void (async () => {
       for (const status of script) {
         await new Promise((r) => setTimeout(r, 1));
-        api.setStatus("sandboxes", name, status);
+        api.setStatus("sandboxes", name, placed(status));
       }
     })();
   });
@@ -635,27 +665,117 @@ test("an image name the kubelet cannot use fails at once; a failing pull is name
   );
 });
 
-test("an Unschedulable Sandbox is said as it happens, with the scheduler's words, and the wait goes on (ADR-0063)", async () => {
-  const unplaced = {
-    phase: "Pending",
+// --- placing (ADR-0064) -----------------------------------------------------------------------
+
+const unplaced = (on: "Unschedulable" | "QuotaExceeded", message: string) => ({
+  phase: "Pending",
+  conditions: [{ type: "Scheduled", status: "False", reason: on, message }],
+});
+const NO_MEMORY = "0/3 nodes are available: 3 Insufficient memory.";
+const NO_QUOTA = 'pods "sb" is forbidden: exceeded quota: jr2, requested: requests.cpu=500m, used: requests.cpu=2';
+
+test("place(): a Sandbox with no node waits with NO deadline, says each reason once, and ends when scheduled", async () => {
+  // The operator is played by hand: the pod waits longer than the whole Ready budget, which it
+  // must not spend — jr2 cannot tell "full now" from "never fits" (ADR-0064).
+  const { exec, api } = cluster([]);
+  const port = kubePort({ imagesPath: await mkImages(REFS), ...provisionable, readyTimeoutMs: 100, ...exec });
+  const waits: PlacingWait[] = [];
+  let placed = false;
+  const placing = port
+    .place({ name: "sb-wait", runId: "r", workflow: "w", ...withApp }, { onWait: (w) => waits.push(w) })
+    .then(() => (placed = true));
+  await waitFor(() => api.object("sandboxes", "sb-wait") !== undefined);
+  api.setStatus("sandboxes", "sb-wait", unplaced("Unschedulable", NO_MEMORY));
+  await waitFor(() => waits.length === 1);
+  // The same reason again (the operator writes on any change) is no new wait; a quota's is.
+  api.setStatus("sandboxes", "sb-wait", { ...unplaced("Unschedulable", NO_MEMORY), podUID: "p" });
+  api.setStatus("sandboxes", "sb-wait", unplaced("QuotaExceeded", NO_QUOTA));
+  await waitFor(() => waits.length === 2);
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(placed, false, "still waiting, well past the Ready budget");
+  assert.deepEqual(waits, [
+    { on: "node", message: NO_MEMORY },
+    { on: "quota", message: NO_QUOTA },
+  ]);
+
+  // Scheduled: the wait ends, and the Ready budget starts only now.
+  api.setStatus("sandboxes", "sb-wait", { ...PENDING, conditions: [SCHEDULED] });
+  await placing;
+  const ready = port.provision("sb-wait");
+  setTimeout(() => api.setStatus("sandboxes", "sb-wait", READY), 50);
+  assert.deepEqual(await ready, { endpoint: READY.endpoint });
+});
+
+test("place(): a Sandbox not yet looked at by the scheduler is no reason — only a False Scheduled is", async () => {
+  const { exec } = cluster([
+    { phase: "Pending", conditions: [{ type: "Scheduled", status: "Unknown", reason: "SchedulingPending" }] },
+    PENDING,
+  ]);
+  const port = kubePort({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  const waits: PlacingWait[] = [];
+  await port.place({ name: "sb-fast", runId: "r", workflow: "w", ...withApp }, { onWait: (w) => waits.push(w) });
+  assert.deepEqual(waits, []);
+});
+
+test("place(): Lost, or deleted, before a node is a failure by name — never a wait (ADR-0021)", async () => {
+  const lost = {
+    phase: "Lost",
+    conditions: [{ type: "Lost", status: "True", reason: "PodDeleted", message: "the pod was deleted" }],
+  };
+  const { exec } = cluster([unplaced("Unschedulable", NO_MEMORY), lost]);
+  const port = kubePort({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  await assert.rejects(
+    () => port.place({ name: "sb-lost", runId: "r", workflow: "w", ...withApp }, { onWait: () => {} }),
+    /Sandbox "sb-lost" is Lost while it waited for a node: PodDeleted: the pod was deleted/,
+  );
+
+  const gone = cluster([unplaced("Unschedulable", NO_MEMORY)]);
+  const port2 = kubePort({ imagesPath: await mkImages(REFS), ...provisionable, ...gone.exec });
+  const waits: PlacingWait[] = [];
+  const placing = port2.place(
+    { name: "sb-del", runId: "r", workflow: "w", ...withApp },
+    { onWait: (w) => waits.push(w) },
+  );
+  await waitFor(() => waits.length === 1);
+  gone.api.remove("sandboxes", "sb-del");
+  await assert.rejects(placing, /Sandbox "sb-del" was deleted while it waited for a node/);
+});
+
+test("place(): the signal ends the wait, after the write it began has settled", async () => {
+  const { exec, api, calls } = cluster([]);
+  const port = kubePort({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  const controller = new AbortController();
+  const placing = port.place(
+    { name: "sb-stop", runId: "r", workflow: "w", ...withApp },
+    { onWait: () => {}, signal: controller.signal },
+  );
+  await waitFor(() => api.object("sandboxes", "sb-stop") !== undefined);
+  controller.abort(new Error("stopped"));
+  await assert.rejects(placing, /stopped/);
+  assert.equal(applies(calls, "sandboxes").length, 1, "the CR was written once, before the stop");
+});
+
+test("provision(): Lost, or deleted, once placed fails at once, naming the pod's reason (ADR-0021)", async () => {
+  const evicted = {
+    phase: "Lost",
     conditions: [
-      {
-        type: "Scheduled",
-        status: "False",
-        reason: "Unschedulable",
-        message: "0/3 nodes are available: 3 Insufficient memory.",
-      },
+      { type: "Ready", status: "False", reason: "Lost" },
+      { type: "Lost", status: "True", reason: "Evicted", message: "The node was low on resource: memory." },
     ],
   };
-  const lines: string[] = [];
-  const { exec } = cluster([unplaced, { ...unplaced, podUID: "x" }, READY]);
-  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, log: (l) => lines.push(l), ...exec });
-  assert.equal(
-    (await port.provision({ name: "sb-wait", runId: "r", workflow: "w", ...withApp })).endpoint,
-    READY.endpoint,
+  const { exec } = cluster([PENDING, evicted]);
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  await assert.rejects(
+    () => port.provision({ name: "sb-ev", runId: "r", workflow: "w", ...withApp }),
+    /Sandbox "sb-ev" is Lost while it provisioned: Evicted: The node was low on resource: memory\./,
   );
-  assert.equal(lines.length, 1, "once, when it first appears — not every event");
-  assert.match(lines[0]!, /Sandbox "sb-wait" is not scheduled yet: 0\/3 nodes are available: 3 Insufficient memory\./);
+
+  const gone = cluster([PENDING]);
+  const port2 = kubePort({ imagesPath: await mkImages(REFS), ...provisionable, ...gone.exec });
+  await port2.place({ name: "sb-gone", runId: "r", workflow: "w", ...withApp }, { onWait: () => {} });
+  const provisioning = port2.provision("sb-gone");
+  gone.api.remove("sandboxes", "sb-gone");
+  await assert.rejects(provisioning, /Sandbox "sb-gone" was deleted while it provisioned/);
 });
 
 test("the map is re-read PER provision, so a converge reaches the next Sandbox without a roll", async () => {
@@ -948,13 +1068,12 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
   assert.ok(!bare.spec.volumes.some((v: { name: string }) => v.name === "ca"));
 });
 
-test("provision reports the pod identity the lease will hold the workspace to", async () => {
+test("provision resolves with the Harness endpoint, and nothing else (ADR-0021: no pod identity to hold)", async () => {
   const { exec } = cluster();
   const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
 
   assert.deepEqual(await port.provision({ name: "sb-1", runId: "r", workflow: "w", ...withApp }), {
     endpoint: "http://sb-1.default.svc:8080",
-    identity: "pod-uid-1",
   });
 });
 
@@ -983,20 +1102,21 @@ function heard(port: ReturnType<typeof kubeSandbox>, name: string): Continuity[]
   return seen;
 }
 
-test("continuity(): the watch's first list is the reconcile — present with its pod, or gone (ADR-0012, ADR-0021)", async () => {
+test("continuity(): the watch's first list is the reconcile — present, or gone (ADR-0012, ADR-0021)", async () => {
   const { exec, api } = cluster();
   api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
   const port = kubeSandbox({ ...exec });
   const live = heard(port, "sb-1");
   const gone = heard(port, "sb-reaped-while-we-were-down");
   await waitFor(() => live.length === 1 && gone.length === 1);
-  assert.deepEqual(live, [{ present: true, identity: "pod-uid-1" }]);
+  assert.deepEqual(live, [{ present: true }]);
   assert.deepEqual(gone, [{ present: false }]);
 });
 
-test("continuity(): a changed podUID is heard within one event — the replacement pod (ADR-0021)", async () => {
+test("continuity(): Lost is heard within one event, with the pod's reason — and a new podUID is not loss", async () => {
   // What an eviction looks like from here: the CR is there, the name and endpoint unchanged — and
-  // the pod behind it is a different pod with an empty `work` volume.
+  // the operator says its one pod ended. It judges identity, because it knows which pod it created;
+  // nothing here compares UIDs (ADR-0021).
   const { exec, api } = cluster();
   api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
   const port = kubeSandbox({ ...exec });
@@ -1004,10 +1124,20 @@ test("continuity(): a changed podUID is heard within one event — the replaceme
   await waitFor(() => seen.length === 1);
   api.setStatus("sandboxes", "sb-1", { ...READY, podUID: "pod-uid-2" });
   await waitFor(() => seen.length === 2);
-  assert.deepEqual(seen[1], { present: true, identity: "pod-uid-2" });
-  api.remove("sandboxes", "sb-1");
+  assert.deepEqual(seen[1], { present: true });
+  api.lose("sb-1", "NodeShutdown", "Pod was terminated in response to imminent node shutdown.");
   await waitFor(() => seen.length === 3);
-  assert.deepEqual(seen[2], { present: false });
+  assert.deepEqual(seen[2], {
+    present: true,
+    lost: { reason: "NodeShutdown", message: "Pod was terminated in response to imminent node shutdown." },
+  });
+  // A Lost condition the operator left without words still names the loss.
+  api.setStatus("sandboxes", "sb-1", { ...READY, phase: "Lost" });
+  await waitFor(() => seen.length === 4);
+  assert.equal((seen[3] as { lost?: { reason: string } }).lost?.reason, "Lost");
+  api.remove("sandboxes", "sb-1");
+  await waitFor(() => seen.length === 5);
+  assert.deepEqual(seen[4], { present: false });
 });
 
 test("continuity(): a dropped watch reports NOTHING — unknown is never loss", async () => {
@@ -1024,15 +1154,21 @@ test("continuity(): a dropped watch reports NOTHING — unknown is never loss", 
   assert.equal(seen.length, 1, "the API server went away; the Sandbox did not");
 });
 
-test("continuity(): an operator that publishes no podUID degrades to presence-only", async () => {
+test("harnessRestarts(): the Harness container's restarts and last end, off the watch — silent for no Sandbox", async () => {
   const { exec, api } = cluster();
-  api.seed("sandboxes", {
-    metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } },
-    status: { phase: "Ready", endpoint: READY.endpoint },
-  } as never);
-  const seen = heard(kubeSandbox({ ...exec }), "sb-1");
+  api.seed("sandboxes", { metadata: { name: "sb-1", labels: { "jr2.dev/run": "r" } }, status: READY } as never);
+  const port = kubeSandbox({ ...exec });
+  const seen: unknown[] = [];
+  const none: unknown[] = [];
+  port.harnessRestarts("sb-1", (h) => seen.push(h));
+  port.harnessRestarts("jr2-instance-harness", (h) => none.push(h));
   await waitFor(() => seen.length === 1);
-  assert.deepEqual(seen, [{ present: true }]);
+  assert.deepEqual(seen[0], { restartCount: 0 });
+  const last = { reason: "Error", exitCode: 1, finishedAt: "2026-09-29T10:00:00Z" };
+  api.setStatus("sandboxes", "sb-1", { ...READY, harness: { restartCount: 1, lastTerminated: last } });
+  await waitFor(() => seen.length === 2);
+  assert.deepEqual(seen[1], { restartCount: 1, lastTerminated: last });
+  assert.deepEqual(none, [], "the Instance Harness is not a Sandbox: nothing to hear");
 });
 
 // --- the memory fault (ADR-0061) ---------------------------------------------------------------
@@ -1340,23 +1476,9 @@ test("the Repo budget runs out BY NAME: the operator's verdict, the node, and wh
 
 test("a pod that never comes up is still the POD budget's timeout, with the preflight hint", async () => {
   // The Repo budget applies only once the operator has held the Sandbox on a Repo reason, which
-  // it reports after the pod is Ready. A pod stuck before that — PodNotReady, or no condition
-  // at all — runs out the pod budget and gets the image hint, Repo budget untouched.
-  const { exec } = cluster([
-    {
-      ...heldOn("PodNotReady", "pod is not yet Ready"),
-      conditions: [
-        ...heldOn("PodNotReady", "pod is not yet Ready").conditions,
-        // The scheduler's word, published by the operator (ADR-0063): where the pod waits.
-        {
-          type: "Scheduled",
-          status: "False",
-          reason: "Unschedulable",
-          message: "0/2 nodes are available: Insufficient memory",
-        },
-      ],
-    },
-  ]);
+  // it reports after the pod is Ready. A placed pod stuck before that — PodNotReady, or no
+  // condition at all — runs out the pod budget and gets the image hint, Repo budget untouched.
+  const { exec } = cluster([heldOn("PodNotReady", "pod is not yet Ready")]);
   const port = kubeSandbox({
     imagesPath: await mkImages(REFS),
     ...provisionable,
@@ -1370,7 +1492,8 @@ test("a pod that never comes up is still the POD budget's timeout, with the pref
       assert.match(err.message, /never reached Ready \(last phase: Pending\)/);
       assert.match(err.message, /check the preflight/);
       assert.match(err.message, /Ready condition says: PodNotReady: pod is not yet Ready/);
-      assert.match(err.message, /the scheduler says: Unschedulable: 0\/2 nodes are available: Insufficient memory/);
+      // The budget starts once the pod is scheduled (ADR-0064), so the scheduler is never the answer.
+      assert.doesNotMatch(err.message, /scheduler/);
       return true;
     },
   );

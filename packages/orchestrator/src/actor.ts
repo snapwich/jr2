@@ -51,7 +51,7 @@ import {
   type WorkspaceAccess,
 } from "./agent.ts";
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
-import type { MemoryKill } from "./workspace.ts";
+import type { HarnessRestarts, MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { agentAddress, continuedIid, resolveAccepts, runBindingOf } from "./registration.ts";
 import type { NoticeScope } from "./notices.ts";
@@ -78,6 +78,13 @@ export type AgentAdmission = {
    * aborts the LIVE conversation, never the dead original the ledger is keyed by.
    */
   instanceId?: string;
+  /**
+   * The Harness container's restart count when this admission was answered (ADR-0021) — stamped by
+   * the ACTOR, for a Turn in a Sandbox Workspace whose watch had spoken. A count above it means
+   * the process holding the conversation died; a restore holds the re-attached Turn to the same
+   * mark.
+   */
+  harnessRestarts?: number;
 };
 
 /**
@@ -332,6 +339,32 @@ function runawayReason(err: unknown): string | undefined {
   return error?.type === "runaway" ? (error.message ?? "runaway") : undefined;
 }
 
+/** The Harness's fixed prefix for a provider that refused the load (ADR-0064), restated like the
+ * runaway literal: `PROVIDER_LIMIT` in `@jr2/harness`. */
+const PROVIDER_LIMIT = "provider limit";
+
+/**
+ * A provider limit (ADR-0064), read STRUCTURALLY like {@link runawayReason}: the Settlement's own
+ * message, unwrapped, so the fault reason STARTS with the fixed prefix — as a memory kill's does
+ * (ADR-0061) — and the Machine and `jr2 status` can key on it.
+ */
+function providerLimitReason(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const message = (err as { settlement?: { error?: { message?: unknown } } }).settlement?.error?.message;
+  return typeof message === "string" && message.startsWith(PROVIDER_LIMIT) ? message : undefined;
+}
+
+/** The kubelet's reason for a container the kernel killed at its memory limit (ADR-0061). */
+const OOM_KILLED = "OOMKilled";
+
+/** Why a Turn failed when its Harness restarted under it (ADR-0021), in the kubelet's words. */
+function harnessRestartReason(seen: HarnessRestarts): string {
+  const last = seen.lastTerminated;
+  return `conversation lost (Harness restarted: ${last?.reason ?? "unknown"}, exit ${last?.exitCode ?? "?"})`;
+}
+
+const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 /**
  * A lost conversation (ADR-0027), read STRUCTURALLY like {@link runawayReason}: the wire client's
  * `SettlementFault` marks a 404 `lost`, and this module is wire-free. The one fault class a
@@ -571,9 +604,38 @@ export function agentActorWith(
     const memoryFault = (name: string): Promise<MemoryKill | undefined> =>
       binding.sandbox?.memoryFault(name, turnStarted).catch(() => undefined) ?? Promise.resolve(undefined);
     const controller = new AbortController();
+
     // Shared per run, created on demand so the ordering guarantee holds for any binding.
     const pendingAborts = (binding.pendingAborts ??= new Map<string, Promise<void>>());
     let stopped = false;
+
+    // A Harness restart ends its Turns (ADR-0021): a conversation lives as long as its Harness
+    // process (ADR-0027), and a Harness that crash-loops only ever refuses connections, so `wait`
+    // would reconnect forever. The watch sees the restart count pass its value at this Turn's
+    // admission, and the Turn fails at once — not its Workspace: the pod and `/work` survive.
+    // Sandbox Workspaces only: the Instance Harness is a Deployment the watch does not see.
+    let heardRestarts: HarnessRestarts | undefined;
+    let restartMark = input.attach?.harnessRestarts;
+    let restarted: HarnessRestarts | undefined;
+    // Whether a Harness has answered an admission of this Turn — before that there is nothing to
+    // lose, and nothing to hold a restart count against.
+    let admitted = input.attach !== undefined;
+    if (workspace !== "none" && sandbox !== undefined && binding.sandbox !== undefined) {
+      disposers.push(
+        binding.sandbox.harnessRestarts(sandbox, (seen) => {
+          heardRestarts = seen;
+          if (stopped || restarted !== undefined || !admitted) return;
+          if (restartMark === undefined) {
+            restartMark = seen.restartCount;
+            return;
+          }
+          if (seen.restartCount > restartMark) {
+            restarted = seen;
+            controller.abort(new Error("the Harness restarted"));
+          }
+        }),
+      );
+    }
     // Ledgered under the ORIGINAL iid — the persisted input's key, like a nudge's — with the
     // LIVE conversation stamped on the record, so a restore settle-follows the live submission
     // AND re-addresses it (see `currentIid` above). The notices the admission carried are
@@ -629,6 +691,12 @@ export function agentActorWith(
         binding.releaseNotices?.(taken.ids);
         throw err;
       }
+      // The mark is taken once the Harness has ANSWERED: a restart before the answer took the
+      // admission with it, and the conversation's 404 says so; a restart after it is this Turn's.
+      // Unheard yet (the watch has not listed), the first count heard is the mark.
+      admitted = true;
+      restartMark = heardRestarts?.restartCount;
+      if (restartMark !== undefined) admission = { ...admission, harnessRestarts: restartMark };
       ledger(admission, taken.ids);
       if (taken.notices.length) carried = { iid: turn.instanceId, notices: taken.notices };
       return admission;
@@ -779,7 +847,10 @@ export function agentActorWith(
         }
       } catch (err) {
         if (stopped) return;
-        const message = err instanceof Error ? err.message : String(err);
+        // The Harness restarted under this Turn (ADR-0021): whatever the stream said as it was cut,
+        // the restart is why.
+        const message =
+          restarted !== undefined ? harnessRestartReason(restarted) : (providerLimitReason(err) ?? errorMessage(err));
         // A lost conversation may be a memory kill (ADR-0061): the kernel's group kill took the
         // Harness with the Agent's processes. The operator publishes the container's last end on
         // the Sandbox, so the fault is NAMED — the fixed prefix `memory limit` — instead of
@@ -789,7 +860,9 @@ export function agentActorWith(
         // through the Briefing, never through the Frame (ADR-0057, ADR-0062) — a notice raised
         // BEFORE the fault, because the state it routes to may admit in the same macrostep. Keyed
         // by the kill itself, so every Turn the one kill ended raises one notice between them.
-        const kill = isLostConversation(err) && sandbox !== undefined ? await memoryFault(sandbox) : undefined;
+        const lostHarness =
+          restarted !== undefined ? restarted.lastTerminated?.reason === OOM_KILLED : isLostConversation(err);
+        const kill = lostHarness && sandbox !== undefined ? await memoryFault(sandbox) : undefined;
         if (stopped) return;
         if (kill !== undefined && noticeWorkspace !== undefined) {
           binding.raiseNotice?.(

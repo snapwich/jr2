@@ -53,10 +53,12 @@ const wsBody = jr2Setup({
   states: { idle: { on: { approve: "done" } }, done: { type: "final" } },
 });
 
-/** A Sandbox backend that never answers: the wrapper stays at `provisioning`, which is all this
+/** A Sandbox backend that never answers: the wrapper stays at `placing`, which is all this
  * suite needs — the resolved spec is already in its context, and no pod is anyone's business here. */
 const parkedSandbox = (): SandboxPort => ({
+  place: () => new Promise(() => {}),
   provision: () => new Promise(() => {}),
+  harnessRestarts: () => () => {},
   attach: () => new Promise(() => {}),
   renew: async () => {},
   continuity: () => () => {},

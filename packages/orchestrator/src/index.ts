@@ -34,7 +34,7 @@ export * from "./repos.ts";
 export * from "./repo-fetch.ts";
 // Type-only: what a workflow event delivery looks like (the registration TABLE stays internal —
 // ADR-0011: workflows speak only defineEvent/agent/gate).
-export type { DeliveredEvent } from "./registration.ts";
+export type { DeliveredEvent, PlacingMarker, RunMarker, TurnMarker } from "./registration.ts";
 export * from "./machine-doc.ts";
 export * from "./run-host.ts";
 export * from "./http.ts";
