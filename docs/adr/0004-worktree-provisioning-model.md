@@ -38,6 +38,14 @@ Enforcement, by side:
   and `maintenance.auto=false` on every checkout it clones **or adopts**, before any fetch — so neither its own fetches
   nor a human running git inside the checkout can trigger object deletion. Only a deliberate `git gc --prune=now`
   defeats it, which is `rm -rf` territory.
+- **Maintenance that deletes no object is allowed, and it is the agent's** (scaling review R13, 2026-09-30). A cache
+  that is only ever fetched accumulates a pack per fetch until every object lookup in every borrowing clone opens
+  thousands of packs. So the agent consolidates on its interval, once loose objects or packs pass a count:
+  `git repack -a -d -k` (one pack holding EVERY object, unreachable ones included — `-k` is the invariant, spelled as a
+  flag: a force-pushed branch's commits stay for the clone that borrows them), `git commit-graph write` and
+  `git pack-refs --all`. Git is built for readers under a repack — an open pack stays readable after its unlink, and a
+  missed object re-scans the pack list — so a borrowing clone never sees an absent object. The rule for anyone who edits
+  that command: no `--prune`, no `gc`, and `gc.pruneExpire=never` stays.
 - **Eviction is deletion of the whole checkout**, never of objects inside one, and only once no pod on the node mounts
   it (ADR-0051). A live clone never loses what it borrows.
 
