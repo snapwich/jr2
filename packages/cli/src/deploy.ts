@@ -434,11 +434,10 @@ export function instanceObjects(opts: {
                 // `replicas: 1` writer is an outage plus a restore, so it fires only on a process
                 // that has answered nothing for five minutes (30 × 10s): silent that long is dead,
                 // not stalled, and without it the pod sits NotReady until a human deletes it. A
-                // process that EXITS needs no probe — the restart policy already has it. The delay
-                // lets a boot's restore finish before the first miss is counted.
+                // process that EXITS needs no probe — the restart policy already has it. The same
+                // five minutes cover a boot's restore, so there is no initial delay.
                 livenessProbe: {
                   httpGet: { path: "/healthz", port: ORCHESTRATOR_PORT },
-                  initialDelaySeconds: 30,
                   periodSeconds: 10,
                   failureThreshold: 30,
                 },

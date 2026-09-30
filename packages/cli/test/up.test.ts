@@ -2329,6 +2329,7 @@ test("the Orchestrator carries a liveness probe that restarts only a process sil
   assert.equal(liveness.httpGet.port, container.readinessProbe.httpGet.port);
   assert.equal(liveness.periodSeconds, 10);
   assert.equal(liveness.failureThreshold, 30);
+  assert.equal(liveness.initialDelaySeconds, undefined, "the five minutes cover a boot too");
   assert.equal(liveness.periodSeconds * liveness.failureThreshold, 300, "dead, not stalled: five minutes of silence");
   // Readiness stays the 30s take-out-of-service it was — the two probes answer different questions.
   assert.equal(container.readinessProbe.periodSeconds * container.readinessProbe.failureThreshold, 30);
