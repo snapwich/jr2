@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -258,6 +258,26 @@ test("a Settlement whose stream line the restart tore is settled again, so a re-
     [[admission.submissionId, "failed", SUBMISSION_HARNESS_RESTARTED]],
   );
   assert.deepEqual((await history(after.app, "/agents/decider/i1")).settlements.length, 1);
+});
+
+test("a record write that fails is the process's end, not a Settlement no wait hears", async (t) => {
+  if (process.getuid?.() === 0) return t.skip("root writes through a read-only mode");
+  const dir = scratch();
+  const faults: string[] = [];
+  const harness = harnessOver(dir, {
+    recordFault: (err, path) => {
+      faults.push(path);
+      throw err;
+    },
+  });
+  await admitted(harness.app, "/agents/decider/i1");
+  await flush();
+  // The volume refuses the Settlement's line.
+  const file = join(conversationDir(dir, "decider", "i1"), "record", "stream.jsonl");
+  chmodSync(file, 0o444);
+  harness.runs[0]!.resolve();
+  await flush();
+  assert.deepEqual(faults, [file]);
 });
 
 // ---- the live set ---------------------------------------------------------------------------------

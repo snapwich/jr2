@@ -52,6 +52,15 @@ export type EngineSeat = {
   history(): HistoryMessage[];
 };
 
+/**
+ * What a record write that failed does — a full volume, a lost mount. It never returns: the
+ * Conversation has already moved in memory (a Submission marked settled, an event on its log), so
+ * a Harness that went on would answer from state its record does not hold, and a `wait` would park
+ * on an event no reader was woken for. The process ends instead, and the boot after it rebuilds from
+ * what is on disk — whatever was cut settles `failed`, `harness_restarted` (ADR-0031).
+ */
+export type RecordFault = (err: unknown, path: string) => never;
+
 /** A conversation as its record rebuilds it. */
 export type RecordedConversation = {
   agentName: string;
@@ -78,12 +87,17 @@ export function conversationDir(root: string, agentName: string, instanceId: str
  * this Harness holds no conversation at that key, so a record there is one the boot could not
  * read — and a new record appended onto it would rebuild as neither.
  */
-export function startRecord(root: string, agentName: string, instanceId: string): ConversationRecorder {
+export function startRecord(
+  root: string,
+  agentName: string,
+  instanceId: string,
+  fault: RecordFault,
+): ConversationRecorder {
   const dir = conversationDir(root, agentName, instanceId);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, "record"), { recursive: true });
   writeFileSync(join(dir, "conversation.json"), `${JSON.stringify({ agentName, instanceId })}\n`);
-  return recorderAt(dir);
+  return recorderAt(dir, fault);
 }
 
 /** The record's files, each one JSONL. */
@@ -92,10 +106,16 @@ const RECORD_FILES = ["admitted.jsonl", "stream.jsonl", "messages.jsonl"];
 /** Append to an existing record — the one a boot rebuilt. The torn write a restart may have left
  * at a file's end is cut first: the read dropped it, and a line appended onto it would join the
  * two into a middle line that does not parse, so the NEXT boot could not read the conversation. */
-export function recorderAt(dir: string): ConversationRecorder {
+export function recorderAt(dir: string, fault: RecordFault): ConversationRecorder {
   for (const file of RECORD_FILES) cutTornTail(join(dir, "record", file));
-  const line = (file: string, value: unknown) =>
-    appendFileSync(join(dir, "record", file), `${JSON.stringify(value)}\n`);
+  const line = (file: string, value: unknown) => {
+    const path = join(dir, "record", file);
+    try {
+      appendFileSync(path, `${JSON.stringify(value)}\n`);
+    } catch (err) {
+      fault(err, path);
+    }
+  };
   return {
     admitted: (submissionId) => line("admitted.jsonl", { submissionId }),
     appended: (event) => line("stream.jsonl", event),

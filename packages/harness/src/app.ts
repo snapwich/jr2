@@ -28,6 +28,7 @@ import {
   recorderAt,
   startRecord,
   type ConversationRecorder,
+  type RecordFault,
   type EngineSeat,
   type RecordedConversation,
 } from "./record.ts";
@@ -117,6 +118,9 @@ export type HarnessAppDeps = {
   conversationsDir?: string;
   /** Where a conversation the boot cannot rebuild is said — the pod log unless a test collects it. */
   bootOut?: PrinterOut;
+  /** What a record write that failed does (ADR-0031, `RecordFault`) — the pod log and exit 1 unless
+   * a test catches it. */
+  recordFault?: RecordFault;
 };
 
 /** The wire app, and the drain a SIGTERM runs (ADR-0031). */
@@ -145,6 +149,16 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
 export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   const longPollMs = deps.longPollMs ?? 25_000;
   const root = deps.conversationsDir;
+  // A record that cannot be written ends the process (ADR-0031): the restart settles what it cut,
+  // and a crash loop on a full volume is louder than a Turn that never settles.
+  const recordFault: RecordFault =
+    deps.recordFault ??
+    ((err, path) => {
+      process.stderr.write(
+        `harness: cannot write the conversation record ${path}: ${err instanceof Error ? err.message : String(err)} — exiting, so the restart settles what it cut (ADR-0031)\n`,
+      );
+      process.exit(1);
+    });
   // Keyed on encoded parts: iids are hierarchical (slashes — ADR-0015), so a raw `/` join
   // could collide two conversations.
   const conversations = new Map<string, Conversation>();
@@ -158,7 +172,7 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     const dir = root === undefined ? undefined : conversationDir(root, agentName, instanceId);
     let recorder: ConversationRecorder | undefined;
     if (root !== undefined && dir !== undefined) {
-      recorder = recorded ? recorderAt(dir) : startRecord(root, agentName, instanceId);
+      recorder = recorded ? recorderAt(dir, recordFault) : startRecord(root, agentName, instanceId, recordFault);
     }
     // The seam is circular by nature — the turn appends to the Conversation that pumps it —
     // so the closures read the binding the next statement fills.
