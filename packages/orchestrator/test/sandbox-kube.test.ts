@@ -972,6 +972,21 @@ test("a CR apply that fails writes no token Secret (ADR-0001)", async () => {
   assert.deepEqual(applies(calls, "secrets"), [], "no Secret without the CR that owns it");
 });
 
+test("a token Secret that fails after its CR fails the provision, and the CR is its caller's to delete (ADR-0001)", async () => {
+  const { api, exec } = cluster([]); // no operator: the CR is deleted before it would answer
+  api.refuse((call) =>
+    call.target === "secrets/sb-orphan-token" ? Response.json({ message: "no" }, { status: 500 }) : undefined,
+  );
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  await assert.rejects(port.provision({ name: "sb-orphan", runId: "r", workflow: "w", ...withApp }));
+  // The CR exists with no token for its Custodian. The provision rejected, so the Workspace deletes
+  // it — workspace.ts destroys a Sandbox whose place failed (workspace.test.ts pins that) — and the
+  // delete takes it whole.
+  assert.ok(api.object("sandboxes", "sb-orphan"));
+  await port.destroy("sb-orphan");
+  assert.equal(api.object("sandboxes", "sb-orphan"), undefined);
+});
+
 test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alone mounts values and leaves (ADR-0059)", async () => {
   const manifest: HeldManifest = {
     version: 1,
