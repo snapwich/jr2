@@ -165,8 +165,9 @@ wire. Successive prompts to the same `(Agent name, instance id)` continue one co
 persists `(name, instance id)` + stream offset host-side to re-attach after an Orchestrator restart. New agent
 invocations get fresh ids by default (the lossy handoff); continuing is opt-in per Turn (`continue`) and names nothing:
 one Agent has one continued conversation per Machine instance, which every state of that Machine may continue. A
-conversation jr2 has faulted is never continued — the next continue lands on a fresh one. _Avoid_: conversation id,
-session id, conversation pin, scope
+conversation jr2 has faulted is never continued — the next continue lands on a fresh one — unless the fault was a
+Harness restart that cut only the Turn, whose rebuilt Harness still holds the conversation (ADR-0031). _Avoid_:
+conversation id, session id, conversation pin, scope
 
 **Turn**: One Agent's answer to the frame a Machine state set for it — the prompt, the work, and the single menu pick
 that ends it (ADR-0006). A turn belongs to the state that asked for it: when that state stops waiting, the turn is over,

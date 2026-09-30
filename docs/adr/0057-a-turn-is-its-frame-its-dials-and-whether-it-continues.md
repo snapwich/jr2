@@ -65,7 +65,11 @@ ADR-0018 and CONTEXT.md said `cwd` is identity, never per Turn. The decided thin
     jr2 keeps an **epoch** per continued conversation in the ledger beside the snapshot; the terminal `agent.fault`
     bumps it, and the next `continue` on that Agent mints `<id>/<epoch>` — a virgin conversation. The author deletes
     their generation counter. What stays with the author is re-briefing: the fault event is the signal that the next
-    prompt must carry the whole task again, and jr2 cannot write that prompt.
+    prompt must carry the whole task again, and jr2 cannot write that prompt. The one fault that is not the
+    conversation's is a Harness restart that cut the Turn (`Turn lost`, or `memory limit` behind it): the rebuilt
+    Harness holds the conversation ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)), so the epoch
+    stays and the next `continue` lands on it; a rebuild that could not read it answers that Turn's `holds` check, which
+    gives a `conversation-new` notice (ADR-0062).
   - **The reroll stays closed to continued conversations** (ADR-0035): the one recovery jr2 knows is the identical
     prompt on a fresh conversation, and a continued Turn's prompt ("Continue.") is meaningless fresh. Fault route plus
     re-brief is the recovery.
@@ -115,7 +119,7 @@ ADR-0018 and CONTEXT.md said `cwd` is identity, never per Turn. The decided thin
   — the two states it joined sat on different Harnesses, and a conversation lives on one server (ADR-0031) — and an
   unused opt-in is the fourth mechanism back under a new name. If a sound case appears it is a new decision.
 - **Continue a faulted conversation, author's choice.** Rejected: there is no case. Every fault class leaves either a
-  poisoned context or no server.
+  poisoned context or no server — except a Harness restart, which cuts the Turn and keeps the conversation (above).
 
 ## Consequences
 

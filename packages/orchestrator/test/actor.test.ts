@@ -621,6 +621,57 @@ test("a Settlement `failed` by a Harness restart is `Turn lost`, and a memory ki
   assert.match(fault?.reason ?? "", /Turn lost \(Harness restarted before this Submission settled/);
 });
 
+test("a Turn a Harness restart cut keeps its continued conversation: only the Turn was lost (ADR-0031, ADR-0057)", async () => {
+  const continued = { ...baseInput, instanceId: "run-1/root/coder", continuation: true };
+
+  // The rebuilt stream's Settlement — the only restart signal the Instance Harness gives.
+  const onInstance = new MockFlueClient();
+  const settledBurned: string[] = [];
+  const settled = harness(
+    onInstance,
+    continued,
+    undefined,
+    { model: "test/model", instructions: "i", workspace: "none" },
+    {
+      instanceHarness: "http://jr2-instance-harness:8080",
+      bumpEpoch: (conversation) => settledBurned.push(conversation),
+    },
+  );
+  await tick();
+  onInstance.faultSettled("harness_restarted", "Harness restarted before this Submission settled");
+  await tick();
+  await tick();
+  assert.match(String(settled.received.find((e) => e.type === "agent.fault")?.reason), /^Turn lost \(/);
+  assert.deepEqual(settledBurned, [], "the rebuilt Harness holds the conversation: the next continue lands on it");
+
+  // The watch's restart count on a Sandbox's Harness, whose emptyDir keeps its conversations.
+  const sandbox = restartingSandbox();
+  const watchedBurned: string[] = [];
+  const watched = harness(new MockFlueClient(), { ...continued, sandbox: "ws-7" }, undefined, undefined, {
+    sandbox: sandbox.port,
+    bumpEpoch: (conversation) => watchedBurned.push(conversation),
+  });
+  await tick();
+  await tick();
+  sandbox.restart({ reason: "Error", exitCode: 1 });
+  await tick();
+  await tick();
+  assert.match(String(watched.received.find((e) => e.type === "agent.fault")?.reason), /^Turn lost \(/);
+  assert.deepEqual(watchedBurned, []);
+
+  // A conversation the Harness no longer holds (404) is burned, as every other fault's is.
+  const lost = new MockFlueClient();
+  const lostBurned: string[] = [];
+  harness(lost, continued, undefined, undefined, { bumpEpoch: (conversation) => lostBurned.push(conversation) });
+  await tick();
+  (lost as unknown as { pending: Array<{ reject: (e: unknown) => void }> }).pending
+    .pop()!
+    .reject(Object.assign(new Error("conversation lost"), { lost: true }));
+  await tick();
+  await tick();
+  assert.deepEqual(lostBurned, ["run-1/root/coder"]);
+});
+
 test("a `failed` Settlement that only MENTIONS a restart is not one — the type is the signal (ADR-0031)", async () => {
   // A provider error whose prose happens to say "harness restart" is the provider's failure, and
   // reported as such; only the Harness's typed `harness_restarted` error is a lost Turn.

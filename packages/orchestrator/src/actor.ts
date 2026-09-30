@@ -149,7 +149,8 @@ export type AgentTurnInput = {
    * share a conversation (the name is in the id), and two Pool children never collide (each
    * worker is its own Machine instance). A conversation jr2 has faulted is never continued: the
    * next `continue` lands on a virgin one (ADR-0035, ADR-0057) — and re-briefing that Turn is the
-   * author's, because jr2 cannot write that prompt.
+   * author's, because jr2 cannot write that prompt. A Harness restart is the exception: it cut the
+   * Turn, and the rebuilt Harness holds the conversation (ADR-0031).
    */
   continue?: true;
 };
@@ -786,14 +787,16 @@ export function agentActorWith(
     //     admitting the identical prompt — closed to continuations, which opted out of exactly that.
     // Any budget exhausting emits the ONE terminal `agent.fault { reason }`.
     void (async () => {
-      const fault = (reason: string) => {
+      const fault = (reason: string, opts: { conversationKept?: boolean } = {}) => {
         if (stopped) return;
         // Burn the conversation before the fault lands (ADR-0057): the state the fault routes to
         // may invoke this Agent again in the same macrostep, and its mapper must already read the
         // bumped epoch. Continuations only — a fresh invocation mints its own conversation, so
-        // there is nothing to burn.
+        // there is nothing to burn. Not when a Harness restart cut the Turn: the rebuilt Harness
+        // holds the conversation (ADR-0031), so only the Turn was lost and the next `continue`
+        // lands on it; that Turn's `holds` check tells it if the rebuild could not read it (ADR-0062).
         // The fault's reason is the next Turn's news: it is why that conversation starts empty.
-        if (input.continuation) binding.bumpEpoch?.(conversation, reason);
+        if (input.continuation && !opts.conversationKept) binding.bumpEpoch?.(conversation, reason);
         sendBack({ type: "agent.fault", instanceId, reason } satisfies FaultTelemetry);
       };
       try {
@@ -912,7 +915,10 @@ export function agentActorWith(
             kill.at === undefined ? undefined : `${noticeWorkspace}@${kill.at}`,
           );
         }
-        fault(kill !== undefined ? `${kill.reason}\n  ${message}` : message);
+        // A restart the Harness came back from keeps the conversation (ADR-0031); a 404 does not.
+        fault(kill !== undefined ? `${kill.reason}\n  ${message}` : message, {
+          conversationKept: restarted !== undefined || restartSettled !== undefined,
+        });
       }
     })();
 
