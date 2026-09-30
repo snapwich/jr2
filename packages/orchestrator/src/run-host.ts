@@ -648,8 +648,7 @@ export class RunHost {
     const drifted: string[] = [];
     const failed: string[] = [];
 
-    for (const stored of await this.store.list()) {
-      if (stored.status !== "live") continue;
+    for (const stored of await this.store.live()) {
       const blob = stored.snapshot as RunBlob | null;
       const def = blob ? this.workflowDefs.get(blob.workflow) : undefined;
       if (!blob || !def) {
@@ -915,7 +914,8 @@ export class RunHost {
    * Read a run's status, **reading through to the store** when it is no longer live (ADR-0009). A
    * completed run's final snapshot is persisted before `persist()` drops it from the registry, so a
    * terminal run reports its `done`/`error` status + final context here rather than 404-ing. Returns
-   * undefined only for a genuinely unknown run (or one marked `lost`, whose snapshot was cleared).
+   * undefined only for a genuinely unknown run (or one marked `lost`, whose snapshot was cleared) —
+   * and a swept one is unknown: a finished run's row lives a week (ADR-0065).
    */
   async read(runId: string): Promise<RunStatus | undefined> {
     const live = this.status(runId);

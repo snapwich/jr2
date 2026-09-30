@@ -6,12 +6,13 @@
 // global `fetch`. The agent side is the no-flue stub (the default), so runs admit + stay live
 // without a Harness — enough to exercise discover → serve → restore end to end.
 
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { defaultImageContext, loadWorkflows, startInstance } from "../src/instance.ts";
 import { SqliteSnapshotStore } from "../src/snapshot-store.ts";
 
@@ -334,5 +335,72 @@ test("loadWorkflows: only ENOENT maps to empty — an unreadable workflows/ path
     await assert.rejects(loadWorkflows(dir), (err: NodeJS.ErrnoException) => err.code === "ENOTDIR");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Back-date a row's last write by `daysAgo` days, through a second connection — the store has no
+ * clock seam, and the boot must not grow one for a test. */
+function age(dbPath: string, runId: string, daysAgo: number): void {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(`UPDATE machine_snapshots SET updated_at = ? WHERE run_id = ?`).run(
+    new Date(Date.now() - daysAgo * DAY_MS).toISOString(),
+    runId,
+  );
+  db.close();
+}
+
+/** A finished run's row as the host writes it: the blob `read()` projects. */
+const finished = { workflow: "echo", instanceId: "i-1", snapshot: { status: "done", value: "end", context: {} } };
+
+test("the boot sweeps a finished run older than a week, and `read()` then answers it unknown (ADR-0065)", async () => {
+  const dbDir = await mkdtemp(join(tmpdir(), "jr2-sweep-"));
+  const dbPath = join(dbDir, "state.db");
+  try {
+    const seed = new SqliteSnapshotStore(dbPath);
+    await seed.init();
+    await seed.save("old-run", finished, "done");
+    await seed.save("new-run", finished, "done");
+    await seed.close();
+    age(dbPath, "old-run", 8);
+    age(dbPath, "new-run", 6);
+
+    const inst = await startInstance({ dir: fixtureDir, store: new SqliteSnapshotStore(dbPath), signingKey: KEY });
+    try {
+      assert.equal(await inst.host.read("old-run"), undefined, "swept: `jr2 status` answers `no run`");
+      assert.equal((await inst.host.read("new-run"))?.status, "done", "six days old: still readable");
+      assert.deepEqual(await inst.host.candidates("old", 10), [], "a swept id frees its abbreviations");
+    } finally {
+      await inst.close();
+    }
+  } finally {
+    await rm(dbDir, { recursive: true, force: true });
+  }
+});
+
+test("the sweep runs again every hour while the Orchestrator is up (ADR-0065)", async () => {
+  const dbDir = await mkdtemp(join(tmpdir(), "jr2-sweep-"));
+  const dbPath = join(dbDir, "state.db");
+  mock.timers.enable({ apis: ["setInterval"] });
+  try {
+    const inst = await startInstance({ dir: fixtureDir, store: new SqliteSnapshotStore(dbPath), signingKey: KEY });
+    try {
+      // A row that ages past the week while the process is up — the boot sweep already ran.
+      const other = new SqliteSnapshotStore(dbPath);
+      await other.init();
+      await other.save("aged-run", finished, "done");
+      await other.close();
+      age(dbPath, "aged-run", 8);
+      assert.equal((await inst.host.read("aged-run"))?.status, "done");
+
+      mock.timers.tick(60 * 60 * 1000);
+      assert.equal(await inst.host.read("aged-run"), undefined, "the hourly sweep deleted it");
+    } finally {
+      await inst.close();
+    }
+  } finally {
+    mock.timers.reset();
+    await rm(dbDir, { recursive: true, force: true });
   }
 });
