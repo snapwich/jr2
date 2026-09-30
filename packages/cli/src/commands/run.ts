@@ -62,7 +62,10 @@ export async function run(args: string[], io: Io): Promise<number> {
         return ev.status.status === "error" ? 1 : 0;
       }
     }
-    return 0;
+    // `events()` re-attaches until the run settles (ADR-0022), so reaching here means no terminal
+    // status ever came: never a success, and nothing on stdout to be mistaken for a result.
+    activity(io, `run ${runId}: the feed ended before the run settled — \`jr2 logs -f ${runId}\` re-attaches`);
+    return 1;
   } finally {
     target.close?.();
   }

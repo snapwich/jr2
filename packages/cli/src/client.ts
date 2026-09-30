@@ -172,29 +172,40 @@ export class JR2Client {
    * `GET /runs/:runId/events` — the SSE feed as an async-iterable of `RunFeedEvent`. The current status
    * is replayed first (attach), then deltas + author `emit`s until the terminal status (or the consumer
    * breaks, which cancels the stream). A settled run streams its final status once and ends.
+   *
+   * A feed that ends BEFORE a terminal status is re-attached, never read as the run's end: the
+   * server closes a reader that fell behind (a paused pager on `jr2 run | less`), and the feed is
+   * level-triggered, so the re-attach opens with where the run stands now (ADR-0022). What falls in
+   * the gap is activity — Emits, retries — never state.
    */
   async *events(runId: string): AsyncGenerator<RunFeedEvent> {
-    const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
-      headers: this.headers({ accept: "text/event-stream" }),
-    });
-    if (res.status === 404) {
-      throw new JR2HttpError(`no run "${runId}"`, 404, "/runs/:runId/events", await this.identify());
-    }
-    if (!res.body) return;
-    for await (const frame of parseSSE(res.body)) {
-      if (frame.event === "emit") {
-        yield { kind: "emit", event: JSON.parse(frame.data) as { type: string } & Record<string, unknown> };
-      } else if (frame.event === "retry") {
-        yield { kind: "retry", ...(JSON.parse(frame.data) as { child: string; attempt: number; reason: string }) };
-      } else if (frame.event === "status") {
-        yield { kind: "status", status: JSON.parse(frame.data) as RunStatus };
-      } else if (frame.event === "placing" || frame.event === "placed") {
-        // A wait for capacity starting and ending (ADR-0064) — activity, never a status.
-        yield { ...(JSON.parse(frame.data) as object), kind: frame.event } as PlacingMarker;
+    for (;;) {
+      const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/events`, {
+        headers: this.headers({ accept: "text/event-stream" }),
+      });
+      if (res.status === 404) {
+        throw new JR2HttpError(`no run "${runId}"`, 404, "/runs/:runId/events", await this.identify());
       }
-      // Any other frame (a Turn marker — ADR-0023 — or a kind this CLI predates) is skipped, not
-      // misread as a status: `jr2 logs -f` decides "settled" off `status.status`, and a marker
-      // parsed as a status would end the follow mid-run.
+      if (!res.body) return;
+      let settled = false;
+      for await (const frame of parseSSE(res.body)) {
+        if (frame.event === "emit") {
+          yield { kind: "emit", event: JSON.parse(frame.data) as { type: string } & Record<string, unknown> };
+        } else if (frame.event === "retry") {
+          yield { kind: "retry", ...(JSON.parse(frame.data) as { child: string; attempt: number; reason: string }) };
+        } else if (frame.event === "status") {
+          const status = JSON.parse(frame.data) as RunStatus;
+          settled = status.status !== "active";
+          yield { kind: "status", status };
+        } else if (frame.event === "placing" || frame.event === "placed") {
+          // A wait for capacity starting and ending (ADR-0064) — activity, never a status.
+          yield { ...(JSON.parse(frame.data) as object), kind: frame.event } as PlacingMarker;
+        }
+        // Any other frame (a Turn marker — ADR-0023 — or a kind this CLI predates) is skipped, not
+        // misread as a status: `jr2 logs -f` decides "settled" off `status.status`, and a marker
+        // parsed as a status would end the follow mid-run.
+      }
+      if (settled) return;
     }
   }
 

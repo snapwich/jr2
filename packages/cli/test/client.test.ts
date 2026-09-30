@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { RunFeedEvent } from "../src/client.ts";
+import { JR2Client, type RunFeedEvent } from "../src/client.ts";
 import { mkHarness } from "./_fixtures.ts";
 
 test("workflows() and list() report registered + live runs", async () => {
@@ -49,6 +49,43 @@ test("events() replays current status, forwards emits, ends on terminal; read() 
   const s = await client.read(runId);
   assert.equal(s?.status, "done");
   assert.equal((s?.context as { reply?: string } | undefined)?.reply, undefined); // feed has no reply field
+});
+
+test("events() re-attaches a feed the server closed before the run settled (ADR-0022)", async () => {
+  const { app, host } = await mkHarness();
+  // The server closes a reader that fell behind: the first attach ends after its opening status.
+  let attaches = 0;
+  const client = new JR2Client("http://test", async (url, init) => {
+    const res = await app.request(url, init);
+    if (!/\/runs\/[^/]+\/events$/.test(String(url)) || attaches++ > 0) return res;
+    const reader = res.body!.getReader();
+    const cut = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        let buf = "";
+        while (!buf.includes("\n\n")) {
+          const { value } = await reader.read();
+          buf += new TextDecoder().decode(value);
+        }
+        controller.enqueue(new TextEncoder().encode(buf.slice(0, buf.indexOf("\n\n") + 2)));
+        controller.close();
+        await reader.cancel();
+      },
+    });
+    return new Response(cut, { headers: res.headers });
+  });
+  const { runId } = await client.start("gated");
+
+  const statuses: string[] = [];
+  for await (const ev of client.events(runId)) {
+    if (ev.kind !== "status") continue;
+    statuses.push(ev.status.status);
+    // Parked on its gate, twice over: once per attach. Then the run moves on and settles.
+    if (statuses.length === 2) await client.sendToGate(runId, "review-1", { type: "approve" });
+  }
+  assert.equal(attaches, 2, "the cut feed was re-attached");
+  assert.deepEqual(statuses.slice(0, 2), ["active", "active"]);
+  assert.equal(statuses.at(-1), "done", "and followed to the terminal status");
+  assert.equal(host.list().length, 0);
 });
 
 test("read() is undefined for an unknown run", async () => {
