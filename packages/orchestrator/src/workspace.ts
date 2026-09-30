@@ -64,7 +64,7 @@ import { attachInputSchema, inputSchemaOf, invokingMachine, type HostInjectedInp
 /** Lease cadence when the backend names none. Well inside the 30m default idle timeout, so a
  * few missed renewals in a row are survivable. It bounds only how long an orphan waits to be
  * reaped: loss is the watch's news, within seconds (ADR-0021, ADR-0063). */
-const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
+export const DEFAULT_LEASE_INTERVAL_MS = 5 * 60_000;
 
 /** Each renewal lands at the interval ±20% (ADR-0021), so Leases restored together after an
  * Orchestrator restart never renew in lockstep. */
@@ -258,7 +258,7 @@ export interface SandboxPort {
    * Hear the Harness container's restarts on this Sandbox's pod (ADR-0021): once the watch has
    * listed, then on every change. A Turn records the count at its admission, and a count above it
    * means the conversation it waits on is gone. Silent for a name the watch does not hold — the
-   * Instance Harness is a Deployment, not a Sandbox. Returns the unsubscribe.
+   * Instance Harness is a StatefulSet, not a Sandbox. Returns the unsubscribe.
    */
   harnessRestarts(name: string, listener: (seen: HarnessRestarts) => void): () => void;
   /**

@@ -7,7 +7,13 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SettlementFault, createEchoPush, createHarnessClient, harnessAgentRunPort } from "../src/harness-client.ts";
+import {
+  SettlementFault,
+  createEchoPush,
+  createHarnessClient,
+  createLiveSetPush,
+  harnessAgentRunPort,
+} from "../src/harness-client.ts";
 import type { AgentAdmission, AgentRunInput } from "../src/actor.ts";
 import type { AgentDefinition } from "../src/agent.ts";
 import type { EchoEvent } from "../src/wire.ts";
@@ -448,6 +454,28 @@ test("a refused echo rejects with the wire's detail — the TEE decides fire-and
   await assert.rejects(
     () => push([{ kind: "emit", event: { type: "note" } }]),
     (err: unknown) => err instanceof Error && /echo failed \(401\): unauthorized/.test(err.message),
+  );
+});
+
+test("createLiveSetPush PUTs the whole live set to /agents, bearing the Instance Harness's bearer (ADR-0031, ADR-0058)", async () => {
+  const { calls, fetch } = scriptedFetch([() => new Response(JSON.stringify({ freed: 3 }), { status: 200 })]);
+  const push = createLiveSetPush({ baseUrl: "http://ih.test:8080", token: "placement-bearer", fetch });
+
+  const live = [{ agent: "triager", instanceId: "run-1/root/triager" }];
+  assert.deepEqual(await push(live), { freed: 3 });
+
+  assert.equal(calls[0]!.url.toString(), "http://ih.test:8080/agents");
+  assert.equal(calls[0]!.init?.method, "PUT");
+  assert.equal((calls[0]!.init?.headers as Record<string, string>).authorization, "Bearer placement-bearer");
+  assert.deepEqual(JSON.parse(String(calls[0]!.init?.body)), { live });
+});
+
+test("a refused live-set statement rejects with the wire's detail — the host decides fire-and-forget", async () => {
+  const { fetch } = scriptedFetch([() => new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 })]);
+  const push = createLiveSetPush({ baseUrl: "http://ih.test", token: "stale", fetch });
+  await assert.rejects(
+    () => push([]),
+    (err: unknown) => err instanceof Error && /live-set statement failed \(401\): unauthorized/.test(err.message),
   );
 });
 
