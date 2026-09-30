@@ -63,12 +63,13 @@ that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; g
     `{aborted: false}`. This is a deliberate divergence from the stub, which answers every read with an empty stream:
     the stub is inert by design, but a real Harness that answered a lost conversation with silence would park a
     re-attached `wait` forever. Honesty about loss beats an endless poll.
-  - **The durability contract is explicit: a conversation lives exactly as long as its Harness process.** Sessions are
-    in-memory; flue's node-target store was in-memory SQLite as deployed, so nothing is lost that was ever had. What is
-    durable is Orchestrator-side — the admission ledger and snapshot ([ADR-0007](0007-durable-machine-state.md)), and
-    `wait`'s reconnect-from-offset. A Harness death under an admitted Submission surfaces as 404 → fault → workflow
-    policy, the same family as `workspace.lost`. Provider-stream retry moves inside the turn (pi's `maxRetries`) — the
-    seat ADR-0016 delegated to flue's `durability{}`.
+  - **The durability contract is explicit: a conversation lives as long as its Sandbox, and on the Instance Harness as
+    long as its run** (ADR-0031). The Harness persists each conversation to a directory as it goes and rebuilds it on
+    boot, so a Harness restart inside a living pod keeps it; a Submission in flight at the restart settles `failed`.
+    What is durable across a lost pod is Orchestrator-side — the admission ledger and snapshot
+    ([ADR-0007](0007-durable-machine-state.md)), and `wait`'s reconnect-from-offset. A conversation that is gone
+    surfaces as 404 → fault → workflow policy, the same family as `workspace.lost`. Provider-stream retry moves inside
+    the turn (pi's `maxRetries`) — the seat ADR-0016 delegated to flue's `durability{}`.
   - **[ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)'s enabling fact is reproduced
     as explicit code.** Each Submission reads `$JR2_CUSTODIAN_URL/agents/<iid>/surface` afresh and presents it to pi as
     the Menu, so the menu is per-turn with no push channel, no turn index, no second port. Menu tools keep the
@@ -108,8 +109,10 @@ that owns tool assembly. As of 0.82.x it ships the read/write/edit/bash tools; g
   Menu over a real socket to a killable fake Orchestrator, real server — moves into `packages/harness/test/` and runs in
   the default `test` gate: the opt-in-ness existed only because the tier owned a foreign pin and build. Its claims
   become jr2 requirements, with the pinned-defect assertion inverted: an abort mid-stream must **not** erase the
-  assistant message. This suite is the only automated exercise of the real turn loop — the `@kind` tier keeps faking the
-  LLM — and it is the canary for pi bumps.
+  assistant message. This suite is the first canary for pi bumps; `@kind` (ADR-0038) drives the same turn loop in a real
+  pod against a scripted model, and `@model`
+  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)) against a real one —
+  run all three before bumping the pin.
 - **The pinning risk moves; it does not vanish.** pi releases ~2.4×/week and breaks across 0.x minors. The pin is exact,
   a bump is a deliberate kit change gated by the conformance suite, and the breaking surface is now a class jr2
   constructs — not a code generator, a CLI build, and a process-global registry.

@@ -41,14 +41,14 @@ end. And a restarted Harness answered a `continue` with no memory of the convers
   minutes, ±20% jitter — the assertion that keeps the operator from reaping (ADR-0001). A dropped watch is unknown,
   never loss: fabricating loss would settle live runs holding real work the first time the API server hiccuped, so the
   loop re-lists and reconciles instead.
-- **A Harness restart ends its Turns, not its Workspace.** A conversation lives as long as its Harness process
-  (ADR-0027). When the watch sees the Harness container's restart count pass its value at a Turn's admission, every Turn
-  waiting on that Harness fails at once: `memory limit` if the last end was `OOMKilled` (ADR-0061), otherwise
-  `conversation lost (Harness restarted: <reason>, exit <code>)`. The pod and `/work` survive, so the Workspace is not
-  lost: the Agent's next Turn lands on a new conversation with a `conversation-new` notice (ADR-0062), and a Harness
-  that never comes back faults that admission inside its bounded window, with the kubelet's reason. `wait` keeps
-  reconnecting without a deadline — every real end now has a watch signal, so a timer would only be a guess at how long
-  a slow Turn may take.
+- **A Harness restart ends its Turns, not its Workspace and not its conversations.** When the watch sees the Harness
+  container's restart count pass its value at a Turn's admission, every Turn waiting on that Harness fails at once:
+  `memory limit` if the last end was `OOMKilled` (ADR-0061), otherwise
+  `Turn lost (Harness restarted: <reason>, exit <code>)`. The pod, `/work` and the conversations' directory survive, so
+  the Workspace is not lost and the Agent's next Turn continues its conversation (ADR-0031); a conversation the rebuilt
+  Harness cannot read gets a `conversation-new` notice (ADR-0062), and a Harness that never comes back faults that
+  admission inside its bounded window, with the kubelet's reason. `wait` keeps reconnecting without a deadline — every
+  real end now has a watch signal, so a timer would only be a guess at how long a slow Turn may take.
 - **The lease is an invoked actor**, one per workspace, owning both halves: it renews, and it subscribes to the watch
   for its Sandbox. Renewal covers the Sandbox from its write to its teardown, `placing` included, so a Sandbox that
   waits for capacity is never reaped as abandoned (ADR-0064); Continuity is judged from `running`, once there is an

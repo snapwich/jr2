@@ -53,8 +53,8 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
   transition. The replay buffer follows the same rule: it keeps the markers and Emits (bounded) and the latest status,
   so the preamble reads "the story so far, and where the run stands now" — old statuses are not interleaved between old
   markers; the live tail keeps the interleaving (scaling review R10, 2026-09-30).
-- **Live-only, and jr2 promises nothing beyond the pod.** A conversation lives exactly as long as its Harness process
-  (ADR-0027), so a Sandbox teardown (ADR-0012) or a lost Workspace (ADR-0021) takes it with it — the same contract
+- **Pod-bound, and jr2 promises nothing beyond the pod.** A conversation lives as long as its Sandbox (ADR-0027,
+  ADR-0031), so a Sandbox teardown (ADR-0012) or a lost Workspace (ADR-0021) takes it with it — the same contract
   ADR-0012 already set for the pod-local clone. A cluster that ships logs will outlive the pod anyway; that is the log
   plane's property, not a jr2 guarantee, and no jr2 behavior may come to depend on it.
 

@@ -50,6 +50,45 @@ built.
   [ADR-0005](0005-sandbox-pod-composition.md)). `sandbox.image`, the per-component image keys, and `operator.image`
   dissolve; the `sandbox` config section disappears until something genuinely pod-shaped and user-tunable exists.
 
+## The Instance Harness holds a conversation as long as its run, and frees the rest
+
+The scaling review (R11, 2026-09-30) found the `conversations` map with no delete path: every Menu-only Agent instance
+of every run stayed until the pod restarted, and the restart lost every conversation at once. The research that preceded
+it checked Agent Substrate's own model against the primary sources: an actor is stateful, the platform snapshots its
+memory and its `DurableDir` volumes and resumes it on any worker, and its control plane holds metadata and snapshot
+pointers only; memory snapshots are tied to one template version, so the state with a documented path across a code
+change is a volume the actor reloads on a cold boot. These decisions take that shape.
+
+- **A conversation is persisted to a directory, and rebuilt from it on boot.** The Harness writes each conversation as
+  it goes: jr2's own record — the stream log, the Settlements, the history messages, in the wire's shapes — plus the
+  engine's state as an opaque, engine-named part (pi's session through its file-backed session repo today). Rebuilding
+  reads jr2's record first; an engine that cannot read the engine part (another engine, another version) continues from
+  the history messages. The record is the contract; the engine part is not. A Submission in flight at the restart
+  settles `failed` ("Harness restarted") on the rebuilt stream, so the Orchestrator reads a Settlement, not a 404, and
+  the conversation's next Turn continues it.
+- **Both placements persist, to different volumes.** The Instance Harness to a PersistentVolumeClaim of its own; a
+  Sandbox's Harness to an emptyDir mounted into the Harness container alone (the User Container must not read it), so a
+  Harness container that restarts inside a living pod keeps its conversations. A pod that is gone takes the emptyDir
+  with it — that Workspace is `Lost` (ADR-0021), and no conversation persistence should say otherwise.
+- **The Instance Harness is a StatefulSet of one, with a per-ordinal volume.** The value is the stable volume; the
+  stable name is what N > 1 would pin a conversation to (the admission ledger already records its endpoint). N is a kit
+  value, 1 until a measured need; never an HPA, which would kill conversations on a scale-down and land a continuation
+  on a replica that never saw it. A rollout at N = 1 has no surge, so admissions are refused while the new pod starts;
+  the Orchestrator already absorbs an admission refused at the connection (ADR-0042), so a rollout delays a Turn and
+  faults nothing.
+- **A rollout drains Turns.** On SIGTERM the Harness stops admitting (readiness drops), finishes the Turns it holds,
+  then exits; the termination grace is a Turn's worst case. A deploy loses no Turn and, with the volume, no
+  conversation.
+- **The Orchestrator states the live set; the Harness frees the rest.** After every restore and every 5 minutes (the
+  Lease's cadence) the Orchestrator tells the Instance Harness which conversations its live runs hold — from the
+  admission ledgers in memory, never from the store — and the Harness frees memory and files of every other one.
+  Level-triggered, idempotent, a missed statement costs nothing, and a crashed Orchestrator's leftovers go at its next
+  boot. No idle TTL: a run parked on a Gate for a day keeps its conversation, and nothing else can decide that. A
+  Sandbox's Harness is not told; its Workspace's teardown frees everything.
+- **The Orchestrator keeps holding handles only** (ADR-0007): no conversation state crosses to it. Storing sessions
+  centrally and re-sending them to a fresh pod was considered and rejected — it is the design Substrate does not have,
+  and it puts every Menu-only Turn's history on the single writer's path.
+
 ## Considered options
 
 - **statelyai/agent (or any in-process decision actor).** Rejected above; the long form: every ADR from 0011 to 0029
@@ -78,8 +117,8 @@ built.
 - **The Agent actor's resolution grows one arm**: explicit `endpoint` (tests) → `workspace: "none"` → Instance Harness
   (deterministic Service DNS) → enclosing `workspace()`'s ambient handles → loud error naming the definition's
   `workspace` value.
-- **A `"none"` conversation must not be continued if the Instance Harness pod restarts** — same live-only contract as
-  every conversation (ADR-0023): the Deployment restores the endpoint, not the history.
+- **A `"none"` conversation survives the Instance Harness pod's restart**: the StatefulSet restores the endpoint and the
+  volume restores the history. A Turn in flight at the restart settles `failed`; nothing is continued silently.
 - **An instance with no `"none"` definitions deploys nothing new.** The feature is invisible until the first
   `agent({ ..., workspace: "none" })` a Machine carries, which is its entire user-facing surface.
 - **The harness conformance suite (ADR-0027) gains the Menu-only shape**: a Turn whose definition withholds every

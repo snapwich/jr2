@@ -96,7 +96,8 @@ server, `local()`
 **Instance Harness**: The per-Instance Harness deployment `jr2 up` converges when an Agent a registered Machine carries
 declares `workspace: "none"` — the placement for every Menu-only Agent's Turn, regardless of any enclosing Workspace, so
 a continued conversation always lands on the Harness that holds it (ADR-0031). Its pod pairs the Harness with a
-Custodian and mounts no worktree. _Avoid_: shared harness, global harness, dev harness
+Custodian and mounts no worktree; it holds a conversation on its volume for as long as a live run does, and frees the
+rest. _Avoid_: shared harness, global harness, dev harness
 
 **Custodian**: The jr2-composed container in every Harness pod — a Sandbox and the Instance Harness — that holds the
 pod's credentials and carries the Harness's traffic out. It holds the Sandbox token, and carries the Harness's Menu
