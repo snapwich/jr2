@@ -26,7 +26,7 @@ const exec = promisify(execFile);
 
 /** The runtime's node inside every Harness container (ADR-0037) — the probe's interpreter. */
 const RUNTIME_NODE = "/opt/jr2/bin/node";
-/** The Instance Harness Deployment `jr2 up` converges for the Menu-only definitions (ADR-0031). */
+/** The Instance Harness StatefulSet `jr2 up` converges for the Menu-only definitions (ADR-0031). */
 const INSTANCE_HARNESS = "jr2-instance-harness";
 
 /** Where the run's scorecard goes, and where committed baselines live (ADR-0066). */
@@ -174,7 +174,7 @@ const NOT_A_CALL = new Set(["prompt", "text", "thinking", "compacted"]);
  * (ADR-0023). `undefined` when the prompt is not there yet, or no call followed it.
  */
 async function firstCallAfter(world: E2EWorld, agent: string, marker: string): Promise<string | undefined> {
-  const log = await kubectl(world, ["logs", `deploy/${INSTANCE_HARNESS}`, "-c", "harness", "--tail=-1"]);
+  const log = await kubectl(world, ["logs", `statefulset/${INSTANCE_HARNESS}`, "-c", "harness", "--tail=-1"]);
   const lines = log.split("\n");
   const at = lines.findIndex((l) => l.startsWith(`[${agent}] [prompt] `) && l.includes(`[${marker}]`));
   if (at === -1) return undefined;

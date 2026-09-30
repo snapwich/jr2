@@ -85,8 +85,8 @@ on the home lab; the two Menu-only claims are a few minutes each.
 
 - **A floor** is in the scenario (`at least 9 trials`). Below it the scenario FAILS: a defect in what jr2 shows the
   model, or in the step. Read the failure list — each trial prints its run id and what it observed — and the pod log
-  (`kubectl -n <ns> logs deploy/jr2-instance-harness -c harness`) before touching a prompt or a floor. Do not raise a
-  floor to pass; do not re-run until it passes.
+  (`kubectl -n <ns> logs statefulset/jr2-instance-harness -c harness`) before touching a prompt or a floor. Do not raise
+  a floor to pass; do not re-run until it passes.
 - **A baseline** is committed in `features/model-baselines/<id>--<model>.json`. Below it while above the floor, the cell
   is REPORTED (`BELOW baseline`), not failed: drift, a signal to read. A 9/10 that was 10/10 is one trial; a pattern
   across cells is a regression.

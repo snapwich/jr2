@@ -449,7 +449,7 @@ Then(
   async function (this: E2EWorld): Promise<void> {
     const out = await kubectlInput(
       this,
-      ["exec", "-i", `deploy/${INSTANCE_HARNESS_SERVICE}`, "-c", "harness", "--", RUNTIME_NODE, "-e", KEY_SCAN],
+      ["exec", "-i", `statefulset/${INSTANCE_HARNESS_SERVICE}`, "-c", "harness", "--", RUNTIME_NODE, "-e", KEY_SCAN],
       this.providerKey ?? "",
     );
     assert.equal(out.trim(), "CLEAN", `the key is in the Instance Harness's container: ${out.trim()}`);
@@ -1402,14 +1402,14 @@ Then(
 
 // --- the Instance Harness (ADR-0031) ---------------------------------------------------------------
 //
-// A `workspace: "none"` Agent's Turn is admitted at the Instance Harness — the Deployment `jr2 up`
+// A `workspace: "none"` Agent's Turn is admitted at the Instance Harness — the StatefulSet `jr2 up`
 // converged because a registered Machine carries such a definition — and nowhere else, even when
 // the Machine invoking it sits inside a `workspace()`. Where a conversation lives is a fact only
 // the Harnesses themselves can answer (ADR-0024/0027: a settlement is invisible to the
 // Orchestrator by construction), so both are asked the same question over the same wire: the
 // Instance Harness must hold the conversation, the run's Sandbox must not.
 
-/** The Instance Harness's Deployment/Service/pod-label name — spelled the way `kubectl get pods`
+/** The Instance Harness's StatefulSet/Service/pod-label name — spelled the way `kubectl get pods`
  * shows it (ADR-0010: a black-box step names what a user sees, and imports nothing from the kit
  * it tests at arm's length). */
 const INSTANCE_HARNESS = "jr2-instance-harness";

@@ -1,6 +1,7 @@
 // `jr2 down [--all] [-n <ns>] [--context <ctx>]` (ADR-0019): remove the instance from the cluster —
 // its namespace and everything `jr2 up` converged into it. ALWAYS confirms (deleting a namespace
-// takes the runs, the store PVC, and every live Sandbox with it). `--all` also uninstalls the
+// takes the runs, the store PVC, the Instance Harness's conversations PVC (ADR-0031), and every
+// live Sandbox with it). `--all` also uninstalls the
 // per-cluster operator — only sane when this was the cluster's last instance, which is the
 // caller's judgment, not derivable here.
 //

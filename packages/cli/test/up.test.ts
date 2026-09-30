@@ -65,11 +65,14 @@ class FakeCluster implements KubeAdmin {
   /** Rollouts scripted to time out, keyed `"<namespace>/<name>"` — what `kubectl rollout status`
    * does when a pod never comes up, and the only thing it says about it (ADR-0046). */
   rolloutFails = new Set<string>();
-  /** Every rollout waited on, as `<namespace>/<name>` — a DaemonSet's prefixed `daemonset/`, so a
-   * test can tell the cache agent's wait from a Deployment's of the same name. */
-  async waitRollout(opts: { kind?: string; name: string; namespace: string }): Promise<void> {
-    const kind = opts.kind === "daemonset" ? "daemonset/" : "";
+  /** Every rollout waited on, as `<namespace>/<name>` — a DaemonSet's prefixed `daemonset/` and a
+   * StatefulSet's `statefulset/`, so a test can tell those waits from a Deployment's. */
+  /** Every rollout wait's timeout, by `<namespace>/<name>` — unset where the default applies. */
+  rolloutTimeouts: Record<string, number | undefined> = {};
+  async waitRollout(opts: { kind?: string; name: string; namespace: string; timeoutSeconds?: number }): Promise<void> {
+    const kind = opts.kind === "daemonset" || opts.kind === "statefulset" ? `${opts.kind}/` : "";
     this.rollouts.push(`${opts.namespace}/${kind}${opts.name}`);
+    this.rolloutTimeouts[`${opts.namespace}/${opts.name}`] = opts.timeoutSeconds;
     if (this.rolloutFails.has(`${opts.namespace}/${opts.name}`)) {
       throw new Error("error: timed out waiting for the condition");
     }
@@ -2132,14 +2135,14 @@ const DECISIONER_AGENTS: Record<string, FixtureAgent> = {
   coder: { model: "anthropic/claude-x" },
 };
 
-function findInstanceHarness(w: World): { deployment?: Record<string, any>; service?: Record<string, any> } {
+function findInstanceHarness(w: World): { statefulSet?: Record<string, any>; service?: Record<string, any> } {
   for (const manifest of w.kube.applied) {
     if (!manifest.trimStart().startsWith("{")) continue;
     const doc = JSON.parse(manifest) as { kind?: string; items?: Array<Record<string, any>> };
     const items = doc.kind === "List" ? (doc.items ?? []) : [];
-    const deployment = items.find((i) => i.kind === "Deployment" && i.metadata.name === "jr2-instance-harness");
+    const statefulSet = items.find((i) => i.kind === "StatefulSet" && i.metadata.name === "jr2-instance-harness");
     const service = items.find((i) => i.kind === "Service" && i.metadata.name === "jr2-instance-harness");
-    if (deployment || service) return { deployment, service };
+    if (statefulSet || service) return { statefulSet, service };
   }
   return {};
 }
@@ -2153,13 +2156,13 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const { deployment, service } = findInstanceHarness(w);
-  assert.ok(deployment, "the Deployment is applied");
+  const { statefulSet, service } = findInstanceHarness(w);
+  assert.ok(statefulSet, "the StatefulSet is applied");
   assert.ok(service, "…with its Service");
-  assert.ok(w.kube.rollouts.includes("myinst/jr2-instance-harness"), "and the rollout is waited for");
+  assert.ok(w.kube.rollouts.includes("myinst/statefulset/jr2-instance-harness"), "and the rollout is waited for");
 
   // The one Harness shape, minus the Workspace (ADR-0031): two containers, no /work, no user.
-  const podSpec = deployment.spec.template.spec;
+  const podSpec = statefulSet.spec.template.spec;
   assert.deepEqual(
     podSpec.containers.map((c: { name: string }) => c.name),
     ["harness", "custodian"],
@@ -2214,7 +2217,7 @@ test('a workspace: "none" definition converges the Instance Harness — Harness 
     (i) => i.metadata.name === "jr2-held",
   )!;
   assert.match(heldCm.data["envoy.json"], /jr2-orchestrator\.myinst\.svc/);
-  assert.ok(deployment.spec.template.metadata.annotations["jr2.dev/held-digest"], "a held-secret edit rolls this pod");
+  assert.ok(statefulSet.spec.template.metadata.annotations["jr2.dev/held-digest"], "a held-secret edit rolls this pod");
 });
 
 test("the Instance Harness checks the bearer derived for ITS placement — a digest, never the Instance token's (ADR-0058)", async () => {
@@ -2227,7 +2230,7 @@ test("the Instance Harness checks the bearer derived for ITS placement — a dig
     (i) => i.kind === "Secret" && i.metadata.name === "jr2-instance",
   )!;
   const key = Buffer.from(secret.stringData.JR2_SIGNING_KEY, "base64");
-  const env = findInstanceHarness(w).deployment!.spec.template.spec.containers[0].env as Array<{
+  const env = findInstanceHarness(w).statefulSet!.spec.template.spec.containers[0].env as Array<{
     name: string;
     value?: string;
   }>;
@@ -2296,7 +2299,7 @@ test("both readiness probes set a period — a ~1s boot must not be billed as a 
   const orchestrator = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
     (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
   )!;
-  const { deployment: harness } = findInstanceHarness(w);
+  const { statefulSet: harness } = findInstanceHarness(w);
 
   // Measured on kind: the Orchestrator answers /healthz 1.1s after its container starts, and the
   // omitted period (k8s default 10s) made the rollout 11.0s. The period is the rollout wait.
@@ -2335,6 +2338,74 @@ test("the Orchestrator carries a liveness probe that restarts only a process sil
   assert.equal(container.readinessProbe.periodSeconds * container.readinessProbe.failureThreshold, 30);
 });
 
+test("the Instance Harness is a StatefulSet of one: its conversations on a claim, a drain for a grace, a headless Service (ADR-0031)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+  const { statefulSet, service } = findInstanceHarness(w);
+
+  assert.equal(statefulSet!.spec.replicas, 1, "N is 1 until a measured need");
+  assert.equal(statefulSet!.spec.serviceName, "jr2-instance-harness", "governed by the headless Service");
+  // The volume is the value: one claim per ordinal, and it goes with the StatefulSet, not a scale.
+  assert.deepEqual(
+    statefulSet!.spec.volumeClaimTemplates.map((t: Record<string, any>) => [
+      t.metadata.name,
+      t.spec.accessModes,
+      t.spec.resources.requests.storage,
+    ]),
+    [["conversations", ["ReadWriteOnce"], "1Gi"]],
+  );
+  assert.deepEqual(statefulSet!.spec.persistentVolumeClaimRetentionPolicy, {
+    whenDeleted: "Delete",
+    whenScaled: "Retain",
+  });
+
+  const pod = statefulSet!.spec.template.spec;
+  // The drain: a Turn's worst case, so a deploy loses no Turn.
+  assert.equal(pod.terminationGracePeriodSeconds, 600);
+  assert.equal(pod.securityContext.fsGroup, 2000, "the claim is writable by the Harness's group");
+  const [harness, custodian] = pod.containers;
+  assert.deepEqual(harness.volumeMounts[0], { name: "conversations", mountPath: "/conversations" });
+  assert.ok(
+    harness.env.some(
+      (e: { name: string; value?: string }) => e.name === "JR2_CONVERSATIONS_DIR" && e.value === "/conversations",
+    ),
+    "the Harness is told where its conversations persist",
+  );
+  assert.ok(
+    !(custodian.volumeMounts ?? []).some((m: { name: string }) => m.name === "conversations"),
+    "the Custodian never reads an Agent's history",
+  );
+
+  // Headless, under the SAME name: the endpoint DNS and the NetworkPolicy selector are unchanged.
+  assert.equal(service!.spec.clusterIP, "None");
+  assert.deepEqual(service!.spec.selector, { app: "jr2-instance-harness" });
+
+  // `jr2 up` waits out a rollout as long as the old pod may drain, then its start.
+  assert.equal(w.kube.rolloutTimeouts["myinst/jr2-instance-harness"], 600 + 180);
+});
+
+test("`jr2 up` converges the Instance Harness from the Deployment it once was (ADR-0031)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
+  const w = mkWorld(root);
+  // What an earlier converge left: a Deployment and a ClusterIP Service of the same name.
+  w.kube.set("myinst", "deployment", "jr2-instance-harness", {});
+  w.kube.set("myinst", "service", "jr2-instance-harness", { spec: { clusterIP: "10.96.0.7" } } as never);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  // `clusterIP` is immutable, so the ClusterIP Service is deleted for the headless one; the
+  // Deployment goes before the StatefulSet comes, so two Harnesses never answer one name.
+  assert.ok(w.kube.deleted.includes("myinst/service/jr2-instance-harness"));
+  assert.ok(w.kube.deleted.includes("myinst/deployment/jr2-instance-harness"));
+  assert.ok(findInstanceHarness(w).statefulSet, "then the StatefulSet is applied");
+
+  // Converged once, a headless Service is left alone: nothing is deleted that the apply keeps.
+  const again = mkWorld(root);
+  again.kube.set("myinst", "service", "jr2-instance-harness", { spec: { clusterIP: "None" } } as never);
+  assert.equal(await up(["--yes"], again.io), 0);
+  assert.ok(!again.kube.deleted.includes("myinst/service/jr2-instance-harness"));
+});
+
 test('no "none" definitions → nothing new deploys, and a stale Instance Harness is deleted on converge', async () => {
   // Agents exist, none of them Menu-only: the feature stays invisible (ADR-0031).
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", {
@@ -2343,10 +2414,13 @@ test('no "none" definitions → nothing new deploys, and a stale Instance Harnes
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
 
-  const { deployment, service } = findInstanceHarness(w);
-  assert.equal(deployment, undefined);
+  const { statefulSet, service } = findInstanceHarness(w);
+  assert.equal(statefulSet, undefined);
   assert.equal(service, undefined);
-  // Idempotent converge: a definition that dropped its "none" must not leave a stale Deployment.
+  // Idempotent converge: a definition that dropped its "none" must not leave a stale StatefulSet —
+  // nor its conversations (ADR-0031), nor the Deployment this layer once was.
+  assert.ok(w.kube.deleted.includes("myinst/statefulset/jr2-instance-harness"));
+  assert.ok(w.kube.deleted.includes("myinst/persistentvolumeclaim/conversations-jr2-instance-harness-0"));
   assert.ok(w.kube.deleted.includes("myinst/deployment/jr2-instance-harness"));
   assert.ok(w.kube.deleted.includes("myinst/service/jr2-instance-harness"));
 });
@@ -2354,7 +2428,7 @@ test('no "none" definitions → nothing new deploys, and a stale Instance Harnes
 test("the Instance Harness runs the refs THIS converge resolved — the same ones the map names", async () => {
   // There is no `images` block to override them with (ADR-0038): in a kit checkout the Instance
   // Harness runs the content-addressed images just built here, and nothing else can be pointed at.
-  // The accepted asymmetry: this Deployment names its images in the pod template (it is SUPPOSED
+  // The accepted asymmetry: this StatefulSet names its images in the pod template (it is SUPPOSED
   // to roll when they move), while a Sandbox's refs travel through the jr2-images ConfigMap.
   const kit = await mkKit();
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
@@ -2363,9 +2437,9 @@ test("the Instance Harness runs the refs THIS converge resolved — the same one
 
   const images = imagesOf(w);
   assert.match(images.harness, /^jr2-harness:[0-9a-f]{12}-amd64$/);
-  const { deployment } = findInstanceHarness(w);
-  assert.equal(deployment!.spec.template.spec.containers[0].image, images.harness);
-  assert.equal(deployment!.spec.template.spec.containers[1].image, images.custodian);
+  const { statefulSet } = findInstanceHarness(w);
+  assert.equal(statefulSet!.spec.template.spec.containers[0].image, images.harness);
+  assert.equal(statefulSet!.spec.template.spec.containers[1].image, images.custodian);
 });
 
 // --- the post-converge sweep (ADR-0039) ----------------------------------------------------------
@@ -2537,7 +2611,7 @@ test("the Instance Harness with two held secrets: the Custodian alone mounts wha
     anthropic: { baseUrl: "https://litellm.corp.example" },
   });
 
-  const pod = findInstanceHarness(w).deployment!.spec.template.spec;
+  const pod = findInstanceHarness(w).statefulSet!.spec.template.spec;
   const env = pod.containers[0].env as Array<{ name: string; value?: string }>;
   assert.equal(env.find((e) => e.name === "ANTHROPIC_API_KEY")?.value, "jr2-held-ANTHROPIC_API_KEY");
   assert.equal(env.find((e) => e.name === "OPENAI_API_KEY")?.value, "jr2-held-OPENAI_API_KEY");
@@ -2745,7 +2819,7 @@ test("the Instance Harness: kit-sized, the sandbox class, and the two disruption
   );
   const w = mkWorld(root);
   assert.equal(await up(["--yes"], w.io), 0);
-  const deploy = appliedObjects(w).get("Deployment/jr2-instance-harness")!;
+  const deploy = appliedObjects(w).get("StatefulSet/jr2-instance-harness")!;
   const pod = deploy.spec.template;
   assert.equal(pod.spec.priorityClassName, "batch-low");
   assert.equal(pod.metadata.annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"], "false");

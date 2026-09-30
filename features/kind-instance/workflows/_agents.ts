@@ -35,7 +35,7 @@ worktree and a branch to work in.
 
 /**
  * The tier's MENU-ONLY Agent (ADR-0028/0031): `workspace: "none"` withholds the whole Working
- * toolset and places every Turn of it on the Instance Harness — the Deployment `jr2 up` converges
+ * toolset and places every Turn of it on the Instance Harness — the StatefulSet `jr2 up` converges
  * for this instance because this definition exists, and where the Turn lands even when the
  * Machine invoking it sits inside a `workspace()`. Its Turns frame no directory either: nothing of
  * its consumes one (ADR-0057).
