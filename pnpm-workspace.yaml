@@ -18,3 +18,5 @@ packages:
   # The @kind tier's shared instance (ADR-0010): a workspace member so `jr2 up`'s image build can
   # `pnpm deploy` it; scenarios isolate by namespace, not by folder.
   - features/kind-instance
+  # The @model tier's instance (ADR-0066): the same shape, a real model endpoint behind it.
+  - features/model-instance

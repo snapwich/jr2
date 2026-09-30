@@ -41,6 +41,12 @@ const HTTP_IMAGE = "nginx:1.27-alpine";
 const MAKE_REPO = [
   "git init -q -b main /tmp/w",
   "echo '# app' > /tmp/w/README.md",
+  // A small project with ONE failing test (ADR-0066): the @model tier's ticket. `greet()` returns
+  // the wrong string, `node --test` says so, and the run's coder is asked to make it pass. Every
+  // other tier reads the seed's refs and never its files, so they are indifferent to it.
+  `printf '%s\\n' '{ "name": "app", "private": true, "type": "module", "scripts": { "test": "node --test" } }' > /tmp/w/package.json`,
+  `printf '%s\\n' 'export function greet(name) {' '  return "Hello " + name;' '}' > /tmp/w/greet.js`,
+  `printf '%s\\n' 'import test from "node:test";' 'import assert from "node:assert/strict";' 'import { greet } from "./greet.js";' '' 'test("greets by name", () => {' '  assert.equal(greet("ada"), "hello, ada");' '});' '' 'test("greets the world by default", () => {' '  assert.equal(greet(), "hello, world");' '});' > /tmp/w/test.js`,
   "git -C /tmp/w add -A",
   "git -C /tmp/w -c user.email=e2e@jr2 -c user.name=e2e commit -qm init",
   "git clone -q --bare /tmp/w /srv/app.git",

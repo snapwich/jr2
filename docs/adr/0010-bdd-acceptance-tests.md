@@ -109,6 +109,17 @@ Cucumber.js**, living in a top-level `./features/` workspace package (`@jr2/e2e`
   `@kind` reason — it needs docker — and NOT part of `pnpm -r test`. What the default gate keeps is the rendering:
   `custodian.test.ts` pins the bootstrap and script `jr2 up` writes, socket-free. The `@kind` tier then proves the
   Custodian in a real pod, in both placements, against a model provider that refuses any request without the key.
+- **An opt-in `@model` tier, against a real model**
+  ([ADR-0066](0066-a-model-tier-runs-a-real-model-and-a-change-to-what-it-reads-runs-the-tier.md)). Every tier above
+  fakes the model, so none can see a change in what a model DOES with what jr2 shows it — and ADR-0029/0062 measured
+  that such changes are large. This tier is `@kind` with the last fake removed: the same cluster and bring-up, `jr2 up`
+  per scenario into a fresh namespace, and behind the Custodian a real endpoint named by a profile
+  (`features/model-endpoints/<name>.json`, selected by `JR2_MODEL_ENDPOINT`). Its scenarios are CLAIMS — an ADR's
+  measured claim as N trials with a floor, scored into `features/.tmp/model-scorecard.json` against a committed baseline
+  — and THE RUN, one workflow from a failing test to a commit verified in the pod. Serial like `@dist`, for the opposite
+  reason: the endpoint is one shared capacity. Not in CI and not in `pnpm -r test`: `just e2e-model` probes the endpoint
+  and says `skipped:` when nothing answers, and whoever changes what the model reads runs it before calling the change
+  done. A third pi canary.
 - **Shared cluster state is the one thing a scenario cannot own, and the pool is PROCESSES.** `--parallel` runs cucumber
   workers as separate processes, so a fixture memoized "once per process" runs once per WORKER — four times,
   concurrently, against one cluster. The tier has exactly one such fixture: the git seed (`steps/seed.ts`) it serves

@@ -1,0 +1,12 @@
+{
+  "//": "The home-lab vLLM (ADR-0066): the weakest model the kit claims to support, and the one ADR-0029/0062 measured on. `id`/`model` compose the definitions' `<id>/<model>`; the limits are the model's own, committed like any `harness.provider.models` entry. No key: the endpoint is open, so no Custodian swap is needed and `JR2_MODEL_API_KEY` stays unset. `thinking` maps the tier's two cells onto the Dial; `trials` and `parallel` are the tier's own.",
+  "id": "vllm",
+  "api": "openai-completions",
+  "baseUrl": "https://vllm.cluster.snapwich.net/v1",
+  "model": "qwen3.6-35b-a3b",
+  "contextWindow": 65536,
+  "maxTokens": 8192,
+  "thinking": { "off": "off", "on": "medium" },
+  "trials": 10,
+  "parallel": 2
+}

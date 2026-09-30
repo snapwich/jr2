@@ -41,6 +41,68 @@ tests cannot see, driven through the real turn loop — pi at the exact pin, the
 Custodian's address, a scripted provider that chooses each turn's shape. Not a separate tier: it runs in the default
 `test` gate as part of `pnpm -r test`. `@jr2/harness` owns the pi pin; conformance is the canary for pi bumps (0.x
 minors break), and since ADR-0038 `@kind` is a **second** canary — it drives the same turn loop in a real pod — so **run
-both before bumping pi**. **Custodian suite (ADR-0059; opt-in, needs docker):** the Custodian's claims against the
-pinned Envoy image itself — the swap, the strip, the refusals, the dial guard, SSE, abort, and the Anthropic SDK through
-`HTTPS_PROXY` — `just custodian-test`; not in `pnpm -r test`. Run it before moving the Envoy pin.
+both before bumping pi** — and the `@model` tier below, the third canary. **`@model` (ADR-0066; opt-in):** a REAL model
+behind each scenario's Custodian — see [Model-tier testing](#model-tier-testing-adr-0066) below. **Custodian suite
+(ADR-0059; opt-in, needs docker):** the Custodian's claims against the pinned Envoy image itself — the swap, the strip,
+the refusals, the dial guard, SSE, abort, and the Anthropic SDK through `HTTPS_PROXY` — `just custodian-test`; not in
+`pnpm -r test`. Run it before moving the Envoy pin.
+
+## Model-tier testing (ADR-0066)
+
+The `@model` tier is the `@kind` tier with the last fake removed: a real model endpoint behind each scenario's
+Custodian. It is the only suite that can see a change in what a model DOES with what jr2 shows it, and ADR-0029/0062
+measured that such changes are large (the same Allowed picks: 0/10 obeyed ahead of the prompt, 10/10 after). It never
+runs in CI. **You run it.**
+
+**When.** After any change to what the model reads or is offered, before calling the change done: the Briefing
+(`packages/harness/src/briefing.ts`), the Menu's rendering or its refusal text, the nudge, the Working tools and their
+descriptions, Compaction's summary, the admit body's notices, the pi pin, a provider adapter, or an authoring surface
+that changes a Frame. Also before bumping pi: it is the third canary beside conformance and `@kind`. If you are
+reviewing a feature or refactor that touched one of these and did not run it, say so.
+
+**How.**
+
+```
+just e2e-kind-up                              # once; the same vanilla kind cluster @kind uses
+just e2e-model                                # JR2_MODEL_ENDPOINT=homelab by default
+JR2_MODEL_ENDPOINT=<name> just e2e-model      # another profile in features/model-endpoints/
+```
+
+The recipe probes the endpoint from the host first. With nothing answering it prints `skipped: no model endpoint at …`
+and exits 0 — report that skip in your handoff exactly as you would a result; it is never silent and never a pass. A
+key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone and never a file. Reachability from the PODS is
+`jr2 up`'s own provider preflight, per scenario.
+
+**What it runs.** Six scenarios in `features/model.feature`, serial (the endpoint is one shared capacity). Five are
+CLAIMS — an ADR's measured claim as N trials with a floor: `obedience` (Allowed picks obeyed, thinking off and on),
+`advised` (a Menu-only Agent's first call is its pick), `workdir` (a relative write lands in the Worktree), `noticed` (a
+memory-kill notice is acted on). One is THE RUN — `ticket`: planner, coder, reviewer, and a commit verified in the pod
+(branch ahead of `main`, HEAD is the named commit, tree clean, `node --test` passes). The whole tier is about 20 minutes
+on the home lab; the two Menu-only claims are a few minutes each.
+
+**Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
+`scorecard: <model> <cell>: k/N`. Two thresholds, two meanings:
+
+- **A floor** is in the scenario (`at least 9 trials`). Below it the scenario FAILS: a defect in what jr2 shows the
+  model, or in the step. Read the failure list — each trial prints its run id and what it observed — and the pod log
+  (`kubectl -n <ns> logs deploy/jr2-instance-harness -c harness`) before touching a prompt or a floor. Do not raise a
+  floor to pass; do not re-run until it passes.
+- **A baseline** is committed in `features/model-baselines/<id>--<model>.json`. Below it while above the floor, the cell
+  is REPORTED (`BELOW baseline`), not failed: drift, a signal to read. A 9/10 that was 10/10 is one trial; a pattern
+  across cells is a regression.
+
+Update a baseline by copying the cells from a run you have read, in the same change that explains them. The instrument
+is the weakest model the kit claims to support (today the home-lab vLLM, Qwen3.6-35B-A3B); a stronger model gets its own
+baseline file and must clear the same floors. It cannot lower them.
+
+**Adding a claim.** It qualifies when an ADR states what a correct Agent does differently for it AND a step can observe
+the difference from outside the pod. A workflow in `features/model-instance/workflows/`, a driver in
+`features/steps/model.steps.ts`, a scenario with a floor, and the ADR's measurement as the floor's origin. The Menu-only
+claims read the model's first call off the Instance Harness's printed conversation (ADR-0023) — the only place a refused
+pick is visible — so they run one trial at a time; Sandbox claims read their pods and run `parallel` at once. A trial
+whose SETUP never happened (the claim measures a later Turn) is `void` and replaced, a bounded number of times; it is
+not a failure of the claim.
+
+**What it is not.** Not a benchmark of the model, and not a gate in CI. A prompt in a claim workflow is fixed data:
+tuning it to pass would measure the prompt. The `ticket` run never asserts the diff, the commit message or the Turn
+count — those are the model's.

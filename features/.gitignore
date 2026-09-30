@@ -1,3 +1,6 @@
 # Per-scenario temp instances scaffolded by the e2e harness (own .jr2/ store + dev.json). Never checked in.
 .tmp/
 node_modules/
+
+# @model (ADR-0066): the endpoint profile the fixture materializes per run
+model-instance/model-endpoint.json

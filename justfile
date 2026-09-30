@@ -269,6 +269,35 @@ e2e-dist:
     mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
     KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig pnpm --filter @jr2/e2e test:e2e:dist
 
+# --- @model e2e tier (ADR-0066; requires docker + kind + a model endpoint) ---
+#
+# The @kind tier with the last fake removed: the same vanilla cluster (`just e2e-kind-up`), and
+# behind each scenario's Custodian a REAL model endpoint, named by a profile in
+# `features/model-endpoints/<name>.json` and selected with `JR2_MODEL_ENDPOINT` (default
+# `homelab`); the key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone. Not in CI and
+# not in `pnpm -r test`: it is nondeterministic by nature, and it is run by whoever changed what
+# the model reads — the Briefing, the Menu, the Working tools, Compaction, the notices, the pi pin
+# — before calling the change done. The endpoint is PROBED first, from this host, so the recipe
+# can always be invoked: with nothing answering it says `skipped:` and exits 0, never silently.
+# Reachability from the PODS is `jr2 up`'s own preflight, per scenario.
+
+# run the @model e2e tier against the selected endpoint profile (needs `just e2e-kind-up`)
+e2e-model:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name="${JR2_MODEL_ENDPOINT:-homelab}"
+    profile="features/model-endpoints/${name}.json"
+    [ -f "$profile" ] || { echo "error: no endpoint profile ${profile} (JR2_MODEL_ENDPOINT=${name})" >&2; exit 1; }
+    base="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).baseUrl.replace(/\/+$/,""))' "$profile")"
+    auth=()
+    [ -n "${JR2_MODEL_API_KEY:-}" ] && auth=(-H "Authorization: Bearer ${JR2_MODEL_API_KEY}")
+    if ! curl -fs --max-time 10 "${auth[@]}" "${base}/models" -o /dev/null; then
+        echo "skipped: no model endpoint at ${base} (profile ${name}) — the @model tier did not run"
+        exit 0
+    fi
+    mkdir -p features/.tmp && kind export kubeconfig --name {{ cluster }} --kubeconfig features/.tmp/kubeconfig
+    KUBECONFIG={{ justfile_directory() }}/features/.tmp/kubeconfig JR2_MODEL_ENDPOINT="$name" pnpm --filter @jr2/e2e test:e2e:model
+
 # --- the release (ADR-0055; the tag push is the release) ---
 #
 # LOCKSTEP: one version across every manifest and the scaffold's exact pins, bumped together here,

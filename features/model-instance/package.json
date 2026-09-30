@@ -1,0 +1,26 @@
+{
+  "name": "jr2-e2e-model-instance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The @model tier's instance (ADR-0066): the @kind instance's shape with a REAL model endpoint behind the Custodian. `model-endpoint.json` is materialized per run from `features/model-endpoints/<name>.json` by the fixture (World.setupModel) and is gitignored; it ships in the image so the in-cluster Orchestrator reads what the host did.",
+  "files": [
+    "package.json",
+    "jr2.config.ts",
+    "model-endpoint.json",
+    "workflows",
+    "images"
+  ],
+  "dependencies": {
+    "@jr2/orchestrator": "workspace:*",
+    "xstate": "^5.18.0",
+    "zod": "^4.4.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "typescript": "^5.6.0"
+  }
+}

@@ -11,6 +11,7 @@
     "test:e2e": "cucumber-js",
     "test:e2e:kind": "cucumber-js --profile kind",
     "test:e2e:dist": "cucumber-js --profile dist",
+    "test:e2e:model": "cucumber-js --profile model",
     "test:e2e-console": "cucumber-js --profile console"
   },
   "devDependencies": {

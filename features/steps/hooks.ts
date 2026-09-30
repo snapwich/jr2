@@ -12,7 +12,7 @@ import { E2EWorld } from "./world.ts";
 // the timeout is only the backstop for a step that hangs outright.
 setDefaultTimeout(120_000);
 
-Before({ tags: "not @kind and not @dist" }, async function (this: E2EWorld): Promise<void> {
+Before({ tags: "not @kind and not @dist and not @model" }, async function (this: E2EWorld): Promise<void> {
   await this.setup();
 });
 
@@ -20,6 +20,12 @@ Before({ tags: "not @kind and not @dist" }, async function (this: E2EWorld): Pro
 // World.setupKind), so it opts out of the mkdtemp above rather than getting a folder of its own.
 Before({ tags: "@kind" }, async function (this: E2EWorld): Promise<void> {
   await this.setupKind();
+});
+
+// The model tier (@model, ADR-0066) is the kind tier's shape — one shared instance, a namespace
+// per scenario — with a real endpoint profile materialized into it first.
+Before({ tags: "@model" }, async function (this: E2EWorld): Promise<void> {
+  await this.setupModel();
 });
 
 // The dist tier (@dist, ADR-0043) opts out of the mkdtemp above for the opposite reason to @kind:

@@ -1,0 +1,26 @@
+{
+  "advised/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "obedience/off": {
+    "passed": 9,
+    "trials": 10
+  },
+  "ticket/on": {
+    "passed": 1,
+    "trials": 1
+  },
+  "obedience/on": {
+    "passed": 10,
+    "trials": 10
+  },
+  "workdir/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "noticed/off": {
+    "passed": 10,
+    "trials": 10
+  }
+}

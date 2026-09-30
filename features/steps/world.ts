@@ -41,6 +41,29 @@ const TMP_BASE = fileURLToPath(new URL("../.tmp/", import.meta.url));
  * into a fresh one (`-n`), and namespace deletion is the teardown.
  */
 const KIND_DIR = fileURLToPath(new URL("../kind-instance/", import.meta.url));
+/**
+ * The @model tier's instance (ADR-0066): the kind instance's shape with a REAL model endpoint
+ * behind it. Shared like KIND_DIR — scenarios isolate by namespace — and its `model-endpoint.json`
+ * is materialized from the selected profile before every converge (`setupModel`).
+ */
+const MODEL_DIR = fileURLToPath(new URL("../model-instance/", import.meta.url));
+/** Where the endpoint profiles live: `<name>.json`, selected by `JR2_MODEL_ENDPOINT`. */
+const MODEL_ENDPOINTS_DIR = fileURLToPath(new URL("../model-endpoints/", import.meta.url));
+
+/** An endpoint profile (`features/model-endpoints/<name>.json`, ADR-0066), as the World and the
+ * model steps read it. The instance reads the same file under its own name (`_profile.ts`). */
+export type ModelEndpointProfile = {
+  id: string;
+  api: string;
+  baseUrl: string;
+  model: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  caBundle?: string;
+  thinking?: Partial<Record<"off" | "on", string>>;
+  trials?: number;
+  parallel?: number;
+};
 
 /** The captured outcome of one `jr2 …` invocation. */
 export type CliResult = { stdout: string; stderr: string; code: number };
@@ -127,6 +150,9 @@ export class E2EWorld {
   echoUrl?: string;
   /** The scripted model's base url, as a pod reaches it. */
   providerUrl?: string;
+  /** @model: the endpoint profile this scenario's instance converged against (ADR-0066) — what
+   * names the model id the scorecard is keyed by, and the trial counts the claim steps use. */
+  modelProfile?: ModelEndpointProfile;
   /** Extra env for the `jr2` binary — @kind publishes the fake provider's address here, because a
    * deployment-varying endpoint rides env and never a committed literal (ADR-0019). */
   private extraEnv: Record<string, string> = {};
@@ -169,6 +195,37 @@ export class E2EWorld {
   }
 
   /**
+   * @model (ADR-0066): the kind instance's shape, a real endpoint behind the Custodian. The
+   * selected profile is COPIED into the instance folder as `model-endpoint.json` — a file, not
+   * env, because the instance's config and definitions are evaluated in the pod too, where env
+   * set here is not (the kind config says so of its own `apiKey`). The copy changes the instance
+   * image's content hash only when the profile does. The key alone stays on env, as a Held secret
+   * (ADR-0059) the config reads at `jr2 up` and the Custodian alone receives.
+   *
+   * No scripted provider, no CA of the tier's own, no echo: what `@kind` fakes, this tier has.
+   */
+  async setupModel(): Promise<void> {
+    this.namespace = `jr2e2e-${randomBytes(3).toString("hex")}`;
+    this.dir = MODEL_DIR;
+    const name = process.env.JR2_MODEL_ENDPOINT ?? "homelab";
+    const source = join(MODEL_ENDPOINTS_DIR, `${name}.json`);
+    const raw = await readFile(source, "utf8").catch(() => {
+      throw new Error(`no endpoint profile at ${source} (JR2_MODEL_ENDPOINT=${name})`);
+    });
+    this.modelProfile = JSON.parse(raw) as ModelEndpointProfile;
+    assert.ok(
+      this.modelProfile.id && this.modelProfile.model && this.modelProfile.baseUrl,
+      `the endpoint profile ${name} names id, model and baseUrl`,
+    );
+    // Replaced by rename, never rewritten in place: another scenario's `jr2 up` may be reading it.
+    const tmp = join(MODEL_DIR, `model-endpoint.json.${randomBytes(6).toString("hex")}`);
+    await writeFile(tmp, raw);
+    await rename(tmp, join(MODEL_DIR, "model-endpoint.json"));
+    const key = process.env.JR2_MODEL_API_KEY;
+    if (key) this.extraEnv.JR2_MODEL_API_KEY = key;
+  }
+
+  /**
    * @dist (ADR-0043): drive the kit as a USER has it. Two facts make the tier, and both live here —
    * the `jr2` is the globally installed one (see `runCli`), and the instance is a folder in the OS
    * temp dir, outside this checkout and outside any git repo. An instance inside the workspace
@@ -205,7 +262,9 @@ export class E2EWorld {
     // @kind's instance folder is the ONE exception: it is a workspace package shared by every
     // scenario, so its scenarios own a namespace and nothing on disk. @dist's temp folder is its
     // own, and goes.
-    if (this.dir && this.dir !== KIND_DIR) await rm(this.dir, { recursive: true, force: true });
+    if (this.dir && this.dir !== KIND_DIR && this.dir !== MODEL_DIR) {
+      await rm(this.dir, { recursive: true, force: true });
+    }
   }
 
   /** Restart the orchestrator against the same instance — the restore path (ADR-0007/0012). */
