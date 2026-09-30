@@ -878,6 +878,25 @@ test("a run restore left live to retry still holds its conversations: the live s
   await host.close();
 });
 
+test("a run started after boot is named in the next statement, and a run that ends drops out (ADR-0031)", async () => {
+  const store = await mkStore();
+  const clients = new Map<string, MockFlueClient>();
+  const { stated, liveSet } = liveSetRecorder();
+  const host = new RunHost({ store, instanceHarness: "http://harness.invalid", liveSet, liveSetIntervalMs: 5 });
+  host.register(codingDef(clients));
+  await host.restore();
+  const { runId, instanceId } = await host.start("coding");
+  const iid = await admittedIid(clients.get(instanceId)!);
+  const named = (s: { live: unknown[] }) => s.live.some((c) => (c as { instanceId: string }).instanceId === iid);
+  await waitFor(() => stated.some(named));
+
+  await host.stop(runId);
+  const ended = stated.length;
+  await waitFor(() => stated.length > ended + 1);
+  assert.ok(!named(stated.at(-1)!), "the Harness frees a conversation no live run holds");
+  await host.close();
+});
+
 test("the live set is stated again on the Lease's cadence, and not after close (ADR-0031)", async () => {
   const store = await mkStore();
   const { stated, liveSet } = liveSetRecorder();
