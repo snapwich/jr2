@@ -60,7 +60,8 @@ That last point deletes machinery rather than adding it. Three mechanisms with t
 the process-global heartbeat map, the one-shot probe, and `release(runId)` (which label-queried the cluster to stop
 timers the in-process map had lost track of, wired into `RunHost`'s error channel) — collapse into one actor. A faulted
 run now stops its lease because it stops its actors; the abandoned pod stays inspectable and ages out of the operator's
-idle timeout on its own. The behavior `release()` was written to produce is emergent.
+idle timeout on its own. A cancelled run's Workspaces are destroyed by the cancel unless it says `keep` (ADR-0025). The
+behavior `release()` was written to produce is emergent.
 
 ## Considered options
 

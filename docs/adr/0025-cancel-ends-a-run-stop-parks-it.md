@@ -33,10 +33,15 @@ carved out for "the Orchestrator ending a run for its own reasons" was being spe
 - **`stop()` stays public with no production caller, and is deliberately not on the wire.** It is correct, it is what
   the durability suite drives, and it is what a future graceful shutdown should call. What nobody asked for is a
   user-facing "park this run" verb.
-- **A cancelled run's Sandbox is not destroyed.** The wrapper's `teardown` is a STATE, entered when the body reaches
-  final; an actor stop skips it. That matches a faulted run ([ADR-0012](0012-workspace-wrapper-machine.md)'s
-  destroy-less terminal): cancelling is precisely when a human wants to exec in and see what happened, and the
-  operator's idle GC reaps the pod on its own.
+- **A cancelled run's Workspaces are destroyed, unless the cancel says `keep`.** The run is over, so nothing can use
+  them, and each holds its whole Size (ADR-0060) — a placed pod left to the idle GC is capacity for nobody. The
+  wrapper's `teardown` is a STATE, entered when the body reaches final, and an actor stop skips it; so the host destroys
+  every Sandbox the run owns after the stop, the same idempotent delete `teardown` runs.
+  `POST /runs/:id/events { type: "CANCEL", keep: true }` — `jr2 send <run> --event CANCEL --keep` — leaves them for
+  inspection instead: with no Lease they age out at the operator's idle timeout, and `jr2 ssh` reaches them until then.
+  Whether to keep is a fact of the moment of the cancel, never a config key. A **faulted** run keeps its Workspaces as
+  before ([ADR-0012](0012-workspace-wrapper-machine.md)'s destroy-less terminal, ADR-0021): a fault is the case nobody
+  chose, and the pod is the evidence.
 
 ## Considered options
 
