@@ -40,7 +40,16 @@ import {
   type RunMarker,
 } from "./registration.ts";
 import { NoticeLedger, type NoticeLedgerState } from "./notices.ts";
-import { WORKSPACE_WAIT_KEY, workspaceName, type SandboxPort, type WorkspaceWait } from "./workspace.ts";
+import {
+  DEFAULT_LEASE_INTERVAL_MS,
+  WORKSPACE_WAIT_KEY,
+  leaseDelay,
+  workspaceName,
+  type SandboxPort,
+  type WorkspaceWait,
+} from "./workspace.ts";
+import type { LiveConversation } from "./harness-client.ts";
+import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { composesSandbox } from "./parts.ts";
 import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
@@ -492,6 +501,15 @@ export type RunHostOptions = {
    * never a dependency of the run.
    */
   echo?: (endpoint: string, bearer: string | undefined) => (events: EchoEvent[]) => Promise<void>;
+  /**
+   * Build the live-set statement to the Instance Harness (ADR-0031) — the seam a fake rides in
+   * tests; `startInstance` binds the real wire push (harness-client.ts). `bearer` is the Instance
+   * Harness's (ADR-0058). Absent, or with no `instanceHarness`, nothing is stated.
+   */
+  liveSet?: (endpoint: string, bearer: string | undefined) => (live: LiveConversation[]) => Promise<unknown>;
+  /** How often the live set is stated, before jitter. Default: the Lease's cadence (ADR-0021).
+   * Tests shrink it. */
+  liveSetIntervalMs?: number;
 };
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs.
@@ -575,6 +593,11 @@ export class RunHost {
     endpoint: string,
     bearer: string | undefined,
   ) => (events: EchoEvent[]) => Promise<void>;
+  private readonly liveSetPush?: (live: LiveConversation[]) => Promise<unknown>;
+  private readonly liveSetIntervalMs: number;
+  private liveSetTimer?: ReturnType<typeof setTimeout>;
+  /** Whether the last live-set statement failed — a failing streak logs one line (ADR-0031). */
+  private liveSetFailing = false;
   private readonly workflowDefs = new Map<string, WorkflowDef>();
   private readonly runs = new Map<string, LiveRun>();
   /**
@@ -595,6 +618,11 @@ export class RunHost {
     this.instanceHarness = opts.instanceHarness;
     this.harnessBearer = opts.harnessBearer;
     this.echoFactory = opts.echo;
+    this.liveSetPush =
+      opts.instanceHarness && opts.liveSet
+        ? opts.liveSet(opts.instanceHarness, opts.harnessBearer?.(INSTANCE_HARNESS_SERVICE))
+        : undefined;
+    this.liveSetIntervalMs = opts.liveSetIntervalMs ?? DEFAULT_LEASE_INTERVAL_MS;
   }
 
   /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
@@ -758,7 +786,73 @@ export class RunHost {
       }
     }
 
+    // Every run this boot will host is live now, so the set is whole: state it, and keep stating it
+    // (ADR-0031). Not before — a statement ahead of restore would free the conversations of the
+    // runs about to be re-attached.
+    this.stateLiveSet();
+    this.scheduleLiveSet();
+
     return { reattached, lost, drifted, failed };
+  }
+
+  /**
+   * The conversations the live runs hold on the Instance Harness (ADR-0031): every admission in
+   * their ledgers whose endpoint is the Instance Harness, as the `(agent, instanceId)` pair it runs
+   * under. From MEMORY, never the store: the store also holds runs this process does not host, and
+   * a run this process hosts is exactly one that may still continue its conversation. A Sandbox's
+   * Harness is not in it — its Workspace's teardown frees everything there.
+   */
+  liveConversations(): LiveConversation[] {
+    const live = new Map<string, LiveConversation>();
+    for (const run of this.runs.values()) {
+      for (const [iid, admission] of Object.entries(run.agents)) {
+        if (admission.endpoint !== this.instanceHarness || admission.agent === undefined) continue;
+        const instanceId = admission.instanceId ?? iid;
+        live.set(JSON.stringify([admission.agent, instanceId]), { agent: admission.agent, instanceId });
+      }
+    }
+    return [...live.values()];
+  }
+
+  /**
+   * State the live set to the Instance Harness (ADR-0031), which frees every other conversation.
+   * FIRE-AND-FORGET: level-triggered and idempotent, so a missed statement costs nothing and the
+   * next one says it all again. A failing streak logs one line; nothing here can touch a run.
+   */
+  private stateLiveSet(): void {
+    const push = this.liveSetPush;
+    if (!push || this.#stopping) return;
+    push(this.liveConversations()).then(
+      () => {
+        this.liveSetFailing = false;
+      },
+      (err: unknown) => {
+        if (this.liveSetFailing) return;
+        this.liveSetFailing = true;
+        console.error(
+          `live-set statement to ${this.instanceHarness} failed (the Instance Harness keeps what it holds): ` +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      },
+    );
+  }
+
+  /** Every Lease interval, ±20% (ADR-0021's cadence, which ADR-0031 names). The timer holds no
+   * process alive, and `close()` clears it. */
+  private scheduleLiveSet(): void {
+    if (!this.liveSetPush || this.liveSetTimer !== undefined || this.#stopping) return;
+    const next = () => {
+      this.liveSetTimer = setTimeout(
+        () => {
+          if (this.#stopping) return;
+          this.stateLiveSet();
+          next();
+        },
+        leaseDelay(this.liveSetIntervalMs, "next", Math.random()),
+      );
+      this.liveSetTimer.unref?.();
+    };
+    next();
   }
 
   /**
@@ -1040,6 +1134,7 @@ export class RunHost {
     // From here on the Orchestrator is going away, not its Turns: `/agents/*` answers 503, which a
     // Harness re-asks on ADR-0042's ladder, and never 404, which says a Turn is over (ADR-0026).
     this.#stopping = true;
+    clearTimeout(this.liveSetTimer);
     for (const run of this.runs.values()) {
       for (const listener of run.listeners) listener({ kind: "closed" });
       run.listeners.clear();

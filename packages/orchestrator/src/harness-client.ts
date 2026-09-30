@@ -19,8 +19,10 @@
 // `workspace.lost`'s to report and a restarted Harness the Agent actor's, both off the watch —
 // ADR-0021 — never this loop's to guess). Re-attach after a restart is `wait`
 // with the SAME persisted admission; replay cost is bounded by one Submission's chunks. A 404 is a
-// LOST conversation (ADR-0027: a conversation lives as long as its Harness process) — a
-// `SettlementFault`, never an endless poll.
+// LOST conversation (ADR-0027: the Harness no longer holds it — a persisted conversation survives a
+// Harness restart, ADR-0031, and one it cannot rebuild or has freed does not) — a
+// `SettlementFault`, never an endless poll. A Submission a restart cut settles `failed` on the
+// rebuilt stream (ADR-0031), which is read like any other Settlement.
 //
 // Both verbs re-send on a network failure, for one reason stated twice: an unanswered request is
 // not an answer. They differ in bound, and the difference is where the Submission is — `wait`'s is
@@ -131,8 +133,8 @@ export type HarnessClientOptions = {
 export class SettlementFault extends Error {
   /** The Settlement as the stream carried it; absent when the conversation itself was lost. */
   readonly settlement?: Settlement;
-  /** The conversation itself is gone (404): its Harness process ended (ADR-0027). The one fault
-   * the Agent actor asks the Sandbox about, to name a memory kill (ADR-0061). */
+  /** The conversation itself is gone (404): its Harness no longer holds it (ADR-0027). One of the
+   * faults the Agent actor asks the Sandbox about, to name a memory kill (ADR-0061). */
   readonly lost: boolean;
   constructor(message: string, settlement?: Settlement, opts: { lost?: boolean } = {}) {
     super(message);
@@ -272,7 +274,7 @@ export function createHarnessClient(options: HarnessClientOptions): HarnessClien
           if (res.status === 404) {
             throw new SettlementFault(
               `conversation lost: the harness answered 404 for submission "${admission.submissionId}" — ` +
-                `a conversation lives as long as its Harness process (ADR-0027)`,
+                `the Harness no longer holds this conversation (ADR-0027, ADR-0031)`,
               undefined,
               { lost: true },
             );
@@ -434,6 +436,44 @@ export function createEchoPush(options: {
     }
     // Drain the `{ printed }` answer so the socket is released; the count is nobody's contract.
     await res.json().catch(() => undefined);
+  };
+}
+
+/** One conversation the Orchestrator's live runs hold on the Instance Harness (ADR-0031): the
+ * `(Agent name, instance id)` pair the Harness keys a conversation by. */
+export type LiveConversation = { agent: string; instanceId: string };
+
+/**
+ * Build the live-set statement for the Instance Harness (ADR-0031): `PUT /agents
+ * { live: [{ agent, instanceId }] }` → `{ freed }`, and the Harness frees memory and files of every
+ * conversation not named. The whole set every time — level-triggered, so a missed statement costs
+ * nothing and the next one says it all again. Un-retried, like the echo: the caller is a timer.
+ */
+export function createLiveSetPush(options: {
+  baseUrl: string;
+  /** The Instance Harness's bearer (ADR-0058). Absent only against the stub Harness. */
+  token?: string;
+  /** Injectable for socket-free tests. Default: global `fetch`. */
+  fetch?: typeof fetch;
+}): (live: LiveConversation[]) => Promise<{ freed: number }> {
+  const fetchImpl = options.fetch ?? fetch;
+  return async (live) => {
+    const url = new URL("/agents", options.baseUrl).toString();
+    const res = await fetchImpl(url, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+      },
+      body: JSON.stringify({ live }),
+    }).catch((err: unknown) => {
+      throw new Error(`live-set statement to ${url} failed: ${transportDetail(err)}`, { cause: err });
+    });
+    if (!res.ok) {
+      throw new Error(`live-set statement failed (${res.status}): ${await errorDetail(res)}`);
+    }
+    const { freed } = (await res.json().catch(() => ({}))) as { freed?: unknown };
+    return { freed: typeof freed === "number" ? freed : 0 };
   };
 }
 

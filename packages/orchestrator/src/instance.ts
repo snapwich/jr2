@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import type { AnyStateMachine } from "xstate";
-import { createEchoPush } from "./harness-client.ts";
+import { createEchoPush, createLiveSetPush } from "./harness-client.ts";
 import { createApp } from "./http.ts";
 import type { FetchAnswer } from "./repo-fetch.ts";
 import type { RepoStatus } from "./repos.ts";
@@ -141,6 +141,9 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     // otherwise pass through a process the Agent executes code beside. The wire push is here and
     // the fire-and-forget is the host's, so a Harness that refuses (or is gone) costs a log line.
     echo: (endpoint, bearer) => createEchoPush({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
+    // The live-set statement (ADR-0031): the host tells the Instance Harness which conversations
+    // its live runs hold, and the Harness frees the rest. Stated only when the host knows one.
+    liveSet: (endpoint, bearer) => createLiveSetPush({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
     // A run left `live` to be retried is otherwise unexplained — the announce line names it, this
     // says why (ADR-0030). stderr, because it is a fault, not the boot's structured result.
     onRestoreError: (runId, err) =>

@@ -53,7 +53,9 @@ export type SandboxStatus = {
   /** The Harness container's restarts and last end on the current pod (ADR-0061, ADR-0063). */
   harness?: {
     restartCount?: number;
-    lastTerminated?: { reason?: string; exitCode?: number; finishedAt?: string };
+    /** `message` is the kubelet's termination message — the Harness's last log lines, by the
+     * operator's `FallbackToLogsOnError` (ADR-0063). */
+    lastTerminated?: { reason?: string; exitCode?: number; finishedAt?: string; message?: string };
   };
   /** Every waiting container of the current pod, init containers first, in the kubelet's words
    * (ADR-0063) — the only evidence of a container that never starts. */

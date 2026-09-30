@@ -85,6 +85,14 @@ export type AgentAdmission = {
    * mark.
    */
   harnessRestarts?: number;
+  /**
+   * The Agent and the Harness base URL this admission was answered by — stamped by the ACTOR at
+   * ledger time, like `instanceId`. Together with `instanceId` they name the conversation on its
+   * Harness, which is what the live set is built from (ADR-0031): the host states the Instance
+   * Harness's live conversations from these ledger entries alone.
+   */
+  agent?: string;
+  endpoint?: string;
 };
 
 /**
@@ -360,7 +368,23 @@ const OOM_KILLED = "OOMKilled";
 /** Why a Turn failed when its Harness restarted under it (ADR-0021), in the kubelet's words. */
 function harnessRestartReason(seen: HarnessRestarts): string {
   const last = seen.lastTerminated;
-  return `conversation lost (Harness restarted: ${last?.reason ?? "unknown"}, exit ${last?.exitCode ?? "?"})`;
+  return `Turn lost (Harness restarted: ${last?.reason ?? "unknown"}, exit ${last?.exitCode ?? "?"})`;
+}
+
+/**
+ * A Submission the Harness settled `failed` because it restarted under it (ADR-0031): the rebuilt
+ * stream says so, so the Orchestrator reads a Settlement, not a 404. Read STRUCTURALLY off the
+ * Settlement's own message, like {@link providerLimitReason}. It can reach the actor BEFORE the
+ * watch's restart count does, and it is the only restart signal an Instance Harness gives — the
+ * watch does not see that pod.
+ */
+function settledByRestart(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const settlement = (err as { settlement?: { outcome?: unknown; error?: { message?: unknown } } }).settlement;
+  const message = settlement?.error?.message;
+  return settlement?.outcome === "failed" && typeof message === "string" && /harness restart/i.test(message)
+    ? message
+    : undefined;
 }
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
@@ -613,7 +637,8 @@ export function agentActorWith(
     // process (ADR-0027), and a Harness that crash-loops only ever refuses connections, so `wait`
     // would reconnect forever. The watch sees the restart count pass its value at this Turn's
     // admission, and the Turn fails at once — not its Workspace: the pod and `/work` survive.
-    // Sandbox Workspaces only: the Instance Harness is a Deployment the watch does not see.
+    // Sandbox Workspaces only: the Instance Harness is a StatefulSet the watch does not see, and
+    // its rebuilt stream settles the Turn `failed` instead (ADR-0031, `settledByRestart`).
     let heardRestarts: HarnessRestarts | undefined;
     let restartMark = input.attach?.harnessRestarts;
     let restarted: HarnessRestarts | undefined;
@@ -641,7 +666,11 @@ export function agentActorWith(
     // AND re-addresses it (see `currentIid` above). The notices the admission carried are
     // delivered by this same write (ADR-0062).
     const ledger = (admission: AgentAdmission, delivered: readonly string[]) =>
-      binding.recordAdmission?.(instanceId, { ...admission, instanceId: currentIid }, delivered);
+      binding.recordAdmission?.(
+        instanceId,
+        { ...admission, instanceId: currentIid, agent: input.agentName, endpoint },
+        delivered,
+      );
 
     // Where this Turn hears notices (ADR-0062). Its continued conversation's — the base id the
     // epoch ledger burns — only when it CONTINUES one: a fresh Turn is new by definition, and the
@@ -849,19 +878,30 @@ export function agentActorWith(
         if (stopped) return;
         // The Harness restarted under this Turn (ADR-0021): whatever the stream said as it was cut,
         // the restart is why.
+        // A Settlement that names the restart is the same fault in the Harness's words (ADR-0021
+        // wording, ADR-0031's rebuilt stream), so it carries the same `Turn lost` prefix.
+        const restartSettled = restarted === undefined ? settledByRestart(err) : undefined;
         const message =
-          restarted !== undefined ? harnessRestartReason(restarted) : (providerLimitReason(err) ?? errorMessage(err));
+          restarted !== undefined
+            ? harnessRestartReason(restarted)
+            : restartSettled !== undefined
+              ? `Turn lost (${restartSettled})`
+              : (providerLimitReason(err) ?? errorMessage(err));
         // A lost conversation may be a memory kill (ADR-0061): the kernel's group kill took the
         // Harness with the Agent's processes. The operator publishes the container's last end on
         // the Sandbox, so the fault is NAMED — the fixed prefix `memory limit` — instead of
-        // "conversation lost", and the Machine's policy can tell the two apart.
+        // "Turn lost", and the Machine's policy can tell the two apart.
         //
         // The fault reaches the Machine (ADR-0016); the next Agent in this Workspace is told
         // through the Briefing, never through the Frame (ADR-0057, ADR-0062) — a notice raised
         // BEFORE the fault, because the state it routes to may admit in the same macrostep. Keyed
         // by the kill itself, so every Turn the one kill ended raises one notice between them.
+        // A restart the Settlement reported before the watch did may still be a memory kill: the
+        // Sandbox is asked, as for a 404.
         const lostHarness =
-          restarted !== undefined ? restarted.lastTerminated?.reason === OOM_KILLED : isLostConversation(err);
+          restarted !== undefined
+            ? restarted.lastTerminated?.reason === OOM_KILLED
+            : isLostConversation(err) || restartSettled !== undefined;
         const kill = lostHarness && sandbox !== undefined ? await memoryFault(sandbox) : undefined;
         if (stopped) return;
         if (kill !== undefined && noticeWorkspace !== undefined) {

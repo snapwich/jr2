@@ -7,6 +7,9 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   CA_CONFIGMAP,
+  CONVERSATIONS_DIR,
+  CONVERSATIONS_DIR_ENV,
+  CONVERSATIONS_VOLUME,
   custodianComposition,
   CUSTODIAN_BOOTSTRAP_KEY,
   CUSTODIAN_SCRIPT_KEY,
@@ -70,6 +73,15 @@ export const ANNOTATION_HELD_DIGEST = "jr2.dev/held-digest";
 /** The Instance Harness pod's `fsGroup` — a Sandbox pod's default work group (ADR-0005), for the
  * same reason: a group every container is granted, which the Custodian's values are readable by. */
 const INSTANCE_HARNESS_FS_GROUP = 2000;
+
+/** How long the Instance Harness pod is given to stop (ADR-0031's drain): on SIGTERM it stops
+ * admitting and finishes the Turns it holds, so the grace is a Turn's worst case. `jr2 up` waits
+ * out a rollout that long, and no longer. */
+export const INSTANCE_HARNESS_DRAIN_SECONDS = 600;
+
+/** The Instance Harness's conversations volume (ADR-0031): the StatefulSet's one claim, and the
+ * PVC ordinal 0 gets from it — `<claim>-<statefulset>-<ordinal>`. */
+export const INSTANCE_HARNESS_PVC = `${CONVERSATIONS_VOLUME}-${INSTANCE_HARNESS_SERVICE}-0`;
 
 /** The two ingress NetworkPolicies (ADR-0058) — see `harnessIngressPolicies`. */
 export const SANDBOX_INGRESS_POLICY = "jr2-sandbox-ingress";
@@ -692,7 +704,7 @@ export function trustObject(opts: {
 }
 
 /**
- * The Instance Harness (ADR-0031): the per-instance Harness Deployment + Service `jr2 up`
+ * The Instance Harness (ADR-0031): the per-instance Harness StatefulSet + headless Service `jr2 up`
  * converges whenever an Agent a registered Machine CARRIES declares `workspace: "none"`
  * (ADR-0049's walk) — the placement for every Menu-only Agent's Turn, regardless of any enclosing
  * Workspace. The one Harness shape, minus the Workspace: the stock Harness image plus the Custodian,
@@ -712,7 +724,7 @@ export function instanceHarnessObjects(opts: {
    *
    * The accepted asymmetry: the Instance Harness names its images HERE, in the pod template, while
    * a Sandbox's refs travel through the `jr2-images` ConfigMap. Both are right for what they are —
-   * this Deployment is supposed to roll when its image moves; the Orchestrator is not. */
+   * this StatefulSet is supposed to roll when its image moves; the Orchestrator is not. */
   harnessImage: string;
   /** The resolved Custodian ref: the Harness's one route to its Menu, kept even though a `"none"`
    * Agent cannot execute code — forking the path for one pod buys a divergence ADR-0031 declines. */
@@ -782,11 +794,14 @@ export function instanceHarnessObjects(opts: {
       { name: "JR2_MENU_ONLY", value: "1" },
       ...(opts.harness?.env ?? []).filter((v) => v.valueFrom !== undefined),
       ...custodian.harnessEnv,
+      // Where the conversations persist (ADR-0031): the claim below. Mechanism, as on a Sandbox.
+      { name: CONVERSATIONS_DIR_ENV, value: CONVERSATIONS_DIR },
       // The wire's gate (ADR-0058), last — as on a Sandbox — so no `harness.env` entry chooses it.
       { name: "JR2_HARNESS_TOKEN_SHA256", value: opts.bearerSha256 },
     ],
     envFrom: [{ secretRef: { name: HARNESS_ENV_SECRET } }, ...(opts.harness?.envFrom ?? [])],
-    ...(custodian.harnessMounts.length ? { volumeMounts: custodian.harnessMounts } : {}),
+    // The Harness container's alone: the Custodian has no business with an Agent's history.
+    volumeMounts: [{ name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR }, ...custodian.harnessMounts],
     // The operator probes a Sandbox's Harness the same way: serving = the socket accepts.
     // Period and threshold as reasoned on the Orchestrator above: the default 10s period is the
     // rollout wait rather than the boot, and the threshold then has to carry the stall tolerance
@@ -804,26 +819,43 @@ export function instanceHarnessObjects(opts: {
   const items: KubeManifest[] = [
     {
       apiVersion: "apps/v1",
-      kind: "Deployment",
+      kind: "StatefulSet",
       metadata: { ...meta(), labels: { ...labels, [LABEL_VERSION]: KIT_VERSION } },
       spec: {
-        // ONE replica, Recreate: a conversation is an Instance ID on one Harness PROCESS
-        // (ADR-0031) — two pods behind this Service would route one conversation to two servers,
-        // the exact amnesia definition-wins placement exists to prevent. A restart loses the
-        // conversations (live-only, ADR-0023); the Deployment restores the endpoint, not the
-        // history.
+        // A StatefulSet of ONE (ADR-0031): the value is the stable volume — a restart or a rollout
+        // brings the same conversations back — and the stable name is what N > 1 would pin a
+        // conversation to. Never more than one pod behind this Service for one conversation, and
+        // never an HPA: a scale-down would kill conversations. At N = 1 a rollout has no surge,
+        // so admissions are refused while the new pod starts, which the Orchestrator absorbs
+        // (ADR-0042).
         replicas: 1,
-        strategy: { type: "Recreate" },
+        serviceName: INSTANCE_HARNESS_SERVICE,
         selector: { matchLabels: { app: INSTANCE_HARNESS_SERVICE } },
+        // The conversations go with the StatefulSet, never with a scale-down: an instance whose
+        // Machines dropped every `"none"` Agent keeps no history for them.
+        persistentVolumeClaimRetentionPolicy: { whenDeleted: "Delete", whenScaled: "Retain" },
+        volumeClaimTemplates: [
+          {
+            metadata: { name: CONVERSATIONS_VOLUME, labels },
+            spec: {
+              accessModes: ["ReadWriteOnce"],
+              resources: { requests: { storage: "1Gi" } },
+            },
+          },
+        ],
         template: {
           metadata: {
             labels: { ...labels, app: INSTANCE_HARNESS_SERVICE },
             // A held-secret edit rolls this pod; a live Sandbox keeps what its Custodian read at
-            // start (ADR-0059, the ADR-0037 stance). Moving it loses its live conversations, so no
-            // autoscaler may choose to (ADR-0060) — a drain still can.
+            // start (ADR-0059, the ADR-0037 stance). A move costs a drain, not the conversations
+            // (the volume keeps them), yet no autoscaler may choose one (ADR-0060) — a drain still
+            // can.
             annotations: { [ANNOTATION_HELD_DIGEST]: opts.heldDigest, ...NO_DISRUPT_ANNOTATIONS },
           },
           spec: {
+            // The drain (ADR-0031): on SIGTERM the Harness stops admitting and finishes the Turns
+            // it holds, so the grace is a Turn's worst case — a deploy loses no Turn.
+            terminationGracePeriodSeconds: INSTANCE_HARNESS_DRAIN_SECONDS,
             // The Sandbox tier's class (ADR-0060): it holds live conversations, as a Sandbox holds
             // `/work`, and it may wait rather than preempt.
             priorityClassName: priorityClassNames(opts.priorityClasses).sandbox,
@@ -849,6 +881,10 @@ export function instanceHarnessObjects(opts: {
       kind: "Service",
       metadata: meta(),
       spec: {
+        // Headless — the StatefulSet's governing Service. The name still resolves (to the ready
+        // pod's address) at the same DNS the Agent actor dials, so the endpoint and the
+        // NetworkPolicy's selector are unchanged; the port is the pod's own.
+        clusterIP: "None",
         selector: { app: INSTANCE_HARNESS_SERVICE },
         ports: [{ port: INSTANCE_HARNESS_PORT, targetPort: INSTANCE_HARNESS_PORT }],
       },

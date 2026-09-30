@@ -253,20 +253,48 @@ test("provision applies the labeled CR naming its Repos by cache key, gates on R
     { name: "work", mountPath: "/work" },
     // jr2's runtime, read-only in the container where the Agent has code execution.
     RUNTIME_AT_OPT,
+    // The conversations' directory (ADR-0031), the Harness container's alone.
+    { name: "conversations", mountPath: "/conversations" },
   ]);
   // Then the Custodian's own two (ADR-0059): what it holds and how it is told to hold it. With
   // nothing held and no CA bundle, the Harness container mounts neither.
   assert.deepEqual(
     applied.spec.volumes.map((v: { name: string }) => v.name),
-    ["work", "runtime", "custodian-values", "custodian-config"],
+    ["work", "runtime", "conversations", "custodian-values", "custodian-config"],
   );
-  assert.deepEqual(applied.spec.volumes.slice(0, 2), [
+  assert.deepEqual(applied.spec.volumes.slice(0, 3), [
     { name: "work", emptyDir: {} },
     // The KIT's image, mounted as a volume (ADR-0037): no pull policy of its own, so the kubelet
     // treats the ref exactly as it treats the same ref on a container.
     { name: "runtime", image: { reference: "jr2-harness:h00" } },
+    // An emptyDir: a Harness restart inside the pod keeps its conversations, and a pod that is
+    // gone takes them with it — that Workspace is Lost (ADR-0021, ADR-0031).
+    { name: "conversations", emptyDir: {} },
   ]);
   assert.ok(!JSON.stringify(applied).includes("persistentVolumeClaim"), "no source PVC — the cache is per node");
+});
+
+test("a Sandbox's Harness persists its conversations to an emptyDir no other container mounts (ADR-0031)", async () => {
+  const { exec, calls } = cluster();
+  const port = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...exec });
+  await port.provision({ name: "sb-conv", runId: "r", workflow: "w", user: RUST.url, ...withApp });
+
+  const applied = crOf(calls);
+  // Told where, by the env the Harness reads — mechanism, so it comes after `harness.env`.
+  assert.ok(
+    applied.spec.env.some(
+      (e: { name: string; value?: string }) => e.name === "JR2_CONVERSATIONS_DIR" && e.value === "/conversations",
+    ),
+  );
+  // CR-level volumeMounts are the Harness container's (the operator's contract); every other
+  // container — the Custodian, the User Container, the preflight — mounts it nowhere.
+  assert.ok(applied.spec.volumeMounts.some((m: { name: string }) => m.name === "conversations"));
+  for (const c of [...applied.spec.sidecars, ...applied.spec.initContainers]) {
+    assert.ok(
+      !(c.volumeMounts ?? []).some((m: { name: string }) => m.name === "conversations"),
+      `${c.name} must not read an Agent's history`,
+    );
+  }
 });
 
 test("two slots spelling one repository are ONE CR entry; two repositories are two", async () => {
@@ -597,6 +625,34 @@ test("a Harness that keeps dying before Ready fails the provision BY NAME, with 
     () => port3.provision({ name: "sb-oom", runId: "r", workflow: "w", ...withApp }),
     /OOMKilled, exit 137.*larger Size/s,
   );
+
+  // The Harness's own last words ride the fault (ADR-0063): the termination message falls back to
+  // its last log lines, and they are quoted, not interpreted.
+  const said = cluster([
+    {
+      phase: "Pending",
+      harness: {
+        restartCount: 2,
+        lastTerminated: {
+          reason: "Error",
+          exitCode: 1,
+          message: "starting harness\nError: listen EADDRINUSE: :8080 is taken by another container in the pod\n",
+        },
+      },
+    },
+  ]);
+  const port4 = kubeSandbox({ imagesPath: await mkImages(REFS), ...provisionable, ...said.exec });
+  await assert.rejects(
+    () => port4.provision({ name: "sb-said", runId: "r", workflow: "w", ...withApp }),
+    (err: Error) => {
+      assert.match(
+        err.message,
+        /last: Error, exit 1\)\. Its last output:\n {2}starting harness\n {2}Error: listen EADDRINUSE/,
+      );
+      assert.match(err.message, /kubectl logs sb-said -c harness --previous/);
+      return true;
+    },
+  );
 });
 
 test("a brought image that runs as root fails the provision at once, BY NAME, with the USER fix (ADR-0063)", async () => {
@@ -855,6 +911,8 @@ test("env/envFrom pass through to the HARNESS container spec; mechanism env ride
       "OMP_NUM_THREADS",
       "PYTHON_CPU_COUNT",
       "GOMAXPROCS",
+      // Where the conversations persist (ADR-0031): mechanism too.
+      "JR2_CONVERSATIONS_DIR",
       "JR2_HARNESS_TOKEN_SHA256",
     ],
   );
@@ -1036,6 +1094,7 @@ test("a held secret: the Harness gets Stand-ins and the proxy, the Custodian alo
       ["REQUESTS_CA_BUNDLE", "/etc/jr2/ca/bundle.crt"],
       ["GIT_SSL_CAINFO", "/etc/jr2/ca/bundle.crt"],
       ...CPU_HINTS.map((h) => [h.name, undefined]),
+      ["JR2_CONVERSATIONS_DIR", "/conversations"],
       ["JR2_HARNESS_TOKEN_SHA256", harnessTokenDigest(provisionable.signingKey, "sb-held")],
     ],
   );
@@ -1102,6 +1161,7 @@ test("caBundle, nothing held: the jr2-ca ConfigMap mounts into the HARNESS conta
     { name: "JR2_SANDBOX_TOKEN", value: "jr2-held-JR2_SANDBOX_TOKEN" },
     { name: "NODE_EXTRA_CA_CERTS", value: "/etc/jr2/ca/ca.crt" },
     ...CPU_HINTS,
+    { name: "JR2_CONVERSATIONS_DIR", value: "/conversations" },
     { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(provisionable.signingKey, "sb-ca") },
   ]);
   assert.deepEqual(applied.spec.volumes.at(-1), { name: "ca", configMap: { name: "jr2-ca" } });
@@ -1258,7 +1318,7 @@ test("memoryFault(): waits a moment for the operator's word, which can trail the
   const named = port.memoryFault("sb-1", TURN);
   setTimeout(() => api.setStatus("sandboxes", "sb-1", killed("2026-09-28T10:03:00Z").status), 5);
   assert.match((await named)!.reason, /^memory limit \(OOMKilled/);
-  // A name the watch does not hold (the Instance Harness is a Deployment) answers at once.
+  // A name the watch does not hold (the Instance Harness is a StatefulSet) answers at once.
   assert.equal(await port.memoryFault("jr2-instance-harness", TURN), undefined);
 });
 

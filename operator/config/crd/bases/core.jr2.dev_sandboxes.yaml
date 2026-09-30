@@ -6016,6 +6016,12 @@ spec:
                         description: FinishedAt is when the run ended.
                         format: date-time
                         type: string
+                      message:
+                        description: |-
+                          Message is the kubelet's termination message. For the Harness container
+                          it is the run's last log lines (`FallbackToLogsOnError`, ADR-0063), so a
+                          Harness that dies before Ready is named in its own words.
+                        type: string
                       reason:
                         description: Reason is the kubelet's reason, e.g. `OOMKilled`,
                           `Error`, `Completed`.

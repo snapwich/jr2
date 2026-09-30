@@ -109,8 +109,14 @@ test("admits the run over a port built from input.endpoint and ledgers the admis
   assert.equal(mock.admitted?.instanceId, "inst-42");
   assert.deepEqual(endpoints, ["http://sandbox-7.harness.local:8080"]);
   // The durable handle went to the HOST ledger the moment flue admitted (ADR-0016), stamped
-  // with the conversation it was admitted under (the reroll advances the stamp — ADR-0035)…
-  assert.deepEqual(ledger["inst-42"], { ...mock.minted, instanceId: "inst-42" });
+  // with the conversation it was admitted under (the reroll advances the stamp — ADR-0035) and
+  // the Harness that holds it, which the live set is built from (ADR-0031)…
+  assert.deepEqual(ledger["inst-42"], {
+    ...mock.minted,
+    instanceId: "inst-42",
+    agent: "coder",
+    endpoint: "http://sandbox-7.harness.local:8080",
+  });
   // …and the actor is now following that admission to settlement.
   assert.deepEqual(mock.settled, [mock.minted]);
 });
@@ -526,7 +532,7 @@ test("a Harness restart ends the Turn at once, in the kubelet's words — the ma
     {
       type: "agent.fault",
       instanceId: "inst-42",
-      reason: "conversation lost (Harness restarted: Error, exit 1)",
+      reason: "Turn lost (Harness restarted: Error, exit 1)",
     },
   );
 });
@@ -548,7 +554,62 @@ test("a Harness restart that was a memory kill is named `memory limit` (ADR-0021
   await tick();
   const fault = received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined;
   assert.match(fault?.reason ?? "", /^memory limit \(OOMKilled/);
-  assert.match(fault?.reason ?? "", /conversation lost \(Harness restarted: OOMKilled, exit 137\)/);
+  assert.match(fault?.reason ?? "", /Turn lost \(Harness restarted: OOMKilled, exit 137\)/);
+});
+
+test("a Settlement `failed` by a Harness restart is `Turn lost`, and a memory kill behind it is still named (ADR-0021, ADR-0031)", async () => {
+  // The rebuilt stream settles the cut Submission `failed` (ADR-0031) — possibly before the watch
+  // hears the restart, and always on the Instance Harness, which the watch does not see.
+  const restartSettlement = () =>
+    Object.assign(new Error("submission settled failed: Harness restarted"), {
+      settlement: { submissionId: "sub-1", outcome: "failed", error: { message: "Harness restarted" } },
+    });
+
+  const onInstance = new MockFlueClient();
+  const plain = harness(
+    onInstance,
+    baseInput,
+    undefined,
+    { model: "test/model", instructions: "i", workspace: "none" },
+    {
+      instanceHarness: "http://jr2-instance-harness:8080",
+    },
+  );
+  await tick();
+  (onInstance as unknown as { pending: Array<{ reject: (e: unknown) => void }> }).pending
+    .pop()!
+    .reject(restartSettlement());
+  await tick();
+  await tick();
+  assert.deepEqual(
+    plain.received.find((e) => e.type === "agent.fault"),
+    {
+      type: "agent.fault",
+      instanceId: "inst-42",
+      reason: "Turn lost (Harness restarted)",
+    },
+  );
+
+  // In a Sandbox, the Settlement may beat the watch: the kill is asked about, as for a 404.
+  const sandbox = restartingSandbox({
+    reason: "memory limit (OOMKilled, limit 1920Mi): the kernel killed the container",
+    limit: "1920Mi",
+    at: "2026-09-29T10:00:00Z",
+  });
+  const inSandbox = new MockFlueClient();
+  const named = harness(inSandbox, { ...baseInput, sandbox: "ws-7" }, undefined, undefined, {
+    sandbox: sandbox.port,
+  });
+  await tick();
+  await tick();
+  (inSandbox as unknown as { pending: Array<{ reject: (e: unknown) => void }> }).pending
+    .pop()!
+    .reject(restartSettlement());
+  await tick();
+  await tick();
+  const fault = named.received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined;
+  assert.match(fault?.reason ?? "", /^memory limit \(OOMKilled/);
+  assert.match(fault?.reason ?? "", /Turn lost \(Harness restarted\)/);
 });
 
 test("a re-attached Turn is held to its ledgered mark; the Instance Harness is not watched (ADR-0021)", async () => {
@@ -576,10 +637,10 @@ test("a re-attached Turn is held to its ledgered mark; the Instance Harness is n
   await tick();
   assert.equal(
     (received.find((e) => e.type === "agent.fault") as { reason?: string } | undefined)?.reason,
-    "conversation lost (Harness restarted: Error, exit 2)",
+    "Turn lost (Harness restarted: Error, exit 2)",
   );
 
-  // A Menu-only Agent's Turn runs on the Instance Harness, a Deployment: nothing to watch.
+  // A Menu-only Agent's Turn runs on the Instance Harness, a StatefulSet: nothing to watch.
   const other = restartingSandbox();
   harness(
     new MockFlueClient(),
@@ -627,7 +688,7 @@ test("no-signal: a completed turn with no menu call is re-prompted on the SAME i
   assert.match(mock.admits[1]!.prompt ?? "", /allowed/i);
   assert.deepEqual(
     ledger["inst-42"],
-    { ...mock.minted, instanceId: "inst-42" },
+    { ...mock.minted, instanceId: "inst-42", agent: "coder", endpoint: "http://sandbox-7.harness.local:8080" },
     "the nudge's admission is ledgered like any other",
   );
   // `child` is the invoking parent's actor id — meaningful in real trees ("F-1", "body"); the
@@ -711,7 +772,12 @@ test("runaway: a FRESH turn is rerolled ONCE — fresh conversation, IDENTICAL p
   // The reroll's admission is ledgered under the ORIGINAL iid (the persisted input's key, like a
   // nudge's) and STAMPED with the reroll's own, so a restore settle-follows the LIVE submission
   // and re-addresses the live conversation…
-  assert.deepEqual(ledger["inst-42"], { ...mock.minted, instanceId: "inst-42-r1" });
+  assert.deepEqual(ledger["inst-42"], {
+    ...mock.minted,
+    instanceId: "inst-42-r1",
+    agent: "coder",
+    endpoint: "http://sandbox-7.harness.local:8080",
+  });
   assert.equal(ledger["inst-42-r1"], undefined);
   // …and the reroll's surface is live at the DERIVED address: its conversation's Menu reads
   // /agents/inst-42-r1/surface (surfaces resolve by iid, end to end).

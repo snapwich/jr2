@@ -105,6 +105,8 @@ import {
 import {
   ANNOTATION_IMAGES,
   compareVersions,
+  INSTANCE_HARNESS_DRAIN_SECONDS,
+  INSTANCE_HARNESS_PVC,
   INSTANCE_HARNESS_SERVICE,
   instanceHarnessObjects,
   instanceObjects,
@@ -885,9 +887,9 @@ export async function up(args: string[], io: Io): Promise<number> {
   // The scan is the Machine walk above, and it is DEFINITION-level (the line ADR-0018 drew:
   // workflow internals are not statically recoverable) — a carried-but-never-invoked `"none"`
   // Agent over-deploys, erring toward "the convention works when you need it". No `"none"`
-  // definitions → nothing, and a stale Deployment from a definition that dropped its `"none"` is
-  // deleted: the layer converges toward the Machines like every other layer converges toward the
-  // config.
+  // definitions → nothing, and a stale StatefulSet from a definition that dropped its `"none"` is
+  // deleted with its conversations: the layer converges toward the Machines like every other layer
+  // converges toward the config.
   const menuOnly = [...new Set(agents.filter((a) => a.definition.workspace === "none").map((a) => a.name))];
   if (menuOnly.length > 0) {
     activity(
@@ -895,6 +897,20 @@ export async function up(args: string[], io: Io): Promise<number> {
       `instance harness: converging (${menuOnly.join(", ")} declare${menuOnly.length === 1 ? "s" : ""} workspace: "none")`,
     );
     const harnessImage = refs.harness;
+    // Converging from the Deployment this layer once was (ADR-0031): a Service's `clusterIP` is
+    // immutable, so a ClusterIP one is deleted before the headless one is applied under its name,
+    // and the Deployment goes before the StatefulSet comes, so no two Harnesses ever answer one
+    // conversation's DNS. Both are gone after the first converge; `--ignore-not-found` then.
+    const service = await kube.getJson<{ spec?: { clusterIP?: string } }>({
+      kind: "service",
+      name: INSTANCE_HARNESS_SERVICE,
+      namespace,
+      ...ctx,
+    });
+    if (service !== undefined && service.spec?.clusterIP !== "None") {
+      await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
+    }
+    await kube.deleteObject({ kind: "deployment", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
     await kube.apply({
       manifest: instanceHarnessObjects({
         name,
@@ -913,9 +929,13 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...ctx,
     });
     await awaitRollout(kube, {
+      kind: "statefulset",
       name: INSTANCE_HARNESS_SERVICE,
       namespace,
       selector: `app=${INSTANCE_HARNESS_SERVICE}`,
+      // A rollout waits out the old pod's drain (ADR-0031): up to a Turn's worst case, then the
+      // new pod's start.
+      timeoutSeconds: INSTANCE_HARNESS_DRAIN_SECONDS + 180,
       ...ctx,
     });
     await verifyRunningImage(io, kube, {
@@ -927,6 +947,10 @@ export async function up(args: string[], io: Io): Promise<number> {
       ...ctx,
     });
   } else {
+    await kube.deleteObject({ kind: "statefulset", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
+    // The claim's retention policy deletes it with the StatefulSet; deleted here too, so the
+    // conversations go even from a StatefulSet the controller never got to.
+    await kube.deleteObject({ kind: "persistentvolumeclaim", name: INSTANCE_HARNESS_PVC, namespace, ...ctx });
     await kube.deleteObject({ kind: "deployment", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
     await kube.deleteObject({ kind: "service", name: INSTANCE_HARNESS_SERVICE, namespace, ...ctx });
   }
@@ -1172,9 +1196,15 @@ async function reportOlderWorkspaces(
  * evidence gathering that hid inside the kubectl port could never be exercised without a cluster.
  */
 async function awaitRollout(kube: KubeAdmin, target: RolloutTarget): Promise<void> {
-  const { kind, name, namespace, context } = target;
+  const { kind, name, namespace, context, timeoutSeconds } = target;
   try {
-    await kube.waitRollout({ ...(kind ? { kind } : {}), name, namespace, ...(context ? { context } : {}) });
+    await kube.waitRollout({
+      ...(kind ? { kind } : {}),
+      name,
+      namespace,
+      ...(context ? { context } : {}),
+      ...(timeoutSeconds ? { timeoutSeconds } : {}),
+    });
   } catch (err) {
     throw await rolloutFailure(kube, err, target);
   }

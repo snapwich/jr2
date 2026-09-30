@@ -161,8 +161,8 @@ export type KubeAdmin = {
 
 const nsArgs = (namespace?: string): string[] => (namespace ? ["--namespace", namespace] : []);
 
-/** The two workload kinds `jr2 up` rolls out and waits on. */
-export type RolloutKind = "deployment" | "daemonset";
+/** The workload kinds `jr2 up` rolls out and waits on. */
+export type RolloutKind = "deployment" | "daemonset" | "statefulset";
 
 /** One rollout to wait for: the object, by kind and name, in its namespace. */
 export type RolloutRequest = {
@@ -401,6 +401,8 @@ export type RolloutTarget = {
   namespace: string;
   selector: string;
   context?: string;
+  /** Default 180s (see `rolloutStatusArgs`). */
+  timeoutSeconds?: number;
 };
 
 /** One container's state, as the kubelet tells it. `reason`/`message` are its words verbatim — the
@@ -525,7 +527,12 @@ async function gatherRolloutEvidence(kube: KubeAdmin, target: RolloutTarget): Pr
   const live = pods.filter((p) => !p.metadata.deletionTimestamp);
   if (pods.length > 0 && live.length === 0) notes.push(`every pod matching ${selector} is terminating`);
   if (pods.length === 0 && notes.length === 0) {
-    const maker = target.kind === "daemonset" ? "the DaemonSet" : "the ReplicaSet";
+    const maker =
+      target.kind === "daemonset"
+        ? "the DaemonSet"
+        : target.kind === "statefulset"
+          ? "the StatefulSet"
+          : "the ReplicaSet";
     notes.push(`no pod matches ${selector} — ${maker} made none (check quota, node taints, and the selector)`);
   }
 

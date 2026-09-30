@@ -310,7 +310,11 @@ test("the admission is ledgered host-side and persisted beside the snapshot (ADR
     void store.load(runId).then((l) => (agents = (l?.snapshot as { agents?: Record<string, unknown> })?.agents));
     return agents?.[iid] !== undefined;
   });
-  assert.deepEqual(agents?.[iid], { ...minted, instanceId: iid }, "the durable handle rides RunBlob.agents");
+  assert.deepEqual(
+    agents?.[iid],
+    { ...minted, instanceId: iid, agent: "coder", endpoint: "http://harness.invalid" },
+    "the durable handle rides RunBlob.agents",
+  );
 });
 
 test("a burned conversation rides the RunBlob, and a restored run still avoids it (ADR-0057)", async () => {
@@ -381,7 +385,7 @@ test("a second host restores an in-flight run and re-attaches by persisted admis
   assert.equal(reattachedClient!.admitted, undefined, "re-attach must not re-POST the prompt");
   assert.deepEqual(
     reattachedClient!.settled,
-    [{ ...minted, instanceId: iid }],
+    [{ ...minted, instanceId: iid, agent: "coder", endpoint: "http://harness.invalid" }],
     "settlement follows the PERSISTED admission",
   );
 });
@@ -776,4 +780,110 @@ test("a guard kill is told to the next Turn in that Workspace, and only once (AD
   assert.deepEqual(flue.notices[2], [
     { kind: "memory-limit", scope: "workspace", agent: "coder", peak: "1.8Gi", limit: "1920Mi" },
   ]);
+});
+
+/** A fake Instance Harness's `PUT /agents` (ADR-0031): every live set stated to it, in order. */
+function liveSetRecorder(opts: { fail?: boolean } = {}) {
+  const stated: Array<{ endpoint: string; bearer: string | undefined; live: unknown[] }> = [];
+  const liveSet = (endpoint: string, bearer: string | undefined) => async (live: unknown[]) => {
+    stated.push({ endpoint, bearer, live });
+    if (opts.fail) throw new Error("connect ECONNREFUSED");
+    return { freed: 0 };
+  };
+  return { stated, liveSet };
+}
+
+/** A run of `coding` admitted and ledgered on `store`, then left for another host to restore. */
+async function ledgeredRun(store: SnapshotStore): Promise<{ runId: string; iid: string }> {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store });
+  host.register(codingDef(clients));
+  const { runId, instanceId } = await host.start("coding");
+  const iid = await admittedIid(clients.get(instanceId)!);
+  let ledgered = false;
+  await waitFor(() => {
+    void store.load(runId).then((l) => {
+      ledgered = (l?.snapshot as { agents?: Record<string, unknown> })?.agents?.[iid] !== undefined;
+    });
+    return ledgered;
+  });
+  await host.stop(runId);
+  return { runId, iid };
+}
+
+test("after restore, the live set names the conversations live runs hold on the Instance Harness — and no other Harness's (ADR-0031)", async () => {
+  const store = await mkStore();
+  const { runId, iid } = await ledgeredRun(store);
+
+  // The coding fixture admits at `http://harness.invalid`: as the Instance Harness, its
+  // conversation is stated, under the bearer of the placement (ADR-0058).
+  const onIt = liveSetRecorder();
+  const host = new RunHost({
+    store,
+    instanceHarness: "http://harness.invalid",
+    harnessBearer: (placement) => `bearer-for-${placement}`,
+    liveSet: onIt.liveSet,
+  });
+  host.register(codingDef(new Map()));
+  assert.deepEqual((await host.restore()).reattached, [runId]);
+  assert.deepEqual(onIt.stated, [
+    {
+      endpoint: "http://harness.invalid",
+      bearer: "bearer-for-jr2-instance-harness",
+      live: [{ agent: "coder", instanceId: iid }],
+    },
+  ]);
+  await host.stop(runId);
+  await host.close();
+
+  // The same ledger on a host whose Instance Harness is elsewhere: that conversation lives on
+  // another Harness, so the statement names nothing — and the Instance Harness frees what it holds.
+  const elsewhere = liveSetRecorder();
+  const other = new RunHost({
+    store,
+    instanceHarness: "http://jr2-instance-harness.ns.svc:8080",
+    liveSet: elsewhere.liveSet,
+  });
+  other.register(codingDef(new Map()));
+  assert.deepEqual((await other.restore()).reattached, [runId]);
+  assert.deepEqual(
+    elsewhere.stated.map((s) => s.live),
+    [[]],
+  );
+  await other.close();
+});
+
+test("the live set is stated again on the Lease's cadence, and not after close (ADR-0031)", async () => {
+  const store = await mkStore();
+  const { stated, liveSet } = liveSetRecorder();
+  const host = new RunHost({ store, instanceHarness: "http://harness.invalid", liveSet, liveSetIntervalMs: 10 });
+  await host.restore();
+  await waitFor(() => stated.length >= 3);
+  await host.close();
+  const after = stated.length;
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(stated.length, after, "close() clears the timer");
+});
+
+test("a host that knows no Instance Harness states nothing (ADR-0031)", async () => {
+  const store = await mkStore();
+  const { stated, liveSet } = liveSetRecorder();
+  const host = new RunHost({ store, liveSet, liveSetIntervalMs: 5 });
+  await host.restore();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(stated, []);
+  await host.close();
+});
+
+test("a failing live-set statement logs once per failing streak and touches no run (ADR-0031)", async (t) => {
+  const store = await mkStore();
+  const { stated, liveSet } = liveSetRecorder({ fail: true });
+  const errors = t.mock.method(console, "error", () => {});
+  const host = new RunHost({ store, instanceHarness: "http://harness.invalid", liveSet, liveSetIntervalMs: 5 });
+  await host.restore();
+  await waitFor(() => stated.length >= 3);
+  await host.close();
+  const lines = errors.mock.calls.map((c) => String(c.arguments[0]));
+  assert.equal(lines.length, 1, lines.join("\n"));
+  assert.match(lines[0]!, /live-set statement to http:\/\/harness\.invalid failed.*ECONNREFUSED/);
 });

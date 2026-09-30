@@ -43,6 +43,8 @@
 // containers:
 //
 //   volume        runtime     the kit's Harness image, as an `image` volume → /opt/jr2
+//   volume        conversations  an emptyDir → /conversations, the Harness container's alone
+//                             (ADR-0031: a Harness restart inside the pod keeps its conversations)
 //   initContainer preflight   the USER'S image + that volume → ADR-0037's probe, the thing that
 //                             proves a registry ref, whose first appearance is this provision
 //   container     harness     the Sandbox Image, command overridden, /work + /opt/jr2 mounted
@@ -79,7 +81,17 @@ import {
 import { custodianComposition, type CustodianComposition } from "./custodian.ts";
 import { readHeldManifest } from "./held-secrets.ts";
 import { readImageRefs, resolveSandboxImage, resolveUserImage, type ImageRefs } from "./images.ts";
-import { HELD_KEY, HELD_MOUNT, IMAGES_KEY, IMAGES_MOUNT, PRIORITY_CLASS_SANDBOX, REPOS_MOUNT } from "./names.ts";
+import {
+  CONVERSATIONS_DIR,
+  CONVERSATIONS_DIR_ENV,
+  CONVERSATIONS_VOLUME,
+  HELD_KEY,
+  HELD_MOUNT,
+  IMAGES_KEY,
+  IMAGES_MOUNT,
+  PRIORITY_CLASS_SANDBOX,
+  REPOS_MOUNT,
+} from "./names.ts";
 import { SANDBOXES, SECRETS, kubeClient, type KubeClient, type KubeObject } from "./kube-client.ts";
 import { repoIdentity } from "./repo-identity.ts";
 import type { RepoResources } from "./repos.ts";
@@ -443,6 +455,9 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
       // The CPU hints (ADR-0060) are mechanism: they say what the Size gives, so they win over a
       // `harness.env` entry of the same name.
       ...hints,
+      // Where the Harness persists its conversations (ADR-0031) — the volume below, mechanism, so
+      // no `harness.env` entry chooses it.
+      { name: CONVERSATIONS_DIR_ENV, value: CONVERSATIONS_DIR },
       { name: "JR2_HARNESS_TOKEN_SHA256", value: harnessTokenDigest(opts.signingKey, name) },
     ];
   };
@@ -630,6 +645,11 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
           { name: "work", emptyDir: {} },
           // jr2's runtime (ADR-0037): the kit's Harness image, mounted.
           runtimeVolume(refs),
+          // The conversations' directory (ADR-0031): a Harness container that restarts inside a
+          // living pod rebuilds its conversations from here. An emptyDir, so it goes with the pod —
+          // that Workspace is `Lost` (ADR-0021) — and mounted below into the Harness container
+          // ALONE: the User Container must not read an Agent's history.
+          { name: CONVERSATIONS_VOLUME, emptyDir: {} },
           // Only for ADR-0037's fallback seat: uid 1000 on a stranger's base has no home at all.
           ...seat.homeVolume,
           // The Custodian's (its values, leaves and config), and the trust ConfigMap (ADR-0020).
@@ -641,6 +661,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
         volumeMounts: [
           { name: "work", mountPath: WORK_ROOT },
           RUNTIME_VOLUME_MOUNT,
+          { name: CONVERSATIONS_VOLUME, mountPath: CONVERSATIONS_DIR },
           ...seat.homeMount,
           ...custodian.harnessMounts,
         ],
@@ -1036,7 +1057,7 @@ export function kubeSandbox(opts: KubeSandboxOptions = {}): SandboxPort {
     },
 
     async memoryFault(name, since) {
-      // Only a Sandbox the watch knows: the Instance Harness is a Deployment, not a Sandbox, and
+      // Only a Sandbox the watch knows: the Instance Harness is a StatefulSet, not a Sandbox, and
       // waiting on a name that will never appear would only delay its fault (ADR-0031).
       if (!sandboxes().get(name)) return undefined;
       const judge = (sandbox: SandboxObject | undefined) => memoryFaultOf(sandbox, since);
@@ -1174,9 +1195,20 @@ function repoCloneError(name: string, verdict: string): string {
 function crashLoopError(name: string, harness: NonNullable<NonNullable<SandboxObject["status"]>["harness"]>): string {
   const last = harness.lastTerminated;
   const how = last ? `${last.reason ?? "?"}, exit ${last.exitCode ?? "?"}` : "no reason reported";
+  // The Harness's own last words (ADR-0063): its termination message falls back to its last log
+  // lines (`FallbackToLogsOnError`, set by the operator), so the fault quotes them rather than
+  // sending the reader to a log a gone pod no longer has. Quoted, never interpreted.
+  const words = last?.message?.trim();
   return (
     `Sandbox "${name}" cannot start: its Harness has ended ${harness.restartCount} times before it was ever ` +
-    `Ready (last: ${how}). See its output: \`kubectl logs ${name} -c harness --previous\`` +
+    `Ready (last: ${how}).` +
+    (words
+      ? ` Its last output:\n${words
+          .split("\n")
+          .map((line) => `  ${line}`)
+          .join("\n")}\n`
+      : " ") +
+    `See its output: \`kubectl logs ${name} -c harness --previous\`` +
     (last?.reason === OOM_KILLED
       ? " — it passed its memory limit, so give the Workspace a larger Size (ADR-0060)."
       : ".")

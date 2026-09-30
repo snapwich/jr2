@@ -651,6 +651,10 @@ func (r *SandboxReconciler) buildPod(sandbox *corev1alpha1.Sandbox, repos map[st
 		VolumeMounts:    append(append(append([]corev1.VolumeMount{}, sandbox.Spec.VolumeMounts...), repoMounts...), shmMounts...),
 		ReadinessProbe:  readinessProbeFor(sandbox),
 		SecurityContext: containerSecurityContextFor(sandbox),
+		// A Harness that dies says why in its log, not in a termination-log
+		// file it never writes (ADR-0063): the kubelet takes the last log
+		// lines as the termination message, and harnessStatus publishes it.
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		Ports: []corev1.ContainerPort{{
 			Name:          "http",
 			ContainerPort: portFor(sandbox),
@@ -997,7 +1001,7 @@ func harnessStatus(pod *corev1.Pod) *corev1alpha1.SandboxHarnessStatus {
 		}
 		out := &corev1alpha1.SandboxHarnessStatus{RestartCount: c.RestartCount}
 		if t := c.LastTerminationState.Terminated; t != nil {
-			out.LastTerminated = &corev1alpha1.SandboxTermination{Reason: t.Reason, ExitCode: t.ExitCode}
+			out.LastTerminated = &corev1alpha1.SandboxTermination{Reason: t.Reason, ExitCode: t.ExitCode, Message: t.Message}
 			if !t.FinishedAt.IsZero() {
 				out.LastTerminated.FinishedAt = t.FinishedAt.DeepCopy()
 			}

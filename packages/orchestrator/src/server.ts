@@ -165,7 +165,7 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     // The pod's route out (ADR-0053), same shape: read per request, off the port.
     ...(fetches ? { fetchRepo: (name: string, identity: string) => fetches.fetch(name, identity) } : {}),
     // Where a Menu-only Turn runs (ADR-0031): the Instance Harness's deterministic Service DNS.
-    // `jr2 up` converges the Deployment behind it whenever any definition declares
+    // `jr2 up` converges the StatefulSet behind it whenever any definition declares
     // `workspace: "none"`, so deployed, the address exists exactly when it is needed.
     instanceHarness: namespace
       ? `http://${INSTANCE_HARNESS_SERVICE}.${namespace}.svc:${INSTANCE_HARNESS_PORT}`
