@@ -6,7 +6,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { Agent, request } from "node:http";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { harnessServer, type ConversationSeat, type HarnessAppDeps } from "../src/app.ts";
@@ -411,6 +412,65 @@ test("SIGTERM's stop: drains, closes the port, exits 0", async () => {
   await stopped;
   assert.deepEqual(exits, [0]);
   assert.equal(served.server.listening, false);
+});
+
+test("over the wire, a drain closes the 503's socket and severs a parked long-poll once it is over", async () => {
+  // Hours of long-poll must not hold the pod past its grace, and a kept-alive socket must not carry
+  // the re-sent admission back here: both are claims about sockets, which `app.request` never opens.
+  const harness = harnessOver(undefined, { longPollMs: 3_000 });
+  const exits: number[] = [];
+  const served = serveHarness(harness, {
+    port: 0,
+    hostname: "127.0.0.1",
+    exit: (code) => exits.push(code),
+    flushMs: 10,
+  });
+  await new Promise((resolve) => served.server.once("listening", resolve));
+  const { port } = served.server.address() as AddressInfo;
+  const base = `http://127.0.0.1:${port}`;
+
+  await admitted(harness.app, "/agents/decider/idle");
+  await flush();
+  harness.runs[0]!.resolve();
+  await flush();
+  await admitted(harness.app, "/agents/decider/busy");
+  await flush();
+  // A `wait` parked on a conversation with nothing more to say.
+  const end = (await stream(harness.app, "/agents/decider/idle")).length;
+  const parked = fetch(`${base}/agents/decider/idle?offset=${end}&live=long-poll`).then(
+    () => "answered",
+    () => "severed",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const stopped = served.stop();
+  await flush();
+  // An admission over a kept-alive socket: refused, and that socket is closed after the answer.
+  const agent = new Agent({ keepAlive: true });
+  const refused = await new Promise<{ status: number; closed: Promise<void> }>((resolve, reject) => {
+    const req = request(
+      `${base}/agents/decider/other`,
+      { method: "POST", agent, headers: { "content-type": "application/json" } },
+      (res) => {
+        const closed = new Promise<void>((done) => res.socket.once("close", () => done()));
+        res.resume();
+        resolve({ status: res.statusCode ?? 0, closed });
+      },
+    );
+    req.on("error", reject);
+    req.end(JSON.stringify({ message: "go", definition: DECISIONER }));
+  });
+  assert.equal(refused.status, 503);
+  await refused.closed;
+  agent.destroy();
+
+  // The drain ends with the Turn it owed; the parked read goes with the port, well inside the grace.
+  const at = Date.now();
+  harness.runs[1]!.resolve();
+  await stopped;
+  assert.ok(Date.now() - at < 1_000, "stop() did not wait out the long-poll");
+  assert.equal(await parked, "severed");
+  assert.deepEqual(exits, [0]);
 });
 
 // ---- the listen's fault (R16) ---------------------------------------------------------------------
