@@ -909,7 +909,10 @@ export class RunHost {
     const run = this.runs.get(runId);
     if (!run) return () => {};
     run.listeners.add(listener);
-    listener({ kind: "status", status: this.liveStatus(run) });
+    // The status the feed last carried, the SAME object for every attach, so http.ts renders the
+    // replay once however many readers attach — a reconnect after a close is the common attach
+    // (ADR-0022). A transition not yet persisted follows on the feed within the microtask.
+    listener(run.latestStatus ?? { kind: "status", status: this.liveStatus(run) });
     return () => run.listeners.delete(listener);
   }
 

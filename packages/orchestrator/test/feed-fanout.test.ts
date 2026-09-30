@@ -265,3 +265,19 @@ test("a reader stalled on a quiet feed is closed by its own pings", { timeout: 1
   assert.ok((await read(stalled)).ended);
   assert.equal(host.status(runId)?.value, "parked", "the run is untouched");
 });
+
+test("readers attaching to a run share its replay, rendered once", async (t) => {
+  const host = new RunHost({ store: await mkStore() });
+  host.register(burstDef());
+  const app = createApp(host);
+  const { runId } = await host.start("burst");
+  while (host.status(runId)?.value !== "parked") await new Promise((r) => setTimeout(r, 5));
+
+  // A reconnect after a close is the common attach (ADR-0022): the replay is the status the feed
+  // last carried, one object, so N readers cost one render.
+  const stringify = t.mock.method(JSON, "stringify");
+  const readers = await Promise.all([1, 2, 3].map(() => app.request(`/runs/${runId}/events`)));
+  const bodies = await Promise.all(readers.map((res) => read(res, (b) => b.includes("event: status\n"))));
+  for (const { buf } of bodies) assert.match(buf, /"value":"parked"/);
+  assert.equal(rendersStartingWith(stringify.mock.calls, `{"runId":"${runId}","workflow":"burst","instanceId":`), 1);
+});
