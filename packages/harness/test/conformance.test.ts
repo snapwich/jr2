@@ -590,6 +590,37 @@ test("an engine part that does not open: the conversation continues from the rec
   assert.match(lastUserText(provider.calls[0]), /Decide the second thing\./);
 });
 
+test("a restart that cut a Turn mid-tool-call: the next Turn sends every tool call with its result (ADR-0031)", async () => {
+  // The case the persistence exists for: the process dies while a tool call is open, so pi's
+  // session ends in an assistant tool call with no result. A provider refuses a dangling call, so
+  // the conversation's next Turn must not send one.
+  const iid = "conf/restart-mid-call";
+  const dir = await mkdtemp(join(tmpdir(), "jr2-conversations-"));
+  provider.reset([
+    { text: "Deciding.", toolCall: { id: "call_cut", name: "mcp__jr2__review_verdict", args: '{"verdict":"alpha"}' } },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  sandbox.holdDeliveries();
+  const before = appOver(dir);
+  await admit(iid, "Decide the first thing.", undefined, DECISIONER, before);
+  await until(() => sandbox.delivered.length > 0, "the pick to be in flight");
+  // The process is gone here: nothing settles the open call. (The abandoned app stays parked on
+  // the held delivery until the suite closes the fake.)
+
+  const sent = await nextTurnAfterRestart(iid, dir);
+  const calls = sent.flatMap((m) =>
+    m.role === "assistant" ? ((m.tool_calls ?? []) as Array<{ id: string }>).map((c) => c.id) : [],
+  );
+  const results = new Set(sent.flatMap((m) => (m.role === "tool" ? [String(m.tool_call_id)] : [])));
+  // The cut call comes back with the session (pi answers an orphaned call with a result of its own
+  // when it sends the history), so the model reads what it began and the request is well-formed.
+  assert.ok(calls.includes("call_cut"), `the cut Turn's call came back: ${JSON.stringify(sent)}`);
+  for (const id of calls) {
+    assert.ok(results.has(id), `tool call ${id} is sent with its result: ${JSON.stringify(sent)}`);
+  }
+  assert.match(lastUserText(provider.calls[0]), /Decide the second thing\./);
+});
+
 test("a Menu pick reaches the Orchestrator and its receipt reaches the model; the Submission settles completed", async () => {
   provider.reset([
     {
