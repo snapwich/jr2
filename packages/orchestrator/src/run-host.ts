@@ -40,7 +40,7 @@ import {
   type RunMarker,
 } from "./registration.ts";
 import { NoticeLedger, type NoticeLedgerState } from "./notices.ts";
-import { WORKSPACE_WAIT_KEY, type SandboxPort, type WorkspaceWait } from "./workspace.ts";
+import { WORKSPACE_WAIT_KEY, workspaceName, type SandboxPort, type WorkspaceWait } from "./workspace.ts";
 import { composesSandbox } from "./parts.ts";
 import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
@@ -139,6 +139,38 @@ function runWaiting(snapshot: unknown, logic?: unknown, path: string[] = []): Ru
     if ((childSnap as { value?: unknown } | undefined)?.value === undefined) continue;
     out.push(...runWaiting(childSnap, live ? child.logic : undefined, [...path, id]));
   }
+  return out;
+}
+
+/**
+ * The Sandbox of every live Workspace under `actor`, at any depth, by CR name — what a cancel
+ * destroys (ADR-0025). Read off the run's own live actor tree: each Workspace holds its `wsId` in
+ * context, and the name is a function of the run and that id, the same one its `teardown` deletes.
+ * Correct after a restart by construction: `restore()` rebuilds this tree from the persisted
+ * snapshot, so a restored run names its Sandboxes before its watch has listed. The Sandbox watch's
+ * set, filtered by the run's label, is not: before the watch has listed it holds nothing, and
+ * unknown is never absent (ADR-0063).
+ *
+ * Left out: a Workspace in `placing`, which deletes its own Sandbox when its wait is aborted — and
+ * only once any write in flight has settled, so a delete from here could race the apply and leave
+ * the CR behind (ADR-0064); and one that is `done` or ended, whose `teardown` already ran.
+ */
+function runSandboxes(actor: AnyActorRef, runId: string): string[] {
+  const out: string[] = [];
+  const snap = actor.getSnapshot() as
+    | { status?: string; value?: unknown; context?: { wsId?: unknown }; children?: Record<string, AnyActorRef> }
+    | undefined;
+  if (snap?.status !== "active") return out;
+  const logic = (actor as AnyActorRef & { logic?: unknown }).logic;
+  if (
+    logic != null &&
+    composesSandbox(logic as AnyStateMachine) &&
+    snap.value !== "placing" &&
+    typeof snap.context?.wsId === "string"
+  ) {
+    out.push(workspaceName(runId, snap.context.wsId));
+  }
+  for (const child of Object.values(snap.children ?? {})) out.push(...runSandboxes(child, runId));
   return out;
 }
 
@@ -999,14 +1031,37 @@ export class RunHost {
    * Ending the turns and refusing to restore are one decision, not two: a cancelled run that came
    * back would re-attach to submissions that settled `aborted`, and `settle`'s rejection would
    * fault a run whose Agents were stopped on purpose.
+   *
+   * It then destroys every Sandbox the run owns, unless `keep` (`jr2 send <run> --event CANCEL
+   * --keep`): kept, they age out at the operator's idle timeout, and `jr2 ssh` reaches them until
+   * then. A faulted run never comes through here, and keeps its Workspaces (ADR-0012).
    */
-  async cancel(runId: string): Promise<void> {
+  async cancel(runId: string, opts: { keep?: boolean } = {}): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) return;
+    // Named BEFORE the stop, while the tree still says which Workspaces are live.
+    const sandboxes = opts.keep ? [] : runSandboxes(run.actor, runId);
     run.actor.stop();
     // Persist AFTER the stop: the snapshot is final, and `persist` fans out the last status,
     // announces `gone`, and untracks — the same terminal path a run that settled on its own takes.
     this.persist(run, "cancelled");
+    // The run is over, so nothing can use its Workspaces, and each holds its whole Size (ADR-0025).
+    // An actor stop skips the wrapper's `teardown` state, so the host runs the same idempotent
+    // delete here, after the stop, so no lease renews what was deleted. `keep` leaves them to the
+    // operator's idle timeout, for inspection. A delete that fails is the idle GC's, as in
+    // `teardown` (ADR-0012 backstop): the cancel has already happened.
+    const port = this.sandbox;
+    if (!port) return;
+    await Promise.all(
+      sandboxes.map((name) =>
+        port.destroy(name).catch((err: unknown) => {
+          console.error(
+            `run ${runId}: cancel could not delete Sandbox ${name} (the idle timeout will): ` +
+              (err instanceof Error ? err.message : String(err)),
+          );
+        }),
+      ),
+    );
   }
 
   /** Feed a run's final word to both granularities: where it ended, then that it is gone. */

@@ -36,7 +36,8 @@ usage: jr2 <command> [args]
   status [runId]                    print a run's current status (read-through),
          [--json]                   or the instance's Repos, per node, when given none (ADR-0048/0051)
   logs <runId> [-f]                 replay a run's status; -f to follow until it settles
-  send <runId> --event CANCEL       abandon a live run
+  send <runId> --event CANCEL       abandon a live run and destroy its Workspaces
+       [--keep]                     ...or keep them for inspection until the idle timeout
   send <runId> --gate <gate> --event <name> [--input <json>]
                                     deliver a workflow event to an open gate
 

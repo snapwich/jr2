@@ -183,6 +183,28 @@ test("POST /runs/:id/events takes CANCEL, and nothing else", async () => {
   assert.equal(host.status(runId), undefined, "CANCEL abandons the run");
 });
 
+test("POST /runs/:id/events: CANCEL carries `keep` to the host, and refuses one that is not a boolean (ADR-0025)", async () => {
+  const { host, app } = await mkApp();
+  const seen: Array<{ keep?: boolean }> = [];
+  const cancel = host.cancel.bind(host);
+  host.cancel = async (id, opts) => {
+    seen.push(opts ?? {});
+    return cancel(id, opts);
+  };
+
+  const a = await host.start("coding");
+  const bad = await app.request(`/runs/${a.runId}/events`, jsonPost({ type: "CANCEL", keep: "yes" }));
+  assert.equal(bad.status, 400);
+  assert.match(((await bad.json()) as { error: string }).error, /"keep" must be a boolean/);
+  assert.deepEqual(seen, [], "a refused body cancels nothing");
+  assert.ok(host.status(a.runId), "the run is still live");
+
+  assert.equal((await app.request(`/runs/${a.runId}/events`, jsonPost({ type: "CANCEL", keep: true }))).status, 200);
+  const b = await host.start("coding");
+  assert.equal((await app.request(`/runs/${b.runId}/events`, jsonPost({ type: "CANCEL" }))).status, 200);
+  assert.deepEqual(seen, [{ keep: true }, { keep: false }]);
+});
+
 test("SSE: GET /runs/:id/events streams a status delta on transition", async () => {
   const { host, app, clients } = await mkApp();
   const { runId, instanceId } = await host.start("coding");

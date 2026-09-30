@@ -180,6 +180,35 @@ test("send resolves before it writes — an unresolvable id never reaches CANCEL
   assert.match(real.err(), new RegExp(`sent CANCEL to ${runId}`), "the message names the run it actually hit");
 });
 
+test("send --keep carries keep on CANCEL, and is refused with any other event (ADR-0025)", async () => {
+  const { app, host } = await mkHarness();
+  const seen: Array<{ keep?: boolean } | undefined> = [];
+  const cancel = host.cancel.bind(host);
+  host.cancel = async (id, opts) => {
+    seen.push(opts);
+    return cancel(id, opts);
+  };
+  const mk = () =>
+    mkIo({ env: { JR2_URL: "http://test" }, fetch: (url, init) => Promise.resolve(app.request(url, init)) });
+
+  const a = await host.start("loop");
+  const gated = mk();
+  assert.equal(await main(["send", a.runId, "--gate", "g", "--event", "go", "--keep"], gated.io), 2);
+  assert.match(gated.err(), /--keep goes with --event CANCEL alone/);
+  const other = mk();
+  assert.equal(await main(["send", a.runId, "--event", "STEER", "--keep"], other.io), 2);
+  assert.match(other.err(), /--keep goes with --event CANCEL alone/);
+  assert.deepEqual(seen, [], "a refused flag cancels nothing");
+  assert.equal(host.status(a.runId)?.status, "active");
+
+  const kept = mk();
+  assert.equal(await main(["send", a.runId, "--event", "CANCEL", "--keep"], kept.io), 0);
+  assert.match(kept.err(), /Workspaces are kept/);
+  const b = await host.start("loop");
+  assert.equal(await main(["send", b.runId, "--event", "CANCEL"], mk().io), 0);
+  assert.deepEqual(seen, [{ keep: true }, { keep: false }]);
+});
+
 test("`jr2 status` with no run reports the data plane and every Repo, failing nodes with git's own error", async () => {
   // ADR-0048's third claim on ADR-0051's shape: the cache agent degrades a Repo on one node instead
   // of the daemon, so the way to learn a clone never landed is to ask the instance — not to tail

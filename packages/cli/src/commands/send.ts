@@ -1,6 +1,6 @@
 // `jr2 send` (ADR-0009/0011/0013): the two down-channels a human has into a live run.
 //
-//   jr2 send <runId|abbrev> --event CANCEL                           run control (the only verb left)
+//   jr2 send <runId|abbrev> --event CANCEL [--keep]                  run control (the only verb left)
 //   jr2 send <runId|abbrev> --gate <gate> --event <name> [--input '<json>'] deliver to an open Gate
 //
 // Run control used to carry APPROVE and STEER too. Those rode the `deferred` (held tool result)
@@ -13,6 +13,10 @@
 // The run id resolves BEFORE either branch: both are writes, and a write must never be
 // prefix-sensitive (ADR-0009). It also gives a bad id a real error — `host.stop()` returns silently
 // for an unknown run, so an unresolved CANCEL used to report success.
+//
+// A CANCEL destroys the run's Workspaces; `--keep` leaves them for inspection until the operator's
+// idle timeout (ADR-0025). It is a fact of this cancel, so it is a flag here and never a config key,
+// and it means nothing on any other event — refused there rather than ignored.
 
 import { parseArgs } from "node:util";
 import { JR2Client } from "../client.ts";
@@ -21,7 +25,7 @@ import { activity, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
 
 const USAGE =
-  "usage: jr2 send <runId|abbrev> --event CANCEL | jr2 send <runId|abbrev> --gate <gate> --event <name> [--input '<json>']";
+  "usage: jr2 send <runId|abbrev> --event CANCEL [--keep] | jr2 send <runId|abbrev> --gate <gate> --event <name> [--input '<json>']";
 
 export async function send(args: string[], io: Io): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -32,6 +36,7 @@ export async function send(args: string[], io: Io): Promise<number> {
       event: { type: "string" },
       gate: { type: "string" },
       input: { type: "string" },
+      keep: { type: "boolean" },
       ...TARGET_ARGS,
     },
   });
@@ -40,6 +45,12 @@ export async function send(args: string[], io: Io): Promise<number> {
   const event = values.event as string | undefined;
   if (!given || !event) {
     activity(io, USAGE);
+    return 2;
+  }
+  const keep = values.keep === true;
+  // Refused before the run id resolves: a usage error needs no instance to be one.
+  if (values.keep !== undefined && (gate || event.toUpperCase() !== "CANCEL")) {
+    activity(io, `jr2 send: --keep goes with --event CANCEL alone (it keeps a cancelled run's Workspaces)`);
     return 2;
   }
   const target = await resolveTarget(io, targetOptions(values));
@@ -74,8 +85,8 @@ export async function send(args: string[], io: Io): Promise<number> {
       activity(io, `jr2 send: unknown event "${event}" (run control accepts: CANCEL; workflow events need --gate)`);
       return 2;
     }
-    await client.send(runId, { type: control });
-    activity(io, `sent ${control} to ${runId}`);
+    await client.send(runId, keep ? { type: control, keep } : { type: control });
+    activity(io, keep ? `sent ${control} to ${runId}; its Workspaces are kept` : `sent ${control} to ${runId}`);
     return 0;
   } finally {
     target.close?.();

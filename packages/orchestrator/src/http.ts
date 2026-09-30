@@ -49,8 +49,9 @@ import { observe, type RunHost } from "./run-host.ts";
 import { KIT_VERSION } from "./config.ts";
 
 /** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
- * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery, which is reserved, not built. */
-type RunEventBody = { type?: string };
+ * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery, which is reserved, not built.
+ * `keep` leaves the cancelled run's Workspaces for inspection instead of destroying them (ADR-0025). */
+type RunEventBody = { type?: string; keep?: unknown };
 
 /** `GET /runs/resolve` floor — a 1-char prefix is a table scan, not a question. The CLI enforces
  * the same floor on the argument; this one guards the scan regardless of who is calling. */
@@ -663,8 +664,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   // held `deferred` calls and drained `poll` inboxes, and ADR-0013 reserves both semantics without
   // building them. Workflow-defined events reach a run through its GATES, not through here.
   //
-  // It ENDS the run (ADR-0025): the Agents' turns end with it and the run does not come back on
-  // the next restore. `RunHost.stop()` — park it, keep it restorable — is a different verb, and
+  // It ENDS the run (ADR-0025): the Agents' turns end with it, the run does not come back on the
+  // next restore, and its Workspaces are destroyed unless the body says `keep: true`. `RunHost.stop()` — park it, keep it restorable — is a different verb, and
   // deliberately not on the wire.
   app.post("/runs/:runId/events", instanceOnly, async (c) => {
     const runId = c.req.param("runId");
@@ -672,8 +673,12 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     if (body.type !== "CANCEL") {
       return c.json({ error: `unknown event type "${body.type ?? ""}" (accepts: CANCEL)` }, 400);
     }
+    // Whether to keep is a fact of the moment of the cancel, never a config key (ADR-0025).
+    if (body.keep !== undefined && typeof body.keep !== "boolean") {
+      return c.json({ error: `"keep" must be a boolean` }, 400);
+    }
     try {
-      await host.cancel(runId);
+      await host.cancel(runId, { keep: body.keep === true });
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: errMessage(err) }, 404);

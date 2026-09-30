@@ -1038,10 +1038,103 @@ test("placing: a cancelled run deletes its Sandbox that never ran", async () => 
   await waitFor(() => sandbox.waiting === 1);
   sandbox.waitFor(NODE);
   await waitFor(() => host.status(runId)?.waiting.length === 1);
+  // The cancel names no Sandbox still `placing`: that one is its own abort's to delete, once the
+  // apply has settled (ADR-0064) — so the cancel resolves, and the CR is deleted exactly once.
   await host.cancel(runId);
   await waitFor(() => sandbox.calls.some((c) => c.startsWith("destroy:")));
+  await new Promise((r) => setTimeout(r, 20));
   assert.deepEqual(lifecycle(sandbox), ["place", "destroy"]);
   assert.deepEqual((await host.read(runId))?.waiting, [], "a cancelled run waits for nothing");
+});
+
+/** Two Workspaces under one run, each parked on its own gate in `running`. */
+const holdOther = jr2Setup({ events: [approveDef] }).createMachine({
+  id: "holdOther",
+  initial: "working",
+  states: {
+    working: { invoke: { src: "gate", input: { gate: "other", accepts: ["approve"] } }, on: { approve: "done" } },
+    done: { type: "final" },
+  },
+});
+const twoFeatures = setup({
+  actors: {
+    feature: wrapped,
+    other: workspace(holdOther, { repos: { app: APP }, spec: () => ({ branch: "feat-2" }) }),
+  },
+}).createMachine({
+  id: "two",
+  type: "parallel",
+  states: {
+    a: { invoke: { id: "F-1", src: "feature" } },
+    b: { invoke: { id: "F-2", src: "other" } },
+  },
+});
+const twoDef = (): WorkflowDef => ({ name: "two", machine: twoFeatures, provide: () => ({}) });
+const destroyed = (sandbox: FakeSandbox): string[] =>
+  sandbox.calls.filter((c) => c.startsWith("destroy:")).map((c) => c.slice("destroy:".length));
+
+test("cancel destroys every Sandbox the run owns — an actor stop skips `teardown` (ADR-0025)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(twoDef());
+  const { runId } = await host.start("two");
+  await waitFor(() => host.gates(runId).length === 2);
+  assert.deepEqual(destroyed(sandbox), [], "parked is retained");
+
+  await host.cancel(runId);
+  assert.deepEqual(destroyed(sandbox).sort(), [workspaceName(runId, "F-1"), workspaceName(runId, "F-2")].sort());
+  assert.equal((await host.read(runId))?.status, "cancelled");
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "no lease renews what was deleted");
+});
+
+test("cancel finds a restored run's Sandboxes from its own snapshot, before any watch has listed", async () => {
+  const store = await mkStore();
+  const sandbox = new FakeSandbox();
+  const first = new RunHost({ store, sandbox });
+  first.register(wsDef());
+  const { runId } = await first.start("ws");
+  await waitFor(() => first.gates(runId).length === 1);
+  const [placed] = sandbox.calls.filter((c) => c.startsWith("place:")).map((c) => c.slice("place:".length));
+  await first.stop(runId);
+
+  const second = new RunHost({ store, sandbox });
+  second.register(wsDef());
+  await second.restore();
+  await second.cancel(runId);
+  assert.deepEqual(destroyed(sandbox), [placed], "the same CR the wrapper placed");
+});
+
+test("cancel with keep destroys nothing: the Sandboxes age out at the idle timeout (ADR-0025)", async () => {
+  const sandbox = new FakeSandbox();
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(twoDef());
+  const { runId } = await host.start("two");
+  await waitFor(() => host.gates(runId).length === 2);
+
+  await host.cancel(runId, { keep: true });
+  assert.equal((await host.read(runId))?.status, "cancelled");
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.deepEqual(destroyed(sandbox), []);
+  const settled = renews(sandbox);
+  await new Promise((r) => setTimeout(r, sandbox.leaseIntervalMs * 6));
+  assert.equal(renews(sandbox), settled, "kept is not leased: nothing claims it");
+});
+
+test("cancel shrugs off a delete that fails: the run is cancelled, the idle GC has the CR", async () => {
+  const sandbox = new FakeSandbox();
+  sandbox.destroy = async (name) => {
+    sandbox.calls.push(`destroy:${name}`);
+    throw new Error("the API server is having a day");
+  };
+  const host = new RunHost({ store: await mkStore(), sandbox });
+  host.register(wsDef());
+  const { runId } = await host.start("ws");
+  await waitFor(() => host.gates(runId).length === 1);
+  await host.cancel(runId);
+  assert.equal(destroyed(sandbox).length, 1);
+  assert.equal((await host.read(runId))?.status, "cancelled");
 });
 
 test("placing: a Sandbox Lost before its node faults the run by name, and is deleted — it never ran", async () => {

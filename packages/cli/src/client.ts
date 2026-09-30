@@ -34,8 +34,9 @@ export type RunFeedEvent =
   | { kind: "retry"; child: string; attempt: number; reason: string }
   | PlacingMarker;
 
-/** A run-control event posted to a live run (ADR-0013): CANCEL is the vocabulary that is left. */
-export type RunEvent = { type: string };
+/** A run-control event posted to a live run (ADR-0013): CANCEL is the vocabulary that is left.
+ * `keep` leaves a cancelled run's Workspaces instead of destroying them (ADR-0025). */
+export type RunEvent = { type: string; keep?: boolean };
 
 /** The subset of `fetch` the client uses. `globalThis.fetch` and hono's `app.request` both satisfy it. */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
