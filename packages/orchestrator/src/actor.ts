@@ -55,7 +55,7 @@ import type { HarnessRestarts, MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { agentAddress, continuedIid, resolveAccepts, runBindingOf } from "./registration.ts";
 import type { NoticeScope } from "./notices.ts";
-import type { Notice } from "./wire.ts";
+import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice } from "./wire.ts";
 
 /**
  * One admitted Submission — the durable re-attach handle (ADR-0016). The wire fields are
@@ -337,15 +337,16 @@ export type AgentRunOptions = {
 
 /**
  * The runaway settlement class (ADR-0035), read STRUCTURALLY off a settle rejection: the wire
- * client's `SettlementFault` carries the Settlement, but this module is wire-free (see header),
- * so the literal is restated (`SUBMISSION_RUNAWAY` in `./wire.ts`) and the shape
- * duck-typed. A lost conversation (404) carries no settlement, so it stays terminal like every
- * other class.
+ * client's `SettlementFault` carries the Settlement, but this module never loads the wire client
+ * (see header), so the shape is duck-typed. The literal is the wire's own `SUBMISSION_RUNAWAY` —
+ * `./wire.ts` is shapes and constants, nothing a test load path pays for — and wire-types.test.ts
+ * holds it to the Harness's. A lost conversation (404) carries no settlement, so it stays
+ * terminal like every other class.
  */
 function runawayReason(err: unknown): string | undefined {
   if (typeof err !== "object" || err === null) return undefined;
   const error = (err as { settlement?: { error?: { type?: string; message?: string } } }).settlement?.error;
-  return error?.type === "runaway" ? (error.message ?? "runaway") : undefined;
+  return error?.type === SUBMISSION_RUNAWAY ? (error.message ?? SUBMISSION_RUNAWAY) : undefined;
 }
 
 /** The Harness's fixed prefix for a provider that refused the load (ADR-0064), restated like the
@@ -375,8 +376,8 @@ function harnessRestartReason(seen: HarnessRestarts): string {
 /**
  * A Submission the Harness settled `failed` because it restarted under it (ADR-0031): the rebuilt
  * stream says so, so the Orchestrator reads a Settlement, not a 404. Read STRUCTURALLY off the
- * Settlement's typed error, like {@link runawayReason} — the literal is restated
- * (`SUBMISSION_HARNESS_RESTARTED` in `./wire.ts`), and the message is only what the fault quotes.
+ * Settlement's typed error, like {@link runawayReason} — the wire's `SUBMISSION_HARNESS_RESTARTED`,
+ * held to the Harness's by wire-types.test.ts — and the message is only what the fault quotes.
  * It can reach the actor BEFORE the watch's restart count does, and it is the only restart signal
  * an Instance Harness gives — the watch does not see that pod.
  */
@@ -384,7 +385,7 @@ function settledByRestart(err: unknown): string | undefined {
   if (typeof err !== "object" || err === null) return undefined;
   const settlement = (err as { settlement?: { outcome?: unknown; error?: { type?: unknown; message?: unknown } } })
     .settlement;
-  if (settlement?.outcome !== "failed" || settlement.error?.type !== "harness_restarted") return undefined;
+  if (settlement?.outcome !== "failed" || settlement.error?.type !== SUBMISSION_HARNESS_RESTARTED) return undefined;
   const message = settlement.error.message;
   return typeof message === "string" ? message : "Harness restarted";
 }

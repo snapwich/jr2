@@ -17,6 +17,7 @@ import { registerAmbientHandles, type AmbientHandles } from "../src/ambient.ts";
 import { bindRun, agentAddress, RegistrationTable, type RetryTelemetry, type RunBinding } from "../src/registration.ts";
 import { attachVocabulary } from "../src/vocabulary.ts";
 import type { HarnessRestarts } from "../src/workspace.ts";
+import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY } from "../src/wire.ts";
 import { MockFlueClient } from "./_fixtures.ts";
 
 const pingEvent = defineEvent({ name: "ping", input: z.object({}) });
@@ -568,7 +569,7 @@ test("a Settlement `failed` by a Harness restart is `Turn lost`, and a memory ki
         submissionId: "sub-1",
         outcome: "failed",
         error: {
-          type: "harness_restarted",
+          type: SUBMISSION_HARNESS_RESTARTED,
           message: "Harness restarted before this Submission settled (ADR-0031)",
         },
       },
@@ -638,7 +639,7 @@ test("a Turn a Harness restart cut keeps its continued conversation: only the Tu
     },
   );
   await tick();
-  onInstance.faultSettled("harness_restarted", "Harness restarted before this Submission settled");
+  onInstance.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted before this Submission settled");
   await tick();
   await tick();
   assert.match(String(settled.received.find((e) => e.type === "agent.fault")?.reason), /^Turn lost \(/);
@@ -852,7 +853,7 @@ test("runaway: a FRESH turn is rerolled ONCE — fresh conversation, IDENTICAL p
   const { received, ledger, telemetry, table } = harness(mock, baseInput);
   await tick();
 
-  mock.faultSettled("runaway", "repeated an identical tool call 4 times");
+  mock.faultSettled(SUBMISSION_RUNAWAY, "repeated an identical tool call 4 times");
   await tick();
 
   assert.equal(mock.admits.length, 2, "the reroll is a fresh admission");
@@ -882,7 +883,7 @@ test("runaway: a pick delivered on the reroll surface lands on the invoking stat
   const mock = new MockFlueClient();
   const { received, table } = harness(mock, baseInput);
   await tick();
-  mock.faultSettled("runaway", "exceeded 128 steps");
+  mock.faultSettled(SUBMISSION_RUNAWAY, "exceeded 128 steps");
   await tick();
 
   table.deliver(agentAddress("inst-42-r1"), "ping", {});
@@ -898,9 +899,9 @@ test("runaway: a second runaway is the ONE terminal agent.fault, carrying the ru
   const mock = new MockFlueClient();
   const { received } = harness(mock, baseInput);
   await tick();
-  mock.faultSettled("runaway", "repeated an identical tool call 4 times");
+  mock.faultSettled(SUBMISSION_RUNAWAY, "repeated an identical tool call 4 times");
   await tick();
-  mock.faultSettled("runaway", "repeated an identical tool call 4 times");
+  mock.faultSettled(SUBMISSION_RUNAWAY, "repeated an identical tool call 4 times");
   await tick();
 
   assert.equal(mock.admits.length, 2, "budget 1: two independent runaways mean the task is pathological");
@@ -922,7 +923,7 @@ test("runaway: a continuation gets NO reroll, and its terminal fault BURNS it (A
     },
   );
   await tick();
-  mock.faultSettled("runaway", "exceeded 128 steps");
+  mock.faultSettled(SUBMISSION_RUNAWAY, "exceeded 128 steps");
   await tick();
 
   assert.equal(mock.admits.length, 1, "jr2 does not invent a conversation the workflow asked to continue");
@@ -964,7 +965,7 @@ test("a CANCEL after a reroll aborts the REROLL conversation and destroys both s
   const mock = new MockFlueClient();
   const { actor, table } = harness(mock, baseInput);
   await tick();
-  mock.faultSettled("runaway", "exceeded 128 steps");
+  mock.faultSettled(SUBMISSION_RUNAWAY, "exceeded 128 steps");
   await tick();
 
   actor.send({ type: "CANCEL_RUN" });
@@ -1012,7 +1013,7 @@ test("runaway: a restored turn (attach, no prompt) gets NO reroll — there is n
   };
   const { received } = harness(mock, { ...baseInput, prompt: undefined, attach });
   await tick();
-  mock.faultSettled("runaway", "exceeded 128 steps");
+  mock.faultSettled(SUBMISSION_RUNAWAY, "exceeded 128 steps");
   await tick();
 
   assert.equal(mock.admits.length, 0, "no admit — a promptless reroll would be a mechanism 400");
@@ -1031,7 +1032,7 @@ test("runaway AFTER a delivered pick gets NO reroll — the workflow already hol
   await tick();
 
   table.deliver(agentAddress("inst-42"), "ping", {});
-  mock.faultSettled("runaway", "repeated an identical tool call 4 times");
+  mock.faultSettled(SUBMISSION_RUNAWAY, "repeated an identical tool call 4 times");
   await tick();
 
   assert.equal(mock.admits.length, 1, "a reroll would replay a prompt whose signal was already delivered");
