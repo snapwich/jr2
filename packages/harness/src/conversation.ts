@@ -277,8 +277,8 @@ export class Conversation {
     const index = this.queue.findIndex((queued) => queued === record);
     if (index !== -1) this.queue.splice(index, 1);
     const settlement: Settlement = { submissionId: record.submissionId, outcome, ...(error ? { error } : {}) };
+    // Recorded as its stream line alone (`append`): the rebuild reads settlements off the stream.
     this.settlements.push(settlement);
-    this.recorder?.settled(settlement);
     this.append({
       type: "submission-settled",
       conversationId: this.instanceId,

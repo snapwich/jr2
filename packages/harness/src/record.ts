@@ -8,13 +8,16 @@
 //   <root>/<agent>/<instance id>/record/admitted.jsonl    one { submissionId } per Admission
 //   <root>/<agent>/<instance id>/record/stream.jsonl      the stream log, one StreamEvent per line
 //   <root>/<agent>/<instance id>/record/messages.jsonl    the history view's messages
-//   <root>/<agent>/<instance id>/record/settlements.jsonl the history view's settlements
 //   <root>/<agent>/<instance id>/engine/<engine>/         the engine part (pi's sessions: engine/pi)
 //
 // Append-only JSONL, written synchronously: the Conversation's appends are synchronous, and a line
 // on disk before the append returns is what lets a rebuilt stream agree with every offset the
 // Orchestrator was ever handed. A Harness writes a line per event, not per token, so the cost is
 // small next to a Turn.
+//
+// A Settlement is recorded once, as its `submission-settled` line on the stream: the rebuild reads
+// the history view's settlements off the stream, so no crash between two writes can leave a
+// Settlement that is counted settled but never reaches a `wait`.
 
 import {
   appendFileSync,
@@ -34,7 +37,6 @@ export type ConversationRecorder = {
   admitted(submissionId: string): void;
   appended(event: StreamEvent): void;
   said(message: HistoryMessage): void;
-  settled(settlement: Settlement): void;
 };
 
 /**
@@ -85,7 +87,7 @@ export function startRecord(root: string, agentName: string, instanceId: string)
 }
 
 /** The record's files, each one JSONL. */
-const RECORD_FILES = ["admitted.jsonl", "stream.jsonl", "messages.jsonl", "settlements.jsonl"];
+const RECORD_FILES = ["admitted.jsonl", "stream.jsonl", "messages.jsonl"];
 
 /** Append to an existing record — the one a boot rebuilt. The torn write a restart may have left
  * at a file's end is cut first: the read dropped it, and a line appended onto it would join the
@@ -98,7 +100,6 @@ export function recorderAt(dir: string): ConversationRecorder {
     admitted: (submissionId) => line("admitted.jsonl", { submissionId }),
     appended: (event) => line("stream.jsonl", event),
     said: (message) => line("messages.jsonl", message),
-    settled: (settlement) => line("settlements.jsonl", settlement),
   };
 }
 
@@ -134,13 +135,24 @@ export function readRecord(dir: string): RecordedConversation {
   if (typeof identity.agentName !== "string" || typeof identity.instanceId !== "string") {
     throw new Error(`${join(dir, "conversation.json")} names no conversation`);
   }
+  const log = jsonl<StreamEvent>(join(dir, "record", "stream.jsonl"));
   return {
     agentName: identity.agentName,
     instanceId: identity.instanceId,
     admitted: jsonl<{ submissionId: string }>(join(dir, "record", "admitted.jsonl")).map((a) => a.submissionId),
-    log: jsonl<StreamEvent>(join(dir, "record", "stream.jsonl")),
+    log,
     messages: jsonl<HistoryMessage>(join(dir, "record", "messages.jsonl")),
-    settlements: jsonl<Settlement>(join(dir, "record", "settlements.jsonl")),
+    settlements: log.flatMap((event): Settlement[] =>
+      event.type === "submission-settled"
+        ? [
+            {
+              submissionId: event.submissionId,
+              outcome: event.outcome,
+              ...(event.error ? { error: event.error } : {}),
+            },
+          ]
+        : [],
+    ),
   };
 }
 

@@ -236,6 +236,30 @@ test("a torn write is cut before the rebuilt record appends, so the boot after t
   );
 });
 
+test("a Settlement whose stream line the restart tore is settled again, so a re-attached wait reads one", async () => {
+  const dir = scratch();
+  const before = harnessOver(dir);
+  const admission = await admitted(before.app, "/agents/decider/i1", "one");
+  await flush();
+  before.runs[0]!.resolve();
+  await flush();
+  // The process dies while it writes the Settlement's line: the line is torn, and the stream is
+  // the only place a Settlement is recorded.
+  const file = join(conversationDir(dir, "decider", "i1"), "record", "stream.jsonl");
+  const text = readFileSync(file, "utf8");
+  writeFileSync(file, text.slice(0, text.lastIndexOf("\n", text.length - 2) + 20));
+
+  const after = harnessOver(dir);
+  const settled = (await stream(after.app, "/agents/decider/i1", admission.offset)).filter(
+    (e) => e.type === "submission-settled",
+  );
+  assert.deepEqual(
+    settled.map((e) => [e.submissionId, e.outcome, e.error?.type]),
+    [[admission.submissionId, "failed", SUBMISSION_HARNESS_RESTARTED]],
+  );
+  assert.deepEqual((await history(after.app, "/agents/decider/i1")).settlements.length, 1);
+});
+
 // ---- the live set ---------------------------------------------------------------------------------
 
 test("PUT /agents frees every conversation the live set does not name — memory and directory", async () => {
