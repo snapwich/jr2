@@ -8,7 +8,7 @@
 
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -97,6 +97,9 @@ let boundedApp: Hono;
 let compactApp: Hono;
 /** Both toy bounds at once — the only way to watch a Compaction and a Runaway share one turn. */
 let boundedCompactApp: Hono;
+/** The same composition persisting under a directory (ADR-0031) — a second one over the same
+ * directory is the Harness after a restart. */
+let appOver: (conversationsDir: string) => Hono;
 /** Small enough that the cut lands near the tail of a scripted transcript. */
 const KEEP_RECENT = 12;
 /** What each conversation printed (ADR-0023) — the pod log, keyed by iid. */
@@ -123,8 +126,12 @@ before(async () => {
     },
   };
   const models = modelsFor(harness, {});
-  const appWith = (seams?: { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number }): Hono =>
+  const appWith = (
+    seams?: { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number },
+    conversationsDir?: string,
+  ): Hono =>
     harnessApp({
+      ...(conversationsDir ? { conversationsDir } : {}),
       longPollMs: 250,
       // The turn loop is under test here; the wire's gate is `auth.test.ts`'s (ADR-0058).
       checkBearer: () => true,
@@ -148,6 +155,7 @@ before(async () => {
   boundedApp = appWith({ stepBudget: 3 });
   compactApp = appWith({ keepRecentTokens: KEEP_RECENT });
   boundedCompactApp = appWith({ stepBudget: 3, keepRecentTokens: KEEP_RECENT });
+  appOver = (conversationsDir) => appWith(undefined, conversationsDir);
   process.on("unhandledRejection", onRejection);
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array, ...rest: never[]) => {
@@ -510,6 +518,76 @@ test("an unresolvable dial is a 400 at admission — the turn never starts", asy
   });
   assert.equal(res.status, 400);
   assert.equal(provider.calls.length, 0, "no provider request was ever made");
+});
+
+/** One Menu-only conversation's first Turn, on a Harness persisting under a fresh directory: the
+ * model says something only it said, then picks. Answers the directory, for a restart over it. */
+async function firstTurnPersisted(iid: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "jr2-conversations-"));
+  provider.reset([
+    {
+      text: "The inputs say alpha.",
+      toolCall: { id: "call_1", name: "mcp__jr2__review_verdict", args: '{"verdict":"alpha"}' },
+    },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const before = appOver(dir);
+  const first = await admit(iid, "Decide the first thing.", undefined, DECISIONER, before);
+  assert.equal((await settled(iid, first, DECISIONER, before)).outcome, "completed");
+  return dir;
+}
+
+/** The restarted Harness's next Turn on the conversation: what the model was sent. */
+async function nextTurnAfterRestart(iid: string, dir: string): Promise<Array<Record<string, unknown>>> {
+  provider.reset([
+    { toolCall: { id: "call_2", name: "mcp__jr2__review_verdict", args: '{"verdict":"beta"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceWith("review_verdict"));
+  const after = appOver(dir);
+  const next = await admit(iid, "Decide the second thing.", undefined, DECISIONER, after);
+  assert.equal((await settled(iid, next, DECISIONER, after)).outcome, "completed");
+  return provider.calls[0]?.messages ?? [];
+}
+
+test("a conversation survives the Harness's restart: pi's session reopens from the engine part (ADR-0031)", async () => {
+  const iid = "conf/restart";
+  const dir = await firstTurnPersisted(iid);
+  const sent = await nextTurnAfterRestart(iid, dir);
+  const text = JSON.stringify(sent);
+  // The whole first Turn, as pi carried it — the tool call and its receipt too, which only the
+  // engine part keeps (the record keeps what was said).
+  assert.match(text, /Decide the first thing\./);
+  assert.match(text, /The inputs say alpha\./);
+  assert.ok(
+    sent.some((m) => m.role === "tool"),
+    "the first Turn's tool traffic came back with the session",
+  );
+  assert.match(lastUserText(provider.calls[0]), /Decide the second thing\./);
+});
+
+test("an engine part that does not open: the conversation continues from the record's messages (ADR-0031)", async () => {
+  const iid = "conf/restart-unreadable";
+  const dir = await firstTurnPersisted(iid);
+  // Another engine's part, or another pi's: nothing this pi reads as a session.
+  const engineDir = join(dir, DECISIONER, encodeURIComponent(iid), "engine", "pi");
+  for (const entry of await readdir(engineDir, { recursive: true, withFileTypes: true })) {
+    if (entry.isFile()) await writeFile(join(entry.parentPath, entry.name), "not a session\n");
+  }
+  const sent = await nextTurnAfterRestart(iid, dir);
+  // The words, as the record kept them — and no tool traffic, which the record never had.
+  const said = sent.filter((m) => m.role === "user" || m.role === "assistant").map((m) => JSON.stringify(m.content));
+  assert.ok(
+    said.some((content) => content.includes("Decide the first thing.")),
+    JSON.stringify(said),
+  );
+  assert.ok(
+    said.some((content) => content.includes("The inputs say alpha.")),
+    JSON.stringify(said),
+  );
+  assert.ok(!sent.some((m) => m.role === "tool"), "the record keeps no tool traffic");
+  assert.match(lastUserText(provider.calls[0]), /Decide the second thing\./);
 });
 
 test("a Menu pick reaches the Orchestrator and its receipt reaches the model; the Submission settles completed", async () => {

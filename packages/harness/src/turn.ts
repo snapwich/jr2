@@ -15,7 +15,6 @@
 
 import {
   AgentHarness,
-  InMemorySessionRepo,
   type AgentMessage,
   type ExecutionToolContext,
   type Session,
@@ -29,7 +28,9 @@ import { RunawayError, TurnOverError, type RunSubmission } from "./conversation.
 import { readMenu, type MenuOptions } from "./menu.ts";
 import { menuToolName, menuTools } from "./menu-tools.ts";
 import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
+import { piSession } from "./pi-engine.ts";
 import { mapThinkingLevel, providerLimit, resolveModel } from "./provider.ts";
+import type { EngineSeat } from "./record.ts";
 import { resolveDefinition, type ResolvedDefinition } from "./spec.ts";
 import type { HistoryMessage } from "./wire.ts";
 import type { MemoryGuard } from "./memory-guard.ts";
@@ -46,6 +47,9 @@ export type TurnDeps = {
   agentName: string;
   instanceId: string;
   appendMessage: (message: HistoryMessage) => void;
+  /** Where pi keeps its session for this conversation, and the record it continues from when that
+   * session will not open (ADR-0031, `pi-engine.ts`). Omitted, the session lives in memory. */
+  engine?: EngineSeat;
   /** Provider-stream retry attempts — the seat ADR-0016 delegated to flue's `durability{}`,
    * re-owned as pi's `maxRetries`. Omitted → pi's default. */
   maxRetries?: number;
@@ -102,7 +106,6 @@ type Assembled = {
 
 /** Build the turn executor for one conversation (the `RunSubmission` its Conversation pumps). */
 export function runSubmissionFor(deps: TurnDeps): RunSubmission {
-  const repo = new InMemorySessionRepo();
   let assembled: Assembled | undefined;
   const stepBudget = deps.stepBudget ?? STEP_BUDGET;
   const identicalCallLimit = deps.identicalCallLimit ?? IDENTICAL_CALL_LIMIT;
@@ -150,8 +153,9 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     if (!assembled) {
       const current = { definition, model, thinkingLevel, signal };
       // Held, not inlined: Compaction appends its entry to THIS session (ADR-0036), and
-      // `AgentHarness` exposes no accessor for the one it was given.
-      const session = await repo.create();
+      // `AgentHarness` exposes no accessor for the one it was given. Opened, not created, when the
+      // conversation was rebuilt: the engine part a previous process wrote (ADR-0031).
+      const session = await piSession(deps.engine, { cwd: definition.cwd, model });
       const harness = new AgentHarness<ExecutionToolContext>({
         session,
         models: deps.models,

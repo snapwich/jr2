@@ -9,6 +9,8 @@
 // forever. Plus ADR-0023's echo (`POST /echo`): the run-narrative events the Orchestrator tees
 // here, rendered to this pod's stdout in the printer's idiom. Plus ADR-0063's attach
 // (`POST /attach`): the Workspace's Repos into `/work`, run here instead of over `kubectl exec`.
+// Plus ADR-0031's lifetime: each conversation persisted to a directory and rebuilt from it on boot,
+// the Orchestrator's live set (`PUT /agents`) freeing the rest, and a drain that stops admitting.
 // Turn execution and the attach are injected, so this module owns routing alone — wire tests drive it socket-free via `app.request()` and never touch
 // pi.
 
@@ -17,6 +19,18 @@ import type { Context, MiddlewareHandler } from "hono";
 import { AttachFault, attachFault } from "./attach.ts";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
 import { renderEchoEvent, type PrinterOut } from "./printer.ts";
+import {
+  conversationDir,
+  conversationDirs,
+  engineSeat,
+  freeDir,
+  readRecord,
+  recorderAt,
+  startRecord,
+  type ConversationRecorder,
+  type EngineSeat,
+  type RecordedConversation,
+} from "./record.ts";
 import {
   definitionFault,
   frameFault,
@@ -35,6 +49,8 @@ import {
   type AttachRequest,
   type AttachResponse,
   type HistoryMessage,
+  type LiveConversation,
+  type LiveSetResponse,
   type Notice,
 } from "./wire.ts";
 
@@ -44,6 +60,9 @@ export type ConversationSeat = {
   instanceId: string;
   /** The Conversation's `appendMessage` — how the turn puts completed messages on the stream. */
   appendMessage: (message: HistoryMessage) => void;
+  /** Where the engine keeps its part of the conversation, and the record it continues from when
+   * that part is unreadable (ADR-0031). */
+  engine: EngineSeat;
 };
 
 export type HarnessAppDeps = {
@@ -89,6 +108,24 @@ export type HarnessAppDeps = {
    * lands on the stream of every conversation whose Submission is running, where the Orchestrator
    * reads it and keeps a workspace notice (ADR-0062). Omitted, no kill is reported. */
   memoryKills?: (listener: (kill: { peak: string; limit: string }) => void) => () => void;
+  /**
+   * The directory every conversation is persisted under (ADR-0031) — `JR2_CONVERSATIONS_DIR`: the
+   * Instance Harness's own PersistentVolumeClaim, a Sandbox Harness's emptyDir. Read once, when the
+   * app is built, to rebuild each conversation a previous process left; written as each one goes.
+   * Omitted, conversations live in memory alone and a restart loses them.
+   */
+  conversationsDir?: string;
+  /** Where a conversation the boot cannot rebuild is said — the pod log unless a test collects it. */
+  bootOut?: PrinterOut;
+};
+
+/** The wire app, and the drain a SIGTERM runs (ADR-0031). */
+export type HarnessServer = {
+  app: Hono;
+  /** Stop admitting — every admission answers 503 from this call on — and resolve once every
+   * Submission already admitted has settled. Nothing here bounds it: the pod's termination grace
+   * is a Turn's worst case, and the kubelet ends what outlives it. */
+  drain: () => Promise<void>;
 };
 
 /** The bearer token on a request, if it carries one. */
@@ -100,12 +137,62 @@ function bearerOf(c: Context): string | undefined {
 
 /** The five wire routes over a map of Conversations, created on POST (admission creates). */
 export function harnessApp(deps: HarnessAppDeps): Hono {
+  return harnessServer(deps).app;
+}
+
+/** The wire app over a map of Conversations — rebuilt from `conversationsDir` first, then created
+ * on POST (admission creates) — with the drain beside it. */
+export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   const longPollMs = deps.longPollMs ?? 25_000;
+  const root = deps.conversationsDir;
   // Keyed on encoded parts: iids are hierarchical (slashes — ADR-0015), so a raw `/` join
   // could collide two conversations.
   const conversations = new Map<string, Conversation>();
   const key = (agentName: string, instanceId: string) =>
     `${encodeURIComponent(agentName)}/${encodeURIComponent(instanceId)}`;
+  /** Set by the drain: the Harness is going away, and admits nothing more. */
+  let draining = false;
+
+  /** A Conversation and its turn factory — new (`recorded` omitted) or rebuilt from its record. */
+  const seat = (agentName: string, instanceId: string, recorded?: RecordedConversation): Conversation => {
+    const dir = root === undefined ? undefined : conversationDir(root, agentName, instanceId);
+    let recorder: ConversationRecorder | undefined;
+    if (root !== undefined && dir !== undefined) {
+      recorder = recorded ? recorderAt(dir) : startRecord(root, agentName, instanceId);
+    }
+    // The seam is circular by nature — the turn appends to the Conversation that pumps it —
+    // so the closures read the binding the next statement fills.
+    let created: Conversation;
+    const run = deps.runSubmissionFor({
+      agentName,
+      instanceId,
+      appendMessage: (message) => created.appendMessage(message),
+      engine: engineSeat(dir, () => created.historyView().messages),
+    });
+    created = recorded
+      ? Conversation.rebuilt(recorded, run, recorder)
+      : new Conversation(agentName, instanceId, run, recorder);
+    conversations.set(key(agentName, instanceId), created);
+    return created;
+  };
+
+  // The boot's rebuild (ADR-0031): every conversation a previous process persisted answers again,
+  // its in-flight Submissions settled `failed`. One that cannot be read is said and skipped — a
+  // GET on it is the 404 of a conversation that is gone, which the Orchestrator already handles
+  // (ADR-0021: a `conversation-new` notice); its directory goes on the next live-set statement
+  // or the next admission to its key.
+  if (root !== undefined) {
+    for (const dir of conversationDirs(root)) {
+      try {
+        const recorded = readRecord(dir);
+        seat(recorded.agentName, recorded.instanceId, recorded);
+      } catch (err) {
+        (deps.bootOut ?? process.stderr).write(
+          `harness: conversation at ${dir} is unreadable, not rebuilt: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      }
+    }
+  }
   // One guard per process, one subscription per app: a kill is the whole container's, so every
   // conversation hears it, and each says it only if its Submission was running.
   deps.memoryKills?.((kill) => {
@@ -121,11 +208,26 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
     if (!deps.checkBearer(bearerOf(c))) return c.json({ error: "unauthorized" }, 401);
     return next();
   };
+  app.use("/agents", gate);
   app.use("/agents/*", gate);
   app.use("/echo", gate);
   app.use("/attach", gate);
 
   app.post("/agents/:name/:id", async (c) => {
+    // The drain (ADR-0031): a Submission admitted now would outlive the process. Refused before
+    // anything is read or created, so a 503 guarantees nothing was queued — the caller may send the
+    // same admission to the replacement. The readiness probe is the socket (deploy.ts, the
+    // operator), so the pod stays Ready while it drains: this 503 is the signal, not readiness.
+    if (draining) {
+      return c.json(
+        {
+          error:
+            "the Harness is draining for shutdown: it admits nothing more, and the Submissions it holds " +
+            "are settling (ADR-0031) — admit again once its replacement serves",
+        },
+        503,
+      );
+    }
     const agentName = c.req.param("name");
     const instanceId = c.req.param("id");
     const sent = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
@@ -157,20 +259,7 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
     // (and therefore a live turn factory) behind for an iid that never ran.
     const badRun = deps.checkAdmission?.(resolved);
     if (badRun) return c.json({ error: `agent "${agentName}": ${badRun}` }, 400);
-    let conversation = conversations.get(key(agentName, instanceId));
-    if (!conversation) {
-      // The seam is circular by nature — the turn appends to the Conversation that pumps it —
-      // so the closure reads the binding the next statement fills.
-      let created: Conversation;
-      const run = deps.runSubmissionFor({
-        agentName,
-        instanceId,
-        appendMessage: (message) => created.appendMessage(message),
-      });
-      created = new Conversation(agentName, instanceId, run);
-      conversation = created;
-      conversations.set(key(agentName, instanceId), conversation);
-    }
+    const conversation = conversations.get(key(agentName, instanceId)) ?? seat(agentName, instanceId);
     const admission = conversation.admit(submission);
     // The Conversation mints a relative streamUrl; the wire's is absolute (the stub's shape).
     return c.json({ ...admission, streamUrl: `${new URL(c.req.url).origin}${admission.streamUrl}` });
@@ -198,6 +287,45 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
   app.post("/agents/:name/:id/abort", (c) => {
     const conversation = conversations.get(key(c.req.param("name"), c.req.param("id")));
     return c.json(conversation ? conversation.abort() : { aborted: false });
+  });
+
+  // The live set (ADR-0031): the Orchestrator names every conversation its live runs hold, and
+  // this Harness frees the memory and the directory of every other one — except a busy one, kept
+  // until it settles and freed by the next statement. Directories the boot could not rebuild are
+  // not in the map, so no statement can name them: they go too.
+  app.put("/agents", async (c) => {
+    const body = (await c.req.json().catch(() => undefined)) as { live?: unknown } | undefined;
+    const live = liveSetOf(body?.live);
+    if (!live) {
+      return c.json(
+        {
+          error:
+            "live-set body must be { live: [{ agent, instanceId }, ...] } — every conversation a live run holds (ADR-0031)",
+        },
+        400,
+      );
+    }
+    const held = new Set(live.map((conversation) => key(conversation.agent, conversation.instanceId)));
+    let freed = 0;
+    for (const [k, conversation] of conversations) {
+      if (held.has(k) || conversation.busy) continue;
+      conversations.delete(k);
+      if (root !== undefined) freeDir(conversationDir(root, conversation.agentName, conversation.instanceId));
+      freed++;
+    }
+    if (root !== undefined) {
+      const kept = new Set(
+        [...conversations.values()].map((conversation) =>
+          conversationDir(root, conversation.agentName, conversation.instanceId),
+        ),
+      );
+      for (const dir of conversationDirs(root)) {
+        if (kept.has(dir)) continue;
+        freeDir(dir);
+        freed++;
+      }
+    }
+    return c.json<LiveSetResponse>({ freed });
   });
 
   // The run-narrative echo (ADR-0023): "print these events". The body is the STRUCTURED feed —
@@ -252,7 +380,28 @@ export function harnessApp(deps: HarnessAppDeps): Hono {
 
   app.notFound((c) => c.json({ error: `harness: no route ${new URL(c.req.url).pathname}` }, 404));
 
-  return app;
+  const drain = async (): Promise<void> => {
+    draining = true;
+    // A conversation's idle waits out its queue as well: those Submissions were admitted, so the
+    // drain owes them their Turns exactly as it owes the running one.
+    await Promise.all([...conversations.values()].map((conversation) => conversation.idle()));
+  };
+
+  return { app, drain };
+}
+
+/** The live set's conversations, or undefined for a body that is not one. All-or-nothing: a
+ * statement that cannot be read whole frees nothing, because freeing on half a list would free
+ * what the other half holds. */
+function liveSetOf(value: unknown): LiveConversation[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const live: LiveConversation[] = [];
+  for (const entry of value) {
+    const { agent, instanceId } = (entry ?? {}) as Record<string, unknown>;
+    if (typeof agent !== "string" || typeof instanceId !== "string") return undefined;
+    live.push({ agent, instanceId });
+  }
+  return live;
 }
 
 /** The admit body, taken defensively where defaulting is honest: a missing/garbage `message`
