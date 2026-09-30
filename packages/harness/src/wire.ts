@@ -6,7 +6,8 @@
 // on an unknown conversation is 404 — POST creates, abort answers `{ aborted: false }`
 // (ADR-0027). The echo endpoint (`POST /echo` — the run-narrative shapes at the bottom of this
 // file) is the real Harness's alone: the stub hosts turns for tests, and nothing ever narrates
-// to it.
+// to it. So is the live set (`PUT /agents`, ADR-0031) and the drain's 503 on admission: the stub
+// keeps nothing to free and never shuts down under a Turn.
 
 import type { AgentDefinition, TurnDials, TurnFrame } from "./spec.ts";
 
@@ -67,6 +68,13 @@ export const SUBMISSION_ABORTED = "submission_aborted";
  * `SettlementOutcome`; the typed error on a `failed` settlement is what lets the Agent actor switch on
  * the class (one fresh-conversation reroll) without parsing prose. */
 export const SUBMISSION_RUNAWAY = "runaway";
+
+/** `SettlementError.type` for a Submission the Harness admitted but had not settled when it
+ * restarted (ADR-0031): the rebuilt conversation settles it `failed` on its stream, so a re-attached
+ * `wait` reads a Settlement, not a 404, and the conversation's next Turn continues it. The message
+ * is `SUBMISSION_RESTARTED_MESSAGE`. */
+export const SUBMISSION_HARNESS_RESTARTED = "harness_restarted";
+export const SUBMISSION_RESTARTED_MESSAGE = "Harness restarted before this Submission settled (ADR-0031)";
 
 /** One settled Submission, in the shape `?view=history`'s `settlements` reports — the asserted
  * contract (the mechanics/@kind tiers assert exact counts and outcomes). */
@@ -131,6 +139,26 @@ export const VIEW_HISTORY = "history";
 /** `?live=` value: park until a new event or timeout (204 + the same headers). Long-poll is the
  * ONLY wait transport (ADR-0027) — no SSE, no `?wait=result`. */
 export const LIVE_LONG_POLL = "long-poll";
+
+// ---- The live set (`PUT /agents` — ADR-0031) ----------------------------------------------------
+// The Orchestrator states which conversations its live runs hold — from the admission ledgers in
+// memory, never from the store — after every restore and every 5 minutes (the Lease's cadence).
+// LEVEL-triggered: each statement is the whole set, so a missed one costs nothing and the next
+// frees what it would have. The Harness frees the memory and the directory of every conversation
+// not named, except one whose Submission is still running: that one is kept until it settles and
+// goes on the next statement. No idle TTL — a run parked on a Gate for a day keeps its
+// conversation, because the live set is the only thing that can say it is gone. Idempotent; gated
+// on the same bearer as every route (ADR-0058). Only the Instance Harness is told: a Sandbox's
+// Harness is freed whole by its Workspace's teardown.
+
+/** One conversation a live run holds: the `:name` and `:id` of its `/agents/:name/:id` route. */
+export type LiveConversation = { agent: string; instanceId: string };
+
+/** What `PUT /agents` accepts: every conversation the Orchestrator's live runs hold. */
+export type LiveSetRequest = { live: LiveConversation[] };
+
+/** What `PUT /agents` answers (200): how many conversations this statement freed. */
+export type LiveSetResponse = { freed: number };
 
 // ---- The run-narrative echo (`POST /echo` — ADR-0023) ------------------------------------------
 // "Print these events": the Orchestrator — the observation feed's one subscriber (ADR-0022) —

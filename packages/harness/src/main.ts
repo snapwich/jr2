@@ -11,14 +11,14 @@
 // runtime is mounted at `/opt/jr2` and nothing about this process came from the image (ADR-0037).
 
 import { createHash } from "node:crypto";
-import { serve } from "@hono/node-server";
-import { harnessApp } from "./app.ts";
+import { harnessServer } from "./app.ts";
 import { attacher } from "./attach.ts";
 import { seatFacts, standingBriefing } from "./briefing.ts";
 import { clearShm, podMemoryGuard } from "./memory-guard.ts";
 import { admissionFault, modelsFor } from "./provider.ts";
 import { loadHarnessSpec } from "./spec.ts";
 import { prepareProcess } from "./startup.ts";
+import { serveHarness } from "./serve.ts";
 import { runSubmissionFor } from "./turn.ts";
 
 // FIRST, before anything reads the environment or writes a file: umask 002, PATH appended with
@@ -74,7 +74,7 @@ guard.start();
 // every conversation sends the same bytes. Unknown where this is not a Sandbox, and then unsaid.
 const standing = standingBriefing(seatFacts(process.env));
 
-const app = harnessApp({
+const harnessWire = harnessServer({
   runSubmissionFor: (seat) => runSubmissionFor({ models, menu, guard, standing, ...seat }),
   // A guard kill lands on the running conversations' streams, for the Orchestrator's notice (ADR-0062).
   memoryKills: (listener) => guard.onKill(listener),
@@ -86,19 +86,22 @@ const app = harnessApp({
   // execution in this pod" a property, not a comment.
   ...(process.env.JR2_MENU_ONLY ? { menuOnly: true } : {}),
   checkBearer: (bearer) => bearer !== undefined && sha256(bearer) === bearerSha256,
+  // Where each conversation is persisted and rebuilt from (ADR-0031): the Instance Harness's
+  // PersistentVolumeClaim, a Sandbox Harness's emptyDir. Unset, conversations live in memory.
+  ...(process.env.JR2_CONVERSATIONS_DIR ? { conversationsDir: process.env.JR2_CONVERSATIONS_DIR } : {}),
 });
 
-const server = serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0" }, (info) => {
-  // No agent count: this process holds no roster to count (ADR-0049) — every admission brings
-  // the definition it runs.
-  console.log(`jr2 harness serving on :${info.port}`);
-});
+// A port another container in the pod took is said in one line, exit 1 (R16 — serve.ts).
+const served = serveHarness(harnessWire, { port: Number(process.env.PORT ?? 8080) });
 
+// A rollout drains Turns (ADR-0031): the first signal stops admitting and exits 0 once every
+// admitted Submission has settled. A second is someone who will not wait — a human's second ^C.
+let stopping = false;
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
-    server.close(() => process.exit(0));
-    // Parked long-polls hold sockets open; without severing them a graceful close outlives the
-    // pod's termination grace period.
-    if ("closeAllConnections" in server) server.closeAllConnections();
+    if (stopping) process.exit(0);
+    stopping = true;
+    console.log(`jr2 harness draining on ${signal}: admitting nothing, settling what it holds`);
+    void served.stop();
   });
 }

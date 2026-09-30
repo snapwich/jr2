@@ -3,10 +3,14 @@
 // Submission of its conversation, admission order), the abort sweep, the append-only stream log
 // with jr2-minted opaque offsets, the settlements the history view asserts, and the long-poll
 // parking that settlement events wake. Turn execution is injected (`runSubmission`), so this
-// module owns ordering and observation and never touches pi or HTTP.
+// module owns ordering and observation and never touches pi or HTTP. Its record is written through
+// an injected recorder as it goes, and a boot rebuilds it from that record (ADR-0031, `record.ts`).
 
+import type { ConversationRecorder, RecordedConversation } from "./record.ts";
 import {
   SUBMISSION_ABORTED,
+  SUBMISSION_HARNESS_RESTARTED,
+  SUBMISSION_RESTARTED_MESSAGE,
   SUBMISSION_RUNAWAY,
   type AdmissionRequest,
   type AdmissionResponse,
@@ -70,13 +74,59 @@ export class Conversation {
   private readonly settlements: Settlement[] = [];
   /** Parked long-polls; every append wakes all of them. */
   private readonly waiters = new Set<() => void>();
+  /** Drains waiting for this conversation to hold no Submission (`idle`). */
+  private readonly idleWaiters = new Set<() => void>();
+  /** Where each record line goes as it is appended — memory alone when omitted (ADR-0031). */
+  private readonly recorder: ConversationRecorder | undefined;
   private admitted = 0;
   private mintedMessages = 0;
 
-  constructor(agentName: string, instanceId: string, runSubmission: RunSubmission) {
+  constructor(agentName: string, instanceId: string, runSubmission: RunSubmission, recorder?: ConversationRecorder) {
     this.agentName = agentName;
     this.instanceId = instanceId;
     this.runSubmission = runSubmission;
+    this.recorder = recorder;
+  }
+
+  /**
+   * A conversation as its record left it (ADR-0031): the stream, the messages and the settlements
+   * as written, so every offset the Orchestrator holds reads the same events. A Submission admitted
+   * but not settled was lost with the process that ran it: it settles `failed` here, on the rebuilt
+   * stream, so a re-attached `wait` reads a Settlement instead of parking or reading a 404. Nothing
+   * is re-run — a Turn is continued by the conversation's NEXT Submission, never silently.
+   */
+  static rebuilt(
+    recorded: RecordedConversation,
+    runSubmission: RunSubmission,
+    recorder?: ConversationRecorder,
+  ): Conversation {
+    const conversation = new Conversation(recorded.agentName, recorded.instanceId, runSubmission, recorder);
+    conversation.log.push(...recorded.log);
+    conversation.messages.push(...recorded.messages);
+    conversation.settlements.push(...recorded.settlements);
+    conversation.admitted = recorded.admitted.length;
+    conversation.mintedMessages = recorded.log.filter((event) => event.type === "message-appended").length;
+    const settled = new Set(recorded.settlements.map((s) => s.submissionId));
+    for (const submissionId of recorded.admitted) {
+      if (settled.has(submissionId)) continue;
+      conversation.settle({ submissionId, settled: false }, "failed", {
+        type: SUBMISSION_HARNESS_RESTARTED,
+        message: SUBMISSION_RESTARTED_MESSAGE,
+      });
+    }
+    return conversation;
+  }
+
+  /** Whether a Submission is running or queued. A busy conversation is never freed (ADR-0031). */
+  get busy(): boolean {
+    return this.active !== undefined || this.queue.length > 0;
+  }
+
+  /** Resolves once the conversation holds no Submission — every admitted one settled and its run
+   * wound down. What a drain waits on (ADR-0031). */
+  idle(): Promise<void> {
+    if (!this.busy) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.add(resolve));
   }
 
   /** Accept and queue (ADR-0027): mint the Admission and answer immediately — running comes
@@ -84,6 +134,7 @@ export class Conversation {
    * relative; the HTTP layer absolutizes it if it wants to. */
   admit(submission: AdmissionRequest): AdmissionResponse {
     const submissionId = `s-${++this.admitted}-${Math.random().toString(36).slice(2, 8)}`;
+    this.recorder?.admitted(submissionId);
     this.queue.push({ submissionId, submission, settled: false });
     const admission: AdmissionResponse = {
       streamUrl: `/agents/${encodeURIComponent(this.agentName)}/${encodeURIComponent(this.instanceId)}`,
@@ -112,6 +163,7 @@ export class Conversation {
    * long-polls. */
   appendMessage(message: HistoryMessage): void {
     this.messages.push(message);
+    this.recorder?.said(message);
     this.append({
       type: "message-appended",
       conversationId: this.instanceId,
@@ -181,7 +233,12 @@ export class Conversation {
   private pump(): void {
     if (this.active) return;
     const record = this.queue[0];
-    if (!record) return;
+    if (!record) {
+      const idle = [...this.idleWaiters];
+      this.idleWaiters.clear();
+      for (const resolve of idle) resolve();
+      return;
+    }
     const controller = new AbortController();
     this.active = { record, controller };
     void (async () => {
@@ -210,13 +267,18 @@ export class Conversation {
     })();
   }
 
-  private settle(record: SubmissionRecord, outcome: SettlementOutcome, error?: SettlementError): void {
+  private settle(
+    record: Pick<SubmissionRecord, "submissionId" | "settled">,
+    outcome: SettlementOutcome,
+    error?: SettlementError,
+  ): void {
     if (record.settled) return;
     record.settled = true;
-    const index = this.queue.indexOf(record);
+    const index = this.queue.findIndex((queued) => queued === record);
     if (index !== -1) this.queue.splice(index, 1);
     const settlement: Settlement = { submissionId: record.submissionId, outcome, ...(error ? { error } : {}) };
     this.settlements.push(settlement);
+    this.recorder?.settled(settlement);
     this.append({
       type: "submission-settled",
       conversationId: this.instanceId,
@@ -232,6 +294,7 @@ export class Conversation {
 
   private append(event: StreamEvent): void {
     this.log.push(event);
+    this.recorder?.appended(event);
     const woken = [...this.waiters];
     this.waiters.clear();
     for (const wake of woken) wake();
