@@ -1120,9 +1120,9 @@ const QUOTA_EXCEEDED = "QuotaExceeded";
 /**
  * The memory kill (ADR-0061), or undefined: the Harness container's last run ended
  * `OOMKilled`, at or after `since` (less the skew a node's clock may carry). The prefix is FIXED —
- * `memory limit` — so a Machine, `jr2 status` and the feed can tell a memory kill from a
- * conversation lost any other way; the limit named is the Harness container's own, the one the
- * kernel enforced. `limit` and `at` ride beside the reason as data: the next Turn's notice is made
+ * `memory limit` — so a Machine, `jr2 status` and the feed can tell a memory kill from a Turn lost
+ * to any other restart (ADR-0021) and from a conversation lost (a 404); the limit named is the
+ * Harness container's own, the one the kernel enforced. `limit` and `at` ride beside the reason as data: the next Turn's notice is made
  * of them (ADR-0062), and `at` tells two Turns ended by one kill that it was one.
  */
 export function memoryFaultOf(sandbox: SandboxObject | undefined, since: Date): MemoryKill | undefined {

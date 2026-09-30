@@ -28,10 +28,10 @@ Layers, each a backstop for the one before:
    `killed: memory limit (peak X of Y); use fewer workers or a larger Size`. The Agent hears it in the same Turn and
    conversation, and can retry smaller.
 5. **The kernel's group kill is the last backstop.** The Orchestrator reads `lastState.terminated.reason: OOMKilled` and
-   the fault reason starts with the fixed prefix `memory limit`, not "conversation lost". The fault reaches the Machine
-   (ADR-0016); the next Agent in that Workspace is told through the Briefing
-   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), never through the Frame (ADR-0057). The
-   kit's Machines pass the reason into their retry Turn as the example for authors.
+   the fault reason starts with the fixed prefix `memory limit`, not `Turn lost` (any other restart, ADR-0021) or
+   "conversation lost" (a 404). The fault reaches the Machine (ADR-0016); the next Agent in that Workspace is told
+   through the Briefing ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)), never through the
+   Frame (ADR-0057). The kit's Machines pass the reason into their retry Turn as the example for authors.
 
 The guard is best-effort and says so: a fast enough spike beats any poll. The lab won 35/35 on arm64 at 50 ms, 6/6 on
 amd64 at 10 ms (0.8% of a core), and only half on amd64 at 50 ms; it fired at 90–96% of the limit. Layer 5 covers what
@@ -66,4 +66,5 @@ at v1.38. When it is enabled by default, jr2 sets the field on the Harness conta
 - The guard's threshold comes from the Harness container's limit, so it needs ADR-0060's limits first; layer 1 does not
   and is fixed at once.
 - The kill set includes a human's exec session open at that moment; the group kill would end it too.
-- A memory fault is named in `jr2 status` and on the feed, not "conversation lost".
+- A memory fault is named in `jr2 status` and on the feed, not `Turn lost` (a restart for any other reason) or
+  "conversation lost" (a 404).
