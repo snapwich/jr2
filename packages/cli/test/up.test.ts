@@ -2314,6 +2314,26 @@ test("both readiness probes set a period — a ~1s boot must not be billed as a 
   }
 });
 
+test("the Orchestrator carries a liveness probe that restarts only a process silent for five minutes (ADR-0008)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", DECISIONER_AGENTS);
+  const w = mkWorld(root);
+  assert.equal(await up(["--yes"], w.io), 0);
+
+  const list = w.kube.applied.find((m) => m.includes(`"jr2-orchestrator"`) && m.includes(`"kind":"List"`))!;
+  const orchestrator = (JSON.parse(list) as { items: Array<Record<string, any>> }).items.find(
+    (i) => i.kind === "Deployment" && i.metadata.name === "jr2-orchestrator",
+  )!;
+  const container = orchestrator.spec.template.spec.containers[0];
+  const liveness = container.livenessProbe;
+  assert.equal(liveness.httpGet.path, "/healthz");
+  assert.equal(liveness.httpGet.port, container.readinessProbe.httpGet.port);
+  assert.equal(liveness.periodSeconds, 10);
+  assert.equal(liveness.failureThreshold, 30);
+  assert.equal(liveness.periodSeconds * liveness.failureThreshold, 300, "dead, not stalled: five minutes of silence");
+  // Readiness stays the 30s take-out-of-service it was — the two probes answer different questions.
+  assert.equal(container.readinessProbe.periodSeconds * container.readinessProbe.failureThreshold, 30);
+});
+
 test('no "none" definitions → nothing new deploys, and a stale Instance Harness is deleted on converge', async () => {
   // Agents exist, none of them Menu-only: the feature stays invisible (ADR-0031).
   const root = await mkInstance(`export default { name: "myinst" };\n`, "myinst", {
