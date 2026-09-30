@@ -356,9 +356,10 @@ export type RunFeedEvent =
 
 /**
  * The feed-so-far cap. The buffer exists so a Workspace attaching mid-run can open its log with
- * the run's preamble (ADR-0023); a run long enough to blow past it loses its OLDEST frames, which
- * is the same trade kubelet's log rotation already makes on the printed side — the feed remains
- * the record, the buffer serves a courtesy view.
+ * the run's preamble (ADR-0023); a run long enough to blow past it loses its OLDEST markers and
+ * Emits, which is the same trade kubelet's log rotation already makes on the printed side — the
+ * feed remains the record, the buffer serves a courtesy view. Statuses do not count against it:
+ * the buffer keeps only the latest (a status is a level — ADR-0023).
  */
 const FEED_SO_FAR_CAP = 1000;
 
@@ -384,6 +385,51 @@ function echoEventOf(event: RunFeedEvent, target: string): EchoEvent | undefined
     return { kind: "pick", agent, event: event.event, ...(payload ? { payload } : {}) };
   }
   return undefined;
+}
+
+/**
+ * The echo's outbox (ADR-0023): one push in flight per attachment, and whatever the feed produces
+ * meanwhile rides the NEXT push, together — a burst of transitions costs the Harness one push per
+ * flush, not one per transition.
+ *
+ * A status is a level, so a pending status is REPLACED by a newer one, never queued behind it. The
+ * ordering rule, exactly: markers and Emits keep feed order among themselves, and the one pending
+ * status sits where the NEWEST status arrived — after every marker and Emit fed before it, before
+ * every one fed after it. A superseded status drops out; nothing else moves. So a Harness that
+ * answers slowly holds at most one status plus the markers since its last push.
+ *
+ * Fire-and-forget: a failed push goes to `report` and the outbox drains on — nothing here can
+ * fail a turn, a state, or a run. Exported for its unit test; {@link RunHost} is its one caller.
+ */
+export function echoOutbox(
+  push: (events: EchoEvent[]) => Promise<void>,
+  report: (err: unknown) => void,
+): (events: EchoEvent[]) => void {
+  let pending: EchoEvent[] = [];
+  let flushing = false;
+  const flush = async (): Promise<void> => {
+    while (pending.length > 0) {
+      const batch = pending;
+      pending = [];
+      try {
+        await push(batch);
+      } catch (err) {
+        report(err);
+      }
+    }
+    flushing = false;
+  };
+  return (events) => {
+    for (const event of events) {
+      if (event.kind === "status") pending = pending.filter((p) => p.kind !== "status");
+      pending.push(event);
+    }
+    if (flushing || pending.length === 0) return;
+    flushing = true;
+    // A microtask, so a synchronous burst (the replay; one transition's Emits and status) leaves
+    // as one push rather than as its first event alone.
+    queueMicrotask(() => void flush());
+  };
 }
 
 /** The child-machine tree for the echo's status: spawn ids and state values alone — a root's
@@ -504,9 +550,13 @@ type LiveRun = {
   /** Per-run observers fed by `persist()` (status) and the actor's `emit` (emit) — SSE/CLI watch. */
   listeners: Set<(e: RunFeedEvent) => void>;
   /** The run's feed-so-far (ADR-0023): what a Workspace attaching mid-run gets replayed as its
-   * log's preamble. In-memory and this-boot only — a restored run's preamble starts at restore,
-   * the same live-only contract the printed log already has. Capped ({@link FEED_SO_FAR_CAP}). */
+   * log's preamble — its markers and Emits, in feed order. In-memory and this-boot only — a
+   * restored run's preamble starts at restore, the same live-only contract the printed log already
+   * has. Capped ({@link FEED_SO_FAR_CAP}). */
   feedSoFar: RunFeedEvent[];
+  /** The preamble's last line: where the run stands now. A status is a level (ADR-0023), so the
+   * buffer keeps the latest alone — old statuses are not interleaved between old markers. */
+  latestStatus?: RunFeedEvent & { kind: "status" };
 };
 
 export class RunHost {
@@ -1074,19 +1124,25 @@ export class RunHost {
 
   /** Put one event on the run's feed: buffer it for ADR-0023's backfill, then fan it out. The
    * buffer and the fan-out share one seat so an attached echo and a later attach see the SAME
-   * feed — a projection cannot drift from a record it is read out of. */
+   * feed — a projection cannot drift from a record it is read out of. Every listener is handed the
+   * SAME event object, which is what lets http.ts render each frame once (ADR-0022). */
   private feed(run: LiveRun, event: RunFeedEvent): void {
-    run.feedSoFar.push(event);
-    if (run.feedSoFar.length > FEED_SO_FAR_CAP) run.feedSoFar.shift();
+    if (event.kind === "status") {
+      run.latestStatus = event;
+    } else {
+      run.feedSoFar.push(event);
+      if (run.feedSoFar.length > FEED_SO_FAR_CAP) run.feedSoFar.shift();
+    }
     for (const listener of run.listeners) listener(event);
   }
 
   /**
    * Attach the run-narrative echo (ADR-0023): replay the run's feed-so-far to the Workspace's
-   * Harness at `endpoint` — the backfilled preamble, why this Workspace exists — then tee live
-   * until detached. FIRE-AND-FORGET is this method's contract: pushes are chained so events
-   * arrive in feed order, and a failure is logged once and swallowed — the feed remains the
-   * record, the log is a courtesy view, and nothing here can fail a turn, a state, or a run.
+   * Harness at `endpoint` — the backfilled preamble, why this Workspace exists: its markers and
+   * Emits in feed order, then where the run stands now — then tee live until detached, through an
+   * {@link echoOutbox}, which coalesces statuses. FIRE-AND-FORGET is this method's contract: a
+   * failure is logged once and swallowed — the feed remains the record, the log is a courtesy
+   * view, and nothing here can fail a turn, a state, or a run.
    * Scoped to the OWNING run's lineage by construction: it reads one run's buffer and listeners
    * and nothing else — a sibling run's events cannot reach this endpoint through here.
    */
@@ -1094,25 +1150,19 @@ export class RunHost {
     const run = this.runs.get(runId);
     const factory = this.echoFactory;
     if (!run || !factory) return () => {};
-    const push = factory(endpoint, this.harnessBearer?.(placement));
-    let chain = Promise.resolve();
     let reported = false;
-    const enqueue = (events: EchoEvent[]): void => {
-      if (events.length === 0) return;
-      chain = chain
-        .then(() => push(events))
-        .catch((err) => {
-          // Log-and-continue, ONCE per attachment — an unreachable Harness must not turn every
-          // transition into an error line, and must not surface anywhere a run could trip on.
-          if (reported) return;
-          reported = true;
-          console.error(
-            `run ${runId}: echo to ${endpoint} failed (log only — the run is unaffected): ` +
-              (err instanceof Error ? err.message : String(err)),
-          );
-        });
-    };
-    enqueue(run.feedSoFar.map((ev) => echoEventOf(ev, endpoint)).filter((ev): ev is EchoEvent => ev !== undefined));
+    const enqueue = echoOutbox(factory(endpoint, this.harnessBearer?.(placement)), (err) => {
+      // Log-and-continue, ONCE per attachment — an unreachable Harness must not turn every
+      // transition into an error line, and must not surface anywhere a run could trip on.
+      if (reported) return;
+      reported = true;
+      console.error(
+        `run ${runId}: echo to ${endpoint} failed (log only — the run is unaffected): ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    });
+    const preamble = run.latestStatus ? [...run.feedSoFar, run.latestStatus] : run.feedSoFar;
+    enqueue(preamble.map((ev) => echoEventOf(ev, endpoint)).filter((ev): ev is EchoEvent => ev !== undefined));
     const listener = (ev: RunFeedEvent): void => {
       const projected = echoEventOf(ev, endpoint);
       if (projected) enqueue([projected]);

@@ -3,7 +3,8 @@
 // seam. What is asserted: the backfilled preamble at workspace attach, the live tee thereafter,
 // "markers, not mirrors" (a Turn hosted AT the echo's own target leaves no marker there; a
 // remotely-hosted Turn leaves exactly its admission and its pick), the owning-run scope, and the
-// fire-and-forget property — an unreachable echo target costs a log line and nothing else.
+// fire-and-forget property — an unreachable echo target costs a log line and nothing else. Then
+// the outbox alone: a status is a level, so a slow Harness is sent the latest one, not the queue.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,7 +15,7 @@ import { jr2Setup } from "../src/setup.ts";
 import { agentActorWith } from "../src/actor.ts";
 import type { AgentRunInput } from "../src/actor.ts";
 import { workspace, type MemoryKill, type SandboxPort, type WorkspaceSpec } from "../src/workspace.ts";
-import { RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts";
+import { echoOutbox, RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts";
 import { mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 /** A fake Sandbox backend whose endpoint is unique per Workspace — so two runs' echoes are
@@ -140,13 +141,18 @@ test("tee + backfill: the Workspace's log opens with the preamble, then follows 
   host.subscribe(runId, (e) => feed.push(e));
   await waitFor(() => pushes.length > 0);
 
-  // The backfilled preamble (ADR-0023): the first push replays the feed-so-far — the run's walk
-  // to this point (provisioning/attaching happened BEFORE the Workspace's Harness existed).
+  // The backfilled preamble (ADR-0023): the first push replays the feed-so-far — its markers and
+  // Emits, then where the run stands NOW. A status is a level: the walk through placing,
+  // provisioning and attaching (all BEFORE the Workspace's Harness existed) is not replayed as
+  // three old statuses interleaved with the story, but as the one that is still true.
   const target = sandbox.endpointOf(runId)!;
   assert.equal(pushes[0]!.endpoint, target);
+  const preambleStatuses = pushes[0]!.events.filter((e) => e.kind === "status");
+  assert.equal(preambleStatuses.length, 1, "the latest status alone");
+  assert.equal(pushes[0]!.events.at(-1), preambleStatuses[0], "…as the preamble's last line");
   assert.ok(
-    pushes[0]!.events.some((e) => e.kind === "status" && JSON.stringify(e.value).includes("provisioning")),
-    "the preamble reaches back to before the Workspace existed",
+    !pushes[0]!.events.some((e) => e.kind === "status" && JSON.stringify(e.value).includes("provisioning")),
+    "a superseded status is not replayed",
   );
 
   // The LOCAL turn runs on this Workspace's own Harness: its transcript prints there, so its
@@ -281,5 +287,105 @@ test("the echo bears its Workspace's Harness bearer — derived for that pod, ne
   // The endpoint is `http://<sandbox name>.test` (EchoSandbox), so the name is read back off it.
   const name = new URL(sandbox.endpointOf(runId)!).hostname.replace(/\.test$/, "");
   assert.ok(pushes.every((p) => p.bearer === `bearer-for:${name}`));
+  await host.stop(runId);
+});
+
+// ---- A status is a level, so the echo coalesces it (ADR-0023) ----------------------------------
+
+const status = (value: string): EchoEvent => ({ kind: "status", status: "active", value });
+const note = (message: string): EchoEvent => ({ kind: "emit", event: { type: "note", message } });
+const admission = (agent: string): EchoEvent => ({ kind: "admission", agent, prompt: "go" });
+const pick = (agent: string): EchoEvent => ({ kind: "pick", agent, event: "done" });
+
+/** A Harness that answers only when told to: each push parks until `answer()`. */
+function slowEcho() {
+  const pushes: EchoEvent[][] = [];
+  const waiting: Array<() => void> = [];
+  const push = (events: EchoEvent[]) => {
+    pushes.push(events);
+    return new Promise<void>((resolve) => waiting.push(resolve));
+  };
+  const answer = () => waiting.shift()?.();
+  return { pushes, push, answer };
+}
+
+test("a slow Harness gets one status carrying the latest value, and every marker in order", async () => {
+  const echo = slowEcho();
+  const enqueue = echoOutbox(echo.push, () => assert.fail("nothing failed"));
+
+  enqueue([status("s1")]);
+  await waitFor(() => echo.pushes.length === 1); // in flight, unanswered
+
+  // The feed moves on while the Harness sits on that push.
+  for (const ev of [note("a"), status("s2"), admission("decider"), status("s3"), pick("decider")]) enqueue([ev]);
+  echo.answer();
+  await waitFor(() => echo.pushes.length === 2);
+
+  // s2 is superseded and gone. The ordering rule: the one status sits where the NEWEST status
+  // arrived — after the Emit and the admission fed before s3, before the pick fed after it.
+  assert.deepEqual(echo.pushes[1], [note("a"), admission("decider"), status("s3"), pick("decider")]);
+  echo.answer();
+});
+
+test("a burst leaves as one push, and a failed push does not stop the next", async () => {
+  const pushes: EchoEvent[][] = [];
+  const failures: unknown[] = [];
+  let refuse = true;
+  const enqueue = echoOutbox(
+    async (events) => {
+      pushes.push(events);
+      if (refuse) throw new Error("ECONNREFUSED");
+    },
+    (err) => failures.push(err),
+  );
+
+  // One synchronous burst — a transition's Emit and statuses — costs one push, not three.
+  enqueue([status("s1"), note("a")]);
+  enqueue([status("s2")]);
+  await waitFor(() => failures.length === 1);
+  assert.deepEqual(pushes, [[note("a"), status("s2")]]);
+
+  // Fire-and-forget: the refusal went to `report`, and the outbox still drains.
+  refuse = false;
+  enqueue([pick("decider")]);
+  await waitFor(() => pushes.length === 2);
+  assert.deepEqual(pushes[1], [pick("decider")]);
+  assert.equal(failures.length, 1);
+});
+
+test("the replay is the story so far, then where the run stands now — not the old statuses", async () => {
+  const client = new MockFlueClient();
+  const { pushes, factory } = fakeEcho();
+  const host = new RunHost({ store: await mkStore(), sandbox: new EchoSandbox(), echo: factory });
+  // Two Emits before the Workspace exists, and a walk of statuses around and after them.
+  const feature = echoDef(client).machine;
+  const root = jr2Setup({
+    types: {} as { emitted: { type: "note"; message: string } },
+    events: [],
+    actors: { feature },
+  }).createMachine({
+    id: "root",
+    initial: "opening",
+    states: {
+      opening: {
+        entry: [emit({ type: "note", message: "first" }), emit({ type: "note", message: "second" })],
+        after: { 5: "working" },
+      },
+      working: { invoke: { src: "feature" } },
+    },
+  });
+  host.register({ name: "storied", machine: root, provide: () => ({}) });
+
+  const { runId } = await host.start("storied");
+  await waitFor(() => pushes.length > 0);
+
+  const { events } = pushes[0]!;
+  assert.deepEqual(
+    events.flatMap((e) => (e.kind === "emit" ? [e.event.message] : [])),
+    ["first", "second"],
+    "the Emits, in feed order",
+  );
+  assert.equal(events.filter((e) => e.kind === "status").length, 1, "one status: the latest");
+  assert.equal(events.at(-1)?.kind, "status", "…after the story, not interleaved with it");
   await host.stop(runId);
 });
