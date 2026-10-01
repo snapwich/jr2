@@ -1,0 +1,22 @@
+# operator / Lint (CI) runs golangci-lint on any change under operator/. Run it here first, only
+# when this push changes operator/, so a push that fails it never leaves this machine.
+zero=0000000000000000000000000000000000000000
+changed=
+while read -r _ local_sha _ remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ]; then
+    base=$(git merge-base "$local_sha" origin/main 2>/dev/null) || base=
+    [ -z "$base" ] && { changed=1; continue; }
+  else
+    base=$remote_sha
+  fi
+  git diff --quiet "$base" "$local_sha" -- operator/ || changed=1
+done
+[ -z "$changed" ] && exit 0
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "pre-push: operator/ changed but go is not on PATH; skipped golangci-lint (CI still runs it)" >&2
+  exit 0
+fi
+echo "pre-push: operator/ changed; running golangci-lint" >&2
+make -C operator lint

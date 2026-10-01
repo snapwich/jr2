@@ -239,7 +239,9 @@ $(ENVTEST): $(LOCALBIN)
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
-$(GOLANGCI_LINT): $(LOCALBIN)
+# Rebuilt only when .custom-gcl.yml (version, plugins) changes: the custom build replaces
+# go-install-tool's symlink with a binary, so its version check would always rebuild.
+$(GOLANGCI_LINT): .custom-gcl.yml | $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 	@test -f .custom-gcl.yml && { \
 		echo "Building custom golangci-lint with plugins..." && \
