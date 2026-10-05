@@ -121,6 +121,19 @@ secret, through the Custodian, while its pod lives. _Avoid_: masked secret, inje
 public. It means something only to the Custodian, and only toward a host the secret is bound to; sent anywhere else, it
 arrives as it left. _Avoid_: placeholder (an Open part's word), dummy key, fake key, token, mask
 
+**Effector**: The jr2-owned container that runs, for a Machine, the Effects that hold an Effect secret. The Agent
+executes nothing in it. A `command` Effect does not run in it. Two placements: the Sandbox Effector and the Instance
+Effector. _Avoid_: Courier, Actuator, Clerk, machine container
+
+**Sandbox Effector**: The Effector as a container in a Sandbox pod, with the Worktree mounted read-only — for `push`,
+`upload`, and an `http` Effect whose body is a Worktree file. Present only when a Machine needs it.
+
+**Instance Effector**: The Effector as its own stateless pod, one per Instance — for an `http` Effect that reads no
+Worktree file.
+
+**Effect secret**: A secret as an Effect uses it — the real value, in an Effector. A placement, not a kind: one secret
+is a Held secret where an Agent's pod names it and an Effect secret where an Effect names it, and it can be both.
+
 **Kit image**: One of the two jr2-owned images an Instance deploys but never authors — `jr2-harness`, `jr2-operator`.
 Built from the checkout in checkout mode; installed, pulled at published `<kitversion>` tags from the canonical home
 (`ghcr.io/snapwich`) or from a self-hosted mirror of it (`kitRegistry`, ADR-0044); one release train with the npm
@@ -211,6 +224,15 @@ states below it, so a pick written in a substate is one the Turn can never be al
 refused at build (ADR-0057 retired the hand-written Menu that used to hide it). _Avoid_: menu (the fixed set), open
 picks, active tools, legal moves
 
+**mode**: A child state of an Agent's state with no invoke. The Agent is at Rest there, with a different set of Allowed
+picks.
+
+**Rest**: The condition of an Agent's state under which a pick is answered: no state below it is running something (an
+Effect, a Gate, another Agent, a child Machine), and no pending timer will move the workflow to another state inside it.
+A condition jr2 reads from the Machine, not a state: a state named `rest` means nothing to jr2.
+
+**outstanding**: A pick that is delivered and not yet answered. _Avoid_: held pick (collides with Held secret), pending
+
 **Vocabulary**: The workflow events a Machine accepts — each a `defineEvent` def: a name, a payload schema, an optional
 audience — taken as values by its `jr2Setup` and scoped to that Machine alone (ADR-0011). What a Gate's accepted set and
 an Agent's Menu are drawn from, and what a delivery is validated against. A nested Machine keeps its own; the Machine
@@ -265,6 +287,9 @@ class as context, so the open band carries the type alone (ADR-0014/0022). Also 
 narrative a Workspace Harness prints (ADR-0023): Emits land in that log because the log is a projection of the feed.
 _Avoid_: event (the down-channel thing a Gate or an Agent delivers, which does drive a Machine), log (an Emit is
 deliberate vocabulary, not a diagnostic)
+
+**Effect**: Work a Machine does outside itself — run a command, call a URL, upload a file, push a branch. _Avoid_:
+action (xstate's word), side effect, job, task, step, operation, errand, tool
 
 **Workspace**: A long-lived Sandbox bound to a unit of work, modeled as a child Machine. Entering the state creates the
 Sandbox and its worktree; the child Machine's states manage what happens inside (e.g. coding, review, merge); reaching
