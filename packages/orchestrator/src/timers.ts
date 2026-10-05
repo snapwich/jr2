@@ -12,9 +12,10 @@
 // the state's exit `cancel(id)` still cancels a re-armed timer.
 //
 // This reads an xstate INTERNAL: `system.getSnapshot()._scheduledEvents` (typed in xstate's
-// `ActorSystem`, but underscored) and `system.scheduler.schedule`. An xstate bump can break it; the
-// raw-xstate tests in test/timers.test.ts are the canary. xstate 6 persists timers in the snapshot
-// and re-arms them itself, with the same deadline and clamp: on xstate 6, delete this module.
+// `ActorSystem`, but underscored), `system.scheduler.schedule`, and `system.scheduler.cancel`
+// (wrapped for the length of `start()`). An xstate bump can break it; the raw-xstate tests in
+// test/timers.test.ts are the canary. xstate 6 persists timers in the snapshot and re-arms them
+// itself, with the same deadline and clamp: on xstate 6, delete this module.
 
 import type { AnyActorRef, EventObject } from "xstate";
 
@@ -26,9 +27,9 @@ export type PendingTimer = {
   /** xstate's scheduled id. */
   id: string;
   event: EventObject;
-  /** The delay as last scheduled, ms: the upper bound on what remains (see {@link rearmTimers}). */
+  /** The delay as last scheduled, ms: the upper bound on what remains (see {@link startAndRearm}). */
   delay: number;
-  /** Wall-clock ms (`Date.now()`) at which it is due. */
+  /** Wall-clock ms at which it is due, on the host's clock (`now`). */
   deadline: number;
 };
 
@@ -51,39 +52,68 @@ function refAt(root: AnyActorRef, path: string[]): AnyActorRef | undefined {
   return ref;
 }
 
+/** xstate's key for a scheduled event: one per source actor and id. */
+const keyOf = (source: AnyActorRef, id: string) => `${source.sessionId}.${id}`;
+
+const clamp = (ms: number, delay: number) => Math.min(delay, Math.max(0, ms));
+
 /**
  * The run's pending timers, read off its actor system. Call at persist time: the scheduler's table
  * and the snapshot are read in the same tick, so they agree. A timer whose source or target is not
  * in the run's tree (a delayed send to an actor outside it) is not recorded; jr2 has no such idiom.
+ *
+ * xstate stamps a timer's start with `Date.now()`, so the time that remains is read on that clock;
+ * the deadline is `now + remaining`, on the host's clock. With the default `now` the two are one
+ * clock and the deadline is xstate's own `startedAt + delay`.
  */
-export function pendingTimers(root: AnyActorRef): PendingTimer[] {
+export function pendingTimers(root: AnyActorRef, now = Date.now()): PendingTimer[] {
+  const wall = Date.now();
   const out: PendingTimer[] = [];
   for (const s of Object.values(root.system.getSnapshot()._scheduledEvents)) {
     const source = pathOf(root, s.source);
     const target = pathOf(root, s.target);
     if (!source || !target) continue;
-    out.push({ source, target, id: s.id, event: s.event, delay: s.delay, deadline: s.startedAt + s.delay });
+    const remaining = clamp(s.startedAt + s.delay - wall, s.delay);
+    out.push({ source, target, id: s.id, event: s.event, delay: s.delay, deadline: now + remaining });
   }
   return out;
 }
 
 /**
- * Schedule each recorded timer again on a restored run. Call AFTER `actor.start()`, never before:
- * `start()` is where xstate builds the children (so a child's path resolves), and the system's own
- * `start()` schedules whatever is already in its table, so a timer re-armed before it is armed
- * twice and fires twice.
+ * Start a restored run, then schedule each recorded timer again on it. One function, so the order
+ * cannot be got wrong: re-armed BEFORE `start()`, a timer is armed twice and fires twice, because
+ * the system's own `start()` schedules whatever is already in its table; and `start()` is where
+ * xstate builds the children, so a child's path resolves only after it.
+ *
+ * `start()` drains the mailbox: a child that sends on start (an author's `fromCallback`) can move
+ * the Machine out of a state before any timer is re-armed. That exit's `cancel(id)` finds nothing
+ * armed yet. So every cancel during `start()` is recorded, and a row it names is not re-armed: a
+ * state exit cancels the timer whether it happens during `start()` or after it.
  *
  * Remaining time is `deadline - now`, clamped to `[0, delay]`. A deadline that passed while the
  * Orchestrator was down fires at once. A wall clock that went BACKWARDS cannot push a timer past its
  * own delay. A wall clock that jumped forwards fires a timer early: only the wall clock survives a
- * process, so the deadline is a wall-clock time.
+ * process, so the deadline is a wall-clock time. Rows are scheduled in deadline order, so timers
+ * that are all overdue (remaining 0) fire in the order they fell due, as in an uninterrupted run.
  */
-export function rearmTimers(root: AnyActorRef, timers: readonly PendingTimer[], now = Date.now()): void {
-  for (const t of timers) {
+export function startAndRearm(root: AnyActorRef, timers: readonly PendingTimer[], now = Date.now()): void {
+  const scheduler = root.system.scheduler;
+  const cancel = scheduler.cancel;
+  const cancelled = new Set<string>();
+  scheduler.cancel = (source, id) => {
+    cancelled.add(keyOf(source, id));
+    cancel(source, id);
+  };
+  try {
+    root.start();
+  } finally {
+    scheduler.cancel = cancel;
+  }
+  // `sort` is stable: equal deadlines keep the order xstate scheduled them in.
+  for (const t of [...timers].sort((a, b) => a.deadline - b.deadline)) {
     const source = refAt(root, t.source);
     const target = refAt(root, t.target);
-    if (!source || !target) continue;
-    const remaining = Math.min(t.delay, Math.max(0, t.deadline - now));
-    root.system.scheduler.schedule(source, target, t.event, remaining, t.id);
+    if (!source || !target || cancelled.has(keyOf(source, t.id))) continue;
+    scheduler.schedule(source, target, t.event, clamp(t.deadline - now, t.delay), t.id);
   }
 }

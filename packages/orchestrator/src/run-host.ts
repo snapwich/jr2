@@ -40,7 +40,7 @@ import {
   type RunMarker,
 } from "./registration.ts";
 import { NoticeLedger, type NoticeLedgerState } from "./notices.ts";
-import { pendingTimers, rearmTimers, type PendingTimer } from "./timers.ts";
+import { pendingTimers, startAndRearm, type PendingTimer } from "./timers.ts";
 import {
   DEFAULT_LEASE_INTERVAL_MS,
   WORKSPACE_WAIT_KEY,
@@ -510,6 +510,9 @@ export type RunHostOptions = {
   /** How often the live set is stated, before jitter. Default: the Lease's cadence (ADR-0021).
    * Tests shrink it. */
   liveSetIntervalMs?: number;
+  /** The wall clock a run's timer table is written and read on (ADR-0007, timers.ts): each pending
+   * timer's deadline is a time on it. Default: `Date.now`. Tests pass a clock that does not step. */
+  now?: () => number;
 };
 
 /** What we persist per run: the machine snapshot wrapped with the run metadata restore needs.
@@ -602,6 +605,7 @@ export class RunHost {
   ) => (events: EchoEvent[]) => Promise<void>;
   private readonly liveSetPush?: (live: LiveConversation[]) => Promise<unknown>;
   private readonly liveSetIntervalMs: number;
+  private readonly now: () => number;
   private liveSetTimer?: ReturnType<typeof setTimeout>;
   /** Whether the last live-set statement failed — a failing streak logs one line (ADR-0031). */
   private liveSetFailing = false;
@@ -637,6 +641,7 @@ export class RunHost {
         ? opts.liveSet(opts.instanceHarness, opts.harnessBearer?.(INSTANCE_HARNESS_SERVICE))
         : undefined;
     this.liveSetIntervalMs = opts.liveSetIntervalMs ?? DEFAULT_LEASE_INTERVAL_MS;
+    this.now = opts.now ?? Date.now;
   }
 
   /** Register a workflow so `start`/`restore` can run it. Re-registering replaces (dev reload).
@@ -790,9 +795,9 @@ export class RunHost {
           // admission never reached the ledger is delivered again.
           blob.notices,
         );
-        actor.start();
-        // After `start()`, never before: see `rearmTimers`. The next save records them again.
-        rearmTimers(actor, blob.timers ?? []);
+        // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
+        // records them again.
+        startAndRearm(actor, blob.timers ?? [], this.now());
         reattached.push(stored.runId);
       } catch (err) {
         // Left `live` on purpose — see the note above. The row is unchanged, so the next boot tries
@@ -1509,7 +1514,7 @@ export class RunHost {
       agents: run.agents,
       epochs: run.epochs,
       notices: run.notices.state(),
-      timers: pendingTimers(run.actor),
+      timers: pendingTimers(run.actor, this.now()),
       fault: run.fault,
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);

@@ -11,11 +11,25 @@
 // Each case waits DELAY, restarts about RESTART_AT in, and times the transition after restore:
 // about DELAY - RESTART_AT → the remaining time was kept; about DELAY → the full delay started
 // again; never → the timer was lost.
+//
+// The hosts read deadlines on `clock`, which never steps. A wall clock can step (a WSL2 host steps
+// back about 3 s every 30 s), and a step between the save and the restore moves every deadline: the
+// clamp then gives the full delay, which is ADR-0007's rule and not what these tests measure.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
-import { assign, createActor, createMachine, fromPromise, raise, sendParent, sendTo, setup } from "xstate";
+import {
+  assign,
+  createActor,
+  createMachine,
+  fromCallback,
+  fromPromise,
+  raise,
+  sendParent,
+  sendTo,
+  setup,
+} from "xstate";
 import { z } from "zod";
 import { defineEvent, doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
 import { agentActorWith, type AgentTurnInput, type AgentTurnPlacement } from "../src/actor.ts";
@@ -23,7 +37,7 @@ import { agent } from "../src/harness-client.ts";
 import { pool, source } from "../src/pool.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
-import { pendingTimers, rearmTimers, type PendingTimer } from "../src/timers.ts";
+import { pendingTimers, startAndRearm, type PendingTimer } from "../src/timers.ts";
 import { coderDefinition, mkStore, MockFlueClient } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 
@@ -49,6 +63,9 @@ function assertAbout(t: number | "never", expected: number, label: string): void
 }
 
 const remaining = DELAY - RESTART_AT;
+
+/** A wall clock for the hosts that does not step: see the header. */
+const clock = () => performance.timeOrigin + performance.now();
 
 // ---- Raw xstate: the canary -----------------------------------------------------------------
 
@@ -91,9 +108,10 @@ test("raw xstate: the system's `snapshot.scheduler` seam is not wired — passin
 });
 
 test("raw xstate + pendingTimers: a timer is recorded with its absolute deadline, JSON-safe", async () => {
-  const before = Date.now();
+  const now = 1_000_000;
   const actor = createActor(waiting).start();
-  const timers = pendingTimers(actor);
+  await sleep(20);
+  const timers = pendingTimers(actor, now);
   actor.stop();
   assert.equal(timers.length, 1);
   const [t] = timers as [PendingTimer];
@@ -107,26 +125,32 @@ test("raw xstate + pendingTimers: a timer is recorded with its absolute deadline
       delay: DELAY,
     },
   );
-  assert.ok(t.deadline >= before + DELAY && t.deadline <= Date.now() + DELAY);
+  // Read at `now`, 20 ms after xstate scheduled it: what remains, on the host's clock.
+  assert.ok(t.deadline > now + DELAY - 20 - SLACK && t.deadline <= now + DELAY - 20, `deadline ${t.deadline}`);
   assert.deepEqual(JSON.parse(JSON.stringify(timers)), timers);
 });
 
-test("raw xstate + rearmTimers: a backwards wall clock cannot push a timer past its own delay", async () => {
+test("raw xstate + startAndRearm: a backwards wall clock cannot push a timer past its own delay", async () => {
   const first = createActor(waiting).start();
   const persisted = JSON.parse(JSON.stringify(first.getPersistedSnapshot()));
   first.stop();
-  const restored = createActor(waiting, { snapshot: persisted }).start();
+  const restored = createActor(waiting, { snapshot: persisted });
+  const now = 1_000_000;
   // A deadline an hour out: the clock that wrote it ran ahead of this one.
-  rearmTimers(restored, [
-    {
-      source: [],
-      target: [],
-      id: `xstate.after.${DELAY}.m.waiting`,
-      event: { type: `xstate.after.${DELAY}.m.waiting` },
-      delay: DELAY,
-      deadline: Date.now() + 3_600_000,
-    },
-  ]);
+  startAndRearm(
+    restored,
+    [
+      {
+        source: [],
+        target: [],
+        id: `xstate.after.${DELAY}.m.waiting`,
+        event: { type: `xstate.after.${DELAY}.m.waiting` },
+        delay: DELAY,
+        deadline: now + 3_600_000,
+      },
+    ],
+    now,
+  );
   const t = await timeTo(() => restored.getSnapshot().value === "done");
   restored.stop();
   assertAbout(t, DELAY, "clamped to the delay");
@@ -149,7 +173,7 @@ async function persistedAt(store: SnapshotStore, runId: string, value: unknown):
  * `live`, as after a crash. */
 async function runThenStop(def: WorkflowDef, value: unknown, ms: number) {
   const store = await mkStore();
-  const a = new RunHost({ store });
+  const a = new RunHost({ store, now: clock });
   a.register(def);
   const { runId } = await a.start(def.name);
   await persistedAt(store, runId, value);
@@ -159,7 +183,7 @@ async function runThenStop(def: WorkflowDef, value: unknown, ms: number) {
 }
 
 async function restoreOn(store: SnapshotStore, def: WorkflowDef, runId: string): Promise<RunHost> {
-  const host = new RunHost({ store });
+  const host = new RunHost({ store, now: clock });
   host.register(def);
   assert.deepEqual((await host.restore()).reattached, [runId]);
   return host;
@@ -285,6 +309,137 @@ test("two restores in a row keep the one deadline", async () => {
   assertAbout(t, remaining - 100, "second restore");
   assert.equal(firedOf(c, runId), 1);
   await c.stop(runId);
+});
+
+test("the host writes and reads deadlines on its own clock (`now`), not on Date.now", async () => {
+  // Both hosts run 10 s ahead of Date.now. A host that read either side on Date.now would see a
+  // deadline 10 s off: the full delay (clamped), or at once.
+  const ahead = () => clock() + 10_000;
+  const store = await mkStore();
+  const a = new RunHost({ store, now: ahead });
+  a.register(counting);
+  const { runId } = await a.start(counting.name);
+  await persistedAt(store, runId, "waiting");
+  const [saved] = ((await store.load(runId))!.snapshot as { timers: PendingTimer[] }).timers;
+  assert.ok(Math.abs(saved!.deadline - (ahead() + DELAY)) < SLACK, "the deadline is a time on `now`");
+  await sleep(RESTART_AT);
+  await a.stop(runId);
+  const b = new RunHost({ store, now: ahead });
+  b.register(counting);
+  await b.restore();
+  const t = await timeTo(() => b.status(runId)?.value === "done");
+  assertAbout(t, remaining, "on the host's clock");
+  await b.stop(runId);
+});
+
+test("a state exit after the restore cancels a re-armed timer", async () => {
+  // Restart 150 ms in: `leave` is re-armed at 50 ms, the `after` at 250. `leave` exits `waiting`,
+  // which must cancel the re-armed `after`; `other` enters `waiting` again 100 ms later, with a fresh
+  // DELAY. A re-armed timer the exit missed would fire at 250 into the fresh `waiting`.
+  const def = workflow(
+    "exit-after",
+    setup({
+      types: {} as { context: Count; events: { type: "leave" } },
+      actions: { count: assign({ fired: ({ context }) => context.fired + 1 }) },
+    }).createMachine({
+      id: "m",
+      context: { fired: 0 },
+      entry: raise({ type: "leave" }, { delay: 200 }),
+      initial: "waiting",
+      states: {
+        waiting: { after: { [DELAY]: { target: "done", actions: "count" } }, on: { leave: "other" } },
+        other: { after: { 100: "waiting" } },
+        done: {},
+      },
+    }),
+  );
+  const { store, runId } = await runThenStop(def, "waiting", RESTART_AT);
+  const b = await restoreOn(store, def, runId);
+  const t = await timeTo(() => b.status(runId)?.value === "done");
+  assertAbout(t, 200 - RESTART_AT + 100 + DELAY, "the fresh `after`, not the re-armed one");
+  assert.equal(firedOf(b, runId), 1);
+  await b.stop(runId);
+});
+
+test("a state exit during start() on restore cancels the saved timer", async () => {
+  // `start()` drains the mailbox: the restored `cb` sends `leave` while it starts, before anything is
+  // re-armed. That exit must still cancel the saved `after`: `other` enters `waiting` again 100 ms
+  // later, with a fresh DELAY, and the saved row (250 ms left) must not fire into it.
+  let sendOnStart = false;
+  const machine = setup({
+    types: {} as { context: Count; events: { type: "leave" } },
+    actions: { count: assign({ fired: ({ context }) => context.fired + 1 }) },
+    actors: { cb: fromCallback(() => {}) },
+  }).createMachine({
+    id: "m",
+    context: { fired: 0 },
+    initial: "waiting",
+    states: {
+      waiting: {
+        invoke: { src: "cb" },
+        after: { [DELAY]: { target: "done", actions: "count" } },
+        on: { leave: "other" },
+      },
+      other: { after: { 100: "waiting" } },
+      done: {},
+    },
+  });
+  const def: WorkflowDef = {
+    name: "exit-during-start",
+    machine,
+    provide: () => ({
+      actors: {
+        cb: fromCallback(({ sendBack }) => {
+          if (!sendOnStart) return;
+          sendOnStart = false;
+          sendBack({ type: "leave" });
+        }),
+      },
+    }),
+  };
+  const { store, runId } = await runThenStop(def, "waiting", RESTART_AT);
+  sendOnStart = true;
+  const b = await restoreOn(store, def, runId);
+  assert.equal(b.status(runId)?.value, "other", "the exit happened inside start()");
+  const t = await timeTo(() => b.status(runId)?.value === "done");
+  assertAbout(t, 100 + DELAY, "the fresh `after`, not the saved one");
+  assert.equal(firedOf(b, runId), 1);
+  await b.stop(runId);
+});
+
+test("timers that fell due while the Orchestrator was down fire in deadline order", async () => {
+  // The outer `after` is scheduled first and falls due last. Uninterrupted, the inner one fires at
+  // 100 and its exit cancels the outer: the run ends `inner`. Restored after both deadlines, it must
+  // end the same way, not `timeout`.
+  const def = workflow(
+    "overdue-order",
+    createMachine({
+      id: "m",
+      initial: "outer",
+      states: {
+        outer: {
+          after: { 300: "timeout" },
+          initial: "a",
+          states: { a: { after: { 100: "#m.inner" } } },
+        },
+        inner: {},
+        timeout: {},
+      },
+    }),
+  );
+  const { store, runId } = await runThenStop(def, { outer: "a" }, 50);
+  const saved = ((await store.load(runId))!.snapshot as { timers: PendingTimer[] }).timers;
+  assert.deepEqual(
+    saved.map((t) => t.delay),
+    [300, 100],
+    "saved in the order xstate scheduled them",
+  );
+  await sleep(400); // down past both deadlines
+  const b = await restoreOn(store, def, runId);
+  const t = await timeTo(() => typeof b.status(runId)?.value === "string");
+  assert.ok(typeof t === "number" && t < SLACK, `prompt: ${t}`);
+  assert.equal(b.status(runId)?.value, "inner");
+  await b.stop(runId);
 });
 
 test("a named delay is re-armed with the remaining time", async () => {
@@ -464,7 +619,7 @@ test("an `after` below a state that invokes an Agent is re-armed; the Turn is re
     },
   };
   const store = await mkStore();
-  const a = new RunHost({ store });
+  const a = new RunHost({ store, now: clock });
   a.register(def);
   const { runId } = await a.start(def.name);
   // Persisted with the admission ledgered, so the restore re-attaches the Turn.
