@@ -495,8 +495,8 @@ async function saidUntil(
  * the release board as soon as the Turn's prompt prints, while the model writes; the boundary read
  * finds picks and restates the Turn part; the model picks in the same Submission — the first Menu
  * call after the restatement is `release` or `hold`, with no nudge before it. A model that finished
- * writing before the answer landed ended its Submission with nothing allowed; the nudge that wakes it
- * (ADR-0016) is a second Submission, with no restatement in it (`void`; cancelled if unsettled).
+ * writing before the answer landed ended its Submission with nothing allowed, and nothing asks it
+ * again (`void`; cancelled).
  */
 const pushWake: Driver = async (world, input) => {
   const runId = await startRun(world, "push-wake", input);

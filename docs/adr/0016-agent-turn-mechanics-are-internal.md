@@ -47,16 +47,15 @@ later adds the third: runaway):
 - **No-signal** (the agent stops while its Turn is still open — jr's dominant failure mode): the wire treats that as a
   normal completed Submission, so recovery is jr2's. **The ask-again rule**: a model that stops while the Turn is open
   and its Allowed picks are not empty is asked again. A delivered pick does not end the question — a pick with no
-  target, or one into a mode, keeps the Turn open (ADR-0024) — only the Turn ending does. A model that stops while its
-  Allowed picks are empty stopped correctly: the Turn waits on a Gate, a child's invoke or a timer, or it was never
-  meant to pick. It is asked when one of those opens a pick, and not before. The rule has two seats. Inside the
-  Submission, the Harness's step-boundary check restates the Turn part when the Allowed picks changed since the model
-  last read them (ADR-0029), and that message keeps the engine's loop going; it never restates an empty list to a model
-  that stopped. After the Submission, the Agent actor reads the Allowed picks and, if any are left, admits a budgeted
-  **nudge** on the same conversation — "Your previous turn ended, and the workflow is still waiting for your pick." —
-  absorbing ADR-0006's "forced final pick is a Machine-level re-prompt" into the actor. If none are left, the actor
-  watches the invoking Machine and admits the same nudge the first time its Allowed picks are not empty; the watch ends
-  with the state. That nudge spends no budget: the model did nothing wrong, and only an outside event can cause it.
+  target, or one into a mode, keeps the Turn open (ADR-0024) — only the Turn ending does, and an open Turn whose Allowed
+  picks are empty is not asked (it waits on a Gate, a child's invoke or a timer, or it was never meant to pick). Nothing
+  watches the Machine after such a stop: if a pick opens later, the model is not asked, and the Turn waits until its
+  state exits. The rule has two seats. Inside the Submission, the Harness's step-boundary check restates the Turn part
+  when the Allowed picks changed since the model last read them (ADR-0029), and that message keeps the engine's loop
+  going; it never restates an empty list to a model that stopped. After the Submission, the Agent actor reads the
+  Allowed picks and, if any are left, admits a budgeted **nudge** on the same conversation — "Your previous turn ended,
+  and the workflow is still waiting for your pick." — absorbing ADR-0006's "forced final pick is a Machine-level
+  re-prompt" into the actor.
 
 Budgets are defaulted knobs, not Machine context. Exhaustion emits the single terminal `agent.fault { reason }`; where
 it routes (escalation, a triage/investigator state) is workflow policy. Attempts surface as run-feed/visualize telemetry

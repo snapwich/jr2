@@ -7,8 +7,8 @@
 //
 // The step answers the Gate as soon as the Turn's prompt prints. A trial whose model finished
 // writing first ended its Submission with nothing allowed — nothing restates an empty list to a
-// model that stopped — and is asked again by a nudge once the answer opens a pick (ADR-0016): a
-// second Submission, so that trial never reached the moment the claim measures (`void`).
+// model that stopped, and nothing asks it again after — so that trial never reached the moment
+// the claim measures (`void`), and the step cancels it.
 //
 // Filename `push-wake.ts` → workflow "push-wake".
 

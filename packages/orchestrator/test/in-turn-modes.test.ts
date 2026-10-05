@@ -494,36 +494,9 @@ function gateWaitDef(clients: Map<string, MockFlueClient>, options: { nudgeBudge
   };
 }
 
-test("the ask-again rule: a model that stopped with NOTHING allowed is asked when a Gate's answer opens a pick — and the wake spends no nudge (ADR-0016)", async () => {
-  // nudgeBudget 0: a no-signal stop with picks allowed would fault at once, so a nudge here can only
-  // be the wake.
-  const clients = new Map<string, MockFlueClient>();
-  const host = new RunHost({ store: await mkStore() });
-  host.register(gateWaitDef(clients, { nudgeBudget: 0 }));
-  const { runId, instanceId } = await host.start("gate-wait");
-  const client = clients.get(instanceId)!;
-  const iid = await admittedIid(client);
-
-  host.sendToAgent(iid, { type: "ask" });
-  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "waiting on the Gate: nothing to pick");
-  client.complete(); // correct: nothing to pick, so it stops
-  await new Promise((r) => setTimeout(r, 30));
-  assert.equal(client.admits.length, 1, "nothing is allowed: not asked yet");
-
-  // The human answers: a pick opens, and the stopped model is asked again on the same conversation.
-  host.sendToGate(runId, "approval", { type: "approve" });
-  await waitFor(() => client.admits.length === 2);
-  assert.equal(client.admits[1]!.instanceId, iid);
-  assert.match(client.admits[1]!.prompt ?? "", /still waiting for your pick/);
-  assert.equal(host.status(runId)?.status, "active", "no fault: the wake is not a nudge");
-
-  host.sendToAgent(iid, { type: "submit", summary: "done" });
-  client.complete();
-  await waitFor(() => host.status(runId) === undefined);
-  assert.equal(client.admits.length, 2);
-});
-
-test("the ask-again rule: a Gate answer that LEAVES the Agent's state ends the wait — nothing is asked", async () => {
+test("the ask-again rule: a model that stopped with NOTHING allowed is not asked when a Gate's answer later opens a pick — the nudge has one moment (design 3.6)", async () => {
+  // The nudge answers a stop with picks LEFT. A stop with the list empty is correct, and nothing
+  // watches the Machine after it: the Gate's answer opening `submit` asks nobody.
   const clients = new Map<string, MockFlueClient>();
   const host = new RunHost({ store: await mkStore() });
   host.register(gateWaitDef(clients));
@@ -532,12 +505,15 @@ test("the ask-again rule: a Gate answer that LEAVES the Agent's state ends the w
   const iid = await admittedIid(client);
 
   host.sendToAgent(iid, { type: "ask" });
-  client.complete();
+  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "waiting on the Gate: nothing to pick");
+  client.complete(); // correct: nothing to pick, so it stops
   await new Promise((r) => setTimeout(r, 30));
-  host.sendToGate(runId, "approval", { type: "leave" });
-  await waitFor(() => host.status(runId) === undefined);
+
+  host.sendToGate(runId, "approval", { type: "approve" });
+  await waitFor(() => host.agentSurface(iid)?.allowed.includes("submit") === true);
   await new Promise((r) => setTimeout(r, 30));
-  assert.equal(client.admits.length, 1, "the Turn is over: no wake");
+  assert.equal(client.admits.length, 1, "no wake: nothing asks the stopped model");
+  assert.equal(host.status(runId)?.status, "active", "no fault");
 });
 
 test("a pick on the Menu that ANOTHER state of the Agent handles: answered with the correction receipt, never refused, never delivered to the Machine (ADR-0029)", async () => {

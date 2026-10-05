@@ -31,15 +31,16 @@ recover, finish — are exercised only one scripted tool call at a time.
   ADR-0062); a Turn follows its modes — after a pick changes the mode, after a correction receipt, and after a nudge
   ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md), ADR-0029,
   [ADR-0016](0016-agent-turn-mechanics-are-internal.md)); and a Turn hears its Allowed picks change under it at a step
-  boundary, follows them without a refused pick, and wakes from a stop with nothing to pick (ADR-0029). A claim
-  qualifies when an ADR states what a correct Agent does differently for it and a step can observe the difference from
-  outside the pod. **The run** is one `workspace()` workflow through to `done` on a real task: a ticket the seed Repo
-  carries as a failing test, a planner's pick, a coder that edits in the Worktree, runs the test, commits on the run's
-  branch and names the commit — a guard refuses a `submit` that names none — and a reviewer in the same Sandbox,
-  read-only ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)), that runs the test
-  itself and approves or rejects, bounded. Approval parks at a Gate, and the witness is the pod (parking is retention,
-  ADR-0012): the branch is ahead of `main`, its head is the named commit, the tree is clean, and the test passes when
-  the suite runs it there. Nothing is pushed — the Agent holds no credential and the push is the caller's (ADR-0005,
+  boundary, follows them without a refused pick, and picks inside the same Submission when a Gate's answer opens a pick
+  while it works (ADR-0029). A claim qualifies when an ADR states what a correct Agent does differently for it and a
+  step can observe the difference from outside the pod. **The run** is one `workspace()` workflow through to `done` on a
+  real task: a ticket the seed Repo carries as a failing test, a planner's pick, a coder that edits in the Worktree,
+  runs the test, commits on the run's branch and names the commit — a guard refuses a `submit` that names none — and a
+  reviewer in the same Sandbox, read-only
+  ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)), that runs the test itself and
+  approves or rejects, bounded. Approval parks at a Gate, and the witness is the pod (parking is retention, ADR-0012):
+  the branch is ahead of `main`, its head is the named commit, the tree is clean, and the test passes when the suite
+  runs it there. Nothing is pushed — the Agent holds no credential and the push is the caller's (ADR-0005,
   [ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)), as `task` says — and
   the seed accepts none. The run asserts the pick ledger's shape and a time bound — never the diff, the commit message,
   or the Turn count, which are the model's.

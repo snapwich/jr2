@@ -150,12 +150,11 @@ Feature: a real model drives the kit
       And the cell "push-follow/off" is written to the scorecard
       And the cell "push-no-refusal/off" is written to the scorecard
 
-    Scenario: a Menu-only Turn with nothing to pick wakes when a Gate's answer allows a pick
+    Scenario: a Menu-only Turn with nothing to pick picks in the same Submission when a Gate's answer allows a pick
       The `push-wake` Turn starts with nothing allowed and is asked to write while it waits; the
       step answers the release board as soon as the Turn's prompt prints. The first Menu call
       after the restatement, with no nudge before it, is the measurement. A model that finished
-      writing before the answer landed ended its Submission with nothing allowed, and a nudge
-      wakes it in a second Submission: void.
+      writing before the answer landed ended its Submission with nothing allowed: void, cancelled.
       Given the model instance is serving
       When I run the "push-wake" workflow 10 times with thinking off
       Then the Agent picked inside the same Submission in at least 9 trials
