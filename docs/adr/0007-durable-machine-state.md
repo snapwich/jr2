@@ -20,6 +20,10 @@ The store's own durability — what a persist survives, and how long a finished 
 Durable **agent handles** do not ride Machine context at all: the host persists an `iid → admission` ledger beside the
 snapshot in the same save (ADR-0016). Iids are globally unique, so restore needs no context-tree walking to find them.
 
+**Pending timers** do not ride the snapshot either. The host persists a **timer table** beside it in the same save: one
+row per pending `after`, named delay, delayed `raise` or delayed `sendTo` in the run's tree, with its absolute deadline.
+The author writes plain xstate `after`; there is no kit timer actor, and `after` is refused nowhere.
+
 ## Mechanism (the non-obvious parts)
 
 - **Re-attach is driven by the child's persisted input, not the parent `invoke`.** On restore, xstate v5 re-spawns an
@@ -27,6 +31,22 @@ snapshot in the same save (ADR-0016). Iids are globally unique, so restore needs
   re-attach lever is rewriting the child's persisted input on hydrate (drop `prompt`, mark it attaching) so the run
   resumes its stream instead of re-POSTing. Keep the parent-side input expression as defence-in-depth, but know it is
   not what fires on restore.
+- **A timer is re-armed by the host, because xstate 5 drops it.** xstate 5 keeps a delayed event on the actor SYSTEM's
+  scheduler, not in the snapshot, and a restore runs no entry action again, so a pending `after` never fires after a
+  restore (Pool's `pollEvery` included, ADR-0017). At each save the host reads the scheduler's table and writes each
+  timer as `{ source, target, id, event, delay, deadline }`, actors named by their child-id path below the root. On
+  restore the order is: `start()`, then re-arm each row with `deadline − now` clamped to `[0, delay]`. Re-armed before
+  `start()`, a timer is armed twice, because the system's own `start()` schedules its table. The id is xstate's own, so
+  a state's exit still cancels a re-armed timer. So a timer fires once, after the time that remained; at once if its
+  deadline passed while the Orchestrator was down; never if an exit cancelled it before the save; and never later than
+  its own delay when the wall clock went backwards. A wall clock that jumped forwards fires it early: only the wall
+  clock survives a process. "Once" is with respect to the saved state: a timer that fired after the last save fires
+  again on restore, as any event after the last save replays. A delayed send to an actor outside the run's tree is not
+  recorded; jr2 has no such idiom.
+- **The re-arm reads an xstate internal** (`system.getSnapshot()._scheduledEvents`, `system.scheduler.schedule`;
+  `packages/orchestrator/src/timers.ts`). Raw-xstate tests that show xstate itself dropping the timer are the canary for
+  an xstate bump. xstate 6 persists timers in the snapshot and re-arms them with the same deadline and clamp; on xstate
+  6 the timer table is deleted.
 - **Reconcile against the live world before re-attaching.** Restore is not blind resume: a present Sandbox CR →
   re-attach; an absent one → the defined failure path (`workspace.lost` into the body — ADR-0012), never a silent
   re-provision.

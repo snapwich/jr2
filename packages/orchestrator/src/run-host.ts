@@ -40,6 +40,7 @@ import {
   type RunMarker,
 } from "./registration.ts";
 import { NoticeLedger, type NoticeLedgerState } from "./notices.ts";
+import { pendingTimers, rearmTimers, type PendingTimer } from "./timers.ts";
 import {
   DEFAULT_LEASE_INTERVAL_MS,
   WORKSPACE_WAIT_KEY,
@@ -545,6 +546,13 @@ type RunBlob = {
    * it, so a restart before that save delivers it again and a restart after does not.
    */
   notices?: NoticeLedgerState;
+  /**
+   * The pending TIMERS (`after`, named delays, delayed `raise` and `sendTo`), each with its
+   * absolute deadline (ADR-0007, timers.ts). xstate 5 keeps them on the actor system, not in the
+   * snapshot, so a restore without this table loses every one. Same blob for the snapshot's
+   * atomicity: the timers saved are exactly the ones the saved states scheduled.
+   */
+  timers?: PendingTimer[];
   fault?: string;
 };
 
@@ -783,6 +791,8 @@ export class RunHost {
           blob.notices,
         );
         actor.start();
+        // After `start()`, never before: see `rearmTimers`. The next save records them again.
+        rearmTimers(actor, blob.timers ?? []);
         reattached.push(stored.runId);
       } catch (err) {
         // Left `live` on purpose — see the note above. The row is unchanged, so the next boot tries
@@ -1499,6 +1509,7 @@ export class RunHost {
       agents: run.agents,
       epochs: run.epochs,
       notices: run.notices.state(),
+      timers: pendingTimers(run.actor),
       fault: run.fault,
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
