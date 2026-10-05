@@ -42,6 +42,17 @@ whole history again. It also left the history calling tools the request no longe
   arguments cannot help; one inside `allowed` was refused by a guard that read its payload, and its receipt says to
   change the arguments. The Harness does not pre-check: its list is as old as what it last read, and an in-state move
   (`moved: true, turnComplete: false`) can change the guards and the mode mid-Turn.
+- **The Turn part is restated at a step boundary when the Allowed picks changed under the Agent.** A Gate's answer, an
+  outside event or a child's settled invoke can move the Machine while the Agent works with its Working tools and picks
+  nothing. So the Harness keeps the last Allowed-picks list the model read — the Turn part, then every receipt and
+  refusal — and after each step's tool results reads the surface once and compares the two as sets. If they differ, it
+  appends one message before the next model request: "The workflow's state changed since you last read the Allowed
+  picks. Allowed now: …", in a `<jr2-turn>` block. The Agent's own pick is never restated, because its receipt already
+  told the model. The read is one bounded attempt and a failure is silence; the next boundary asks again. Nothing is
+  said after the Turn ended (the surface is gone) or after an abort, and an empty list is not restated to a model that
+  stopped (ADR-0016's ask-again rule). The comparison is engine-neutral (`between-steps.ts`); only the placement is the
+  engine's — pi's between-steps input (`steer`). An engine with no such input falls back to the next receipt. No route
+  is added and no cap is set; the Orchestrator already serves the truth on `GET /agents/:iid/surface`.
 - **Presentation stays in the Harness's neutral layer.** `menu.ts` renders the Allowed-picks text and every receipt; a
   presenter (`menu-tools.ts` for pi) only maps Menu items to its tool API and places the text it is handed. A second
   harness — one that takes MCP tools fixed per session and the prompt as text — needs a presenter, not a second Menu.
@@ -94,12 +105,20 @@ block was not perfect either: once the model invented a tool it had never been g
   dialects; the receipt already carries the distinction.
 - **Filter mid-Turn and push `list_changed`.** Rejected: nothing pushes to the Harness (ADR-0013), and a list that moves
   under an Agent invites the retry loop from the other direction.
+- **The Orchestrator pushes the restated Turn part over a new route.** Rejected: pi appends only at a step boundary, so
+  a push arrives no earlier than the Harness's read, and it needs a route that writes text into a conversation, change
+  detection over every run, and a copy of what the model read that an Orchestrator restart loses.
+- **The Allowed picks on every Working-tool result.** Rejected: a statement repeated where nothing changed is one the
+  model learns to skip.
 
 ## Consequences
 
 - **One state can allow different picks as its context changes or its active mode changes; the Menu does not change.**
   The conformance tier asserts it: two Submissions with different Allowed picks send a byte-identical tools block
   (ADR-0027).
+- **A restatement is appended, never rewritten.** Conformance asserts that each request of a Submission is a byte prefix
+  of the next, with the tools and the system prompt unchanged, and that the restatement sits right after the step's last
+  tool result.
 - **A workflow expresses "not available yet" with a guard alone,** and the Agent is told so rather than finding a tool
   that silently does nothing.
 - **`on: { X: {} }` — targetless and actionless — is never allowed,** matching xstate's `can()`.

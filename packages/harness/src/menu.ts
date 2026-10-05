@@ -111,6 +111,10 @@ export type MenuOptions = {
   /** How the presenter names a pick to its model (`menu-tools.ts`: `mcp__jr2__<name>`), so every
    * text here names the tool the model actually sees. Default: the bare name. */
   toolName?: (name: string) => string;
+  /** Hears every Allowed-picks list a pick's answer carries — a receipt's or a refusal's — as the
+   * model is about to read it. `between-steps.ts` keeps the last list the model read, so a change it
+   * already read is never restated. */
+  onAllowed?: (allowed: string[]) => void;
 };
 
 /**
@@ -362,7 +366,45 @@ async function deliver(
       `the Orchestrator is unavailable (${await errorOf(res)}), so the pick was not taken — try it again`,
     );
   }
-  return (await answered(res, (allowed) => allowedPicksText(allowed, opts.toolName))) as DeliveryReceipt;
+  const receipt = (await answered(res, (allowed) => {
+    opts.onAllowed?.(allowed);
+    return allowedPicksText(allowed, opts.toolName);
+  })) as DeliveryReceipt;
+  // Absent is not empty (ADR-0029's skew): an older Orchestrator's receipt carries no list to hear.
+  if (Array.isArray(receipt.allowed)) opts.onAllowed?.(receipt.allowed);
+  return receipt;
+}
+
+/**
+ * The Allowed picks NOW, read at a step boundary of a running Turn (`between-steps.ts`). ONE
+ * attempt, bounded, and every failure is `undefined`: unlike `readSurface`, this read is not the
+ * Turn's footing. A 404 (the Turn is over), a stopping Orchestrator's 503, the Custodian's
+ * unreachable, a blip — each means "say nothing this step", and the next boundary asks again. It
+ * never stalls or fails a Turn.
+ */
+export async function readAllowed(
+  opts: MenuOptions,
+  instanceId: string,
+  signal?: AbortSignal,
+  timeoutMs = 2_000,
+): Promise<string[] | undefined> {
+  const url = `${base(opts)}/agents/${encodeURIComponent(instanceId)}/surface`;
+  const bound = AbortSignal.timeout(timeoutMs);
+  try {
+    const res = await (opts.fetch ?? globalThis.fetch)(url, {
+      headers: authorization(opts),
+      signal: signal ? AbortSignal.any([signal, bound]) : bound,
+    });
+    if (!res.ok || res.headers.get("x-jr2-custodian") === "unreachable") {
+      await res.body?.cancel();
+      return undefined;
+    }
+    const surface = (await res.json()) as Surface;
+    // ADR-0029's skew, as in `readMenu`: absent `allowed` is the whole Menu, never empty.
+    return surface.allowed ?? (surface.menu ?? surface.accepts ?? []).map((event) => event.name);
+  } catch {
+    return undefined;
+  }
 }
 
 function base(opts: MenuOptions): string {

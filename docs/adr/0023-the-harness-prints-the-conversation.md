@@ -29,7 +29,10 @@ replayable from any offset. The gap was a read decision, not a missing capabilit
 - **Reasoning prints; results do not.** Prompts, assistant text, thinking, and tool calls with truncated inputs. File
   contents, command output, and API responses never print. This is one cut serving two purposes, which is why it is a
   boundary and not an unfinished implementation: tool results are where the secrets are, and they are also most of the
-  bytes.
+  bytes. Every user message the model reads prints as a prompt — the Frame's prompt with its Turn part, a nudge, and a
+  Turn part the Harness restated at a step boundary
+  ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)), which prints once as
+  `[<agent>] [prompt] <jr2-turn>` where the model read it.
 - **The writer structures, the reader colorizes.** Lines carry a parseable prefix and no ANSI. jr's colors were correct
   for an fzf preview, which is a terminal; `kubectl logs` output is piped, grepped, and ingested, where escape codes are
   corruption. A future reader may colorize on `isatty`.

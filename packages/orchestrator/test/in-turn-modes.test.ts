@@ -383,3 +383,70 @@ test("edge: an `external` event on a child state never enters the Agent's Menu",
   assert.deepEqual(mock.admits[0]!.menu, ["run_tests"]);
   actor.stop();
 });
+
+test("the ask-again rule: an in-Turn pick, then the model stops — nudged, because picks are still allowed (ADR-0016)", async () => {
+  // After a settle, a live Turn whose Allowed picks are not empty is asked again (ADR-0016).
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(modesDef(clients, controllableTests()));
+  const { runId, instanceId } = await host.start("modes");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  host.sendToAgent(iid, { type: "ask_review" }); // a mode change: moved, Turn open
+  client.complete(); // the model ends its Submission without a Turn-ending pick
+  await waitFor(() => client.admits.length === 2);
+  assert.equal(client.admits[1]!.instanceId, iid, "the nudge is on the same conversation");
+  assert.match(client.admits[1]!.prompt ?? "", /still waiting for your pick/);
+  assert.deepEqual(host.status(runId)?.value, { ticket: "reviewing" }, "still in the mode");
+  // The nudged Submission ends with the Turn-ending pick: no further nudge.
+  host.sendToAgent(iid, { type: "submit", summary: "done" });
+  client.complete();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(client.admits.length, 2);
+});
+
+test("the ask-again rule: a live Turn whose Allowed picks are EMPTY (a busy mode) is not nudged", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const tests = controllableTests();
+  const host = new RunHost({ store: await mkStore() });
+  // A Machine whose only Allowed pick while testing would be the parent's `abandon` — so a variant
+  // with no parent pick: in `testing`, nothing is allowed.
+  const machine = jr2Setup({
+    types: {} as { context: Record<string, never> },
+    events: [run_tests, submit],
+    actors: { coder: agentActorWith(() => new MockFlueClient(), coderDefinition), tests: tests.logic },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    initial: "ticket",
+    states: {
+      ticket: {
+        invoke: { src: "coder", input: { prompt: "go", endpoint: "http://harness.invalid" } },
+        initial: "coding",
+        states: {
+          coding: { on: { run_tests: "testing", submit: "#wf.done" } },
+          testing: { invoke: { src: "tests", onDone: "coding" } },
+        },
+      },
+      done: { type: "final" },
+    },
+  });
+  host.register({
+    name: "busy",
+    machine,
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      clients.set(instanceId, client);
+      return { actors: { coder: agentActorWith(() => client, coderDefinition), tests: tests.logic } };
+    },
+  });
+  const { runId, instanceId } = await host.start("busy");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  host.sendToAgent(iid, { type: "run_tests" });
+  assert.deepEqual(host.agentSurface(iid)?.allowed, []);
+  client.complete();
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(client.admits.length, 1, "nothing is allowed: not asked again");
+  assert.equal(host.status(runId)?.status, "active", "no fault");
+});

@@ -20,6 +20,12 @@ whose processes are gone, with no way to know why.
   picks ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)) and the notices.
   So the Briefing never breaks the provider's prompt cache — the Turn part sits in the newest message, which is uncached
   anyway, and stays unchanged in the history after.
+- **The Turn part is written once per Submission, and restated when its Allowed picks change.** When something other
+  than the Agent's own pick changes them inside the Turn, the Harness appends the Allowed picks again at the next step
+  boundary, in a `<jr2-turn>` block of their own: "The workflow's state changed since you last read the Allowed picks.
+  Allowed now: …" ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). It is
+  appended, never a rewrite of the first, so the cache argument above holds for it too. It carries no notice: notices
+  are for the next Turn in their scope.
 - **The Turn part comes last, because a model obeys what it read last.** Measured on the home-lab vLLM model: with a
   prompt that argued for a pick the Turn did not allow, the Allowed picks placed ahead of the prompt were obeyed 0/10
   (thinking off) and 5/10 (thinking on); placed after it, 10/10 both. Wording made no difference. The author's task

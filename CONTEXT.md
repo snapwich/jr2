@@ -184,9 +184,10 @@ conversation id, session id, conversation pin, scope
 
 **Turn**: One Agent's answer to the frame a Machine state set for it — the prompt, the work, and the single menu pick
 that ends it (ADR-0006). A turn belongs to the state that asked for it: when that state stops waiting, the turn is over,
-whatever made it stop (ADR-0024). It rides on one Submission but is not the same thing — a Submission is the Harness's
-durable unit, and an Agent whose turn has ended can still be generating, which is the failure ADR-0024 closes. _Avoid_:
-session (a conversation spans turns), generation, request
+whatever made it stop (ADR-0024). So a pick whose target stays inside that state — a mode, a pick with no target — keeps
+the turn open, and other picks may come before the one that ends it. It rides on one Submission but is not the same
+thing — a Submission is the Harness's durable unit, and an Agent whose turn has ended can still be generating, which is
+the failure ADR-0024 closes. _Avoid_: session (a conversation spans turns), generation, request
 
 **Submission**: One admitted prompt on a conversation — the Harness's unit of work. A Turn rides on exactly one; a
 conversation (Instance ID) spans many. Per-conversation queue, processed in admission order; an abort sweeps the active
@@ -220,9 +221,10 @@ tools (unqualified), tool list
 **Allowed picks**: The part of the Menu one Turn may pick now — the invoking state's derived set (its own, its
 ancestors' and its modes' picks — ADR-0015), narrowed to those the live Machine would currently accept (ADR-0029). So
 they follow the active mode and the guards: one Turn can allow different picks as the Machine moves inside the invoking
-state; the Menu does not change. Stated to the model in the Briefing's Turn part and enforced at the pick: a pick
-outside them is refused, and the refusal names them. _Avoid_: menu (the fixed set), open picks, active tools, legal
-moves
+state; the Menu does not change. Stated to the model in the Briefing's Turn part, in every answer to a pick that leaves
+the Turn open, and again at a step boundary when they changed since the model last read them; enforced at the pick: a
+pick outside them moves nothing, and its answer names them. _Avoid_: menu (the fixed set), open picks, active tools,
+legal moves
 
 **mode**: A child state of an Agent's state with no invoke. The Agent is at Rest there, with a different set of Allowed
 picks.
@@ -248,9 +250,10 @@ is a content address, not an ordering), schema
 **Briefing**: jr2's own text to the model — facts about the Agent's seat and the mechanism that a correct Agent needs
 and cannot observe for itself (how a Turn ends, its CPUs and Size, its working directory, what happened to its last
 Turn, which of its Menu it may pick), and nothing about the task. A standing part, the same on every Turn, follows the
-Agent's `instructions`; a Turn part follows the Frame's prompt and carries its Allowed picks and its **notices**. Always
-on: no author can turn it off. _Avoid_: system prompt (the mechanism, and the Turn part is not in it), preamble, header,
-instructions (identity's word), nudge (a re-prompt after a Turn ended with no pick)
+Agent's `instructions`; a Turn part follows the Frame's prompt and carries its Allowed picks and its **notices**, and
+the Harness restates its Allowed picks at a step boundary when they changed under the Agent (ADR-0029). Always on: no
+author can turn it off. _Avoid_: system prompt (the mechanism, and the Turn part is not in it), preamble, header,
+instructions (identity's word), nudge (a re-prompt after a Submission ended with the Turn open and picks left)
 
 **Working tools**: The file and shell tools (read, write, edit, bash, grep, glob) the Harness executes in its own
 container — what the Agent may **do**; filtered by the definition's `workspace` access (ADR-0028; `"none"` withholds

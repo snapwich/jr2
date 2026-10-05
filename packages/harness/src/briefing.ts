@@ -127,6 +127,19 @@ export function turnPart(facts: TurnFacts): string {
   return `<jr2-turn>\n${lines.join("\n")}\n</jr2-turn>`;
 }
 
+/**
+ * The Turn part, restated at a step boundary (`between-steps.ts`, ADR-0029): said only when the
+ * Allowed picks differ from the last list the model read, so it is true by construction. It claims
+ * no cause — the Harness cannot tell a Gate's answer from a pick whose answer was lost — and it is
+ * delimited as the Turn part is, so "the newest Allowed now holds" stays one rule.
+ */
+export function restatedTurnPart(allowed: string[], toolName?: (name: string) => string): string {
+  return (
+    "<jr2-turn>\nThe workflow's state changed since you last read the Allowed picks. " +
+    `${allowedPicksText(allowed, toolName)}\n</jr2-turn>`
+  );
+}
+
 /** The Frame's prompt with the Turn part after it — the one user message a Turn sends. */
 export function briefedPrompt(prompt: string, part: string): string {
   return prompt ? `${prompt}\n\n${part}` : part;

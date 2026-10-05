@@ -42,6 +42,10 @@ single-threaded.
 - **A turn ends when the state that asked for it stops waiting.** When an `agentRun` invocation ends, its submission is
   aborted — `abort` on the wire (`POST /agents/:name/:id/abort`). `agentRun` is an **invoke**: leaving the state _means_
   "I am no longer interested in this answer", and nothing in the kit offers a detached Agent.
+- **Same Turn or not is the target's position, and nothing else.** A pick whose target is inside the state that invokes
+  the Agent — a mode, a child that runs something, a Gate, another Agent — keeps the Turn; a pick that leaves that state
+  ends it, and the next prompt carries the result. A pick with no target keeps the Turn open. So a Turn may hold many
+  picks, and the one that leaves the state ends it. What the child does changes nothing: there is no second mechanism.
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,
@@ -138,8 +142,9 @@ matter:
 - **`turnComplete` fails conservatively.** It is read after `deliver` returns and depends on `sendBack` being
   synchronous. Should that stop holding, it reads `false` — today's behavior, never a false claim. The guarantee no
   longer depends on it at all.
-- **The no-signal nudge (ADR-0016) is untouched.** It answers the opposite failure — a turn ending without a pick — and
-  neither path can fire against the other.
+- **The nudge (ADR-0016) answers the opposite failure** — a model that stops while its Turn is still open with picks
+  left. It reads the Allowed picks after the Submission settles, so a pick that kept the Turn open can be followed by a
+  nudge, and a pick that ended it never is: the abort and the nudge cannot fire against each other.
 - **Non-determinism dictates how this is tested.** "Did it stop calling?" proves nothing when a well-behaved agent stops
   on its own. The `@kind` tier asserts the **settlement outcome**: after a settling delivery the submission must settle
   `aborted`, and a `continue` re-invocation must settle `completed` rather than being swallowed by its predecessor's

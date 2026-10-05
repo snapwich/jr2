@@ -207,6 +207,12 @@ export type FakeSandbox = {
    * pick (`moved`, `turnComplete`, the Allowed picks after the route). Cleared by `reset`; unset,
    * every pick ends the Turn. */
   answerWith: (receipt: (event: Record<string, unknown>) => Record<string, unknown>) => void;
+  /** Serve each later surface read by its number (1-based since the last `reset`): a surface, or
+   * an HTTP status to answer instead (a promise: an answer that takes that long). Read 1 is a
+   * Submission's start; each later read is a step boundary — so a test places a change made by
+   * SOMETHING ELSE (a Gate's answer, an outside event) between two exact steps. Wins over
+   * `setSurface`; cleared by `reset`. */
+  surfaceByRead: (serve: (read: number) => Surface | number | Promise<Surface | number>) => void;
   /** Rearm for the next scenario: this surface, live, responding, nothing delivered. */
   reset: (surface: Surface) => void;
   close: () => Promise<void>;
@@ -220,6 +226,7 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
   let surfaceFault: number | undefined;
   let stopping = 0;
   let surfaceReads = 0;
+  let byRead: ((read: number) => Surface | number | Promise<Surface | number>) | undefined;
   const delivered: Array<Record<string, unknown>> = [];
   const bearers: string[] = [];
   const server: Server = createServer((req, res) => {
@@ -238,6 +245,12 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
         if (stopping > 0) {
           stopping -= 1;
           return json(503, { error: "the Orchestrator is stopping" });
+        }
+        if (byRead) {
+          void Promise.resolve(byRead(surfaceReads)).then((served) =>
+            typeof served === "number" ? json(served, { error: "scripted" }) : json(200, served),
+          );
+          return;
         }
         return json(200, surface);
       }
@@ -262,11 +275,13 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     bearers,
     holdDeliveries: () => (holding = true),
     answerWith: (receipt) => (answer = receipt),
+    surfaceByRead: (serve) => (byRead = serve),
     reset: (next) => {
       surface = next;
       live = true;
       holding = false;
       answer = undefined;
+      byRead = undefined;
       surfaceFault = undefined;
       stopping = 0;
       surfaceReads = 0;

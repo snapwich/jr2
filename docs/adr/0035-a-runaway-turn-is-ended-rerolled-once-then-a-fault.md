@@ -27,7 +27,9 @@ collapses into repetition.
   on a trivial task, and an honest live bug-hunt burned 161 steps before exhausting its context) as the unconditional
   backstop, and **K consecutive byte-identical tool calls** (initial K=4; healthy max observed 2, the production loop
   ~100) as the early exit. If a surface is ever demanded, note it would be a Dial question (ADR-0018) — how hard to run
-  this one Turn — but no workflow has needed one.
+  this one Turn — but no workflow has needed one. Both count tool calls alone: a Turn part the Harness restates at a
+  step boundary ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)) is not a
+  step and neither breaks nor extends an identical-call streak.
 - **Tripping settles the Submission `failed` with `SettlementError.type: "runaway"`** and a legible message ("repeated
   an identical tool call 4 times", "exceeded 256 steps"). No fourth `SettlementOutcome`: `aborted` stays the ADR-0024
   sweep's word, and the typed error is what lets `agentRun` switch on the class without parsing prose.

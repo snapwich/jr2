@@ -377,7 +377,8 @@ test("a stopping Orchestrator's 503 is waited out: the surface read re-asks, and
 
   const admission = await admit(iid, "Review the diff.");
   assert.equal((await settled(iid, admission)).outcome, "completed");
-  assert.equal(sandbox.reads(), 3, "two 503s, then the live surface");
+  // …then the one step boundary's read: nothing changed, nothing said.
+  assert.equal(sandbox.reads(), 4, "two 503s, the live surface, then the step boundary");
   assert.equal(provider.calls.length, 1);
 });
 
@@ -672,6 +673,332 @@ test("in-Turn modes: ONE Submission walks two modes — the tools block never mo
   assert.match(results[0]!, /Allowed now: `mcp__jr2__ask_review`, `mcp__jr2__run_tests`\./);
   assert.match(results[1]!, /not over yet\. Allowed now: `mcp__jr2__revise`, `mcp__jr2__submit`\./);
   assert.match(results[2]!, /your turn is over/);
+});
+
+// ─── the step boundary: the Turn part restated (ADR-0029, ADR-0016) ─────────────────────────────
+// A modes Machine (coding / testing / reviewing), its Orchestrator side scripted by surface read:
+// read 1 is the Submission's start, read n+1 the boundary after step n.
+// A change made by SOMETHING ELSE (a Gate's answer, an external event) is a surface that differs
+// from read k on — no pick of the Agent's made it.
+
+const MODES_MENU = ["abandon", "ask_review", "revise", "run_tests", "submit"];
+const CODING = ["abandon", "ask_review", "run_tests"];
+const REVIEWING = ["abandon", "revise", "submit"];
+const PUSH_MARK = "The workflow's state changed since you last read the Allowed picks.";
+
+/** Every request message, as one string — what the model was sent. */
+function sentText(call: { messages: Array<Record<string, unknown>> } | undefined): string {
+  return JSON.stringify(call?.messages ?? []);
+}
+
+/** How many restatements a request carries. */
+function pushesIn(call: { messages: Array<Record<string, unknown>> } | undefined): number {
+  return sentText(call).split(PUSH_MARK).length - 1;
+}
+
+/** The receipt of a pick that left the Agent's state: the Turn is over, so the surface is gone
+ * (ADR-0024/0026) — as the real Orchestrator answers it. */
+function endsTurn(): Record<string, unknown> {
+  sandbox.killSurface();
+  return { moved: true, turnComplete: true, allowed: [] };
+}
+
+const bashCall = (id: string, command: string) => ({
+  toolCall: { id, name: "bash", args: JSON.stringify({ command }) },
+});
+
+test("step boundary: a Gate's answer during a run of Working-tool calls is restated at the next step boundary — once, after the tool result, the tools block unmoved", async () => {
+  provider.reset([
+    bashCall("w1", "echo one"),
+    bashCall("w2", "echo two"),
+    bashCall("w3", "echo three"),
+    bashCall("w4", "echo four"),
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  // The human answered the Gate during step 2: reads 1-2 coding, from read 3 on reviewing.
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 2 ? CODING : REVIEWING));
+  sandbox.answerWith(endsTurn);
+  const iid = "conf/push-gate";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+
+  const calls = provider.calls;
+  assert.equal(calls.length, 6, "one request per scripted step: the restatement is not a step");
+  for (const call of calls)
+    assert.equal(JSON.stringify(call.tools), JSON.stringify(calls[0]!.tools), "tools byte-identical");
+  assert.equal(systemText(calls[5]), systemText(calls[0]), "and the system prompt");
+  // Not before the change, and exactly once after it — in every later request, the SAME one.
+  assert.deepEqual(calls.map(pushesIn), [0, 0, 1, 1, 1, 1]);
+  // Its position in request 3: the newest message, right after step 2's tool result.
+  const third = calls[2]!.messages as Array<{ role: string; content?: unknown; tool_call_id?: string }>;
+  assert.equal(third.at(-2)?.role, "tool");
+  assert.equal(third.at(-2)?.tool_call_id, "w2");
+  assert.equal(third.at(-1)?.role, "user");
+  assert.equal(
+    lastUserText(calls[2]),
+    "<jr2-turn>\nThe workflow's state changed since you last read the Allowed picks. " +
+      "Allowed now: `mcp__jr2__abandon`, `mcp__jr2__revise`, `mcp__jr2__submit`.\n</jr2-turn>",
+  );
+  // The request before it is byte-for-byte a prefix of the request after it: appended, never
+  // rewritten — what a prefix cache needs.
+  const two = calls[1]!.messages;
+  assert.equal(JSON.stringify(third.slice(0, two.length)), JSON.stringify(two), "request 2 is a prefix of request 3");
+  // The history view and the printed conversation (ADR-0023) both carry it, once.
+  const said = (await history(iid)).messages.filter((m) => m.text.includes(PUSH_MARK));
+  assert.equal(said.length, 1);
+  assert.equal(said[0]!.role, "user");
+  assert.equal(printed.get(iid)!.split(PUSH_MARK).length - 1, 1, "printed once");
+  assert.match(printed.get(iid)!, /\[reviewer\] \[prompt\] <jr2-turn>\n\[reviewer\] The workflow's state changed/);
+});
+
+test("step boundary: the Agent's OWN pick changed the mode — its receipt said so, and nothing is restated", async () => {
+  provider.reset([
+    bashCall("w1", "echo one"),
+    { toolCall: { id: "p1", name: "mcp__jr2__ask_review", args: '{"verdict":"x"}' } },
+    bashCall("w2", "echo two"),
+    bashCall("w3", "echo three"),
+    { toolCall: { id: "p2", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  let mode: "coding" | "reviewing" = "coding";
+  // The Orchestrator: the surface follows the mode, and so does every receipt.
+  sandbox.surfaceByRead(() => surfaceAllowing(MODES_MENU, mode === "coding" ? CODING : REVIEWING));
+  sandbox.answerWith((event) => {
+    if (event.type === "ask_review") {
+      mode = "reviewing";
+      return { moved: true, turnComplete: false, allowed: REVIEWING };
+    }
+    return endsTurn();
+  });
+  const iid = "conf/push-own-pick";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.equal(provider.calls.length, 6);
+  assert.deepEqual(provider.calls.map(pushesIn), [0, 0, 0, 0, 0, 0], "no restatement: the receipt was the news");
+  assert.ok(sandbox.reads() >= 5, `the boundaries still asked (${sandbox.reads()} reads)`);
+});
+
+test("step boundary: a change that came and went between two boundaries is no change — and a flapping guard is said at most once per step", async () => {
+  provider.reset([
+    bashCall("w1", "echo one"),
+    bashCall("w2", "echo two"),
+    bashCall("w3", "echo three"),
+    bashCall("w4", "echo four"),
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  // Read 2 coding (whatever happened in between came back), read 3 reviewing, read 4 coding,
+  // read 5 coding: the guard flapped across steps 2-3.
+  const served = [CODING, CODING, REVIEWING, CODING, CODING, CODING, CODING];
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, served[read - 1] ?? CODING));
+  sandbox.answerWith(endsTurn);
+  const iid = "conf/push-flap";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.equal(provider.calls.length, 6);
+  const last = sentText(provider.calls[5]);
+  // Two restatements — to reviewing, and back — each at its own boundary; none for read 2.
+  assert.deepEqual(provider.calls.map(pushesIn), [0, 0, 1, 2, 2, 2]);
+  assert.match(last, /Allowed now: `mcp__jr2__abandon`, `mcp__jr2__revise`, `mcp__jr2__submit`/);
+});
+
+test("step boundary: a change that races a pick of the old mode — the refusal names the new Allowed picks, and nothing is restated after it", async () => {
+  provider.reset([
+    bashCall("w1", "echo one"),
+    // Composed against coding; the Gate moved the Machine to reviewing before it arrived.
+    { toolCall: { id: "p1", name: "mcp__jr2__run_tests", args: '{"verdict":"x"}' } },
+    { toolCall: { id: "p2", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  let gateAnswered = false;
+  sandbox.surfaceByRead(() => surfaceAllowing(MODES_MENU, gateAnswered ? REVIEWING : CODING));
+  sandbox.answerWith((event) => {
+    if (event.type === "run_tests") {
+      gateAnswered = true; // the human's answer landed while the model was composing
+      return { moved: false, turnComplete: false, allowed: REVIEWING };
+    }
+    return endsTurn();
+  });
+  const iid = "conf/push-race";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.equal(provider.calls.length, 4);
+  const refusal = (provider.calls[2]!.messages as Array<{ role: string; content?: unknown }>).at(-1);
+  assert.equal(refusal?.role, "tool", "the refusal is the newest message: no restatement after it");
+  assert.match(String(refusal?.content), /`mcp__jr2__run_tests` is not allowed in the workflow's current state/);
+  assert.match(String(refusal?.content), /Allowed now: `mcp__jr2__abandon`, `mcp__jr2__revise`, `mcp__jr2__submit`\./);
+  assert.deepEqual(provider.calls.map(pushesIn), [0, 0, 0, 0]);
+});
+
+test("step boundary: a model that stopped with no pick while the list changed is asked again INSIDE the Submission — pi's loop runs on for a steered message", async () => {
+  provider.reset([
+    bashCall("w1", "echo one"),
+    { text: "I have nothing to pick yet." }, // would end the Submission: a no-signal (ADR-0016)
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 2 ? CODING : REVIEWING));
+  sandbox.answerWith(endsTurn);
+  const iid = "conf/push-after-stop";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.equal(provider.calls.length, 4, "asked again after the text-only answer");
+  assert.deepEqual(
+    sandbox.delivered.map((e) => e.type),
+    ["submit"],
+  );
+  const third = provider.calls[2]!.messages as Array<{ role: string }>;
+  assert.deepEqual(
+    third.slice(-2).map((m) => m.role),
+    ["assistant", "user"],
+    "the restatement follows the text-only answer",
+  );
+  assert.equal((await history(iid)).settlements.length, 1, "one Submission: no nudge was needed");
+});
+
+test("ask-again rule: a model that stopped while the list became EMPTY is not asked again inside the Submission", async () => {
+  // The Orchestrator's half (its nudge) reads the same list after the settle and, empty, asks
+  // nothing either: one rule, two seats.
+  provider.reset([bashCall("w1", "echo one"), { text: "Waiting for the review." }]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 2 ? CODING : []));
+  const iid = "conf/ask-again-empty";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.equal(provider.calls.length, 2, "not asked again: nothing is allowed");
+  assert.deepEqual(provider.calls.map(pushesIn), [0, 0]);
+});
+
+test("step boundary: nothing is said once the Turn is over — the surface is gone (ADR-0024/0026)", async () => {
+  provider.reset([
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    bashCall("w1", "echo after"), // a model that does not stop (ADR-0024)
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  sandbox.answerWith(() => {
+    sandbox.killSurface(); // the state that asked for the Turn exited
+    return endsTurn();
+  });
+  const iid = "conf/push-over";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.deepEqual(provider.calls.map(pushesIn), [0, 0, 0]);
+});
+
+test("step boundary: an abort that lands during the boundary read says nothing — and nothing stale rides into the next Submission (ADR-0024)", async () => {
+  provider.reset([bashCall("w1", "echo one"), { stall: true }]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  const iid = "conf/push-abort";
+  sandbox.surfaceByRead(async (read) => {
+    // The state that asked for the Turn exited while this read was in flight: its abort lands
+    // BEFORE the read answers — with the changed list, so only the abort check can stay silent.
+    if (read === 2) await app.request(`${conversationPath(iid)}/abort`, { method: "POST" });
+    return surfaceAllowing(MODES_MENU, read === 1 ? CODING : REVIEWING);
+  });
+  const first = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, first)).outcome, "aborted");
+  const asked = provider.calls.length;
+
+  provider.reset([{ text: "Next." }]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  const next = await admit(iid, "Next Turn.");
+  assert.equal((await settled(iid, next)).outcome, "completed");
+  assert.equal(pushesIn(provider.calls[0]), 0, `no restatement, then or now (first Turn made ${asked} requests)`);
+  assert.match(lastUserText(provider.calls[0]), /^Next Turn\.\n\n<jr2-turn>/);
+});
+
+test("step boundary: an Orchestrator that is restarting answers a boundary 503 — silence that step, the change said at the next", async () => {
+  provider.reset([
+    bashCall("w1", "echo one"),
+    bashCall("w2", "echo two"),
+    bashCall("w3", "echo three"),
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  // Read 2: the Orchestrator is stopping (503). Read 3: the restored one serves the Machine as it
+  // was saved — moved on by a Gate answered across the restart.
+  sandbox.surfaceByRead((read) =>
+    read === 1 ? surfaceAllowing(MODES_MENU, CODING) : read === 2 ? 503 : surfaceAllowing(MODES_MENU, REVIEWING),
+  );
+  sandbox.answerWith(endsTurn);
+  const iid = "conf/push-orchestrator-restart";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed", "a failed boundary read never fails the Turn");
+  assert.deepEqual(provider.calls.map(pushesIn), [0, 0, 1, 1, 1]);
+});
+
+test("step boundary: a restatement is not a step and breaks no streak — the Runaway guard counts tool calls alone (ADR-0035)", async () => {
+  // Under a step budget of 3: three tool calls with a restatement between them is a healthy Turn.
+  provider.reset([
+    bashCall("w1", "true"),
+    bashCall("w2", "true"),
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 1 ? CODING : REVIEWING));
+  sandbox.answerWith(endsTurn);
+  const healthy = await admit("conf/push-budget", "Fix the ticket.", undefined, AGENT, boundedApp);
+  assert.equal((await settled("conf/push-budget", healthy, AGENT, boundedApp)).outcome, "completed");
+  assert.deepEqual(provider.calls.map(pushesIn), [0, 1, 1, 1]);
+
+  // K=4 identical calls with a restatement in the middle still trip: it neither resets nor adds.
+  const repeated = { name: "bash", args: '{"command":"true"}' };
+  provider.reset([1, 2, 3, 4, 5].map((n) => ({ toolCall: { id: `r${n}`, ...repeated } })));
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 2 ? CODING : REVIEWING));
+  const looping = await admit("conf/push-streak", "Fix the ticket.");
+  const end = await settled("conf/push-streak", looping);
+  assert.equal(end.outcome, "failed");
+  assert.equal(end.error?.type, "runaway");
+  assert.match(end.error?.message ?? "", /repeated an identical tool call 4 times/);
+  assert.equal(provider.calls.length, 4, "the 4th identical call trips, as with no restatement");
+});
+
+test("step boundary: across a Harness restart the restatement stays in the conversation once, and no stale one rides into the next Turn (ADR-0031)", async () => {
+  const iid = "conf/push-harness-restart";
+  const dir = await mkdtemp(join(tmpdir(), "jr2-conversations-"));
+  provider.reset([
+    bashCall("w1", "echo one"),
+    // The Turn is cut mid-pick: the process dies with this delivery in flight.
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 1 ? CODING : REVIEWING));
+  sandbox.holdDeliveries();
+  const before = appOver(dir);
+  await admit(iid, "Fix the ticket.", undefined, AGENT, before);
+  await until(() => sandbox.delivered.length > 0, "the pick to be in flight");
+
+  provider.reset([{ toolCall: { id: "p2", name: "mcp__jr2__submit", args: '{"verdict":"y"}' } }, { text: "Done." }]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, REVIEWING));
+  const after = appOver(dir);
+  const next = await admit(iid, "Continue.", undefined, AGENT, after);
+  assert.equal((await settled(iid, next, AGENT, after)).outcome, "completed");
+  // The next Turn reopened pi's session: the cut Turn's restatement is in it, exactly once, and
+  // the next Turn's own Turn part is the newest statement.
+  assert.equal(pushesIn(provider.calls[0]), 1);
+  assert.match(
+    lastUserText(provider.calls[0]),
+    /^Continue\.\n\n<jr2-turn>\n[\s\S]*Allowed now: `mcp__jr2__abandon`, `mcp__jr2__revise`, `mcp__jr2__submit`\.\n<\/jr2-turn>$/,
+  );
+  assert.deepEqual(provider.calls.map(pushesIn), [1, 1], "nothing new: the Turn part already said it");
 });
 
 test("a Menu pick reaches the Orchestrator and its receipt reaches the model; the Submission settles completed", async () => {
