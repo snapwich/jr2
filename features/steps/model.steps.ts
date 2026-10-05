@@ -173,9 +173,28 @@ const NOT_A_CALL = new Set(["prompt", "text", "thinking", "compacted"]);
  * line. */
 type Said = { call: string } | { prompt: string };
 
-/** The printed conversation's source: the Instance Harness's (Menu-only Agents), or one Sandbox
- * pod's Harness container. */
-type LogSource = { statefulset: string } | { pod: string };
+/** A Sandbox pod's Harness log, streamed from the moment its Sandbox is Ready. The reap when the
+ * run settles deletes the pod and its log with it, and a read after settle can find nothing: the
+ * stream holds everything the container printed up to then. `closed` settles when it ends. */
+type LogFollow = { text: string; closed: Promise<void>; stop: () => void };
+
+function followLog(world: E2EWorld, pod: string): LogFollow {
+  assert.ok(world.namespace, "a @model scenario has its namespace set in setupModel");
+  const child = spawn("kubectl", ["--namespace", world.namespace, "logs", "-f", `pod/${pod}`, "-c", "harness"]);
+  const follow: LogFollow = {
+    text: "",
+    closed: new Promise((resolve) => child.on("close", () => resolve())),
+    stop: () => child.kill(),
+  };
+  child.stdout.on("data", (d: Buffer) => {
+    follow.text += d.toString();
+  });
+  return follow;
+}
+
+/** The printed conversation's source: the Instance Harness's (Menu-only Agents), one Sandbox
+ * pod's Harness container read once, or one followed from Ready. */
+type LogSource = { statefulset: string } | { pod: string } | { follow: LogFollow };
 
 const INSTANCE_LOG: LogSource = { statefulset: INSTANCE_HARNESS };
 
@@ -196,8 +215,16 @@ async function saidAfter(
   marker: string,
   source = INSTANCE_LOG,
 ): Promise<Said[] | undefined> {
-  const target = "pod" in source ? `pod/${source.pod}` : `statefulset/${source.statefulset}`;
-  const log = await kubectl(world, ["logs", target, "-c", "harness", "--tail=-1"]);
+  const log =
+    "follow" in source
+      ? source.follow.text
+      : await kubectl(world, [
+          "logs",
+          "pod" in source ? `pod/${source.pod}` : `statefulset/${source.statefulset}`,
+          "-c",
+          "harness",
+          "--tail=-1",
+        ]);
   const lines = log.split("\n");
   const at = lines.findIndex((l) => l.startsWith(`[${agent}] [prompt] `) && l.includes(`[${marker}]`));
   if (at === -1) return undefined;
@@ -489,9 +516,7 @@ function gateNamed(s: Status, id: string): OpenGate | undefined {
 }
 
 /** Wait until the Turn whose prompt carries `marker` has printed and what follows it satisfies
- * `until`; the last read either way (empty while the prompt has not printed). A Sandbox pod is
- * reaped once its run settles: when a read fails after one succeeded, the pod's log is gone and
- * the last read is the whole of what it printed. */
+ * `until`; the last read either way (empty while the prompt has not printed). */
 async function saidUntil(
   world: E2EWorld,
   agent: string,
@@ -501,16 +526,8 @@ async function saidUntil(
   source = INSTANCE_LOG,
 ): Promise<{ hit: boolean; said: Said[] }> {
   const deadline = Date.now() + ms;
-  let read: Said[] | undefined;
   for (;;) {
-    let said: Said[] | undefined;
-    try {
-      said = await saidAfter(world, agent, marker, source);
-    } catch (err) {
-      if (read === undefined) throw err;
-      return { hit: false, said: read };
-    }
-    read = said;
+    const said = await saidAfter(world, agent, marker, source);
     if (said !== undefined && until(said)) return { hit: true, said };
     if (Date.now() > deadline) return { hit: false, said: said ?? [] };
     await sleep(500);
@@ -570,7 +587,20 @@ const pushFollow: Driver = async (world, input) => {
   const runId = await startRun(world, "push-follow", input);
   const pod = await readySandbox(world, runId);
   if (!pod) return { runId, measured: false, finished: false, note: "no Ready Sandbox" };
-  const source = { pod };
+  const source = { follow: followLog(world, pod) };
+  try {
+    return await pushFollowIn(world, input, runId, source);
+  } finally {
+    source.follow.stop();
+  }
+};
+
+async function pushFollowIn(
+  world: E2EWorld,
+  input: { thinking: string; marker: string },
+  runId: string,
+  source: { follow: LogFollow },
+): Promise<Trial> {
   const sleeping = await saidUntil(
     world,
     "coder",
@@ -593,22 +623,10 @@ const pushFollow: Driver = async (world, input) => {
     };
   }
   await sendToGate(world, runId, desk.gate, "approve");
-  // The Sandbox is reaped once the run settles, and its log with it: read the conversation while
-  // the run goes on, until a Menu call follows the restated Turn part or the pod is gone.
-  const [{ said }, { last }] = await Promise.all([
-    saidUntil(
-      world,
-      "coder",
-      input.marker,
-      (s) => {
-        const at = s.findIndex(isRestatement);
-        return at !== -1 && menuCalls(s, PUSH_MENU, at).length > 0;
-      },
-      TRIAL_MS,
-      source,
-    ),
-    waitFor(world, runId, settled, TRIAL_MS),
-  ]);
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  // The reap at settle ends the stream; what it held by then is the whole conversation.
+  await Promise.race([source.follow.closed, sleep(10_000)]);
+  const said = (await saidAfter(world, "coder", input.marker, source)) ?? [];
   const ledger = (last.context.output?.picks ?? []) as string[];
   const approved = ledger.indexOf(APPROVED);
   if (approved !== 0) {
@@ -630,7 +648,7 @@ const pushFollow: Driver = async (world, input) => {
     also: { "push-no-refusal": firstAfter !== undefined && PUSH_NEW.has(firstAfter) },
     note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${last.status}/${String(last.context.output?.outcome)}`,
   };
-};
+}
 
 const DRIVERS: Record<string, Driver> = {
   obedience,
