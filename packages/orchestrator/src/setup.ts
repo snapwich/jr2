@@ -245,13 +245,13 @@ export function jr2Setup<
 // --- Menu derivation (ADR-0015, ADR-0029) --------------------------------------------------------
 // A state that invokes an AGENT SLOT derives the workflow events the Turn may pick: its own
 // transitions, its ancestors' (bubbled, per statechart semantics), and those written on the states
-// below it — its MODES (`modePicks`) — filtered to audience ∈ {agent, any}. That is its derived set,
-// before its guards narrow it to the Allowed picks; the Allowed picks are read off the live
-// snapshot, so they follow the active mode. The Agent's MENU — its tools block — is the union of
-// those sets over every state that invokes it, fixed for the conversation. A `gate` derives its own
-// and its ancestors' transitions (no descent), filtered to {external, any}. The invoking actor kind
-// is the primary router; `audience` on the def exists to RESTRICT (tag the security-sensitive
-// events). An explicit `accepts:` on a gate's input remains an escape hatch.
+// below it — its MODES (`modePicks`) — filtered to the names that Agent may send (the audience
+// rule, on `deriveMenus`). That is its derived set, before its guards narrow it to the Allowed
+// picks; the Allowed picks are read off the live snapshot, so they follow the active mode. The
+// Agent's MENU — its tools block — is the union of those sets over every state that invokes it,
+// fixed for the conversation. A `gate` derives its own and its ancestors' transitions (no descent),
+// filtered to the names its caller may send. An explicit `accepts:` on a gate's input remains an
+// escape hatch.
 //
 // An agent invoke is identified by its LOGIC, not by a reserved src name: the walk looks the
 // invoke's `src` up in the setup's own `actors` map and asks `isAgent` (ADR-0049). That is also
@@ -505,8 +505,8 @@ function partiesOf(node: LooseState, actors: Record<string, UnknownActorLogic>):
 /** Does this state invoke a party that sends this Machine's workflow events — an Agent slot or a
  * `gate`? An Effect, a child Machine, a `workspace()`/`pool()` body: none of them sends them. */
 function invokesParty(node: LooseState, actors: Record<string, UnknownActorLogic>): boolean {
-  const invokes = node.invoke ? (Array.isArray(node.invoke) ? node.invoke : [node.invoke]) : [];
-  return invokes.some((inv) => inv?.src === "gate" || (typeof inv?.src === "string" && isAgent(actors[inv.src])));
+  const { agents, gate } = partiesOf(node, actors);
+  return gate || agents.length > 0;
 }
 
 /**
