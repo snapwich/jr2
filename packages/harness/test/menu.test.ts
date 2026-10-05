@@ -127,6 +127,21 @@ test("the receipt says a rejected pick was rejected, and reads an absent `moved`
   assert.match(receiptProse(base), /still in the state that asked for this turn/);
 });
 
+test("a pick that moved nothing: outside the Allowed picks the STATE refused it (the correction receipt), inside them the arguments did (ADR-0029)", () => {
+  const base = { delivered: true, event: "submit", moved: false, turnComplete: false, deliveryId: "d-9" };
+  const toolName = (name: string) => `mcp__jr2__${name}`;
+  assert.equal(
+    receiptProse({ ...base, allowed: ["ask_review", "run_tests"] }, toolName),
+    'Delivered "submit" to the workflow (delivery d-9). The workflow did NOT act on it: `mcp__jr2__submit` is not ' +
+      "allowed in the workflow's current state, whatever its arguments. Your turn is not over. Do not repeat this " +
+      "call — pick one of the allowed tools. Allowed now: `mcp__jr2__ask_review`, `mcp__jr2__run_tests`.",
+  );
+  const args = receiptProse({ ...base, allowed: ["submit"] });
+  assert.match(args, /with these arguments.*Do not repeat this call unchanged/s);
+  // An older Orchestrator sends no `allowed`: absent is not empty, so the arguments' wording stays.
+  assert.match(receiptProse(base), /with these arguments/);
+});
+
 test("a turn that is over has NO surface — not an empty Menu (ADR-0026); a pick against it fails loudly", async () => {
   let live = true;
   const { fetch } = fakeFetch((call) => {

@@ -430,7 +430,7 @@ test("each Machine node carries its OWN vocabulary; nothing is flattened to the 
   // The child node carries the OTHER `approve` — same name, its own schema and audience.
   const child = findState(doc.root, "top.running")!.children[0]!.machine!;
   assert.equal(child.id, "nested");
-  assert.equal(child.events[0]?.audience, "any");
+  assert.equal(child.events[0]?.audience, undefined, "unset: each writing state decides");
   assert.deepEqual((child.events[0]?.input as { required?: string[] }).required, ["score"]);
 });
 

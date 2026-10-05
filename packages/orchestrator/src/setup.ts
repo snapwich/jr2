@@ -47,7 +47,7 @@ import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { gate } from "./gate.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
-import { attachInputSchema, attachVocabulary } from "./vocabulary.ts";
+import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } from "./vocabulary.ts";
 
 /**
  * The events jr2's own mechanism delivers into any workflow machine, injected into every jr2Setup
@@ -175,9 +175,8 @@ export function jr2Setup<
     // append its DERIVED menu and finalize the mechanism fields. Static — the walk sees the same
     // config the Console will — and the derived names still ride serializable input, so the
     // ADR-0007 restore path and invoke-time `resolveAccepts` validation are unchanged.
-    const machine = (inner.createMachine as unknown as (c: never) => AnyStateMachine)(
-      deriveMenus(machineConfig, defs, def.actors ?? {}) as never,
-    );
+    const derived = deriveMenus(machineConfig, defs, def.actors ?? {});
+    const machine = (inner.createMachine as unknown as (c: never) => AnyStateMachine)(derived.config as never);
 
     // Close the nested-`on` typo hole (ADR-0015): with the manifest dead, a typo'd key would
     // silently become vocabulary — so every non-dotted key the machine handles anywhere must map
@@ -185,6 +184,7 @@ export function jr2Setup<
     // targetless/actionless transitions — exactly where a typo'd key would hide). Dotted names
     // (`agent.*`, `workspace.*`, `xstate.*`, delayed transitions) are mechanically jr2's/xstate's;
     // `*` is the wildcard descriptor.
+    const handled = new Set<string>();
     const walk = (node: AnyStateMachine["root"]): void => {
       for (const descriptor of node.transitions.keys()) {
         if (descriptor === "*" || descriptor.includes(".")) continue;
@@ -194,12 +194,32 @@ export function jr2Setup<
               `declares (declared: ${[...defs.keys()].join(", ") || "none"}) — a typo, or a missing defineEvent`,
           );
         }
+        handled.add(descriptor);
       }
       for (const child of Object.values(node.states)) walk(child);
     };
     walk(machine.root);
 
+    // The other direction (ADR-0015): a def no state handles is in no derived set, so it is on no
+    // Menu and no Gate — a pick nothing can send and nothing would take.
+    const dead = [...defs.keys()].filter((name) => !handled.has(name));
+    if (dead.length) {
+      throw new Error(
+        `machine "${machine.id}" declares ${dead.map((name) => `"${name}"`).join(", ")}, which no state handles — ` +
+          `a pick no state takes is on no Menu and no Gate: handle it, or drop it from jr2Setup({ events })`,
+      );
+    }
+
+    const idOf = (path: readonly string[]): string => stateAt(machine, path).id;
     attachVocabulary(machine, defs);
+    attachSeats(
+      machine,
+      derived.seats.map(({ path, ...seat }) => ({ state: idOf(path), ...seat })),
+    );
+    attachLoadWarnings(machine, [
+      ...unenteredModes(machine, def.actors ?? {}),
+      ...derived.warnings.map((warning) => warning(idOf)),
+    ]);
     if (inputSchema) attachInputSchema(machine, inputSchema);
     return machine;
   };
@@ -223,13 +243,15 @@ export function jr2Setup<
 }
 
 // --- Menu derivation (ADR-0015, ADR-0029) --------------------------------------------------------
-// A state that invokes an AGENT SLOT derives the workflow events its transitions handle — own +
-// bubbled ancestors, per statechart semantics — filtered to audience ∈ {agent, any}: what that
-// Turn may pick, before its guards narrow it to the Allowed picks. The Agent's MENU — its tools
-// block — is the union of those sets over every state that invokes it, fixed for the conversation.
-// A `gate` gets the same set filtered to {external, any}. The invoking actor kind is the primary
-// router; `audience` on the def exists to RESTRICT (tag the security-sensitive events). An
-// explicit `accepts:` on a gate's input remains an escape hatch.
+// A state that invokes an AGENT SLOT derives the workflow events the Turn may pick: its own
+// transitions, its ancestors' (bubbled, per statechart semantics), and those written on the states
+// below it — its MODES (`modePicks`) — filtered to the names that Agent may send (the audience
+// rule, on `deriveMenus`). That is its derived set, before its guards narrow it to the Allowed
+// picks; the Allowed picks are read off the live snapshot, so they follow the active mode. The
+// Agent's MENU — its tools block — is the union of those sets over every state that invokes it,
+// fixed for the conversation. A `gate` derives its own and its ancestors' transitions (no descent),
+// filtered to the names its caller may send. An explicit `accepts:` on a gate's input remains an
+// escape hatch.
 //
 // An agent invoke is identified by its LOGIC, not by a reserved src name: the walk looks the
 // invoke's `src` up in the setup's own `actors` map and asks `isAgent` (ADR-0049). That is also
@@ -250,25 +272,96 @@ type LooseState = {
 };
 type InputArgs = { context: unknown; event: unknown; self: AnyActorRef };
 
+/**
+ * One party's seat on one state: who may send what there (ADR-0015). `path` is the state's key
+ * path below the Machine's root; `names` is the derived set — for an Agent, what its Turn may pick
+ * before the guards narrow it; for a Gate, its accepted set unless its input names `accepts:`.
+ */
+export type Seat = { path: readonly string[]; party: "agent" | "gate"; agent?: string; names: string[] };
+
+/** Each name in reach, with the OWNER mark of every writing of it in reach (see below). */
+type Reach = Map<string, Set<string>>;
+/** Each name written on the path from the root: where, and the owner mark of each writing. */
+type Writings = Map<string, Array<{ path: readonly string[]; owner: string }>>;
+/** A load warning, rendered once the built Machine can turn a key path into a state id. */
+type Warning = (idOf: (path: readonly string[]) => string) => string;
+
+/** The owner mark of a writing no party answers for — at or above it, no state invokes an Agent
+ * slot or a `gate` — so both kinds may send it. */
+const NOBODY = "";
+/** The owner mark of the state at `path`: the party it invokes answers for the writings below it.
+ * `#` keeps the root's mark apart from {@link NOBODY}. */
+const ownerMark = (path: readonly string[]): string => `#${path.join(".")}`;
+
 /** Rewrite a machine config, wrapping every Agent-slot/`gate` invoke input (immutably).
  *
  * The same walk derives each Agent name's MENU (ADR-0029): the union of the derived sets of every
  * state that invokes an Agent of that name in this Machine — the scope of its continued
  * conversation's id (ADR-0057) — sorted, so it is byte-stable for every Turn of the conversation
- * and for every fresh one. The wrapped inputs read it at invoke time, when the walk is long done. */
-function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Record<string, UnknownActorLogic>): unknown {
-  const pick = (names: Set<string>, kind: "agent" | "external"): string[] =>
-    [...names].filter((name) => {
-      const d = defs.get(name);
-      return !!d && (d.audience === kind || d.audience === "any");
-    });
+ * and for every fresh one. The wrapped inputs read it at invoke time, when the walk is long done.
+ *
+ * WHO may send a name (the audience rule, ADR-0015). A writing — an `on` key on a state —
+ * belongs to the party that its state, or the nearest state above it, invokes: an Agent slot, a
+ * `gate`, or both when one state invokes both. With no such state above, it belongs to both. An
+ * event whose def leaves `audience` unset follows that rule; an explicit `audience` overrides it
+ * BY KIND over the whole reach (`agent`: every Agent whose reach holds a writing of it; `external`:
+ * every Gate's; `any`: both). The REACH never changes — own + ancestors, plus the modes for an
+ * Agent — and the rule only filters inside it, so it cannot widen who may send a name. */
+function deriveMenus(
+  config: unknown,
+  defs: Map<string, EventDef>,
+  actors: Record<string, UnknownActorLogic>,
+): { config: unknown; seats: Seat[]; warnings: Warning[] } {
+  const pick = (reach: Reach, kind: "agent" | "external", self: string): string[] =>
+    [...reach]
+      .filter(([name, owners]) => {
+        const d = defs.get(name);
+        if (!d) return false;
+        if (d.audience !== undefined) return d.audience === kind || d.audience === "any";
+        return owners.has(self) || owners.has(NOBODY);
+      })
+      .map(([name]) => name);
   const menus = new Map<string, Set<string>>();
   const menuOf = (agentName: string): string[] => [...(menus.get(agentName) ?? [])].sort();
+  const seats: Seat[] = [];
+  // The load warnings this walk can see (ADR-0015), each rendered once the states have ids. Keyed,
+  // so a writing seen from two paths is one warning.
+  const warnings = new Map<string, Warning>();
+  // Which parties each owner mark's state invokes — what a warning names.
+  const parties = new Map<string, { agents: string[]; gate: boolean }>();
+  const partyOf = (mark: string): string => {
+    const { agents, gate } = parties.get(mark)!;
+    return [...agents.map((agent) => `Agent "${agent}"`), ...(gate ? ["a Gate"] : [])].join(" and ");
+  };
 
-  const walk = (node: LooseState, inherited: Set<string>, path: readonly string[]): LooseState => {
-    const names = new Set(inherited);
-    for (const key of Object.keys(node.on ?? {})) {
-      if (!key.includes(".") && key !== "*") names.add(key);
+  const walk = (
+    node: LooseState,
+    inherited: Reach,
+    writtenAbove: Writings,
+    path: readonly string[],
+    ownerAbove: string,
+  ): LooseState => {
+    const owner = invokesParty(node, actors) ? ownerMark(path) : ownerAbove;
+    if (owner !== ownerAbove) parties.set(owner, partiesOf(node, actors));
+    const names: Reach = new Map([...inherited].map(([name, owners]) => [name, new Set(owners)]));
+    const written: Writings = new Map([...writtenAbove].map(([name, at]) => [name, [...at]]));
+    for (const name of ownPicks(node)) {
+      names.set(name, (names.get(name) ?? new Set<string>()).add(owner));
+      // One name written for two parties on one path: audience says who may SEND it, and xstate
+      // runs the deepest active handler whoever sent it — so while the deeper state is active, the
+      // shallower party's send runs the transition written for the deeper one.
+      for (const above of written.get(name) ?? []) {
+        if (above.owner === owner || above.owner === NOBODY || owner === NOBODY) continue;
+        warnings.set(
+          `two:${name}:${above.path.join(".")}:${path.join(".")}`,
+          (idOf) =>
+            `"${name}" is written on "${idOf(above.path)}" for ${partyOf(above.owner)} and on "${idOf(path)}" for ` +
+            `${partyOf(owner)}: whoever sends it, the deepest active handler runs, so while "${idOf(path)}" is ` +
+            `active ${partyOf(above.owner)}'s "${name}" runs the transition written for ${partyOf(owner)} — give ` +
+            `the two distinct names`,
+        );
+      }
+      written.set(name, [...(written.get(name) ?? []), { path, owner }]);
     }
 
     let out = node;
@@ -281,15 +374,57 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
       const wrapOne = (inv: LooseInvoke): LooseInvoke => {
         // The slot key IS the Agent name (ADR-0049) — read off the declaration, never authored.
         if (typeof inv?.src === "string" && isAgent(actors[inv.src])) {
-          const derived = pick(names, "agent");
-          if (derived.length === 0) refuseBuriedPicks(node, inv.src, path, pick);
+          // A mode's writings are this state's by construction: the descent stops at any child
+          // that invokes a party, so none answers between them and this one.
+          const reach: Reach = new Map([...names].map(([name, owners]) => [name, new Set(owners)]));
+          for (const name of modePicks(node, actors))
+            reach.set(name, (reach.get(name) ?? new Set<string>()).add(owner));
+          const derived = pick(reach, "agent", owner);
+          // One name written on a mode for this Agent and below a party-invoking child of this
+          // state for another party: not one path, but the same effect as the check above — the
+          // name is in this Agent's derived set through the mode, so while that child is active
+          // the Agent's send reaches the Machine and runs the transition written for the other
+          // party (the Agent answers its own Gate, or picks for the Agent nested below it).
+          for (const mode of modeWritings(node, path, actors)) {
+            if (!derived.includes(mode.name)) continue;
+            for (const other of partyWritings(node, path, actors)) {
+              if (other.name !== mode.name || other.owner === owner) continue;
+              warnings.set(
+                `two:${mode.name}:${mode.path.join(".")}:${other.path.join(".")}`,
+                (idOf) =>
+                  `"${mode.name}" is written on "${idOf(mode.path)}" for ${partyOf(owner)} and on ` +
+                  `"${idOf(other.path)}" for ${partyOf(other.owner)}: whoever sends it, the deepest active handler ` +
+                  `runs, so while "${idOf(other.path)}" is active ${partyOf(owner)}'s "${mode.name}" runs the ` +
+                  `transition written for ${partyOf(other.owner)} — give the two distinct names`,
+              );
+            }
+          }
+          // A Gate above that takes a writing from this Agent: the Gate's caller owns it, so the
+          // Agent below — which reaches it — cannot send it. Legal, and the one narrowing of the
+          // audience rule an author may not expect.
+          const agent = inv.src;
+          for (const [name, owners] of reach) {
+            if (derived.includes(name) || defs.get(name)?.audience !== undefined) continue;
+            for (const at of written.get(name) ?? []) {
+              if (!owners.has(at.owner) || at.owner === owner || !parties.get(at.owner)?.gate) continue;
+              warnings.set(
+                `gate:${agent}:${path.join(".")}:${name}:${at.path.join(".")}`,
+                (idOf) =>
+                  `Agent "${agent}" on "${idOf(path)}" cannot send "${name}": it is written on "${idOf(at.path)}", ` +
+                  `whose Gate's caller owns it — give the def \`audience: "any"\` for both to send it`,
+              );
+            }
+          }
           const menu = menus.get(inv.src) ?? new Set<string>();
           for (const name of derived) menu.add(name);
           menus.set(inv.src, menu);
+          seats.push({ path, party: "agent", agent: inv.src, names: [...derived].sort() });
           return { ...inv, input: wrapAgentInput(inv.input, derived, inv.src, menuOf) };
         }
         if (inv?.src === "gate") {
-          const wrapped: LooseInvoke = { ...inv, input: wrapGateInput(inv.input, pick(names, "external")) };
+          const accepts = pick(names, "external", owner);
+          seats.push({ path, party: "gate", names: [...accepts].sort() });
+          const wrapped: LooseInvoke = { ...inv, input: wrapGateInput(inv.input, accepts) };
           // A machine-root gate (empty path) is left to xstate's default id: a `""` id would be
           // worse than a noisy one, and the derived gate id still works.
           if (inv.id == null && path.length) {
@@ -304,53 +439,171 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
     }
     if (node.states) {
       const states: Record<string, LooseState> = {};
-      for (const [key, child] of Object.entries(node.states)) states[key] = walk(child, names, [...path, key]);
+      for (const [key, child] of Object.entries(node.states))
+        states[key] = walk(child, names, written, [...path, key], owner);
       out = { ...(out === node ? node : out), states };
     }
     return out;
   };
 
-  return walk(config as LooseState, new Set(), []);
+  const out = walk(config as LooseState, new Map(), new Map(), [], NOBODY);
+  return { config: out, seats, warnings: [...warnings.values()] };
 }
 
 /**
- * Refuse the one shape that LOOKS like a Turn's picks and is not (ADR-0015, ADR-0057): an Agent
- * invoked on a state whose picks are written in its SUBSTATES.
+ * A mode that nothing enters (ADR-0015): a child of an Agent's state with no invoke that the Machine
+ * can never enter. Its picks are on the Menu and never allowed. A warning, not a refusal: the Machine
+ * is legal, and a mode left unwired is often work in progress.
  *
- * A state's derived set is its own + ANCESTOR transitions, per statechart semantics, so a pick
- * written below that state is one the Turn is never allowed — the model is offered it in the Menu
- * (the union over every state that invokes the Agent — ADR-0029) and refused whenever it takes it,
- * and the actor reads an empty derived set as a Turn that ended as intended, so nothing nudges and
- * nothing faults: the run parks. Until ADR-0057 the `tools:` override papered over it; with the
- * override gone the kit says it here, at build, where `jr2 up` walks every registered Machine.
- *
- * An EMPTY derived set is not itself wrong — a state moved by a Gate or a timer asks its Agent for
- * text and nothing else — so only the contradiction is refused: no picks here, and picks below.
+ * "Can enter" is reachability from the root, to a fixed point. A state is entered when its parent is
+ * entered and it is the parent's initial state or a region of a parallel parent, or when a transition
+ * whose SOURCE can be entered targets it or a state inside it (entering a state enters its
+ * ancestors). So a compound mode's own `initial` does not enter it, and neither does a transition
+ * written on the mode into itself: neither runs unless the mode is already active.
  */
-function refuseBuriedPicks(
-  node: LooseState,
-  agentName: string,
-  path: readonly string[],
-  pick: (names: Set<string>, kind: "agent" | "external") => string[],
-): void {
-  const below = new Set<string>();
-  const descend = (n: LooseState): void => {
-    for (const key of Object.keys(n.on ?? {})) if (!key.includes(".") && key !== "*") below.add(key);
-    for (const child of Object.values(n.states ?? {})) descend(child);
+function unenteredModes(machine: AnyStateMachine, actors: Record<string, UnknownActorLogic>): string[] {
+  type Node = AnyStateMachine["root"];
+  const all: Node[] = [];
+  const collect = (node: Node): void => {
+    all.push(node);
+    for (const child of Object.values(node.states)) collect(child);
   };
-  for (const child of Object.values(node.states ?? {})) descend(child);
+  collect(machine.root);
 
-  const buried = pick(below, "agent");
-  if (buried.length === 0) return;
-  const state = path.length ? path.join(".") : "(the machine root)";
-  throw new Error(
-    `agent "${agentName}" is invoked on state "${state}", which derives no picks while the ` +
-      `states BELOW it handle ${buried.join(", ")} — a state's picks are its own plus its ` +
-      `ancestors' transitions (ADR-0015), so a pick written below is one the Turn is never ` +
-      `allowed, and a Turn that derives no picks ends with no pick at all. Move it onto "${state}" ` +
-      `(guard it if it must not always be allowed — ADR-0029), or, if this Turn deliberately ` +
-      `takes no pick, the pick belongs to another invoke.`,
-  );
+  const entered = new Set<Node>([machine.root]);
+  const enter = (node: Node): boolean => {
+    let added = false;
+    for (let n: Node | undefined = node; n !== undefined && !entered.has(n); n = n.parent) {
+      entered.add(n);
+      added = true;
+    }
+    return added;
+  };
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const node of all) {
+      const parent = node.parent;
+      if (parent === undefined || entered.has(node) || !entered.has(parent)) continue;
+      if (parent.type === "parallel" || (parent.type === "compound" && parent.initial.target.includes(node)))
+        changed = enter(node) || changed;
+    }
+    for (const node of all) {
+      if (!entered.has(node)) continue;
+      const transitions = [...node.transitions.values()].flat().concat(node.always ?? []);
+      for (const t of transitions) for (const target of t.target ?? []) changed = enter(target) || changed;
+    }
+  }
+  const invokedAgent = (node: Node): string | undefined =>
+    node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))?.src as string | undefined;
+
+  const out: string[] = [];
+  for (const node of all) {
+    const agent = invokedAgent(node);
+    // An Agent's state the Machine never enters is a larger defect than its modes, and not this check.
+    if (agent === undefined || !entered.has(node)) continue;
+    const descend = (parent: Node): void => {
+      for (const child of Object.values(parent.states)) {
+        if (child.invoke.length > 0) continue;
+        if (!entered.has(child)) {
+          const picks = [...child.transitions.keys()].filter((key) => !key.includes(".") && key !== "*");
+          out.push(
+            `mode "${child.id}" of Agent "${agent}"'s state "${node.id}" — nothing enters it: it is not ` +
+              `initial and no state the Machine can enter has a transition into it, so its picks` +
+              `${picks.length ? ` (${picks.join(", ")})` : ""} are on the Menu and never allowed`,
+          );
+          continue;
+        }
+        descend(child);
+      }
+    };
+    descend(node);
+  }
+  return out;
+}
+
+/** The built state node at a key path below the root — what turns a walk's path into a state id. */
+function stateAt(machine: AnyStateMachine, path: readonly string[]): AnyStateMachine["root"] {
+  let node = machine.root;
+  for (const key of path) node = node.states[key]!;
+  return node;
+}
+
+/** A state's own workflow-event keys: dotted names are jr2's or xstate's, `*` is the wildcard. */
+function ownPicks(node: LooseState): string[] {
+  return Object.keys(node.on ?? {}).filter((key) => !key.includes(".") && key !== "*");
+}
+
+/** The parties a state invokes: its Agent slots by name, and whether it invokes a `gate`. */
+function partiesOf(node: LooseState, actors: Record<string, UnknownActorLogic>): { agents: string[]; gate: boolean } {
+  const invokes = node.invoke ? (Array.isArray(node.invoke) ? node.invoke : [node.invoke]) : [];
+  return {
+    agents: invokes.flatMap((inv) => (typeof inv?.src === "string" && isAgent(actors[inv.src]) ? [inv.src] : [])),
+    gate: invokes.some((inv) => inv?.src === "gate"),
+  };
+}
+
+/** Does this state invoke a party that sends this Machine's workflow events — an Agent slot or a
+ * `gate`? An Effect, a child Machine, a `workspace()`/`pool()` body: none of them sends them. */
+function invokesParty(node: LooseState, actors: Record<string, UnknownActorLogic>): boolean {
+  const { agents, gate } = partiesOf(node, actors);
+  return gate || agents.length > 0;
+}
+
+/**
+ * The picks written on the states BELOW an Agent's state — its modes (ADR-0015). xstate hands an
+ * event to the deepest active state that handles it, and a false guard there falls through to the
+ * parent, so a child's `on` keys are picks the Turn can be allowed while that child is active — and
+ * `can()` on the live snapshot already answers for the active child (ADR-0029).
+ *
+ * The descent STOPS at a child that invokes another party — an Agent slot (a nested Turn: its picks
+ * are its own) or a `gate` (its `on` keys are the Gate's accepted set) — and leaves out everything
+ * below it. A child that runs an Effect, a child Machine or a timer is no stop: its `on` keys are
+ * this Turn's.
+ */
+function modePicks(node: LooseState, actors: Record<string, UnknownActorLogic>): Set<string> {
+  return new Set(modeWritings(node, [], actors).map((w) => w.name));
+}
+
+/** Each writing {@link modePicks} reads, with the key path of the mode it is written on. */
+function modeWritings(
+  node: LooseState,
+  path: readonly string[],
+  actors: Record<string, UnknownActorLogic>,
+): Array<{ name: string; path: readonly string[] }> {
+  const out: Array<{ name: string; path: readonly string[] }> = [];
+  const descend = (n: LooseState, at: readonly string[]): void => {
+    for (const [key, child] of Object.entries(n.states ?? {})) {
+      if (invokesParty(child, actors)) continue;
+      const childPath = [...at, key];
+      for (const name of ownPicks(child)) out.push({ name, path: childPath });
+      descend(child, childPath);
+    }
+  };
+  descend(node, path);
+  return out;
+}
+
+/** The writings where {@link modePicks} stops: at and below each child (at any depth through the
+ * modes) that invokes a party, each with its owner mark — the nearest party-invoking state at or
+ * above it. */
+function partyWritings(
+  node: LooseState,
+  path: readonly string[],
+  actors: Record<string, UnknownActorLogic>,
+): Array<{ name: string; path: readonly string[]; owner: string }> {
+  const out: Array<{ name: string; path: readonly string[]; owner: string }> = [];
+  // `owner` is undefined while the descent is still in the modes.
+  const below = (n: LooseState, at: readonly string[], owner: string | undefined): void => {
+    for (const [key, child] of Object.entries(n.states ?? {})) {
+      const childPath = [...at, key];
+      const childOwner = invokesParty(child, actors) ? ownerMark(childPath) : owner;
+      if (childOwner !== undefined)
+        for (const name of ownPicks(child)) out.push({ name, path: childPath, owner: childOwner });
+      below(child, childPath, childOwner);
+    }
+  };
+  below(node, path, undefined);
+  return out;
 }
 
 const resolveInput = (orig: unknown, args: InputArgs): Record<string, unknown> =>

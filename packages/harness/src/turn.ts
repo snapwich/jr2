@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import type { Api, AssistantMessage, Model, Models, UserMessage } from "@earendil-works/pi-ai";
+import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { RunawayError, TurnOverError, type RunSubmission } from "./conversation.ts";
@@ -114,8 +115,23 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
   const out = deps.printerOut ?? process.stdout;
   const summaryRetry = summaryRetryPolicy(deps.maxRetries);
   const standing = deps.standing ?? standingBriefing({});
+  /** The last Allowed-picks list the model read (`between-steps.ts`): the Turn part sets it per
+   * Submission, every receipt and refusal through `onAllowed`. */
+  const told = new ToldPicks();
   // The presenter's naming reaches every text `menu.ts` writes (ADR-0029).
-  const menuOptions: MenuOptions = { ...deps.menu, toolName: menuToolName };
+  const menuOptions: MenuOptions = {
+    ...deps.menu,
+    toolName: menuToolName,
+    onAllowed: (allowed) => told.heard(allowed),
+    onTurnOver: () => {
+      turn.over = true;
+    },
+  };
+  /** Per Submission: a pick's answer said the Turn is over (`turnComplete`, or a 404). From then on
+   * the step boundary reads nothing — under `continue: true` the next state re-registers the SAME
+   * address before the abort lands, so a read would answer for the NEXT Turn, and steer the NEXT
+   * Turn's picks into this Submission. Reset when each Submission starts. */
+  const turn = { over: false };
   /** The runaway watch (ADR-0035), per Submission — reset when each turn starts. The
    * once-per-conversation `tool_call` hook reads it through this seat, like `current.definition`. */
   const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
@@ -127,6 +143,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     watch.streak = 0;
     watch.signature = "";
     watch.tripped = "";
+    turn.over = false;
     // This Submission's Frame and dials layer over the definition it carries (ADR-0018/0049/0057).
     // Read HERE, per Submission, so one `continue` conversation can queue turns at different
     // settings and in different worktrees — the `setModel`/`setThinkingLevel` reconciliation below
@@ -169,6 +186,32 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // Once per conversation — the subscriptions survive across Submissions; re-attaching per
       // Submission would duplicate every line and every stream event.
       attachPrinter(harness, deps.agentName, out);
+      // The step boundary — pi's placement of the engine-neutral check (`between-steps.ts`, ADR-0029):
+      // after a step's tool results and before its next model request, the Turn part is restated
+      // when the Allowed picks changed since the model last read them. pi awaits `turn_end`
+      // subscribers and drains its steering queue right after (agent-loop.js), so a message steered
+      // HERE is the next request's newest message, after every tool result of the step — the one
+      // position every provider accepts — and it keeps the loop going after a text-only answer.
+      // A subscriber that throws fails the run, so this one never throws. It says nothing to a Turn
+      // that is ending: a steer that missed its drain would ride into the conversation's NEXT
+      // Submission (pi drains the queue first thing), so both ends are checked again after the read.
+      // A Turn is ending once a runaway trips, the run's signal aborts, or a pick's answer said the
+      // Turn is over — the last is the Harness's own fact, and the only one that never races the
+      // Orchestrator's abort.
+      harness.subscribe(async (event) => {
+        if (event.type !== "turn_end") return;
+        const live = () => !watch.tripped && !current.signal.aborted && !turn.over;
+        if (!live()) return;
+        // A step with no tool result is the model stopping: the ask-again rule (ADR-0016).
+        const stopped = event.toolResults.length === 0;
+        const text = await between(menuOptions, deps.instanceId, told, current.signal, { stopped }).catch(
+          () => undefined,
+        );
+        if (text === undefined || !live()) return;
+        await harness.steer(text).catch((err: unknown) => {
+          console.error(`[${deps.agentName}] could not restate the Allowed picks:`, err);
+        });
+      });
       harness.subscribe((event) => {
         if (event.type !== "message_end") return;
         const entry = historyMessage(event.message);
@@ -271,6 +314,8 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     }
 
     const harness = assembled.harness;
+    // The Turn part below states this list: it is the first the model reads this Submission.
+    told.heard(read.allowed);
     // The whole Menu, never the Allowed picks: the tools lead the provider's prefix cache, so they
     // are the same bytes on every Turn of the conversation (ADR-0029). What this Turn may pick is
     // said in the Turn part below, and enforced at delivery.

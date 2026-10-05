@@ -79,6 +79,47 @@ export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined
   return inputSchemas.get(machine.config);
 }
 
+// Who may send what, per state (ADR-0015): the seats the menu-derivation walk computed. Same key
+// choice as the vocabulary, for the same reasons. The Machine's doc carries them and `jr2 up`
+// prints them, so an author reads the audience rule's answer for their own Machine.
+
+/** One party's seat on one state: the state's id, the party, and the names it may send there —
+ * for an Agent the derived set its guards narrow; for a Gate its accepted set, unless the Gate's
+ * input names `accepts:` itself. */
+export type MachineSeat = { state: string; party: "agent" | "gate"; agent?: string; names: string[] };
+
+const seatTables = new WeakMap<MachineKey, MachineSeat[]>();
+
+/** Attach a Machine's seats. jr2-internal: `jr2Setup.createMachine` calls it. */
+export function attachSeats(machine: AnyStateMachine, seats: MachineSeat[]): void {
+  seatTables.set(machine.config, seats);
+}
+
+/** The seats of a Machine built by `jr2Setup`, in walk order; empty for any other Machine. */
+export function seatsOf(machine: AnyStateMachine): MachineSeat[] {
+  return seatTables.get(machine.config) ?? [];
+}
+
+/** One line per seat — `<state> agent:<slot>: [names]` or `<state> gate: [names]`. */
+export function seatLine(seat: MachineSeat): string {
+  const party = seat.party === "agent" ? `agent:${seat.agent}` : "gate";
+  return `${seat.state} ${party}: [${seat.names.join(", ")}]`;
+}
+
+const loadWarnings = new WeakMap<MachineKey, string[]>();
+
+/** Attach the load warnings `jr2Setup.createMachine` found (ADR-0015). jr2-internal. */
+export function attachLoadWarnings(machine: AnyStateMachine, warnings: string[]): void {
+  loadWarnings.set(machine.config, warnings);
+}
+
+/** What the build found legal and suspect — a mode nothing enters, a pick a Gate above takes from
+ * the Agent below, one name written for two parties on one path. `jr2 up` prints them; the
+ * Machine's doc carries them. Empty for a Machine not built by `jr2Setup`. */
+export function loadWarningsOf(machine: AnyStateMachine): string[] {
+  return loadWarnings.get(machine.config) ?? [];
+}
+
 /**
  * What the HOST adds to the input of the machine a run STARTS with, beside the door
  * (`RunHost.start`). One field today: the run's seed Instance ID, minted with the run and

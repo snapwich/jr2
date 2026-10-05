@@ -26,16 +26,40 @@ whole history again. It also left the history calling tools the request no longe
   conversation's id (ADR-0057). `jr2Setup.createMachine` derives it in ADR-0015's walk, in a fixed order, so it is
   byte-stable for every Turn of the conversation and for every fresh conversation of that Agent. The descriptions are
   the event defs' own and do not vary by state.
-- **What one Turn may pick is its Allowed picks**: the invoking state's derived set, narrowed to what its guards would
-  currently accept. The surface serves both (`GET /agents/:iid/surface` → `menu` and `allowed`); the Harness presents
-  `menu` as the tools block and states `allowed` in the Briefing's Turn part, after the Frame's prompt
+- **What one Turn may pick is its Allowed picks**: the invoking state's derived set (its own, its ancestors' and its
+  modes' picks — ADR-0015), narrowed to what the live Machine would currently accept. Read off the live snapshot, they
+  follow the active mode as well as the guards; the Menu stays byte-identical in every mode. The surface serves both
+  (`GET /agents/:iid/surface` → `menu` and `allowed`); the Harness presents `menu` as the tools block and states
+  `allowed` in the Briefing's Turn part, after the Frame's prompt
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). It rides the newest message, so it never
   touches the cached prefix.
-- **The Orchestrator enforces, at delivery, and only there.** A pick outside the invoking state's derived set is refused
-  (`deliver` already throws); a pick inside it that no guard accepts is delivered and answered `moved: false`. Both
-  answers carry `allowed`, read **after** the delivery, and the Harness renders it ("Allowed now: `finish`"). The
-  Harness does not pre-check: its list is as old as its Submission, and an in-state move
-  (`moved: true, turnComplete: false`) can change the guards mid-Turn.
+- **The Orchestrator enforces, at delivery, and only there.** A pick off the Menu is refused. A pick on the Menu is not
+  refused before delivery: one inside the invoking state's derived set that the Machine does not take — a pick of
+  another mode included — is delivered and answered `moved: false`; one that only another state of this Agent handles is
+  answered `moved: false` whatever its arguments, and never reaches the Machine, because only a state the Agent does not
+  own (a nested Agent's, a Gate's) could act on it there (ADR-0015). A pick in the derived set does reach the Machine,
+  and xstate runs the deepest active handler: when a mode and a sibling Gate's or nested Agent's state write the same
+  name, the Agent's send runs that party's transition while its state is active. The load warns about that Machine
+  (ADR-0015); delivery does not filter it. Both answers carry `allowed`, read **after** the delivery, and the Harness
+  renders it ("Allowed now: `finish`"). A `moved: false` pick outside `allowed` gets the **correction receipt** —
+  "`<pick>` is not allowed in the workflow's current state, whatever its arguments. Your turn is not over. Do not repeat
+  this call — pick one of the allowed tools." — because the state refused it and new arguments cannot help; one inside
+  `allowed` was refused by a guard that read its payload, and its receipt says to change the arguments. The Harness does
+  not pre-check: its list is as old as what it last read, and an in-state move (`moved: true, turnComplete: false`) can
+  change the guards and the mode mid-Turn.
+- **The Turn part is restated at a step boundary when the Allowed picks changed under the Agent.** A Gate's answer, an
+  outside event or a child's settled invoke can move the Machine while the Agent works with its Working tools and picks
+  nothing. So the Harness keeps the last Allowed-picks list the model read — the Turn part, then every receipt and
+  refusal — and after each step's tool results reads the surface once and compares the two as sets. If they differ, it
+  appends one message before the next model request: "The workflow's state changed since you last read the Allowed
+  picks. Allowed now: …", in a `<jr2-turn>` block. The Agent's own pick is never restated, because its receipt already
+  told the model. The read is one bounded attempt and a failure is silence; the next boundary asks again. Nothing is
+  read or said after the Turn ended or after an abort. The Harness knows the Turn ended from a pick's answer
+  (`turnComplete`, or a 404), not only from a read: under `continue: true` the next state re-registers the same address
+  before the abort lands, so a read there would answer for the next Turn. An empty list is not restated to a model that
+  stopped (ADR-0016's ask-again rule). The comparison is engine-neutral (`between-steps.ts`); only the placement is the
+  engine's — pi's between-steps input (`steer`). An engine with no such input falls back to the next receipt. No route
+  is added and no cap is set; the Orchestrator already serves the truth on `GET /agents/:iid/surface`.
 - **Presentation stays in the Harness's neutral layer.** `menu.ts` renders the Allowed-picks text and every receipt; a
   presenter (`menu-tools.ts` for pi) only maps Menu items to its tool API and places the text it is handed. A second
   harness — one that takes MCP tools fixed per session and the prompt as text — needs a presenter, not a second Menu.
@@ -88,11 +112,20 @@ block was not perfect either: once the model invented a tool it had never been g
   dialects; the receipt already carries the distinction.
 - **Filter mid-Turn and push `list_changed`.** Rejected: nothing pushes to the Harness (ADR-0013), and a list that moves
   under an Agent invites the retry loop from the other direction.
+- **The Orchestrator pushes the restated Turn part over a new route.** Rejected: pi appends only at a step boundary, so
+  a push arrives no earlier than the Harness's read, and it needs a route that writes text into a conversation, change
+  detection over every run, and a copy of what the model read that an Orchestrator restart loses.
+- **The Allowed picks on every Working-tool result.** Rejected: a statement repeated where nothing changed is one the
+  model learns to skip.
 
 ## Consequences
 
-- **One state can allow different picks as its context changes; the Menu does not change.** The conformance tier asserts
-  it: two Submissions with different Allowed picks send a byte-identical tools block (ADR-0027).
+- **One state can allow different picks as its context changes or its active mode changes; the Menu does not change.**
+  The conformance tier asserts it: two Submissions with different Allowed picks send a byte-identical tools block
+  (ADR-0027).
+- **A restatement is appended, never rewritten.** Conformance asserts that each request of a Submission is a byte prefix
+  of the next, with the tools and the system prompt unchanged, and that the restatement sits right after the step's last
+  tool result.
 - **A workflow expresses "not available yet" with a guard alone,** and the Agent is told so rather than finding a tool
   that silently does nothing.
 - **`on: { X: {} }` — targetless and actionless — is never allowed,** matching xstate's `can()`.

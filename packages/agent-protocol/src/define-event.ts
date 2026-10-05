@@ -17,10 +17,12 @@ import { z } from "zod";
 export type EventSemantics = "ack" | "deferred" | "poll";
 
 /**
- * Who may deliver the event (ADR-0015). The invoking actor kind is the primary router — an
- * an Agent's menu draws audience ∈ {agent, any}, a `gate` draws {external, any} — so this tag
- * exists to RESTRICT: tag the security-sensitive events (`approve: "external"` guarantees no
- * agent state can ever offer it) and leave the rest at the `"any"` default.
+ * Who may deliver the event, stated BY KIND (ADR-0015): `agent` (an Agent's pick), `external` (a
+ * Gate's caller), `any` (both). Leave it UNSET for the default: each writing of the event — each
+ * `on` key — belongs to the party that its state, or the nearest state above it, invokes (an Agent
+ * slot, a `gate`, or both); with none above, both. Set it only to give a pick to the other party
+ * (`submit: "any"` lets an in-Turn Gate's caller send the Agent's pick) or to hold a root pick back
+ * (`report_blocked: "agent"`; `approve: "external"` guarantees no Agent state can offer it).
  */
 export type EventAudience = "agent" | "external" | "any";
 
@@ -34,7 +36,8 @@ export type EventDef<Name extends string = string, Input extends z.ZodObject = z
   /** Input schema — a flat tagged object, never a `oneOf` (ADR-0006 encoding rule). */
   readonly input: Input;
   readonly semantics: EventSemantics;
-  readonly audience: EventAudience;
+  /** Absent: each writing's state decides who may send it (see {@link EventAudience}). */
+  readonly audience?: EventAudience;
   /** Result schema for `deferred` events (the held tool result the Machine answers with). */
   readonly output?: z.ZodType;
 };
@@ -65,7 +68,7 @@ export function defineEvent<const Name extends string, Input extends z.ZodObject
   input: Input;
   /** Default: `ack`. */
   semantics?: EventSemantics;
-  /** Default: `any` — restrict only the security-sensitive events (ADR-0015). */
+  /** Default: unset — each writing's state decides (see {@link EventAudience}). */
   audience?: EventAudience;
   output?: z.ZodType;
 }): EventDef<Name, Input> {
@@ -80,7 +83,7 @@ export function defineEvent<const Name extends string, Input extends z.ZodObject
       `defineEvent: "${def.name}" is deferred but has no output schema — a deferred event's result IS its output`,
     );
   }
-  return Object.freeze({ semantics: "ack" as const, audience: "any" as const, ...def });
+  return Object.freeze({ semantics: "ack" as const, ...def });
 }
 
 /** Duck-type guard for manifest validation (defs are plain data, not branded). */

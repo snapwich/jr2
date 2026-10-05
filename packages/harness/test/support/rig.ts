@@ -203,6 +203,16 @@ export type FakeSandbox = {
   bearers: string[];
   /** Park every LATER delivery after recording it — the abort-mid-tool-call lever. */
   holdDeliveries: () => void;
+  /** Answer each later delivery with this receipt — what an Orchestrator's Machine did with the
+   * pick (`moved`, `turnComplete`, the Allowed picks after the route). Cleared by `reset`; unset,
+   * every pick ends the Turn. */
+  answerWith: (receipt: (event: Record<string, unknown>) => Record<string, unknown>) => void;
+  /** Serve each later surface read by its number (1-based since the last `reset`): a surface, or
+   * an HTTP status to answer instead (a promise: an answer that takes that long). Read 1 is a
+   * Submission's start; each later read is a step boundary — so a test places a change made by
+   * SOMETHING ELSE (a Gate's answer, an outside event) between two exact steps. Wins over
+   * `setSurface`; cleared by `reset`. */
+  surfaceByRead: (serve: (read: number) => Surface | number | Promise<Surface | number>) => void;
   /** Rearm for the next scenario: this surface, live, responding, nothing delivered. */
   reset: (surface: Surface) => void;
   close: () => Promise<void>;
@@ -212,9 +222,11 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
   let surface = initialSurface;
   let live = true;
   let holding = false;
+  let answer: ((event: Record<string, unknown>) => Record<string, unknown>) | undefined;
   let surfaceFault: number | undefined;
   let stopping = 0;
   let surfaceReads = 0;
+  let byRead: ((read: number) => Surface | number | Promise<Surface | number>) | undefined;
   const delivered: Array<Record<string, unknown>> = [];
   const bearers: string[] = [];
   const server: Server = createServer((req, res) => {
@@ -234,12 +246,20 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
           stopping -= 1;
           return json(503, { error: "the Orchestrator is stopping" });
         }
+        if (byRead) {
+          void Promise.resolve(byRead(surfaceReads)).then((served) =>
+            typeof served === "number" ? json(served, { error: "scripted" }) : json(200, served),
+          );
+          return;
+        }
         return json(200, surface);
       }
       const event = JSON.parse(raw) as Record<string, unknown>;
       delivered.push(event);
       if (holding) return; // parked: the response never comes
-      json(200, { delivered: true, event: event.type, turnComplete: true, deliveryId: `d-${delivered.length}` });
+      const deliveryId = `d-${delivered.length}`;
+      if (answer) return json(200, { delivered: true, event: event.type, deliveryId, ...answer(event) });
+      json(200, { delivered: true, event: event.type, turnComplete: true, deliveryId });
     });
   });
   const port = await listen(server);
@@ -254,10 +274,14 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     reads: () => surfaceReads,
     bearers,
     holdDeliveries: () => (holding = true),
+    answerWith: (receipt) => (answer = receipt),
+    surfaceByRead: (serve) => (byRead = serve),
     reset: (next) => {
       surface = next;
       live = true;
       holding = false;
+      answer = undefined;
+      byRead = undefined;
       surfaceFault = undefined;
       stopping = 0;
       surfaceReads = 0;

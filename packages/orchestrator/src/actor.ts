@@ -53,7 +53,7 @@ import {
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import type { HarnessRestarts, MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
-import { agentAddress, continuedIid, resolveAccepts, runBindingOf } from "./registration.ts";
+import { agentAddress, continuedIid, mayMove, resolveAccepts, runBindingOf } from "./registration.ts";
 import type { NoticeScope } from "./notices.ts";
 import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice } from "./wire.ts";
 
@@ -402,13 +402,14 @@ function isLostConversation(err: unknown): boolean {
 }
 
 /**
- * The forced-final-pick re-prompt (ADR-0006, absorbed here by ADR-0016). It names no picks: the
- * Harness writes the Turn part after it, stating the Allowed picks in the model's own tool names and
- * narrowed by the guards (ADR-0029, ADR-0062) — a list here would be a second one, in other names,
- * that a closed guard makes wrong.
+ * The nudge (ADR-0006, absorbed here by ADR-0016). It names no picks: the Harness writes the Turn
+ * part after it, stating the Allowed picks in the model's own tool names and narrowed by the guards
+ * (ADR-0029, ADR-0062) — a list here would be a second one, in other names, that a closed guard
+ * makes wrong. Its first sentence stays true after a pick that left the Turn open: the ask-again
+ * rule asks whenever picks are still allowed after a settle, picked or not.
  */
 const NUDGE_PROMPT =
-  `Your previous turn ended without calling one of the required workflow tools. ` +
+  `Your previous turn ended, and the workflow is still waiting for your pick. ` +
   `You MUST end your turn by calling exactly one of the workflow tools allowed below. ` +
   `Pick the one that matches the true state of your work and call it now.`;
 
@@ -567,8 +568,10 @@ export function agentActorWith(
     // Register this invocation's event surface (throws on a name outside the INVOKING MACHINE's
     // vocabulary — ADR-0011's invoke-time check, scoped to `self._parent.logic` because names are
     // per-Machine — which errors the run loudly at the invoking state).
-    // `signaled` is the no-signal detector: a delivered menu event means the Agent ended its
-    // turn the intended way, so a completed settlement needs no nudge. ONE invocation can hold
+    // `signaled`: a Menu pick was delivered in this invocation. It closes the runaway REROLL gate
+    // (below): replaying the identical prompt would deliver it again. It does not decide the nudge
+    // — the ask-again rule does, from the Allowed picks after the settle, because a delivered pick
+    // may leave the Turn open (a mode change, a pick with no target). ONE invocation can hold
     // more than one surface: a runaway reroll (ADR-0035) is a fresh conversation whose menu
     // dials `/mcp/<derived iid>`, so its address must be live too — same defs, same deliver,
     // because whichever conversation answers, it answers THIS invocation.
@@ -779,8 +782,9 @@ export function agentActorWith(
     //   - INFRA faults: provider retries run inside the turn, Harness-side, and the wire
     //     client reconnects transparently — so a `settle` rejection means the Submission settled
     //     failed/aborted, or the conversation is lost (ADR-0027). Terminal, no jr2 re-run.
-    //   - NO-SIGNAL: the Submission settles COMPLETED but no menu tool was called. The Harness
-    //     calls that a normal turn, so jr2 owns a budgeted re-prompt on the SAME iid (the conversation
+    //   - NO-SIGNAL: the Submission settles COMPLETED with the Turn still open and Allowed picks
+    //     left (the ask-again rule, below). The Harness calls that a normal Submission, so jr2 owns
+    //     a budgeted re-prompt on the SAME iid (the conversation
     //     continues; each nudge is a fresh admission, ledgered like any other).
     //   - RUNAWAY: the Harness ended a turn that would not conclude and settled it failed with
     //     the typed "runaway" error (ADR-0035). The degenerate context is poisoned, so the
@@ -857,9 +861,18 @@ export function agentActorWith(
             admission = await admitTurn({ ...framed, attach: undefined, instanceId: currentIid });
             continue;
           }
-          if (stopped || signaled || input.tools.length === 0) return; // the turn ended as intended
+          // THE ASK-AGAIN RULE (ADR-0016), one rule with two seats — the Harness's is its step
+          // boundary (`between-steps.ts`): while the Turn is open, a model that stops with Allowed
+          // picks NOT EMPTY is asked again. Inside its Submission when the list changed since the
+          // model last read it (the restated Turn part keeps the engine's loop going); else here, by
+          // a nudge Submission after it settles. An open Turn whose Allowed picks are empty is not
+          // asked: it waits on something else (a Gate, a child's invoke, a timer), or it was never
+          // meant to pick. A Turn whose pick left the Agent's state is over: the invoke was stopped.
+          if (stopped) return;
+          const allowed = [...defs.keys()].filter((name) => mayMove(self._parent, name));
+          if (allowed.length === 0) return;
           if (nudges >= nudgeBudget) {
-            fault(`agent completed its turn without calling any of: ${input.tools.join(", ")}`);
+            fault(`agent completed its turn without a pick that ends it; still allowed: ${allowed.join(", ")}`);
             return;
           }
           nudges++;

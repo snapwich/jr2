@@ -18,7 +18,7 @@
 import type { AnyStateMachine, StateNode, TransitionDefinition } from "xstate";
 import { z } from "zod";
 import type { EventAudience } from "@jr2/agent-protocol";
-import { vocabularyOf } from "./vocabulary.ts";
+import { loadWarningsOf, seatsOf, vocabularyOf, type MachineSeat } from "./vocabulary.ts";
 
 /** One transition of the Machine, id-addressed at both ends. */
 export type MachineTransitionDoc = {
@@ -98,7 +98,8 @@ export type ChildMachineDoc = {
 export type MachineEventDoc = {
   name: string;
   description?: string;
-  audience: EventAudience;
+  /** Absent: each writing's state decides who may send it (ADR-0015) — see the body's `seats`. */
+  audience?: EventAudience;
   /** The def's input schema as JSON Schema — what a form or a `jr2 send` prompt generates from. */
   input: unknown;
 };
@@ -112,6 +113,13 @@ export type MachineBodyDoc = {
   /** The events THIS Machine declares, and only this one (ADR-0049): a nested Machine's ride its
    * own `MachineBodyDoc`. Empty for a Machine not built by `jr2Setup`. */
   events: MachineEventDoc[];
+  /** Who may send what, per state (ADR-0015): one entry per party on each state that invokes one —
+   * the audience rule's answer for this Machine, as `jr2 up` prints it. Empty for a Machine not
+   * built by `jr2Setup`. */
+  seats: MachineSeat[];
+  /** What the build found legal and suspect (ADR-0015) — a mode nothing enters, a pick a Gate above
+   * takes from the Agent below, one name written for two parties on one path. */
+  warnings: string[];
 };
 
 /** The serialized structure of a workflow's Machine. */
@@ -311,6 +319,18 @@ export function opaqueStates(doc: MachineDoc): string[] {
   return ids;
 }
 
+/** Every Machine body in a doc — the root's, then each child Machine's, depth-first in state order.
+ * A recursive reference is not repeated: its body is already above it. */
+export function machineBodies(doc: MachineBodyDoc): MachineBodyDoc[] {
+  const out: MachineBodyDoc[] = [doc];
+  const walk = (state: MachineStateDoc): void => {
+    for (const child of state.children) if (child.machine) out.push(...machineBodies(child.machine));
+    for (const nested of state.states) walk(nested);
+  };
+  walk(doc.root);
+  return out;
+}
+
 /** Serialize one Machine — its own state tree and its own transitions. Each level carries its own
  * actor registry (a child machine resolves `src` names against ITS `setup`, not its parent's). */
 function serializeBody(machine: AnyStateMachine, path: Set<AnyStateMachine>): MachineBodyDoc {
@@ -321,10 +341,10 @@ function serializeBody(machine: AnyStateMachine, path: Set<AnyStateMachine>): Ma
   const events = [...(vocabularyOf(machine)?.values() ?? [])].map((def) => ({
     name: def.name,
     ...(def.description !== undefined ? { description: def.description } : {}),
-    audience: def.audience,
+    ...(def.audience !== undefined ? { audience: def.audience } : {}),
     input: z.toJSONSchema(def.input),
   }));
-  return { id: machine.id, root, transitions, events };
+  return { id: machine.id, root, transitions, events, seats: seatsOf(machine), warnings: loadWarningsOf(machine) };
 }
 
 /** Serialize a workflow's template Machine into the Console's DTO, child machines and all. */

@@ -927,12 +927,25 @@ export class RunHost {
     }
     const address = agentAddress(instanceId);
     const invoking = this.table.lookup(address);
-    // A name the invoking state does not handle is refused HERE, in the Agent's own terms: the
-    // table's refusal lists the derived set, bare and unnarrowed, where the Harness is about to write
-    // the Allowed picks in the model's tool names (ADR-0029, ADR-0062) — two lists that disagree.
-    // With the Menu holding other states' picks, this is the everyday recovery path, so the one
-    // list the model reads is the Harness's.
     if (invoking && !invoking.defs.has(type)) {
+      // A pick on the Menu that another state of this Agent handles (ADR-0029): answered, not
+      // refused — `moved: false` is the correction receipt, whatever its arguments, so the payload
+      // is not read. It never reaches the Machine: the invoking state does not handle it, so it
+      // could move nothing of this Turn's, and only a state the Agent does not own (a nested
+      // Agent's, a Gate's) could act on it — a widening the audience rule forbids (ADR-0015).
+      if (menuOf(invoking).has(type)) {
+        return {
+          delivered: true,
+          event: type,
+          moved: false,
+          turnComplete: false,
+          allowed: allowedOf(invoking),
+          deliveryId: this.newId(),
+        };
+      }
+      // A name off the Menu is refused HERE, in the Agent's own terms: the table's refusal lists the
+      // derived set, bare and unnarrowed, where the Harness is about to write the Allowed picks in
+      // the model's tool names (ADR-0029, ADR-0062) — two lists that disagree.
       const refused = new EventValidationError(`the workflow's current state does not accept "${type}"`);
       refused.allowed = allowedOf(invoking);
       throw refused;

@@ -75,6 +75,13 @@ is needed either (ADR-0006).
     another Sandbox. The Stand-in the Harness holds is refused on every route.
   - **Instance token** — the human/CLI credential for Gates and run control. Minted into an in-cluster Secret at
     `jr2 up`; the CLI reads it over the kube API (RBAC is the gate) while port-forwarding the Service (ADR-0019).
+  - **The Instance-token door.** The Instance token may also read any Agent's surface and deliver to it —
+    `GET /agents/:iid/surface`, `POST /agents/:iid/events` — because it is the operator. That is the operator speaking
+    AS the Agent: it reads the Agent's Menu and Allowed picks and its picks are judged as the Agent's, and no audience
+    filter applies, so it can send a pick no Gate's caller may send
+    ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)). It is deliberate — it is how the e2e tier stands in
+    for an Agent — and it adds no party: neither `jr2 send` nor the Console offers it, and a Sandbox token never opens
+    it for a registration that is not its own.
   - An agent registration records its Sandbox **ambiently**: `agentRun` resolves the enclosing `workspace()` and records
     the same deterministic name the token was minted for (ADR-0016), so forgetting to pass it is unrepresentable (the
     pre-ambient version shipped exactly that footgun: `sandbox` omitted, every tool call 403'd — fail-closed but

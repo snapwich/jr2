@@ -686,7 +686,8 @@ test("an `after` in a child Machine is re-armed with the remaining time", async 
   await b.stop(runId);
 });
 
-test("an `after` below a state that invokes an Agent is re-armed; the Turn is re-attached, not admitted again", async () => {
+// The timer moves the Turn into a mode (ADR-0029): the restored Turn's Allowed picks follow it.
+test("an `after` below a state that invokes an Agent is re-armed; the Turn is re-attached, not admitted again, and its Allowed picks follow the mode it enters", async () => {
   const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
     events: [doneEvent, requestReviewEvent],
@@ -704,7 +705,10 @@ test("an `after` below a state that invokes an Agent is re-armed; the Turn is re
         },
         on: { done: "#m.done" },
         initial: "running",
-        states: { running: { after: { [DELAY]: "review" } }, review: {} },
+        states: {
+          running: { after: { [DELAY]: "review" } },
+          review: { on: { request_review: "#m.done" } },
+        },
       },
       done: { type: "final" },
     },
@@ -732,9 +736,13 @@ test("an `after` below a state that invokes an Agent is re-armed; the Turn is re
   await sleep(RESTART_AT);
   await a.stop(runId);
 
+  const iid = clients[0]!.admits[0]!.instanceId;
+
   const b = await restoreOn(store, def, runId);
+  assert.deepEqual(b.agentSurface(iid)?.allowed, ["done"], "restored in the mode the timer has not left");
   const t = await timeTo(() => JSON.stringify(b.status(runId)?.value) === JSON.stringify({ active: "review" }));
   assertAbout(t, remaining, "below an Agent's state");
+  assert.deepEqual(b.agentSurface(iid)?.allowed, ["done", "request_review"], "the re-armed timer moved the mode");
   const second = clients.at(-1)!;
   assert.equal(second.admits.length, 0, "the Turn was re-attached, not admitted again");
   assert.equal(second.settled.length, 1);

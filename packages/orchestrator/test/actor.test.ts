@@ -802,10 +802,12 @@ test("no-signal budget exhausted → ONE terminal agent.fault naming the menu", 
   assert.equal(mock.admits.length, 1, "budget 0: no nudge");
   const faults = received.filter((e) => e.type === "agent.fault");
   assert.equal(faults.length, 1);
-  assert.match(String(faults[0]!.reason), /without calling any of: ping/);
+  assert.match(String(faults[0]!.reason), /without a pick that ends it; still allowed: ping/);
 });
 
-test("a completed turn that DID signal is simply over — no nudge, no fault", async () => {
+test("the ask-again rule: a delivered pick that leaves the Turn OPEN, then a stop, is nudged", async () => {
+  // The fixture's `ping` is targetless (a `*` action): the receipt says the Turn is not over, and
+  // `ping` stays Allowed, so the Turn is still open and still has a pick to make (ADR-0016).
   const mock = new MockFlueClient();
   const { received, table } = harness(mock, baseInput);
   await tick();
@@ -814,9 +816,57 @@ test("a completed turn that DID signal is simply over — no nudge, no fault", a
   mock.complete();
   await tick();
 
-  assert.equal(mock.admits.length, 1, "no nudge after a delivered signal");
-  assert.ok(!received.some((e) => e.type === "agent.fault"));
+  assert.equal(mock.admits.length, 2, "picks still allowed: asked again");
   assert.ok(received.some((e) => e.type === "ping"));
+});
+
+/** A parent whose `ping` LEAVES the state that invokes the Agent (or, closed, allows nothing). */
+function leaving(client: MockFlueClient, open: boolean) {
+  const table = new RegistrationTable();
+  const machine = setup({
+    types: {} as { context: { open: boolean } },
+    actors: { run: agentActorWith(() => client, { model: "test/model", instructions: "i" }) },
+  }).createMachine({
+    id: "parent",
+    context: { open },
+    initial: "running",
+    states: {
+      running: {
+        invoke: { id: "run", src: "run", input: baseInput },
+        on: { ping: { target: "done", guard: ({ context }) => context.open } },
+      },
+      done: {},
+    },
+  });
+  attachVocabulary(machine, eventMap("test", [pingEvent]));
+  const actor = createActor(machine);
+  bindRun(actor.system, { runId: "run-1", workflow: "test", table, recordAdmission: () => {} });
+  actor.start();
+  return { actor, table };
+}
+
+test("the ask-again rule: a pick that ENDS the Turn is over — no nudge, no fault", async () => {
+  const mock = new MockFlueClient();
+  const { actor, table } = leaving(mock, true);
+  await tick();
+  table.deliver(agentAddress("inst-42"), "ping", {});
+  mock.complete();
+  await tick();
+  assert.equal(mock.admits.length, 1);
+  assert.equal(actor.getSnapshot().value, "done");
+});
+
+test("the ask-again rule: a live Turn with NO Allowed pick (guard closed) is not nudged and does not fault", async () => {
+  const mock = new MockFlueClient();
+  const { actor } = leaving(mock, false);
+  const errors: unknown[] = [];
+  actor.subscribe({ error: (e) => errors.push(e) });
+  await tick();
+  mock.complete();
+  await tick();
+  assert.equal(mock.admits.length, 1);
+  assert.equal(actor.getSnapshot().value, "running");
+  assert.deepEqual(errors, []);
 });
 
 test("a menuless invocation (tools: []) never nudges — there is nothing to demand", async () => {
@@ -879,7 +929,7 @@ test("runaway: a FRESH turn is rerolled ONCE — fresh conversation, IDENTICAL p
   assert.ok(!received.some((e) => e.type === "agent.fault"), "budget not exhausted — no fault yet");
 });
 
-test("runaway: a pick delivered on the reroll surface lands on the invoking state — and IS the signal", async () => {
+test("runaway: a pick delivered on the reroll surface lands on the invoking state — and closes the reroll gate", async () => {
   const mock = new MockFlueClient();
   const { received, table } = harness(mock, baseInput);
   await tick();
@@ -891,7 +941,11 @@ test("runaway: a pick delivered on the reroll surface lands on the invoking stat
   await tick();
 
   assert.ok(received.some((e) => e.type === "ping"));
-  assert.equal(mock.admits.length, 2, "no nudge after a delivered signal");
+  // The delivery closed the reroll gate (no third reroll). `ping` stays Allowed (targetless), so
+  // the ask-again rule nudges — on the LIVE (rerolled) conversation.
+  await tick();
+  assert.equal(mock.admits.length, 3, "rerolled once, then nudged");
+  assert.equal(mock.admits[2]!.instanceId, "inst-42-r1");
   assert.ok(!received.some((e) => e.type === "agent.fault"));
 });
 

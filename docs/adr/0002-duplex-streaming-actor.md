@@ -21,11 +21,16 @@ The split-channel model:
 | up        | control / decision (the workflow's events, ADR-0011)      | Menu tool call → Custodian → delivery    |
 | up        | progress / telemetry (tokens, attempts, "still working")  | Harness stream (lossy, observation-only) |
 | down      | the next turn's prompt (feedback, steering at a boundary) | a new submission on the same iid         |
+| down      | the Turn part, restated (the Allowed picks changed)       | the Harness's read at each step boundary |
 | down      | interrupts (deliberate terminal cancel)                   | `abort` on the wire                      |
 
-The residual hard case is **unsolicited mid-turn steering**: tool calls are Agent-initiated, so the Machine can only
-speak when the Agent has asked or the turn has ended. That remains unsolved — but it is the only behavior in that
-bucket, not a dependency of the whole control plane.
+Tool calls are Agent-initiated, so the Machine speaks inside a Turn only as an answer. The one exception is the
+**restated Turn part**: when something other than the Agent's own pick changes its Allowed picks — a Gate's answer, an
+outside event — the Harness learns it by reading the surface at each step boundary and appends the new list
+([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)). It is a pull, not a push:
+nothing new reaches the Harness, and what is restated is fixed text plus Menu names. The residual hard case is
+**unsolicited mid-turn steering** — free text from the Machine to an Agent that has not asked. That remains unsolved,
+and it is the only behavior in that bucket, not a dependency of the whole control plane.
 
 ## Durability: the admission is the handle
 

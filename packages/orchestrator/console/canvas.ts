@@ -57,7 +57,8 @@ export type ChildMachineDoc = {
 export type MachineEventDoc = {
   name: string;
   description?: string;
-  audience: "agent" | "external" | "any";
+  /** Absent: each writing's state decides who may send it (ADR-0015). */
+  audience?: "agent" | "external" | "any";
   /** The def's input schema as JSON Schema. */
   input: unknown;
 };

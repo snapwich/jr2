@@ -111,6 +111,14 @@ export type MenuOptions = {
   /** How the presenter names a pick to its model (`menu-tools.ts`: `mcp__jr2__<name>`), so every
    * text here names the tool the model actually sees. Default: the bare name. */
   toolName?: (name: string) => string;
+  /** Hears every Allowed-picks list a pick's answer carries — a receipt's or a refusal's — as the
+   * model is about to read it. `between-steps.ts` keeps the last list the model read, so a change it
+   * already read is never restated. */
+  onAllowed?: (allowed: string[]) => void;
+  /** Hears that a pick's answer ended the Turn — a receipt's `turnComplete`, or a 404 (no surface).
+   * `between-steps.ts` then reads nothing more for that Submission: under `continue: true` the next
+   * state re-registers the SAME address, so a later read could answer for the NEXT Turn. */
+  onTurnOver?: () => void;
 };
 
 /**
@@ -233,6 +241,18 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
   // Order matters: a rejected pick is also `turnComplete: false`, and saying only that sends the
   // Agent back to do the same thing again (ADR-0029). Say what it can act on FIRST.
   if (receipt.moved === false) {
+    // Nothing moved, so the Allowed picks after the delivery are the ones before it. A pick outside
+    // them — another mode's pick, or one a guard on context closed — was refused by the workflow's
+    // current STATE, whatever its arguments: the correction receipt. "Change the arguments" there
+    // sends the Agent round the same loop.
+    if (receipt.allowed && !receipt.allowed.includes(receipt.event)) {
+      const name = (toolName ?? ((n: string) => n))(sanitizeToolNamePart(receipt.event));
+      return (
+        `${delivered} The workflow did NOT act on it: \`${name}\` is not allowed in the workflow's ` +
+        `current state, whatever its arguments. Your turn is not over. Do not repeat this call — ` +
+        `pick one of the allowed tools.${allowed}`
+      );
+    }
     return (
       `${delivered} The workflow did NOT act on it: no transition in its current state accepts ` +
       `"${receipt.event}" with these arguments. Your turn is not over. Do not repeat this call ` +
@@ -344,13 +364,55 @@ async function deliver(
     throw new Error(`the pick never reached the Orchestrator (${transportDetail(err)}) — try it again`, { cause: err });
   }
   await unreachable(res);
-  if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}" — this turn is over`);
+  if (res.status === 404) {
+    opts.onTurnOver?.();
+    throw new NoSurfaceError(`no live surface for agent "${instanceId}" — this turn is over`);
+  }
   if (res.status === UNAVAILABLE) {
     throw new Error(
       `the Orchestrator is unavailable (${await errorOf(res)}), so the pick was not taken — try it again`,
     );
   }
-  return (await answered(res, (allowed) => allowedPicksText(allowed, opts.toolName))) as DeliveryReceipt;
+  const receipt = (await answered(res, (allowed) => {
+    opts.onAllowed?.(allowed);
+    return allowedPicksText(allowed, opts.toolName);
+  })) as DeliveryReceipt;
+  // Absent is not empty (ADR-0029's skew): an older Orchestrator's receipt carries no list to hear.
+  if (Array.isArray(receipt.allowed)) opts.onAllowed?.(receipt.allowed);
+  if (receipt.turnComplete === true) opts.onTurnOver?.();
+  return receipt;
+}
+
+/**
+ * The Allowed picks NOW, read at a step boundary of a running Turn (`between-steps.ts`). ONE
+ * attempt, bounded, and every failure is `undefined`: unlike `readSurface`, this read is not the
+ * Turn's footing. A 404 (the Turn is over), a stopping Orchestrator's 503, the Custodian's
+ * unreachable, a blip — each means "say nothing this step", and the next boundary asks again. It
+ * never stalls or fails a Turn.
+ */
+export async function readAllowed(
+  opts: MenuOptions,
+  instanceId: string,
+  signal?: AbortSignal,
+  timeoutMs = 2_000,
+): Promise<string[] | undefined> {
+  const url = `${base(opts)}/agents/${encodeURIComponent(instanceId)}/surface`;
+  const bound = AbortSignal.timeout(timeoutMs);
+  try {
+    const res = await (opts.fetch ?? globalThis.fetch)(url, {
+      headers: authorization(opts),
+      signal: signal ? AbortSignal.any([signal, bound]) : bound,
+    });
+    if (!res.ok || res.headers.get("x-jr2-custodian") === "unreachable") {
+      await res.body?.cancel();
+      return undefined;
+    }
+    const surface = (await res.json()) as Surface;
+    // ADR-0029's skew, as in `readMenu`: absent `allowed` is the whole Menu, never empty.
+    return surface.allowed ?? (surface.menu ?? surface.accepts ?? []).map((event) => event.name);
+  } catch {
+    return undefined;
+  }
 }
 
 function base(opts: MenuOptions): string {

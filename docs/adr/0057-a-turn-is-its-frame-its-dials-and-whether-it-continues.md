@@ -88,12 +88,10 @@ ADR-0018 and CONTEXT.md said `cwd` is identity, never per Turn. The decided thin
 - **The author type carries no mechanism.** `endpoint` and `sandbox` — set only by stub-tier fixtures that have no
   `workspace()` to resolve from — move to a mechanism type the tests import. `tools`, the Menu override, retires: a
   hand-written Menu can only agree with the invoking state's transitions or lie about them, and the lie is a pick that
-  moves nothing (ADR-0029). It was also hiding one real shape — a fixture whose picks sat in SUBSTATES of the invoking
-  state, where ADR-0015's derivation (own plus ancestors) cannot see them, so the derived Menu was empty and the
-  override supplied what the state could not. That shape is now refused at build, naming the state, the Agent and the
-  buried picks; a state that allows no picks with nothing below it stays legal, because a state a Gate or a timer moves
-  asks its Agent for text and nothing else. A real run never sets any of them: a Sandbox Agent resolves ambiently
-  (ADR-0016), a `workspace: "none"` Agent lands on the Instance Harness (ADR-0031).
+  moves nothing (ADR-0029). The one shape it hid — picks written on SUBSTATES of the invoking state — is derived: those
+  substates are the state's modes (ADR-0015). A state that allows no picks stays legal, because a state a Gate or a
+  timer moves asks its Agent for text and nothing else. A real run never sets any of them: a Sandbox Agent resolves
+  ambiently (ADR-0016), a `workspace: "none"` Agent lands on the Instance Harness (ADR-0031).
 
 ## Considered options
 

@@ -81,6 +81,8 @@ function composeStanding(facts: SeatFacts, workspace: Workspace): string {
     "jr2 runs the workflow you are part of. These are facts about your seat, not your task.",
     "- Your Turn ends with exactly one pick from your Menu: a call to one of the workflow's tools, one " +
       "that the <jr2-turn> block after each prompt allows now. When a pick ends your Turn, stop — call no other tool.",
+    "- Some picks move the workflow and leave your Turn open; their answer says so and lists what is allowed now. " +
+      'The newest "Allowed now" you read is the one that holds.',
   ];
   if (workspace === "none") {
     lines.push("- You have no Working tools: no shell and no files. You act only by picking from your Menu.");
@@ -125,6 +127,19 @@ export function turnPart(facts: TurnFacts): string {
   for (const notice of facts.notices ?? []) lines.push(noticeText(notice));
   lines.push(allowedPicksText(facts.allowed, facts.toolName));
   return `<jr2-turn>\n${lines.join("\n")}\n</jr2-turn>`;
+}
+
+/**
+ * The Turn part, restated at a step boundary (`between-steps.ts`, ADR-0029): said only when the
+ * Allowed picks differ from the last list the model read, so it is true by construction. It claims
+ * no cause — the Harness cannot tell a Gate's answer from a pick whose answer was lost — and it is
+ * delimited as the Turn part is, so "the newest Allowed now holds" stays one rule.
+ */
+export function restatedTurnPart(allowed: string[], toolName?: (name: string) => string): string {
+  return (
+    "<jr2-turn>\nThe workflow's state changed since you last read the Allowed picks. " +
+    `${allowedPicksText(allowed, toolName)}\n</jr2-turn>`
+  );
 }
 
 /** The Frame's prompt with the Turn part after it — the one user message a Turn sends. */
