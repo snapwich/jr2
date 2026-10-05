@@ -37,13 +37,16 @@ whole history again. It also left the history calling tools the request no longe
   refused before delivery: one inside the invoking state's derived set that the Machine does not take — a pick of
   another mode included — is delivered and answered `moved: false`; one that only another state of this Agent handles is
   answered `moved: false` whatever its arguments, and never reaches the Machine, because only a state the Agent does not
-  own (a nested Agent's, a Gate's) could act on it there (ADR-0015). Both answers carry `allowed`, read **after** the
-  delivery, and the Harness renders it ("Allowed now: `finish`"). A `moved: false` pick outside `allowed` gets the
-  **correction receipt** — "`<pick>` is not allowed in the workflow's current state, whatever its arguments. Your turn
-  is not over. Do not repeat this call — pick one of the allowed tools." — because the state refused it and new
-  arguments cannot help; one inside `allowed` was refused by a guard that read its payload, and its receipt says to
-  change the arguments. The Harness does not pre-check: its list is as old as what it last read, and an in-state move
-  (`moved: true, turnComplete: false`) can change the guards and the mode mid-Turn.
+  own (a nested Agent's, a Gate's) could act on it there (ADR-0015). A pick in the derived set does reach the Machine,
+  and xstate runs the deepest active handler: when a mode and a sibling Gate's or nested Agent's state write the same
+  name, the Agent's send runs that party's transition while its state is active. The load warns about that Machine
+  (ADR-0015); delivery does not filter it. Both answers carry `allowed`, read **after** the delivery, and the Harness
+  renders it ("Allowed now: `finish`"). A `moved: false` pick outside `allowed` gets the **correction receipt** —
+  "`<pick>` is not allowed in the workflow's current state, whatever its arguments. Your turn is not over. Do not repeat
+  this call — pick one of the allowed tools." — because the state refused it and new arguments cannot help; one inside
+  `allowed` was refused by a guard that read its payload, and its receipt says to change the arguments. The Harness does
+  not pre-check: its list is as old as what it last read, and an in-state move (`moved: true, turnComplete: false`) can
+  change the guards and the mode mid-Turn.
 - **The Turn part is restated at a step boundary when the Allowed picks changed under the Agent.** A Gate's answer, an
   outside event or a child's settled invoke can move the Machine while the Agent works with its Working tools and picks
   nothing. So the Harness keeps the last Allowed-picks list the model read — the Turn part, then every receipt and

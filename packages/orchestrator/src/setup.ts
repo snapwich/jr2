@@ -380,6 +380,25 @@ function deriveMenus(
           for (const name of modePicks(node, actors))
             reach.set(name, (reach.get(name) ?? new Set<string>()).add(owner));
           const derived = pick(reach, "agent", owner);
+          // One name written on a mode for this Agent and below a party-invoking child of this
+          // state for another party: not one path, but the same effect as the check above — the
+          // name is in this Agent's derived set through the mode, so while that child is active
+          // the Agent's send reaches the Machine and runs the transition written for the other
+          // party (the Agent answers its own Gate, or picks for the Agent nested below it).
+          for (const mode of modeWritings(node, path, actors)) {
+            if (!derived.includes(mode.name)) continue;
+            for (const other of partyWritings(node, path, actors)) {
+              if (other.name !== mode.name || other.owner === owner) continue;
+              warnings.set(
+                `two:${mode.name}:${mode.path.join(".")}:${other.path.join(".")}`,
+                (idOf) =>
+                  `"${mode.name}" is written on "${idOf(mode.path)}" for ${partyOf(owner)} and on ` +
+                  `"${idOf(other.path)}" for ${partyOf(other.owner)}: whoever sends it, the deepest active handler ` +
+                  `runs, so while "${idOf(other.path)}" is active ${partyOf(owner)}'s "${mode.name}" runs the ` +
+                  `transition written for ${partyOf(other.owner)} — give the two distinct names`,
+              );
+            }
+          }
           // A Gate above that takes a writing from this Agent: the Gate's caller owns it, so the
           // Agent below — which reaches it — cannot send it. Legal, and the one narrowing of the
           // audience rule an author may not expect.
@@ -542,15 +561,48 @@ function invokesParty(node: LooseState, actors: Record<string, UnknownActorLogic
  * this Turn's.
  */
 function modePicks(node: LooseState, actors: Record<string, UnknownActorLogic>): Set<string> {
-  const out = new Set<string>();
-  const descend = (n: LooseState): void => {
-    for (const child of Object.values(n.states ?? {})) {
+  return new Set(modeWritings(node, [], actors).map((w) => w.name));
+}
+
+/** Each writing {@link modePicks} reads, with the key path of the mode it is written on. */
+function modeWritings(
+  node: LooseState,
+  path: readonly string[],
+  actors: Record<string, UnknownActorLogic>,
+): Array<{ name: string; path: readonly string[] }> {
+  const out: Array<{ name: string; path: readonly string[] }> = [];
+  const descend = (n: LooseState, at: readonly string[]): void => {
+    for (const [key, child] of Object.entries(n.states ?? {})) {
       if (invokesParty(child, actors)) continue;
-      for (const key of ownPicks(child)) out.add(key);
-      descend(child);
+      const childPath = [...at, key];
+      for (const name of ownPicks(child)) out.push({ name, path: childPath });
+      descend(child, childPath);
     }
   };
-  descend(node);
+  descend(node, path);
+  return out;
+}
+
+/** The writings where {@link modePicks} stops: at and below each child (at any depth through the
+ * modes) that invokes a party, each with its owner mark — the nearest party-invoking state at or
+ * above it. */
+function partyWritings(
+  node: LooseState,
+  path: readonly string[],
+  actors: Record<string, UnknownActorLogic>,
+): Array<{ name: string; path: readonly string[]; owner: string }> {
+  const out: Array<{ name: string; path: readonly string[]; owner: string }> = [];
+  // `owner` is undefined while the descent is still in the modes.
+  const below = (n: LooseState, at: readonly string[], owner: string | undefined): void => {
+    for (const [key, child] of Object.entries(n.states ?? {})) {
+      const childPath = [...at, key];
+      const childOwner = invokesParty(child, actors) ? ownerMark(childPath) : owner;
+      if (childOwner !== undefined)
+        for (const name of ownPicks(child)) out.push({ name, path: childPath, owner: childOwner });
+      below(child, childPath, childOwner);
+    }
+  };
+  below(node, path, undefined);
   return out;
 }
 

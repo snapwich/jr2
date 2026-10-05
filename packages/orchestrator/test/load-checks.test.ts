@@ -188,6 +188,83 @@ test("one name written for two parties on one path is a warning: whoever sends i
   assert.match(warnings[0]!, /deepest active handler/);
 });
 
+test("one name written on a mode for the Agent and on a sibling Gate's state is a warning: the Agent's send runs the Gate's transition", () => {
+  const m = jr2Setup({ events: [ev("ask"), ev("approve"), ev("to_m")], actors: { coder: slot() } }).createMachine({
+    id: "wf",
+    initial: "ticket",
+    states: {
+      ticket: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "coding",
+        states: {
+          coding: { on: { ask: "human", to_m: "m" } },
+          m: { on: { approve: "coding" } },
+          human: { invoke: { src: "gate" }, on: { approve: "#wf.approved" } },
+        },
+      },
+      approved: { type: "final" },
+    },
+  });
+  const warnings = loadWarningsOf(m);
+  assert.equal(warnings.length, 1, warnings.join("\n"));
+  assert.match(
+    warnings[0]!,
+    /"approve" is written on "wf\.ticket\.m" for Agent "coder" and on "wf\.ticket\.human" for a Gate/,
+  );
+  assert.match(warnings[0]!, /while "wf\.ticket\.human" is active Agent "coder"'s "approve" runs the transition/);
+});
+
+test("one name written on a mode for the Agent and on a sibling nested Agent's state is a warning", () => {
+  const m = jr2Setup({ events: [ev("x"), ev("go")], actors: { coder: slot(), reviewer: slot() } }).createMachine({
+    id: "wf",
+    initial: "ticket",
+    states: {
+      ticket: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "a",
+        states: {
+          a: { on: { x: "a", go: "review" } },
+          review: { invoke: { src: "reviewer", input: { prompt: "r", endpoint: EP } }, on: { x: "#wf.hijacked" } },
+        },
+      },
+      hijacked: { type: "final" },
+    },
+  });
+  const warnings = loadWarningsOf(m);
+  assert.equal(warnings.length, 1, warnings.join("\n"));
+  assert.match(
+    warnings[0]!,
+    /"x" is written on "wf\.ticket\.a" for Agent "coder" and on "wf\.ticket\.review" for Agent "reviewer"/,
+  );
+});
+
+test("a name on a mode and on a sibling Gate's state with an explicit audience the Agent may not send: no warning", () => {
+  const m = jr2Setup({
+    events: [ev("ask"), ev("approve", "external"), ev("to_m")],
+    actors: { coder: slot() },
+  }).createMachine({
+    id: "wf",
+    initial: "ticket",
+    states: {
+      ticket: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "coding",
+        states: {
+          coding: { on: { ask: "human", to_m: "m" } },
+          m: { on: { approve: "coding" } },
+          human: { invoke: { src: "gate" }, on: { approve: "#wf.approved" } },
+        },
+      },
+      approved: { type: "final" },
+    },
+  });
+  assert.deepEqual(
+    loadWarningsOf(m).filter((w) => w.includes("deepest active handler")),
+    [],
+    "the Agent cannot send `approve`, so nothing it sends runs the Gate's transition",
+  );
+});
+
 test("a name on an Agent's state and on its mode is one party's: no warning (the guard fall-through idiom)", () => {
   const m = jr2Setup({ events: [ev("abandon"), ev("go")], actors: { coder: slot() } }).createMachine({
     id: "wf",
