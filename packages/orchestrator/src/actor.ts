@@ -769,6 +769,36 @@ export function agentActorWith(
       });
     };
 
+    // The Allowed picks NOW (ADR-0029): the derived set, narrowed by the invoking Machine's guards.
+    const allowedNow = (): string[] => [...defs.keys()].filter((name) => mayMove(self._parent, name));
+    // Resolves with the Allowed picks the first time they are not empty — read on every snapshot of
+    // the invoking Machine, so a Gate's answer, an outside event, a settled child or a timer each
+    // count — or with `[]` once this actor stops. Its own disposer, so `abandon` ends the wait.
+    const picksOpen = (): Promise<string[]> =>
+      new Promise((resolve) => {
+        let done = false;
+        let sub: { unsubscribe(): void } | undefined;
+        const finish = (allowed: string[]): void => {
+          if (done) return;
+          done = true;
+          const at = disposers.indexOf(dispose);
+          if (at >= 0) disposers.splice(at, 1);
+          sub?.unsubscribe();
+          resolve(allowed);
+        };
+        const dispose = (): void => finish([]);
+        const check = (): void => {
+          if (stopped) return finish([]);
+          const allowed = allowedNow();
+          if (allowed.length > 0) finish(allowed);
+        };
+        disposers.push(dispose);
+        check();
+        if (done) return;
+        sub = self._parent?.subscribe({ next: check, error: dispose, complete: dispose });
+        if (sub === undefined) finish([]);
+      });
+
     // Down-channel: interrupts only (ADR-0002 split-channel model).
     receive((event) => {
       if (event.type === "CANCEL") abandon();
@@ -832,6 +862,7 @@ export function agentActorWith(
           binding.marker?.({ kind: "admission", agent: input.agentName, endpoint, prompt: input.prompt ?? "" });
         }
         let nudges = 0;
+        let wakes = 0;
         let rerolls = 0;
         for (;;) {
           try {
@@ -865,23 +896,40 @@ export function agentActorWith(
           // boundary (`between-steps.ts`): while the Turn is open, a model that stops with Allowed
           // picks NOT EMPTY is asked again. Inside its Submission when the list changed since the
           // model last read it (the restated Turn part keeps the engine's loop going); else here, by
-          // a nudge Submission after it settles. An open Turn whose Allowed picks are empty is not
-          // asked: it waits on something else (a Gate, a child's invoke, a timer), or it was never
-          // meant to pick. A Turn whose pick left the Agent's state is over: the invoke was stopped.
+          // a nudge Submission after it settles. A Turn whose pick left the Agent's state is over:
+          // the invoke was stopped.
+          //
+          // A model that stopped while its Allowed picks were EMPTY stopped correctly: the Turn
+          // waits on something else (a Gate, a child's invoke, a timer). It is asked when that
+          // something opens a pick — the moment the rule's condition becomes true — and not
+          // before; a Turn that was never meant to pick waits until its state exits. That wake
+          // spends no nudge: the model did nothing wrong, and only an outside event can cause one.
           if (stopped) return;
-          const allowed = [...defs.keys()].filter((name) => mayMove(self._parent, name));
-          if (allowed.length === 0) return;
-          if (nudges >= nudgeBudget) {
-            fault(`agent completed its turn without a pick that ends it; still allowed: ${allowed.join(", ")}`);
-            return;
+          let allowed = allowedNow();
+          const woken = allowed.length === 0;
+          if (woken) {
+            allowed = await picksOpen();
+            if (stopped || allowed.length === 0) return;
+            wakes++;
+            binding.telemetry?.({
+              kind: "retry",
+              child: self._parent?.id ?? self.id,
+              attempt: wakes,
+              reason: "picks allowed again",
+            });
+          } else {
+            if (nudges >= nudgeBudget) {
+              fault(`agent completed its turn without a pick that ends it; still allowed: ${allowed.join(", ")}`);
+              return;
+            }
+            nudges++;
+            binding.telemetry?.({
+              kind: "retry",
+              child: self._parent?.id ?? self.id,
+              attempt: nudges,
+              reason: "no-signal nudge",
+            });
           }
-          nudges++;
-          binding.telemetry?.({
-            kind: "retry",
-            child: self._parent?.id ?? self.id,
-            attempt: nudges,
-            reason: "no-signal nudge",
-          });
           admission = await admitTurn(
             {
               ...framed,

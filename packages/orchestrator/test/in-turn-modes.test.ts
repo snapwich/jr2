@@ -452,3 +452,90 @@ test("the ask-again rule: a live Turn whose Allowed picks are EMPTY (a busy mode
   assert.equal(client.admits.length, 1, "nothing is allowed: not asked again");
   assert.equal(host.status(runId)?.status, "active", "no fault");
 });
+
+/** An Agent's state with no pick of its own: in `human` (a Gate) NOTHING is allowed. */
+function gateWaitDef(clients: Map<string, MockFlueClient>, options: { nudgeBudget?: number } = {}): WorkflowDef {
+  const ask = defineEvent({ name: "ask", description: "Ask a human.", input: z.object({}) });
+  const approve = defineEvent({ name: "approve", audience: "external", input: z.object({}) });
+  const leave = defineEvent({ name: "leave", audience: "external", input: z.object({}) });
+  const machineWith = (coder: ReturnType<typeof agentActorWith>) =>
+    jr2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [ask, approve, leave, submit],
+      actors: { coder },
+    }).createMachine({
+      id: "wf",
+      context: {},
+      initial: "ticket",
+      states: {
+        ticket: {
+          invoke: { src: "coder", input: { prompt: "go", endpoint: "http://harness.invalid" } },
+          initial: "coding",
+          states: {
+            coding: { on: { ask: "human" } },
+            human: {
+              invoke: { src: "gate", input: { gate: "approval" } },
+              on: { approve: "reviewing", leave: "#wf.done" },
+            },
+            reviewing: { on: { submit: "#wf.done" } },
+          },
+        },
+        done: { type: "final" },
+      },
+    });
+  return {
+    name: "gate-wait",
+    machine: machineWith(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      clients.set(instanceId, client);
+      return { actors: { coder: agentActorWith(() => client, coderDefinition, options) } };
+    },
+  };
+}
+
+test("the ask-again rule: a model that stopped with NOTHING allowed is asked when a Gate's answer opens a pick — and the wake spends no nudge (ADR-0016)", async () => {
+  // nudgeBudget 0: a no-signal stop with picks allowed would fault at once, so a nudge here can only
+  // be the wake.
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(gateWaitDef(clients, { nudgeBudget: 0 }));
+  const { runId, instanceId } = await host.start("gate-wait");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+
+  host.sendToAgent(iid, { type: "ask" });
+  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "waiting on the Gate: nothing to pick");
+  client.complete(); // correct: nothing to pick, so it stops
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(client.admits.length, 1, "nothing is allowed: not asked yet");
+
+  // The human answers: a pick opens, and the stopped model is asked again on the same conversation.
+  host.sendToGate(runId, "approval", { type: "approve" });
+  await waitFor(() => client.admits.length === 2);
+  assert.equal(client.admits[1]!.instanceId, iid);
+  assert.match(client.admits[1]!.prompt ?? "", /still waiting for your pick/);
+  assert.equal(host.status(runId)?.status, "active", "no fault: the wake is not a nudge");
+
+  host.sendToAgent(iid, { type: "submit", summary: "done" });
+  client.complete();
+  await waitFor(() => host.status(runId) === undefined);
+  assert.equal(client.admits.length, 2);
+});
+
+test("the ask-again rule: a Gate answer that LEAVES the Agent's state ends the wait — nothing is asked", async () => {
+  const clients = new Map<string, MockFlueClient>();
+  const host = new RunHost({ store: await mkStore() });
+  host.register(gateWaitDef(clients));
+  const { runId, instanceId } = await host.start("gate-wait");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+
+  host.sendToAgent(iid, { type: "ask" });
+  client.complete();
+  await new Promise((r) => setTimeout(r, 30));
+  host.sendToGate(runId, "approval", { type: "leave" });
+  await waitFor(() => host.status(runId) === undefined);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(client.admits.length, 1, "the Turn is over: no wake");
+});

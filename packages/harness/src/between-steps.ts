@@ -47,8 +47,8 @@ function key(allowed: readonly string[]): string {
  * Submission, when the list changed since it last read it: an appended message keeps the engine's
  * loop going. So when the step ended with no tool call (`stopped`) and the list is now EMPTY,
  * nothing is said — a restatement there buys a request in which the model can pick nothing. The
- * list stays unheard, and the next read that finds picks says it. A step that ran tools goes on
- * anyway, so any change is said there, an empty list included.
+ * Submission ends, and the Orchestrator's seat asks the model again once a pick opens. A step that
+ * ran tools goes on anyway, so any change is said there, an empty list included.
  */
 export async function between(
   opts: MenuOptions,
