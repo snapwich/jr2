@@ -407,6 +407,107 @@ test("a state exit during start() on restore cancels the saved timer", async () 
   await b.stop(runId);
 });
 
+test("a child Machine stopped during start() on restore takes its saved timer with it", async () => {
+  // xstate stops a child with `scheduler.cancelAll`, not `cancel`, and on restore that walks an
+  // empty table: no cancel is seen. The restored `cb` sends `again` while it starts, so `running` is
+  // exited and entered again inside start(), and a NEW `kid` (same id, so the same path) arms a
+  // fresh DELAY. The saved row (250 ms left) belongs to the stopped `kid` and must not fire into the
+  // new one, nor overwrite its timeout.
+  let sendOnStart = false;
+  const kid = setup({}).createMachine({
+    id: "kid",
+    initial: "waiting",
+    states: { waiting: { after: { [DELAY]: "over" } }, over: { type: "final" } },
+  });
+  const machine = setup({
+    types: {} as { events: { type: "again" } },
+    actors: { kid, cb: fromCallback(() => {}) },
+  }).createMachine({
+    id: "m",
+    initial: "running",
+    states: {
+      running: {
+        invoke: [{ src: "cb" }, { id: "kid", src: "kid", onDone: "done" }],
+        on: { again: { target: "running", reenter: true } },
+      },
+      done: {},
+    },
+  });
+  const def: WorkflowDef = {
+    name: "child-stopped-during-start",
+    machine,
+    provide: () => ({
+      actors: {
+        cb: fromCallback(({ sendBack }) => {
+          if (!sendOnStart) return;
+          sendOnStart = false;
+          sendBack({ type: "again" });
+        }),
+      },
+    }),
+  };
+  const { store, runId } = await runThenStop(def, "running", RESTART_AT);
+  sendOnStart = true;
+  const b = await restoreOn(store, def, runId);
+  const t = await timeTo(() => b.status(runId)?.value === "done");
+  assertAbout(t, DELAY, "the new child's fresh `after`, not the stopped child's saved one");
+  await b.stop(runId);
+});
+
+test("raw xstate + startAndRearm: a re-entered child's own timer is not doubled by its predecessor's row", async () => {
+  // A self-re-entering child timer, its parent state re-entered during start(). Re-armed on the new
+  // child, the stale row would arm a second timeout under the id the new child already armed, and
+  // the loop would tick at double rate from then on.
+  let sendOnStart = false;
+  const ticker = setup({}).createMachine({
+    id: "ticker",
+    initial: "waiting",
+    states: {
+      waiting: { after: { [DELAY]: { target: "waiting", reenter: true, actions: sendParent({ type: "tick" }) } } },
+    },
+  });
+  const parent = setup({
+    types: {} as { context: Count; events: { type: "again" } | { type: "tick" } },
+    actions: { count: assign({ fired: ({ context }) => context.fired + 1 }) },
+    actors: {
+      ticker,
+      cb: fromCallback(({ sendBack }) => {
+        if (!sendOnStart) return;
+        sendOnStart = false;
+        sendBack({ type: "again" });
+      }),
+    },
+  }).createMachine({
+    id: "m",
+    context: { fired: 0 },
+    initial: "a",
+    states: {
+      a: {
+        invoke: [{ src: "cb" }, { id: "c", src: "ticker" }],
+        on: { again: { target: "a", reenter: true }, tick: { actions: "count" } },
+      },
+    },
+  });
+  const a = createActor(parent).start();
+  await sleep(RESTART_AT);
+  const snapshot = JSON.parse(JSON.stringify(a.getPersistedSnapshot()));
+  const timers: PendingTimer[] = JSON.parse(JSON.stringify(pendingTimers(a)));
+  a.stop();
+  assert.deepEqual(
+    timers.map((t) => t.source),
+    [["c"]],
+    "the child's timer is saved",
+  );
+
+  sendOnStart = true;
+  const b = createActor(parent, { snapshot });
+  startAndRearm(b, timers);
+  await sleep(DELAY * 3 + DELAY / 2);
+  const fired = (b.getSnapshot().context as Count).fired;
+  b.stop();
+  assert.equal(fired, 3, "one tick per DELAY from the re-entry, as in an uninterrupted run");
+});
+
 test("timers that fell due while the Orchestrator was down fire in deadline order", async () => {
   // The outer `after` is scheduled first and falls due last. Uninterrupted, the inner one fires at
   // 100 and its exit cancels the outer: the run ends `inner`. Restored after both deadlines, it must

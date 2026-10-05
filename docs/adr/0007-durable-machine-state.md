@@ -40,13 +40,15 @@ The author writes plain xstate `after`; there is no kit timer actor, and `after`
   deadline order. Re-armed before `start()`, a timer is armed twice, because the system's own `start()` schedules its
   table. The id is xstate's own, so a state's exit after the re-arm cancels a re-armed timer. `start()` drains the
   mailbox, so a child that sends on start can exit a state before any row is re-armed; the host records each cancel
-  during `start()` and does not re-arm a row it names. So a timer fires once, after the time that remained; at once if
-  its deadline passed while the Orchestrator was down, and timers that are all overdue fire in the order they fell due;
-  never if an exit cancelled it, before the save, during `start()` or after the re-arm; and never later than its own
-  delay when the wall clock went backwards. A wall clock that jumped forwards fires it early: only the wall clock
-  survives a process. "Once" is with respect to the saved state: a timer that fired after the last save fires again on
-  restore, as any event after the last save replays. A delayed send to an actor outside the run's tree is not recorded;
-  jr2 has no such idiom.
+  during `start()` and does not re-arm a row it names. A child stopped during `start()` is stopped with xstate's
+  `cancelAll`, which sees an empty table, and its parent state entered again puts a new child at the same path; so the
+  host resolves each row's actors before `start()` and re-arms a row only on the same actors after it. So a timer fires
+  once, after the time that remained; at once if its deadline passed while the Orchestrator was down, and timers that
+  are all overdue fire in the order they fell due; never if an exit cancelled it, before the save, during `start()` or
+  after the re-arm; and never later than its own delay when the wall clock went backwards. A wall clock that jumped
+  forwards fires it early: only the wall clock survives a process. "Once" is with respect to the saved state: a timer
+  that fired after the last save fires again on restore, as any event after the last save replays. A delayed send to an
+  actor outside the run's tree is not recorded; jr2 has no such idiom.
 - **The re-arm reads an xstate internal** (`system.getSnapshot()._scheduledEvents`, `system.scheduler.schedule`, and
   `system.scheduler.cancel`, wrapped for the length of `start()`; `packages/orchestrator/src/timers.ts`). Raw-xstate
   tests that show xstate itself dropping the timer are the canary for an xstate bump. xstate 6 persists timers in the

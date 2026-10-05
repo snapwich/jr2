@@ -90,6 +90,13 @@ export function pendingTimers(root: AnyActorRef, now = Date.now()): PendingTimer
  * armed yet. So every cancel during `start()` is recorded, and a row it names is not re-armed: a
  * state exit cancels the timer whether it happens during `start()` or after it.
  *
+ * A child stopped during `start()` takes its timers with it, but xstate stops a child with
+ * `scheduler.cancelAll`, which walks the table, and the table is still empty: no cancel is seen.
+ * If its parent state is entered again, a NEW child sits at the same path. So each row's actors are
+ * resolved BEFORE `start()` (the restored tree already holds them), and a row is re-armed only on
+ * the same actors after it. A row of a stopped child then fires into nothing, not into its
+ * replacement.
+ *
  * Remaining time is `deadline - now`, clamped to `[0, delay]`. A deadline that passed while the
  * Orchestrator was down fires at once. A wall clock that went BACKWARDS cannot push a timer past its
  * own delay. A wall clock that jumped forwards fires a timer early: only the wall clock survives a
@@ -100,6 +107,10 @@ export function startAndRearm(root: AnyActorRef, timers: readonly PendingTimer[]
   const scheduler = root.system.scheduler;
   const cancel = scheduler.cancel;
   const cancelled = new Set<string>();
+  const rows = [...timers]
+    // `sort` is stable: equal deadlines keep the order xstate scheduled them in.
+    .sort((a, b) => a.deadline - b.deadline)
+    .map((t) => ({ t, source: refAt(root, t.source), target: refAt(root, t.target) }));
   scheduler.cancel = (source, id) => {
     cancelled.add(keyOf(source, id));
     cancel(source, id);
@@ -109,11 +120,9 @@ export function startAndRearm(root: AnyActorRef, timers: readonly PendingTimer[]
   } finally {
     scheduler.cancel = cancel;
   }
-  // `sort` is stable: equal deadlines keep the order xstate scheduled them in.
-  for (const t of [...timers].sort((a, b) => a.deadline - b.deadline)) {
-    const source = refAt(root, t.source);
-    const target = refAt(root, t.target);
+  for (const { t, source, target } of rows) {
     if (!source || !target || cancelled.has(keyOf(source, t.id))) continue;
+    if (refAt(root, t.source) !== source || refAt(root, t.target) !== target) continue;
     scheduler.schedule(source, target, t.event, clamp(t.deadline - now, t.delay), t.id);
   }
 }
