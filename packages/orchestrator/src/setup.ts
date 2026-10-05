@@ -47,7 +47,7 @@ import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { gate } from "./gate.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
-import { attachInputSchema, attachSeats, attachVocabulary } from "./vocabulary.ts";
+import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } from "./vocabulary.ts";
 
 /**
  * The events jr2's own mechanism delivers into any workflow machine, injected into every jr2Setup
@@ -184,6 +184,7 @@ export function jr2Setup<
     // targetless/actionless transitions — exactly where a typo'd key would hide). Dotted names
     // (`agent.*`, `workspace.*`, `xstate.*`, delayed transitions) are mechanically jr2's/xstate's;
     // `*` is the wildcard descriptor.
+    const handled = new Set<string>();
     const walk = (node: AnyStateMachine["root"]): void => {
       for (const descriptor of node.transitions.keys()) {
         if (descriptor === "*" || descriptor.includes(".")) continue;
@@ -193,16 +194,32 @@ export function jr2Setup<
               `declares (declared: ${[...defs.keys()].join(", ") || "none"}) — a typo, or a missing defineEvent`,
           );
         }
+        handled.add(descriptor);
       }
       for (const child of Object.values(node.states)) walk(child);
     };
     walk(machine.root);
 
+    // The other direction (ADR-0015): a def no state handles is in no derived set, so it is on no
+    // Menu and no Gate — a pick nothing can send and nothing would take.
+    const dead = [...defs.keys()].filter((name) => !handled.has(name));
+    if (dead.length) {
+      throw new Error(
+        `machine "${machine.id}" declares ${dead.map((name) => `"${name}"`).join(", ")}, which no state handles — ` +
+          `a pick no state takes is on no Menu and no Gate: handle it, or drop it from jr2Setup({ events })`,
+      );
+    }
+
+    const idOf = (path: readonly string[]): string => stateAt(machine, path).id;
     attachVocabulary(machine, defs);
     attachSeats(
       machine,
-      derived.seats.map(({ path, ...seat }) => ({ state: stateAt(machine, path).id, ...seat })),
+      derived.seats.map(({ path, ...seat }) => ({ state: idOf(path), ...seat })),
     );
+    attachLoadWarnings(machine, [
+      ...unenteredModes(machine, def.actors ?? {}),
+      ...derived.warnings.map((warning) => warning(idOf)),
+    ]);
     if (inputSchema) attachInputSchema(machine, inputSchema);
     return machine;
   };
@@ -264,6 +281,10 @@ export type Seat = { path: readonly string[]; party: "agent" | "gate"; agent?: s
 
 /** Each name in reach, with the OWNER mark of every writing of it in reach (see below). */
 type Reach = Map<string, Set<string>>;
+/** Each name written on the path from the root: where, and the owner mark of each writing. */
+type Writings = Map<string, Array<{ path: readonly string[]; owner: string }>>;
+/** A load warning, rendered once the built Machine can turn a key path into a state id. */
+type Warning = (idOf: (path: readonly string[]) => string) => string;
 
 /** The owner mark of a writing no party answers for — at or above it, no state invokes an Agent
  * slot or a `gate` — so both kinds may send it. */
@@ -290,7 +311,7 @@ function deriveMenus(
   config: unknown,
   defs: Map<string, EventDef>,
   actors: Record<string, UnknownActorLogic>,
-): { config: unknown; seats: Seat[] } {
+): { config: unknown; seats: Seat[]; warnings: Warning[] } {
   const pick = (reach: Reach, kind: "agent" | "external", self: string): string[] =>
     [...reach]
       .filter(([name, owners]) => {
@@ -303,11 +324,45 @@ function deriveMenus(
   const menus = new Map<string, Set<string>>();
   const menuOf = (agentName: string): string[] => [...(menus.get(agentName) ?? [])].sort();
   const seats: Seat[] = [];
+  // The load warnings this walk can see (ADR-0015), each rendered once the states have ids. Keyed,
+  // so a writing seen from two paths is one warning.
+  const warnings = new Map<string, Warning>();
+  // Which parties each owner mark's state invokes — what a warning names.
+  const parties = new Map<string, { agents: string[]; gate: boolean }>();
+  const partyOf = (mark: string): string => {
+    const { agents, gate } = parties.get(mark)!;
+    return [...agents.map((agent) => `Agent "${agent}"`), ...(gate ? ["a Gate"] : [])].join(" and ");
+  };
 
-  const walk = (node: LooseState, inherited: Reach, path: readonly string[], ownerAbove: string): LooseState => {
+  const walk = (
+    node: LooseState,
+    inherited: Reach,
+    writtenAbove: Writings,
+    path: readonly string[],
+    ownerAbove: string,
+  ): LooseState => {
     const owner = invokesParty(node, actors) ? ownerMark(path) : ownerAbove;
+    if (owner !== ownerAbove) parties.set(owner, partiesOf(node, actors));
     const names: Reach = new Map([...inherited].map(([name, owners]) => [name, new Set(owners)]));
-    for (const name of ownPicks(node)) names.set(name, (names.get(name) ?? new Set<string>()).add(owner));
+    const written: Writings = new Map([...writtenAbove].map(([name, at]) => [name, [...at]]));
+    for (const name of ownPicks(node)) {
+      names.set(name, (names.get(name) ?? new Set<string>()).add(owner));
+      // One name written for two parties on one path: audience says who may SEND it, and xstate
+      // runs the deepest active handler whoever sent it — so while the deeper state is active, the
+      // shallower party's send runs the transition written for the deeper one.
+      for (const above of written.get(name) ?? []) {
+        if (above.owner === owner || above.owner === NOBODY || owner === NOBODY) continue;
+        warnings.set(
+          `two:${name}:${above.path.join(".")}:${path.join(".")}`,
+          (idOf) =>
+            `"${name}" is written on "${idOf(above.path)}" for ${partyOf(above.owner)} and on "${idOf(path)}" for ` +
+            `${partyOf(owner)}: whoever sends it, the deepest active handler runs, so while "${idOf(path)}" is ` +
+            `active ${partyOf(above.owner)}'s "${name}" runs the transition written for ${partyOf(owner)} — give ` +
+            `the two distinct names`,
+        );
+      }
+      written.set(name, [...(written.get(name) ?? []), { path, owner }]);
+    }
 
     let out = node;
     if (node.invoke) {
@@ -325,6 +380,22 @@ function deriveMenus(
           for (const name of modePicks(node, actors))
             reach.set(name, (reach.get(name) ?? new Set<string>()).add(owner));
           const derived = pick(reach, "agent", owner);
+          // A Gate above that takes a writing from this Agent: the Gate's caller owns it, so the
+          // Agent below — which reaches it — cannot send it. Legal, and the one narrowing of the
+          // audience rule an author may not expect.
+          const agent = inv.src;
+          for (const [name, owners] of reach) {
+            if (derived.includes(name) || defs.get(name)?.audience !== undefined) continue;
+            for (const at of written.get(name) ?? []) {
+              if (!owners.has(at.owner) || at.owner === owner || !parties.get(at.owner)?.gate) continue;
+              warnings.set(
+                `gate:${agent}:${path.join(".")}:${name}:${at.path.join(".")}`,
+                (idOf) =>
+                  `Agent "${agent}" on "${idOf(path)}" cannot send "${name}": it is written on "${idOf(at.path)}", ` +
+                  `whose Gate's caller owns it — give the def \`audience: "any"\` for both to send it`,
+              );
+            }
+          }
           const menu = menus.get(inv.src) ?? new Set<string>();
           for (const name of derived) menu.add(name);
           menus.set(inv.src, menu);
@@ -349,13 +420,65 @@ function deriveMenus(
     }
     if (node.states) {
       const states: Record<string, LooseState> = {};
-      for (const [key, child] of Object.entries(node.states)) states[key] = walk(child, names, [...path, key], owner);
+      for (const [key, child] of Object.entries(node.states))
+        states[key] = walk(child, names, written, [...path, key], owner);
       out = { ...(out === node ? node : out), states };
     }
     return out;
   };
 
-  return { config: walk(config as LooseState, new Map(), [], NOBODY), seats };
+  const out = walk(config as LooseState, new Map(), new Map(), [], NOBODY);
+  return { config: out, seats, warnings: [...warnings.values()] };
+}
+
+/**
+ * A mode that nothing enters (ADR-0015): a child of an Agent's state with no invoke, that is not its
+ * parent's initial state and that no transition anywhere in the Machine targets — itself or a state
+ * inside it. Its picks are on the Menu and never allowed. A warning, not a refusal: the Machine is
+ * legal, and a mode left unwired is often work in progress.
+ */
+function unenteredModes(machine: AnyStateMachine, actors: Record<string, UnknownActorLogic>): string[] {
+  type Node = AnyStateMachine["root"];
+  const all: Node[] = [];
+  const collect = (node: Node): void => {
+    all.push(node);
+    for (const child of Object.values(node.states)) collect(child);
+  };
+  collect(machine.root);
+  const targeted = new Set<Node>();
+  for (const node of all) {
+    const transitions = [...node.transitions.values()].flat().concat(node.always ?? []);
+    for (const t of transitions) for (const target of t.target ?? []) targeted.add(target);
+    if (node.type === "compound") for (const target of node.initial.target) targeted.add(target);
+  }
+  // Entered when it, or a state inside it, is targeted; a parallel parent enters every region.
+  const entered = (node: Node): boolean =>
+    targeted.has(node) || node.parent?.type === "parallel" || Object.values(node.states).some(entered);
+  const isAgentState = (node: Node): boolean =>
+    node.invoke.some((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]));
+
+  const out: string[] = [];
+  for (const node of all) {
+    if (!isAgentState(node)) continue;
+    const agent = node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))!.src as string;
+    const descend = (parent: Node): void => {
+      for (const child of Object.values(parent.states)) {
+        if (child.invoke.length > 0) continue;
+        if (!entered(child)) {
+          const picks = [...child.transitions.keys()].filter((key) => !key.includes(".") && key !== "*");
+          out.push(
+            `mode "${child.id}" of Agent "${agent}"'s state "${node.id}" — nothing enters it: no transition ` +
+              `targets it and it is not initial, so its picks${picks.length ? ` (${picks.join(", ")})` : ""} are ` +
+              `on the Menu and never allowed`,
+          );
+          continue;
+        }
+        descend(child);
+      }
+    };
+    descend(node);
+  }
+  return out;
 }
 
 /** The built state node at a key path below the root — what turns a walk's path into a state id. */
@@ -368,6 +491,15 @@ function stateAt(machine: AnyStateMachine, path: readonly string[]): AnyStateMac
 /** A state's own workflow-event keys: dotted names are jr2's or xstate's, `*` is the wildcard. */
 function ownPicks(node: LooseState): string[] {
   return Object.keys(node.on ?? {}).filter((key) => !key.includes(".") && key !== "*");
+}
+
+/** The parties a state invokes: its Agent slots by name, and whether it invokes a `gate`. */
+function partiesOf(node: LooseState, actors: Record<string, UnknownActorLogic>): { agents: string[]; gate: boolean } {
+  const invokes = node.invoke ? (Array.isArray(node.invoke) ? node.invoke : [node.invoke]) : [];
+  return {
+    agents: invokes.flatMap((inv) => (typeof inv?.src === "string" && isAgent(actors[inv.src]) ? [inv.src] : [])),
+    gate: invokes.some((inv) => inv?.src === "gate"),
+  };
 }
 
 /** Does this state invoke a party that sends this Machine's workflow events — an Agent slot or a

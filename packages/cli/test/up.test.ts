@@ -1240,6 +1240,30 @@ test("an OPEN Agent is refused the same way, with the `agents` line that binds t
   assert.deepEqual(w.confirms, [], "and no first-contact ask for a folder that cannot deploy");
 });
 
+test("up prints who may send what, per state, and the load warnings — a warning converges on (ADR-0015)", async () => {
+  const root = await mkInstance(`export default { name: "myinst" };\n`);
+  // A Gate on the parent takes `abandon` from the Agent below: legal, and warned.
+  await writeFile(
+    join(root, "workflows", "job.ts"),
+    `import { z } from ${JSON.stringify(import.meta.resolve("zod"))};\n` +
+      `import { agent, defineEvent, jr2Setup } from ${JSON.stringify(KIT_SRC)};\n` +
+      `const finish = defineEvent({ name: "finish", input: z.object({}) });\n` +
+      `const abandon = defineEvent({ name: "abandon", input: z.object({}) });\n` +
+      `export const machine = jr2Setup({ events: [finish, abandon], actors: { coder: agent({ model: "p/m", instructions: "i" }) } })\n` +
+      `  .createMachine({ id: "job", initial: "job", states: {\n` +
+      `    job: { invoke: { src: "gate", id: "operator" }, on: { abandon: "gaveUp" }, initial: "working", states: {\n` +
+      `      working: { invoke: { src: "coder", input: { prompt: "go" } }, on: { finish: "#job.done" } } } },\n` +
+      `    gaveUp: { type: "final" }, done: { type: "final" } } });\n`,
+  );
+  const w = mkWorld(root);
+  await up(["--yes"], w.io);
+  const err = w.err.join("\n");
+  assert.match(err, /seats: workflow "job" — who may send what, per state \(ADR-0015\)/);
+  assert.match(err, /\n {2}job\.job gate: \[abandon\]\n+ {2}job\.job\.working agent:coder: \[finish\]/);
+  assert.match(err, /warning: workflow "job": Agent "coder" on "job\.job\.working" cannot send "abandon"/);
+  assert.match(err, /converged/, "a warning converges on");
+});
+
 test("a bound Repo is narrated as the boot's to create; the token env vars git.credentials names ride the Secret", async () => {
   // `jr2 up` clones nothing (ADR-0051): the Orchestrator creates a Repo resource per bound identity
   // at boot and the cache agent clones on first need, on the node that needs it. What the

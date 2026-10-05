@@ -28,7 +28,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromPromise, setup, type InputFrom } from "xstate";
 import { z } from "zod";
-import { defineEvent } from "@jr2/agent-protocol";
 import { isAgent } from "../src/agent.ts";
 import { customize } from "../src/customize.ts";
 import { open } from "../src/parts.ts";
@@ -39,16 +38,15 @@ import { workspace, type WorkspaceMachine, type Workspaced } from "../src/worksp
 
 const opus = "anthropic/claude-opus-x";
 const haiku = "anthropic/claude-haiku-x";
-const done = defineEvent({ name: "done", input: z.object({}) });
 
 /** The Machine a package exports: two Agent slots, one composed child, one plain actor. */
 const child = jr2Setup({
-  events: [done],
+  events: [],
   actors: { scribe: agent({ model: haiku, instructions: "s" }) },
 }).createMachine({ id: "child", initial: "idle", states: { idle: {} } });
 
 const research = jr2Setup({
-  events: [done],
+  events: [],
   actors: {
     coder: agent({ model: haiku, instructions: "c" }),
     reviewer: agent({ model: haiku, instructions: "r" }),
@@ -98,7 +96,7 @@ function refusedChildren(): void {
 
 const door = z.object({ topic: z.string() });
 const body = jr2Setup({
-  events: [done],
+  events: [],
   types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, "target"> },
   actors: { coder: agent({ model: haiku, instructions: "c" }) },
 }).createMachine({ id: "body", context: {}, initial: "idle", states: { idle: {} } });
@@ -143,7 +141,7 @@ function refusedThroughTheWrapper(): void {
 // offer this Machine's OWN Agents nowhere and the child's everywhere — a compile-time answer the
 // runtime (which reads `wrapperBodyOf`) would then contradict.
 const namesake = jr2Setup({
-  events: [done],
+  events: [],
   actors: { coder: agent({ model: haiku, instructions: "c" }), body: child, worker: fromPromise(async () => 1) },
 }).createMachine({ id: "namesake", initial: "idle", states: { idle: {} } });
 
@@ -234,7 +232,7 @@ function refusedRepos(): void {
 // composer's own keys — as many as they write — in the same three forms, and still refuses a
 // value that is none of them.
 const anySlots = jr2Setup({
-  events: [done],
+  events: [],
   types: {} as { context: {}; input: Workspaced<z.infer<typeof door>, string> },
   actors: { coder: agent({ model: haiku, instructions: "c" }) },
 }).createMachine({ id: "anySlots", context: {}, initial: "idle", states: { idle: {} } });

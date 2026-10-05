@@ -106,6 +106,20 @@ export function seatLine(seat: MachineSeat): string {
   return `${seat.state} ${party}: [${seat.names.join(", ")}]`;
 }
 
+const loadWarnings = new WeakMap<MachineKey, string[]>();
+
+/** Attach the load warnings `jr2Setup.createMachine` found (ADR-0015). jr2-internal. */
+export function attachLoadWarnings(machine: AnyStateMachine, warnings: string[]): void {
+  loadWarnings.set(machine.config, warnings);
+}
+
+/** What the build found legal and suspect — a mode nothing enters, a pick a Gate above takes from
+ * the Agent below, one name written for two parties on one path. `jr2 up` prints them; the
+ * Machine's doc carries them. Empty for a Machine not built by `jr2Setup`. */
+export function loadWarningsOf(machine: AnyStateMachine): string[] {
+  return loadWarnings.get(machine.config) ?? [];
+}
+
 /**
  * What the HOST adds to the input of the machine a run STARTS with, beside the door
  * (`RunHost.start`). One field today: the run's seed Instance ID, minted with the run and

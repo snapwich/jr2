@@ -189,7 +189,7 @@ test("a slot an AUTHOR spelled `body` is an ordinary child — transparency foll
   // never the spelling. Stepping through this Machine would retune the CHILD's Agents and refuse
   // the host's own — which is what its author named.
   const host = jr2Setup({
-    events: [done],
+    events: [],
     actors: { coder: agent(coderDef), body: research(), worker: fromPromise(async () => 1) },
   }).createMachine({ id: "host", initial: "idle", states: { idle: { invoke: { src: "body" } } } });
 

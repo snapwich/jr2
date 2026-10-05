@@ -16,6 +16,7 @@ import { agentActorWith } from "../src/actor.ts";
 import { bindRun, RegistrationTable } from "../src/registration.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
+import { loadWarningsOf } from "../src/vocabulary.ts";
 import { admittedIid, coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const run_tests = defineEvent({ name: "run_tests", description: "Run the test suite.", input: z.object({}) });
@@ -331,7 +332,7 @@ test("edge: one name, two schemas is impossible — a vocabulary holds one def p
   );
 });
 
-test("edge: a mode nothing enters still puts its picks on the Menu — SILENT, never Allowed", async () => {
+test("edge: a mode nothing enters still puts its picks on the Menu, never Allowed — and the build warns", async () => {
   const mock = new MockFlueClient();
   const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
@@ -356,6 +357,7 @@ test("edge: a mode nothing enters still puts its picks on the Menu — SILENT, n
   const { actor } = hostless(machine);
   await waitFor(() => mock.admits.length === 1);
   assert.deepEqual(mock.admits[0]!.menu, ["run_tests", "submit"], "built, and `submit` is on the Menu");
+  assert.match(loadWarningsOf(machine).join("\n"), /mode "wf\.ticket\.orphan".*nothing enters it/);
   actor.stop();
 });
 

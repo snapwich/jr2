@@ -65,6 +65,7 @@ import {
   isSshUrl,
   loadConfig,
   loadWorkflows,
+  machineBodies,
   matchCredential,
   partsOf,
   harnessTokenDigest,
@@ -72,6 +73,8 @@ import {
   formatMemory,
   resolveSize,
   sandboxToken,
+  seatLine,
+  serializeMachine,
   splitSize,
   type CarriedAgent,
   type CarriedImage,
@@ -231,6 +234,21 @@ export async function up(args: string[], io: Io): Promise<number> {
           `registered: export const machine = ${customizeLine("<import>", path, slot, part)}  (${adr})`,
       );
       return 1;
+    }
+  }
+  // Who may send what, per state (ADR-0015): the audience rule's answer for each registered
+  // Machine and every Machine it composes, as its doc carries it — so an author reads who holds a
+  // pick before a run finds out. Then what the build found legal and suspect: a warning, never a
+  // refusal (the refusals threw when the Machine loaded).
+  for (const w of workflows) {
+    const bodies = machineBodies(serializeMachine(w.name, w.machine));
+    const seats = bodies.flatMap((body) => body.seats.map(seatLine));
+    if (seats.length) {
+      activity(io, `seats: workflow "${w.name}" — who may send what, per state (ADR-0015)`);
+      for (const line of seats) activity(io, `  ${line}`);
+    }
+    for (const body of bodies) {
+      for (const warning of body.warnings) activity(io, `warning: workflow "${w.name}": ${warning}  (ADR-0015)`);
     }
   }
   // The Size (ADR-0060): every `workspace()` a registered Machine composes, resolved down its chain

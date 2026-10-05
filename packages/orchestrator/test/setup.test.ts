@@ -333,10 +333,9 @@ test("picks written BELOW the invoking state are its modes' picks: derived, neve
 });
 
 test("a Turn with no Menu at all still builds — nothing below it claims a pick (ADR-0015)", () => {
-  const finish = defineEvent({ name: "finish", input: z.object({}) });
   const machine = jr2Setup({
     types: {} as { context: Record<string, never> },
-    events: [finish],
+    events: [],
     actors: { coder: slot(new MockFlueClient()) },
   }).createMachine({
     id: "wf",
