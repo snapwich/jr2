@@ -53,7 +53,7 @@ import {
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import type { HarnessRestarts, MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
-import { agentAddress, continuedIid, mayMove, resolveAccepts, runBindingOf } from "./registration.ts";
+import { agentAddress, continuedIid, allowedPicks, resolveAccepts, runBindingOf } from "./registration.ts";
 import type { NoticeScope } from "./notices.ts";
 import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice } from "./wire.ts";
 
@@ -405,8 +405,9 @@ function isLostConversation(err: unknown): boolean {
  * The nudge (ADR-0006, absorbed here by ADR-0016). It names no picks: the Harness writes the Turn
  * part after it, stating the Allowed picks in the model's own tool names and narrowed by the guards
  * (ADR-0029, ADR-0062) — a list here would be a second one, in other names, that a closed guard
- * makes wrong. Its first sentence stays true after a pick that left the Turn open: the ask-again
- * rule asks whenever picks are still allowed after a settle, picked or not.
+ * makes wrong. Its first sentence stays true after a pick that left the Turn open, and for the
+ * wake: the ask-again rule asks whenever picks are allowed after a settle, picked or not, at once
+ * or when they open.
  */
 const NUDGE_PROMPT =
   `Your previous turn ended, and the workflow is still waiting for your pick. ` +
@@ -769,6 +770,37 @@ export function agentActorWith(
       });
     };
 
+    // The Allowed picks NOW (ADR-0029), read as the surface reads them: one list for the surface,
+    // the receipts, the nudge and the wake.
+    const allowedNow = (): string[] => allowedPicks({ defs, menu, invoker: self._parent });
+    // Resolves with the Allowed picks the first time they are not empty — read on every snapshot of
+    // the invoking Machine, so a Gate's answer, an outside event, a settled child or a timer each
+    // count — or with `[]` once this actor stops. Its own disposer, so `abandon` ends the wait.
+    const picksOpen = (): Promise<string[]> =>
+      new Promise((resolve) => {
+        let done = false;
+        let sub: { unsubscribe(): void } | undefined;
+        const finish = (allowed: string[]): void => {
+          if (done) return;
+          done = true;
+          const at = disposers.indexOf(dispose);
+          if (at >= 0) disposers.splice(at, 1);
+          sub?.unsubscribe();
+          resolve(allowed);
+        };
+        const dispose = (): void => finish([]);
+        const check = (): void => {
+          if (stopped) return finish([]);
+          const allowed = allowedNow();
+          if (allowed.length > 0) finish(allowed);
+        };
+        disposers.push(dispose);
+        check();
+        if (done) return;
+        sub = self._parent?.subscribe({ next: check, error: dispose, complete: dispose });
+        if (sub === undefined) finish([]);
+      });
+
     // Down-channel: interrupts only (ADR-0002 split-channel model).
     receive((event) => {
       if (event.type === "CANCEL") abandon();
@@ -861,16 +893,25 @@ export function agentActorWith(
             admission = await admitTurn({ ...framed, attach: undefined, instanceId: currentIid });
             continue;
           }
-          // THE ASK-AGAIN RULE (ADR-0016), one rule with two seats — the Harness's is its step
-          // boundary (`between-steps.ts`): while the Turn is open, a model that stops with Allowed
-          // picks NOT EMPTY is asked again. Inside its Submission when the list changed since the
-          // model last read it (the restated Turn part keeps the engine's loop going); else here, by
-          // a nudge Submission after it settles. An open Turn whose Allowed picks are empty is not
-          // asked: it waits on something else (a Gate, a child's invoke, a timer), or it was never
-          // meant to pick. A Turn whose pick left the Agent's state is over: the invoke was stopped.
+          // THE ASK-AGAIN RULE (ADR-0016): while the Turn is open, a model that stopped is asked again
+          // once its Allowed picks are not empty — and never with an empty list. One rule, three
+          // moments:
+          //   - inside the Submission, the Harness's step boundary (`between-steps.ts`) restates the
+          //     Turn part when the list changed since the model last read it; that message keeps the
+          //     engine's loop going, and costs no Submission;
+          //   - after it settles with picks LEFT, the NUDGE, here;
+          //   - after it settles with NONE left (the Turn waits on a Gate, a child's invoke, a timer),
+          //     the WAKE: this actor watches the invoking Machine and asks the first time a pick
+          //     opens. A Turn that was never meant to pick waits until its state exits.
+          // The nudge and the wake are one Submission kind — the same text, the same conversation,
+          // the same budget — so a Machine that opens and closes picks under a stopped model cannot
+          // ask it without bound. A Turn whose pick left the Agent's state is over: the invoke was
+          // stopped, and nothing is asked.
           if (stopped) return;
-          const allowed = [...defs.keys()].filter((name) => mayMove(self._parent, name));
-          if (allowed.length === 0) return;
+          let allowed = allowedNow();
+          const woken = allowed.length === 0;
+          if (woken) allowed = await picksOpen();
+          if (stopped || allowed.length === 0) return;
           if (nudges >= nudgeBudget) {
             fault(`agent completed its turn without a pick that ends it; still allowed: ${allowed.join(", ")}`);
             return;
@@ -880,7 +921,7 @@ export function agentActorWith(
             kind: "retry",
             child: self._parent?.id ?? self.id,
             attempt: nudges,
-            reason: "no-signal nudge",
+            reason: woken ? "picks allowed again" : "no-signal nudge",
           });
           admission = await admitTurn(
             {

@@ -145,8 +145,9 @@ matter:
   synchronous. Should that stop holding, it reads `false` — today's behavior, never a false claim. The guarantee no
   longer depends on it at all.
 - **The nudge (ADR-0016) answers the opposite failure** — a model that stops while its Turn is still open with picks
-  left. It reads the Allowed picks after the Submission settles, so a pick that kept the Turn open can be followed by a
-  nudge, and a pick that ended it never is: the abort and the nudge cannot fire against each other.
+  left. It reads the Allowed picks after the Submission settles — or, if none are left then, the first time they open
+  while the state is active (the wake) — so a pick that kept the Turn open can be followed by a nudge, and a pick that
+  ended it never is: the abort and the nudge cannot fire against each other.
 - **Non-determinism dictates how this is tested.** "Did it stop calling?" proves nothing when a well-behaved agent stops
   on its own. The `@kind` tier asserts the **settlement outcome**: after a settling delivery the submission must settle
   `aborted`, and a `continue` re-invocation must settle `completed` rather than being swallowed by its predecessor's

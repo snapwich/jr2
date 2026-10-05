@@ -57,9 +57,10 @@ whole history again. It also left the history calling tools the request no longe
   read or said after the Turn ended or after an abort. The Harness knows the Turn ended from a pick's answer
   (`turnComplete`, or a 404), not only from a read: under `continue: true` the next state re-registers the same address
   before the abort lands, so a read there would answer for the next Turn. An empty list is not restated to a model that
-  stopped (ADR-0016's ask-again rule). The comparison is engine-neutral (`between-steps.ts`); only the placement is the
-  engine's — pi's between-steps input (`steer`). An engine with no such input falls back to the next receipt. No route
-  is added and no cap is set; the Orchestrator already serves the truth on `GET /agents/:iid/surface`.
+  stopped; the Orchestrator's wake asks it when a pick opens (ADR-0016's ask-again rule). The comparison is
+  engine-neutral (`between-steps.ts`); only the placement is the engine's — pi's between-steps input (`steer`). An
+  engine with no such input falls back to the next receipt. No route is added and no cap is set; the Orchestrator
+  already serves the truth on `GET /agents/:iid/surface`.
 - **Presentation stays in the Harness's neutral layer.** `menu.ts` renders the Allowed-picks text and every receipt; a
   presenter (`menu-tools.ts` for pi) only maps Menu items to its tool API and places the text it is handed. A second
   harness — one that takes MCP tools fixed per session and the prompt as text — needs a presenter, not a second Menu.

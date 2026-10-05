@@ -42,13 +42,13 @@ function key(allowed: readonly string[]): string {
  * (`readAllowed`: bounded, one attempt, every failure is silence — the next boundary asks again) and
  * says the new list only when it differs from the one the model read — then records it as read.
  *
- * THE ASK-AGAIN RULE (ADR-0016), one rule with two seats — the Orchestrator's is its nudge: while
- * the Turn is open, a model that STOPS with Allowed picks not empty is asked again. Here, inside its
- * Submission, when the list changed since it last read it: an appended message keeps the engine's
- * loop going. So when the step ended with no tool call (`stopped`) and the list is now EMPTY,
- * nothing is said — a restatement there buys a request in which the model can pick nothing. The
- * Submission ends, and nothing asks the model again (ADR-0016). A step that ran tools goes on
- * anyway, so any change is said there, an empty list included.
+ * THE ASK-AGAIN RULE (ADR-0016) — the Orchestrator holds its other moments, the nudge and the
+ * wake: while the Turn is open, a model that STOPS is asked again once its Allowed picks are not
+ * empty. Here, inside its Submission, when the list changed since it last read it: an appended
+ * message keeps the engine's loop going. So when the step ended with no tool call (`stopped`) and
+ * the list is now EMPTY, nothing is said — a restatement there buys a request in which the model
+ * can pick nothing. The Submission ends, and the Orchestrator's wake asks the model when a pick
+ * opens. A step that ran tools goes on anyway, so any change is said there, an empty list included.
  */
 export async function between(
   opts: MenuOptions,

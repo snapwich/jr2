@@ -152,6 +152,18 @@ export function mayMove(invoker: AnyActorRef | undefined, type: string): boolean
   return readPayload;
 }
 
+/**
+ * An Agent's Allowed picks now (ADR-0029): the invoking state's derived set, narrowed to what the
+ * invoking Machine may take ({@link mayMove}), in Menu order — so the list reads in the order the
+ * tools block does. The ONE reading of the list: the surface, every receipt, the nudge and the wake
+ * all ask here, so no two of them can disagree about what the Turn may pick (ADR-0016).
+ */
+export function allowedPicks(reg: Pick<Registration, "defs" | "menu" | "invoker">): string[] {
+  const ordered = new Set([...(reg.menu ?? reg.defs).keys()].filter((name) => reg.defs.has(name)));
+  for (const name of reg.defs.keys()) ordered.add(name);
+  return [...ordered].filter((name) => mayMove(reg.invoker, name));
+}
+
 /** Delivery target absent (unknown address, settled run, exited state) — the one catch point. */
 export class UnknownAddressError extends Error {}
 /** Delivery body rejected (unaccepted name, or payload failing the named schema). An Agent's

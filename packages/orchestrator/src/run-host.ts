@@ -27,10 +27,10 @@ import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation } from "./wire.ts";
 import {
   agentAddress,
+  allowedPicks,
   bindRun,
   EventValidationError,
   gateAddress,
-  mayMove,
   RegistrationTable,
   UnknownAddressError,
   wouldMove,
@@ -261,12 +261,9 @@ function menuOf(reg: Registration): Map<string, EventDef> {
   return reg.menu ?? reg.defs;
 }
 
-/** The Allowed picks (ADR-0029): the invoking state's derived set, narrowed to what its guards would
- * accept now (`mayMove`), in Menu order — so the list reads in the order the tools block does. */
+/** The Allowed picks (ADR-0029), as the Agent actor's nudge and wake read them too. */
 function allowedOf(reg: Registration): string[] {
-  const ordered = new Set([...menuOf(reg).keys()].filter((name) => reg.defs.has(name)));
-  for (const name of reg.defs.keys()) ordered.add(name);
-  return [...ordered].filter((name) => mayMove(reg.invoker, name));
+  return allowedPicks(reg);
 }
 
 /** One open gate as external callers discover it (`GET /runs/:id` — ADR-0011): the accepted
