@@ -22,5 +22,25 @@
   "noticed/off": {
     "passed": 10,
     "trials": 10
+  },
+  "mode-follow/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "mode-refusal/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "push-follow/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "push-no-refusal/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "ticket-modes/on": {
+    "passed": 1,
+    "trials": 1
   }
 }
