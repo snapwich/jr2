@@ -133,6 +133,37 @@ test("onAllowed hears every receipt's and every refusal's Allowed picks — what
   assert.deepEqual(heard, [["revise", "submit"], ["abandon"]], "a receipt with no `allowed` (skew) says nothing");
 });
 
+test("onTurnOver hears a receipt that ended the Turn and a pick's 404 — never a receipt that left it open", async () => {
+  let over = 0;
+  let reply: Response = json(200, surface(["submit"]));
+  const { options } = opts(() => reply, { onTurnOver: () => void over++ });
+  const pick = (await readMenu(options, "i"))!.menu.find((item) => item.event === "submit")!;
+
+  reply = json(200, {
+    delivered: true,
+    event: "submit",
+    moved: true,
+    turnComplete: false,
+    allowed: [],
+    deliveryId: "d",
+  });
+  await pick.pick({});
+  assert.equal(over, 0, "an open Turn");
+  reply = json(200, {
+    delivered: true,
+    event: "submit",
+    moved: true,
+    turnComplete: true,
+    allowed: [],
+    deliveryId: "d",
+  });
+  await pick.pick({});
+  assert.equal(over, 1, "turnComplete");
+  reply = json(404, { error: "no live registration" });
+  await assert.rejects(pick.pick({}), /this turn is over/);
+  assert.equal(over, 2, "no surface");
+});
+
 test("restatedTurnPart: an empty list reads as the receipt's 'none' — the same words the model already knows", () => {
   assert.match(restatedTurnPart([]), /Allowed now: none — the workflow's current state accepts no pick yet/);
 });

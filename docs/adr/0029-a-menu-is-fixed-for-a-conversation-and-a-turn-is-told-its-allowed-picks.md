@@ -49,7 +49,9 @@ whole history again. It also left the history calling tools the request no longe
   appends one message before the next model request: "The workflow's state changed since you last read the Allowed
   picks. Allowed now: …", in a `<jr2-turn>` block. The Agent's own pick is never restated, because its receipt already
   told the model. The read is one bounded attempt and a failure is silence; the next boundary asks again. Nothing is
-  said after the Turn ended (the surface is gone) or after an abort, and an empty list is not restated to a model that
+  read or said after the Turn ended or after an abort. The Harness knows the Turn ended from a pick's answer
+  (`turnComplete`, or a 404), not only from a read: under `continue: true` the next state re-registers the same address
+  before the abort lands, so a read there would answer for the next Turn. An empty list is not restated to a model that
   stopped (ADR-0016's ask-again rule). The comparison is engine-neutral (`between-steps.ts`); only the placement is the
   engine's — pi's between-steps input (`steer`). An engine with no such input falls back to the next receipt. No route
   is added and no cap is set; the Orchestrator already serves the truth on `GET /agents/:iid/surface`.

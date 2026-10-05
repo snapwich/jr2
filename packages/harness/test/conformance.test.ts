@@ -899,6 +899,31 @@ test("step boundary: nothing is said once the Turn is over — the surface is go
   assert.deepEqual(provider.calls.map(pushesIn), [0, 0, 0]);
 });
 
+test("step boundary: nothing is read or said after a pick's receipt ended the Turn — even while the address answers for the NEXT Turn (`continue: true`)", async () => {
+  // Under `continue: true` the next state re-registers the SAME address before the abort lands: the
+  // surface stays live and serves the next Turn's Allowed picks. The receipt's `turnComplete` is the
+  // Harness's own fact that this Turn is over; a read after it would steer the next Turn's picks
+  // into this Submission and mark the next Turn's notices as read.
+  provider.reset([
+    { toolCall: { id: "p1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+    { text: "Still here." },
+  ]);
+  sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
+  let reads = 0;
+  sandbox.surfaceByRead((read) => {
+    reads = read;
+    return surfaceAllowing(MODES_MENU, read <= 1 ? CODING : REVIEWING);
+  });
+  sandbox.answerWith(() => ({ moved: true, turnComplete: true, allowed: [] }));
+  const iid = "conf/push-over-live";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.deepEqual(provider.calls.map(pushesIn), [0, 0], "no restatement after the Turn-ending receipt");
+  assert.equal(reads, 1, "the Turn's own read only: no boundary read after the receipt");
+});
+
 test("step boundary: an abort that lands during the boundary read says nothing — and nothing stale rides into the next Submission (ADR-0024)", async () => {
   provider.reset([bashCall("w1", "echo one"), { stall: true }]);
   sandbox.reset(surfaceAllowing(MODES_MENU, CODING));

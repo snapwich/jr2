@@ -123,7 +123,15 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     ...deps.menu,
     toolName: menuToolName,
     onAllowed: (allowed) => told.heard(allowed),
+    onTurnOver: () => {
+      turn.over = true;
+    },
   };
+  /** Per Submission: a pick's answer said the Turn is over (`turnComplete`, or a 404). From then on
+   * the step boundary reads nothing — under `continue: true` the next state re-registers the SAME
+   * address before the abort lands, so a read would answer for the NEXT Turn, and steer the NEXT
+   * Turn's picks into this Submission. Reset when each Submission starts. */
+  const turn = { over: false };
   /** The runaway watch (ADR-0035), per Submission — reset when each turn starts. The
    * once-per-conversation `tool_call` hook reads it through this seat, like `current.definition`. */
   const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
@@ -135,6 +143,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     watch.streak = 0;
     watch.signature = "";
     watch.tripped = "";
+    turn.over = false;
     // This Submission's Frame and dials layer over the definition it carries (ADR-0018/0049/0057).
     // Read HERE, per Submission, so one `continue` conversation can queue turns at different
     // settings and in different worktrees — the `setModel`/`setThinkingLevel` reconciliation below
@@ -186,9 +195,12 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       // A subscriber that throws fails the run, so this one never throws. It says nothing to a Turn
       // that is ending: a steer that missed its drain would ride into the conversation's NEXT
       // Submission (pi drains the queue first thing), so both ends are checked again after the read.
+      // A Turn is ending once a runaway trips, the run's signal aborts, or a pick's answer said the
+      // Turn is over — the last is the Harness's own fact, and the only one that never races the
+      // Orchestrator's abort.
       harness.subscribe(async (event) => {
         if (event.type !== "turn_end") return;
-        const live = () => !watch.tripped && !current.signal.aborted;
+        const live = () => !watch.tripped && !current.signal.aborted && !turn.over;
         if (!live()) return;
         // A step with no tool result is the model stopping: the ask-again rule (ADR-0016).
         const stopped = event.toolResults.length === 0;

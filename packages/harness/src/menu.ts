@@ -115,6 +115,10 @@ export type MenuOptions = {
    * model is about to read it. `between-steps.ts` keeps the last list the model read, so a change it
    * already read is never restated. */
   onAllowed?: (allowed: string[]) => void;
+  /** Hears that a pick's answer ended the Turn — a receipt's `turnComplete`, or a 404 (no surface).
+   * `between-steps.ts` then reads nothing more for that Submission: under `continue: true` the next
+   * state re-registers the SAME address, so a later read could answer for the NEXT Turn. */
+  onTurnOver?: () => void;
 };
 
 /**
@@ -360,7 +364,10 @@ async function deliver(
     throw new Error(`the pick never reached the Orchestrator (${transportDetail(err)}) — try it again`, { cause: err });
   }
   await unreachable(res);
-  if (res.status === 404) throw new NoSurfaceError(`no live surface for agent "${instanceId}" — this turn is over`);
+  if (res.status === 404) {
+    opts.onTurnOver?.();
+    throw new NoSurfaceError(`no live surface for agent "${instanceId}" — this turn is over`);
+  }
   if (res.status === UNAVAILABLE) {
     throw new Error(
       `the Orchestrator is unavailable (${await errorOf(res)}), so the pick was not taken — try it again`,
@@ -372,6 +379,7 @@ async function deliver(
   })) as DeliveryReceipt;
   // Absent is not empty (ADR-0029's skew): an older Orchestrator's receipt carries no list to hear.
   if (Array.isArray(receipt.allowed)) opts.onAllowed?.(receipt.allowed);
+  if (receipt.turnComplete === true) opts.onTurnOver?.();
   return receipt;
 }
 
