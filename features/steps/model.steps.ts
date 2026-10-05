@@ -444,10 +444,26 @@ const modeRefusal: Driver = async (world, input) => {
   };
 };
 
+/** The `mode-stop` workflow's modes, each by the picks it allows and where each pick goes. */
+const MODE_STOP: Record<string, Record<string, string>> = {
+  drafting: { ask_review: "reviewing" },
+  reviewing: { revise: "drafting", submit: "submitted" },
+};
+
+/** The `mode-stop` mode active after `calls`, replayed from `drafting`: an allowed pick moves the
+ * mode; a pick the mode does not allow is refused and moves nothing. */
+function modeAfter(calls: ReadonlyArray<{ call: string }>): string {
+  let mode = "drafting";
+  for (const { call } of calls) mode = MODE_STOP[mode]?.[call] ?? mode;
+  return mode;
+}
+
 /**
  * mode-stop (ADR-0016's ask-again rule): a model that stopped after `ask_review` — the Turn open,
- * picks still allowed — is nudged, and its first Menu call after the nudge is an allowed pick. A
- * model that picked straight through never stopped (`void`).
+ * picks still allowed — is nudged, and its first Menu call after the nudge is a pick the mode
+ * active at the nudge allows. The model may change mode before it stops (`ask_review` then
+ * `revise` stops in `drafting`), so that mode is replayed from the calls before the nudge. A model
+ * that picked straight through never stopped (`void`).
  */
 const modeStop: Driver = async (world, input) => {
   const runId = await startRun(world, "mode-stop", input);
@@ -457,9 +473,10 @@ const modeStop: Driver = async (world, input) => {
   const asked = said.findIndex((s) => "call" in s && s.call === "ask_review");
   const nudged = asked === -1 ? -1 : said.findIndex((s, i) => i > asked && isNudge(s));
   const next = nudged === -1 ? undefined : menuCalls(said, menu, nudged)[0]?.call;
+  const allowed = nudged === -1 ? {} : (MODE_STOP[modeAfter(menuCalls(said.slice(0, nudged), menu))] ?? {});
   return {
     runId,
-    measured: next === "revise" || next === "submit",
+    measured: next !== undefined && next in allowed,
     finished: FINISHED["mode-stop"]!(last),
     ...(nudged === -1 ? { void: true } : {}),
     note: `said ${told(said)}; ended ${last.status}/${String(last.value)}`,
@@ -472,7 +489,9 @@ function gateNamed(s: Status, id: string): OpenGate | undefined {
 }
 
 /** Wait until the Turn whose prompt carries `marker` has printed and what follows it satisfies
- * `until`; the last read either way (empty while the prompt has not printed). */
+ * `until`; the last read either way (empty while the prompt has not printed). A Sandbox pod is
+ * reaped once its run settles: when a read fails after one succeeded, the pod's log is gone and
+ * the last read is the whole of what it printed. */
 async function saidUntil(
   world: E2EWorld,
   agent: string,
@@ -482,8 +501,16 @@ async function saidUntil(
   source = INSTANCE_LOG,
 ): Promise<{ hit: boolean; said: Said[] }> {
   const deadline = Date.now() + ms;
+  let read: Said[] | undefined;
   for (;;) {
-    const said = await saidAfter(world, agent, marker, source);
+    let said: Said[] | undefined;
+    try {
+      said = await saidAfter(world, agent, marker, source);
+    } catch (err) {
+      if (read === undefined) throw err;
+      return { hit: false, said: read };
+    }
+    read = said;
     if (said !== undefined && until(said)) return { hit: true, said };
     if (Date.now() > deadline) return { hit: false, said: said ?? [] };
     await sleep(500);
@@ -566,8 +593,22 @@ const pushFollow: Driver = async (world, input) => {
     };
   }
   await sendToGate(world, runId, desk.gate, "approve");
-  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const said = (await saidAfter(world, "coder", input.marker, source)) ?? [];
+  // The Sandbox is reaped once the run settles, and its log with it: read the conversation while
+  // the run goes on, until a Menu call follows the restated Turn part or the pod is gone.
+  const [{ said }, { last }] = await Promise.all([
+    saidUntil(
+      world,
+      "coder",
+      input.marker,
+      (s) => {
+        const at = s.findIndex(isRestatement);
+        return at !== -1 && menuCalls(s, PUSH_MENU, at).length > 0;
+      },
+      TRIAL_MS,
+      source,
+    ),
+    waitFor(world, runId, settled, TRIAL_MS),
+  ]);
   const ledger = (last.context.output?.picks ?? []) as string[];
   const approved = ledger.indexOf(APPROVED);
   if (approved !== 0) {
