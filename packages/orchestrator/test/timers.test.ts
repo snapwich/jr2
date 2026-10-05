@@ -109,9 +109,15 @@ test("raw xstate: the system's `snapshot.scheduler` seam is not wired — passin
 
 test("raw xstate + pendingTimers: a timer is recorded with its absolute deadline, JSON-safe", async () => {
   const now = 1_000_000;
+  // The wall-clock window around xstate's own stamp and the read, so the bound holds however the
+  // event loop schedules the sleep (a timer may fire a millisecond early on `Date.now()`).
+  const before = Date.now();
   const actor = createActor(waiting).start();
+  const started = Date.now();
   await sleep(20);
+  const read = Date.now();
   const timers = pendingTimers(actor, now);
+  const after = Date.now();
   actor.stop();
   assert.equal(timers.length, 1);
   const [t] = timers as [PendingTimer];
@@ -125,8 +131,11 @@ test("raw xstate + pendingTimers: a timer is recorded with its absolute deadline
       delay: DELAY,
     },
   );
-  // Read at `now`, 20 ms after xstate scheduled it: what remains, on the host's clock.
-  assert.ok(t.deadline > now + DELAY - 20 - SLACK && t.deadline <= now + DELAY - 20, `deadline ${t.deadline}`);
+  // Read at `now`, some 20 ms after xstate scheduled it: what remains, on the host's clock.
+  assert.ok(
+    t.deadline >= now + DELAY - (after - before) && t.deadline <= now + DELAY - (read - started),
+    `deadline ${t.deadline}, window ${after - before} ms, slept ${read - started} ms`,
+  );
   assert.deepEqual(JSON.parse(JSON.stringify(timers)), timers);
 });
 
