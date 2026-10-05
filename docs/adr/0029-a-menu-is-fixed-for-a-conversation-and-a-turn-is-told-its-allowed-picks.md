@@ -26,9 +26,11 @@ whole history again. It also left the history calling tools the request no longe
   conversation's id (ADR-0057). `jr2Setup.createMachine` derives it in ADR-0015's walk, in a fixed order, so it is
   byte-stable for every Turn of the conversation and for every fresh conversation of that Agent. The descriptions are
   the event defs' own and do not vary by state.
-- **What one Turn may pick is its Allowed picks**: the invoking state's derived set, narrowed to what its guards would
-  currently accept. The surface serves both (`GET /agents/:iid/surface` → `menu` and `allowed`); the Harness presents
-  `menu` as the tools block and states `allowed` in the Briefing's Turn part, after the Frame's prompt
+- **What one Turn may pick is its Allowed picks**: the invoking state's derived set (its own, its ancestors' and its
+  modes' picks — ADR-0015), narrowed to what the live Machine would currently accept. Read off the live snapshot, they
+  follow the active mode as well as the guards; the Menu stays byte-identical in every mode. The surface serves both
+  (`GET /agents/:iid/surface` → `menu` and `allowed`); the Harness presents `menu` as the tools block and states
+  `allowed` in the Briefing's Turn part, after the Frame's prompt
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). It rides the newest message, so it never
   touches the cached prefix.
 - **The Orchestrator enforces, at delivery, and only there.** A pick outside the invoking state's derived set is refused
@@ -91,8 +93,9 @@ block was not perfect either: once the model invented a tool it had never been g
 
 ## Consequences
 
-- **One state can allow different picks as its context changes; the Menu does not change.** The conformance tier asserts
-  it: two Submissions with different Allowed picks send a byte-identical tools block (ADR-0027).
+- **One state can allow different picks as its context changes or its active mode changes; the Menu does not change.**
+  The conformance tier asserts it: two Submissions with different Allowed picks send a byte-identical tools block
+  (ADR-0027).
 - **A workflow expresses "not available yet" with a guard alone,** and the Agent is told so rather than finding a tool
   that silently does nothing.
 - **`on: { X: {} }` — targetless and actionless — is never allowed,** matching xstate's `can()`.

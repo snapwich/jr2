@@ -30,15 +30,20 @@ casts). It:
 
 ## Agent menus and gate accepts derive from the machine
 
-A state that invokes `agentRun` derives the workflow events its transitions handle (own + bubbled ancestors, per
-statechart semantics); a state that invokes `gate` gets its accepted set the same way. The consumer names neither; MCP
-appears nowhere in workflow code. Mechanics: the **vocabulary** derivation is static, in `jr2Setup.createMachine` — a
-config walk wraps each invoke's `input` to append the derived names, so names still ride serializable input and the
-ADR-0007 restore path and invoke-time validation are unchanged. The same walk unions the derived sets of every state
-that invokes an Agent of one name into that Agent's **Menu** — its tools, fixed for a conversation so the provider's
-prompt cache survives a change of state. The walk reads transition _keys_ and so cannot see guards, which is why what a
-Turn may pick is not static on top of it: `agentSurface` asks the invoking machine's guards, and the Turn is told its
-**Allowed picks** — the derived set, less every event whose every transition is guarded false
+A state that invokes an Agent slot derives the workflow events its Turn may pick: its own transitions, its ancestors'
+(bubbled, per statechart semantics), and the transitions written on the states below it — its **modes**. xstate hands an
+event to the deepest active state that handles it, and a false guard there falls through to the parent, so a pick
+written on a child is one the Turn can take while that child is active. The descent stops at a child that invokes
+another Agent slot (a nested Turn: its picks are its own) or a `gate` (its transitions are the Gate's accepted set), and
+leaves out everything below that child; a child that runs anything else stays in. A state that invokes `gate` gets its
+accepted set from its own and its ancestors' transitions, with no descent. The consumer names neither; MCP appears
+nowhere in workflow code. Mechanics: the **vocabulary** derivation is static, in `jr2Setup.createMachine` — a config
+walk wraps each invoke's `input` to append the derived names, so names still ride serializable input and the ADR-0007
+restore path and invoke-time validation are unchanged. The same walk unions the derived sets of every state that invokes
+an Agent of one name into that Agent's **Menu** — its tools, fixed for a conversation so the provider's prompt cache
+survives a change of state. The walk reads transition _keys_ and so cannot see guards, which is why what a Turn may pick
+is not static on top of it: `agentSurface` asks the invoking machine's guards, and the Turn is told its **Allowed
+picks** — the derived set, less every event that the live snapshot, in its active mode, would not take
 ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md) owns the rationale).
 Authoring is untouched by the split: a workflow names no tools in either leg. The same walk feeds `jr2 visualize` ("this
 state's agent can call X, Y"). Dotted names (`agent.*`, `workspace.lost`, `xstate.*`, `after`) are mechanically
@@ -51,6 +56,9 @@ and accept-set untagged. Cross-contamination is only possible when an event is h
 actor kinds are invoked beneath it; the convention is to **tag the security-sensitive events** (`approve: "external"`
 guarantees no agent state can ever offer it) and leave the rest alone. Explicit `tools:`/`accepts:` on an invoke input
 remain as escape hatches.
+
+Considered and rejected for modes: a Menu per mode (the tools block would change inside a conversation and bill its
+history again — ADR-0029), and refusing picks written below an Agent's state at build (that shape is a mode).
 
 Considered and rejected: per-transition demarcation (xstate transitions have no typed metadata slot for it without
 inventing jr2-only config inside the transition table — a DSL by the back door) and purely structural

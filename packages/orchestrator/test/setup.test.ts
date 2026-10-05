@@ -302,42 +302,34 @@ test("the Menu is the union of every state that invokes that Agent, sorted — f
   actor.stop();
 });
 
-// An EMPTY derived set is legitimate — a state moved by a Gate or a timer asks its Agent for text
-// and nothing else — so it cannot be refused on sight. What is refused is the shape that LOOKS
-// like picks and is not: picks written in the invoking state's SUBSTATES, which the derivation
-// (own + ancestor handlers, per statechart semantics) cannot see. Retiring the `tools:` override
-// (ADR-0057) left no way to say it by hand, so the kit says it here, at build.
-test("picks written BELOW the invoking state are refused at build — the derived set cannot see them (ADR-0015/0057)", () => {
+// A state's picks are its own, its ancestors', and those written on the states below it — its
+// modes (ADR-0015). Before, the derivation read own + ancestors only: the shape was refused at build
+// when the state had no picks of its own, and its picks silently dropped when it had some.
+test("picks written BELOW the invoking state are its modes' picks: derived, never refused (ADR-0015)", async () => {
   const finish = defineEvent({ name: "finish", input: z.object({}) });
-  const build = () =>
-    jr2Setup({
-      types: {} as { context: Record<string, never> },
-      events: [finish],
-      actors: { coder: slot(new MockFlueClient()) },
-    }).createMachine({
-      id: "wf",
-      context: {},
-      initial: "active",
-      states: {
-        active: {
-          invoke: { src: "coder", input: { prompt: "go", endpoint: "http://x" } },
-          initial: "working",
-          states: { working: { on: { finish: "#wf.done" } } },
-        },
-        done: { type: "final" },
+  const mock = new MockFlueClient();
+  const machine = jr2Setup({
+    types: {} as { context: Record<string, never> },
+    events: [finish],
+    actors: { coder: slot(mock) },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    initial: "active",
+    states: {
+      active: {
+        invoke: { src: "coder", input: { prompt: "go", endpoint: "http://x" } },
+        initial: "working",
+        states: { working: { on: { finish: "#wf.done" } } },
       },
-    });
-
-  assert.throws(build, (err: Error) => {
-    assert.match(err.message, /agent "coder"/, "names the slot");
-    assert.match(err.message, /active/, "names the state that holds the Turn");
-    assert.match(err.message, /finish/, "names the pick the Menu could not see");
-    assert.match(err.message, /ADR-0015/);
-    // The invoking state's picks are its DERIVED SET; the Menu is the union over every state that
-    // invokes the Agent, so it may well be non-empty here (ADR-0029, CONTEXT.md).
-    assert.doesNotMatch(err.message, /menu/i, "names the derived set, not the Menu");
-    return true;
+      done: { type: "final" },
+    },
   });
+  const { actor } = hostless(machine);
+  await tick();
+  assert.deepEqual(mock.admits[0]!.tools, ["finish"], "the mode's pick is in the derived set");
+  assert.deepEqual(mock.admits[0]!.menu, ["finish"]);
+  actor.stop();
 });
 
 test("a Turn with no Menu at all still builds — nothing below it claims a pick (ADR-0015)", () => {

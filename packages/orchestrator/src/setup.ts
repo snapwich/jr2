@@ -223,13 +223,15 @@ export function jr2Setup<
 }
 
 // --- Menu derivation (ADR-0015, ADR-0029) --------------------------------------------------------
-// A state that invokes an AGENT SLOT derives the workflow events its transitions handle — own +
-// bubbled ancestors, per statechart semantics — filtered to audience ∈ {agent, any}: what that
-// Turn may pick, before its guards narrow it to the Allowed picks. The Agent's MENU — its tools
-// block — is the union of those sets over every state that invokes it, fixed for the conversation.
-// A `gate` gets the same set filtered to {external, any}. The invoking actor kind is the primary
-// router; `audience` on the def exists to RESTRICT (tag the security-sensitive events). An
-// explicit `accepts:` on a gate's input remains an escape hatch.
+// A state that invokes an AGENT SLOT derives the workflow events the Turn may pick: its own
+// transitions, its ancestors' (bubbled, per statechart semantics), and those written on the states
+// below it — its MODES (`modePicks`) — filtered to audience ∈ {agent, any}. That is its derived set,
+// before its guards narrow it to the Allowed picks; the Allowed picks are read off the live
+// snapshot, so they follow the active mode. The Agent's MENU — its tools block — is the union of
+// those sets over every state that invokes it, fixed for the conversation. A `gate` derives its own
+// and its ancestors' transitions (no descent), filtered to {external, any}. The invoking actor kind
+// is the primary router; `audience` on the def exists to RESTRICT (tag the security-sensitive
+// events). An explicit `accepts:` on a gate's input remains an escape hatch.
 //
 // An agent invoke is identified by its LOGIC, not by a reserved src name: the walk looks the
 // invoke's `src` up in the setup's own `actors` map and asks `isAgent` (ADR-0049). That is also
@@ -266,10 +268,7 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
   const menuOf = (agentName: string): string[] => [...(menus.get(agentName) ?? [])].sort();
 
   const walk = (node: LooseState, inherited: Set<string>, path: readonly string[]): LooseState => {
-    const names = new Set(inherited);
-    for (const key of Object.keys(node.on ?? {})) {
-      if (!key.includes(".") && key !== "*") names.add(key);
-    }
+    const names = new Set([...inherited, ...ownPicks(node)]);
 
     let out = node;
     if (node.invoke) {
@@ -281,8 +280,7 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
       const wrapOne = (inv: LooseInvoke): LooseInvoke => {
         // The slot key IS the Agent name (ADR-0049) — read off the declaration, never authored.
         if (typeof inv?.src === "string" && isAgent(actors[inv.src])) {
-          const derived = pick(names, "agent");
-          if (derived.length === 0) refuseBuriedPicks(node, inv.src, path, pick);
+          const derived = pick(new Set([...names, ...modePicks(node, actors)]), "agent");
           const menu = menus.get(inv.src) ?? new Set<string>();
           for (const name of derived) menu.add(name);
           menus.set(inv.src, menu);
@@ -313,44 +311,40 @@ function deriveMenus(config: unknown, defs: Map<string, EventDef>, actors: Recor
   return walk(config as LooseState, new Set(), []);
 }
 
-/**
- * Refuse the one shape that LOOKS like a Turn's picks and is not (ADR-0015, ADR-0057): an Agent
- * invoked on a state whose picks are written in its SUBSTATES.
- *
- * A state's derived set is its own + ANCESTOR transitions, per statechart semantics, so a pick
- * written below that state is one the Turn is never allowed — the model is offered it in the Menu
- * (the union over every state that invokes the Agent — ADR-0029) and refused whenever it takes it,
- * and the actor reads an empty derived set as a Turn that ended as intended, so nothing nudges and
- * nothing faults: the run parks. Until ADR-0057 the `tools:` override papered over it; with the
- * override gone the kit says it here, at build, where `jr2 up` walks every registered Machine.
- *
- * An EMPTY derived set is not itself wrong — a state moved by a Gate or a timer asks its Agent for
- * text and nothing else — so only the contradiction is refused: no picks here, and picks below.
- */
-function refuseBuriedPicks(
-  node: LooseState,
-  agentName: string,
-  path: readonly string[],
-  pick: (names: Set<string>, kind: "agent" | "external") => string[],
-): void {
-  const below = new Set<string>();
-  const descend = (n: LooseState): void => {
-    for (const key of Object.keys(n.on ?? {})) if (!key.includes(".") && key !== "*") below.add(key);
-    for (const child of Object.values(n.states ?? {})) descend(child);
-  };
-  for (const child of Object.values(node.states ?? {})) descend(child);
+/** A state's own workflow-event keys: dotted names are jr2's or xstate's, `*` is the wildcard. */
+function ownPicks(node: LooseState): string[] {
+  return Object.keys(node.on ?? {}).filter((key) => !key.includes(".") && key !== "*");
+}
 
-  const buried = pick(below, "agent");
-  if (buried.length === 0) return;
-  const state = path.length ? path.join(".") : "(the machine root)";
-  throw new Error(
-    `agent "${agentName}" is invoked on state "${state}", which derives no picks while the ` +
-      `states BELOW it handle ${buried.join(", ")} — a state's picks are its own plus its ` +
-      `ancestors' transitions (ADR-0015), so a pick written below is one the Turn is never ` +
-      `allowed, and a Turn that derives no picks ends with no pick at all. Move it onto "${state}" ` +
-      `(guard it if it must not always be allowed — ADR-0029), or, if this Turn deliberately ` +
-      `takes no pick, the pick belongs to another invoke.`,
-  );
+/** Does this state invoke a party that sends this Machine's workflow events — an Agent slot or a
+ * `gate`? An Effect, a child Machine, a `workspace()`/`pool()` body: none of them sends them. */
+function invokesParty(node: LooseState, actors: Record<string, UnknownActorLogic>): boolean {
+  const invokes = node.invoke ? (Array.isArray(node.invoke) ? node.invoke : [node.invoke]) : [];
+  return invokes.some((inv) => inv?.src === "gate" || (typeof inv?.src === "string" && isAgent(actors[inv.src])));
+}
+
+/**
+ * The picks written on the states BELOW an Agent's state — its modes (ADR-0015). xstate hands an
+ * event to the deepest active state that handles it, and a false guard there falls through to the
+ * parent, so a child's `on` keys are picks the Turn can be allowed while that child is active — and
+ * `can()` on the live snapshot already answers for the active child (ADR-0029).
+ *
+ * The descent STOPS at a child that invokes another party — an Agent slot (a nested Turn: its picks
+ * are its own) or a `gate` (its `on` keys are the Gate's accepted set) — and leaves out everything
+ * below it. A child that runs an Effect, a child Machine or a timer is no stop: its `on` keys are
+ * this Turn's.
+ */
+function modePicks(node: LooseState, actors: Record<string, UnknownActorLogic>): Set<string> {
+  const out = new Set<string>();
+  const descend = (n: LooseState): void => {
+    for (const child of Object.values(n.states ?? {})) {
+      if (invokesParty(child, actors)) continue;
+      for (const key of ownPicks(child)) out.add(key);
+      descend(child);
+    }
+  };
+  descend(node);
+  return out;
 }
 
 const resolveInput = (orig: unknown, args: InputArgs): Record<string, unknown> =>

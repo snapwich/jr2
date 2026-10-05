@@ -211,18 +211,18 @@ tail — taken by the Harness mid-Turn at a step boundary when the context cross
 recorded: the history view is what was said. _Avoid_: summarization (one step of taking a Compaction, and the LLM call
 is not the decision), truncation (the failure Compaction exists to prevent), pruning
 
-**Menu**: An Agent's control-plane tools — every workflow event that any state invoking it derives (ADR-0015), presented
-to its model as tools named `mcp__jr2__<event>` (ADR-0013). What the Agent may **say**. Fixed for a conversation: the
-tools lead the model provider's cached prefix, so a Menu that changed between Turns would bill the whole history again
-(ADR-0029). What one Turn may actually pick is a part of it, its Allowed picks. _Avoid_: tools (unqualified), tool list
+**Menu**: An Agent's control-plane tools — every workflow event that any state invoking it derives, its modes' picks
+included (ADR-0015), presented to its model as tools named `mcp__jr2__<event>` (ADR-0013). What the Agent may **say**.
+Fixed for a conversation: the tools lead the model provider's cached prefix, so a Menu that changed between Turns would
+bill the whole history again (ADR-0029). What one Turn may actually pick is a part of it, its Allowed picks. _Avoid_:
+tools (unqualified), tool list
 
-**Allowed picks**: The part of the Menu one Turn may pick — the invoking state's derived set (ADR-0015), narrowed to
-those its guards would currently accept (ADR-0029). Stated to the model in the Briefing's Turn part and enforced at the
-pick: a pick outside them is refused, and the refusal names them. One state can allow different picks as its context
-changes; the Menu does not change. The derived set comes from the INVOKING state and its ancestors, never from the
-states below it, so a pick written in a substate is one the Turn can never be allowed — and a Machine shaped that way is
-refused at build (ADR-0057 retired the hand-written Menu that used to hide it). _Avoid_: menu (the fixed set), open
-picks, active tools, legal moves
+**Allowed picks**: The part of the Menu one Turn may pick now — the invoking state's derived set (its own, its
+ancestors' and its modes' picks — ADR-0015), narrowed to those the live Machine would currently accept (ADR-0029). So
+they follow the active mode and the guards: one Turn can allow different picks as the Machine moves inside the invoking
+state; the Menu does not change. Stated to the model in the Briefing's Turn part and enforced at the pick: a pick
+outside them is refused, and the refusal names them. _Avoid_: menu (the fixed set), open picks, active tools, legal
+moves
 
 **mode**: A child state of an Agent's state with no invoke. The Agent is at Rest there, with a different set of Allowed
 picks.
