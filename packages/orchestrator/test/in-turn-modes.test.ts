@@ -539,3 +539,80 @@ test("the ask-again rule: a Gate answer that LEAVES the Agent's state ends the w
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(client.admits.length, 1, "the Turn is over: no wake");
 });
+
+test("a pick on the Menu that ANOTHER state of the Agent handles: answered with the correction receipt, never refused, never delivered to the Machine (ADR-0029)", async () => {
+  // `x` is on the coder's Menu only through `later`; in `ticket.review` the nested reviewer handles
+  // an `x` of its own. The coder's `x` there is answered `moved: false` — and must not reach the
+  // Machine, or it would take the reviewer's transition (a widening, ADR-0015).
+  const x = defineEvent({ name: "x", input: z.object({ why: z.string() }) });
+  const next = defineEvent({ name: "next", input: z.object({}) });
+  const clients = new Map<string, MockFlueClient>();
+  const reviewerDefinition = { ...coderDefinition, name: "reviewer" } as typeof coderDefinition;
+  const machineWith = (coder: ReturnType<typeof agentActorWith>, reviewer: ReturnType<typeof agentActorWith>) =>
+    jr2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [x, next],
+      actors: { coder, reviewer },
+    }).createMachine({
+      id: "wf",
+      context: {},
+      initial: "ticket",
+      states: {
+        ticket: {
+          invoke: { src: "coder", input: { prompt: "go", endpoint: "http://harness.invalid" } },
+          on: { next: "later" },
+          initial: "review",
+          states: {
+            review: {
+              invoke: { src: "reviewer", input: { prompt: "review", endpoint: "http://harness.invalid" } },
+              on: { x: "#wf.hijacked" },
+            },
+          },
+        },
+        later: {
+          invoke: { src: "coder", input: { prompt: "again", endpoint: "http://harness.invalid" } },
+          on: { x: "#wf.done" },
+        },
+        hijacked: { type: "final" },
+        done: { type: "final" },
+      },
+    });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "other-state",
+    machine: machineWith(
+      agentActorWith(() => new MockFlueClient(), coderDefinition),
+      agentActorWith(() => new MockFlueClient(), reviewerDefinition),
+    ),
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      clients.set(instanceId, client);
+      return {
+        actors: {
+          coder: agentActorWith(() => client, coderDefinition),
+          reviewer: agentActorWith(() => new MockFlueClient(), reviewerDefinition),
+        },
+      };
+    },
+  });
+  const { runId, instanceId } = await host.start("other-state");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  assert.deepEqual(client.admits[0]!.menu, ["next", "x"], "`x` is on the Menu through `later`");
+  assert.deepEqual(host.agentSurface(iid)?.allowed, ["next"]);
+
+  // Any arguments, even ones the schema refuses: the pick is not allowed, whatever its arguments.
+  for (const payload of [{ why: "now" }, {}]) {
+    const receipt = host.sendToAgent(iid, { type: "x", ...payload });
+    assert.deepEqual(
+      { delivered: receipt.delivered, moved: receipt.moved, turnComplete: receipt.turnComplete },
+      { delivered: true, moved: false, turnComplete: false },
+    );
+    assert.deepEqual(receipt.allowed, ["next"], "the correction receipt names the Allowed picks");
+  }
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(host.status(runId)?.value, { ticket: "review" }, "the reviewer's `x` was never taken");
+
+  // A name off the Menu is still refused before delivery.
+  assert.throws(() => host.sendToAgent(iid, { type: "merge" }), /does not accept "merge"/);
+});

@@ -33,9 +33,11 @@ whole history again. It also left the history calling tools the request no longe
   `allowed` in the Briefing's Turn part, after the Frame's prompt
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). It rides the newest message, so it never
   touches the cached prefix.
-- **The Orchestrator enforces, at delivery, and only there.** A pick outside the invoking state's derived set is refused
-  (`deliver` already throws); a pick inside it that the Machine does not take is delivered and answered `moved: false` —
-  a pick of another mode included: it is not refused before delivery. Both answers carry `allowed`, read **after** the
+- **The Orchestrator enforces, at delivery, and only there.** A pick off the Menu is refused. A pick on the Menu is not
+  refused before delivery: one inside the invoking state's derived set that the Machine does not take — a pick of
+  another mode included — is delivered and answered `moved: false`; one that only another state of this Agent handles is
+  answered `moved: false` whatever its arguments, and never reaches the Machine, because only a state the Agent does not
+  own (a nested Agent's, a Gate's) could act on it there (ADR-0015). Both answers carry `allowed`, read **after** the
   delivery, and the Harness renders it ("Allowed now: `finish`"). A `moved: false` pick outside `allowed` gets the
   **correction receipt** — "`<pick>` is not allowed in the workflow's current state, whatever its arguments. Your turn
   is not over. Do not repeat this call — pick one of the allowed tools." — because the state refused it and new
