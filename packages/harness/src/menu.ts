@@ -233,6 +233,18 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
   // Order matters: a rejected pick is also `turnComplete: false`, and saying only that sends the
   // Agent back to do the same thing again (ADR-0029). Say what it can act on FIRST.
   if (receipt.moved === false) {
+    // Nothing moved, so the Allowed picks after the delivery are the ones before it. A pick outside
+    // them — another mode's pick, or one a guard on context closed — was refused by the workflow's
+    // current STATE, whatever its arguments: the correction receipt. "Change the arguments" there
+    // sends the Agent round the same loop.
+    if (receipt.allowed && !receipt.allowed.includes(receipt.event)) {
+      const name = (toolName ?? ((n: string) => n))(sanitizeToolNamePart(receipt.event));
+      return (
+        `${delivered} The workflow did NOT act on it: \`${name}\` is not allowed in the workflow's ` +
+        `current state, whatever its arguments. Your turn is not over. Do not repeat this call — ` +
+        `pick one of the allowed tools.${allowed}`
+      );
+    }
     return (
       `${delivered} The workflow did NOT act on it: no transition in its current state accepts ` +
       `"${receipt.event}" with these arguments. Your turn is not over. Do not repeat this call ` +

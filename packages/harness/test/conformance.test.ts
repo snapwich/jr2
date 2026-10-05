@@ -621,6 +621,59 @@ test("a restart that cut a Turn mid-tool-call: the next Turn sends every tool ca
   assert.match(lastUserText(provider.calls[0]), /Decide the second thing\./);
 });
 
+test("in-Turn modes: ONE Submission walks two modes — the tools block never moves, each receipt names the mode's Allowed picks (ADR-0029)", async () => {
+  // The Orchestrator's side is scripted (what `sendToAgent` answers for a Machine whose Agent state
+  // has child states coding / reviewing — the orchestrator's in-turn-modes test drives that half).
+  // What this asserts is the model's side, through the real loop: what it reads after each pick.
+  const menu = ["ask_review", "revise", "run_tests", "submit"];
+  provider.reset([
+    { text: "Submitting.", toolCall: { id: "c1", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Asking for review.", toolCall: { id: "c2", name: "mcp__jr2__ask_review", args: '{"verdict":"x"}' } },
+    { text: "Submitting now.", toolCall: { id: "c3", name: "mcp__jr2__submit", args: '{"verdict":"x"}' } },
+    { text: "Done." },
+  ]);
+  sandbox.reset(surfaceAllowing(menu, ["ask_review", "run_tests"]));
+  let mode: "coding" | "reviewing" = "coding";
+  sandbox.answerWith((event) => {
+    if (mode === "coding" && event.type === "ask_review") {
+      mode = "reviewing";
+      return { moved: true, turnComplete: false, allowed: ["revise", "submit"] };
+    }
+    if (mode === "reviewing" && event.type === "submit") {
+      sandbox.killSurface(); // the pick left the Agent's state: the Turn is over (ADR-0024/0026)
+      return { moved: true, turnComplete: true, allowed: [] };
+    }
+    return {
+      moved: false,
+      turnComplete: false,
+      allowed: mode === "coding" ? ["ask_review", "run_tests"] : ["revise", "submit"],
+    };
+  });
+  const iid = "conf/modes";
+
+  const admission = await admit(iid, "Fix the ticket.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+  assert.deepEqual(
+    sandbox.delivered.map((e) => e.type),
+    ["submit", "ask_review", "submit"],
+  );
+
+  const calls = provider.calls;
+  assert.equal(calls.length, 4);
+  for (const call of calls)
+    assert.equal(JSON.stringify(call.tools), JSON.stringify(calls[0]!.tools), "byte-identical tools");
+  // The Briefing's Turn part is written once, at the Submission's start, and never rewritten.
+  assert.match(lastUserText(calls[0]), /Allowed now: `mcp__jr2__ask_review`, `mcp__jr2__run_tests`\.\n<\/jr2-turn>$/);
+  const results = (calls[3]!.messages as Array<{ role: string; content?: unknown }>)
+    .filter((m) => m.role === "tool")
+    .map((m) => JSON.stringify(m.content));
+  assert.equal(results.length, 3);
+  assert.match(results[0]!, /did NOT act on it: `mcp__jr2__submit` is not allowed in the workflow's current state/);
+  assert.match(results[0]!, /Allowed now: `mcp__jr2__ask_review`, `mcp__jr2__run_tests`\./);
+  assert.match(results[1]!, /not over yet\. Allowed now: `mcp__jr2__revise`, `mcp__jr2__submit`\./);
+  assert.match(results[2]!, /your turn is over/);
+});
+
 test("a Menu pick reaches the Orchestrator and its receipt reaches the model; the Submission settles completed", async () => {
   provider.reset([
     {

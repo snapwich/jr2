@@ -34,10 +34,14 @@ whole history again. It also left the history calling tools the request no longe
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). It rides the newest message, so it never
   touches the cached prefix.
 - **The Orchestrator enforces, at delivery, and only there.** A pick outside the invoking state's derived set is refused
-  (`deliver` already throws); a pick inside it that no guard accepts is delivered and answered `moved: false`. Both
-  answers carry `allowed`, read **after** the delivery, and the Harness renders it ("Allowed now: `finish`"). The
-  Harness does not pre-check: its list is as old as its Submission, and an in-state move
-  (`moved: true, turnComplete: false`) can change the guards mid-Turn.
+  (`deliver` already throws); a pick inside it that the Machine does not take is delivered and answered `moved: false` —
+  a pick of another mode included: it is not refused before delivery. Both answers carry `allowed`, read **after** the
+  delivery, and the Harness renders it ("Allowed now: `finish`"). A `moved: false` pick outside `allowed` gets the
+  **correction receipt** — "`<pick>` is not allowed in the workflow's current state, whatever its arguments. Your turn
+  is not over. Do not repeat this call — pick one of the allowed tools." — because the state refused it and new
+  arguments cannot help; one inside `allowed` was refused by a guard that read its payload, and its receipt says to
+  change the arguments. The Harness does not pre-check: its list is as old as what it last read, and an in-state move
+  (`moved: true, turnComplete: false`) can change the guards and the mode mid-Turn.
 - **Presentation stays in the Harness's neutral layer.** `menu.ts` renders the Allowed-picks text and every receipt; a
   presenter (`menu-tools.ts` for pi) only maps Menu items to its tool API and places the text it is handed. A second
   harness — one that takes MCP tools fixed per session and the prompt as text — needs a presenter, not a second Menu.

@@ -203,6 +203,10 @@ export type FakeSandbox = {
   bearers: string[];
   /** Park every LATER delivery after recording it — the abort-mid-tool-call lever. */
   holdDeliveries: () => void;
+  /** Answer each later delivery with this receipt — what an Orchestrator's Machine did with the
+   * pick (`moved`, `turnComplete`, the Allowed picks after the route). Cleared by `reset`; unset,
+   * every pick ends the Turn. */
+  answerWith: (receipt: (event: Record<string, unknown>) => Record<string, unknown>) => void;
   /** Rearm for the next scenario: this surface, live, responding, nothing delivered. */
   reset: (surface: Surface) => void;
   close: () => Promise<void>;
@@ -212,6 +216,7 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
   let surface = initialSurface;
   let live = true;
   let holding = false;
+  let answer: ((event: Record<string, unknown>) => Record<string, unknown>) | undefined;
   let surfaceFault: number | undefined;
   let stopping = 0;
   let surfaceReads = 0;
@@ -239,7 +244,9 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
       const event = JSON.parse(raw) as Record<string, unknown>;
       delivered.push(event);
       if (holding) return; // parked: the response never comes
-      json(200, { delivered: true, event: event.type, turnComplete: true, deliveryId: `d-${delivered.length}` });
+      const deliveryId = `d-${delivered.length}`;
+      if (answer) return json(200, { delivered: true, event: event.type, deliveryId, ...answer(event) });
+      json(200, { delivered: true, event: event.type, turnComplete: true, deliveryId });
     });
   });
   const port = await listen(server);
@@ -254,10 +261,12 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     reads: () => surfaceReads,
     bearers,
     holdDeliveries: () => (holding = true),
+    answerWith: (receipt) => (answer = receipt),
     reset: (next) => {
       surface = next;
       live = true;
       holding = false;
+      answer = undefined;
       surfaceFault = undefined;
       stopping = 0;
       surfaceReads = 0;
