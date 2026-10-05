@@ -210,6 +210,8 @@ export function jr2Setup<
       );
     }
 
+    refuseParallelBelowAgents(machine, def.actors ?? {});
+
     const idOf = (path: readonly string[]): string => stateAt(machine, path).id;
     attachVocabulary(machine, defs);
     attachSeats(
@@ -519,6 +521,37 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
     descend(node);
   }
   return out;
+}
+
+/**
+ * A parallel region below a state that invokes an Agent is refused (ADR-0015). The shape is
+ * reserved for picks the Agent does not wait for, which jr2 does not build; a Turn takes one pick
+ * at a time. The Agent's state itself being parallel counts: its regions are below it. A
+ * background task goes above the Agent's state.
+ */
+function refuseParallelBelowAgents(machine: AnyStateMachine, actors: Record<string, UnknownActorLogic>): void {
+  type Node = AnyStateMachine["root"];
+  const firstParallel = (node: Node): Node | undefined => {
+    if (node.type === "parallel") return node;
+    for (const child of Object.values(node.states)) {
+      const found = firstParallel(child);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  const visit = (node: Node): void => {
+    const agent = node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))?.src;
+    const parallel = agent === undefined ? undefined : firstParallel(node);
+    if (parallel !== undefined) {
+      throw new Error(
+        `machine "${machine.id}": state "${parallel.id}" is parallel, at or below Agent "${String(agent)}"'s state ` +
+          `"${node.id}" — a parallel region below an Agent's state is reserved for picks the Agent does not wait ` +
+          `for, which jr2 does not build; a background task goes above the Agent's state`,
+      );
+    }
+    for (const child of Object.values(node.states)) visit(child);
+  };
+  visit(machine.root);
 }
 
 /** The built state node at a key path below the root — what turns a walk's path into a state id. */

@@ -303,3 +303,76 @@ test("the Machine's doc carries who may send what, per state, and its warnings",
   assert.deepEqual(doc.seats.map(seatLine), ["c.job gate: [abandon]", "c.job.working agent:coder: [finish]"]);
   assert.equal(doc.warnings.length, 1);
 });
+
+test("a parallel region below a state that invokes an Agent is refused at build, with the reserved text", () => {
+  assert.throws(
+    () =>
+      jr2Setup({ events: [ev("finish"), ev("lint")], actors: { coder: slot() } }).createMachine({
+        id: "par",
+        initial: "t",
+        states: {
+          t: {
+            invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+            on: { finish: "d" },
+            initial: "coding",
+            states: {
+              coding: {
+                type: "parallel",
+                states: {
+                  left: { on: { lint: "right" } },
+                  right: {},
+                },
+              },
+            },
+          },
+          d: { type: "final" },
+        },
+      }),
+    (err: Error) => {
+      assert.match(err.message, /machine "par"/);
+      assert.match(err.message, /"par\.t\.coding" is parallel/);
+      assert.match(err.message, /Agent "coder"'s state "par\.t"/);
+      assert.match(err.message, /reserved for picks the Agent does not wait for/);
+      assert.match(err.message, /a background task goes above the Agent's state/);
+      return true;
+    },
+  );
+});
+
+test("an Agent's state that is itself parallel is refused: its regions are below it", () => {
+  assert.throws(
+    () =>
+      jr2Setup({ events: [ev("finish")], actors: { coder: slot() } }).createMachine({
+        id: "par",
+        initial: "t",
+        states: {
+          t: {
+            type: "parallel",
+            invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+            on: { finish: "d" },
+            states: { a: {}, b: {} },
+          },
+          d: { type: "final" },
+        },
+      }),
+    /"par\.t" is parallel[\s\S]*reserved for picks the Agent does not wait for/,
+  );
+});
+
+test("a parallel state above an Agent's state is legal: a background task goes there", () => {
+  const m = jr2Setup({ events: [ev("finish")], actors: { coder: slot() } }).createMachine({
+    id: "par",
+    type: "parallel",
+    states: {
+      work: {
+        initial: "t",
+        states: {
+          t: { invoke: { src: "coder", input: { prompt: "p", endpoint: EP } }, on: { finish: "d" } },
+          d: { type: "final" },
+        },
+      },
+      background: { invoke: { src: "gate" } },
+    },
+  });
+  assert.deepEqual(loadWarningsOf(m), []);
+});
