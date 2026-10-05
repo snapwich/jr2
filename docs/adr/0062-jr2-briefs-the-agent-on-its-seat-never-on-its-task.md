@@ -10,10 +10,11 @@ whose processes are gone, with no way to know why.
 ## Decision
 
 - **jr2 has its own text to the model, the Briefing.** It says a fact only if a correct Agent would act differently
-  knowing it **and** cannot find it out for itself: how a Turn ends (one Menu pick), the Sandbox's CPUs and Size, the
-  working directory, that a Menu-only Agent has no Working tools, and what happened to the last Turn. Nothing about the
-  task — that is the Frame's — and nothing about style or care — that is identity's. Stand-ins are left out: the only
-  change that knowing could cause is an attempt to go around the Custodian.
+  knowing it **and** cannot find it out for itself: how a Turn ends (one Menu pick), that some picks leave the Turn open
+  and the newest "Allowed now" the Agent read is the one that holds, the Sandbox's CPUs and Size, the working directory,
+  that a Menu-only Agent has no Working tools, and what happened to the last Turn. Nothing about the task — that is the
+  Frame's — and nothing about style or care — that is identity's. Stand-ins are left out: the only change that knowing
+  could cause is an attempt to go around the Custodian.
 - **Two parts, placed by how often they change.** The standing part is the same on every Turn of a seat; it follows
   `instructions` in the system prompt, in its own delimited section, and is byte-stable (no timestamps, no counters, no
   Menu names). The Turn part follows the Frame's prompt in a delimited block: the working directory, the Turn's Allowed

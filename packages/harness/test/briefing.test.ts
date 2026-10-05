@@ -37,6 +37,19 @@ test("the standing part says how a Turn ends, and the Sandbox's CPUs and Size â€
   assert.doesNotMatch(part, /mcp__jr2__|\d{4}-\d{2}-\d{2}|Turn \d/);
 });
 
+test("the standing part says that some picks leave the Turn open, and that the newest Allowed list holds (ADR-0062)", () => {
+  for (const workspace of ["write", "none"] as const) {
+    const part = standingBriefing({}).part(workspace);
+    assert.ok(
+      part.includes(
+        "- Some picks move the workflow and leave your Turn open; their answer says so and lists what is allowed now. " +
+          'The newest "Allowed now" you read is the one that holds.',
+      ),
+      part,
+    );
+  }
+});
+
 test("a fact the seat does not know is not stated â€” a host run knows neither", () => {
   const part = standingBriefing({}).part("write");
   assert.doesNotMatch(part, /CPU|memory/);

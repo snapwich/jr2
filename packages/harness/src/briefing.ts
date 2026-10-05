@@ -81,6 +81,8 @@ function composeStanding(facts: SeatFacts, workspace: Workspace): string {
     "jr2 runs the workflow you are part of. These are facts about your seat, not your task.",
     "- Your Turn ends with exactly one pick from your Menu: a call to one of the workflow's tools, one " +
       "that the <jr2-turn> block after each prompt allows now. When a pick ends your Turn, stop — call no other tool.",
+    "- Some picks move the workflow and leave your Turn open; their answer says so and lists what is allowed now. " +
+      'The newest "Allowed now" you read is the one that holds.',
   ];
   if (workspace === "none") {
     lines.push("- You have no Working tools: no shell and no files. You act only by picking from your Menu.");
