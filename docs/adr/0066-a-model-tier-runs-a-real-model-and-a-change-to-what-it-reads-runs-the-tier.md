@@ -28,17 +28,21 @@ recover, finish — are exercised only one scripted tool call at a time.
   where its Frame says ([ADR-0057](0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md)); a Menu-only Agent
   picks without reaching for tools it has not got ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)); a
   notice changes what the next Turn does ([ADR-0061](0061-a-memory-kill-ends-the-agents-processes-not-the-harness.md),
-  ADR-0062). A claim qualifies when an ADR states what a correct Agent does differently for it and a step can observe
-  the difference from outside the pod. **The run** is one `workspace()` workflow through to `done` on a real task: a
-  ticket the seed Repo carries as a failing test, a planner's pick, a coder that edits in the Worktree, runs the test,
-  commits on the run's branch and names the commit — a guard refuses a `submit` that names none — and a reviewer in the
-  same Sandbox, read-only ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)), that
-  runs the test itself and approves or rejects, bounded. Approval parks at a Gate, and the witness is the pod (parking
-  is retention, ADR-0012): the branch is ahead of `main`, its head is the named commit, the tree is clean, and the test
-  passes when the suite runs it there. Nothing is pushed — the Agent holds no credential and the push is the caller's
-  (ADR-0005, [ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)), as `task`
-  says — and the seed accepts none. The run asserts the pick ledger's shape and a time bound — never the diff, the
-  commit message, or the Turn count, which are the model's.
+  ADR-0062); a Turn follows its modes — after a pick changes the mode, after a correction receipt, and after a nudge
+  ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md), ADR-0029,
+  [ADR-0016](0016-agent-turn-mechanics-are-internal.md)); and a Turn hears its Allowed picks change under it at a step
+  boundary, follows them without a refused pick, and wakes from a stop with nothing to pick (ADR-0029). A claim
+  qualifies when an ADR states what a correct Agent does differently for it and a step can observe the difference from
+  outside the pod. **The run** is one `workspace()` workflow through to `done` on a real task: a ticket the seed Repo
+  carries as a failing test, a planner's pick, a coder that edits in the Worktree, runs the test, commits on the run's
+  branch and names the commit — a guard refuses a `submit` that names none — and a reviewer in the same Sandbox,
+  read-only ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)), that runs the test
+  itself and approves or rejects, bounded. Approval parks at a Gate, and the witness is the pod (parking is retention,
+  ADR-0012): the branch is ahead of `main`, its head is the named commit, the tree is clean, and the test passes when
+  the suite runs it there. Nothing is pushed — the Agent holds no credential and the push is the caller's (ADR-0005,
+  [ADR-0053](0053-a-fetch-inside-the-pod-asks-the-node-cache-and-the-cache-asks-the-remote.md)), as `task` says — and
+  the seed accepts none. The run asserts the pick ledger's shape and a time bound — never the diff, the commit message,
+  or the Turn count, which are the model's.
 - **Scored, not asserted.** A claim is N trials per cell (thinking off and on are cells, set through the Dial), and a
   cell fails only below the floor written in its scenario. The floors are the ADRs' numbers rounded down to what a model
   at the floor can hold: 9 of 10 where the ADR measured 10/10. Every run writes a scorecard,
@@ -97,8 +101,12 @@ recover, finish — are exercised only one scripted tool call at a time.
 - The seed Repo's `main` gains a small project with one failing test, so the run has a task with a checkable outcome.
   `@kind` reads the seed's refs, never its files, so it is indifferent.
 - ADR-0029's and ADR-0062's measurements become scenarios; their prose keeps the numbers as the origin of the floors.
-- The two Menu-only claims read the model's first call off the Instance Harness's printed conversation (ADR-0023) — the
-  one place a refused pick is visible, since the Orchestrator admits only what it allowed — so their trials run one at a
-  time; the Sandbox claims read their pods and run `parallel` at once.
+- The Menu-only claims read the model's calls off the Instance Harness's printed conversation (ADR-0023) — the one place
+  a refused pick, a nudge and a restated Turn part are all visible — so their trials run one at a time; the Sandbox
+  claims read their pods and run `parallel` at once. A claim whose setup the step must race (a Gate answered while the
+  model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
+  past the bound counts against the floor.
+- One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials.
+- The run has a second form, `ticket-modes`: one coder Turn walks three modes of its state to a verified commit.
 - A claim whose notice no step can yet raise (Compaction's summary, a kernel group kill) is added when the step exists;
   the ADR does not wait on it.
