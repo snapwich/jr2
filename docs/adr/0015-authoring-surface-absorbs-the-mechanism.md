@@ -76,11 +76,12 @@ remains an escape hatch.
 
 **Load checks on modes and audience.** `createMachine` refuses a registered event that no state handles: it is in no
 derived set, so it is on no Menu and no Gate. It warns — the Machine stays legal, and the doc carries the warning and
-`jr2 up` prints it — about a mode that nothing enters (not initial, and no transition targets it or a state inside it:
-its picks are on the Menu and never allowed); about a Gate above an Agent's state that takes an unset-audience writing
-the Agent reaches (the one narrowing of the audience rule an author may not expect); and about one name written for two
-parties on one path (whoever sends it, the deepest active handler runs). A child with no `onDone` that strands the Agent
-in it — a one-way mode — is legal and silent on purpose.
+`jr2 up` prints it — about a mode that nothing enters (not initial, and no state the Machine can enter has a transition
+into it or a state inside it — so neither the mode's own `initial` nor its transition into itself counts: its picks are
+on the Menu and never allowed); about a Gate above an Agent's state that takes an unset-audience writing the Agent
+reaches (the one narrowing of the audience rule an author may not expect); and about one name written for two parties on
+one path (whoever sends it, the deepest active handler runs). A child with no `onDone` that strands the Agent in it — a
+one-way mode — is legal and silent on purpose.
 
 Considered and rejected for modes: a Menu per mode (the tools block would change inside a conversation and bill its
 history again — ADR-0029), and refusing picks written below an Agent's state at build (that shape is a mode).

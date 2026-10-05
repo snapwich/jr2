@@ -432,10 +432,15 @@ function deriveMenus(
 }
 
 /**
- * A mode that nothing enters (ADR-0015): a child of an Agent's state with no invoke, that is not its
- * parent's initial state and that no transition anywhere in the Machine targets — itself or a state
- * inside it. Its picks are on the Menu and never allowed. A warning, not a refusal: the Machine is
- * legal, and a mode left unwired is often work in progress.
+ * A mode that nothing enters (ADR-0015): a child of an Agent's state with no invoke that the Machine
+ * can never enter. Its picks are on the Menu and never allowed. A warning, not a refusal: the Machine
+ * is legal, and a mode left unwired is often work in progress.
+ *
+ * "Can enter" is reachability from the root, to a fixed point. A state is entered when its parent is
+ * entered and it is the parent's initial state or a region of a parallel parent, or when a transition
+ * whose SOURCE can be entered targets it or a state inside it (entering a state enters its
+ * ancestors). So a compound mode's own `initial` does not enter it, and neither does a transition
+ * written on the mode into itself: neither runs unless the mode is already active.
  */
 function unenteredModes(machine: AnyStateMachine, actors: Record<string, UnknownActorLogic>): string[] {
   type Node = AnyStateMachine["root"];
@@ -445,31 +450,47 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
     for (const child of Object.values(node.states)) collect(child);
   };
   collect(machine.root);
-  const targeted = new Set<Node>();
-  for (const node of all) {
-    const transitions = [...node.transitions.values()].flat().concat(node.always ?? []);
-    for (const t of transitions) for (const target of t.target ?? []) targeted.add(target);
-    if (node.type === "compound") for (const target of node.initial.target) targeted.add(target);
+
+  const entered = new Set<Node>([machine.root]);
+  const enter = (node: Node): boolean => {
+    let added = false;
+    for (let n: Node | undefined = node; n !== undefined && !entered.has(n); n = n.parent) {
+      entered.add(n);
+      added = true;
+    }
+    return added;
+  };
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const node of all) {
+      const parent = node.parent;
+      if (parent === undefined || entered.has(node) || !entered.has(parent)) continue;
+      if (parent.type === "parallel" || (parent.type === "compound" && parent.initial.target.includes(node)))
+        changed = enter(node) || changed;
+    }
+    for (const node of all) {
+      if (!entered.has(node)) continue;
+      const transitions = [...node.transitions.values()].flat().concat(node.always ?? []);
+      for (const t of transitions) for (const target of t.target ?? []) changed = enter(target) || changed;
+    }
   }
-  // Entered when it, or a state inside it, is targeted; a parallel parent enters every region.
-  const entered = (node: Node): boolean =>
-    targeted.has(node) || node.parent?.type === "parallel" || Object.values(node.states).some(entered);
-  const isAgentState = (node: Node): boolean =>
-    node.invoke.some((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]));
+  const invokedAgent = (node: Node): string | undefined =>
+    node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))?.src as string | undefined;
 
   const out: string[] = [];
   for (const node of all) {
-    if (!isAgentState(node)) continue;
-    const agent = node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))!.src as string;
+    const agent = invokedAgent(node);
+    // An Agent's state the Machine never enters is a larger defect than its modes, and not this check.
+    if (agent === undefined || !entered.has(node)) continue;
     const descend = (parent: Node): void => {
       for (const child of Object.values(parent.states)) {
         if (child.invoke.length > 0) continue;
-        if (!entered(child)) {
+        if (!entered.has(child)) {
           const picks = [...child.transitions.keys()].filter((key) => !key.includes(".") && key !== "*");
           out.push(
-            `mode "${child.id}" of Agent "${agent}"'s state "${node.id}" — nothing enters it: no transition ` +
-              `targets it and it is not initial, so its picks${picks.length ? ` (${picks.join(", ")})` : ""} are ` +
-              `on the Menu and never allowed`,
+            `mode "${child.id}" of Agent "${agent}"'s state "${node.id}" — nothing enters it: it is not ` +
+              `initial and no state the Machine can enter has a transition into it, so its picks` +
+              `${picks.length ? ` (${picks.join(", ")})` : ""} are on the Menu and never allowed`,
           );
           continue;
         }

@@ -60,6 +60,51 @@ test("a mode that nothing enters is a warning: its picks are on the Menu and nev
   assert.match(warnings[0]!, /submit/);
 });
 
+test("a compound mode that nothing enters is a warning: its own `initial` does not enter it", () => {
+  const m = jr2Setup({ events: [ev("run_tests"), ev("submit")], actors: { coder: slot() } }).createMachine({
+    id: "wf",
+    initial: "ticket",
+    states: {
+      ticket: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "coding",
+        states: {
+          coding: { on: { run_tests: "coding" } },
+          orphan: { initial: "x", states: { x: { on: { submit: "#wf.done" } } } },
+        },
+      },
+      done: { type: "final" },
+    },
+  });
+  const warnings = loadWarningsOf(m);
+  assert.equal(warnings.length, 1, warnings.join("\n"));
+  assert.match(warnings[0]!, /mode "wf\.ticket\.orphan"/);
+});
+
+test("a mode whose only entry is its own transition into itself, or a state nothing enters, is a warning", () => {
+  const m = jr2Setup({ events: [ev("a"), ev("b"), ev("submit")], actors: { coder: slot() } }).createMachine({
+    id: "wf",
+    initial: "ticket",
+    states: {
+      ticket: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "coding",
+        states: {
+          coding: { on: { submit: "#wf.done" } },
+          self: { on: { a: "self", b: "second" } },
+          // `second` is targeted only from `self`, which nothing enters.
+          second: { on: { submit: "coding" } },
+        },
+      },
+      done: { type: "final" },
+    },
+  });
+  const warnings = loadWarningsOf(m);
+  assert.equal(warnings.length, 2, warnings.join("\n"));
+  assert.match(warnings.join("\n"), /mode "wf\.ticket\.self"/);
+  assert.match(warnings.join("\n"), /mode "wf\.ticket\.second"/);
+});
+
 test("a mode entered by a target, by being initial, or through a child it contains is no warning", () => {
   const m = jr2Setup({ events: [ev("a"), ev("b"), ev("c")], actors: { coder: slot() } }).createMachine({
     id: "wf",
