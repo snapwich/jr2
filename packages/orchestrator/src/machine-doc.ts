@@ -98,7 +98,8 @@ export type ChildMachineDoc = {
 export type MachineEventDoc = {
   name: string;
   description?: string;
-  audience: EventAudience;
+  /** Absent: each writing's state decides who may send it (ADR-0015) — see the body's `seats`. */
+  audience?: EventAudience;
   /** The def's input schema as JSON Schema — what a form or a `jr2 send` prompt generates from. */
   input: unknown;
 };
@@ -321,7 +322,7 @@ function serializeBody(machine: AnyStateMachine, path: Set<AnyStateMachine>): Ma
   const events = [...(vocabularyOf(machine)?.values() ?? [])].map((def) => ({
     name: def.name,
     ...(def.description !== undefined ? { description: def.description } : {}),
-    audience: def.audience,
+    ...(def.audience !== undefined ? { audience: def.audience } : {}),
     input: z.toJSONSchema(def.input),
   }));
   return { id: machine.id, root, transitions, events };

@@ -7,13 +7,14 @@ routing layer exists anywhere.
 ## `defineEvent`: mechanism, not policy
 
 `defineEvent({ name, input, audience?, semantics? })` produces a pure-data definition: a name, a zod input schema (flat
-tagged objects, never `oneOf` — the ADR-0006 encoding rule), an optional audience tag (`agent` | `external` | `any`,
-ADR-0015), and an optional semantics tag (`ack` | `deferred` | `poll`). It is a **pure factory — no import-time side
-effects, no global registry**. Because actor **inputs are serializable** (ADR-0007) they carry event _names_, so
-resolution needs a name→def scope; that scope is **per-Machine**: `jr2Setup` takes the defs as values and attaches the
-vocabulary to the machine (ADR-0015 — discovery reads it there; the module contract is `export const machine` alone),
-and `gate`/`agentRun` resolve names against **the Machine that invoked them** — `self._parent.logic`, public xstate API
-— never a run-wide set. Names are local to their Machine: `coding`'s `approve` and `release`'s `approve` may differ, and
+tagged objects, never `oneOf` — the ADR-0006 encoding rule), an optional audience tag (`agent` | `external` | `any`;
+unset, each writing of the event belongs to the party its state, or the nearest state above it, invokes — ADR-0015), and
+an optional semantics tag (`ack` | `deferred` | `poll`). It is a **pure factory — no import-time side effects, no global
+registry**. Because actor **inputs are serializable** (ADR-0007) they carry event _names_, so resolution needs a
+name→def scope; that scope is **per-Machine**: `jr2Setup` takes the defs as values and attaches the vocabulary to the
+machine (ADR-0015 — discovery reads it there; the module contract is `export const machine` alone), and
+`gate`/`agentRun` resolve names against **the Machine that invoked them** — `self._parent.logic`, public xstate API —
+never a run-wide set. Names are local to their Machine: `coding`'s `approve` and `release`'s `approve` may differ, and
 one run may hold both, because a Machine nested inside another resolves against its own defs and no map is ever merged.
 That is what makes a Machine composable by plain `invoke` (ADR-0049): the importing Machine neither re-declares nor sees
 the nested one's events, and `workspace()`/`pool()` propagate nothing. An unlisted name fails at invoke time with an

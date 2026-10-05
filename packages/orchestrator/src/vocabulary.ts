@@ -79,6 +79,33 @@ export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined
   return inputSchemas.get(machine.config);
 }
 
+// Who may send what, per state (ADR-0015): the seats the menu-derivation walk computed. Same key
+// choice as the vocabulary, for the same reasons. The Machine's doc carries them and `jr2 up`
+// prints them, so an author reads the audience rule's answer for their own Machine.
+
+/** One party's seat on one state: the state's id, the party, and the names it may send there —
+ * for an Agent the derived set its guards narrow; for a Gate its accepted set, unless the Gate's
+ * input names `accepts:` itself. */
+export type MachineSeat = { state: string; party: "agent" | "gate"; agent?: string; names: string[] };
+
+const seatTables = new WeakMap<MachineKey, MachineSeat[]>();
+
+/** Attach a Machine's seats. jr2-internal: `jr2Setup.createMachine` calls it. */
+export function attachSeats(machine: AnyStateMachine, seats: MachineSeat[]): void {
+  seatTables.set(machine.config, seats);
+}
+
+/** The seats of a Machine built by `jr2Setup`, in walk order; empty for any other Machine. */
+export function seatsOf(machine: AnyStateMachine): MachineSeat[] {
+  return seatTables.get(machine.config) ?? [];
+}
+
+/** One line per seat — `<state> agent:<slot>: [names]` or `<state> gate: [names]`. */
+export function seatLine(seat: MachineSeat): string {
+  const party = seat.party === "agent" ? `agent:${seat.agent}` : "gate";
+  return `${seat.state} ${party}: [${seat.names.join(", ")}]`;
+}
+
 /**
  * What the HOST adds to the input of the machine a run STARTS with, beside the door
  * (`RunHost.start`). One field today: the run's seed Instance ID, minted with the run and

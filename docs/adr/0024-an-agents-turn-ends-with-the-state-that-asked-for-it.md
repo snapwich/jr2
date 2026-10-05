@@ -46,6 +46,8 @@ single-threaded.
   the Agent — a mode, a child that runs something, a Gate, another Agent — keeps the Turn; a pick that leaves that state
   ends it, and the next prompt carries the result. A pick with no target keeps the Turn open. So a Turn may hold many
   picks, and the one that leaves the state ends it. What the child does changes nothing: there is no second mechanism.
+  Child or sibling says only this — same Turn or not — and never who may send what: that is the audience rule's, by the
+  party each state invokes (ADR-0015).
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

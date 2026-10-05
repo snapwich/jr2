@@ -236,9 +236,11 @@ A condition jr2 reads from the Machine, not a state: a state named `rest` means 
 **outstanding**: A pick that is delivered and not yet answered. _Avoid_: held pick (collides with Held secret), pending
 
 **Vocabulary**: The workflow events a Machine accepts — each a `defineEvent` def: a name, a payload schema, an optional
-audience — taken as values by its `jr2Setup` and scoped to that Machine alone (ADR-0011). What a Gate's accepted set and
-an Agent's Menu are drawn from, and what a delivery is validated against. A nested Machine keeps its own; the Machine
-that invokes it never sees or merges it. _Avoid_: events (unqualified — the mechanism also delivers `agent.fault`-class
+audience — taken as values by its `jr2Setup` and scoped to that Machine alone (ADR-0011). An unset audience means each
+transition belongs to the party its state, or the nearest state above it, invokes, and a root transition to both; an
+explicit one gives a pick to the other party or holds a root pick back (ADR-0015). What a Gate's accepted set and an
+Agent's Menu are drawn from, and what a delivery is validated against. A nested Machine keeps its own; the Machine that
+invokes it never sees or merges it. _Avoid_: events (unqualified — the mechanism also delivers `agent.fault`-class
 events no author declared), event manifest (the retired module export), schema
 
 **Machine shape**: The facts about a Machine that decide whether a persisted snapshot can still be read by it — state
@@ -279,9 +281,11 @@ unblocked subset)
 
 **Gate**: A pending external input on a run — from a human or any outside system (webhook, CI) — created when a state
 invokes the `gate` actor and destroyed when the state exits. An addressable resource (`gate` id + accepted events +
-`meta` context), because concurrent children park concurrently and a caller acts on one specific decision. What
-`jr2 send`, a UI inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller among many),
-approval (one possible event, not the resource)
+`meta` context), because concurrent children park concurrently and a caller acts on one specific decision. Its accepted
+events are its own state's transitions and the ancestors' ones no other party owns (ADR-0015): a Gate inside an Agent's
+state takes its own events, never the Agent's picks, unless a pick's audience gives it to both. What `jr2 send`, a UI
+inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller among many), approval (one
+possible event, not the resource)
 
 **Emit**: A message a workflow author surfaces from a Machine for whoever is watching (xstate `emit({...})`), carried on
 the observation feeds beside the automatic status deltas. Progress and notice — "review requested", "branch pushed" —

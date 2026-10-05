@@ -43,8 +43,8 @@ test("createMachine attaches the vocabulary to the machine object (the manifest 
   assert.equal(vocab?.size, 2);
 });
 
-test("audience defaults to any and rides the def", () => {
-  assert.equal(approve.audience, "any");
+test("audience is unset by default (each writing state decides) and rides the def when set", () => {
+  assert.equal(approve.audience, undefined);
   const external = defineEvent({ name: "human_only", audience: "external", input: z.object({}) });
   assert.equal(external.audience, "external");
 });

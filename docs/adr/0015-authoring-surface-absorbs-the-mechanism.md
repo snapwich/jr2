@@ -49,16 +49,38 @@ Authoring is untouched by the split: a workflow names no tools in either leg. Th
 state's agent can call X, Y"). Dotted names (`agent.*`, `workspace.lost`, `xstate.*`, `after`) are mechanically
 excluded.
 
-**The invoking actor kind is the primary router; `audience` on the def is an optional restriction.**
-`defineEvent({ audience?: "agent" | "external" | "any" })`, default `"any"`: an `agentRun` menu draws audience ∈ {agent,
-any}, a `gate` draws {external, any}. Simple workflows need zero tags — the rewritten coding workflow derives every menu
-and accept-set untagged. Cross-contamination is only possible when an event is handled at a shared ancestor while both
-actor kinds are invoked beneath it; the convention is to **tag the security-sensitive events** (`approve: "external"`
-guarantees no agent state can ever offer it) and leave the rest alone. Explicit `tools:`/`accepts:` on an invoke input
-remain as escape hatches.
+**A transition belongs to the party that its state, or the nearest state above it, invokes.** The party is the Agent
+slot or the `gate` that state invokes, or both when one state invokes both; root transitions, with no such state above,
+belong to both. That is who may send an event whose def leaves `audience` unset
+(`defineEvent({ audience?: "agent" | "external" | "any" })`, no default):
+
+| Transition written on                                                                             | Unset audience: who may send                                         |
+| ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| A state that invokes an Agent, or a mode below it                                                 | That Agent                                                           |
+| A state that invokes a Gate                                                                       | The Gate's caller                                                    |
+| A state that invokes both                                                                         | Both                                                                 |
+| A state that invokes anything else (a child Machine, a wrapper body, any other actor), or nothing | The party of the nearest invoking state above; none above means both |
+
+So child or sibling says only "same Turn or not"
+([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): an in-Turn Gate's caller sends the Gate's
+events and not the Agent's picks, and a nested Agent does not get the outer Agent's picks. **Write an audience only to
+give a pick to the other party, or to hold a root pick back.** An explicit `audience` overrides by kind over the whole
+reach: `agent` reaches every Agent whose reach holds a writing of the event, `external` every Gate's, `any` both — so
+`submit: "any"` lets an in-Turn Gate's caller send the Agent's pick, and `report_blocked: "agent"` keeps a root pick
+from the Gates. The reach itself is unchanged by the rule — own and ancestors, plus the modes for an Agent — and the
+rule only filters inside it, so no case widens who can send a pick; a test scans every shipped Machine and fixture for
+it. Audience says who may SEND, never which transition runs: xstate runs the deepest active handler, whoever sent the
+event. The walk computes every party's seat — per state, who may send what — and the Machine carries it. An explicit
+`accepts:` on a Gate's input remains an escape hatch.
 
 Considered and rejected for modes: a Menu per mode (the tools block would change inside a conversation and bill its
 history again — ADR-0029), and refusing picks written below an Agent's state at build (that shape is a mode).
+
+Considered and rejected for the audience: a default of `any` with a convention to tag the sensitive events (an in-Turn
+Gate's caller could then send every pick of the Agent above it unless each was tagged `agent`, and a nested Agent got
+the outer Agent's picks); a fixed default of `agent` (every Gate event then needs a tag, and the nested leak stays); and
+a knob on the Gate (`accepts: "own"`), which fixes the Gate side only. The rule above reads the transition's position,
+not a mark written in it, so it is not the per-transition demarcation rejected below.
 
 Considered and rejected: per-transition demarcation (xstate transitions have no typed metadata slot for it without
 inventing jr2-only config inside the transition table — a DSL by the back door) and purely structural

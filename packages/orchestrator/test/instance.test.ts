@@ -215,7 +215,7 @@ test("the vocabulary rides the machine (ADR-0015) and is resolvable on the host 
       ["approve"],
       "the machine's vocabulary must be readable after discovery",
     );
-    assert.equal(vocab?.[0]?.audience, "any");
+    assert.equal(vocab?.[0]?.audience, undefined, "unset: each writing state decides");
   } finally {
     await inst.close();
     await rm(dir, { recursive: true, force: true });
