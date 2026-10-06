@@ -122,8 +122,10 @@ Feature: a real model drives the kit
 
     Scenario: a model that stops in an open Turn is asked again, and picks
       ADR-0016's ask-again rule. The `mode-stop` workflow's prompt asks for a review and to wait;
-      no reviewer exists, so only the nudge moves the run. The nudge's Turn part states the
-      Allowed picks last. A model that picked straight through never stopped: void.
+      `ask_review` enters a mode with nothing to pick, so the model stops; a timer then opens
+      `revise` and `submit`, and the wake asks the model with the nudge's text and a Turn part that
+      states the Allowed picks last. The first Menu call after the ask is the measurement. A model
+      still working when the picks opened heard them at a step boundary and was never asked: void.
       Given the model instance is serving
       When I run the "mode-stop" workflow 10 times with thinking off
       Then the first pick after the nudge was allowed in at least 9 trials
@@ -152,9 +154,10 @@ Feature: a real model drives the kit
 
     Scenario: a Menu-only Turn with nothing to pick picks in the same Submission when a Gate's answer allows a pick
       The `push-wake` Turn starts with nothing allowed and is asked to write while it waits; the
-      step answers the release board as soon as the Turn's prompt prints. The first Menu call
-      after the restatement, with no nudge before it, is the measurement. A model that finished
-      writing before the answer landed ended its Submission with nothing allowed: void, cancelled.
+      step answers the release board once the Turn's first step has ended with a Menu call, so a
+      later step boundary carries the change. The first Menu call after the restatement, with no
+      nudge before it, is the measurement. A model whose first step made no Menu call ended its
+      Submission with nothing allowed, and the wake asks it in a second Submission: void.
       Given the model instance is serving
       When I run the "push-wake" workflow 10 times with thinking off
       Then the Agent picked inside the same Submission in at least 9 trials

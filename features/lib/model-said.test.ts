@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMachine } from "xstate";
 import {
+  askAfter,
   follow,
   isNudge,
   isRestatement,
@@ -62,17 +63,17 @@ test("a followed process keeps all it printed after it ends — a reaped pod's l
   assert.deepEqual(saidIn(f.text, "coder", "m"), [{ call: "bash" }]);
 });
 
-/** The mode-stop shape: a mode with nothing to pick that a timer leaves, and two modes with picks. */
+/** The mode-stop shape: `ask_review` enters a mode with nothing to pick that a timer leaves. */
 const notes = createMachine({
   id: "w",
   initial: "notes",
   states: {
     notes: {
-      initial: "waiting",
+      initial: "drafting",
       states: {
+        drafting: { on: { ask_review: "waiting" } },
         waiting: { after: { 30_000: "reviewing" } },
         reviewing: { on: { revise: "drafting", submit: "#w.submitted" } },
-        drafting: { on: { ask_review: "reviewing" } },
       },
     },
     submitted: { type: "final" },
@@ -81,18 +82,49 @@ const notes = createMachine({
 
 test("the modes are read from the built Machine: each pick's target, and each timer's (efb2d7e)", () => {
   assert.deepEqual(modesOf(notes), {
+    drafting: { picks: { ask_review: "waiting" }, after: [] },
     waiting: { picks: {}, after: ["reviewing"] },
     reviewing: { picks: { revise: "drafting", submit: "w.submitted" }, after: [] },
-    drafting: { picks: { ask_review: "reviewing" }, after: [] },
   });
 });
 
 test("the mode at the ask: allowed picks move it, refused picks do not, and a woken model is asked once a pick opens", () => {
   const modes = modesOf(notes);
-  // Nothing allowed while waiting: a refused `submit` moves nothing; the wake follows the timer.
-  assert.equal(modeAtAsk(modes, "waiting", [{ call: "submit" }]), "reviewing");
+  // `ask_review`, then nothing allowed: a refused `submit` moves nothing; the wake follows the timer.
+  const menu = new Set(["ask_review", "revise", "submit"]);
+  assert.equal(modeAtAsk(modes, "drafting", [{ call: "ask_review" }, { call: "submit" }], menu), "reviewing");
   // A nudge after picks: `revise` took the model to drafting, where it stopped with a pick left.
-  assert.equal(modeAtAsk(modes, "reviewing", [{ call: "revise" }]), "drafting");
-  assert.equal(modeAtAsk(modes, "drafting", [{ call: "ask_review" }, { call: "revise" }]), "drafting");
-  assert.equal(modeAtAsk(modes, "drafting", [{ call: "revise" }]), "drafting", "not allowed in drafting");
+  assert.equal(modeAtAsk(modes, "reviewing", [{ call: "revise" }], menu), "drafting");
+  assert.equal(modeAtAsk(modes, "drafting", [{ call: "revise" }], menu), "drafting", "not allowed in drafting");
+  // A call that is not on the Menu (a Working tool) moves nothing.
+  assert.equal(modeAtAsk(modes, "drafting", [{ call: "bash" }, { call: "ask_review" }], menu), "reviewing");
+});
+
+test("the mode at the ask takes the timer where the Turn part was restated, not only at the ask", () => {
+  const modes = modesOf(notes);
+  const menu = new Set(["ask_review", "revise", "submit"]);
+  const restated = { prompt: "<jr2-turn>" };
+  // The timer fired while the model worked: the restatement told it `revise` and `submit` are
+  // allowed, `revise` took it back to drafting, and it stopped there with a pick left — the nudge
+  // asks it in drafting. Replayed without the timer, `revise` would be refused in `waiting` and the
+  // ask would be read as the wake's, in reviewing.
+  assert.equal(modeAtAsk(modes, "drafting", [{ call: "ask_review" }, restated, { call: "revise" }], menu), "drafting");
+  // After the restatement, `submit` is a pick of reviewing: it leaves the Agent's state.
+  assert.equal(
+    modeAtAsk(modes, "drafting", [{ call: "ask_review" }, restated, { call: "submit" }], menu),
+    "w.submitted",
+  );
+  // A restatement in a mode with no timer moves nothing.
+  assert.equal(modeAtAsk(modes, "drafting", [restated, { call: "ask_review" }], menu), "reviewing");
+});
+
+test("mode-stop measures the first ask AFTER the model's `ask_review`; a trial with none is void", () => {
+  const nudge = { prompt: "Your previous turn ended, and the workflow is still waiting for your pick." };
+  const restated = { prompt: "<jr2-turn>" };
+  assert.equal(askAfter([{ call: "ask_review" }, nudge, { call: "submit" }], "ask_review"), 1);
+  assert.equal(askAfter([{ call: "ask_review" }, restated, { call: "submit" }, nudge], "ask_review"), 3);
+  // Stopped in drafting before asking for the review, nudged, then asked: not measured.
+  assert.equal(askAfter([nudge, { call: "ask_review" }], "ask_review"), -1, "an ask before the call is not measured");
+  assert.equal(askAfter([{ call: "ask_review" }, restated, { call: "submit" }], "ask_review"), -1, "never asked");
+  assert.equal(askAfter([nudge, { call: "revise" }], "ask_review"), -1, "never called");
 });

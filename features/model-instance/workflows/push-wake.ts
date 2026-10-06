@@ -5,10 +5,13 @@
 // the Turn part, which keeps the Submission going; a correct Agent then picks inside the SAME
 // Submission, with no nudge.
 //
-// The step answers the Gate as soon as the Turn's prompt prints. A trial whose model finished
-// writing first ended its Submission with nothing allowed — nothing restates an empty list to a
-// model that stopped, and nothing asks it again after — so that trial never reached the moment
-// the claim measures (`void`), and the step cancels it.
+// The step answers the Gate once the Turn's first step has ended with a Menu call — refused, since
+// nothing is allowed yet — so the change lands after that step, and a later step boundary must
+// carry it. Answered sooner, the answer can land before the model's first pick, which is then
+// simply taken and nothing is restated. A model whose first step made no Menu call ended its
+// Submission with nothing allowed — nothing restates an empty list to a model that stopped — and
+// the wake asks it again in a second Submission once the answer opens a pick (ADR-0016): that
+// trial never reached the moment the claim measures (`void`).
 //
 // Filename `push-wake.ts` → workflow "push-wake".
 

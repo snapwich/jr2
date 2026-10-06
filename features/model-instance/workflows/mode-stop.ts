@@ -1,15 +1,15 @@
 // The mode-stop claim (ADR-0016's ask-again rule): a model that stops while its Turn is still open
-// and picks are still allowed is asked again — here by the nudge, which the Agent actor admits on
-// the same conversation after the Submission settles, with a fresh Turn part stating the Allowed
-// picks last. A correct Agent then picks.
+// is asked again once a pick is allowed — the nudge's text, on the same conversation, with a fresh
+// Turn part stating the Allowed picks last. A correct Agent then picks one of them.
 //
-// The stop is the setup. `ask_review` takes the Turn into `reviewing` and leaves it open (its
-// receipt says so, and lists `revise` and `submit`); the prompt says to wait for the reviewer after
-// asking, which a model may do — and then nothing else will ever answer it, because no reviewer
-// exists: only the nudge can move the run. A trial whose model picks straight through never
-// stopped, so it says nothing about the rule (`void`). The tier reads the printed conversation
-// (ADR-0023): the nudge prints as its own prompt, and the first Menu call after it is the
-// measurement.
+// The stop is the setup, and it must happen reliably. `ask_review` takes the Turn into `waiting`,
+// a mode with nothing to pick while the reviewer reads, so a model that follows the Briefing ("If
+// nothing is allowed, stop") and the prompt ("wait for the reviewer's answer") stops. A timer then
+// moves the Turn into `reviewing` (`revise`, `submit`), and the wake asks the stopped model
+// (ADR-0016). A model still working when the timer fires hears the change at a step boundary
+// instead and is never asked, so its trial says nothing about the rule (`void`). The tier reads
+// the printed conversation (ADR-0023): the ask prints as its own prompt, and the first Menu call
+// after it is the measurement. The step reads the modes from this file.
 //
 // Filename `mode-stop.ts` → workflow "mode-stop".
 
@@ -75,7 +75,9 @@ export const machine = jr2Setup({
       },
       initial: "drafting",
       states: {
-        drafting: { on: { ask_review: "reviewing" } },
+        drafting: { on: { ask_review: "waiting" } },
+        // The reviewer reads: nothing to pick. Long enough that a model stops first.
+        waiting: { after: { 30_000: "reviewing" } },
         reviewing: { on: { revise: "drafting", submit: "#mode-stop.submitted" } },
       },
     },

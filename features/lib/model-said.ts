@@ -45,6 +45,13 @@ export function saidIn(log: string, agent: string, marker: string): Said[] | und
   return out;
 }
 
+/** The index of the first ask (a nudge or a wake, ADR-0016) after the model's first `call`; -1 when
+ * it never made that call, or was not asked after it. */
+export function askAfter(said: readonly Said[], call: string): number {
+  const at = said.findIndex((s) => "call" in s && s.call === call);
+  return at === -1 ? -1 : said.findIndex((s, i) => i > at && isNudge(s));
+}
+
 /** The calls in `said` from index `from` on, Menu calls only (`menu` names them). */
 export function menuCalls(
   said: readonly Said[],
@@ -112,20 +119,34 @@ export function modesOf(node: StateNodeLike): Modes {
 }
 
 /**
- * The mode active when the model was asked again: `calls` (the Menu calls before the ask) replayed
- * from `initial` — an allowed pick moves the mode; a pick the mode does not allow is refused and
- * moves nothing. A model asked in a mode with no picks was woken (ADR-0016): the ask waits for a
- * pick to open, so the mode's timers are followed to the first mode that has one.
+ * The mode active when the model was asked again, replayed from `initial` over `said` up to the ask
+ * (its calls and its restated Turn parts, in order):
+ *   - a Menu call (`menu` names them) the mode allows moves the mode; one it does not allow is
+ *     refused and moves nothing;
+ *   - a restated Turn part (ADR-0029) says the Allowed picks changed under the model with no pick
+ *     of its own. In a claim workflow only a timer does that, so the mode's timer is taken there;
+ *   - at the ask: a model asked in a mode with no picks was woken (ADR-0016), and the wake waits
+ *     for a pick to open, so the mode's timers are followed to the first mode that has one.
+ * A timer that fires between a step boundary's read and the model's next call is seen by neither;
+ * the replay cannot tell it, and a claim's timer is long enough that it is rare.
  */
-export function modeAtAsk(modes: Modes, initial: string, calls: ReadonlyArray<{ call: string }>): string {
+export function modeAtAsk(modes: Modes, initial: string, said: readonly Said[], menu: ReadonlySet<string>): string {
   let mode = initial;
-  for (const { call } of calls) mode = modes[mode]?.picks[call] ?? mode;
+  const timer = (): boolean => {
+    const next = modes[mode]?.after[0];
+    if (next === undefined) return false;
+    mode = next;
+    return true;
+  };
+  for (const s of said) {
+    if ("call" in s) {
+      if (menu.has(s.call)) mode = modes[mode]?.picks[s.call] ?? mode;
+    } else if (isRestatement(s)) timer();
+  }
   const seen = new Set<string>();
   while (modes[mode] && Object.keys(modes[mode]!.picks).length === 0 && !seen.has(mode)) {
     seen.add(mode);
-    const next = modes[mode]!.after[0];
-    if (next === undefined) break;
-    mode = next;
+    if (!timer()) break;
   }
   return mode;
 }

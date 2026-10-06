@@ -28,8 +28,8 @@ recover, finish — are exercised only one scripted tool call at a time.
   where its Frame says ([ADR-0057](0057-a-turn-is-its-frame-its-dials-and-whether-it-continues.md)); a Menu-only Agent
   picks without reaching for tools it has not got ([ADR-0031](0031-menu-only-agents-run-on-the-instance-harness.md)); a
   notice changes what the next Turn does ([ADR-0061](0061-a-memory-kill-ends-the-agents-processes-not-the-harness.md),
-  ADR-0062); a Turn follows its modes — after a pick changes the mode, after a correction receipt, and after a nudge
-  ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md), ADR-0029,
+  ADR-0062); a Turn follows its modes — after a pick changes the mode, after a correction receipt, and after a model
+  that stopped is asked again ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md), ADR-0029,
   [ADR-0016](0016-agent-turn-mechanics-are-internal.md)); and a Turn hears its Allowed picks change under it at a step
   boundary, follows them without a refused pick, and picks inside the same Submission when a Gate's answer opens a pick
   while it works (ADR-0029). A claim qualifies when an ADR states what a correct Agent does differently for it and a
@@ -108,6 +108,28 @@ recover, finish — are exercised only one scripted tool call at a time.
   model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
   past the bound counts against the floor.
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials.
+- **A claim's setup may change; its floor and what counts as a pass may not.** A setup is the part of a trial that
+  brings the model to the moment the claim measures. When a claim falls below its floor because that moment seldom
+  happens, its workflow and its driver may change for the setup alone, and the reason is recorded here. A setup that no
+  honest change makes reliable leaves the claim open, and it is reported as open. The first run of the mode and
+  step-boundary claims (home-lab vLLM, 2026-10-05) changed two:
+  - `mode-stop`. Its Turn asked for a review and told the model to wait; the stop happened in about 1 trial of 3 —
+    models picked straight through (`ask_review submit`) or looped `ask_review`/`revise` — and the claim fell to 5 of 10
+    twice. `ask_review` now enters a mode with nothing to pick, where the Briefing tells a model to stop, and a timer
+    then opens `revise` and `submit`, so the wake asks it with the nudge's text (ADR-0016). The prompt is unchanged: it
+    is the claim's fixed data. What counts is unchanged: the trial is measured at the first ask after the model's
+    `ask_review`, and void without one, and it passes when the first Menu call after that ask is a pick the mode active
+    at the ask allows. The driver reads the modes from the workflow, not from a copy of them, and replays the model's
+    calls through them: it takes the timer where a restated Turn part shows that it fired, and follows it at the ask
+    when the wake asked in a mode with nothing to pick.
+  - `push-wake`. The step answered the board as soon as the Turn's prompt printed. In two runs, 8 and 9 trials had no
+    restatement, each with one `hold` or `release` as its whole conversation: the answer had landed before the model's
+    first pick, so the pick was taken and nothing needed restating. Five were replaced as void and the rest counted
+    against the floor (7 and 5 of 10). The step now answers once the Turn's first step has ended with a Menu call, so a
+    later step boundary must carry the change. The pass is unchanged: the first Menu call after the restatement is
+    `release` or `hold`, with no ask before it.
+- The drivers' readings of the printed conversation and of a workflow's modes are plain functions in
+  `features/lib/model-said.ts`, with unit tests beside them that need no cluster and no model.
 - The run has a second form, `ticket-modes`: one coder Turn walks three modes of its state to a verified commit.
 - A claim whose notice no step can yet raise (Compaction's summary, a kernel group kill) is added when the step exists;
   the ADR does not wait on it.

@@ -19,7 +19,20 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { harnessToken } from "@jr2/orchestrator";
-import { follow, isNudge, isRestatement, menuCalls, saidIn, told, type Follow, type Said } from "../lib/model-said.ts";
+import {
+  askAfter,
+  follow,
+  isNudge,
+  isRestatement,
+  menuCalls,
+  modeAtAsk,
+  modesOf,
+  saidIn,
+  told,
+  type Follow,
+  type Said,
+  type StateNodeLike,
+} from "../lib/model-said.ts";
 import { ensureSeed } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
@@ -420,42 +433,41 @@ const modeRefusal: Driver = async (world, input) => {
   };
 };
 
-/** The `mode-stop` workflow's modes, each by the picks it allows and where each pick goes. */
-const MODE_STOP: Record<string, Record<string, string>> = {
-  drafting: { ask_review: "reviewing" },
-  reviewing: { revise: "drafting", submit: "submitted" },
-};
-
-/** The `mode-stop` mode active after `calls`, replayed from `drafting`: an allowed pick moves the
- * mode; a pick the mode does not allow is refused and moves nothing. */
-function modeAfter(calls: ReadonlyArray<{ call: string }>): string {
-  let mode = "drafting";
-  for (const { call } of calls) mode = MODE_STOP[mode]?.[call] ?? mode;
-  return mode;
+/** The `mode-stop` workflow's Agent state, read from the workflow itself: its modes and the one it
+ * starts in. Imported at the first trial, because the workflow reads the endpoint profile that
+ * only a @model run writes. */
+async function modeStopNotes(): Promise<StateNodeLike & { initial: { target: StateNodeLike[] } }> {
+  const { machine } = (await import("../model-instance/workflows/mode-stop.ts")) as {
+    machine: { root: { states: Record<string, unknown> } };
+  };
+  return machine.root.states.notes as StateNodeLike & { initial: { target: StateNodeLike[] } };
 }
 
 /**
- * mode-stop (ADR-0016's ask-again rule): a model that stopped after `ask_review` — the Turn open,
- * picks still allowed — is nudged, and its first Menu call after the nudge is a pick the mode
- * active at the nudge allows. The model may change mode before it stops (`ask_review` then
- * `revise` stops in `drafting`), so that mode is replayed from the calls before the nudge. A model
- * that picked straight through never stopped (`void`).
+ * mode-stop (ADR-0016's ask-again rule): a model that stopped while its Turn is open is asked again,
+ * and its first Menu call after the ask is a pick the mode active at the ask allows. The ask
+ * measured is the first one AFTER the model's `ask_review`: that call takes the Turn into a mode with
+ * nothing to pick, so the model stops; a timer then opens picks, and the wake asks it with the
+ * nudge's text. The mode at the ask is replayed from the Menu calls and the restated Turn parts
+ * before it, with the modes read from the workflow. A trial with no ask after an `ask_review` — the model never asked for the
+ * review, or it heard the change at a step boundary instead and was never asked — is `void`.
  */
 const modeStop: Driver = async (world, input) => {
+  const notes = await modeStopNotes();
   const runId = await startRun(world, "mode-stop", input);
   const { last } = await waitFor(world, runId, settled, TRIAL_MS);
   const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
-  const menu = new Set(["ask_review", "revise", "submit"]);
-  const asked = said.findIndex((s) => "call" in s && s.call === "ask_review");
-  const nudged = asked === -1 ? -1 : said.findIndex((s, i) => i > asked && isNudge(s));
-  const next = nudged === -1 ? undefined : menuCalls(said, menu, nudged)[0]?.call;
-  const allowed = nudged === -1 ? {} : (MODE_STOP[modeAfter(menuCalls(said.slice(0, nudged), menu))] ?? {});
+  const modes = modesOf(notes);
+  const menu = new Set(Object.values(modes).flatMap((m) => Object.keys(m.picks)));
+  const asked = askAfter(said, "ask_review");
+  const next = asked === -1 ? undefined : menuCalls(said, menu, asked)[0]?.call;
+  const mode = modeAtAsk(modes, notes.initial.target[0]!.key, said.slice(0, Math.max(asked, 0)), menu);
   return {
     runId,
-    measured: next !== undefined && next in allowed,
+    measured: next !== undefined && next in (modes[mode]?.picks ?? {}),
     finished: FINISHED["mode-stop"]!(last),
-    ...(nudged === -1 ? { void: true } : {}),
-    note: `said ${told(said)}; ended ${last.status}/${String(last.value)}`,
+    ...(asked === -1 ? { void: true } : {}),
+    note: `said ${told(said)}; asked in ${asked === -1 ? "none" : mode}; ended ${last.status}/${String(last.value)}`,
   };
 };
 
@@ -473,35 +485,50 @@ async function saidUntil(
   until: (said: Said[]) => boolean,
   ms: number,
   source = INSTANCE_LOG,
+  everyMs = 500,
 ): Promise<{ hit: boolean; said: Said[] }> {
   const deadline = Date.now() + ms;
   for (;;) {
     const said = await saidAfter(world, agent, marker, source);
     if (said !== undefined && until(said)) return { hit: true, said };
     if (Date.now() > deadline) return { hit: false, said: said ?? [] };
-    await sleep(500);
+    await sleep(everyMs);
   }
 }
 
+/** The push-wake workflow's Menu (`push-wake.ts`). */
+const WAKE_MENU = new Set(["release", "hold"]);
+
 /**
- * push-wake (ADR-0029's step-boundary check): the Turn starts with nothing allowed; the step answers
- * the release board as soon as the Turn's prompt prints, while the model writes; the boundary read
- * finds picks and restates the Turn part; the model picks in the same Submission — the first Menu
- * call after the restatement is `release` or `hold`, with no nudge before it. A model that finished
- * writing before the answer landed ended its Submission with nothing allowed, and nothing asks it
- * again (`void`; cancelled).
+ * push-wake (ADR-0029's step-boundary check): the Turn starts with nothing allowed. The step answers
+ * the release board once the Turn's first step has ended with a Menu call (refused: nothing is
+ * allowed yet), so the change lands after that step and a later step boundary must carry it: the
+ * read finds picks and restates the Turn part, and the model picks in the same Submission — the
+ * first Menu call after the restatement is `release` or `hold`, with no ask before it. A first step
+ * with no Menu call ended the Submission with nothing allowed: the step answers anyway, the wake
+ * asks the model in a second Submission (ADR-0016), and the trial never reached the moment the
+ * claim measures (`void`).
  */
 const pushWake: Driver = async (world, input) => {
   const runId = await startRun(world, "push-wake", input);
   const opened = await waitFor(world, runId, (s) => gateNamed(s, "board") !== undefined, 120_000);
   const board = gateNamed(opened.last, "board");
   if (!board) return { runId, measured: false, finished: false, note: `no board Gate: ${opened.last.status}` };
-  // As soon as the Turn's prompt has printed — its Turn part read, the model now writing.
   const shown = await saidUntil(world, "advisor", input.marker, () => true, 120_000);
   if (!shown.hit) {
     await world.runCli(["send", runId, "--event", "CANCEL"]);
     return { runId, measured: false, finished: false, note: "the Turn's prompt never printed" };
   }
+  // The first step has ended once its Menu call printed: a call prints when its message ends.
+  await saidUntil(
+    world,
+    "advisor",
+    input.marker,
+    (said) => menuCalls(said, WAKE_MENU).length > 0,
+    120_000,
+    INSTANCE_LOG,
+    200,
+  );
   await sendToGate(world, runId, board.gate, "cleared");
   const { hit, last } = await waitFor(world, runId, settled, 300_000);
   const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
@@ -510,11 +537,11 @@ const pushWake: Driver = async (world, input) => {
     if (!hit) await world.runCli(["send", runId, "--event", "CANCEL"]);
     return { runId, measured: false, finished: false, void: true, note: `no restatement: ${told(said)}` };
   }
-  const first = menuCalls(said, new Set(["release", "hold"]), restated)[0];
-  const nudgedFirst = said.slice(0, first?.at ?? said.length).some(isNudge);
+  const first = menuCalls(said, WAKE_MENU, restated)[0];
+  const askedFirst = said.slice(0, first?.at ?? said.length).some(isNudge);
   return {
     runId,
-    measured: first !== undefined && !nudgedFirst,
+    measured: first !== undefined && !askedFirst,
     finished: FINISHED["push-wake"]!(last),
     note: `said ${told(said)}; ended ${last.status}/${String(last.value)}`,
   };
