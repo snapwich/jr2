@@ -286,10 +286,11 @@ unblocked subset)
 **Gate**: A pending external input on a run — from a human or any outside system (webhook, CI) — created when a state
 invokes the `gate` actor and destroyed when the state exits. An addressable resource (`gate` id + accepted events +
 `meta` context), because concurrent children park concurrently and a caller acts on one specific decision. Its accepted
-events are its own state's transitions and the ancestors' ones no other party owns (ADR-0015): a Gate inside an Agent's
-state takes its own events, never the Agent's picks, unless a pick's audience gives it to both. What `jr2 send`, a UI
-inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller among many), approval (one
-possible event, not the resource)
+events are its own state's transitions, its plain children's, and the ancestors' ones no other party owns (ADR-0015): a
+Gate inside an Agent's state takes its own events, never the Agent's picks, unless a pick's audience gives it to both.
+Its `acceptsNow` is the part of them the run would take from it now; a send outside it is refused, not delivered
+(ADR-0013). What `jr2 send`, a UI inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller
+among many), approval (one possible event, not the resource)
 
 **Sender**: The party that delivered an event, as `event.sender` — `{ party, id }`: an Agent by its slot, or a Gate by
 its invoke id. Written by the Orchestrator alone, on every event a party delivers; absent on the Machine's own events

@@ -36,14 +36,16 @@ event to the deepest active state that handles it, and a false guard there falls
 written on a child is one the Turn can take while that child is active. The descent stops at a child that invokes
 another Agent slot (a nested Turn: its picks are its own) or a `gate` (its transitions are the Gate's accepted set), and
 leaves out everything below that child; a child that runs anything else stays in. A state that invokes `gate` gets its
-accepted set from its own and its ancestors' transitions, with no descent. The consumer names neither; MCP appears
-nowhere in workflow code. Mechanics: the **vocabulary** derivation is static, in `jr2Setup.createMachine` — a config
-walk wraps each invoke's `input` to append the derived names, so names still ride serializable input and the ADR-0007
-restore path and invoke-time validation are unchanged. The same walk unions the derived sets of every state that invokes
-an Agent of one name into that Agent's **Menu** — its tools, fixed for a conversation so the provider's prompt cache
-survives a change of state. The walk reads transition _keys_ and so cannot see guards, which is why what a Turn may pick
-is not static on top of it: `agentSurface` asks the invoking machine's guards, and the Turn is told its **Allowed
-picks** — the derived set, less every event that the live snapshot, in its active mode, would not take
+accepted set from its own and its ancestors' transitions and those written on its plain children, by the same descent:
+position gives a Gate the writings below it that no other party answers for, as it gives an Agent its modes (the Pool's
+wake Gate, on its root, takes the writing on `parked`). The consumer names neither; MCP appears nowhere in workflow
+code. Mechanics: the **vocabulary** derivation is static, in `jr2Setup.createMachine` — a config walk wraps each
+invoke's `input` to append the derived names, so names still ride serializable input and the ADR-0007 restore path and
+invoke-time validation are unchanged. The same walk unions the derived sets of every state that invokes an Agent of one
+name into that Agent's **Menu** — its tools, fixed for a conversation so the provider's prompt cache survives a change
+of state. The walk reads transition _keys_ and so cannot see guards, which is why what a Turn may pick is not static on
+top of it: `agentSurface` asks the invoking machine's guards, and the Turn is told its **Allowed picks** — the derived
+set, less every event that the live snapshot, in its active mode, would not take
 ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md) owns the rationale).
 Authoring is untouched by the split: a workflow names no tools in either leg. The same walk feeds `jr2 visualize` ("this
 state's agent can call X, Y"). Dotted names (`agent.*`, `workspace.lost`, `xstate.*`, `after`) are mechanically
@@ -67,12 +69,12 @@ events and not the Agent's picks, and a nested Agent does not get the outer Agen
 give a pick to the other party, or to hold a root pick back.** An explicit `audience` overrides by kind over the whole
 reach: `agent` reaches every Agent whose reach holds a writing of the event, `external` every Gate's, `any` both — so
 `submit: "any"` lets an in-Turn Gate's caller send the Agent's pick, and `report_blocked: "agent"` keeps a root pick
-from the Gates. The reach itself is unchanged by the rule — own and ancestors, plus the modes for an Agent — and the
-rule only filters inside it, so no case widens who can send a pick; a test scans every shipped Machine and fixture for
-it. Audience says who may SEND, never which transition runs: xstate runs the deepest active handler, whoever sent the
-event. The walk computes every party's seat — per state, who may send what — and the Machine's doc carries it, and
-`jr2 up` prints it for every registered Machine and every Machine it composes. An explicit `accepts:` on a Gate's input
-remains an escape hatch.
+from the Gates. The reach itself is unchanged by the rule — own and ancestors, plus the states below with no
+party-invoking state between (an Agent's modes, a Gate's plain children) — and the rule only filters inside it, so no
+case widens who can send a pick; a test scans every shipped Machine and fixture for it, both the derived names and the
+writings each party may take at run time. The walk computes every party's seat — per state, who may send what — and the
+Machine's doc carries it, and `jr2 up` prints it for every registered Machine and every Machine it composes. An explicit
+`accepts:` on a Gate's input remains an escape hatch.
 
 **`sentBy(id)`: a writing that declines other senders.** Every event a party delivers carries its sender (ADR-0011):
 `sender: { party, id }`, the Agent's slot or the Gate's invoke id. `jr2Setup` registers one guard, `jr2.sentBy`, and the
@@ -83,6 +85,19 @@ name. It can only make a writing decline; it never gives a writing to a party �
 a Gate's invoke id of this Machine, and a `sentBy` that names neither is refused at load, like an unknown event key.
 Under `or()` or `not()`, or in an author's own guard that reads `event.sender`, it works at run time but the walk cannot
 read it. A `.provide()` test sends as a party by writing the field: `{ type, sender: { party, id } }`.
+
+**A delivery never runs another party's writing.** Audience says who may send a name; xstate selects which writing runs,
+deepest active first, whoever sent it. So at delivery the real event — its payload and its sender — goes through
+xstate's own selection (`getTransitionData`) before the Machine sees it, and if a writing selected is one the sender may
+not take by the position rule above, the event is refused: an Agent's pick is answered `moved: false` and not delivered
+(ADR-0029), a Gate's caller gets 409 with what the Gate takes now (ADR-0013). The lists ask the same question the same
+way, payload-blind: an Agent's Allowed picks and a Gate's `acceptsNow` are the names whose selection, for an event that
+carries the sender and with every guard that reads the payload counted as passing, moves something and holds only
+writings the sender may take. A guard that reads the payload is unknown there and passes the party question; it is never
+the fail-open of a party check skipped, because delivery asks again with the real payload. The payload-blind selection
+is a copy of xstate 5.32.2's (`transitionNode`, `StateNode.next`, `evaluateGuard`, the members of `and`/`or`/`not`),
+pinned against `getTransitionData` in the default test run — the canary for an xstate bump. Without a `sentBy`, nothing
+misroutes: the shallower party is refused while the deeper writing is active, and the walk warns (below).
 
 **Load checks on modes and audience.** `createMachine` refuses a registered event that no state handles: it is in no
 derived set, so it is on no Menu and no Gate. It refuses a parallel region below a state that invokes an Agent — the

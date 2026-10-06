@@ -41,7 +41,7 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { accepts } from "hono/accepts";
 import { streamSSE } from "hono/streaming";
-import { EventValidationError, UnknownAddressError } from "./registration.ts";
+import { EventValidationError, NotTakenError, UnknownAddressError } from "./registration.ts";
 import type { RepoStatus } from "./repos.ts";
 import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
 import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
@@ -682,6 +682,14 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     } catch (err) {
       if (err instanceof UnknownAddressError) return c.json({ error: errMessage(err) }, 404);
       if (err instanceof EventValidationError) return c.json({ error: errMessage(err) }, 400);
+      // The run would not take it from this Gate now (ADR-0013): never `{ ok: true }`. The body
+      // names what the Gate takes now, as `GET /runs/:id` lists it.
+      if (err instanceof NotTakenError) {
+        const runId = c.req.param("runId");
+        const gate = c.req.param("gate");
+        const acceptsNow = host.gates(runId).find((g) => g.gate === gate)?.acceptsNow ?? [];
+        return c.json({ error: errMessage(err), acceptsNow }, 409);
+      }
       throw err;
     }
   });

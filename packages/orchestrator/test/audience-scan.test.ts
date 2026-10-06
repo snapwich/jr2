@@ -1,8 +1,14 @@
 // The audience rule never widens (ADR-0015), checked over every Machine the repo ships or tests
 // with: the kit's packaged Machines, the e2e fixtures, the `@kind` instance's workflows, and the
-// CLI's and this package's own fixtures. For every seat — one party on one state — the names
-// src gives it (`seatsOf`) must be a subset of what the rule it replaced gave: every name in the
-// party's reach whose audience is its kind, an unset audience counting as `any`.
+// CLI's and this package's own fixtures. For every seat — one party on one state — two readings
+// must each be a subset of what the rule it replaced gave, every name in the party's reach whose
+// audience is its kind, an unset audience counting as `any`:
+//   - the names the load walk derives for it (`seatsOf`) — what it may send;
+//   - the names of every writing it may take at run time (`mayTake`) — what a delivery from it may
+//     run; `sentBy` only declines, so it cannot add one.
+// The reach is own + ancestors, plus the states below with no party-invoking state between: an
+// Agent's modes, and a Gate's plain children (position gives a Gate those, as it gives an Agent its
+// modes).
 //
 // Not scanned: the `@model` instance's workflows, whose endpoint profile exists only once the tier
 // materializes it (`features/model-instance/workflows/_profile.ts`), and the intro instance under
@@ -14,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { AnyStateMachine } from "xstate";
 import { isAgent } from "../src/agent.ts";
+import { allNodes, mayTake, partiesAt } from "../src/party.ts";
 import { seatsOf, vocabularyOf } from "../src/vocabulary.ts";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -64,16 +71,14 @@ function replacedRule(machine: AnyStateMachine): Array<{ key: string; names: Set
       if (inv.src !== "gate" && slot === undefined) continue;
       const reach = new Set<string>();
       for (let p: Node | undefined = n; p; p = p.parent) keys(p).forEach((k) => reach.add(k));
-      if (slot !== undefined) {
-        const modes = (m: Node) => {
-          for (const c of Object.values(m.states)) {
-            if (party(c)) continue;
-            keys(c).forEach((k) => reach.add(k));
-            modes(c);
-          }
-        };
-        modes(n);
-      }
+      const below = (m: Node) => {
+        for (const c of Object.values(m.states)) {
+          if (party(c)) continue;
+          keys(c).forEach((k) => reach.add(k));
+          below(c);
+        }
+      };
+      below(n);
       const kind = slot !== undefined ? "agent" : "external";
       const names = [...reach].filter((k) => {
         const a = defs.get(k)!.audience ?? "any";
@@ -124,6 +129,22 @@ test("the audience rule never widens who may send a name — over every shipped 
         const was = before[i]!;
         for (const name of seat.names)
           assert.ok(was.names.has(name), `WIDENED ${file} #${machine.id} ${was.key}: ${name}`);
+      }
+      // What a delivery from each seat may run: every writing it may take, by name.
+      const nodes = allNodes(machine);
+      const defs = vocabularyOf(machine)!;
+      for (const node of nodes) {
+        for (const sender of partiesAt(node, machine)) {
+          const key = `${node.id} ${sender.party === "agent" ? `agent:${sender.id}` : "gate"}`;
+          const was = before.find((seat) => seat.key === key)!;
+          for (const writing of nodes)
+            for (const name of writing.transitions.keys())
+              if (defs.has(name) && mayTake(machine, sender, node, writing, name))
+                assert.ok(
+                  was.names.has(name),
+                  `WIDENED at run time ${file} #${machine.id} ${key}: ${name} on ${writing.id}`,
+                );
+        }
       }
       scanned++;
     }

@@ -10,7 +10,7 @@ import { createActor, fromPromise, type AnyActorRef, type AnyStateMachine } from
 import { z } from "zod";
 import { defineEvent, type EventDef } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
-import { bindRun, RegistrationTable } from "../src/registration.ts";
+import { bindRun, NotTakenError, RegistrationTable } from "../src/registration.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { seatLine, seatsOf } from "../src/vocabulary.ts";
 import { workspace } from "../src/workspace.ts";
@@ -215,7 +215,7 @@ test("a nested Agent does not get the outer Agent's picks", async () => {
   p.actor.stop();
 });
 
-test("a mode's writings are its Agent's, even below a Gate's sibling; a Gate's reach does not descend", () => {
+test("a mode's writings are its Agent's, even below a Gate's sibling; a Gate's plain children are its own", () => {
   const [approve, comment, revise, submit, ask] = [ev("approve"), ev("comment"), ev("revise"), ev("submit"), ev("ask")];
   const m = jr2Setup({
     events: [approve, comment, revise, submit, ask],
@@ -248,7 +248,7 @@ test("a mode's writings are its Agent's, even below a Gate's sibling; a Gate's r
   assert.deepEqual(seats(m), [
     "g.ticket agent:coder: [ask, revise, submit]",
     "g.ticket.reviewing.approval gate: [approve]",
-    "g.review gate: [approve]",
+    "g.review gate: [approve, comment]",
   ]);
 });
 
@@ -335,7 +335,7 @@ test("one state that invokes an Agent AND a Gate: both share its writings", () =
   assert.deepEqual(seats(m), ["arr.w agent:coder: [abandon, finish]", "arr.w gate: [abandon, finish]"]);
 });
 
-test("audience says who may SEND, never which transition runs: the deepest active handler takes the event", async () => {
+test("the deepest active writing is another party's: the Agent's send is refused before the Machine sees it", async () => {
   const [stop, ask] = [ev("stop"), ev("ask")];
   const coder = new MockFlueClient();
   const m = jr2Setup({ events: [stop, ask], actors: { coder: slot(coder) } }).createMachine({
@@ -356,9 +356,16 @@ test("audience says who may SEND, never which transition runs: the deepest activ
   await waitFor(() => coder.admits.length === 1);
   p.agentSend("coder", "ask");
   await tick();
-  p.agentSend("coder", "stop");
+  assert.throws(
+    () => p.agentSend("coder", "stop"),
+    (err: Error) =>
+      err instanceof NotTakenError &&
+      /"stop" from Agent "coder" would run the writing on "same\.t\.asking", which is Gate "t\.asking"'s/.test(
+        err.message,
+      ),
+  );
   await tick();
-  assert.deepEqual(p.value(), { t: "coding" }, "the Agent's `stop` ran the Gate state's transition");
+  assert.deepEqual(p.value(), { t: "asking" }, "the Agent's `stop` ran nothing");
   p.actor.stop();
 });
 

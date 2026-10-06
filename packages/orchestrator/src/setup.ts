@@ -262,7 +262,8 @@ export function jr2Setup<
 // rule, on `deriveMenus`). That is its derived set, before its guards narrow it to the Allowed
 // picks; the Allowed picks are read off the live snapshot, so they follow the active mode. The
 // Agent's MENU — its tools block — is the union of those sets over every state that invokes it,
-// fixed for the conversation. A `gate` derives its own and its ancestors' transitions (no descent),
+// fixed for the conversation. A `gate` derives its own and its ancestors' transitions, and those
+// written on its plain children (the same descent, stopping at a child that invokes a party),
 // filtered to the names its caller may send. An explicit `accepts:` on a gate's input remains an
 // escape hatch.
 //
@@ -318,8 +319,9 @@ const ownerMark = (path: readonly string[]): string => `#${path.join(".")}`;
  * `gate`, or both when one state invokes both. With no such state above, it belongs to both. An
  * event whose def leaves `audience` unset follows that rule; an explicit `audience` overrides it
  * BY KIND over the whole reach (`agent`: every Agent whose reach holds a writing of it; `external`:
- * every Gate's; `any`: both). The REACH never changes — own + ancestors, plus the modes for an
- * Agent — and the rule only filters inside it, so it cannot widen who may send a name. */
+ * every Gate's; `any`: both). The REACH never changes — own + ancestors, plus the states below
+ * with no party-invoking state between (an Agent's modes, a Gate's plain children) — and the rule
+ * only filters inside it, so it cannot widen who may send a name. */
 function deriveMenus(
   config: unknown,
   defs: Map<string, EventDef>,
@@ -435,7 +437,12 @@ function deriveMenus(
           return { ...inv, input: wrapAgentInput(inv.input, derived, inv.src, menuOf) };
         }
         if (inv?.src === "gate") {
-          const accepts = pick(names, "external", owner);
+          // A Gate's plain children — below it, with no party-invoking state between — are its own
+          // by position, as an Agent's modes are its (ADR-0015).
+          const reach: Reach = new Map([...names].map(([name, owners]) => [name, new Set(owners)]));
+          for (const name of modePicks(node, actors))
+            reach.set(name, (reach.get(name) ?? new Set<string>()).add(owner));
+          const accepts = pick(reach, "external", owner);
           seats.push({ path, party: "gate", names: [...accepts].sort() });
           const wrapped: LooseInvoke = { ...inv, input: wrapGateInput(inv.input, accepts) };
           // A machine-root gate (empty path) is left to xstate's default id: a `""` id would be

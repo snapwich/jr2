@@ -27,8 +27,10 @@ whole history again. It also left the history calling tools the request no longe
   byte-stable for every Turn of the conversation and for every fresh conversation of that Agent. The descriptions are
   the event defs' own and do not vary by state.
 - **What one Turn may pick is its Allowed picks**: the invoking state's derived set (its own, its ancestors' and its
-  modes' picks — ADR-0015), narrowed to what the live Machine would currently accept. Read off the live snapshot, they
-  follow the active mode as well as the guards; the Menu stays byte-identical in every mode. The surface serves both
+  modes' picks — ADR-0015), narrowed to what the live Machine would currently accept **from this Agent**: xstate's
+  selection for an event that carries the Agent's sender, a guard that reads the payload counted as passing, must move
+  something, and every writing it selects must be the Agent's (ADR-0015). Read off the live snapshot, they follow the
+  active mode as well as the guards; the Menu stays byte-identical in every mode. The surface serves both
   (`GET /agents/:iid/surface` → `menu` and `allowed`); the Harness presents `menu` as the tools block and states
   `allowed` in the Briefing's Turn part, after the Frame's prompt
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). It rides the newest message, so it never
@@ -38,16 +40,15 @@ whole history again. It also left the history calling tools the request no longe
   refused before delivery: one inside the invoking state's derived set that the Machine does not take — a pick of
   another mode included — is delivered and answered `moved: false`; one that only another state of this Agent handles is
   answered `moved: false` whatever its arguments, and never reaches the Machine, because only a state the Agent does not
-  own (a nested Agent's, a Gate's) could act on it there (ADR-0015). A pick in the derived set does reach the Machine,
-  and xstate runs the deepest active handler: when a mode and a sibling Gate's or nested Agent's state write the same
-  name, the Agent's send runs that party's transition while its state is active. The load warns about that Machine
-  (ADR-0015); delivery does not filter it. Both answers carry `allowed`, read **after** the delivery, and the Harness
-  renders it ("Allowed now: `finish`"). A `moved: false` pick outside `allowed` gets the **correction receipt** —
-  "`<pick>` is not allowed in the workflow's current state, whatever its arguments. Your turn is not over. Do not repeat
-  this call — pick one of the allowed tools." — because the state refused it and new arguments cannot help; one inside
-  `allowed` was refused by a guard that read its payload, and its receipt says to change the arguments. The Harness does
-  not pre-check: its list is as old as what it last read, and an in-state move (`moved: true, turnComplete: false`) can
-  change the guards and the mode mid-Turn.
+  own (a nested Agent's, a Gate's) could act on it there (ADR-0015). A pick whose selection, with its real payload,
+  holds another party's writing — a mode and a sibling Gate's or nested Agent's state that write the same name, say — is
+  answered `moved: false` the same way and does not reach the Machine (ADR-0015). Every answer carries `allowed`, read
+  **after** the delivery, and the Harness renders it ("Allowed now: `finish`"). A `moved: false` pick outside `allowed`
+  gets the **correction receipt** — "`<pick>` is not allowed in the workflow's current state, whatever its arguments.
+  Your turn is not over. Do not repeat this call — pick one of the allowed tools." — because the state refused it and
+  new arguments cannot help; one inside `allowed` was refused by a guard that read its payload, and its receipt says to
+  change the arguments. The Harness does not pre-check: its list is as old as what it last read, and an in-state move
+  (`moved: true, turnComplete: false`) can change the guards and the mode mid-Turn.
 - **The Turn part is restated at a step boundary when the Allowed picks changed under the Agent.** A Gate's answer, an
   outside event or a child's settled invoke can move the Machine while the Agent works with its Working tools and picks
   nothing. So the Harness keeps the last Allowed-picks list the model read — the Turn part, then every receipt and
@@ -68,15 +69,18 @@ whole history again. It also left the history calling tools the request no longe
 
 **The guard question is asked twice, because the two askings can see different things.**
 
-- `mayMove(invoker, name)` — the Allowed picks. The pick has not happened, so there are no arguments to judge.
-- `wouldMove(invoker, event)` — delivery. The validated payload is in hand, so the answer is exact.
+- The Allowed picks: payload-blind, asked as the Agent's sender (`takesNow`, ADR-0015) — or `mayMove(invoker, name)`
+  where no seat can be read (a plain `setup()` actor tree). The pick has not happened, so there are no arguments to
+  judge.
+- Delivery: `wouldMove(invoker, event)` and xstate's own selection on the real event. The validated payload and the
+  sender are in hand, so the answer is exact.
 
 **A guard that reads the pick is never hidden.** A guard like `({ event }) => event.verdict === "approved"` answers
-`false` on a payload it was not given — by plain comparison against `undefined`, not by throwing. So `mayMove` passes
-the event behind a Proxy that records any read outside `type`, and trusts a `false` only when the guard never looked. A
-guard that looked is allowed, and settled at delivery. This rests on xstate handing a guard the object passed to
-`can()`, unspread — pinned by a test asserting a payload-reading guard stays allowed. A future xstate that copies the
-event first would degrade this to allowing more, never less.
+`false` on a payload it was not given — by plain comparison against `undefined`, not by throwing. So the payload-blind
+reading passes the event behind a Proxy that records any read outside `type` and `sender`, per guard, and trusts a
+`false` only when the guard never looked. A guard that looked is allowed, and settled at delivery. This rests on xstate
+handing a guard the object passed to `can()`, unspread — pinned by a test asserting a payload-reading guard stays
+allowed. A future xstate that copies the event first would degrade this to allowing more, never less.
 
 **Both readings fail open.** No invoker, or a guard that throws, reads as allowed. A wrong `true` costs one refused
 pick; a wrong `false` tells an Agent its work is not wanted when the workflow would have taken it, and nothing recovers
@@ -86,8 +90,11 @@ from that.
 Orchestrator as the instance image (ADR-0027), so the two can skew. A surface without `menu` is read as today's narrowed
 list, presented as tools.
 
-**Gate accepted-sets are not filtered.** A human at a Gate reads its `meta` and can tell why an option did nothing,
-which is precisely what an Agent cannot do; and a Gate filtered to empty would fault the run.
+**A Gate's accepted set stays whole; `acceptsNow` sits beside it.** `GET /runs/:id` lists each Gate's `accepts` — every
+name it may ever send, with its schema, which drives a form — and `acceptsNow`, the same payload-blind question the
+Allowed picks ask, asked as the Gate's sender (ADR-0011). Neither is filtered to empty into a fault: a Gate whose
+`acceptsNow` is empty waits. A send the run would not take is refused 409 with `acceptsNow` (ADR-0013); a human reads
+the Gate's `meta` and the refusal and can tell why, which is precisely what an Agent needs the Allowed picks for.
 
 ## Why the text comes after the prompt, and why refusal is not optional
 
@@ -110,8 +117,10 @@ block was not perfect either: once the model invented a tool it had never been g
 - **Mask at decode time** (OpenAI `allowed_tools`, logit masking). Deferred: it is provider-specific — Anthropic has no
   subset form, and changing `tool_choice` there drops the messages cache; vLLM's Chat Completions refuses it. The design
   must hold without it; where it is cache-safe, it can be added in the presenter.
-- **Refuse the delivery outright when `moved` is false.** Rejected: `deliver` is the single validation path behind both
-  dialects; the receipt already carries the distinction.
+- **Refuse the delivery outright when `moved` is false.** Rejected for a guard that says no: `deliver` is the single
+  validation path behind both dialects, and the receipt already carries the distinction. A pick whose selection holds
+  another party's writing is a different class — delivering it would run that party's writing — so it is answered like a
+  pick off the invoking state's derived set, and never delivered.
 - **Filter mid-Turn and push `list_changed`.** Rejected: nothing pushes to the Harness (ADR-0013), and a list that moves
   under an Agent invites the retry loop from the other direction.
 - **The Orchestrator pushes the restated Turn part over a new route.** Rejected: pi appends only at a step boundary, so

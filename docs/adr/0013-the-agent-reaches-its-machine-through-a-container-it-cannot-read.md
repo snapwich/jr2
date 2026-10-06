@@ -52,8 +52,8 @@ is needed either (ADR-0006).
 
   ```
   # human / webhook / CI — the Gate resource of ADR-0011, authenticated
-  GET  /runs/:id                       → open gates: accepts + schemas + meta     [Instance token]
-  POST /runs/:id/gates/:gate/events    → validate + deliver                       [Instance token]
+  GET  /runs/:id                       → open gates: accepts + schemas + acceptsNow + meta  [Instance token]
+  POST /runs/:id/gates/:gate/events    → validate + deliver, or 409                   [Instance token]
 
   # the Agent's, through its pod's Custodian
   GET  /agents/:iid/surface            → Menu + Allowed picks + schemas + semantics [Sandbox token]
@@ -64,7 +64,11 @@ is needed either (ADR-0006).
   result will need. Lookup, validation, delivery and lifecycle are implemented once, in the table. The token's scope,
   the live registration, and the event's name and payload are judged here and nowhere else; the Custodian forwards and
   decides nothing about a pick. Neither surface takes a body that carries `sender`: the table writes it on every
-  delivered event (ADR-0011), so a client that posts it — the Harness, `jr2 send --input` — is answered 400.
+  delivered event (ADR-0011), so a client that posts it — the Harness, `jr2 send --input` — is answered 400. The gates
+  surface answers `{ ok: true }` when the run took the send, and only then; a send the run would not take now — its
+  selection holds another party's writing, or no writing would move on this payload (ADR-0015, ADR-0029) — is answered
+  `409 { error, acceptsNow }` and nothing is delivered. `jr2 send --gate` prints that error, which names what the Gate
+  takes now, and exits 1.
 
 - **Bearer tokens, because the boundary is otherwise theater.** The Harness container shares the pod's network
   namespace, so an Agent can `curl` the Orchestrator directly; a per-pod NetworkPolicy cannot distinguish it from the
@@ -94,8 +98,9 @@ is needed either (ADR-0006).
 - **Deferred tool results are reserved, not built.** ADR-0006's `deferred`/`poll` semantics stay in the model and the
   wire leaves room for them: the surface listing ships each def's `semantics`, and an agent-surface delivery returns a
   **receipt with a `deliveryId`** (so an outcome is addressable after the fact; the gates surface answers `{ ok: true }`
-  — external callers need no receipt). Registering a `deferred` or `poll` def **fails loudly as unimplemented** — a
-  silent downgrade to `ack` would be a lying tool contract — and the Harness refuses a turn whose surface offers one.
+  for a send the run took, and 409 for one it would not — external callers need no receipt). Registering a `deferred` or
+  `poll` def **fails loudly as unimplemented** — a silent downgrade to `ack` would be a lying tool contract — and the
+  Harness refuses a turn whose surface offers one.
 
 ## Considered options
 

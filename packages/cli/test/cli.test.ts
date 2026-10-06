@@ -6,6 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { main } from "../src/cli.ts";
 import type { Io } from "../src/output.ts";
+import { z } from "zod";
+import { defineEvent, jr2Setup } from "@jr2/orchestrator";
 import { mkHarness } from "./_fixtures.ts";
 
 type Captured = { io: Io; out: () => string; err: () => string };
@@ -207,6 +209,72 @@ test("send --keep carries keep on CANCEL, and is refused with any other event (A
   const b = await host.start("loop");
   assert.equal(await main(["send", b.runId, "--event", "CANCEL"], mk().io), 0);
   assert.deepEqual(seen, [{ keep: true }, { keep: false }]);
+});
+
+test("send --gate: an answer the run would not take prints the refusal and what the Gate takes now, and exits 1 (ADR-0013)", async () => {
+  const { app, host } = await mkHarness();
+  const hold = defineEvent({ name: "hold", input: z.object({}) });
+  const release = defineEvent({ name: "release", input: z.object({}) });
+  host.register({
+    name: "held",
+    machine: jr2Setup({ events: [hold, release] }).createMachine({
+      id: "held",
+      initial: "board",
+      states: {
+        board: {
+          invoke: { src: "gate", input: { gate: "board" } },
+          on: { hold: { target: "done", guard: () => false }, release: "done" },
+        },
+        done: { type: "final" },
+      },
+    }),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("held");
+  const mk = () =>
+    mkIo({ env: { JR2_URL: "http://test" }, fetch: (url, init) => Promise.resolve(app.request(url, init)) });
+
+  const refused = mk();
+  assert.equal(await main(["send", runId, "--gate", "board", "--event", "hold"], refused.io), 1);
+  assert.match(
+    refused.err(),
+    /error: gate "board" is open, and the run does not take "hold" now: no writing of it would move the run with this payload — not delivered \(takes now: release\)/,
+  );
+  assert.doesNotMatch(refused.err(), /delivered hold/);
+  assert.equal(host.status(runId)?.status, "active", "nothing moved");
+
+  const taken = mk();
+  assert.equal(await main(["send", runId, "--gate", "board", "--event", "release"], taken.io), 0);
+  assert.match(taken.err(), /delivered release to gate "board"/);
+});
+
+test("send --gate: an --input that carries `sender` is refused and exits 1; the Orchestrator writes that field (ADR-0013)", async () => {
+  const { app, host } = await mkHarness();
+  const release = defineEvent({ name: "release", input: z.object({}) });
+  host.register({
+    name: "held",
+    machine: jr2Setup({ events: [release] }).createMachine({
+      id: "held",
+      initial: "board",
+      states: {
+        board: { invoke: { src: "gate", input: { gate: "board" } }, on: { release: "done" } },
+        done: { type: "final" },
+      },
+    }),
+    provide: () => ({}),
+  });
+  const { runId } = await host.start("held");
+  const forged = mkIo({
+    env: { JR2_URL: "http://test" },
+    fetch: (url, init) => Promise.resolve(app.request(url, init)),
+  });
+  const input = JSON.stringify({ sender: { party: "agent", id: "coder" } });
+  assert.equal(await main(["send", runId, "--gate", "board", "--event", "release", "--input", input], forged.io), 1);
+  assert.match(
+    forged.err(),
+    /error: `sender` is written by the Orchestrator on every delivered event; a caller cannot send it/,
+  );
+  assert.equal(host.status(runId)?.status, "active", "nothing moved");
 });
 
 test("`jr2 status` with no run reports the data plane and every Repo, failing nodes with git's own error", async () => {

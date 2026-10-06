@@ -57,11 +57,13 @@ lifecycle stay implemented once, in the registration table.
 `gate` is the symmetric actor for **every non-agent caller** — humans (`jr2 send`, a UI), webhook translators, CI, other
 systems. "Human" is policy, not mechanism, so the actor is not named for one caller. Each invocation is an addressable
 **gate**: input is `{ gate?, meta? }` — `gate` an optional authored id (the id is derived when absent — below), `meta`
-serializable caller/integration context (PR URL, title); its accepted set derives from the gated state's transitions
-(ADR-0015). Registration is per-gate: `GET /runs/:runId` lists open gates (`{ gate, accepts (names + schemas), meta }`),
-`POST /runs/:runId/gates/:gate/events` validates the body against the named schema and delivers via `sendBack` into the
-gated state, and leaving the state destroys the gate. Gate ids are **run-scoped by mechanism** (the same `system`→run
-mapping that scopes event resolution), so `gate: "F-12"` in two concurrent runs cannot collide.
+serializable caller/integration context (PR URL, title); its accepted set derives from the gated state's transitions,
+its ancestors' and its plain children's (ADR-0015). Registration is per-gate: `GET /runs/:runId` lists open gates
+(`{ gate, accepts (names + schemas), acceptsNow, meta }` — `acceptsNow` the names the run would take from this Gate now,
+read the way an Agent's Allowed picks are, ADR-0029), `POST /runs/:runId/gates/:gate/events` validates the body against
+the named schema and delivers via `sendBack` into the gated state — or refuses a send the run would not take (ADR-0013)
+— and leaving the state destroys the gate. Gate ids are **run-scoped by mechanism** (the same `system`→run mapping that
+scopes event resolution), so `gate: "F-12"` in two concurrent runs cannot collide.
 
 Gate-as-resource is forced by concurrency: several children park simultaneously (three features in `humanReview` is the
 _normal_ case), all accepting `approve` — a run-level POST is ambiguous. And every real external surface already thinks

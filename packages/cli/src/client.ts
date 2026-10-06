@@ -149,7 +149,8 @@ export class JR2Client {
 
   /** `POST /runs/:runId/gates/:gate/events` — deliver a workflow-defined event to an open gate
    * (ADR-0011). The body is `{ type, ...input }`, validated against the event's schema host-side;
-   * an unknown gate (404) or rejected payload (400) surfaces as a throw. */
+   * an unknown gate (404), a rejected payload (400) or an answer the run would not take now (409,
+   * ADR-0013) surfaces as a throw. */
   async sendToGate(runId: string, gate: string, event: { type: string } & Record<string, unknown>): Promise<void> {
     const res = await this.fetchImpl(
       `${this.baseUrl}/runs/${encodeURIComponent(runId)}/gates/${encodeURIComponent(gate)}/events`,

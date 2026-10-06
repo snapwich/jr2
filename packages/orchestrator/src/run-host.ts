@@ -22,15 +22,18 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
-import type { EventDef, EventSemantics } from "@jr2/agent-protocol";
+import { SENDER_KEY, type EventDef, type EventSemantics } from "@jr2/agent-protocol";
+import { senderText } from "./party.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation } from "./wire.ts";
 import {
+  acceptsNow,
   agentAddress,
   allowedPicks,
   bindRun,
   EventValidationError,
   gateAddress,
+  NotTakenError,
   RegistrationTable,
   refuseSenderField,
   UnknownAddressError,
@@ -277,6 +280,9 @@ export type GateView = {
    * id was authored ("F-12") or derived. Never parse `gate` for this. */
   path: string[];
   accepts: Array<{ name: string; description?: string; input: unknown }>;
+  /** The names of `accepts` the run would take from this Gate NOW, payload-blind (ADR-0011,
+   * ADR-0029): a send of another name is refused 409. `accepts` stays whole — it drives the forms. */
+  acceptsNow: string[];
   meta?: Record<string, unknown>;
 };
 
@@ -958,11 +964,28 @@ export class RunHost {
     // makes this unreliable and `deliver` throws on the next line anyway — so it fails open.
     const def = invoking?.defs.get(type);
     const parsed = def?.input.safeParse(payload ?? {});
-    const moved = wouldMove(invoking?.invoker, parsed?.success ? { type, ...parsed.data } : { type, ...payload });
+    const moved = wouldMove(invoking?.invoker, {
+      ...(parsed?.success ? { type, ...parsed.data } : { type, ...payload }),
+      ...(invoking?.sender ? { [SENDER_KEY]: invoking.sender } : {}),
+    });
 
     try {
       this.table.deliver(address, type, payload);
     } catch (err) {
+      // The writing xstate would run for this pick is another party's (ADR-0015, ADR-0029): the
+      // pick is ANSWERED, never delivered — `moved: false`, and the Harness picks the receipt by
+      // whether the name is in `allowed`. Not in it: the correction receipt. In it: a guard that
+      // read the payload turned the selection outward, and the receipt says to change the arguments.
+      if (err instanceof NotTakenError && invoking) {
+        return {
+          delivered: true,
+          event: type,
+          moved: false,
+          turnComplete: false,
+          allowed: allowedOf(invoking),
+          deliveryId: this.newId(),
+        };
+      }
       // A refused pick names the Allowed picks, read after the refusal (ADR-0029): one refusal
       // naming them is what brings a wrong pick back — the statement in the Briefing carries the
       // everyday case, and this is the net under it.
@@ -1003,20 +1026,50 @@ export class RunHost {
           description: def.description,
           input: z.toJSONSchema(def.input),
         })),
+        acceptsNow: acceptsNow(reg),
         meta: reg.meta,
       }));
   }
 
-  /** Deliver one external event to a run's open gate (`POST /runs/:id/gates/:gate/events`).
-   * Validation and delivery are the table's — this only run-scopes the address. */
+  /**
+   * Deliver one external event to a run's open gate (`POST /runs/:id/gates/:gate/events`).
+   * Validation and delivery are the table's — this run-scopes the address, and returns only when
+   * the run TOOK the event (ADR-0013): one that would run another party's writing, or that no
+   * writing would take with this payload, throws {@link NotTakenError} naming what the Gate takes
+   * now, and nothing is delivered.
+   */
   sendToGate(runId: string, gate: string, event: { type?: unknown } & Record<string, unknown>): void {
     const { type, ...payload } = event;
     if (typeof type !== "string" || !type) {
       throw new EventValidationError(`event body must carry a string "type" (one of the gate's accepted names)`);
     }
+    const reg = this.table.lookup(gateAddress(runId, gate));
+    const refused = (why: string): NotTakenError =>
+      new NotTakenError(
+        `gate "${gate}" is open, and the run does not take "${type}" now: ${why} — not delivered ` +
+          `(takes now: ${reg ? acceptsNow(reg).join(", ") || "nothing" : "nothing"})`,
+      );
     try {
+      // Exact, with the validated payload: a send no writing would move on is refused, never
+      // answered `{ ok: true }`. A bad payload or an unaccepted name falls through to the table,
+      // which refuses it with its own words.
+      const def = reg?.defs.get(type);
+      const parsed = def && !(payload && SENDER_KEY in payload) ? def.input.safeParse(payload ?? {}) : undefined;
+      if (reg && parsed?.success && !wouldMove(reg.invoker, { type, ...parsed.data, [SENDER_KEY]: reg.sender })) {
+        throw refused("no writing of it would move the run with this payload");
+      }
       this.table.deliver(gateAddress(runId, gate), type, payload);
     } catch (err) {
+      if (err instanceof NotTakenError && err.writings.length) {
+        throw refused(
+          err.writings
+            .map(
+              (w) =>
+                `it would run the writing on "${w.state}"${w.owners.length ? `, which is ${w.owners.map(senderText).join(" and ")}'s` : ""}`,
+            )
+            .join("; "),
+        );
+      }
       if (err instanceof UnknownAddressError) {
         const open = this.gates(runId).map((g) => g.gate);
         throw new UnknownAddressError(

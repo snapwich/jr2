@@ -8,7 +8,9 @@
 // gone rather than left pretending. Workflow-defined events reach a run through its GATES
 // (`POST /runs/:id/gates/:gate/events` — ADR-0011): the gate names the pending decision, the
 // event name must be in its derived accepts, and the input is validated against the event's
-// schema host-side. Discover a run's open gates (names + accepts + meta) with `jr2 status <runId>`.
+// schema host-side. An answer the run would not take now is refused (409, ADR-0013) and prints as
+// an error naming what the Gate takes now; "delivered" is printed only when the run took it.
+// Discover a run's open gates (names + accepts + meta) with `jr2 status <runId>`.
 //
 // The run id resolves BEFORE either branch: both are writes, and a write must never be
 // prefix-sensitive (ADR-0009). It also gives a bad id a real error — `host.stop()` returns silently

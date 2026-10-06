@@ -31,6 +31,7 @@ import type { NoticeScope, TakenNotices } from "./notices.ts";
 import type { Notice } from "./wire.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
+import { notTaken, senderText, takesNow, type NotTakenWriting } from "./party.ts";
 
 /** xstate doesn't export its internal AnyActorSystem; this matches what actors receive. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -162,16 +163,30 @@ export function mayMove(invoker: AnyActorRef | undefined, type: string): boolean
   return readPayload;
 }
 
+/** Would the run take `type` from this registration now, payload-blind? Asked AS its sender
+ * ({@link takesNow}); a registration with no seat to ask from (a plain `setup()` actor tree, a bare
+ * test entry) falls back to {@link mayMove}. */
+function takenNow(reg: Pick<Registration, "invoker" | "sender" | "invokeId">, type: string): boolean {
+  return takesNow(reg, type) ?? mayMove(reg.invoker, type);
+}
+
 /**
  * An Agent's Allowed picks now (ADR-0029): the invoking state's derived set, narrowed to what the
- * invoking Machine may take ({@link mayMove}), in Menu order — so the list reads in the order the
- * tools block does. The ONE reading of the list: the surface, every receipt, the nudge and the wake
- * all ask here, so no two of them can disagree about what the Turn may pick (ADR-0016).
+ * invoking Machine would take from this Agent ({@link takenNow}), in Menu order — so the list reads
+ * in the order the tools block does. The ONE reading of the list: the surface, every receipt, the
+ * nudge and the wake all ask here, so no two of them can disagree about what the Turn may pick
+ * (ADR-0016).
  */
-export function allowedPicks(reg: Pick<Registration, "defs" | "menu" | "invoker">): string[] {
+export function allowedPicks(reg: Pick<Registration, "defs" | "menu" | "invoker" | "sender" | "invokeId">): string[] {
   const ordered = new Set([...(reg.menu ?? reg.defs).keys()].filter((name) => reg.defs.has(name)));
   for (const name of reg.defs.keys()) ordered.add(name);
-  return [...ordered].filter((name) => mayMove(reg.invoker, name));
+  return [...ordered].filter((name) => takenNow(reg, name));
+}
+
+/** A Gate's `acceptsNow` (ADR-0011): its accepted set, narrowed the same way as an Agent's Allowed
+ * picks — the names the run would take from this Gate now. */
+export function acceptsNow(reg: Pick<Registration, "defs" | "invoker" | "sender" | "invokeId">): string[] {
+  return [...reg.defs.keys()].filter((name) => takenNow(reg, name));
 }
 
 /** Delivery target absent (unknown address, settled run, exited state) — the one catch point. */
@@ -190,6 +205,19 @@ export function refuseSenderField(payload: unknown): void {
     throw new EventValidationError(
       `\`${SENDER_KEY}\` is written by the Orchestrator on every delivered event; a caller cannot send it`,
     );
+  }
+}
+
+/**
+ * The run would not take this event from this sender (ADR-0015, ADR-0029): xstate's selection holds
+ * a writing that is another party's, or — at a Gate — nothing would move. Refused BEFORE the Machine
+ * sees it. `writings` names the other party's writings, empty when nothing would move.
+ */
+export class NotTakenError extends Error {
+  readonly writings: readonly NotTakenWriting[];
+  constructor(message: string, writings: readonly NotTakenWriting[] = []) {
+    super(message);
+    this.writings = writings;
   }
 }
 
@@ -264,7 +292,8 @@ export class RegistrationTable {
    * call. Unknown address / unaccepted name / bad payload throw typed errors the adapters map
    * to their wire (404 / 400, MCP tool errors). The payload is parsed by the named def's
    * schema, so what lands in the Machine is exactly the validated shape — plus the registration's
-   * sender, written here and nowhere else (ADR-0015).
+   * sender, written here and nowhere else (ADR-0015). A delivery that would run another party's
+   * writing throws {@link NotTakenError}.
    */
   deliver(address: string, type: string, payload: unknown): void {
     const reg = this.byAddress.get(address);
@@ -280,7 +309,24 @@ export class RegistrationTable {
     if (!parsed.success) {
       throw new EventValidationError(`invalid "${type}" payload: ${parsed.error.message}`);
     }
-    reg.deliver({ type: def.name, ...parsed.data, ...(reg.sender ? { [SENDER_KEY]: reg.sender } : {}) });
+    const event: DeliveredEvent = {
+      type: def.name,
+      ...parsed.data,
+      ...(reg.sender ? { [SENDER_KEY]: reg.sender } : {}),
+    };
+    // Exact, with the real payload (ADR-0015): a delivery whose selection holds a writing that is
+    // not this sender's never reaches the Machine.
+    const others = reg.sender ? notTaken(reg, event) : [];
+    if (others.length) {
+      const owned = (w: NotTakenWriting): string =>
+        w.owners.length ? `, which is ${w.owners.map(senderText).join(" and ")}'s` : "";
+      throw new NotTakenError(
+        `"${type}" from ${senderText(reg.sender!)} would run the writing on ` +
+          `${others.map((w) => `"${w.state}"${owned(w)}`).join(" and ")}`,
+        others,
+      );
+    }
+    reg.deliver(event);
   }
 }
 

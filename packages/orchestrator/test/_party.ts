@@ -68,7 +68,10 @@ export async function partyHost(build: Build, slots: string[] = ["coder"], store
     for (const slot of slots) iids[slot] = await admittedIid(clients[slot]!);
     return { ...handle(runId), iids, clients };
   };
-  return { host, store: s, start, handle, feed, app: createApp(host), machine: def.machine };
+  /** A run's open Gates as `GET /runs/:id` lists them: names only. */
+  const gateNow = (runId: string) =>
+    host.gates(runId).map((g) => ({ gate: g.gate, accepts: g.accepts.map((a) => a.name), acceptsNow: g.acceptsNow }));
+  return { host, store: s, start, handle, feed, gateNow, app: createApp(host), machine: def.machine };
 }
 
 /** A receipt's three facts the Harness reads to pick its prose (ADR-0029). */
