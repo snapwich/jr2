@@ -382,3 +382,32 @@ test("the walk's party warnings over the scenarios: each plain shape that shadow
       `  draft: { on: { approve: { guard: sentBy("coder"), target: "#s2.doneB" } } }`,
   ]);
 });
+
+test("a Gate takes the writings of its state's plain children: they are in its accepts, and its caller's send runs them", async () => {
+  const [approve, comment] = ["approve", "comment"].map((name) => defineEvent({ name, input: z.object({}) }));
+  const h = await partyHost(
+    () =>
+      jr2Setup({ types: {} as { context: { ran: string[] } }, events: [approve!, comment!] }).createMachine({
+        id: "rv",
+        context: { ran: [] },
+        initial: "review",
+        states: {
+          review: {
+            invoke: { src: "gate", id: "board" },
+            on: { approve: "done" },
+            initial: "drafting",
+            states: { drafting: { on: { comment: { target: "commented" } } }, commented: {} },
+          },
+          done: { type: "final" },
+        },
+      }),
+    [],
+  );
+  const r = await h.start();
+  assert.deepEqual(h.gateNow(r.runId), [
+    { gate: "board", accepts: ["approve", "comment"], acceptsNow: ["approve", "comment"] },
+  ]);
+  h.host.sendToGate(r.runId, "board", { type: "comment" });
+  await r.until({ review: "commented" });
+  assert.deepEqual(h.gateNow(r.runId)[0]!.acceptsNow, ["approve"]);
+});
