@@ -89,8 +89,8 @@ export type MemoryLimitNotice = {
 export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversation"; reason: string };
 
 /**
- * What an outstanding pick's answer is (ADR-0024): the LAST reply from outside the Machine since the
- * pick — a party's event (a Gate's answer, a nested Agent's pick) with its payload, or a child's
+ * What an outstanding pick's answer is (ADR-0024): the LAST reply from below the Agent's state since
+ * the pick — a party's event (a Gate's answer, a nested Agent's pick) with its payload, or a child's
  * output (a child Machine, an Effect stand-in) — named by who sent it. Absent where nothing replied:
  * the pick moved the workflow and nothing ran. Plain data; the Harness writes the words.
  */

@@ -6,18 +6,21 @@
 // A hold is plain data on the run (`RunBlob.holds`), saved with the snapshot, so a park or an
 // Orchestrator restart is a longer wait in the same Turn: the restored host reads the same Rest off
 // the restored Machine, and answers the same poll. What a hold keeps beside the delivery id is the
-// LAST reply from outside the Machine since the pick (`last`) — the answer's default — because the
+// LAST reply from below the Agent's state since the pick (`last`) — the answer's default — because the
 // events that carried it are gone after a restart.
 //
 // The answer is the last reply since the pick, rendered by the Harness: a party's event (a Gate's
 // answer, a nested Agent's pick) with its payload, or a child's output (a child Machine, an Effect
-// stand-in). A chain link is a reply from outside the Machine; the events the Machine sent itself
-// (`raise`, `sendTo(self)`, a timer) are skipped. With no link, the pick moved the workflow and
-// nothing ran.
+// stand-in). A chain link is a reply from below the Agent's state — from the set of active states
+// under it, never from a sibling region or the root; the events the Machine sent itself (`raise`,
+// `sendTo(self)`, a timer) are skipped. With no link, the pick moved the workflow and nothing ran.
 
-import type { AnyActorRef, AnyEventObject } from "xstate";
+import type { AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyStateMachine } from "xstate";
 import { SENDER_KEY, type Sender } from "@jr2/agent-protocol";
+import { activeBelow } from "./rest.ts";
 import type { PickAnswer } from "./wire.ts";
+
+type Node = AnyStateMachine["root"];
 
 /** One outstanding pick, or its answer not yet superseded. JSON-safe: it rides the run blob. */
 export type Hold = {
@@ -58,16 +61,34 @@ export type HeldAnswer = {
 
 /**
  * The reply one event is, when the invoking Machine receives it during a hold — or undefined when it
- * is no reply: the Machine's own event (`source` is the Machine itself: a `raise`, a `sendTo(self)`,
- * a timer), or an xstate event other than a child's end. A child is named by its slot (`src`) where
- * it has one, else by its invoke id.
+ * is no reply. Rest, the answer and the ledger are computed over the SET of active states below the
+ * Agent's state (`seat`), so a reply comes from below it:
+ *
+ *   - from a child invoked on an active state below the seat (`source` is that child: its end, or an
+ *     event it sends its parent), or
+ *   - from a party seated below it: a Gate whose invoke id, or an Agent whose slot, is invoked on an
+ *     active state below the seat (the event's `sender`, ADR-0015).
+ *
+ * Everything else is skipped: the Machine's own events (`source` is the Machine itself: a `raise`, a
+ * `sendTo(self)`, a timer), an xstate event other than a child's end, and an event from outside the
+ * set — a Gate in a sibling region, a root Gate, an outside `jr2 send`. Read it as the event is
+ * relayed, before the Machine processes it: the states the reply came from are still active. A
+ * child is named by its slot (`src`) where it has one, else by its invoke id.
  */
 export function replyOf(
   event: AnyEventObject,
   source: AnyActorRef | undefined,
   machine: AnyActorRef,
+  seat: Node,
 ): PickAnswer | undefined {
   if (source === machine) return undefined;
+  const below = activeBelow(machine.getSnapshot() as AnyMachineSnapshot, seat).flatMap((node) => node.invoke);
+  const sender = (event as { [SENDER_KEY]?: Sender })[SENDER_KEY];
+  const fromChild = source !== undefined && below.some((inv) => inv.id === source.id);
+  const fromParty =
+    sender !== undefined &&
+    below.some((inv) => (sender.party === "gate" ? inv.id === sender.id : inv.src === sender.id));
+  if (!fromChild && !fromParty) return undefined;
   const done = /^xstate\.(done|error)\.actor\.(.+)$/.exec(event.type);
   if (done) {
     const src = (source as { src?: unknown } | undefined)?.src;
@@ -77,6 +98,6 @@ export function replyOf(
     return { kind: "error", actor, error: error instanceof Error ? error.message : String(error) };
   }
   if (event.type.startsWith("xstate.")) return undefined;
-  const { type, [SENDER_KEY]: sender, ...payload } = event as AnyEventObject & { [SENDER_KEY]?: Sender };
-  return { kind: "event", event: type, ...(sender ? { sender: { ...sender } } : {}), payload };
+  const payload = Object.fromEntries(Object.entries(event).filter(([key]) => key !== "type" && key !== SENDER_KEY));
+  return { kind: "event", event: event.type, ...(sender ? { sender: { ...sender } } : {}), payload };
 }

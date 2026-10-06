@@ -21,9 +21,16 @@
 
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type AnyStateMachine } from "xstate";
+import {
+  createActor,
+  type AnyActor,
+  type AnyActorLogic,
+  type AnyActorRef,
+  type AnyMachineSnapshot,
+  type AnyStateMachine,
+} from "xstate";
 import { SENDER_KEY, type EventDef, type EventSemantics } from "@jr2/agent-protocol";
-import { senderText } from "./party.ts";
+import { seatOf, senderText } from "./party.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
 import { replyOf, type Hold } from "./holds.ts";
@@ -1741,15 +1748,18 @@ export class RunHost {
             this.announce(record.workflow, { kind: "emit", runId: record.runId, event });
           });
         }
-        // The chain (ADR-0024): every reply a Machine receives while one of its Agents' picks is
-        // outstanding — inspected as it is relayed, before the Machine processes it — and the last
-        // is the answer's default. The Machine's own events are skipped (`replyOf`).
+        // The chain (ADR-0024): every reply from below the Agent's state while one of its picks is
+        // outstanding — inspected as it is relayed, before the Machine processes it, so the states
+        // it came from are still active — and the last is the answer's default. The Machine's own
+        // events, and events from outside the states below the Agent's, are skipped (`replyOf`).
         if (ev.type === "@xstate.event" && holds.size > 0) {
           for (const hold of holds.values()) {
             if (hold.answer !== undefined) continue;
             const reg = this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId));
-            if (!reg?.invoker || reg.invoker !== ev.actorRef) continue;
-            const reply = replyOf(ev.event, ev.sourceRef as AnyActorRef | undefined, ev.actorRef as AnyActorRef);
+            if (!reg?.invoker || !reg.invokeId || reg.invoker !== ev.actorRef) continue;
+            const seat = seatOf(reg.invoker.getSnapshot() as AnyMachineSnapshot, reg.invokeId);
+            if (!seat) continue;
+            const reply = replyOf(ev.event, ev.sourceRef as AnyActorRef | undefined, reg.invoker, seat);
             if (reply) hold.last = reply;
           }
         }

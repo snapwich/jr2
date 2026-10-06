@@ -67,14 +67,16 @@ single-threaded.
   also claims one pick at a time in MESSAGE order — pi starts one message's calls in that order, each up to its first
   `await` — because a socket race does not keep it (measured: `finish` arrived first in 1 of 50).
 - **The answer, in order:** the work settles, the Machine's route runs (guards, assign), then the Agent is answered with
-  the Allowed picks read AFTER the route. The answer is the last reply since the pick, from outside the Machine — a
-  Gate's event and payload, another Agent's pick, a child's output — and the Harness writes the words. The events the
-  Machine sent itself (a `raise`, a `sendTo(self)`, a timer) are no reply; with none, the pick moved the workflow and
-  nothing ran. The pick's `POST` answers at once with `outstanding` and a delivery id, and the Harness long-polls the
-  answer inside the one tool call (ADR-0002, ADR-0013). A route that leaves the Agent's state ends the Turn like any
-  other: the poll reads `turnComplete`, the next state's prompt is the author's, and the answer is a `pick-answer`
-  notice to the Agent's next continued Turn (ADR-0062). There is no default time bound on a held Turn; the Console shows
-  each outstanding pick "held since".
+  the Allowed picks read AFTER the route. The answer is the last reply since the pick from below the Agent's state — a
+  Gate's event and payload, another Agent's pick, a child's output — and the Harness writes the words. A reply comes
+  from a child invoked on an active state below the Agent's state, or from a party whose Gate invoke id or Agent slot is
+  invoked there (its sender, ADR-0015). The events the Machine sent itself (a `raise`, a `sendTo(self)`, a timer) are no
+  reply, and neither is an event from outside that set (a Gate in a sibling region, a root Gate, an outside send); with
+  none, the pick moved the workflow and nothing ran. The pick's `POST` answers at once with `outstanding` and a delivery
+  id, and the Harness long-polls the answer inside the one tool call (ADR-0002, ADR-0013). A route that leaves the
+  Agent's state ends the Turn like any other: the poll reads `turnComplete`, the next state's prompt is the author's,
+  and the answer is a `pick-answer` notice to the Agent's next continued Turn (ADR-0062). There is no default time bound
+  on a held Turn; the Console shows each outstanding pick "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

@@ -42,7 +42,7 @@ export type MemoryLimitNotice = {
 /** This conversation is new and earlier context is gone — stated to that Agent's next Turn. */
 export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversation"; reason: string };
 
-/** The last reply from outside the workflow since a pick (ADR-0024): a party's event with its
+/** The last reply from below the Agent's state since a pick (ADR-0024): a party's event with its
  * payload, or a child's output — what an outstanding pick's answer carries. Absent: nothing ran. */
 export type PickAnswer =
   | { kind: "event"; event: string; sender?: { party: "agent" | "gate"; id: string }; payload: Record<string, unknown> }

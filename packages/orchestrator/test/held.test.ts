@@ -398,3 +398,74 @@ test("a Sandbox Harness restart the watch sees while a pick is outstanding: no f
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(rig.host.status(rig.runId)?.status, "active");
 });
+
+// --- The answer comes from below the Agent's state (ADR-0024) -------------------------------------
+
+test("a reply from outside the states below the Agent's is no link: a sibling region's Gate and child answer nothing", async () => {
+  const note = ev("note", z.object({ text: z.string() }));
+  const side = controllable();
+  const endpoint = "http://harness.invalid";
+  const machineWith = (coder: ReturnType<typeof agentActorWith>) =>
+    jr2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [wait, note, finish],
+      actors: { coder, side: side.logic },
+    }).createMachine({
+      id: "wf",
+      context: {},
+      type: "parallel",
+      states: {
+        main: {
+          initial: "work",
+          states: {
+            work: {
+              invoke: { src: "coder", input: { prompt: "Work.", endpoint, continue: true } },
+              on: { finish: "#wf.main.done" },
+              initial: "rest",
+              states: { rest: { on: { wait: "waiting" } }, waiting: { after: { 40: "rest" } } },
+            },
+            done: { type: "final" },
+          },
+        },
+        // The Pool's wake Gate shape: a Gate and a child in a sibling root region.
+        aside: {
+          initial: "open",
+          states: {
+            open: {
+              invoke: [
+                { src: "gate", id: "side", input: {} },
+                { src: "side", id: "job" },
+              ],
+              on: { note: "noted" },
+            },
+            noted: {},
+          },
+        },
+      },
+    });
+  const clients: MockFlueClient[] = [];
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "sibling",
+    machine: machineWith(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+    provide: () => {
+      const coder = new MockFlueClient();
+      clients.push(coder);
+      return { actors: { coder: agentActorWith(() => coder, coderDefinition), side: side.logic } };
+    },
+  });
+  const { runId } = await host.start("sibling");
+  await waitFor(() => (clients[0]?.admits.length ?? 0) > 0);
+  const iid = clients[0]!.admits[0]!.instanceId;
+
+  const waiting = host.sendToAgent(iid, { type: "wait" });
+  assert.equal(waiting.outstanding, true);
+  const polled = host.awaitDelivery(iid, waiting.deliveryId);
+  side.settle({ unrelated: true });
+  await new Promise((r) => setTimeout(r, 5));
+  host.sendToGate(runId, "side", { type: "note", text: "unrelated" });
+  const answer = await polled;
+  assert.equal(answer?.answered, true);
+  assert.equal(answer?.answer, undefined, "it moved, and nothing ran below the Agent's state");
+  await host.close();
+});
