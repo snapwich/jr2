@@ -748,7 +748,7 @@ test("an `after` below a state that invokes an Agent is re-armed; the Turn is re
   const iid = clients[0]!.admits[0]!.instanceId;
 
   const b = await restoreOn(store, def, runId);
-  assert.deepEqual(b.agentSurface(iid)?.allowed, ["done"], "restored in the mode the timer has not left");
+  assert.deepEqual(b.agentSurface(iid)?.allowed, [], "restored in the mode the timer has not left: it holds Rest");
   const t = await timeTo(() => JSON.stringify(b.status(runId)?.value) === JSON.stringify({ active: "review" }));
   assertAbout(t, remaining, "below an Agent's state");
   assert.deepEqual(b.agentSurface(iid)?.allowed, ["done", "request_review"], "the re-armed timer moved the mode");

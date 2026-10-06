@@ -29,7 +29,11 @@ collapses into repetition.
   ~100) as the early exit. If a surface is ever demanded, note it would be a Dial question (ADR-0018) — how hard to run
   this one Turn — but no workflow has needed one. Both count tool calls alone: a Turn part the Harness restates at a
   step boundary ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)) is not a
-  step and neither breaks nor extends an identical-call streak.
+  step and neither breaks nor extends an identical-call streak. An outstanding pick
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)) is one call however long the workflow runs
+  it — the guard has no clock, so a held Turn is never a Runaway for waiting — and its answer **resets the
+  identical-call streak**: the world moved, so the same pick again is a new question. Four `run_tests` in a row, each
+  answered by a flaky suite, is a model reading answers, not a loop.
 - **Tripping settles the Submission `failed` with `SettlementError.type: "runaway"`** and a legible message ("repeated
   an identical tool call 4 times", "exceeded 256 steps"). No fourth `SettlementOutcome`: `aborted` stays the ADR-0024
   sweep's word, and the typed error is what lets `agentRun` switch on the class without parsing prose.

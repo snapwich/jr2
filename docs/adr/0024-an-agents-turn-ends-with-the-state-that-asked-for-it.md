@@ -48,6 +48,33 @@ single-threaded.
   picks, and the one that leaves the state ends it. What the child does changes nothing: there is no second mechanism.
   Child or sibling says only this — same Turn or not — and never who may send what: that is the audience rule's, by the
   party each state invokes (ADR-0015).
+- **A pick that moves the workflow inside the Agent's state is answered at Rest.** Rest: no state below the Agent's
+  state is running something — an invoked child that is still active (a Gate, another Agent, a child Machine, a promise)
+  — and no pending timer will move the workflow to another state inside the Agent's state. A timer counts the same
+  whatever wrote it (`after`, a named delay, a delayed `raise`, a delayed `sendTo` back to the Machine): it holds Rest
+  when an active state at or below the Agent's state handles its event with a target inside it; a timer that leaves the
+  Agent's state (a Turn timeout) holds nothing. A settled child with no `onDone` is Rest, and a state named `rest` means
+  nothing to jr2, so a forgotten route cannot hang a Turn. Rest is read from the Machine, never kept: the snapshot and
+  the timer table (ADR-0007), after the mailbox drains (`rest.ts`), so a restored run gives the same answer as before
+  the restart. It is computed over the SET of active states below the Agent's state; nothing assumes the set has one
+  member. Known limit: a delayed `sendTo` to a child whose reply then moves the Machine is not counted.
+- **While a pick is outstanding — delivered and not yet answered — every other pick is refused**, `finish` included, and
+  nothing is delivered; so is every pick while the Agent's state is busy with work it started in. xstate itself would
+  take the pick, and one the Agent's state handles would exit the child state and stop the work running there, so the
+  refusal is jr2's. The Orchestrator decides it from the Machine (Rest) and the run's saved holds, so it holds after a
+  restart, and answers `409 { refused: "outstanding", outstanding?, allowed: [] }`. The Allowed picks are empty while
+  the Agent's state is not at Rest (ADR-0029): the Rest rule and the payload-blind selection give one list. The Harness
+  also claims one pick at a time in MESSAGE order — pi starts one message's calls in that order, each up to its first
+  `await` — because a socket race does not keep it (measured: `finish` arrived first in 1 of 50).
+- **The answer, in order:** the work settles, the Machine's route runs (guards, assign), then the Agent is answered with
+  the Allowed picks read AFTER the route. The answer is the last reply since the pick, from outside the Machine — a
+  Gate's event and payload, another Agent's pick, a child's output — and the Harness writes the words. The events the
+  Machine sent itself (a `raise`, a `sendTo(self)`, a timer) are no reply; with none, the pick moved the workflow and
+  nothing ran. The pick's `POST` answers at once with `outstanding` and a delivery id, and the Harness long-polls the
+  answer inside the one tool call (ADR-0002, ADR-0013). A route that leaves the Agent's state ends the Turn like any
+  other: the poll reads `turnComplete`, the next state's prompt is the author's, and the answer is a `pick-answer`
+  notice to the Agent's next continued Turn (ADR-0062). There is no default time bound on a held Turn; the Console shows
+  each outstanding pick "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,
@@ -82,10 +109,10 @@ single-threaded.
 - **The receipt becomes self-describing**: `POST /agents/:iid/events` answers
   `{ delivered: true, event: "review_verdict", turnComplete: true, deliveryId }`. `turnComplete` is read off the same
   table the guarantee uses — whether the registration just delivered to is still live — so it reports what happened
-  rather than what was hoped. `deliveryId` is unchanged
-  ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md) keeps it as the room a deferred
-  result will need). **This is the hint, not the guarantee**, and it is named for the Agent's frame rather than the
-  wire's: the Agent has no submissions, it has a Turn (CONTEXT.md).
+  rather than what was hoped; for an outstanding pick it is read at Rest, on the answer. `deliveryId` addresses that
+  answer ([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)). **This is the hint, not
+  the guarantee**, and it is named for the Agent's frame rather than the wire's: the Agent has no submissions, it has a
+  Turn (CONTEXT.md).
 - **The Harness renders the receipt as prose**, because a model reads the tool result's text: the pick was delivered,
   the workflow consumed it, the turn is over.
 - **The Agent instructions gain the stop half.** "You MUST finish by calling `review_verdict`" is half a contract — it
@@ -128,9 +155,18 @@ matter:
   answering, and it only ever covers endings caused by deliveries — the narrow rule again, wearing a different hat.
 - **Take the Menu's tools away when the surface goes.** Rejected: nothing pushes to the Harness by design (ADR-0013 — it
   asks per turn, and the answer is the turn), and a tool disappearing does not stop a model already generating.
-- **Make the event `deferred` and hold the call open.** Rejected: reserved-not-built (ADR-0013), and a held tool call
-  would have to be poll-with-progress anyway. It also solves a different problem — giving the Agent an _answer_ — where
-  this one is about giving it an _end_.
+- **Make the event `deferred` and hold the call open** as the way to END a Turn. Rejected: it solves a different problem
+  — giving the Agent an _answer_ — where this one is about giving it an _end_. The answer is now given, by Rest and the
+  poll above, to every pick that runs work inside the Agent's state, with no per-event declaration.
+- **Answer an outstanding pick from the POST itself, held open.** Rejected: undici cuts it at 300 s and its error then
+  says the delivered pick never arrived; an Orchestrator restart mid-request reads as unreachable (ADR-0002).
+- **A per-pick footprint as the Rest rule** (Rest when what THIS pick started has settled), or explicit `rest`-tagged
+  states. Rejected for the one-path shape jr2 builds: the footprint needs a per-pick record that a restore must carry,
+  and a tag makes a forgotten mark hang the Turn. A footprint is the natural rule for the shape jr2 reserves — picks the
+  Agent does not wait for, in parallel regions (ADR-0015) — if that is ever built.
+- **Let the Orchestrator alone refuse a second pick.** Rejected as the only refusal: it sees arrival order, and two
+  calls of one message race over two sockets. The Orchestrator's refusal is the authority; the Harness's claim is what
+  makes the result the same every time.
 
 ## Consequences
 
@@ -148,6 +184,12 @@ matter:
   left. It reads the Allowed picks after the Submission settles — or, if none are left then, the first time they open
   while the state is active (the wake) — so a pick that kept the Turn open can be followed by a nudge, and a pick that
   ended it never is: the abort and the nudge cannot fire against each other.
+- **A Machine author can hold a Turn for long by accident.** A Gate below the Agent's state whose answer has no target
+  stays open after it, and a long-lived invoke below it (not a promise, a Gate, an Agent or a child Machine) never
+  settles: either keeps the Agent's state from Rest, and every pick of the Agent waits. The load walk warns on both
+  (ADR-0015's walk); neither is refused, because either can be meant.
+- **Rest reads xstate internals**: the timer table (`system.getSnapshot()._scheduledEvents`, as ADR-0007's re-arm does)
+  and the seat lookup's active nodes. The raw-xstate tests are the canary for a bump.
 - **Non-determinism dictates how this is tested.** "Did it stop calling?" proves nothing when a well-behaved agent stops
   on its own. The `@kind` tier asserts the **settlement outcome**: after a settling delivery the submission must settle
   `aborted`, and a `continue` re-invocation must settle `completed` rather than being swallowed by its predecessor's

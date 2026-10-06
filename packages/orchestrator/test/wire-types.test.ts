@@ -35,6 +35,8 @@ const memoryLimit: Mutual<client.MemoryLimitEvent, harness.MemoryLimitEvent> = a
 const notice: Mutual<client.Notice, harness.Notice> = agree;
 const memoryLimitNotice: Mutual<client.MemoryLimitNotice, harness.MemoryLimitNotice> = agree;
 const conversationNew: Mutual<client.ConversationNewNotice, harness.ConversationNewNotice> = agree;
+const pickAnswerNotice: Mutual<client.PickAnswerNotice, harness.PickAnswerNotice> = agree;
+const pickAnswer: Mutual<client.PickAnswer, harness.PickAnswer> = agree;
 const echoStatus: Mutual<client.EchoStatusEvent, harness.EchoStatusEvent> = agree;
 const echoChild: Mutual<client.EchoStatusChild, harness.EchoStatusChild> = agree;
 const echoEmit: Mutual<client.EchoEmitEvent, harness.EchoEmitEvent> = agree;
@@ -70,6 +72,8 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     notice,
     memoryLimitNotice,
     conversationNew,
+    pickAnswerNotice,
+    pickAnswer,
     echoStatus,
     echoChild,
     echoEmit,

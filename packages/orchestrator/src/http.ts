@@ -14,6 +14,7 @@
 //   # the Agent's Harness, through its Custodian, and nothing else
 //   GET  /agents/:iid/surface          accepts + schemas + semantics             [Sandbox token]
 //   POST /agents/:iid/events           validate + deliver → the turn receipt      [Sandbox token]
+//   GET  /agents/:iid/deliveries/:id   long-poll an outstanding pick's answer    [Sandbox token]
 //   POST /sandboxes/:name/fetch        ask the node cache to fetch one Repo      [Sandbox token]
 //
 // The token is not decoration: an Agent has code execution in its Harness container and shares the
@@ -41,7 +42,7 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { accepts } from "hono/accepts";
 import { streamSSE } from "hono/streaming";
-import { EventValidationError, NotTakenError, UnknownAddressError } from "./registration.ts";
+import { EventValidationError, NotTakenError, OutstandingError, UnknownAddressError } from "./registration.ts";
 import type { RepoStatus } from "./repos.ts";
 import { UnmountedRepoError, type FetchAnswer } from "./repo-fetch.ts";
 import { mayAskForSandbox, mayDeliverToAgent, type Authenticator, type Principal } from "./tokens.ts";
@@ -368,6 +369,10 @@ export type CreateAppOptions = {
    * ask, and the route says so rather than waiting on a cluster that is not there.
    */
   fetchRepo?: (sandbox: string, identity: string) => Promise<FetchAnswer>;
+  /** How long one poll of an outstanding pick waits for its answer before it answers `outstanding`
+   * (ADR-0013, ADR-0024). Default 25 s: every request stays far below undici's 300 s and the
+   * Custodian's idle limit. Tests shorten it. */
+  deliveryWaitMs?: number;
 };
 
 /**
@@ -841,12 +846,53 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
       return c.json(host.sendToAgent(c.req.param("instanceId"), body));
     } catch (err) {
       if (err instanceof UnknownAddressError) return c.json({ error: errMessage(err) }, 404);
+      // One pick at a time (ADR-0024): refused, nothing delivered, and nothing is allowed until the
+      // workflow is back at Rest. `outstanding` names the pick still running, when there is one; the
+      // Harness writes the words.
+      if (err instanceof OutstandingError) {
+        return c.json(
+          {
+            error: errMessage(err),
+            refused: "outstanding",
+            ...(err.outstanding !== undefined ? { outstanding: err.outstanding } : {}),
+            allowed: [],
+          },
+          409,
+        );
+      }
       if (err instanceof EventValidationError) {
         // The Allowed picks ride the refusal (ADR-0029), so "Allowed now: …" can follow it.
         return c.json({ error: errMessage(err), ...(err.allowed ? { allowed: err.allowed } : {}) }, 400);
       }
       throw err;
     }
+  });
+
+  // An outstanding pick's answer (ADR-0013, ADR-0024), long-polled: the POST answered at once with a
+  // delivery id, and the Harness asks here inside the pick's one tool call, up to `deliveryWaitMs`
+  // per request, until the workflow is back at Rest in the Agent's state or has left it. A GET is
+  // safe to repeat, so a reset or a restarting Orchestrator costs a retry, never the pick: a stopping
+  // or parked host answers 503 — ask again — and the restored host answers from the saved hold.
+  // Scoped like the pick: the Sandbox the registration had when the pick was made, because the
+  // answer outlives a registration that a route out of the Agent's state ends.
+  app.get("/agents/:instanceId/deliveries/:deliveryId", authenticated, async (c) => {
+    const instanceId = c.req.param("instanceId");
+    const deliveryId = c.req.param("deliveryId");
+    if (host.stopping || host.parkedDelivery(instanceId, deliveryId)) {
+      return c.json({ error: `the Orchestrator is stopping — ask again for delivery "${deliveryId}"` }, 503);
+    }
+    const scope = host.deliveryScope(instanceId, deliveryId);
+    if (!scope) return c.json({ error: `no delivery "${deliveryId}" for instance "${instanceId}"` }, 404);
+    if (!mayDeliverToAgent(principalOf(c), scope.sandbox)) {
+      return c.json({ error: `this token cannot speak for instance "${instanceId}"` }, 403);
+    }
+    const receipt = await host.awaitDelivery(instanceId, deliveryId, opts.deliveryWaitMs);
+    if (host.stopping) {
+      return c.json({ error: `the Orchestrator is stopping — ask again for delivery "${deliveryId}"` }, 503);
+    }
+    return receipt
+      ? c.json(receipt)
+      : c.json({ error: `no delivery "${deliveryId}" for instance "${instanceId}"` }, 404);
   });
 
   // The pod's one route out (ADR-0053). A `git fetch` inside a Sandbox runs a program on the

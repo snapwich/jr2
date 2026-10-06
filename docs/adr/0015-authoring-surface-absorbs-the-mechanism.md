@@ -98,7 +98,11 @@ writings the sender may take. A guard that reads the payload is unknown there an
 the fail-open of a party check skipped, because delivery asks again with the real payload. The payload-blind selection
 is a copy of xstate 5.32.2's (`transitionNode`, `StateNode.next`, `evaluateGuard`, the members of `and`/`or`/`not`),
 pinned against `getTransitionData` in the default test run — the canary for an xstate bump. Without a `sentBy`, nothing
-misroutes: the shallower party is refused while the deeper writing is active, and the walk warns (below).
+misroutes: the shallower party is refused while the deeper writing is active, and the walk warns (below). When the
+deeper party runs BELOW an Agent's state — a Gate, a nested Agent — the Agent's state is not at Rest, so the Agent's
+picks are refused before the selection is asked
+([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)); the selection decides the Gate's caller's
+sends there, and every case with the Agent's state at Rest.
 
 **Load checks on modes and audience.** `createMachine` refuses a registered event that no state handles: it is in no
 derived set, so it is on no Menu and no Gate. It refuses a parallel region below a state that invokes an Agent — the
@@ -108,9 +112,11 @@ stays legal, and the doc carries the warning and `jr2 up` prints it — about a 
 no state the Machine can enter has a transition into it or a state inside it — so neither the mode's own `initial` nor
 its transition into itself counts: its picks are on the Menu and never allowed); about a Gate above an Agent's state
 that takes an unset-audience writing the Agent reaches (the one narrowing of the audience rule an author may not
-expect); about two parties' writings of one name that can be active together; and about one party's writings of one name
-that mean two things. A child with no `onDone` that strands the Agent in it — a one-way mode — is legal and silent on
-purpose.
+expect); about two parties' writings of one name that can be active together; about one party's writings of one name
+that mean two things; and about two shapes below an Agent's state that keep it from Rest, so every pick of the Agent
+waits (ADR-0024): a Gate whose answer has no target (the Gate stays open after it), and a long-lived invoke — one that
+runs until its state exits, not a promise, a Gate, an Agent or a child Machine. A child with no `onDone` that strands
+the Agent in it — a one-way mode — is legal and silent on purpose.
 
 - **Two parties' writings of one name that can be active together** — one above the other on one path, or in parallel
   regions — where the deeper writing (each other region's, for parallel regions) does not decline the other sender with

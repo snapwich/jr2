@@ -43,10 +43,12 @@ is needed either (ADR-0006).
 
 - **The Harness presents the Menu to its model itself.** There is no MCP server and no MCP client. `menu.ts` turns each
   accepted event into a Menu item, with the event's JSON Schema as its parameters, and turns a pick into one
-  `POST …/events`. It imports nothing from pi: `menu-tools.ts` gives each item to pi as a tool. A harness that only
-  speaks MCP would get a second presenter over the same `menu.ts`, not a second Menu. The receipt comes back as prose
-  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A 404 on the surface is a Turn that is
-  over, and it is never prompted ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)).
+  `POST …/events` — and, for an outstanding pick, the polls of its delivery, inside the same tool call. It holds one
+  pick at a time per Submission, claimed in message order. It imports nothing from pi: `menu-tools.ts` gives each item
+  to pi as a tool. A harness that only speaks MCP would get a second presenter over the same `menu.ts`, not a second
+  Menu. The receipt comes back as prose ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)). A
+  404 on the surface is a Turn that is over, and it is never prompted
+  ([ADR-0026](0026-a-turn-that-is-over-is-never-prompted.md)).
 - **The Orchestrator hosts no MCP, and judges every pick.** The registration table stays the one internal primitive; it
   keeps two thin HTTP surfaces, neither of them MCP:
 
@@ -57,18 +59,26 @@ is needed either (ADR-0006).
 
   # the Agent's, through its pod's Custodian
   GET  /agents/:iid/surface            → Menu + Allowed picks + schemas + semantics [Sandbox token]
-  POST /agents/:iid/events             → validate + deliver → the receipt          [Sandbox token]
+  POST /agents/:iid/events             → validate + deliver → the receipt, or 409  [Sandbox token]
+  GET  /agents/:iid/deliveries/:id     → an outstanding pick's answer, long-polled [Sandbox token]
   ```
 
-  The receipt is `{ delivered, event, moved, turnComplete, deliveryId }`. `deliveryId` is still the room a deferred
-  result will need. Lookup, validation, delivery and lifecycle are implemented once, in the table. The token's scope,
-  the live registration, and the event's name and payload are judged here and nowhere else; the Custodian forwards and
-  decides nothing about a pick. Neither surface takes a body that carries `sender`: the table writes it on every
-  delivered event (ADR-0011), so a client that posts it — the Harness, `jr2 send --input` — is answered 400. The gates
-  surface answers `{ ok: true }` when the run took the send, and only then; a send the run would not take now — its
-  selection holds another party's writing, or no writing would move on this payload (ADR-0015, ADR-0029) — is answered
-  `409 { error, acceptsNow }` and nothing is delivered. `jr2 send --gate` prints that error, which names what the Gate
-  takes now, and exits 1.
+  The receipt is `{ delivered, event, moved, turnComplete, allowed, deliveryId }`. A pick the workflow is still running
+  when the POST answers — it moved the workflow to work inside the Agent's state
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)) — is `outstanding`, and `deliveryId`
+  addresses its answer: `GET /agents/:iid/deliveries/:id` holds up to about 25 s and answers either `outstanding` (ask
+  again) or the receipt with `answered`, the Allowed picks read after the route, and the answer. A stopping or parked
+  Orchestrator answers the poll 503, never 404, which says the Turn is over; the delivery is scoped to the Sandbox its
+  registration had when the pick was made, because the answer outlives a registration that a route out of the Agent's
+  state ends. A pick while one is outstanding, or while the Agent's state is busy, is answered
+  `409 { refused: "outstanding", outstanding?, allowed: [] }` and nothing is delivered. Lookup, validation, delivery and
+  lifecycle are implemented once, in the table. The token's scope, the live registration, and the event's name and
+  payload are judged here and nowhere else; the Custodian forwards and decides nothing about a pick. Neither surface
+  takes a body that carries `sender`: the table writes it on every delivered event (ADR-0011), so a client that posts it
+  — the Harness, `jr2 send --input` — is answered 400. The gates surface answers `{ ok: true }` when the run took the
+  send, and only then; a send the run would not take now — its selection holds another party's writing, or no writing
+  would move on this payload (ADR-0015, ADR-0029) — is answered `409 { error, acceptsNow }` and nothing is delivered.
+  `jr2 send --gate` prints that error, which names what the Gate takes now, and exits 1.
 
 - **Bearer tokens, because the boundary is otherwise theater.** The Harness container shares the pod's network
   namespace, so an Agent can `curl` the Orchestrator directly; a per-pod NetworkPolicy cannot distinguish it from the
@@ -95,12 +105,13 @@ is needed either (ADR-0006).
 - **Reachability, narrowed to one caller.** The Orchestrator is always in-cluster (ADR-0019), so the route home is
   simply **Service DNS**, which `jr2 up` writes into the Custodian's configuration. The Harness is told the Custodian's
   loopback address (`JR2_CUSTODIAN_URL`) and nothing else.
-- **Deferred tool results are reserved, not built.** ADR-0006's `deferred`/`poll` semantics stay in the model and the
-  wire leaves room for them: the surface listing ships each def's `semantics`, and an agent-surface delivery returns a
-  **receipt with a `deliveryId`** (so an outcome is addressable after the fact; the gates surface answers `{ ok: true }`
-  for a send the run took, and 409 for one it would not — external callers need no receipt). Registering a `deferred` or
-  `poll` def **fails loudly as unimplemented** — a silent downgrade to `ack` would be a lying tool contract — and the
-  Harness refuses a turn whose surface offers one.
+- **A Machine-answered tool result is the held answer, for every pick that runs work.** No def declares it: a pick whose
+  target runs something inside the Agent's state is outstanding until the workflow is back at Rest, and the Harness
+  polls its delivery inside the one tool call (ADR-0002, ADR-0024). The gates surface answers `{ ok: true }` for a send
+  the run took and 409 for one it would not — external callers need no receipt. ADR-0006's `deferred`/`poll` semantics
+  are still in the model and the surface listing still ships each def's `semantics`; registering a `deferred` or `poll`
+  def **fails loudly as unimplemented** — a silent downgrade to `ack` would be a lying tool contract — and the Harness
+  refuses a turn whose surface offers one.
 
 ## Considered options
 

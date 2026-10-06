@@ -34,6 +34,7 @@ import {
   type GateCard,
   type ObservedRun,
   type Store,
+  type HeldLine,
   type WaitingLine,
 } from "./store.ts";
 import { zoomFit, zoomIn, zoomOut, zoomReset, type MachineDoc } from "./canvas.ts";
@@ -144,10 +145,10 @@ async function refreshRun(runId: string, workflow: string): Promise<void> {
   const res = await gfetch(`/runs/${encodeURIComponent(runId)}`);
   if (!res) return; // 401 already dropped the page to observer
   // !ok: settled + evicted — no gates, and nothing waits.
-  const body = res.ok ? ((await res.json()) as { gates?: GateCard[]; waiting?: WaitingLine[] }) : {};
+  const body = res.ok ? ((await res.json()) as { gates?: GateCard[]; waiting?: WaitingLine[]; held?: HeldLine[] }) : {};
   if (runFetchSerial.get(runId) !== serial) return; // superseded — a newer re-fetch owns the answer
   dispatch({ kind: "gates", runId, workflow, gates: body.gates ?? [] });
-  dispatch({ kind: "waiting", runId, workflow, waiting: body.waiting ?? [] });
+  dispatch({ kind: "waiting", runId, workflow, waiting: body.waiting ?? [], held: body.held ?? [] });
 }
 
 // ---- The two writes (start-run + gate delivery — ADR-0033) --------------------------------------

@@ -44,11 +44,21 @@ first-class terminal outcome, but actor STOP does not call it: a host shutdown s
 stay alive server-side for restore to re-attach. Remote abort is reserved for a deliberate terminal act, not a stop side
 effect.
 
-## A held tool result is bounded by the client that holds it
+## A held tool result is a poll, never a held socket
 
-A pick is one `POST` from the Harness through the Custodian
-([ADR-0013](0013-the-agent-reaches-its-machine-through-a-container-it-cannot-read.md)), and an unanswered one surfaces
-to the Agent as a tool error when a client bound runs out — the Harness's HTTP client waits 300 s for response headers.
-When a bound ran out, the Agent did **not** perform the gated action (measured, with a 60 s bound — the gate held). This
-is the one real constraint on ADR-0013's reserved `deferred` semantics: when a Machine-answered tool result lands, it
-will be poll-with-progress, not a socket held open for minutes.
+A pick that moves the workflow to work inside the Agent's state is answered when the workflow is back at Rest there
+([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)) — seconds or hours later. One request cannot
+carry that wait: the Harness's HTTP client (Node's undici) cuts a request at 300 s with no response headers, and at 300
+s between body chunks, and its error then told the Agent "the pick never reached the Orchestrator — try it again" for a
+pick that WAS delivered (measured: cut at 302 s, both timers, and through the real turn loop at 301 s). An Orchestrator
+restart mid-request is a reset after the request was sent, which the Custodian rightly does not retry and which read as
+"the Custodian could not reach it". A model told either goes round again.
+
+So the answer is **poll-with-progress**. The pick's `POST` answers at once: `outstanding`, with a delivery id. Inside
+the one tool call, the Harness long-polls `GET /agents/:iid/deliveries/:id` (ADR-0013), about 25 s per request — the
+same register as the Harness's own stream long-poll — until the answer comes. Every timer on the path sees short
+requests; a GET is safe to repeat, so a reset, a 503 from a stopping Orchestrator and a park cost a retry, never the
+pick; and an Orchestrator restart is a longer wait in the same Turn, because the hold is saved with the snapshot and the
+restored host answers the same poll. There is no default time bound on the wait: pi awaits a tool's `execute` with no
+timer of its own, and the Runaway guard counts calls, not time
+([ADR-0035](0035-a-runaway-turn-is-ended-rerolled-once-then-a-fault.md)).

@@ -80,6 +80,18 @@ export function pendingTimers(root: AnyActorRef, now = Date.now()): PendingTimer
 }
 
 /**
+ * The pending delayed events whose TARGET is `ref`, from any source: what Rest asks (rest.ts) —
+ * an `after`, a named delay, a delayed `raise` or `sendTo(self)`, a child's delayed `sendParent`.
+ * The same table {@link pendingTimers} persists and {@link startAndRearm} re-arms, so Rest reads
+ * the same timers after a restore as before it.
+ */
+export function scheduledFor(ref: AnyActorRef): Array<{ id: string; event: EventObject }> {
+  return Object.values(ref.system.getSnapshot()._scheduledEvents)
+    .filter((s) => s.target === ref)
+    .map((s) => ({ id: s.id, event: s.event }));
+}
+
+/**
  * Start a restored run, then schedule each recorded timer again on it. One function, so the order
  * cannot be got wrong: re-armed BEFORE `start()`, a timer is armed twice and fires twice, because
  * the system's own `start()` schedules whatever is already in its table; and `start()` is where

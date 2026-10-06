@@ -5,7 +5,7 @@
 
 import { h, type JSX } from "preact";
 import { useEffect, useRef } from "preact/hooks";
-import type { GateCard, ObservedRun, WaitingLine } from "../store.ts";
+import type { GateCard, HeldLine, ObservedRun, WaitingLine } from "../store.ts";
 import {
   clearCanvas,
   initCanvas,
@@ -22,9 +22,10 @@ export function MachinePane(props: {
   selectedNodeId: string | null;
   gates: GateCard[];
   waiting: WaitingLine[];
+  held: HeldLine[];
   api: AppApi;
 }): JSX.Element {
-  const { view, run, selectedNodeId, gates, waiting, api } = props;
+  const { view, run, selectedNodeId, gates, waiting, held, api } = props;
   const canvasRef = useRef<HTMLElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -59,6 +60,7 @@ export function MachinePane(props: {
     h("div", { id: "error", hidden: !view.note, class: view.note?.notice ? "notice" : "" }, view.note?.text ?? ""),
     rootTransitionStrip(view.doc),
     waitingStrip(waiting),
+    heldStrip(held),
     h("svg", { id: "machine-svg", ref: svgRef }),
   );
 }
@@ -104,6 +106,24 @@ function waitingStrip(waiting: WaitingLine[]): JSX.Element {
         ),
         h("span", { class: "dim", title: w.since }, ` since ${new Date(w.since).toLocaleTimeString()}`),
         h("div", { class: "waiting-message" }, w.message),
+      ),
+    ),
+  );
+}
+
+/** The selected run's outstanding picks (ADR-0024): the Agent, its pick, and since when it is held.
+ *  A held Turn has no default time bound, so this is where a human sees one that waits too long.
+ *  Guarded like the waiting strip: here only with a live token. */
+function heldStrip(held: HeldLine[]): JSX.Element {
+  return h(
+    "ul",
+    { id: "held" },
+    held.map((line) =>
+      h(
+        "li",
+        { key: `${line.agent} ${line.pick}` },
+        h("span", { class: "held-head" }, `${line.agent || "Agent"}'s pick ${line.pick} runs`),
+        h("span", { class: "dim", title: line.since }, ` held since ${new Date(line.since).toLocaleTimeString()}`),
       ),
     ),
   );

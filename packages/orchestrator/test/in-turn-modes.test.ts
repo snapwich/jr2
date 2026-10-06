@@ -13,7 +13,7 @@ import { createActor, fromPromise, type AnyActorRef } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
-import { bindRun, RegistrationTable } from "../src/registration.ts";
+import { bindRun, OutstandingError, RegistrationTable } from "../src/registration.ts";
 import { RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { loadWarningsOf } from "../src/vocabulary.ts";
@@ -116,20 +116,42 @@ test("one Turn, three modes: the Menu never changes, the Allowed picks follow th
   );
   assert.equal(value(), JSON.stringify({ ticket: "coding" }));
 
-  // run_tests -> testing: same Turn. The receipt answers at once, while the command still runs,
-  // with the testing mode's Allowed picks (only the parent's `abandon`).
+  // run_tests -> testing: same Turn. The pick is OUTSTANDING while the command runs (ADR-0024): the
+  // POST answers at once with a delivery id, and nothing is allowed — not even the parent's
+  // `abandon` — until the workflow is back at Rest.
   const toTesting = host.sendToAgent(iid, { type: "run_tests" });
   assert.deepEqual(
-    { moved: toTesting.moved, turnComplete: toTesting.turnComplete, allowed: toTesting.allowed },
-    { moved: true, turnComplete: false, allowed: ["abandon"] },
+    {
+      moved: toTesting.moved,
+      turnComplete: toTesting.turnComplete,
+      allowed: toTesting.allowed,
+      outstanding: toTesting.outstanding,
+    },
+    { moved: true, turnComplete: false, allowed: [], outstanding: true },
   );
   assert.equal(value(), JSON.stringify({ ticket: "testing" }));
-  assert.deepEqual(surface(), ["abandon"]);
+  assert.deepEqual(surface(), []);
 
-  // The command settles; the Machine routes back to coding, and the surface says so — what the
-  // Harness reads at its next step boundary (ADR-0029).
+  // The command settles; the Machine routes back to coding, and the held answer carries the output
+  // and the Allowed picks read after the route.
+  const polled = host.awaitDelivery(iid, toTesting.deliveryId);
   tests.settle("pass");
-  await waitFor(() => value() === JSON.stringify({ ticket: "coding" }));
+  const answer = await polled;
+  assert.deepEqual(
+    {
+      answered: answer?.answered,
+      turnComplete: answer?.turnComplete,
+      allowed: answer?.allowed,
+      answer: answer?.answer,
+    },
+    {
+      answered: true,
+      turnComplete: false,
+      allowed: ["abandon", "ask_review", "run_tests"],
+      answer: { kind: "output", actor: "tests", output: "pass" },
+    },
+  );
+  assert.equal(value(), JSON.stringify({ ticket: "coding" }));
   assert.deepEqual(surface(), ["abandon", "ask_review", "run_tests"]);
 
   // coding -> reviewing
@@ -604,18 +626,20 @@ test("no wake after the Turn ended: a Gate's answer that leaves the Agent's stat
   assert.equal(client.admits.length, 1, "the Turn is over: no wake");
 });
 
-test("a pick on the Menu that ANOTHER state of the Agent handles: answered with the correction receipt, never refused, never delivered to the Machine (ADR-0029)", async () => {
+test("a pick on the Menu that ANOTHER state of the Agent handles: answered with the correction receipt, never delivered to the Machine (ADR-0029) — and refused while a nested Agent runs below (ADR-0024)", async () => {
   // `x` is on the coder's Menu only through `later`; in `ticket.review` the nested reviewer handles
-  // an `x` of its own. The coder's `x` there is answered `moved: false` — and must not reach the
-  // Machine, or it would take the reviewer's transition (a widening, ADR-0015).
+  // an `x` of its own. At Rest in `ticket.coding`, the coder's `x` is answered `moved: false`. While
+  // the reviewer runs below the coder's state, that state is not at Rest, so every pick of the coder
+  // is refused — and the reviewer's transition is never taken (a widening, ADR-0015).
   const x = defineEvent({ name: "x", input: z.object({ why: z.string() }) });
   const next = defineEvent({ name: "next", input: z.object({}) });
+  const consult = defineEvent({ name: "consult", input: z.object({}) });
   const clients = new Map<string, MockFlueClient>();
   const reviewerDefinition = { ...coderDefinition, name: "reviewer" } as typeof coderDefinition;
   const machineWith = (coder: ReturnType<typeof agentActorWith>, reviewer: ReturnType<typeof agentActorWith>) =>
     jr2Setup({
       types: {} as { context: Record<string, never> },
-      events: [x, next],
+      events: [x, next, consult],
       actors: { coder, reviewer },
     }).createMachine({
       id: "wf",
@@ -625,8 +649,9 @@ test("a pick on the Menu that ANOTHER state of the Agent handles: answered with 
         ticket: {
           invoke: { src: "coder", input: { prompt: "go", endpoint: "http://harness.invalid" } },
           on: { next: "later" },
-          initial: "review",
+          initial: "coding",
           states: {
+            coding: { on: { consult: "review" } },
             review: {
               invoke: { src: "reviewer", input: { prompt: "review", endpoint: "http://harness.invalid" } },
               on: { x: "#wf.hijacked" },
@@ -662,8 +687,8 @@ test("a pick on the Menu that ANOTHER state of the Agent handles: answered with 
   const { runId, instanceId } = await host.start("other-state");
   const client = clients.get(instanceId)!;
   const iid = await admittedIid(client);
-  assert.deepEqual(client.admits[0]!.menu, ["next", "x"], "`x` is on the Menu through `later`");
-  assert.deepEqual(host.agentSurface(iid)?.allowed, ["next"]);
+  assert.deepEqual(client.admits[0]!.menu, ["consult", "next", "x"], "`x` is on the Menu through `later`");
+  assert.deepEqual(host.agentSurface(iid)?.allowed, ["consult", "next"]);
 
   // Any arguments, even ones the schema refuses: the pick is not allowed, whatever its arguments.
   for (const payload of [{ why: "now" }, {}]) {
@@ -672,11 +697,21 @@ test("a pick on the Menu that ANOTHER state of the Agent handles: answered with 
       { delivered: receipt.delivered, moved: receipt.moved, turnComplete: receipt.turnComplete },
       { delivered: true, moved: false, turnComplete: false },
     );
-    assert.deepEqual(receipt.allowed, ["next"], "the correction receipt names the Allowed picks");
+    assert.deepEqual(receipt.allowed, ["consult", "next"], "the correction receipt names the Allowed picks");
+  }
+  // A name off the Menu is still refused before delivery.
+  assert.throws(() => host.sendToAgent(iid, { type: "merge" }), /does not accept "merge"/);
+
+  // The reviewer runs below the coder's state: not at Rest, so the coder may pick nothing.
+  const consulting = host.sendToAgent(iid, { type: "consult" });
+  assert.equal(consulting.outstanding, true, "the pick runs a nested Agent: outstanding");
+  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "no Allowed picks while not at Rest");
+  for (const pick of ["x", "next"]) {
+    assert.throws(
+      () => host.sendToAgent(iid, { type: pick, why: "now" }),
+      (err: Error) => err instanceof OutstandingError && err.outstanding === "consult",
+    );
   }
   await new Promise((r) => setTimeout(r, 30));
   assert.deepEqual(host.status(runId)?.value, { ticket: "review" }, "the reviewer's `x` was never taken");
-
-  // A name off the Menu is still refused before delivery.
-  assert.throws(() => host.sendToAgent(iid, { type: "merge" }), /does not accept "merge"/);
 });

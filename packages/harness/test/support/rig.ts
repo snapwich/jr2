@@ -28,6 +28,8 @@ export type Turn = {
   text?: string;
   /** Emit a tool call. `partial` stops after the name — no arguments, no finish, no `[DONE]`. */
   toolCall?: { id: string; name: string; args?: string; partial?: boolean };
+  /** Several tool calls in ONE assistant message — pi runs them as one parallel batch. */
+  toolCalls?: Array<{ id: string; name: string; args?: string }>;
   stall?: boolean;
   /** Answer this HTTP status with an error body instead of a stream — the provider-failure lever
    * (with `maxRetries: 0` the turn settles `failed` on the first attempt). */
@@ -137,6 +139,10 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
         frame({ tool_calls: [{ index: 0, id: callId, type: "function", function: { name, arguments: "" } }] });
         if (!partial) frame({ tool_calls: [{ index: 0, function: { arguments: args ?? "{}" } }] });
       }
+      for (const [index, call] of (turn.toolCalls ?? []).entries()) {
+        frame({ tool_calls: [{ index, id: call.id, type: "function", function: { name: call.name, arguments: "" } }] });
+        frame({ tool_calls: [{ index, function: { arguments: call.args ?? "{}" } }] });
+      }
       if (turn.stall) {
         stalling += 1;
         const keepalive = setInterval(() => res.write(": keepalive\n\n"), 5000);
@@ -147,7 +153,7 @@ export async function startFakeProvider(initialScript: Turn[] = []): Promise<Fak
         return;
       }
       res.write(
-        `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: "model-x", choices: [{ index: 0, delta: {}, finish_reason: turn.toolCall ? "tool_calls" : "stop" }], usage })}\n\n`,
+        `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model: "model-x", choices: [{ index: 0, delta: {}, finish_reason: turn.toolCall || turn.toolCalls ? "tool_calls" : "stop" }], usage })}\n\n`,
       );
       res.write("data: [DONE]\n\n");
       res.end();
@@ -213,6 +219,12 @@ export type FakeSandbox = {
    * SOMETHING ELSE (a Gate's answer, an outside event) between two exact steps. Wins over
    * `setSurface`; cleared by `reset`. */
   surfaceByRead: (serve: (read: number) => Surface | number | Promise<Surface | number>) => void;
+  /** Answer each delivery poll (`GET /agents/:iid/deliveries/:id`, ADR-0024) by its number since
+   * the last `reset`: a body, or an HTTP status (a promise: an answer that takes that long). Unset,
+   * a poll is a 404. */
+  pollWith: (serve: (poll: number, deliveryId: string) => unknown | Promise<unknown>) => void;
+  /** Every delivery poll since the last `reset`, by delivery id. */
+  polls: string[];
   /** Rearm for the next scenario: this surface, live, responding, nothing delivered. */
   reset: (surface: Surface) => void;
   close: () => Promise<void>;
@@ -227,6 +239,8 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
   let stopping = 0;
   let surfaceReads = 0;
   let byRead: ((read: number) => Surface | number | Promise<Surface | number>) | undefined;
+  let byPoll: ((poll: number, deliveryId: string) => unknown | Promise<unknown>) | undefined;
+  const polls: string[] = [];
   const delivered: Array<Record<string, unknown>> = [];
   const bearers: string[] = [];
   const server: Server = createServer((req, res) => {
@@ -254,6 +268,15 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
         }
         return json(200, surface);
       }
+      const poll = /\/deliveries\/([^/?]+)/.exec(req.url ?? "");
+      if (poll) {
+        polls.push(decodeURIComponent(poll[1]!));
+        if (!byPoll) return json(404, { error: "no delivery" });
+        void Promise.resolve(byPoll(polls.length, polls.at(-1)!)).then((served) =>
+          typeof served === "number" ? json(served, { error: "scripted" }) : json(200, served),
+        );
+        return;
+      }
       const event = JSON.parse(raw) as Record<string, unknown>;
       delivered.push(event);
       if (holding) return; // parked: the response never comes
@@ -276,12 +299,16 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     holdDeliveries: () => (holding = true),
     answerWith: (receipt) => (answer = receipt),
     surfaceByRead: (serve) => (byRead = serve),
+    pollWith: (serve) => (byPoll = serve),
+    polls,
     reset: (next) => {
       surface = next;
       live = true;
       holding = false;
       answer = undefined;
       byRead = undefined;
+      byPoll = undefined;
+      polls.length = 0;
       surfaceFault = undefined;
       stopping = 0;
       surfaceReads = 0;

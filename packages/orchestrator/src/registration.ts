@@ -28,10 +28,11 @@ import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
 import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
 import type { NoticeScope, TakenNotices } from "./notices.ts";
-import type { Notice } from "./wire.ts";
+import type { Notice, PickAnswer } from "./wire.ts";
 import type { SandboxPort } from "./workspace.ts";
 import { invokingMachine, vocabularyOf } from "./vocabulary.ts";
 import { notTaken, senderText, takesNow, type NotTakenWriting } from "./party.ts";
+import { restOf } from "./rest.ts";
 
 /** xstate doesn't export its internal AnyActorSystem; this matches what actors receive. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -176,8 +177,13 @@ function takenNow(reg: Pick<Registration, "invoker" | "sender" | "invokeId">, ty
  * in the order the tools block does. The ONE reading of the list: the surface, every receipt, the
  * nudge and the wake all ask here, so no two of them can disagree about what the Turn may pick
  * (ADR-0016).
+ *
+ * EMPTY while the Agent's state is not at Rest (rest.ts, ADR-0024): something below it runs, or a
+ * timer holds, and every pick is refused until it is back at Rest — so the Rest rule and the
+ * payload-blind selection give one list, and a Turn that starts busy is not asked into a refusal.
  */
 export function allowedPicks(reg: Pick<Registration, "defs" | "menu" | "invoker" | "sender" | "invokeId">): string[] {
+  if (restOf(reg) === "busy") return [];
   const ordered = new Set([...(reg.menu ?? reg.defs).keys()].filter((name) => reg.defs.has(name)));
   for (const name of reg.defs.keys()) ordered.add(name);
   return [...ordered].filter((name) => takenNow(reg, name));
@@ -196,6 +202,20 @@ export class UnknownAddressError extends Error {}
  * what the Turn may pick instead. */
 export class EventValidationError extends Error {
   allowed?: string[];
+}
+
+/**
+ * A pick that arrived while the Agent's state is not at Rest (ADR-0024): refused, `finish` included,
+ * and nothing is delivered — xstate would take it, and a pick its state handles would exit the child
+ * state and stop the work running there. `outstanding` names this Turn's pick still out, when there
+ * is one; without it, the state is busy with work the Turn did not pick (it started busy).
+ */
+export class OutstandingError extends Error {
+  readonly outstanding?: string;
+  constructor(message: string, outstanding?: string) {
+    super(message);
+    this.outstanding = outstanding;
+  }
 }
 
 /** Refuse a caller's body that carries the sender (ADR-0013, ADR-0015): only the Orchestrator writes
@@ -393,6 +413,16 @@ export type RunBinding = {
   takeNotices?: (scope: NoticeScope) => TakenNotices;
   releaseNotices?: (ids: readonly string[]) => void;
   /**
+   * The pick this conversation has outstanding, or answered and not yet read (ADR-0024): what the
+   * Agent actor asks when its Harness restarted under a Turn — a Turn whose pick is still out, or
+   * whose answer never reached the model, is cut, not faulted (ADR-0031). Read after the host settles
+   * its holds, so `answered` is the Rest rule's verdict now. Absent outside a RunHost.
+   */
+  heldPick?: (instanceId: string) => HeldPick | undefined;
+  /** The held answer reached the model by another road — a re-admission's notice — so the poll's
+   * copy is spent (ADR-0031). */
+  heldAnswerDelivered?: (instanceId: string) => void;
+  /**
    * Surface absorbed-retry telemetry on the run feed (ADR-0016): attempts are observable, but
    * as `{ child, attempt }` — state-key-class data, never iids (ADR-0014's line holds on the
    * open feed).
@@ -429,6 +459,17 @@ export type RunBinding = {
    * one the host remembered to equip.
    */
   pendingAborts?: Map<string, Promise<void>>;
+};
+
+/** A conversation's latest held pick, as the Agent actor reads it (ADR-0024). `answered`: the Machine
+ * came back to Rest, or left the Agent's state (`turnComplete`); `fetched`: the answer reached the
+ * model. */
+export type HeldPick = {
+  pick: string;
+  answered: boolean;
+  turnComplete: boolean;
+  answer?: PickAnswer;
+  fetched: boolean;
 };
 
 /** One absorbed-retry attempt (a no-signal nudge), as the run feed carries it. */

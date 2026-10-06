@@ -40,7 +40,10 @@ whose processes are gone, with no way to know why.
 - **Always on.** No author can turn it off: every fact in it passes the rule above, so removing one can only make the
   Agent act worse. An `instructions` that repeats a fact is harmless.
 - **A notice is delivered once**, on the next Turn in its scope, then cleared.
-  - **Conversation scope** ("this conversation is new; earlier context is gone") goes to that Agent's next Turn.
+  - **Conversation scope** ("this conversation is new; earlier context is gone") goes to that Agent's next Turn. So does
+    a pick's answer that never reached its call
+    ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): the route left the Agent's state, and
+    the next continued Turn hears "your pick ran to its end after your last turn was over", with the answer.
   - **Workspace scope** ("the Sandbox's processes were killed at its memory limit during `coder`'s Turn; `/dev/shm` was
     cleared") goes to the next Turn of any Agent in that Workspace. A Menu-only Agent outside a Workspace receives
     conversation notices only.
@@ -54,10 +57,12 @@ whose processes are gone, with no way to know why.
   admission's notices again. A nudge takes no notices: it re-prompts the Turn within itself, and a notice raised during
   that Turn is for the next one.
 - **The Harness writes every word.** The admit body carries typed notices
-  (`notices: [{ kind: "memory-limit", scope, agent, peak?, limit } | { kind: "conversation-new", reason } …]`), and the
-  Harness renders both parts. The standing part needs no wire: the Harness already holds its limits (cgroup and Downward
-  API env), the definition's `workspace` access, and the Menu. The wording lives in one place, and Harness conformance
-  checks it (ADR-0027).
+  (`notices: [{ kind: "memory-limit", scope, agent, peak?, limit } | { kind: "conversation-new", reason } | { kind: "pick-answer", pick, cut, answer? } …]`),
+  and the Harness renders both parts. An outstanding pick's answer is data too — the last reply since the pick, a
+  party's event with its payload or a child's output (ADR-0024) — and its words ("Its answer: `approve` from Gate
+  `review`, with {…}", "It moved, and nothing ran.") are the Harness's, in the receipt and in the notice alike. The
+  standing part needs no wire: the Harness already holds its limits (cgroup and Downward API env), the definition's
+  `workspace` access, and the Menu. The wording lives in one place, and Harness conformance checks it (ADR-0027).
 
 ## Considered options
 

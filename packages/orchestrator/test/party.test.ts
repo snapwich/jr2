@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { allNodes, mayTake, partiesAt } from "../src/party.ts";
-import { NotTakenError } from "../src/registration.ts";
+import { NotTakenError, OutstandingError } from "../src/registration.ts";
 import type { AnyStateMachine } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
 import { loadWarningsOf } from "../src/vocabulary.ts";
@@ -16,16 +16,18 @@ import { release, rooted } from "./_sent-by-author.ts";
 import { partyHost, placeholder, post, receipt } from "./_party.ts";
 import { payloadBelow, rootShape, s1, s2, s3, s4, s5, s8, twoGatesParallel, twoGatesPath } from "./_party-machines.ts";
 
-test("S1 siblings: in review the Agent's approve is answered, not delivered; the reviewer's runs its own writing", async () => {
+test("S1 siblings: in review the Agent's approve is refused — its ask_review is outstanding; the reviewer's runs its own writing", async () => {
   const h = await partyHost((x) => s1(x.coder!));
   const r = await h.start();
   assert.deepEqual(h.host.agentSurface(r.iids.coder!)!.allowed, ["approve", "ask_review"]);
-  h.host.sendToAgent(r.iids.coder!, { type: "ask_review" });
+  assert.equal(h.host.sendToAgent(r.iids.coder!, { type: "ask_review" }).outstanding, true);
   await r.until({ work: "review" });
-  assert.deepEqual(h.host.agentSurface(r.iids.coder!)!.allowed, [], "the Gate's approve is not the Agent's");
+  assert.deepEqual(h.host.agentSurface(r.iids.coder!)!.allowed, [], "not at Rest: the Gate runs below");
   const picks = h.feed.filter((e) => e.kind === "pick").length;
-  const wrong = h.host.sendToAgent(r.iids.coder!, { type: "approve" });
-  assert.deepEqual(receipt(wrong), { moved: false, turnComplete: false, allowed: [] });
+  assert.throws(
+    () => h.host.sendToAgent(r.iids.coder!, { type: "approve" }),
+    (err: Error) => err instanceof OutstandingError && err.outstanding === "ask_review",
+  );
   assert.equal(h.feed.filter((e) => e.kind === "pick").length, picks, "no pick marker: it never reached the Machine");
   assert.equal(await r.value(), JSON.stringify({ work: "review" }));
   assert.deepEqual((await r.context()).ran, []);
@@ -153,29 +155,29 @@ test("S7 the Machine's own raise carries no sender: sentBy passes it, and (B) ru
   assert.deepEqual((await r.context()).ran, ["B"]);
 });
 
-test("S8 a nested Agent: plain, the outer Agent's submit is answered and runs nothing; marked routes each Agent", async () => {
-  const plain = await partyHost((x) => s8(x.coder!, x.reviewer!, "plain"), ["coder", "reviewer"]);
-  const rp = await plain.start();
-  assert.deepEqual(plain.host.agentSurface(rp.iids.coder!)!.allowed, [], "its submit would select the reviewer's");
-  assert.equal(plain.host.sendToAgent(rp.iids.coder!, { type: "submit" }).moved, false);
-  assert.deepEqual((await rp.context()).ran, []);
-
-  const h = await partyHost((x) => s8(x.coder!, x.reviewer!, "marked"), ["coder", "reviewer"]);
-  const r1 = await h.start();
-  for (const slot of ["coder", "reviewer"]) {
-    const surface = h.host.agentSurface(r1.iids[slot]!)!;
-    assert.deepEqual(
-      surface.menu.map((m) => m.name),
-      ["submit"],
-      `${slot}'s Menu does not widen`,
+test("S8 a nested Agent: the outer Agent's state is not at Rest while the nested one runs, so its submit is refused; the reviewer's runs", async () => {
+  // The nested Agent runs below the outer Agent's state (ADR-0024): the outer Agent may pick nothing
+  // until it is back at Rest, whatever `sentBy` says — so its `submit` never selects the reviewer's.
+  for (const mode of ["plain", "marked"] as const) {
+    const h = await partyHost((x) => s8(x.coder!, x.reviewer!, mode), ["coder", "reviewer"]);
+    const r = await h.start();
+    for (const slot of ["coder", "reviewer"]) {
+      assert.deepEqual(
+        h.host.agentSurface(r.iids[slot]!)!.menu.map((m) => m.name),
+        ["submit"],
+        `${slot}'s Menu does not widen`,
+      );
+    }
+    assert.deepEqual(h.host.agentSurface(r.iids.coder!)!.allowed, [], `${mode}: the reviewer runs below`);
+    assert.deepEqual(h.host.agentSurface(r.iids.reviewer!)!.allowed, ["submit"]);
+    assert.throws(
+      () => h.host.sendToAgent(r.iids.coder!, { type: "submit" }),
+      (err: Error) => err instanceof OutstandingError && err.outstanding === undefined,
     );
-    assert.deepEqual(surface.allowed, ["submit"]);
+    assert.deepEqual((await r.context()).ran, []);
+    h.host.sendToAgent(r.iids.reviewer!, { type: "submit" });
+    await r.until("innerDone");
   }
-  h.host.sendToAgent(r1.iids.coder!, { type: "submit" });
-  await r1.until("outerDone");
-  const r2 = await h.start();
-  h.host.sendToAgent(r2.iids.reviewer!, { type: "submit" });
-  await r2.until("innerDone");
 });
 
 test("the root-writing shape: plain, the reviewer cannot cancel while the mode writes it; marked, its cancel runs the root writing", async () => {
@@ -307,16 +309,15 @@ test("S11 each party's name maps to its own writings only; one party's own overr
 
 test("S11 the fail-open shape: the Agent cannot ship through a Gate child's payload-guarded writing", async () => {
   // `work` (the Agent's) and its Gate child both write `approve`, the child's behind a payload guard.
-  // The payload guard is UNKNOWN to the payload-blind selection, so the child's writing is
-  // selected, and it is not the Agent's: not Allowed, and the Agent's approve with the Gate's
-  // payload is answered, not delivered.
+  // While the Gate runs below the Agent's state, that state is not at Rest (ADR-0024): nothing is
+  // Allowed, and the Agent's approve with the Gate's payload is refused before the selection is
+  // even asked — it never reaches the Machine.
   const h = await partyHost((x) => payloadBelow(x.coder!));
   const r = await h.start();
   h.host.sendToAgent(r.iids.coder!, { type: "ask" });
   await r.until({ work: "review" });
-  assert.deepEqual(h.host.agentSurface(r.iids.coder!)!.allowed, ["ask"]);
-  const ship = h.host.sendToAgent(r.iids.coder!, { type: "approve", note: "ship" });
-  assert.equal(ship.moved, false);
+  assert.deepEqual(h.host.agentSurface(r.iids.coder!)!.allowed, []);
+  assert.throws(() => h.host.sendToAgent(r.iids.coder!, { type: "approve", note: "ship" }), OutstandingError);
   assert.equal(await r.value(), JSON.stringify({ work: "review" }));
 });
 

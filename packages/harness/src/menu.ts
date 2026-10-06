@@ -16,10 +16,22 @@
 //   GET  /agents/<iid>/surface   → the Menu and this Turn's Allowed picks (404: the turn is over —
 //                                  NO surface, and the Turn is never prompted, ADR-0026; 503: the
 //                                  Orchestrator is stopping — re-asked, ADR-0042)
-//   POST /agents/<iid>/events    → one pick, and the receipt, rendered as prose (ADR-0024/0029)
+//   POST /agents/<iid>/events    → one pick, and the receipt, rendered as prose (ADR-0024/0029);
+//                                  `outstanding` when the workflow runs it, 409 while one is out
+//   GET  /agents/<iid>/deliveries/<id>
+//                                → an outstanding pick's answer, long-polled inside the one tool
+//                                  call until the workflow is back at Rest (ADR-0013, ADR-0024)
+//
+// One pick at a time per Turn, claimed HERE in message order: pi starts the calls of one assistant
+// message in that order, each synchronously up to its first `await`, so the first Menu call of a
+// message holds the claim and every other is refused before it leaves — `finish` included. The
+// Orchestrator refuses the same picks from the Machine; only the Harness sees the message order,
+// which a socket race does not keep (measured: `finish` arrived first in 1 of 50).
 //
 // Each Submission reads afresh, and the iid in the path is how the Orchestrator knows which turn is
 // live — no push channel, no turn index (ADR-0013's enabling fact).
+
+import type { PickAnswer } from "./wire.ts";
 
 /**
  * One pick on the Menu. `name` is the event's name made safe for a model API, bare: whoever
@@ -90,6 +102,14 @@ export type DeliveryReceipt = {
   /** The Allowed picks, read AFTER the delivery (ADR-0029): an in-state move can change the guards
    * mid-Turn. Optional on the wire for the same skew — absent is not empty. */
   allowed?: string[];
+  /** The workflow is running the pick (ADR-0024): its answer is long-polled at
+   * `GET /agents/:iid/deliveries/:id`, inside this one tool call. */
+  outstanding?: boolean;
+  /** This receipt is an outstanding pick's answer: the workflow is back at Rest in the state that
+   * asked for this Turn (`turnComplete: false`), or it has left it. */
+  answered?: boolean;
+  /** The last reply since the pick; absent with `answered`: it moved, and nothing ran. */
+  answer?: PickAnswer;
 };
 
 export type MenuOptions = {
@@ -119,6 +139,12 @@ export type MenuOptions = {
    * `between-steps.ts` then reads nothing more for that Submission: under `continue: true` the next
    * state re-registers the SAME address, so a later read could answer for the NEXT Turn. */
   onTurnOver?: () => void;
+  /** Hears that an outstanding pick was answered (ADR-0024): the world moved, so the Runaway guard's
+   * identical-call streak starts again (ADR-0035). */
+  onAnswered?: () => void;
+  /** One delivery poll's own bound, past the Orchestrator's ~25 s long-poll (ADR-0013). Default
+   * 60s; tests shrink it. The poll itself has no window: it asks again while the Turn lives. */
+  pollTimeoutMs?: number;
 };
 
 /**
@@ -150,7 +176,7 @@ class UnreachableError extends Error {
 }
 
 /** flue's sanitization, reproduced: the model-facing name admits `[A-Za-z0-9_-]` only. */
-function sanitizeToolNamePart(name: string): string {
+export function sanitizeToolNamePart(name: string): string {
   return name.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
@@ -174,10 +200,14 @@ export async function readMenu(
   // and a wrong "allowed" costs one refused pick where a wrong "not allowed" costs the Turn.
   const events = surface.menu ?? surface.accepts ?? [];
   const allowed = surface.allowed ?? events.map((event) => event.name);
-  return { menu: events.map((event) => menuItem(opts, instanceId, event)), allowed };
+  const claim: PickClaim = {};
+  return { menu: events.map((event) => menuItem(opts, instanceId, event, claim)), allowed };
 }
 
-function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent): MenuItem {
+/** The one pick in flight in this Submission, by event name (ADR-0024). */
+type PickClaim = { held?: string };
+
+function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent, claim: PickClaim): MenuItem {
   if (event.semantics !== "ack") {
     // ADR-0013: `deferred`/`poll` are reserved in the model and have room on the wire, but nothing
     // answers a held call yet. Offering one as a plain tool would promise the Agent a result that
@@ -192,18 +222,83 @@ function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent): M
     name: sanitizeToolNamePart(event.name),
     description: event.description ?? "",
     parameters: parametersOf(event.input),
-    pick: async (params, pickSignal) =>
-      receiptProse(
-        await deliver(
-          opts,
-          instanceId,
+    pick: (params, pickSignal) => {
+      // The claim is taken before the first `await`: that is what makes it message order.
+      if (claim.held !== undefined) {
+        return Promise.reject(new Error(outstandingRefusal(event.name, claim.held, opts.toolName)));
+      }
+      claim.held = event.name;
+      return (async () => {
+        try {
           // The name last: an argument called `type` cannot make this pick another event.
-          { ...((params ?? {}) as object), type: event.name },
-          pickSignal,
-        ),
-        opts.toolName,
-      ),
+          const sent = await deliver(opts, instanceId, { ...((params ?? {}) as object), type: event.name }, pickSignal);
+          const receipt = sent.outstanding === true ? await awaitAnswer(opts, instanceId, sent, pickSignal) : sent;
+          return receiptProse(receipt, opts.toolName);
+        } finally {
+          claim.held = undefined;
+        }
+      })();
+    },
   };
+}
+
+/** A model-facing name for an event: the presenter's naming over the sanitized name. */
+function named(event: string, toolName?: (name: string) => string): string {
+  return (toolName ?? ((n: string) => n))(sanitizeToolNamePart(event));
+}
+
+/**
+ * The refusal of a pick while another is outstanding (ADR-0024) — `held` is the pick still running,
+ * or undefined when the workflow is busy with work this Turn did not pick (it started busy). Said
+ * the same whether the Harness's claim or the Orchestrator refused it, so the model reads one rule.
+ */
+export function outstandingRefusal(
+  refused: string,
+  held: string | undefined,
+  toolName?: (name: string) => string,
+): string {
+  const pick = `\`${named(refused, toolName)}\``;
+  if (held !== undefined) {
+    return (
+      `${pick} was NOT delivered: your pick \`${named(held, toolName)}\` is still running in the workflow, and no ` +
+      `other pick is taken until it answers. Wait for its answer, then pick again.`
+    );
+  }
+  return (
+    `${pick} was NOT delivered: the workflow is still running work in the state that asked for this turn, and ` +
+    `takes no pick until it is back at rest. ${allowedPicksText([], toolName)}`
+  );
+}
+
+/**
+ * What a Menu call cut by a Harness restart answers in the history, forever after (ADR-0031): the
+ * pick reached the workflow, which does not run it twice, and its answer is the next message's — the
+ * re-admission's notice. `tool` is the name the model called.
+ */
+export function cutPickResult(tool: string): string {
+  return (
+    `This pick reached the workflow, but its answer did not reach you: your turn was cut while the ` +
+    `workflow ran \`${tool}\`. The workflow did not stop, and it does not run a pick twice. Its result ` +
+    `comes in the next message. Do not call \`${tool}\` again to get it.`
+  );
+}
+
+/** What an outstanding pick's answer says, in words (ADR-0024): the last reply since the pick. */
+export function answerText(answer: PickAnswer | undefined): string {
+  if (answer === undefined) return "It moved, and nothing ran.";
+  switch (answer.kind) {
+    case "event": {
+      const from = answer.sender
+        ? ` from ${answer.sender.party === "gate" ? "Gate" : "Agent"} \`${answer.sender.id}\``
+        : "";
+      const payload = Object.keys(answer.payload).length ? `, with ${JSON.stringify(answer.payload)}` : "";
+      return `Its answer: \`${answer.event}\`${from}${payload}.`;
+    }
+    case "output":
+      return `Its answer: the output of \`${answer.actor}\`: ${JSON.stringify(answer.output) ?? "nothing"}.`;
+    case "error":
+      return `Its answer: \`${answer.actor}\` failed: ${answer.error}.`;
+  }
 }
 
 /**
@@ -258,6 +353,14 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
       `"${receipt.event}" with these arguments. Your turn is not over. Do not repeat this call ` +
       `unchanged — change the arguments, pick a different tool, or do more work first.${allowed}`
     );
+  }
+  // An outstanding pick's answer (ADR-0024): the workflow ran it, then routed — back to Rest in the
+  // state that asked for this Turn, with the Allowed picks read after the route, or out of it.
+  if (receipt.answered === true) {
+    return receipt.turnComplete
+      ? `${delivered} The workflow ran it and moved on: your turn is over. Stop here — do not call this or any other tool again.`
+      : `${delivered} The workflow ran it and is back in the state that asked for this turn. ` +
+          `${answerText(receipt.answer)} Your turn is not over.${allowed}`;
   }
   return receipt.turnComplete
     ? `${delivered} The workflow consumed it and moved on: your turn is over. Stop here — do not call this or any other tool again.`
@@ -373,6 +476,14 @@ async function deliver(
       `the Orchestrator is unavailable (${await errorOf(res)}), so the pick was not taken — try it again`,
     );
   }
+  if (res.status === 409) {
+    const body = await bodyOf(res);
+    if (body?.refused === "outstanding") {
+      opts.onAllowed?.([]);
+      throw new Error(outstandingRefusal(String(event.type), body.outstanding, opts.toolName));
+    }
+    throw new Error(body?.error ?? `the Orchestrator answered HTTP 409`);
+  }
   const receipt = (await answered(res, (allowed) => {
     opts.onAllowed?.(allowed);
     return allowedPicksText(allowed, opts.toolName);
@@ -381,6 +492,60 @@ async function deliver(
   if (Array.isArray(receipt.allowed)) opts.onAllowed?.(receipt.allowed);
   if (receipt.turnComplete === true) opts.onTurnOver?.();
   return receipt;
+}
+
+/**
+ * Long-poll an outstanding pick's answer (ADR-0013, ADR-0024), inside the pick's one tool call. Each
+ * request waits up to the Orchestrator's ~25 s and answers `outstanding` (ask again) or the answer.
+ * A GET is safe to repeat, so every failure that is not an answer about the delivery — this
+ * process's transport failure, a request past its own bound, the Custodian's "never answered", a
+ * stopping Orchestrator's 503 — is asked again on the surface read's ladder, with no window: a park
+ * or an Orchestrator restart is a longer wait in the same Turn, and only the Submission's `signal`
+ * ends it. A 404 is the one answer that ends it: no such delivery — the run ended, or the Turn did.
+ */
+async function awaitAnswer(
+  opts: MenuOptions,
+  instanceId: string,
+  sent: DeliveryReceipt,
+  signal?: AbortSignal,
+): Promise<DeliveryReceipt> {
+  const url = `${base(opts)}/agents/${encodeURIComponent(instanceId)}/deliveries/${encodeURIComponent(sent.deliveryId)}`;
+  const fetchImpl = opts.fetch ?? globalThis.fetch;
+  const retryMaxMs = opts.retryMaxMs ?? 5_000;
+  let backoffMs = opts.retryInitialMs ?? 250;
+  for (;;) {
+    const attempt = AbortSignal.timeout(opts.pollTimeoutMs ?? 60_000);
+    try {
+      const res = await fetchImpl(url, {
+        headers: authorization(opts),
+        signal: signal ? AbortSignal.any([signal, attempt]) : attempt,
+      });
+      await unreachable(res);
+      if (res.status === UNAVAILABLE) throw new UnavailableError(await errorOf(res));
+      if (res.status === 404) {
+        await res.body?.cancel();
+        opts.onTurnOver?.();
+        throw new NoSurfaceError(`no delivery "${sent.deliveryId}" for agent "${instanceId}" — this turn is over`);
+      }
+      const receipt = (await answered(res)) as DeliveryReceipt;
+      backoffMs = opts.retryInitialMs ?? 250;
+      if (receipt.outstanding === true) continue;
+      if (Array.isArray(receipt.allowed)) opts.onAllowed?.(receipt.allowed);
+      if (receipt.turnComplete === true) opts.onTurnOver?.();
+      opts.onAnswered?.();
+      return receipt;
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      const retried =
+        attempt.aborted ||
+        err instanceof UnavailableError ||
+        err instanceof UnreachableError ||
+        isTransportFailure(err);
+      if (!retried) throw err;
+      await sleep((backoffMs * (1 + Math.random())) / 2, signal);
+      backoffMs = Math.min(backoffMs * 2, retryMaxMs);
+    }
+  }
 }
 
 /**
@@ -446,10 +611,14 @@ async function answered(res: Response, allowedText?: (allowed: string[]) => stri
   return body;
 }
 
-async function bodyOf(res: Response): Promise<{ error?: string; allowed?: string[] } | undefined> {
+/** An error answer's body: `{ error }`, the Allowed picks a refusal carries, and an outstanding
+ * refusal's `refused`/`outstanding` (ADR-0024). */
+type ErrorBody = { error?: string; allowed?: string[]; refused?: string; outstanding?: string };
+
+async function bodyOf(res: Response): Promise<ErrorBody | undefined> {
   const text = await res.text();
   try {
-    return text ? (JSON.parse(text) as { error?: string; allowed?: string[] }) : undefined;
+    return text ? (JSON.parse(text) as ErrorBody) : undefined;
   } catch {
     return { error: text.trim() };
   }

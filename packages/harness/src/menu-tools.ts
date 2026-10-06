@@ -17,8 +17,12 @@ import type { Menu } from "./menu.ts";
 /** The name pi's model sees for a Menu item. Handed to `menu.ts` too (`MenuOptions.toolName`), so
  * the Allowed-picks text and every receipt name the tool the model can actually call (ADR-0029). */
 export function menuToolName(name: string): string {
-  return `mcp__jr2__${name}`;
+  return `${MENU_TOOL_PREFIX}${name}`;
 }
+
+/** The prefix every Menu tool's name carries — what tells a Menu call from a Working-tool call in a
+ * rebuilt session (`settleCutPicks`, turn.ts). */
+export const MENU_TOOL_PREFIX = "mcp__jr2__";
 
 /**
  * The Menu's items as pi tools. `execute` throws on every failure, as the item's `pick` does — pi's

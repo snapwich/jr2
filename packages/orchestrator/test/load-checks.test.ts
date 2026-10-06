@@ -8,7 +8,15 @@ import { z } from "zod";
 import { defineEvent, type EventDef } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
 import { serializeMachine } from "../src/machine-doc.ts";
-import { or, type AnyStateMachine } from "xstate";
+import {
+  createMachine,
+  fromCallback,
+  fromObservable,
+  fromPromise,
+  fromTransition,
+  or,
+  type AnyStateMachine,
+} from "xstate";
 import { sentBy } from "../src/party.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { loadWarningsOf, seatLine } from "../src/vocabulary.ts";
@@ -545,4 +553,78 @@ test("a parallel state above an Agent's state is legal: a background task goes t
     },
   });
   assert.deepEqual(loadWarningsOf(m), []);
+});
+
+// --- Rest (ADR-0024): shapes below an Agent's state that keep it from Rest ------------------------
+
+const restMachine = (states: Record<string, unknown>, actors: Record<string, unknown> = {}) =>
+  jr2Setup({
+    events: [ev("ask"), ev("approve"), ev("go"), ev("finish")],
+    actors: { coder: slot(), ...actors } as never,
+  }).createMachine({
+    id: "r",
+    initial: "work",
+    states: {
+      work: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        on: { finish: "#r.done" },
+        initial: "rest",
+        states: { rest: { on: { ask: "asking", go: "going" } }, ...states } as never,
+      },
+      done: { type: "final" },
+    },
+  } as never) as unknown as AnyStateMachine;
+
+test("a Gate below an Agent's state whose answer has no target is a warning: the Gate stays open after it", () => {
+  const warned = loadWarningsOf(
+    restMachine({
+      asking: { invoke: { src: "gate", id: "review" }, on: { approve: { actions: () => {} } } },
+      going: {},
+    }),
+  ).join("\n");
+  assert.match(
+    warned,
+    /Gate "review" at "r\.work\.asking", below Agent "coder"'s state "r\.work": its answer "approve" has no target/,
+  );
+
+  const routed = loadWarningsOf(
+    restMachine({ asking: { invoke: { src: "gate", id: "review" }, on: { approve: "rest" } }, going: {} }),
+  ).join("\n");
+  assert.doesNotMatch(routed, /has no target/);
+});
+
+test("a long-lived invoke below an Agent's state is a warning: it blocks every pick — a promise, a child Machine and a Gate are not", () => {
+  const watcher = fromCallback(() => () => {});
+  const warned = loadWarningsOf(
+    restMachine({ asking: { on: { approve: "rest" } }, going: { invoke: { src: "watcher" } } }, { watcher }),
+  ).join("\n");
+  assert.match(
+    warned,
+    /"r\.work\.going", below Agent "coder"'s state "r\.work", invokes "watcher", which runs until its state exits/,
+  );
+  assert.match(warned, /blocks every pick of the Agent/);
+
+  for (const actor of [fromPromise(async () => 1), createMachine({})]) {
+    const quiet = loadWarningsOf(
+      restMachine(
+        {
+          asking: { invoke: { src: "gate" }, on: { approve: "rest" } },
+          going: { invoke: { src: "kid", onDone: "rest" } },
+        },
+        { kid: actor },
+      ),
+    ).join("\n");
+    assert.doesNotMatch(quiet, /runs until its state exits/);
+  }
+});
+
+test("the long-lived probe is pinned against the real constructors: only a promise settles on its own", () => {
+  const warns = (actor: unknown) =>
+    loadWarningsOf(
+      restMachine({ asking: { on: { approve: "rest" } }, going: { invoke: { src: "kid" } } }, { kid: actor }),
+    ).some((w) => w.includes("runs until its state exits"));
+  assert.equal(warns(fromPromise(async () => 1)), false, "a promise settles");
+  assert.equal(warns(fromCallback(() => {})), true);
+  assert.equal(warns(fromObservable(() => ({ subscribe: () => ({ unsubscribe: () => {} }) }) as never)), true);
+  assert.equal(warns(fromTransition((s) => s, 0)), true);
 });

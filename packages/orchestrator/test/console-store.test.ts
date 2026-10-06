@@ -16,6 +16,7 @@ import {
   fleetRuns,
   gateCount,
   selectedRunGates,
+  selectedRunHeld,
   selectedRunWaiting,
   visibleGates,
   SETTLED_CAP,
@@ -493,6 +494,29 @@ test("`waiting` follows the selected run, is whole per run, and an empty re-fetc
   );
   store = applyFrame(store, { kind: "waiting", runId: "a", workflow: "wf", waiting: [] });
   assert.equal(store.waiting.size, 0, "placed: the next re-fetch says nothing waits");
+});
+
+test('an outstanding pick rides the same re-fetch: "held since" for the selected run, cleared when it is answered (ADR-0024)', () => {
+  const since = "2026-10-06T10:00:00.000Z";
+  let store = fold(
+    { kind: "select", workflow: "wf" },
+    { kind: "token", state: "live" },
+    { kind: "runs", runs: [run("a")] },
+    { kind: "waiting", runId: "a", workflow: "wf", waiting: [], held: [{ agent: "coder", pick: "run_tests", since }] },
+  );
+  assert.deepEqual(selectedRunHeld(store), [{ agent: "coder", pick: "run_tests", since }]);
+  assert.deepEqual(selectedRunWaiting(store), [], "nothing waits for capacity");
+  store = applyFrame(store, { kind: "waiting", runId: "a", workflow: "wf", waiting: [], held: [] });
+  assert.deepEqual(selectedRunHeld(store), [], "answered: nothing is held");
+  assert.equal(store.waiting.size, 0);
+  assert.equal(
+    fold(
+      { kind: "select", workflow: "wf" },
+      { kind: "waiting", runId: "a", workflow: "wf", waiting: [], held: [{ agent: "coder", pick: "x", since }] },
+    ).waiting.size,
+    0,
+    "observer mode folds nothing",
+  );
 });
 
 test("the reason cannot outlive the credential, the run, or a whole-set frame that dropped it", () => {

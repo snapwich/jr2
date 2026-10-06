@@ -231,6 +231,7 @@ export function jr2Setup<
     );
     attachLoadWarnings(machine, [
       ...unenteredModes(machine, def.actors ?? {}),
+      ...restWarnings(machine, def.actors ?? {}),
       ...derived.warnings.map((warning) => warning(idOf)),
       ...partyWarnings(machine, derived.derivedGateIds),
     ]);
@@ -505,6 +506,87 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
     };
     descend(node);
   }
+  return out;
+}
+
+/**
+ * Does this logic settle on its own — a promise, the one plain xstate actor that ends without being
+ * stopped? Asked of its own transition: a promise logic's initial snapshot, sent xstate's resolve
+ * event, is `done`. That event name is an xstate internal (5.32.2); a bump that renamed it would
+ * make every promise read long-lived, and setup.test.ts pins it against the real constructors.
+ */
+function settlesOnItsOwn(logic: unknown): boolean {
+  const l = logic as {
+    getInitialSnapshot?: (scope: unknown, input: unknown) => unknown;
+    transition?: (snapshot: unknown, event: unknown, scope: unknown) => { status?: string } | undefined;
+  };
+  if (typeof l?.getInitialSnapshot !== "function" || typeof l.transition !== "function") return false;
+  try {
+    const scope = { self: {}, defer: () => {}, emit: () => {} };
+    const snapshot = l.getInitialSnapshot(scope, undefined);
+    return l.transition(snapshot, { type: "xstate.promise.resolve", data: undefined }, scope)?.status === "done";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The load walk's Rest warnings (ADR-0024): shapes below an Agent's state that keep it from Rest, so
+ * every pick of the Agent is refused for longer than the author likely meant. Warnings, never
+ * refusals: each can be intended.
+ *
+ * - **A Gate whose answer has no target.** The Gate stays open after its answer, and the Agent's
+ *   state is not at Rest again until the Gate's state exits.
+ * - **A long-lived invoke** — an actor that runs until its state exits: not a promise (it settles),
+ *   a Gate, an Agent or a child Machine. While it runs, the Agent's state is never at Rest.
+ *
+ * The descent below an Agent's state stops at a child that invokes another Agent: below it is that
+ * Agent's state, read for that Agent.
+ */
+function restWarnings(machine: AnyStateMachine, actors: Record<string, UnknownActorLogic>): string[] {
+  type Node = AnyStateMachine["root"];
+  const implementations = machine.implementations.actors as Record<string, unknown>;
+  const logicOf = (src: unknown): unknown => (typeof src === "string" ? (actors[src] ?? implementations[src]) : src);
+  const agentOf = (node: Node): string | undefined =>
+    node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))?.src as string | undefined;
+  const out: string[] = [];
+  const visit = (node: Node): void => {
+    const agent = agentOf(node);
+    if (agent !== undefined) {
+      const descend = (parent: Node): void => {
+        for (const child of Object.values(parent.states)) {
+          if (agentOf(child) !== undefined) continue;
+          for (const inv of child.invoke) {
+            const logic = logicOf(inv.src);
+            const name = typeof inv.src === "string" ? inv.src : inv.id;
+            if (inv.src === "gate") {
+              for (const [event, candidates] of child.transitions) {
+                if (event.includes(".") || event === "*") continue;
+                if (candidates.some((t) => (t.target ?? []).length > 0)) continue;
+                out.push(
+                  `Gate "${inv.id}" at "${child.id}", below Agent "${agent}"'s state "${node.id}": its answer "${event}" ` +
+                    `has no target, so the Gate stays open after it — the Agent's state is not at rest again until ` +
+                    `"${child.id}" exits, and every pick of the Agent is refused until then; give the answer a target`,
+                );
+              }
+              continue;
+            }
+            if (isAgent(logic) || (logic as { root?: unknown } | undefined)?.root !== undefined) continue;
+            if (settlesOnItsOwn(logic)) continue;
+            out.push(
+              `"${child.id}", below Agent "${agent}"'s state "${node.id}", invokes "${name}", which runs until its ` +
+                `state exits (not a promise, a Gate, an Agent or a child Machine): while it runs the Agent's state ` +
+                `is never at rest, so it blocks every pick of the Agent — invoke it above the Agent's state`,
+            );
+          }
+          descend(child);
+        }
+      };
+      descend(node);
+    }
+    for (const child of Object.values(node.states)) visit(child);
+  };
+  visit(machine.root);
   return out;
 }
 

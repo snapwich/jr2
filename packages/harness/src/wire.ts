@@ -42,7 +42,25 @@ export type MemoryLimitNotice = {
 /** This conversation is new and earlier context is gone — stated to that Agent's next Turn. */
 export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversation"; reason: string };
 
-export type Notice = MemoryLimitNotice | ConversationNewNotice;
+/** The last reply from outside the workflow since a pick (ADR-0024): a party's event with its
+ * payload, or a child's output — what an outstanding pick's answer carries. Absent: nothing ran. */
+export type PickAnswer =
+  | { kind: "event"; event: string; sender?: { party: "agent" | "gate"; id: string }; payload: Record<string, unknown> }
+  | { kind: "output"; actor: string; output: unknown }
+  | { kind: "error"; actor: string; error: string };
+
+/** A pick's answer that never reached its call — `cut`: this Harness restarted while the workflow
+ * ran it, and the re-admission carries it; else the route left the Agent's state, and the next
+ * continued Turn hears it (ADR-0024, ADR-0031). */
+export type PickAnswerNotice = {
+  kind: "pick-answer";
+  scope: "conversation";
+  pick: string;
+  cut: boolean;
+  answer?: PickAnswer;
+};
+
+export type Notice = MemoryLimitNotice | ConversationNewNotice | PickAnswerNotice;
 
 /** The Admission: what `POST /agents/:name/:id` answers with (200, immediately — accept
  * and queue). The serializable three-string handle the host ledger persists (ADR-0016) and a

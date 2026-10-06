@@ -629,6 +629,11 @@ test("a restart that cut a Turn mid-tool-call: the next Turn sends every tool ca
   for (const id of calls) {
     assert.ok(results.has(id), `tool call ${id} is sent with its result: ${JSON.stringify(sent)}`);
   }
+  // The cut call's result is jr2's words, never pi's "No result provided" — a failed pick invites a
+  // second one, and the workflow does not run a pick twice (ADR-0031).
+  const cut = sent.find((m) => m.role === "tool" && m.tool_call_id === "call_cut");
+  assert.match(JSON.stringify(cut), /This pick reached the workflow, but its answer did not reach you/);
+  assert.doesNotMatch(JSON.stringify(cut), /No result provided/);
   assert.match(lastUserText(provider.calls[0]), /Decide the second thing\./);
 });
 
@@ -1626,4 +1631,117 @@ test("a healthy turn is untouched: varied calls, a sub-K repeat, then the pick (
   assert.deepEqual(sandbox.delivered, [{ type: "review_verdict", verdict: "approved" }]);
   // Both the read and the pick carried the Stand-in: the token itself is the Custodian's (ADR-0059).
   assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
+});
+
+// ─── the held pick (ADR-0024, ADR-0013) ────────────────────────────────────────────────────────
+
+/** The Orchestrator's answer to a pick the workflow runs: at once, with a delivery id. */
+const outstandingReceipt = (event: Record<string, unknown>) => ({
+  moved: true,
+  turnComplete: false,
+  allowed: [],
+  outstanding: true,
+  event: event.type,
+});
+
+/** A poll's answer: the workflow is back at Rest. */
+const answeredReceipt = (deliveryId: string, extra: Record<string, unknown> = {}) => ({
+  delivered: true,
+  event: "run_tests",
+  deliveryId,
+  moved: true,
+  turnComplete: false,
+  answered: true,
+  allowed: ["run_tests", "finish"],
+  ...extra,
+});
+
+test("an outstanding pick through the real loop: ONE tool call long-polls the answer, and the model reads it", async () => {
+  provider.reset([
+    { toolCall: { id: "call_t", name: "mcp__jr2__run_tests", args: '{"verdict":"go"}' } },
+    { text: "Tests pass." },
+  ]);
+  sandbox.reset(surfaceWith("run_tests", "finish"));
+  sandbox.answerWith(outstandingReceipt);
+  sandbox.pollWith((poll, deliveryId) =>
+    poll < 3
+      ? { delivered: true, deliveryId, ...outstandingReceipt({ type: "run_tests" }) }
+      : answeredReceipt(deliveryId, {
+          allowed: ["finish"],
+          answer: { kind: "output", actor: "tests", output: { passed: 3 } },
+        }),
+  );
+  const iid = "conf/held";
+  const admission = await admit(iid, "Run the tests.");
+  assert.equal((await settled(iid, admission)).outcome, "completed");
+
+  assert.deepEqual(
+    sandbox.delivered.map((e) => e.type),
+    ["run_tests"],
+    "one pick, delivered once",
+  );
+  assert.equal(sandbox.polls.length, 3, "polled until answered, all inside one tool call");
+  const result = JSON.stringify((provider.calls[1]?.messages ?? []).find((m) => m.role === "tool"));
+  assert.match(result, /The workflow ran it and is back in the state that asked for this turn/);
+  assert.match(result, /Its answer: the output of `tests`: \{\\"passed\\":3\}/);
+  assert.match(result, /Allowed now: `mcp__jr2__finish`/);
+  assert.equal(provider.calls.length, 2, "the model was asked once more, after the answer — never mid-wait");
+});
+
+test("two picks in ONE message: the Harness claims the first in message order and refuses the second before it leaves — `finish` included", async () => {
+  // pi runs one message's calls in parallel; over separate sockets the arrival order is not the
+  // message order (measured: `finish` first in 1 of 50). The claim is taken before the first await,
+  // in message order, so the result is fixed: every trial the same.
+  for (let trial = 0; trial < 5; trial++) {
+    provider.reset([
+      {
+        toolCalls: [
+          { id: "call_a", name: "mcp__jr2__run_tests", args: '{"verdict":"go"}' },
+          { id: "call_b", name: "mcp__jr2__finish", args: '{"verdict":"done"}' },
+        ],
+      },
+      { text: "Waiting on the answer." },
+    ]);
+    sandbox.reset(surfaceWith("run_tests", "finish"));
+    sandbox.answerWith(outstandingReceipt);
+    sandbox.pollWith(async (_poll, deliveryId) => {
+      await sleep(20);
+      return answeredReceipt(deliveryId, { allowed: ["finish"] });
+    });
+    const iid = `conf/claim-${trial}`;
+    const admission = await admit(iid, "Do both.");
+    assert.equal((await settled(iid, admission)).outcome, "completed");
+    assert.deepEqual(
+      sandbox.delivered.map((e) => e.type),
+      ["run_tests"],
+      `trial ${trial}: only the first call of the message reached the Orchestrator`,
+    );
+    const results = (provider.calls[1]?.messages ?? []).filter((m) => m.role === "tool");
+    const finishResult = JSON.stringify(results.find((m) => m.tool_call_id === "call_b"));
+    assert.match(
+      finishResult,
+      /`mcp__jr2__finish` was NOT delivered: your pick `mcp__jr2__run_tests` is still running/,
+    );
+  }
+});
+
+test("an outstanding pick's answer resets the identical-call streak: the same pick, answered each time, is no Runaway (ADR-0035)", async () => {
+  const call = { name: "mcp__jr2__run_tests", args: '{"verdict":"go"}' };
+  provider.reset([
+    { toolCall: { id: "c1", ...call } },
+    { toolCall: { id: "c2", ...call } },
+    { toolCall: { id: "c3", ...call } },
+    { toolCall: { id: "c4", ...call } },
+    { text: "Flaky, but done." },
+  ]);
+  sandbox.reset(surfaceWith("run_tests", "finish"));
+  sandbox.answerWith(outstandingReceipt);
+  sandbox.pollWith((_poll, deliveryId) =>
+    answeredReceipt(deliveryId, { answer: { kind: "output", actor: "tests", output: "1 failed" } }),
+  );
+  const iid = "conf/held-streak";
+  const admission = await admit(iid, "Run the tests until they pass.");
+  const settlement = await settled(iid, admission);
+  assert.equal(settlement.outcome, "completed", JSON.stringify(settlement));
+  assert.equal(sandbox.delivered.length, 4, "four identical picks, each answered by the world");
 });

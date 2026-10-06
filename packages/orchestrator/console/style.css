@@ -192,6 +192,29 @@ main {
   color: var(--text-dim);
 }
 
+/* An outstanding pick (ADR-0024): an Agent's Turn held while the workflow runs its pick. */
+#held {
+  list-style: none;
+  margin: 0 28px 16px;
+  padding: 0;
+  max-width: 720px;
+}
+
+#held:empty {
+  display: none;
+}
+
+#held li {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+
+#held .held-head {
+  font-family: var(--mono);
+}
+
 /* ---- Machine (SVG) ---- */
 
 /* Every box is click-to-select (outline only — the click is reserved beyond that). */

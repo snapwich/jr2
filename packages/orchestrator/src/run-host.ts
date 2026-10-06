@@ -25,15 +25,19 @@ import { createActor, type AnyActor, type AnyActorLogic, type AnyActorRef, type 
 import { SENDER_KEY, type EventDef, type EventSemantics } from "@jr2/agent-protocol";
 import { senderText } from "./party.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
-import type { EchoEvent, EchoStatusChild, LiveConversation } from "./wire.ts";
+import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
+import { replyOf, type Hold } from "./holds.ts";
+import { restOf } from "./rest.ts";
 import {
   acceptsNow,
   agentAddress,
   allowedPicks,
   bindRun,
+  continuedIid,
   EventValidationError,
   gateAddress,
   NotTakenError,
+  OutstandingError,
   RegistrationTable,
   refuseSenderField,
   UnknownAddressError,
@@ -201,6 +205,17 @@ function stopTree(actor: AnyActorRef): void {
   }
 }
 
+/** One outstanding pick, as `RunStatus.held` reports it: the Agent slot, its pick, and the ISO time
+ * it was delivered. */
+export type RunHeld = { agent: string; pick: string; since: string };
+
+/** The outstanding picks among a run's holds. */
+function heldOf(holds: Iterable<Hold>): RunHeld[] {
+  return [...holds]
+    .filter((hold) => hold.answer === undefined)
+    .map((hold) => ({ agent: hold.agent, pick: hold.pick, since: hold.since }));
+}
+
 /** A run's current observable state. `fault` carries the error message when status is "error"
  * (e.g. a gate invoked with a name outside the workflow's manifest — ADR-0011). */
 export type RunStatus = RunRecord & {
@@ -213,6 +228,10 @@ export type RunStatus = RunRecord & {
    * the scheduler's or the quota's own words, which can name nodes and taints, so {@link observe}
    * never carries it — the open band sees only that a Workspace is in `placing`. */
   waiting: RunWaiting[];
+  /** Every pick of this run that is outstanding (ADR-0024): the Agent, its pick, and since when —
+   * the Console's "held since". There is no default time bound on a held Turn; this is how a
+   * human sees one. Behind the token, like `context`: a pick names what the Agent did. */
+  held: RunHeld[];
   fault?: string;
   /**
    * Why the HOST set this status, for the statuses the Machine did not choose — today `drifted`
@@ -323,10 +342,21 @@ export type AgentSurfaceView = {
  * turn has stopped waiting. It fails conservatively — anything that made the read unreliable reads
  * `false`, which is today's behavior, never a false claim.
  *
- * `deliveryId` is unchanged from ADR-0013: an outcome stays ADDRESSABLE after the fact, the room a
- * deferred result needs when it lands. Nothing polls it today, deliberately.
+ * `deliveryId` keeps the outcome ADDRESSABLE after the fact (ADR-0013): a pick the workflow is still
+ * running when the POST answers is OUTSTANDING (`outstanding: true`), and its answer is read at
+ * `GET /agents/:iid/deliveries/:id` — the same shape, `answered: true`, once the workflow is back at
+ * Rest in the Agent's state or has left it (ADR-0024).
  */
 export type AgentDeliveryReceipt = {
+  /** The workflow is running the pick: the answer comes on the delivery's poll. `allowed` is empty:
+   * no other pick is taken until it answers. */
+  outstanding?: true;
+  /** ISO time the pick was delivered — with `outstanding`. */
+  since?: string;
+  /** This receipt is a held pick's answer, read at Rest (or once the Turn left the Agent's state). */
+  answered?: true;
+  /** The last reply since the pick (ADR-0024); absent with `answered`: it moved, nothing ran. */
+  answer?: PickAnswer;
   delivered: true;
   /** The event delivered — the Agent reads its own pick back, by name. */
   event: string;
@@ -560,6 +590,12 @@ type RunBlob = {
    * atomicity: the timers saved are exactly the ones the saved states scheduled.
    */
   timers?: PendingTimer[];
+  /**
+   * The held picks (ADR-0024, holds.ts): each conversation's latest pick that the workflow ran, its
+   * delivery id, the last reply since it, and its answer once read at Rest. Same blob for the
+   * snapshot's atomicity: a restored host answers the same poll from the same Machine.
+   */
+  holds?: Hold[];
   fault?: string;
 };
 
@@ -576,6 +612,8 @@ type LiveRun = {
   epochs: Record<string, number>;
   /** The pending notices (ADR-0062): persisted as `RunBlob.notices`, seeded on restore. */
   notices: NoticeLedger;
+  /** The held picks by Agent address (ADR-0024): persisted as `RunBlob.holds`, seeded on restore. */
+  holds: Map<string, Hold>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
@@ -629,6 +667,13 @@ export class RunHost {
    * than a comment asking the next reader not to clear the wrong Set.
    */
   private readonly workflowListeners = new Map<string, Set<WorkflowListener>>();
+  /** The registration each hold was opened under, this boot: the same address re-registered by
+   * another invocation (`continue: true`) is another Turn. A restored hold adopts the first. */
+  private readonly holdRegs = new WeakMap<Hold, Registration>();
+  /** The long polls waiting on each open hold (ADR-0024). */
+  private readonly holdWaiters = new Map<Hold, Set<() => void>>();
+  /** `<iid> <deliveryId>` of every outstanding pick of a run this host parked (`stop`). */
+  private readonly parked = new Set<string>();
   #stopping = false;
 
   constructor(opts: RunHostOptions) {
@@ -798,6 +843,8 @@ export class RunHost {
           // …and so do the undelivered notices (ADR-0062), reservations forgotten: a notice whose
           // admission never reached the ledger is delivered again.
           blob.notices,
+          // …and the held picks (ADR-0024): the restored Machine says when each is answered.
+          blob.holds,
         );
         // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
         // records them again.
@@ -933,6 +980,25 @@ export class RunHost {
     refuseSenderField(payload);
     const address = agentAddress(instanceId);
     const invoking = this.table.lookup(address);
+    const run = invoking ? this.runs.get(invoking.runId) : undefined;
+    // One pick at a time per Turn (ADR-0024): while a pick is outstanding, or the Agent's state is
+    // busy with work it started in, every pick is refused — `finish` included, and before any other
+    // judgment. Decided from the Machine (the Rest rule) and the run's holds, both of which a
+    // restore brings back, so it holds after a restart. xstate itself would take the pick, and one
+    // the Agent's state handles would exit the child state and stop the work running there.
+    if (invoking && run) {
+      this.settleHolds(run);
+      const hold = run.holds.get(instanceId);
+      const out = hold?.answer === undefined ? hold?.pick : undefined;
+      if (out !== undefined || restOf(invoking) === "busy") {
+        throw new OutstandingError(
+          out !== undefined
+            ? `"${type}" was not delivered: the pick "${out}" is still running in the workflow, and no other pick is taken until it answers`
+            : `"${type}" was not delivered: the workflow is still running work in the state that asked for this Turn, and no pick is taken until it is back at rest`,
+          out,
+        );
+      }
+    }
     if (invoking && !invoking.defs.has(type)) {
       // A pick on the Menu that another state of this Agent handles (ADR-0029): answered, not
       // refused — `moved: false` is the correction receipt, whatever its arguments, so the payload
@@ -1001,6 +1067,40 @@ export class RunHost {
     // IDENTITY, not existence: under `continue: true` the next state re-registers the SAME
     // address for its own turn, and that is a new turn — this one still ended.
     const turnComplete = this.table.lookup(address) !== invoking;
+    // The pick moved the workflow to work inside the Agent's state (ADR-0024): it is OUTSTANDING,
+    // answered once the workflow is back at Rest there — read after the mailbox drains, by the
+    // persist that follows every transition (`settleHolds`). The POST answers now, with the delivery
+    // id the Harness polls; no single request waits on the work (ADR-0013).
+    if (!turnComplete && invoking && run && moved && restOf(invoking) === "busy") {
+      const deliveryId = this.newId();
+      const since = new Date(this.now()).toISOString();
+      const hold: Hold = {
+        instanceId,
+        deliveryId,
+        pick: type,
+        agent: invoking.sender?.id ?? "",
+        since,
+        ...(invoking.sandbox !== undefined ? { sandbox: invoking.sandbox } : {}),
+        ...(invoking.invokeId !== undefined ? { invokeId: invoking.invokeId } : {}),
+        ...(invoking.sender?.party === "agent"
+          ? { conversation: continuedIid(invoking.invoker, invoking.runId, invoking.sender.id) }
+          : {}),
+      };
+      this.closeHold(run.holds.get(instanceId));
+      run.holds.set(instanceId, hold);
+      this.holdRegs.set(hold, invoking);
+      this.persist(run);
+      return {
+        delivered: true,
+        event: type,
+        moved: true,
+        turnComplete: false,
+        allowed: [],
+        deliveryId,
+        outstanding: true,
+        since,
+      };
+    }
     return {
       delivered: true,
       event: type,
@@ -1010,6 +1110,120 @@ export class RunHost {
       // the invoking state may have changed its guards. A Turn that is over may pick nothing.
       allowed: turnComplete || !invoking ? [] : allowedOf(invoking),
       deliveryId: this.newId(),
+    };
+  }
+
+  /**
+   * Answer every held pick of `run` that can be answered now (ADR-0024). Called by the persist that
+   * follows every transition — a microtask after the snapshot, so the mailbox has drained — and
+   * before any read of a hold, so no reader sees a hold the Machine already answered.
+   *
+   *   - The Agent's state is busy: still outstanding.
+   *   - Back at Rest in it: answered with the last reply since the pick and the Allowed picks read
+   *     AFTER the route — the guards read the context the route wrote (ADR-0029).
+   *   - It left the Agent's state (the registration is gone, or is another invocation's): the Turn
+   *     is over, and the answer goes as a notice to the Agent's next continued Turn (ADR-0062).
+   */
+  private settleHolds(run: LiveRun): void {
+    for (const hold of run.holds.values()) {
+      if (hold.answer !== undefined) continue;
+      const reg = this.table.lookup(agentAddress(hold.instanceId));
+      let same = reg !== undefined && reg.runId === run.record.runId && reg.invokeId === hold.invokeId;
+      if (same) {
+        const opened = this.holdRegs.get(hold);
+        if (opened === undefined) this.holdRegs.set(hold, reg!);
+        else same = opened === reg;
+      }
+      const reading = same ? restOf(reg!) : "gone";
+      if (reading === "busy") continue;
+      if (reading === "gone") {
+        hold.answer = { turnComplete: true, allowed: [], ...(hold.last ? { answer: hold.last } : {}) };
+        if (hold.conversation !== undefined) {
+          run.notices.raise(
+            {
+              kind: "pick-answer",
+              scope: "conversation",
+              pick: hold.pick,
+              cut: false,
+              ...(hold.last ? { answer: hold.last } : {}),
+            },
+            hold.conversation,
+          );
+        }
+      } else {
+        hold.answer = { turnComplete: false, allowed: allowedOf(reg!), ...(hold.last ? { answer: hold.last } : {}) };
+      }
+      this.closeHold(hold);
+    }
+  }
+
+  /** Wake every long poll on a hold: it was answered, replaced, or the host is going away. */
+  private closeHold(hold: Hold | undefined): void {
+    if (hold === undefined) return;
+    const waiters = this.holdWaiters.get(hold);
+    this.holdWaiters.delete(hold);
+    for (const wake of waiters ?? []) wake();
+  }
+
+  /** A held pick's delivery: its run and hold, by Agent address and delivery id. */
+  private holdAt(instanceId: string, deliveryId: string): { run: LiveRun; hold: Hold } | undefined {
+    for (const run of this.runs.values()) {
+      const hold = run.holds.get(instanceId);
+      if (hold?.deliveryId === deliveryId) return { run, hold };
+    }
+    return undefined;
+  }
+
+  /** Is this delivery an outstanding pick of a run this host parked? Its poll is asked again. */
+  parkedDelivery(instanceId: string, deliveryId: string): boolean {
+    return this.parked.has(`${instanceId} ${deliveryId}`);
+  }
+
+  /** The Sandbox that may read a delivery's answer (ADR-0013), or undefined for an unknown one. */
+  deliveryScope(instanceId: string, deliveryId: string): { sandbox?: string } | undefined {
+    const found = this.holdAt(instanceId, deliveryId);
+    return found && { ...(found.hold.sandbox !== undefined ? { sandbox: found.hold.sandbox } : {}) };
+  }
+
+  /**
+   * One long poll of a held pick's answer (`GET /agents/:iid/deliveries/:id` — ADR-0013, ADR-0024):
+   * the answer when the workflow is back at Rest in the Agent's state or has left it, else
+   * `outstanding` after at most `waitMs`, and the Harness asks again. Undefined for a delivery this
+   * host does not hold — a pick that was never outstanding, or a run that ended.
+   */
+  async awaitDelivery(
+    instanceId: string,
+    deliveryId: string,
+    waitMs = 25_000,
+  ): Promise<AgentDeliveryReceipt | undefined> {
+    const found = this.holdAt(instanceId, deliveryId);
+    if (!found) return undefined;
+    const { run, hold } = found;
+    this.settleHolds(run);
+    if (hold.answer === undefined && !this.#stopping) {
+      await new Promise<void>((resolve) => {
+        let waiters = this.holdWaiters.get(hold);
+        if (!waiters) this.holdWaiters.set(hold, (waiters = new Set()));
+        const timer = setTimeout(wake, waitMs);
+        function wake(): void {
+          clearTimeout(timer);
+          waiters!.delete(wake);
+          resolve();
+        }
+        waiters.add(wake);
+      });
+    }
+    const base = { delivered: true as const, event: hold.pick, moved: true, deliveryId };
+    if (hold.answer === undefined) {
+      return { ...base, turnComplete: false, allowed: [], outstanding: true, since: hold.since };
+    }
+    hold.fetched = true;
+    return {
+      ...base,
+      turnComplete: hold.answer.turnComplete,
+      allowed: hold.answer.allowed,
+      answered: true,
+      ...(hold.answer.answer !== undefined ? { answer: hold.answer.answer } : {}),
     };
   }
 
@@ -1174,6 +1388,7 @@ export class RunHost {
       context: snap.context,
       children: runChildren(snap), // the persisted `children` map — same tree, off the store
       waiting: status === "active" ? runWaiting(snap) : [],
+      held: status === "active" ? heldOf(blob.holds ?? []) : [],
       fault: blob.fault,
       reason: stored.reason,
     };
@@ -1225,6 +1440,9 @@ export class RunHost {
     // Harness re-asks on ADR-0042's ladder, and never 404, which says a Turn is over (ADR-0026).
     this.#stopping = true;
     clearTimeout(this.liveSetTimer);
+    // Every long poll answers `outstanding` now, so the server can close; the Harness asks again,
+    // and a restarted Orchestrator answers it from the same hold (ADR-0024).
+    for (const hold of [...this.holdWaiters.keys()]) this.closeHold(hold);
     for (const run of this.runs.values()) {
       for (const listener of run.listeners) listener({ kind: "closed" });
       run.listeners.clear();
@@ -1251,6 +1469,14 @@ export class RunHost {
     const run = this.runs.get(runId);
     if (!run) return;
     run.binding.hostStopping = true;
+    // A parked run's outstanding picks are not over (ADR-0024): their polls are answered `503` —
+    // ask again — never `404`, which tells the Harness its Turn ended. The host that restores the
+    // run answers them from the saved holds.
+    for (const hold of run.holds.values()) {
+      if (hold.answer !== undefined) continue;
+      this.parked.add(`${hold.instanceId} ${hold.deliveryId}`);
+      this.closeHold(hold);
+    }
     // Say so BEFORE the actor stops, while there is still a status to read. A stopped run is not a
     // settled one — `persist()` never runs for it (the tracked-run guard drops the scheduled save,
     // keeping the stored status "live" for restore — see `spawn`), so nothing else on this path
@@ -1369,6 +1595,7 @@ export class RunHost {
       context: snap.context,
       children: runChildren(snap),
       waiting: runWaiting(snap, run.actor.logic),
+      held: heldOf(run.holds.values()),
       fault: run.fault,
     };
   }
@@ -1395,8 +1622,10 @@ export class RunHost {
     agents: Record<string, AgentAdmission> = {},
     epochs: Record<string, number> = {},
     noticeState?: NoticeLedgerState,
+    holdState: Hold[] = [],
   ): AnyActor {
     const notices = new NoticeLedger(noticeState, this.newId);
+    const holds = new Map(holdState.map((hold) => [hold.instanceId, hold]));
     let live: LiveRun | undefined;
     let scheduled = false;
     const schedule = () => {
@@ -1464,6 +1693,25 @@ export class RunHost {
       },
       // The run-narrative echo attach (ADR-0023), called from `workspace()`'s registrar.
       echo: (endpoint, placement) => this.attachEcho(record.runId, endpoint, placement),
+      // The held picks, as the Agent actor reads them when its Harness restarted (ADR-0024/0031).
+      heldPick: (instanceId) => {
+        const run = this.runs.get(record.runId);
+        if (run && run.holds === holds) this.settleHolds(run);
+        const hold = holds.get(instanceId);
+        return (
+          hold && {
+            pick: hold.pick,
+            answered: hold.answer !== undefined,
+            turnComplete: hold.answer?.turnComplete ?? false,
+            ...(hold.answer?.answer !== undefined ? { answer: hold.answer.answer } : {}),
+            fetched: hold.fetched === true,
+          }
+        );
+      },
+      heldAnswerDelivered: (instanceId) => {
+        const hold = holds.get(instanceId);
+        if (hold) hold.fetched = true;
+      },
     };
     let bound = false;
     const actor = createActor(machine, {
@@ -1493,10 +1741,22 @@ export class RunHost {
             this.announce(record.workflow, { kind: "emit", runId: record.runId, event });
           });
         }
+        // The chain (ADR-0024): every reply a Machine receives while one of its Agents' picks is
+        // outstanding — inspected as it is relayed, before the Machine processes it — and the last
+        // is the answer's default. The Machine's own events are skipped (`replyOf`).
+        if (ev.type === "@xstate.event" && holds.size > 0) {
+          for (const hold of holds.values()) {
+            if (hold.answer !== undefined) continue;
+            const reg = this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId));
+            if (!reg?.invoker || reg.invoker !== ev.actorRef) continue;
+            const reply = replyOf(ev.event, ev.sourceRef as AnyActorRef | undefined, ev.actorRef as AnyActorRef);
+            if (reply) hold.last = reply;
+          }
+        }
         if (ev.type === "@xstate.snapshot") schedule();
       },
     });
-    live = this.track(record, actor, def, agents, epochs, notices, binding);
+    live = this.track(record, actor, def, agents, epochs, notices, binding, holds);
     return actor;
   }
 
@@ -1508,6 +1768,7 @@ export class RunHost {
     epochs: Record<string, number>,
     notices: NoticeLedger,
     binding: RunBinding,
+    holds: Map<string, Hold>,
   ): LiveRun {
     const run: LiveRun = {
       record,
@@ -1516,6 +1777,7 @@ export class RunHost {
       agents,
       epochs,
       notices,
+      holds,
       binding,
       listeners: new Set(),
       feedSoFar: [],
@@ -1564,6 +1826,8 @@ export class RunHost {
    * status and the one the feeds report.
    */
   private persist(run: LiveRun, terminal?: string): void {
+    // The holds first: an answer read at Rest, and a notice a route out raised, ride this same save.
+    this.settleHolds(run);
     const snapshot = run.actor.getPersistedSnapshot();
     const machineStatus = (snapshot as { status?: string }).status ?? "active";
     const serialized = serializeSnapshot(snapshot, {
@@ -1581,6 +1845,7 @@ export class RunHost {
       epochs: run.epochs,
       notices: run.notices.state(),
       timers: pendingTimers(run.actor, this.now()),
+      holds: [...run.holds.values()],
       fault: run.fault,
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);

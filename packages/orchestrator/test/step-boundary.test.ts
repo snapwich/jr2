@@ -30,7 +30,8 @@ const submit = defineEvent({ name: "submit", input: z.object({}) });
 const abandon = defineEvent({ name: "abandon", input: z.object({}) });
 
 const CODING = ["abandon", "ask_approval", "run_tests"];
-const BUSY = ["abandon"];
+// Not at Rest (ADR-0024): the Gate or the command runs below the Agent's state, so nothing is allowed.
+const BUSY: string[] = [];
 const REVIEWING = ["abandon", "revise", "submit"];
 
 function controllableTests() {
@@ -99,8 +100,8 @@ test("the surface is the truth at every step boundary: a Gate's answer and a set
   await waitFor(() => JSON.stringify(host.status(runId)?.value) === JSON.stringify({ ticket: "reviewing" }));
   assert.deepEqual(allowed(), REVIEWING, "what the next boundary read serves");
 
-  // An Effect the Agent is not waiting on: the Agent picked run_tests (receipt: BUSY), then went on
-  // with its Working tools; the command settles and the Machine is back in coding.
+  // A command the Agent picked: outstanding (receipt: BUSY) until it settles, and the surface follows
+  // it; the command settles and the Machine is back in coding.
   host.sendToAgent(iid, { type: "revise" });
   const toTesting = host.sendToAgent(iid, { type: "run_tests" });
   assert.deepEqual(toTesting.allowed, BUSY);

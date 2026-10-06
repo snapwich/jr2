@@ -88,7 +88,31 @@ export type MemoryLimitNotice = {
  * longer holds it. */
 export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversation"; reason: string };
 
-export type Notice = MemoryLimitNotice | ConversationNewNotice;
+/**
+ * What an outstanding pick's answer is (ADR-0024): the LAST reply from outside the Machine since the
+ * pick — a party's event (a Gate's answer, a nested Agent's pick) with its payload, or a child's
+ * output (a child Machine, an Effect stand-in) — named by who sent it. Absent where nothing replied:
+ * the pick moved the workflow and nothing ran. Plain data; the Harness writes the words.
+ */
+export type PickAnswer =
+  | { kind: "event"; event: string; sender?: { party: "agent" | "gate"; id: string }; payload: Record<string, unknown> }
+  | { kind: "output"; actor: string; output: unknown }
+  | { kind: "error"; actor: string; error: string };
+
+/**
+ * A pick's answer that did not reach the pick's call (ADR-0024): `cut` — the Harness restarted while
+ * the workflow ran it, and jr2 re-admits the Agent on the same conversation with this notice; or the
+ * route left the Agent's state, and the next continued Turn hears it. Conversation scope.
+ */
+export type PickAnswerNotice = {
+  kind: "pick-answer";
+  scope: "conversation";
+  pick: string;
+  cut: boolean;
+  answer?: PickAnswer;
+};
+
+export type Notice = MemoryLimitNotice | ConversationNewNotice | PickAnswerNotice;
 
 /** Response header: the offset to resume the stream from (every stream read carries it). */
 export const STREAM_NEXT_OFFSET_HEADER = "stream-next-offset";

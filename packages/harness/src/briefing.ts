@@ -20,7 +20,7 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { formatBytes } from "./memory-guard.ts";
-import { allowedPicksText } from "./menu.ts";
+import { allowedPicksText, answerText, sanitizeToolNamePart } from "./menu.ts";
 import type { ResolvedDefinition } from "./spec.ts";
 import type { Notice } from "./wire.ts";
 
@@ -125,7 +125,7 @@ export function turnPart(facts: TurnFacts): string {
   const lines: string[] = [];
   // Only Working tools consume a directory; a Menu-only Agent's `/work` default names nothing.
   if (facts.workspace !== "none") lines.push(`Working directory: ${facts.cwd}`);
-  for (const notice of facts.notices ?? []) lines.push(noticeText(notice));
+  for (const notice of facts.notices ?? []) lines.push(noticeText(notice, facts.toolName));
   lines.push(allowedPicksText(facts.allowed, facts.toolName));
   return `<jr2-turn>\n${lines.join("\n")}\n</jr2-turn>`;
 }
@@ -150,7 +150,7 @@ export function briefedPrompt(prompt: string, part: string): string {
 
 /** One notice in words. A notice never replaces a fault (ADR-0062): the Machine already decided;
  * this makes sure the next Agent does not work blind. */
-export function noticeText(notice: Notice): string {
+export function noticeText(notice: Notice, toolName: (name: string) => string = (name) => name): string {
   switch (notice.kind) {
     case "memory-limit": {
       const at = notice.peak === undefined ? `of ${notice.limit}` : `(peak ${notice.peak} of ${notice.limit})`;
@@ -161,5 +161,13 @@ export function noticeText(notice: Notice): string {
     }
     case "conversation-new":
       return `Notice: This conversation is new; earlier context is gone (${notice.reason}).`;
+    case "pick-answer": {
+      // The answer an outstanding pick's call never got (ADR-0024, ADR-0031): the call was cut by a
+      // Harness restart, or the route left the Agent's state before the answer could ride it.
+      const tool = `\`${toolName(sanitizeToolNamePart(notice.pick))}\``;
+      return notice.cut
+        ? `Notice: The workflow finished ${tool}, the pick that was cut from your last turn. It ran once. ${answerText(notice.answer)}`
+        : `Notice: Your pick ${tool} ran to its end after your last turn was over. ${answerText(notice.answer)}`;
+    }
   }
 }

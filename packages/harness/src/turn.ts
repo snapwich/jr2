@@ -21,13 +21,21 @@ import {
   type ThinkingLevel as PiThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import type { Api, AssistantMessage, Model, Models, UserMessage } from "@earendil-works/pi-ai";
+import type {
+  Api,
+  AssistantMessage,
+  Model,
+  Models,
+  ToolCall,
+  ToolResultMessage,
+  UserMessage,
+} from "@earendil-works/pi-ai";
 import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
 import { RunawayError, TurnOverError, type RunSubmission } from "./conversation.ts";
-import { readMenu, type MenuOptions } from "./menu.ts";
-import { menuToolName, menuTools } from "./menu-tools.ts";
+import { cutPickResult, readMenu, type MenuOptions } from "./menu.ts";
+import { MENU_TOOL_PREFIX, menuToolName, menuTools } from "./menu-tools.ts";
 import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
 import { piSession } from "./pi-engine.ts";
 import { mapThinkingLevel, providerLimit, resolveModel } from "./provider.ts";
@@ -125,6 +133,13 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     onAllowed: (allowed) => told.heard(allowed),
     onTurnOver: () => {
       turn.over = true;
+    },
+    // An outstanding pick's answer is the world moving (ADR-0035): the same call again is a new
+    // question, so the identical-call streak starts over. The call itself was one step, whatever
+    // the wait: the guard counts calls, not time.
+    onAnswered: () => {
+      watch.streak = 0;
+      watch.signature = "";
     },
   };
   /** Per Submission: a pick's answer said the Turn is over (`turnComplete`, or a 404). From then on
@@ -271,7 +286,7 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
             renderCompaction(cut.tokensBefore, cut.tokensAfter, current.model.contextWindow),
           ]);
         }
-        return { messages: (cut?.messages ?? messages).map(settleAbandonedMessage) };
+        return { messages: settleCutPicks((cut?.messages ?? messages).map(settleAbandonedMessage)) };
       });
       // The runaway watch (ADR-0035): steps are the tool calls this Submission observed; K
       // consecutive byte-identical calls is the early exit, the step budget the unconditional
@@ -389,6 +404,48 @@ function settleAbandonedMessage(message: AgentMessage): AgentMessage {
   );
   if (kept.length === 0) return message;
   return { ...assistant, content: kept, stopReason: kept.some((b) => b.type === "toolCall") ? "toolUse" : "stop" };
+}
+
+/**
+ * Answer every Menu call left with no result (ADR-0031): a restart of this Harness cut the Turn while
+ * the call was out, and the rebuilt session ends in it. pi would answer it itself when it sends the
+ * history — "No result provided", an error, which reads as a failed pick and invites a second one.
+ * jr2's text says what happened instead: the pick reached the workflow, which does not run it twice,
+ * and its answer comes in the next message (the re-admission's notice, ADR-0024). Placed before pi's
+ * transform, so pi finds a result and adds none. A Working-tool call is pi's to answer.
+ */
+export function settleCutPicks(messages: AgentMessage[]): AgentMessage[] {
+  const answered = new Set(
+    messages.flatMap((m) =>
+      (m as { role?: string }).role === "toolResult" ? [(m as ToolResultMessage).toolCallId] : [],
+    ),
+  );
+  const out: AgentMessage[] = [];
+  let open: ToolCall[] = [];
+  const close = (): void => {
+    for (const call of open) {
+      if (answered.has(call.id) || !call.name.startsWith(MENU_TOOL_PREFIX)) continue;
+      out.push({
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: "text", text: cutPickResult(call.name) }],
+        isError: false,
+        timestamp: Date.now(),
+      } satisfies ToolResultMessage);
+    }
+    open = [];
+  };
+  for (const message of messages) {
+    const role = (message as { role?: string }).role;
+    if (role !== "toolResult") close();
+    out.push(message);
+    if (role === "assistant") {
+      open = (message as AssistantMessage).content.filter((block): block is ToolCall => block.type === "toolCall");
+    }
+  }
+  close();
+  return out;
 }
 
 /** One completed pi message → its history entry, or none. Best-effort by contract (the history

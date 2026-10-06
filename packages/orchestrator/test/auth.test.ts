@@ -256,7 +256,7 @@ test("starting a run is Instance-band: a Sandbox token starts nothing", async ()
 
 test("the Stand-in the Harness holds opens nothing: every route refuses it, and nothing moves (ADR-0059)", async () => {
   // What the Agent gains by skipping the Custodian and calling the Orchestrator itself, with the
-  // one bearer its env holds: nothing. The Custodian swaps the Stand-in on three routes toward
+  // one bearer its env holds: nothing. The Custodian swaps the Stand-in on four routes toward
   // this Service; sent straight here, it is a string no key signed.
   const { host, app, agentPath } = await mkApp();
   const run = await host.start("coding", { sandbox: "ws-1" });
@@ -265,6 +265,7 @@ test("the Stand-in the Harness holds opens nothing: every route refuses it, and 
   const refused = [
     await app.request(await agentPath(run, "surface"), get(held)),
     await app.request(await agentPath(run, "events"), post({ type: "request_review", summary: "self" }, held)),
+    await app.request(await agentPath(run, "deliveries/d-1"), get(held)),
     await app.request("/sandboxes/ws-1/fetch", post({ identity: "example.test/app" }, held)),
     await app.request(`/runs/${gated.runId}/gates/F-1/events`, post({ type: "approve" }, held)),
     await app.request("/runs", get(held)),
@@ -272,7 +273,7 @@ test("the Stand-in the Harness holds opens nothing: every route refuses it, and 
   ];
   assert.deepEqual(
     refused.map((r) => r.status),
-    [401, 401, 401, 401, 401, 401],
+    [401, 401, 401, 401, 401, 401, 401],
   );
   assert.equal(host.status(run.runId)?.status, "active", "the Agent's own run did not move");
   assert.equal(host.status(gated.runId)?.value, "review", "and no gate moved");

@@ -31,18 +31,21 @@ whole history again. It also left the history calling tools the request no longe
   modes' picks — ADR-0015), narrowed to what the live Machine would currently accept **from this Agent**: xstate's
   selection for an event that carries the Agent's sender, a guard that reads the payload counted as passing, must move
   something, and every writing it selects must be the Agent's (ADR-0015). Read off the live snapshot, they follow the
-  active mode as well as the guards; the Menu stays byte-identical in every mode. The surface serves both
-  (`GET /agents/:iid/surface` → `menu` and `allowed`); the Harness presents `menu` as the tools block and states
-  `allowed` in the Briefing's Turn part, after the Frame's prompt
+  active mode as well as the guards; the Menu stays byte-identical in every mode. They are EMPTY while the Agent's state
+  is not at Rest — something it started runs below it, or a timer holds — because every pick is refused then
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)); an outstanding pick's answer carries them
+  read after the route. The surface serves both (`GET /agents/:iid/surface` → `menu` and `allowed`); the Harness
+  presents `menu` as the tools block and states `allowed` in the Briefing's Turn part, after the Frame's prompt
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). It rides the newest message, so it never
   touches the cached prefix. The Briefing's standing part says how to read every such list: a pick is a call that the
   newest "Allowed now" lists, and each pick's answer says if the Turn is over.
-- **The Orchestrator enforces, at delivery, and only there.** A pick off the Menu is refused. A pick on the Menu is not
-  refused before delivery: one inside the invoking state's derived set that the Machine does not take — a pick of
-  another mode included — is delivered and answered `moved: false`; one that only another state of this Agent handles is
-  answered `moved: false` whatever its arguments, and never reaches the Machine, because only a state the Agent does not
-  own (a nested Agent's, a Gate's) could act on it there (ADR-0015). A pick whose selection, with its real payload,
-  holds another party's writing — a mode and a sibling Gate's or nested Agent's state that write the same name, say — is
+- **The Orchestrator enforces, at delivery, and only there.** A pick while the Agent's state is not at Rest is refused
+  before anything else, `finish` included (ADR-0024). A pick off the Menu is refused. A pick on the Menu is not refused
+  before delivery: one inside the invoking state's derived set that the Machine does not take — a pick of another mode
+  included — is delivered and answered `moved: false`; one that only another state of this Agent handles is answered
+  `moved: false` whatever its arguments, and never reaches the Machine, because only a state the Agent does not own (a
+  nested Agent's, a Gate's) could act on it there (ADR-0015). A pick whose selection, with its real payload, holds
+  another party's writing — a mode and a sibling Gate's or nested Agent's state that write the same name, say — is
   answered `moved: false` the same way and does not reach the Machine (ADR-0015). Every answer carries `allowed`, read
   **after** the delivery, and the Harness renders it ("Allowed now: `finish`"). A `moved: false` pick outside `allowed`
   gets the **correction receipt** — "`<pick>` is not allowed in the workflow's current state, whatever its arguments.
@@ -51,16 +54,16 @@ whole history again. It also left the history calling tools the request no longe
   change the arguments. The Harness does not pre-check: its list is as old as what it last read, and an in-state move
   (`moved: true, turnComplete: false`) can change the guards and the mode mid-Turn.
 - **The Turn part is restated at a step boundary when the Allowed picks changed under the Agent.** A Gate's answer, an
-  outside event or a child's settled invoke can move the Machine while the Agent works with its Working tools and picks
-  nothing. So the Harness keeps the last Allowed-picks list the model read — the Turn part, then every receipt and
-  refusal — and after each step's tool results reads the surface once and compares the two as sets. If they differ, it
-  appends one message before the next model request: "The workflow's state changed since you last read the Allowed
-  picks. Allowed now: …", in a `<jr2-turn>` block. The Agent's own pick is never restated, because its receipt already
-  told the model. The read is one bounded attempt and a failure is silence; the next boundary asks again. Nothing is
-  read or said after the Turn ended or after an abort. The Harness knows the Turn ended from a pick's answer
-  (`turnComplete`, or a 404), not only from a read: under `continue: true` the next state re-registers the same address
-  before the abort lands, so a read there would answer for the next Turn. An empty list is not restated to a model that
-  stopped; the Orchestrator's wake asks it when a pick opens (ADR-0016's ask-again rule). The comparison is
+  outside event or a child's settled invoke the Agent did not pick can move the Machine while the Agent works with its
+  Working tools and picks nothing. So the Harness keeps the last Allowed-picks list the model read — the Turn part, then
+  every receipt and refusal — and after each step's tool results reads the surface once and compares the two as sets. If
+  they differ, it appends one message before the next model request: "The workflow's state changed since you last read
+  the Allowed picks. Allowed now: …", in a `<jr2-turn>` block. The Agent's own pick is never restated, because its
+  receipt already told the model. The read is one bounded attempt and a failure is silence; the next boundary asks
+  again. Nothing is read or said after the Turn ended or after an abort. The Harness knows the Turn ended from a pick's
+  answer (`turnComplete`, or a 404), not only from a read: under `continue: true` the next state re-registers the same
+  address before the abort lands, so a read there would answer for the next Turn. An empty list is not restated to a
+  model that stopped; the Orchestrator's wake asks it when a pick opens (ADR-0016's ask-again rule). The comparison is
   engine-neutral (`between-steps.ts`); only the placement is the engine's — pi's between-steps input (`steer`). An
   engine with no such input falls back to the next receipt. No route is added and no cap is set; the Orchestrator
   already serves the truth on `GET /agents/:iid/surface`.

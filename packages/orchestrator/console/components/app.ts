@@ -6,7 +6,14 @@
 
 import { Fragment, h, type JSX } from "preact";
 import { useState } from "preact/hooks";
-import { selectedRun, selectedRunGates, selectedRunWaiting, type Frame, type Store } from "../store.ts";
+import {
+  selectedRun,
+  selectedRunGates,
+  selectedRunHeld,
+  selectedRunWaiting,
+  type Frame,
+  type Store,
+} from "../store.ts";
 import type { MachineDoc } from "../canvas.ts";
 import { Nav } from "./nav.ts";
 import { Fleet } from "./fleet.ts";
@@ -72,6 +79,7 @@ export function App(props: {
         selectedNodeId: store.selectedNodeId,
         gates: selectedRunGates(store),
         waiting: selectedRunWaiting(store),
+        held: selectedRunHeld(store),
         api,
       }),
       h(Drawer, { store, chosenTab, onChooseTab: setChosenTab, api }),

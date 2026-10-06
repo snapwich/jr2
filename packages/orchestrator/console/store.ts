@@ -38,6 +38,11 @@ export type GateCard = {
  *  `RunWaiting` in run-host.ts. Guarded: `message` is the scheduler's or the quota's own words. */
 export type WaitingLine = { child: string; on: "node" | "quota"; message: string; since: string };
 
+/** One outstanding pick as `GET /runs/:id` reports it (ADR-0024) — mirrors `RunHeld` in
+ *  run-host.ts. There is no default time bound on a held Turn: "held since" is how a human sees one.
+ *  Guarded like the reason a Workspace waits: a pick names what an Agent did. */
+export type HeldLine = { agent: string; pick: string; since: string };
+
 /** The credential's state — never its value, which stays in sessionStorage (ADR-0032). */
 export type TokenState = "none" | "checking" | "live" | "invalid";
 
@@ -57,7 +62,7 @@ export type Frame =
   | { kind: "toggleWorkflow"; workflow: string }
   | { kind: "token"; state: TokenState }
   | { kind: "gates"; runId: string; workflow: string; gates: GateCard[] }
-  | { kind: "waiting"; runId: string; workflow: string; waiting: WaitingLine[] }
+  | { kind: "waiting"; runId: string; workflow: string; waiting: WaitingLine[]; held?: HeldLine[] }
   | { kind: "inboxScope"; all: boolean }
   | { kind: "startForm"; workflow: string | null };
 
@@ -105,7 +110,7 @@ export type Store = {
   expanded: Set<string>;
   token: TokenState;
   gates: Map<string, { workflow: string; gates: GateCard[] }>;
-  waiting: Map<string, { workflow: string; waiting: WaitingLine[] }>;
+  waiting: Map<string, { workflow: string; waiting: WaitingLine[]; held: HeldLine[] }>;
   inboxAll: boolean;
   startFormFor: string | null;
 };
@@ -254,12 +259,18 @@ export function applyFrame(store: Store, frame: Frame): Store {
     case "waiting": {
       // The same guarded re-fetch's other half (ADR-0064), folded the same way: whole per run, and
       // nothing folded without the credential that read it.
+      // The run's outstanding picks (ADR-0024) ride the same frame: one re-fetch, one fold.
       if (store.token !== "live") return store;
-      if (!frame.waiting.length) {
+      const held = frame.held ?? [];
+      if (!frame.waiting.length && !held.length) {
         const waiting = mapWithout(store.waiting, frame.runId);
         return waiting === store.waiting ? store : { ...store, waiting };
       }
-      const waiting = new Map(store.waiting).set(frame.runId, { workflow: frame.workflow, waiting: frame.waiting });
+      const waiting = new Map(store.waiting).set(frame.runId, {
+        workflow: frame.workflow,
+        waiting: frame.waiting,
+        held,
+      });
       return { ...store, waiting };
     }
 
@@ -362,6 +373,13 @@ export function selectedRunGates(store: Store): GateCard[] {
 export function selectedRunWaiting(store: Store): WaitingLine[] {
   if (store.selectedRunId === null) return [];
   return store.waiting.get(store.selectedRunId)?.waiting ?? [];
+}
+
+/** The SELECTED run's outstanding picks, each with since when it is held (ADR-0024) — empty in
+ *  observer mode. */
+export function selectedRunHeld(store: Store): HeldLine[] {
+  if (store.selectedRunId === null) return [];
+  return store.waiting.get(store.selectedRunId)?.held ?? [];
 }
 
 /** What the nav badge counts: every open gate everywhere — attention is global even when the
