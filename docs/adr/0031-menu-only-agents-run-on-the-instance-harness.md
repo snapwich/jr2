@@ -72,12 +72,14 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   did not want stopped (ADR-0024). It waits for Rest, then re-admits the Agent on the same conversation, which the
   rebuilt Harness holds: a jr2 prompt ("Your previous turn was cut: the process that ran you restarted while the
   workflow was busy. The workflow did not stop. Continue your task from here.") with the answer as a `pick-answer`
-  notice (`cut: true`) in the Briefing's Turn part, and the Allowed picks after it (ADR-0062). In the rebuilt session
-  the cut Menu call has no result; the Harness answers it in the history with jr2's text — the pick reached the
-  workflow, which does not run it twice, and its result comes in the next message — before pi would answer "No result
-  provided", which reads as a failed pick. The same holds for a Sandbox's Harness, whose restart the watch sees
-  (ADR-0021). A restart at Rest with nothing unread is the fault it always was. A route that leaves the Agent's state
-  ends the Turn while it waits, as any route does.
+  notice (`cut: true`) in the Briefing's Turn part, and the Allowed picks after it (ADR-0062). The re-admission asks the
+  rebuilt Harness for the conversation first, as a continued Turn does: one it cannot read gets a `conversation-new`
+  notice ahead of the answer, and the notices pending for the Turn ride along. In the rebuilt session the cut Menu call
+  has no result; the Harness answers it in the history with jr2's text — the pick reached the workflow, which does not
+  run it twice, and its result comes in the next message — before pi would answer "No result provided", which reads as a
+  failed pick. The same holds for a Sandbox's Harness, whose restart the watch sees (ADR-0021). A restart at Rest with
+  nothing unread is the fault it always was. A route that leaves the Agent's state ends the Turn while it waits, as any
+  route does.
 - **Both placements persist, to different volumes.** The Instance Harness to a PersistentVolumeClaim of its own; a
   Sandbox's Harness to an emptyDir mounted into the Harness container alone (the User Container must not read it), so a
   Harness container that restarts inside a living pod keeps its conversations. A pod that is gone takes the emptyDir

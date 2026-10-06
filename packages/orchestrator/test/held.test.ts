@@ -345,6 +345,22 @@ test("a Harness restart while a pick is outstanding is no agent.fault: at Rest, 
   assert.equal(rig.host.sendToAgent(rig.iid, { type: "finish" }).turnComplete, true);
 });
 
+test("a re-admission after a cut asks the rebuilt Harness for the conversation: one it cannot read is told (ADR-0062)", async () => {
+  const rig = await started();
+  rig.host.sendToAgent(rig.iid, { type: "ask" });
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  rig.coder.held = false;
+  const asked = rig.coder.heldAsked.length;
+  rig.host.sendToGate(rig.runId, "review", { type: "approve" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(rig.coder.heldAsked.slice(asked), [rig.iid], "the re-admission asked for its conversation");
+  assert.deepEqual(
+    rig.coder.notices[1]?.map((n) => n.kind),
+    ["conversation-new", "pick-answer"],
+    "the lost conversation is news, then the cut pick's answer",
+  );
+});
+
 test("a Harness restart after the answer was read at Rest but never reached the model: re-admitted at once", async () => {
   const rig = await started();
   const testing = rig.host.sendToAgent(rig.iid, { type: "run_tests" });

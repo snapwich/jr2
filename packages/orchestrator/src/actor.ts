@@ -889,9 +889,19 @@ export function agentActorWith(
       });
       restarted = undefined;
       controller = new AbortController();
+      // The rebuilt Harness may not read the conversation back: then this Turn lands on a new one,
+      // and is told (ADR-0062), as the continue path tells it below.
+      if (!(await client.holds(input.agentName, currentIid, { signal: controller.signal }))) {
+        binding.raiseNotice?.(
+          { kind: "conversation-new", scope: "conversation", reason: "the Harness no longer holds it" },
+          conversation,
+        );
+      }
+      if (stopped) return "stopped";
+      // The notices pending for this Turn ride the re-admission, with the cut pick's answer after them.
       const admission = await admitTurn(
         { ...framed, attach: undefined, instanceId: currentIid, prompt: READMIT_PROMPT },
-        { notices: false, extra: notice },
+        { notices: true, extra: notice },
       );
       binding.heldAnswerDelivered?.(currentIid);
       return admission;
