@@ -291,6 +291,11 @@ state takes its own events, never the Agent's picks, unless a pick's audience gi
 inbox card, or a webhook translator targets. _Avoid_: humanGate (humans are one caller among many), approval (one
 possible event, not the resource)
 
+**Sender**: The party that delivered an event, as `event.sender` — `{ party, id }`: an Agent by its slot, or a Gate by
+its invoke id. Written by the Orchestrator alone, on every event a party delivers; absent on the Machine's own events
+(ADR-0011, ADR-0015). _Avoid_: origin, caller (a Gate's caller is the human or system behind the Gate; the sender is the
+Gate)
+
 **Emit**: A message a workflow author surfaces from a Machine for whoever is watching (xstate `emit({...})`), carried on
 the observation feeds beside the automatic status deltas. Progress and notice — "review requested", "branch pushed" —
 never control: nothing consumes an Emit, and a Machine cannot be driven by one. Its PAYLOAD is author data of the same

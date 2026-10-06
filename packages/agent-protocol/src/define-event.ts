@@ -61,6 +61,18 @@ export type EventFrom<D extends EventDef> =
 // `workspace.*`).
 const NAME_RE = /^[a-zA-Z0-9_-]+$/;
 
+/**
+ * The field the Orchestrator writes on every event a party delivers into a Machine: its
+ * {@link Sender} (ADR-0011, ADR-0015). Plain data on the event, so it rides the mailbox, a delayed
+ * event the run host persists, and a restore. Only the Orchestrator writes it: no def may declare
+ * it, and a caller that posts it is refused. The Machine's own events (`raise`, `sendTo` itself, a
+ * child's `sendParent`) carry none.
+ */
+export const SENDER_KEY = "sender";
+
+/** Who delivered an event: an Agent by its slot, or a Gate by its invoke id (ADR-0015). */
+export type Sender = { readonly party: "agent" | "gate"; readonly id: string };
+
 /** Define one control event. Pure — returns a frozen def; registration happens nowhere. */
 export function defineEvent<const Name extends string, Input extends z.ZodObject>(def: {
   name: Name;
@@ -76,6 +88,12 @@ export function defineEvent<const Name extends string, Input extends z.ZodObject
     throw new Error(
       `defineEvent: invalid name "${def.name}" — must match ${NAME_RE} ` +
         `(it becomes an MCP tool name and an xstate event type)`,
+    );
+  }
+  if (SENDER_KEY in def.input.shape) {
+    throw new Error(
+      `defineEvent: "${def.name}" declares \`${SENDER_KEY}\` in its input — the Orchestrator writes that field ` +
+        `on every delivered event (who sent it); name the payload field something else`,
     );
   }
   if (def.semantics === "deferred" && !def.output) {

@@ -36,9 +36,9 @@ words; another workflow defines others. jr2 owns only definition, transport, val
 
 On start, the `agentRun` actor registers, for its instance id, a toolset — the menu derived from its invoking state's
 transitions (ADR-0015) — whose handlers **close over that invocation's `sendBack`**; on stop it deregisters. A tool call
-→ validate against the named schema → `sendBack` a typed event → the event lands on **the state that invoked the agent**
-(bubbling to ancestor states per statechart semantics — a machine can handle a `report_blocked`-style event once at its
-root). The binding _is_ the closure.
+→ validate against the named schema → `sendBack` a typed event, plus its sender → the event lands on **the state that
+invoked the agent** (bubbling to ancestor states per statechart semantics — a machine can handle a
+`report_blocked`-style event once at its root). The binding _is_ the closure.
 
 - **No routing.** There is no instance→actor table and no workflow-side forwarding boilerplate; delivery works at any
   nesting depth (workspace wrappers, pool children) with zero authored code.
@@ -89,10 +89,18 @@ the walk (a second dialect and an error case for plain-setup callers), and xstat
 
 The full symmetry: **agents deliver through their per-iid registration (via the Custodian); everything else delivers
 over HTTP (per-gate registration).** Two dialects, one primitive, zero routing. Internally that is literal structure:
-one registration table (`address → { accepted event defs, deliver closure, meta }`) that `agentRun` and `gate` register
-into, with the agent surface and the gates HTTP API as dialect adapters over it — a future caller class (a Slack bridge,
-an email reply) is another adapter, not a third mechanism. The table is implementation structure, not vocabulary —
-workflows speak only `defineEvent` / `agentRun` / `gate`.
+one registration table (`address → { accepted event defs, deliver closure, meta, sender }`) that `agentRun` and `gate`
+register into, with the agent surface and the gates HTTP API as dialect adapters over it — a future caller class (a
+Slack bridge, an email reply) is another adapter, not a third mechanism. The table is implementation structure, not
+vocabulary — workflows speak only `defineEvent` / `agentRun` / `gate`.
+
+**Every delivered event carries its sender.** The table writes `sender: { party: "agent" | "gate", id }` on each event
+it delivers, after the schema parse and from the registration alone: `id` is the Agent's slot, or the Gate's invoke id
+(static in the Machine, the same after a restore — not the caller-facing gate id, which a workflow may compute). It is
+plain data on the event, so it rides the mailbox, a delayed event the run host persists beside the snapshot, and a
+restore; a restored registration writes it again from the persisted input and the invoke id. The Machine's own events
+(`raise`, `sendTo` itself) carry none. `defineEvent` refuses an input that declares `sender`, and both surfaces refuse a
+body that carries it (ADR-0013): no caller and no def can write it. What an author does with it is ADR-0015's.
 
 `CANCEL` stays reserved as the run-level infra interrupt. jr's "exit 3 and let the human drive the bash script" becomes
 "park in a durable state that advertises its human surface."

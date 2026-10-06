@@ -53,6 +53,7 @@ import {
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import type { HarnessRestarts, MemoryKill } from "./workspace.ts";
 import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
+import { SENDER_KEY } from "@jr2/agent-protocol";
 import { agentAddress, continuedIid, allowedPicks, resolveAccepts, runBindingOf } from "./registration.ts";
 import type { NoticeScope } from "./notices.ts";
 import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice } from "./wire.ts";
@@ -587,6 +588,9 @@ export function agentActorWith(
     // The Menu (ADR-0029): resolved against the same vocabulary, and served as the tools block.
     const menu = resolveAccepts(self, input.menu ?? input.tools);
     const disposers: Array<() => void> = [];
+    // Who this Turn's picks are from (ADR-0015): the slot, written on every event it delivers; and
+    // the invoke id that finds its state in the Machine. Both static, so a restore recomputes them.
+    const seat = { sender: { party: "agent", id: input.agentName } as const, invokeId: self.id };
     // The iids whose surface the Harness has read (see `carried` below).
     const served = new Set<string>();
     const registerSurface = (iid: string) =>
@@ -603,8 +607,9 @@ export function agentActorWith(
             signaled = true;
             // The settlement-pick marker (ADR-0023), BEFORE the delivery moves the Machine: the pick
             // must land on the feed ahead of the status delta it causes, or the narrative reads
-            // effect-then-cause.
-            const { type, ...payload } = event;
+            // effect-then-cause. The sender is the Orchestrator's field, not the pick's payload: the
+            // printed conversation shows what the Agent picked, nothing more.
+            const { type, [SENDER_KEY]: _sender, ...payload } = event;
             binding.marker?.({
               kind: "pick",
               agent: input.agentName,
@@ -620,6 +625,7 @@ export function agentActorWith(
           // guards can say whether a pick would move anything (ADR-0029). Same `_parent` the ambient
           // walk above uses; structural, so a sibling's snapshot is unreachable.
           invoker: self._parent,
+          ...seat,
         }),
       );
     registerSurface(currentIid);
@@ -772,7 +778,7 @@ export function agentActorWith(
 
     // The Allowed picks NOW (ADR-0029), read as the surface reads them: one list for the surface,
     // the receipts, the nudge and the wake.
-    const allowedNow = (): string[] => allowedPicks({ defs, menu, invoker: self._parent });
+    const allowedNow = (): string[] => allowedPicks({ defs, menu, invoker: self._parent, ...seat });
     // Resolves with the Allowed picks the first time they are not empty — read on every snapshot of
     // the invoking Machine, so a Gate's answer, an outside event, a settled child or a timer each
     // count — or with `[]` once this actor stops. Its own disposer, so `abandon` ends the wait.

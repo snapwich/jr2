@@ -42,7 +42,7 @@ import {
   type UnknownActorLogic,
 } from "xstate";
 import type { z } from "zod";
-import { eventMap, type EventDef, type EventFrom } from "@jr2/agent-protocol";
+import { eventMap, type EventDef, type EventFrom, type Sender } from "@jr2/agent-protocol";
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { gate } from "./gate.ts";
@@ -64,8 +64,12 @@ export type MechanismEvent = FaultTelemetry | WorkspaceLost;
  */
 export type WorkspaceLost = { type: "workspace.lost"; reason?: string; message?: string };
 
-/** The full event union a jr2Setup machine sees: the defs' derived types plus the mechanism's. */
-export type WorkflowEvent<TDefs extends readonly EventDef[]> = EventFrom<TDefs[number]> | MechanismEvent;
+/** The full event union a jr2Setup machine sees: the defs' derived types plus the mechanism's. A
+ * workflow event a party delivered carries its `sender` (ADR-0015); the Machine's own events
+ * (`raise`, `sendTo` itself) carry none. */
+export type WorkflowEvent<TDefs extends readonly EventDef[]> =
+  | (EventFrom<TDefs[number]> & { readonly sender?: Sender })
+  | MechanismEvent;
 
 /** The jr2 actor every workflow can invoke by name without listing it (ADR-0015). `gate` is the
  * whole set: an Agent is not pre-registered, because it is not one logic — it is the slot the

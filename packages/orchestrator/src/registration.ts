@@ -1,7 +1,8 @@
 // The internal registration table (ADR-0011): one structure behind both delivery dialects.
-// An Agent slot and `gate` register `address → { accepted event defs, deliver closure, meta }`;
-// the two HTTP surfaces (`/agents/:iid/*` for the Agent's Harness, `/runs/:id/gates/*` for humans and
-// webhooks) are adapters over it — lookup, schema validation, delivery, discovery, and lifecycle
+// An Agent slot and `gate` register `address → { accepted event defs, deliver closure, meta,
+// sender }` — the sender written on every event it delivers (ADR-0015); the two HTTP surfaces
+// (`/agents/:iid/*` for the Agent's Harness, `/runs/:id/gates/*` for humans and webhooks) are
+// adapters over it — lookup, schema validation, delivery, discovery, and lifecycle
 // are implemented ONCE. The table is implementation structure, not vocabulary: workflows speak
 // only `defineEvent` / `agent` / `gate`.
 //
@@ -24,7 +25,7 @@
 // never the root's problem.
 
 import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
-import type { EventDef } from "@jr2/agent-protocol";
+import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
 import type { NoticeScope, TakenNotices } from "./notices.ts";
 import type { Notice } from "./wire.ts";
@@ -85,6 +86,15 @@ export type Registration = {
    * that have no parent to name, which is why every read of it fails open.
    */
   invoker?: AnyActorRef;
+  /**
+   * Who this registration delivers as (ADR-0015): an Agent by its slot, a Gate by its invoke id.
+   * The table writes it on every event it delivers (`event.sender`), never taken from the caller.
+   * Absent on a registration no party made (a bare unit-test entry): its events carry none.
+   */
+  sender?: Sender;
+  /** The invoke id of the actor that registered: what finds its state — its seat — in the
+   * Machine, for the party questions (`party.ts`). */
+  invokeId?: string;
 };
 
 /**
@@ -173,6 +183,16 @@ export class EventValidationError extends Error {
   allowed?: string[];
 }
 
+/** Refuse a caller's body that carries the sender (ADR-0013, ADR-0015): only the Orchestrator writes
+ * it, from the registration, so neither the Agent's wire nor the gates route takes it. */
+export function refuseSenderField(payload: unknown): void {
+  if (payload && typeof payload === "object" && SENDER_KEY in payload) {
+    throw new EventValidationError(
+      `\`${SENDER_KEY}\` is written by the Orchestrator on every delivered event; a caller cannot send it`,
+    );
+  }
+}
+
 /**
  * The actor path below the run's root: every id from the root's children down to `ref` itself,
  * root-most first. The root is excluded because its id is generated per process — everything
@@ -243,11 +263,13 @@ export class RegistrationTable {
    * Validate and deliver one event to an address: the shared behavior both dialect adapters
    * call. Unknown address / unaccepted name / bad payload throw typed errors the adapters map
    * to their wire (404 / 400, MCP tool errors). The payload is parsed by the named def's
-   * schema, so what lands in the Machine is exactly the validated shape.
+   * schema, so what lands in the Machine is exactly the validated shape — plus the registration's
+   * sender, written here and nowhere else (ADR-0015).
    */
   deliver(address: string, type: string, payload: unknown): void {
     const reg = this.byAddress.get(address);
     if (!reg) throw new UnknownAddressError(`no live registration at "${address}"`);
+    refuseSenderField(payload);
     const def = reg.defs.get(type);
     if (!def) {
       throw new EventValidationError(
@@ -258,7 +280,7 @@ export class RegistrationTable {
     if (!parsed.success) {
       throw new EventValidationError(`invalid "${type}" payload: ${parsed.error.message}`);
     }
-    reg.deliver({ type: def.name, ...parsed.data });
+    reg.deliver({ type: def.name, ...parsed.data, ...(reg.sender ? { [SENDER_KEY]: reg.sender } : {}) });
   }
 }
 

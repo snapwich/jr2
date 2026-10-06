@@ -70,6 +70,14 @@ export const gate = fromCallback<DeliveredEvent, GateInput | undefined>(({ input
     path,
     defs,
     meta: input.meta,
+    // A Gate's caller sends as the Gate's invoke id (ADR-0015): static in the config (authored, or
+    // named by the walk), the same after a restore, and checkable at load — unlike the
+    // caller-facing `id`, which may be computed at run time.
+    sender: { party: "gate", id: self.id },
+    invokeId: self.id,
+    // The Machine that invoked the Gate: the one whose selection says which writing a caller's
+    // event would run (ADR-0029's question, asked for the Gate's caller too).
+    invoker: self._parent,
     deliver: (event) => sendBack(event),
   });
   return dispose;

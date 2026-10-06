@@ -70,3 +70,12 @@ test("EventFrom derives the Machine event type and distributes over unions", () 
   const unknown: Union = { type: "reject" };
   assert.ok(a && b && bad && unknown);
 });
+
+test("a def may not declare `sender`: the Orchestrator writes it on every delivered event (ADR-0015)", () => {
+  assert.throws(
+    () => defineEvent({ name: "mail", input: z.object({ sender: z.string() }) }),
+    /"mail" declares `sender` in its input — the Orchestrator writes that field on every delivered event/,
+  );
+  // A field that only contains the word is the author's.
+  assert.ok(defineEvent({ name: "mail", input: z.object({ senderName: z.string() }) }));
+});

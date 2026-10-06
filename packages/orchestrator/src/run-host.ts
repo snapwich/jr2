@@ -32,6 +32,7 @@ import {
   EventValidationError,
   gateAddress,
   RegistrationTable,
+  refuseSenderField,
   UnknownAddressError,
   wouldMove,
   type Registration,
@@ -922,6 +923,7 @@ export class RunHost {
     if (typeof type !== "string" || !type) {
       throw new EventValidationError(`event body must carry a string "type" (one of the surface's Allowed picks)`);
     }
+    refuseSenderField(payload);
     const address = agentAddress(instanceId);
     const invoking = this.table.lookup(address);
     if (invoking && !invoking.defs.has(type)) {

@@ -63,7 +63,8 @@ is needed either (ADR-0006).
   The receipt is `{ delivered, event, moved, turnComplete, deliveryId }`. `deliveryId` is still the room a deferred
   result will need. Lookup, validation, delivery and lifecycle are implemented once, in the table. The token's scope,
   the live registration, and the event's name and payload are judged here and nowhere else; the Custodian forwards and
-  decides nothing about a pick.
+  decides nothing about a pick. Neither surface takes a body that carries `sender`: the table writes it on every
+  delivered event (ADR-0011), so a client that posts it — the Harness, `jr2 send --input` — is answered 400.
 
 - **Bearer tokens, because the boundary is otherwise theater.** The Harness container shares the pod's network
   namespace, so an Agent can `curl` the Orchestrator directly; a per-pod NetworkPolicy cannot distinguish it from the
@@ -77,8 +78,8 @@ is needed either (ADR-0006).
     `jr2 up`; the CLI reads it over the kube API (RBAC is the gate) while port-forwarding the Service (ADR-0019).
   - **The Instance-token door.** The Instance token may also read any Agent's surface and deliver to it —
     `GET /agents/:iid/surface`, `POST /agents/:iid/events` — because it is the operator. That is the operator speaking
-    AS the Agent: it reads the Agent's Menu and Allowed picks and its picks are judged as the Agent's, and no audience
-    filter applies, so it can send a pick no Gate's caller may send
+    AS the Agent: it reads the Agent's Menu and Allowed picks and its picks are judged as the Agent's — they carry the
+    Agent's sender (ADR-0011) — and no audience filter applies, so it can send a pick no Gate's caller may send
     ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md)). It is deliberate — it is how the e2e tier stands in
     for an Agent — and it adds no party: neither `jr2 send` nor the Console offers it, and a Sandbox token never opens
     it for a registration that is not its own.
