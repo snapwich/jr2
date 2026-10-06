@@ -19,6 +19,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { harnessToken } from "@jr2/orchestrator";
+import { follow, isNudge, isRestatement, menuCalls, saidIn, told, type Follow, type Said } from "../lib/model-said.ts";
 import { ensureSeed } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
@@ -165,43 +166,18 @@ async function settledTurns(world: E2EWorld, pod: string, agent: string, iid: st
 
 // --- the printed conversation (ADR-0023) ------------------------------------------------------------
 
-/** Labels the printer uses for what is not a tool call. */
-const NOT_A_CALL = new Set(["prompt", "text", "thinking", "compacted"]);
-
-/** One line of a printed conversation that matters to a claim: a tool call by name, or a prompt
- * the model read — the Frame's, a nudge, or a Turn part restated at a step boundary — by its first
- * line. */
-type Said = { call: string } | { prompt: string };
-
-/** A Sandbox pod's Harness log, streamed from the moment its Sandbox is Ready. The reap when the
- * run settles deletes the pod and its log with it, and a read after settle can find nothing: the
- * stream holds everything the container printed up to then. `closed` settles when it ends. */
-type LogFollow = { text: string; closed: Promise<void>; stop: () => void };
-
-function followLog(world: E2EWorld, pod: string): LogFollow {
+/** A Sandbox pod's Harness log, followed from the moment its Sandbox is Ready: the reap when the
+ * run settles deletes the pod and its log with it, and the stream holds what it printed. */
+function followLog(world: E2EWorld, pod: string): Follow {
   assert.ok(world.namespace, "a @model scenario has its namespace set in setupModel");
-  const child = spawn("kubectl", ["--namespace", world.namespace, "logs", "-f", `pod/${pod}`, "-c", "harness"]);
-  const follow: LogFollow = {
-    text: "",
-    closed: new Promise((resolve) => child.on("close", () => resolve())),
-    stop: () => child.kill(),
-  };
-  child.stdout.on("data", (d: Buffer) => {
-    follow.text += d.toString();
-  });
-  return follow;
+  return follow("kubectl", ["--namespace", world.namespace, "logs", "-f", `pod/${pod}`, "-c", "harness"]);
 }
 
 /** The printed conversation's source: the Instance Harness's (Menu-only Agents), one Sandbox
  * pod's Harness container read once, or one followed from Ready. */
-type LogSource = { statefulset: string } | { pod: string } | { follow: LogFollow };
+type LogSource = { statefulset: string } | { pod: string } | { follow: Follow };
 
 const INSTANCE_LOG: LogSource = { statefulset: INSTANCE_HARNESS };
-
-/** A restated Turn part (ADR-0029) prints as its own prompt, `<jr2-turn>` on its first line. */
-const isRestatement = (s: Said): boolean => "prompt" in s && s.prompt.startsWith("<jr2-turn>");
-/** The nudge (ADR-0016) prints as its own prompt; its first sentence is fixed. */
-const isNudge = (s: Said): boolean => "prompt" in s && s.prompt.startsWith("Your previous turn ended");
 
 /**
  * What the model called and read in the Turn whose prompt carries `marker`, read off a Harness's
@@ -225,23 +201,7 @@ async function saidAfter(
           "harness",
           "--tail=-1",
         ]);
-  const lines = log.split("\n");
-  const at = lines.findIndex((l) => l.startsWith(`[${agent}] [prompt] `) && l.includes(`[${marker}]`));
-  if (at === -1) return undefined;
-  const out: Said[] = [];
-  for (const line of lines.slice(at + 1)) {
-    const m = new RegExp(`^\\[${agent}\\] \\[([^\\]]+)\\] ?(.*)$`).exec(line);
-    if (!m) continue;
-    if (m[1] === "prompt") {
-      if (/^\[[^\]]+\]/.test(m[2]!)) break; // another trial's Frame
-      out.push({ prompt: m[2]! });
-      continue;
-    }
-    // A body spans lines and only its first carries the label; a thinking line that happens to
-    // open with `[Output Generation]` is not a call. A tool's name is lower-case snake, always.
-    if (!NOT_A_CALL.has(m[1]!) && /^[a-z][a-z0-9_]*$/.test(m[1]!)) out.push({ call: m[1]! });
-  }
-  return out;
+  return saidIn(log, agent, marker);
 }
 
 /** The first tool the model called in the Turn whose prompt carries `marker`, before any other
@@ -252,11 +212,6 @@ async function firstCallAfter(world: E2EWorld, agent: string, marker: string): P
     return s.call;
   }
   return undefined;
-}
-
-/** The calls in `said` from index `from` on, Menu calls only (`menu` names them). */
-function menuCalls(said: Said[], menu: ReadonlySet<string>, from = 0): Array<{ at: number; call: string }> {
-  return said.flatMap((s, at) => (at >= from && "call" in s && menu.has(s.call) ? [{ at, call: s.call }] : []));
 }
 
 // --- trials ---------------------------------------------------------------------------------------------
@@ -417,12 +372,6 @@ const noticed: Driver = async (world, input) => {
     note: `killed ${killed}; reported running=${String(reported)}, actually ${actual} (${String(gate.meta?.how)})`,
   };
 };
-
-/** What a trial's printed conversation says, in one line for the failure report. */
-const told = (said: Said[]): string =>
-  said
-    .map((s) => ("call" in s ? s.call : isNudge(s) ? "(nudge)" : isRestatement(s) ? "(restated)" : "(prompt)"))
-    .join(" ");
 
 /**
  * mode-follow (ADR-0015/0029): after `ask_review`'s receipt names the reviewing mode's picks, the
@@ -599,7 +548,7 @@ async function pushFollowIn(
   world: E2EWorld,
   input: { thinking: string; marker: string },
   runId: string,
-  source: { follow: LogFollow },
+  source: { follow: Follow },
 ): Promise<Trial> {
   const sleeping = await saidUntil(
     world,
