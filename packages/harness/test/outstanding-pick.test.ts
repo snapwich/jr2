@@ -1,4 +1,4 @@
-// The held pick, Harness side (ADR-0024, ADR-0013): an outstanding pick's answer is long-polled
+// The outstanding pick, Harness side (ADR-0024, ADR-0013): an outstanding pick's answer is long-polled
 // inside the one tool call; the Harness claims one pick at a time in message order; a refusal while
 // one is out names it; the answer reads as prose; a cut call's history result is jr2's text.
 

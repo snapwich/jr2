@@ -418,7 +418,7 @@ export type RunBinding = {
    * whose answer never reached the model, is cut, not faulted (ADR-0031). Read after the host settles
    * its holds, so `answered` is the Rest rule's verdict now. Absent outside a RunHost.
    */
-  heldPick?: (instanceId: string) => HeldPick | undefined;
+  outstandingOf?: (instanceId: string) => OutstandingPick | undefined;
   /** The held answer reached the model by another road — a re-admission's notice — so the poll's
    * copy is spent (ADR-0031). */
   heldAnswerDelivered?: (instanceId: string) => void;
@@ -461,10 +461,10 @@ export type RunBinding = {
   pendingAborts?: Map<string, Promise<void>>;
 };
 
-/** A conversation's latest held pick, as the Agent actor reads it (ADR-0024). `answered`: the Machine
+/** A conversation's latest outstanding pick, as the Agent actor reads it (ADR-0024). `answered`: the Machine
  * came back to Rest, or left the Agent's state (`turnComplete`); `fetched`: the answer reached the
  * model. */
-export type HeldPick = {
+export type OutstandingPick = {
   pick: string;
   answered: boolean;
   turnComplete: boolean;

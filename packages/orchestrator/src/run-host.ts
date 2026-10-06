@@ -360,7 +360,7 @@ export type AgentDeliveryReceipt = {
   outstanding?: true;
   /** ISO time the pick was delivered — with `outstanding`. */
   since?: string;
-  /** This receipt is a held pick's answer, read at Rest (or once the Turn left the Agent's state). */
+  /** This receipt is an outstanding pick's answer, read at Rest (or once the Turn left the Agent's state). */
   answered?: true;
   /** The last reply since the pick (ADR-0024); absent with `answered`: it moved, nothing ran. */
   answer?: PickAnswer;
@@ -598,7 +598,7 @@ type RunBlob = {
    */
   timers?: PendingTimer[];
   /**
-   * The held picks (ADR-0024, holds.ts): each conversation's latest pick that the workflow ran, its
+   * The outstanding picks (ADR-0024, holds.ts): each conversation's latest pick that the workflow ran, its
    * delivery id, the last reply since it, and its answer once read at Rest. Same blob for the
    * snapshot's atomicity: a restored host answers the same poll from the same Machine.
    */
@@ -619,7 +619,7 @@ type LiveRun = {
   epochs: Record<string, number>;
   /** The pending notices (ADR-0062): persisted as `RunBlob.notices`, seeded on restore. */
   notices: NoticeLedger;
-  /** The held picks by Agent address (ADR-0024): persisted as `RunBlob.holds`, seeded on restore. */
+  /** The outstanding picks by Agent address (ADR-0024): persisted as `RunBlob.holds`, seeded on restore. */
   holds: Map<string, Hold>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
@@ -850,7 +850,7 @@ export class RunHost {
           // …and so do the undelivered notices (ADR-0062), reservations forgotten: a notice whose
           // admission never reached the ledger is delivered again.
           blob.notices,
-          // …and the held picks (ADR-0024): the restored Machine says when each is answered.
+          // …and the outstanding picks (ADR-0024): the restored Machine says when each is answered.
           blob.holds,
         );
         // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
@@ -1121,7 +1121,7 @@ export class RunHost {
   }
 
   /**
-   * Answer every held pick of `run` that can be answered now (ADR-0024). Called by the persist that
+   * Answer every outstanding pick of `run` that can be answered now (ADR-0024). Called by the persist that
    * follows every transition — a microtask after the snapshot, so the mailbox has drained — and
    * before any read of a hold, so no reader sees a hold the Machine already answered.
    *
@@ -1172,7 +1172,7 @@ export class RunHost {
     for (const wake of waiters ?? []) wake();
   }
 
-  /** A held pick's delivery: its run and hold, by Agent address and delivery id. */
+  /** An outstanding pick's delivery: its run and hold, by Agent address and delivery id. */
   private holdAt(instanceId: string, deliveryId: string): { run: LiveRun; hold: Hold } | undefined {
     for (const run of this.runs.values()) {
       const hold = run.holds.get(instanceId);
@@ -1193,7 +1193,7 @@ export class RunHost {
   }
 
   /**
-   * One long poll of a held pick's answer (`GET /agents/:iid/deliveries/:id` — ADR-0013, ADR-0024):
+   * One long poll of an outstanding pick's answer (`GET /agents/:iid/deliveries/:id` — ADR-0013, ADR-0024):
    * the answer when the workflow is back at Rest in the Agent's state or has left it, else
    * `outstanding` after at most `waitMs`, and the Harness asks again. Undefined for a delivery this
    * host does not hold — a pick that was never outstanding, or a run that ended.
@@ -1700,8 +1700,8 @@ export class RunHost {
       },
       // The run-narrative echo attach (ADR-0023), called from `workspace()`'s registrar.
       echo: (endpoint, placement) => this.attachEcho(record.runId, endpoint, placement),
-      // The held picks, as the Agent actor reads them when its Harness restarted (ADR-0024/0031).
-      heldPick: (instanceId) => {
+      // The outstanding picks, as the Agent actor reads them when its Harness restarted (ADR-0024/0031).
+      outstandingOf: (instanceId) => {
         const run = this.runs.get(record.runId);
         if (run && run.holds === holds) this.settleHolds(run);
         const hold = holds.get(instanceId);

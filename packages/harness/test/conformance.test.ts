@@ -1633,7 +1633,7 @@ test("a healthy turn is untouched: varied calls, a sub-K repeat, then the pick (
   assert.ok(sandbox.bearers.length >= 2 && sandbox.bearers.every((b) => b === `Bearer ${SANDBOX_STAND_IN}`));
 });
 
-// ─── the held pick (ADR-0024, ADR-0013) ────────────────────────────────────────────────────────
+// ─── the outstanding pick (ADR-0024, ADR-0013) ─────────────────────────────────────────────────────
 
 /** The Orchestrator's answer to a pick the workflow runs: at once, with a delivery id. */
 const outstandingReceipt = (event: Record<string, unknown>) => ({

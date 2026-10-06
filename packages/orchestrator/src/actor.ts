@@ -840,7 +840,7 @@ export function agentActorWith(
         };
         const check = (): void => {
           if (stopped) return finish();
-          const held = binding.heldPick?.(currentIid);
+          const held = binding.outstandingOf?.(currentIid);
           if (held !== undefined && !held.fetched && !held.answered) return;
           if (restOf(agentState) !== "busy") finish();
         };
@@ -861,13 +861,13 @@ export function agentActorWith(
       if (stopped) return "stopped";
       if (restarted === undefined && settledByRestart(err) === undefined) return undefined;
       const unread = (): boolean => {
-        const held = binding.heldPick?.(currentIid);
+        const held = binding.outstandingOf?.(currentIid);
         return held !== undefined && !held.fetched;
       };
       if (restOf(agentState) !== "busy" && !unread()) return undefined;
       await untilRest();
       if (stopped) return "stopped";
-      const held = binding.heldPick?.(currentIid);
+      const held = binding.outstandingOf?.(currentIid);
       const notice: Notice[] =
         held !== undefined && !held.fetched && held.answered && !held.turnComplete
           ? [
