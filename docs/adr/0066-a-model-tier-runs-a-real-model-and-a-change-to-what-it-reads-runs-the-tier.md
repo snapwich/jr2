@@ -108,6 +108,12 @@ recover, finish — are exercised only one scripted tool call at a time.
   model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
   past the bound counts against the floor.
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials.
+- The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link),
+  `refused-outstanding` (a pick refused while another was outstanding is picked again after the answer) and `cut-pick`
+  (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step deletes the
+  Instance Harness pod) — are written and have not run. No measurement of their own exists yet, so each floor carries
+  ADR-0029/0062's measurement of a list read last, and the refusal's carries ADR-0029's recovery after one refusal; the
+  first run confirms or corrects them in the change that records their baselines.
 - **A claim's setup may change; its floor and what counts as a pass may not.** A setup is the part of a trial that
   brings the model to the moment the claim measures. When a claim falls below its floor because that moment seldom
   happens, its workflow and its driver may change for the setup alone, and the reason is recorded here. A setup that no

@@ -27,7 +27,22 @@ export const isNudge = (s: Said): boolean => "prompt" in s && s.prompt.startsWit
 export function saidIn(log: string, agent: string, marker: string): Said[] | undefined {
   const lines = log.split("\n");
   const at = lines.findIndex((l) => l.startsWith(`[${agent}] [prompt] `) && l.includes(`[${marker}]`));
-  if (at === -1) return undefined;
+  return at === -1 ? undefined : saidFrom(lines, at, agent);
+}
+
+/**
+ * What the model called and read after the FIRST prompt that starts with `opening` — a jr2 prompt
+ * that carries no marker, as a re-admission after a Harness restart does (ADR-0031). Read off a log
+ * that begins at that restart, so the first such prompt is the trial's. It stops where `saidIn`
+ * does: at a prompt that carries a trial's marker. `undefined` while it has not printed.
+ */
+export function saidAfterPrompt(log: string, agent: string, opening: string): Said[] | undefined {
+  const lines = log.split("\n");
+  const at = lines.findIndex((l) => l.startsWith(`[${agent}] [prompt] ${opening}`));
+  return at === -1 ? undefined : saidFrom(lines, at, agent);
+}
+
+function saidFrom(lines: string[], at: number, agent: string): Said[] {
   const line = new RegExp(`^\\[${agent}\\] \\[([^\\]]+)\\] ?(.*)$`);
   const out: Said[] = [];
   for (const text of lines.slice(at + 1)) {

@@ -27,6 +27,7 @@ import {
   menuCalls,
   modeAtAsk,
   modesOf,
+  saidAfterPrompt,
   saidIn,
   told,
   type Follow,
@@ -61,6 +62,8 @@ type Status = {
   context: { output?: Record<string, unknown> };
   children: RunChild[];
   gates?: OpenGate[];
+  /** The run's outstanding picks (ADR-0024): the Agent, the pick, and since when it is held. */
+  held?: Array<{ agent: string; pick: string; since: string }>;
 };
 
 type SandboxCR = { metadata: { name: string }; status?: { phase?: string } };
@@ -263,6 +266,9 @@ const FINISHED: Record<string, (s: Status) => boolean> = {
   "mode-stop": (s) => s.status === "done" && s.value === "submitted",
   "push-wake": (s) => s.status === "done" && (s.value === "released" || s.value === "held"),
   "push-follow": (s) => s.status === "done" && s.context.output?.outcome === "submitted",
+  "chain-answer": (s) => s.status === "done" && (s.value === "held" || s.value === "released"),
+  "refused-outstanding": (s) => s.status === "done" && s.value === "invited",
+  "cut-pick": (s) => s.status === "done" && s.value === "filed",
 };
 
 /** How long one trial may take, generously: a Sandbox pull and two model Turns. */
@@ -626,6 +632,113 @@ async function pushFollowIn(
   };
 }
 
+/** The chain-answer workflow's Menu (`chain-answer.ts`). */
+const CHAIN_MENU = new Set(["run_checks", "release", "hold"]);
+
+/**
+ * chain-answer (ADR-0024): `run_checks` is outstanding through two child Machines, and its answer is
+ * the last one's output — the licence check failed — with `release` and `hold` allowed. The first
+ * Menu call after `run_checks` is the measurement: `hold`. A Turn that never ran the checks is void.
+ */
+const chainAnswer: Driver = async (world, input) => {
+  const runId = await startRun(world, "chain-answer", input);
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
+  const calls = menuCalls(said, CHAIN_MENU);
+  const ran = calls.findIndex((c) => c.call === "run_checks");
+  const next = ran === -1 ? undefined : calls[ran + 1]?.call;
+  return {
+    runId,
+    measured: next === "hold",
+    finished: FINISHED["chain-answer"]!(last),
+    ...(ran === -1 ? { void: true } : {}),
+    note: `said ${told(said)}; ended ${last.status}/${String(last.value)}`,
+  };
+};
+
+/** The refused-outstanding workflow's Menu (`refused-outstanding.ts`). */
+const BOOK_MENU = new Set(["book_room", "send_invite"]);
+
+/**
+ * refused-outstanding (ADR-0024): a `send_invite` made while `book_room` was outstanding was refused
+ * before it left — it never reached the Machine — and the call after it, once the booking answered,
+ * is `send_invite` again, taken. The printed conversation shows every call; the ledger only what the
+ * Machine took, so a `send_invite` printed and not taken was the refused one. A model that called
+ * them one after the other was never refused (`void`), and so was one that tried `send_invite`
+ * before `book_room` (a correction receipt, another claim).
+ */
+const refusedOutstanding: Driver = async (world, input) => {
+  const runId = await startRun(world, "refused-outstanding", input);
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
+  const calls = menuCalls(said, BOOK_MENU);
+  const ledger = ((last.context as { picks?: string[] }).picks ?? []) as string[];
+  const booked = calls.findIndex((c) => c.call === "book_room");
+  const invites = calls.filter((c) => c.call === "send_invite");
+  const taken = ledger.includes("send_invite");
+  const first = calls.findIndex((c) => c.call === "send_invite");
+  const setup = booked !== -1 && first > booked && (invites.length >= 2 || !taken);
+  return {
+    runId,
+    measured: setup && calls[first + 1]?.call === "send_invite" && taken,
+    finished: FINISHED["refused-outstanding"]!(last),
+    ...(setup ? {} : { void: true }),
+    note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${last.status}/${String(last.value)}`,
+  };
+};
+
+/** The cut-pick workflow's Menu (`cut-pick.ts`), and how jr2's re-admission prompt opens (actor.ts). */
+const AUDIT_MENU = new Set(["run_audit", "file_report"]);
+const READMITTED = "Your previous turn was cut";
+
+/**
+ * cut-pick (ADR-0031): once `run_audit` is outstanding, the step deletes the Instance Harness pod,
+ * waits for the new one, and only then answers the auditor's Gate. jr2 re-admits the Agent on the
+ * same conversation; the new pod's log begins at the restart, so the first re-admission prompt in it
+ * is this trial's. The first Menu call after it is the measurement: `file_report` — not the cut
+ * pick again. A Turn that had not picked when the step looked is void.
+ */
+const cutPick: Driver = async (world, input) => {
+  const runId = await startRun(world, "cut-pick", input);
+  const out = await waitFor(world, runId, (s) => (s.held ?? []).some((h) => h.pick === "run_audit"), 300_000);
+  const gate = gateNamed(out.last, "auditor");
+  if (!out.hit || !gate) {
+    if (!settled(out.last)) await world.runCli(["send", runId, "--event", "CANCEL"]);
+    return { runId, measured: false, finished: false, void: true, note: `never held: ${out.last.status}` };
+  }
+  await kubectl(world, ["delete", "pod", `${INSTANCE_HARNESS}-0`, "--wait=true"]);
+  await kubectl(world, ["rollout", "status", `statefulset/${INSTANCE_HARNESS}`, "--timeout=300s"]);
+  const r = await world.runCli([
+    "send",
+    runId,
+    "--gate",
+    gate.gate,
+    "--event",
+    "audited",
+    "--input",
+    JSON.stringify({ findings: "Two duplicate hotel claims of $412 each, and no receipt for a $96 taxi." }),
+  ]);
+  assert.equal(r.code, 0, `jr2 send audited failed: ${r.stderr}`);
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  const log = await kubectl(world, ["logs", `statefulset/${INSTANCE_HARNESS}`, "-c", "harness", "--tail=-1"]);
+  const said = saidAfterPrompt(log, "advisor", READMITTED);
+  if (said === undefined) {
+    return {
+      runId,
+      measured: false,
+      finished: FINISHED["cut-pick"]!(last),
+      note: `no re-admission; ended ${last.status}`,
+    };
+  }
+  const next = menuCalls(said, AUDIT_MENU)[0]?.call;
+  return {
+    runId,
+    measured: next === "file_report",
+    finished: FINISHED["cut-pick"]!(last),
+    note: `after the re-admission said ${told(said)}; ended ${last.status}/${String(last.value)}`,
+  };
+};
+
 const DRIVERS: Record<string, Driver> = {
   obedience,
   advised,
@@ -636,10 +749,23 @@ const DRIVERS: Record<string, Driver> = {
   "mode-stop": modeStop,
   "push-wake": pushWake,
   "push-follow": pushFollow,
+  "chain-answer": chainAnswer,
+  "refused-outstanding": refusedOutstanding,
+  "cut-pick": cutPick,
 };
 
 /** The Menu-only claims read one shared pod log, so their trials run one at a time. */
-const SERIAL = new Set(["obedience", "advised", "mode-follow", "mode-refusal", "mode-stop", "push-wake"]);
+const SERIAL = new Set([
+  "obedience",
+  "advised",
+  "mode-follow",
+  "mode-refusal",
+  "mode-stop",
+  "push-wake",
+  "chain-answer",
+  "refused-outstanding",
+  "cut-pick",
+]);
 
 /** Run `n` trials with at most `parallel` in flight. Every trial gets its own marker. */
 async function runTrials(world: E2EWorld, driver: Driver, n: number, parallel: number, thinking: string) {
@@ -772,6 +898,27 @@ Then(
 Then("the Turn's first call was its pick in at least {int} trials", function (this: E2EWorld, floor: number): void {
   atLeast(claimOf(this), floor, "the first call was the pick", (t) => t.measured);
 });
+
+Then(
+  "the first pick after the checks answered was the one their last result called for in at least {int} trials",
+  function (this: E2EWorld, floor: number): void {
+    atLeast(claimOf(this), floor, "the pick after the answer followed its last link", (t) => t.measured);
+  },
+);
+
+Then(
+  "the pick refused while another was outstanding was picked again, and taken, in at least {int} trials",
+  function (this: E2EWorld, floor: number): void {
+    atLeast(claimOf(this), floor, "the refused pick was picked again after the answer", (t) => t.measured);
+  },
+);
+
+Then(
+  "the first pick after the re-admission was not the cut pick in at least {int} trials",
+  function (this: E2EWorld, floor: number): void {
+    atLeast(claimOf(this), floor, "the first pick after the re-admission used the answer", (t) => t.measured);
+  },
+);
 
 Then(
   "the second Turn reported truthfully whether its server survived in at least {int} trials",

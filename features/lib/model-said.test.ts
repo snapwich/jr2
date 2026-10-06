@@ -13,6 +13,7 @@ import {
   menuCalls,
   modeAtAsk,
   modesOf,
+  saidAfterPrompt,
   saidIn,
   told,
   type StateNodeLike,
@@ -127,4 +128,18 @@ test("mode-stop measures the first ask AFTER the model's `ask_review`; a trial w
   assert.equal(askAfter([nudge, { call: "ask_review" }], "ask_review"), -1, "an ask before the call is not measured");
   assert.equal(askAfter([{ call: "ask_review" }, restated, { call: "submit" }], "ask_review"), -1, "never asked");
   assert.equal(askAfter([nudge, { call: "revise" }], "ask_review"), -1, "never called");
+});
+
+test("after a Harness restart: what the model said after the re-admission prompt, which carries no marker (ADR-0031)", () => {
+  const log = [
+    "[advisor] [prompt] Your previous turn was cut: the process that ran you restarted while the workflow was busy.",
+    "[advisor] <jr2-turn>",
+    "[advisor] Notice: The workflow finished `mcp__jr2__run_audit`, the pick that was cut from your last turn.",
+    "[advisor] </jr2-turn>",
+    '[advisor] [file_report] {"summary":"s"}',
+    "[advisor] [prompt] [t1-bbbbbb] The next trial.",
+    "[advisor] [run_audit] {}",
+  ].join("\n");
+  assert.deepEqual(saidAfterPrompt(log, "advisor", "Your previous turn was cut"), [{ call: "file_report" }]);
+  assert.equal(saidAfterPrompt("[advisor] [prompt] [t0-a] x", "advisor", "Your previous turn was cut"), undefined);
 });

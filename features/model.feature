@@ -164,6 +164,55 @@ Feature: a real model drives the kit
       And every trial finished
       And the cell "push-wake/off" is written to the scorecard
 
+  Rule: a pick that runs work is answered at Rest, and the Agent acts on the answer
+    ADR-0024. A pick whose target runs something inside the Agent's state is outstanding until the
+    workflow is back at Rest there; its answer — the last reply since the pick, and the Allowed
+    picks read after the route — comes back on the same call. While it is out, every other pick is
+    refused. A Harness restart while it is out cuts the Turn and faults nothing: jr2 re-admits the
+    Agent on the same conversation with the answer (ADR-0031). Written, not yet run: no floor here
+    has a measurement of its own. Each is ADR-0029/0062's measurement of a list read last — 10/10
+    obeyed — rounded down as ADR-0066 rounds it, because the answer and its Allowed picks are the
+    newest thing the model read; the refusal's is ADR-0029's recovery after one refusal naming the
+    Allowed picks (57 of 58). The first run confirms or corrects each, in the change that records
+    its baseline.
+
+    Scenario: the answer is the last reply since the pick, and the next pick follows it
+      The `chain-answer` workflow's `run_checks` is outstanding through two child Machines: lint
+      passes, then the licence check fails and says why. The answer is the licence check's output;
+      `release` and `hold` are both allowed after it. The first Menu call after `run_checks`, read
+      off the printed conversation, is the measurement: `hold`. A Turn that never ran the checks is
+      void.
+      Given the model instance is serving
+      When I run the "chain-answer" workflow 10 times with thinking off
+      Then the first pick after the checks answered was the one their last result called for in at least 9 trials
+      And every trial finished
+      And the cell "chain-answer/off" is written to the scorecard
+
+    Scenario: a pick refused while another is outstanding is picked again once the answer comes
+      The `refused-outstanding` prompt asks for `book_room` and `send_invite` now. A model that
+      makes both calls in one message has `send_invite` refused before it leaves: the booking is
+      still running. The booking answers a few seconds later, allowing `send_invite`; the call after
+      the refused one is the measurement: `send_invite`, taken. A model that made the calls one
+      after the other was never refused: void.
+      Given the model instance is serving
+      When I run the "refused-outstanding" workflow 10 times with thinking off
+      Then the pick refused while another was outstanding was picked again, and taken, in at least 9 trials
+      And every trial finished
+      And the cell "refused-outstanding/off" is written to the scorecard
+
+    Scenario: after a restart cut its pick, the Agent uses the answer and does not pick it again
+      The `cut-pick` workflow's `run_audit` waits on the auditor's Gate below the Agent's state. Once
+      it is outstanding the step deletes the Instance Harness pod, waits for the new one, and only
+      then answers the Gate with the findings. jr2 re-admits the Agent: the cut call's history result
+      says its answer comes in the next message, and the re-admission's notice carries it, with
+      `file_report` allowed. The first Menu call after the re-admission prompt is the measurement:
+      `file_report`. A Turn that had not picked when the step looked is void.
+      Given the model instance is serving
+      When I run the "cut-pick" workflow 10 times with thinking off
+      Then the first pick after the re-admission was not the cut pick in at least 9 trials
+      And every trial finished
+      And the cell "cut-pick/off" is written to the scorecard
+
   Rule: the kit carries a ticket from a failing test to a verified commit
     The run (ADR-0066). The seed Repo's `main` holds a small project whose one test fails: the
     ticket. `ticket` is a `workspace()` workflow with three seats and the paths no scripted tier
