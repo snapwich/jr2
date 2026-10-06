@@ -8,6 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "pnpm run test:unit",
     "test:unit": "node --test lib/*.test.ts",
     "test:e2e": "cucumber-js",
     "test:e2e:kind": "cucumber-js --profile kind",

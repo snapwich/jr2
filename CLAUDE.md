@@ -19,33 +19,34 @@ Three tiers plus one in-package suite. **Unit/integration:** `node --test` per p
 (`pnpm -r test`). **E2e:** Gherkin `.feature` specs in `./features/` (`@jr2/e2e`), run by Cucumber.js — black-box, each
 step spawns the real `jr2` binary against a real orchestrator process served per scenario. `Rule` = acceptance
 criterion; `Scenario` = isolation unit (own temp instance + orchestrator, torn down in `After`), so `--parallel` is
-safe. Run with `pnpm --filter @jr2/e2e test:e2e`; it has no `test` script, so the unit gate stays fast. Zero-build: Node
-24 strips `.ts` step defs (no ts-node). **`@kind` (opt-in, needs docker + kind + go):** the data-plane tier — real
-Sandboxes for `workspace()` flows (ADR-0012), running the **stock** Harness against a host-side scripted model provider,
-so only the LLM is faked (ADR-0038). Excluded from the default profile, so the everyday suite needs no infra. Bring-up
-builds nothing: `jr2 up` from this checkout builds and loads every image it deploys, and converges the operator
-in-cluster (the tier's config never sets `operator.manage: false`), so it is exactly two commands — `just e2e-kind-up`,
-then `just e2e-kind`. **`@dist` (opt-in, needs docker + kind + network):** the distribution tier — the kit as a USER
-installs it (ADR-0043). Only the REGISTRY is faked: a suite fixture publishes `@jr2/{cli,orchestrator,agent-protocol}`
-into an ephemeral verdaccio, builds the Kit images at their published tags, and `npm i -g @jr2/cli` into a throwaway
-prefix; each scenario then drives that INSTALLED binary — `jr2 init` a temp dir outside any checkout or git repo,
-install with npm (one scenario) or pnpm (the other), `jr2 up`, `jr2 run ping`, and (npm) `jr2 down`. So `npm pack`, the
-`files:` lists, the exact-version pin the scaffold writes, the lockfile-dispatched bundle install, and installed mode
-itself execute here and in no other tier. Publish is once per suite run, so the profile is deliberately serial;
-scenarios isolate by namespace like `@kind`. Two commands: `just e2e-dist-up`, then `just e2e-dist` — and `just dist-up`
-is the same loop with a human at the wheel. **`@console` (opt-in, needs a Playwright chromium):** browser scenarios for
-the Console's UX — a Playwright page held inside Cucumber steps against the same per-scenario orchestrator; no docker
-(ADR-0010 as amended, ADR-0032). Excluded from the default e2e profile; store logic stays unit-tested in
-`console-store.test.ts`. **Harness conformance (ADR-0027; in `@jr2/harness`, no infra):** the claims the socket-free
-tests cannot see, driven through the real turn loop — pi at the exact pin, the Menu over a real socket to the
-Custodian's address, a scripted provider that chooses each turn's shape. Not a separate tier: it runs in the default
-`test` gate as part of `pnpm -r test`. `@jr2/harness` owns the pi pin; conformance is the canary for pi bumps (0.x
-minors break), and since ADR-0038 `@kind` is a **second** canary — it drives the same turn loop in a real pod — so **run
-both before bumping pi** — and the `@model` tier below, the third canary. **`@model` (ADR-0066; opt-in):** a REAL model
-behind each scenario's Custodian — see [Model-tier testing](#model-tier-testing-adr-0066) below. **Custodian suite
-(ADR-0059; opt-in, needs docker):** the Custodian's claims against the pinned Envoy image itself — the swap, the strip,
-the refusals, the dial guard, SSE, abort, and the Anthropic SDK through `HTTPS_PROXY` — `just custodian-test`; not in
-`pnpm -r test`. Run it before moving the Envoy pin.
+safe. Run with `pnpm --filter @jr2/e2e test:e2e`; its `test` script runs only `test:unit` (the socket-free tests of
+`features/lib`), so the unit gate stays fast. Zero-build: Node 24 strips `.ts` step defs (no ts-node). **`@kind`
+(opt-in, needs docker + kind + go):** the data-plane tier — real Sandboxes for `workspace()` flows (ADR-0012), running
+the **stock** Harness against a host-side scripted model provider, so only the LLM is faked (ADR-0038). Excluded from
+the default profile, so the everyday suite needs no infra. Bring-up builds nothing: `jr2 up` from this checkout builds
+and loads every image it deploys, and converges the operator in-cluster (the tier's config never sets
+`operator.manage: false`), so it is exactly two commands — `just e2e-kind-up`, then `just e2e-kind`. **`@dist` (opt-in,
+needs docker + kind + network):** the distribution tier — the kit as a USER installs it (ADR-0043). Only the REGISTRY is
+faked: a suite fixture publishes `@jr2/{cli,orchestrator,agent-protocol}` into an ephemeral verdaccio, builds the Kit
+images at their published tags, and `npm i -g @jr2/cli` into a throwaway prefix; each scenario then drives that
+INSTALLED binary — `jr2 init` a temp dir outside any checkout or git repo, install with npm (one scenario) or pnpm (the
+other), `jr2 up`, `jr2 run ping`, and (npm) `jr2 down`. So `npm pack`, the `files:` lists, the exact-version pin the
+scaffold writes, the lockfile-dispatched bundle install, and installed mode itself execute here and in no other tier.
+Publish is once per suite run, so the profile is deliberately serial; scenarios isolate by namespace like `@kind`. Two
+commands: `just e2e-dist-up`, then `just e2e-dist` — and `just dist-up` is the same loop with a human at the wheel.
+**`@console` (opt-in, needs a Playwright chromium):** browser scenarios for the Console's UX — a Playwright page held
+inside Cucumber steps against the same per-scenario orchestrator; no docker (ADR-0010 as amended, ADR-0032). Excluded
+from the default e2e profile; store logic stays unit-tested in `console-store.test.ts`. **Harness conformance (ADR-0027;
+in `@jr2/harness`, no infra):** the claims the socket-free tests cannot see, driven through the real turn loop — pi at
+the exact pin, the Menu over a real socket to the Custodian's address, a scripted provider that chooses each turn's
+shape. Not a separate tier: it runs in the default `test` gate as part of `pnpm -r test`. `@jr2/harness` owns the pi
+pin; conformance is the canary for pi bumps (0.x minors break), and since ADR-0038 `@kind` is a **second** canary — it
+drives the same turn loop in a real pod — so **run both before bumping pi** — and the `@model` tier below, the third
+canary. **`@model` (ADR-0066; opt-in):** a REAL model behind each scenario's Custodian — see
+[Model-tier testing](#model-tier-testing-adr-0066) below. **Custodian suite (ADR-0059; opt-in, needs docker):** the
+Custodian's claims against the pinned Envoy image itself — the swap, the strip, the refusals, the dial guard, SSE,
+abort, and the Anthropic SDK through `HTTPS_PROXY` — `just custodian-test`; not in `pnpm -r test`. Run it before moving
+the Envoy pin.
 
 ## Model-tier testing (ADR-0066)
 
