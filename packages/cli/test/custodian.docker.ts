@@ -415,6 +415,15 @@ describe("toward the Orchestrator (the control listener)", () => {
     assert.equal(orchestrator.seen.length, before);
   });
 
+  test("an outstanding pick's answer is polled with the Sandbox token, and a connection dropped under a poll is retried (ADR-0024)", async () => {
+    orchestrator.drop(1);
+    const r = await controlRequest(custodian.ports.control, "/agents/run%2Fcoder/deliveries/d-1", { headers: bearer });
+    assert.equal(r.status, 200, r.body);
+    const poll = orchestrator.seen.at(-1)!;
+    assert.equal(poll.url, "/agents/run%2Fcoder/deliveries/d-1");
+    assert.equal(poll.headers.authorization, `Bearer ${SANDBOX_TOKEN}`);
+  });
+
   test("the ask is addressed to THIS pod's Sandbox, whatever the caller writes", async () => {
     const r: Awaited<ReturnType<typeof controlRequest>> = await controlRequest(custodian.ports.control, "/fetch", {
       method: "POST",
@@ -432,6 +441,8 @@ describe("toward the Orchestrator (the control listener)", () => {
       ["/workflows/ping/runs", "POST", bearer],
       ["/runs/r-1/gates/review/events", "POST", bearer],
       ["/agents/x/surface", "POST", bearer],
+      ["/agents/x/deliveries/d-1", "POST", bearer],
+      ["/agents/x/deliveries", "GET", bearer],
       ["/sandboxes/ws-2/fetch", "POST", bearer],
       ["/agents/x/surface", "GET", {}],
       ["/agents/x/surface", "GET", { authorization: "Bearer ws-1.forged" }],

@@ -357,8 +357,8 @@ function isIpLiteral(host: string): boolean {
  * The Custodian's static bootstrap (ADR-0059): Envoy's whole configuration, rendered once per
  * converge by `jr2 up`, identical for every Harness pod of the Instance.
  *
- *   control   127.0.0.1:8081   the Menu and the ask, plain HTTP, to the Orchestrator's Service —
- *                              three routes and nothing else, each swapping the Sandbox token's
+ *   control   127.0.0.1:8081   the Menu, a pick's answer and the ask, plain HTTP, to the Orchestrator's Service —
+ *                              four routes and nothing else, each swapping the Sandbox token's
  *                              Stand-in for the token (ADR-0013, ADR-0053)
  *   health    0.0.0.0:15021    GET /healthz, for the kubelet, which cannot reach loopback
  *   egress    127.0.0.1:15001  CONNECT only — present when a held secret exists; a bound target
@@ -401,6 +401,11 @@ export function custodianBootstrap(manifest: HeldManifest, orchestrator: Orchest
                       }),
                       route("events", "POST", "/agents/[^/]+/events", {
                         retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },
+                      }),
+                      // An outstanding pick's answer, long-polled (ADR-0024): a read, so any reset
+                      // is retried — an Orchestrator restart mid-poll costs a retry, not the pick.
+                      route("deliveries", "GET", "/agents/[^/]+/deliveries/[^/]+", {
+                        retry_policy: { retry_on: "reset,connect-failure", num_retries: 2 },
                       }),
                       route("fetch", "POST", "/fetch", {
                         retry_policy: { retry_on: "reset-before-request,connect-failure", num_retries: 2 },

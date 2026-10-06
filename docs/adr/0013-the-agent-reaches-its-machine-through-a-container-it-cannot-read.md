@@ -28,14 +28,15 @@ is needed either (ADR-0006).
   container in every Harness pod ([ADR-0005](0005-sandbox-pod-composition.md)). The Sandbox token is mounted into it as
   a file, and into no other container. The Harness container holds the token's Stand-in,
   `JR2_SANDBOX_TOKEN=jr2-held-JR2_SANDBOX_TOKEN`, and reaches the Orchestrator only through the Custodian's control
-  listener on `127.0.0.1:8081`. The Custodian forwards three routes, with the token put in place of the Stand-in, and
+  listener on `127.0.0.1:8081`. The Custodian forwards four routes, with the token put in place of the Stand-in, and
   answers every other route itself:
 
   ```
-  GET  /agents/<iid>/surface   the Menu                                   → the Orchestrator
-  POST /agents/<iid>/events    a pick                                     → the Orchestrator
-  POST /fetch                  the ask (ADR-0053), for THIS pod's Sandbox → POST /sandboxes/<name>/fetch
-  anything else                404
+  GET  /agents/<iid>/surface          the Menu                            → the Orchestrator
+  POST /agents/<iid>/events           a pick                              → the Orchestrator
+  GET  /agents/<iid>/deliveries/<id>  an outstanding pick's answer        → the Orchestrator
+  POST /fetch                         the ask (ADR-0053), for THIS pod's Sandbox → POST /sandboxes/<name>/fetch
+  anything else                       404
   ```
 
   So the Agent's sole control-plane peer is a container it can reach but whose credential it cannot read. That is what

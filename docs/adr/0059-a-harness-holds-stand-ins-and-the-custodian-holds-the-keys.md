@@ -41,15 +41,20 @@ decision generalizes that container. It holds every credential the Harness uses,
   ([ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md)), and a `deferred` or `poll` event
   refuses the turn. The event's own JSON Schema is the tool's parameters, so the model sees the contract the
   Orchestrator validates against.
-- **The control listener forwards three routes and no other.** `127.0.0.1:8081`, plain HTTP, to the Orchestrator's
+- **The control listener forwards four routes and no other.** `127.0.0.1:8081`, plain HTTP, to the Orchestrator's
   Service (`jr2-orchestrator.<ns>.svc:4000`, written into the bootstrap by `jr2 up`):
 
   ```
-  GET  /agents/<iid>/surface   → the same path     the Menu
-  POST /agents/<iid>/events    → the same path     a pick
-  POST /fetch                  → /sandboxes/<this pod's Sandbox>/fetch     the ask (ADR-0053)
-  anything else                → 404, from the Custodian
+  GET  /agents/<iid>/surface          → the same path     the Menu
+  POST /agents/<iid>/events           → the same path     a pick
+  GET  /agents/<iid>/deliveries/<id>  → the same path     an outstanding pick's answer (ADR-0024)
+  POST /fetch                         → /sandboxes/<this pod's Sandbox>/fetch     the ask (ADR-0053)
+  anything else                       → 404, from the Custodian
   ```
+
+  A read — the surface, a delivery's poll — is retried on any reset; a pick and the ask only on a reset before they were
+  sent, so one the Orchestrator may have read is not sent twice. A poll holds up to about 25 s, far below the listener's
+  3600 s idle limit, so an outstanding pick never rides one long request (ADR-0002).
 
   On each forwarded request, the Custodian swaps `Authorization: Bearer <Stand-in>` for the token and removes every
   other credential header. A request without the Stand-in gets 403. The ask's path comes from the Custodian

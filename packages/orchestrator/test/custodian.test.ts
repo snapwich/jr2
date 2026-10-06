@@ -86,7 +86,7 @@ test("nothing held: the control and health listeners alone — no admin, no xDS,
   });
 });
 
-test("the control listener forwards three routes — the Menu's two and the ask — and answers the rest itself", () => {
+test("the control listener forwards four routes — the Menu's two, a pick's answer, and the ask — and answers the rest itself", () => {
   const control = listeners(EMPTY_HELD).find((l) => l.name === "control")!;
   const hcm = control.filter_chains[0]!.filters[0]!.typed_config;
   const routes = hcm.route_config.virtual_hosts[0].routes as Array<Record<string, any>>;
@@ -95,11 +95,12 @@ test("the control listener forwards three routes — the Menu's two and the ask 
     [
       ["surface", "GET", "/agents/[^/]+/surface"],
       ["events", "POST", "/agents/[^/]+/events"],
+      ["deliveries", "GET", "/agents/[^/]+/deliveries/[^/]+"],
       ["fetch", "POST", "/fetch"],
       ["deny", undefined, "/"],
     ],
   );
-  assert.deepEqual(routes[3]!.direct_response, { status: 404 }, "anything else never reaches the Orchestrator");
+  assert.deepEqual(routes[4]!.direct_response, { status: 404 }, "anything else never reaches the Orchestrator");
   // An Instance ID is ONE encoded path segment: this listener must not refuse its `%2F`.
   assert.equal(hcm.path_with_escaped_slashes_action, "KEEP_UNCHANGED");
   // The rewrite of the ask stays on the route it arrived on.

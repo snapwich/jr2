@@ -101,13 +101,14 @@ the rest. _Avoid_: shared harness, global harness, dev harness
 
 **Custodian**: The jr2-composed container in every Harness pod — a Sandbox and the Instance Harness — that holds the
 pod's credentials and carries the Harness's traffic out. It holds the Sandbox token, and carries the Harness's Menu
-reads and picks and every pod's ask to the Orchestrator on three routes and no other (ADR-0013, ADR-0053). It holds
-every Held secret, and carries the Harness's outbound HTTPS (`HTTPS_PROXY`): toward a host a Held secret is bound to, it
-ends TLS with a leaf `jr2 up` issued from the Instance's CA, swaps the Stand-in for the value in the named headers, and
-opens its own verified TLS to the host; every other host it tunnels untouched (ADR-0059). A separate container from the
-Harness because the Agent executes code in the Harness container and none here (ADR-0005). It controls no egress — a
-client that goes around it sends only a Stand-in. Its engine is Envoy, a Pinned image, configured by `jr2 up`. _Avoid_:
-proxy (the mechanism, and the Handoff's word), sidecar (its deployment shape), MITM, vault, egress gateway, firewall
+reads, picks and polls of an outstanding pick's answer, and every pod's ask, to the Orchestrator on four routes and no
+other (ADR-0013, ADR-0053). It holds every Held secret, and carries the Harness's outbound HTTPS (`HTTPS_PROXY`): toward
+a host a Held secret is bound to, it ends TLS with a leaf `jr2 up` issued from the Instance's CA, swaps the Stand-in for
+the value in the named headers, and opens its own verified TLS to the host; every other host it tunnels untouched
+(ADR-0059). A separate container from the Harness because the Agent executes code in the Harness container and none here
+(ADR-0005). It controls no egress — a client that goes around it sends only a Stand-in. Its engine is Envoy, a Pinned
+image, configured by `jr2 up`. _Avoid_: proxy (the mechanism, and the Handoff's word), sidecar (its deployment shape),
+MITM, vault, egress gateway, firewall
 
 **Held secret**: A credential the Harness uses but never holds — a model API key above all, and the Sandbox token.
 `jr2.config.ts` declares it with the hosts it may reach (`harness.heldSecrets`; `harness.provider.apiKey` is one
