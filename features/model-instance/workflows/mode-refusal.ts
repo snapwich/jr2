@@ -1,5 +1,5 @@
 // The mode-refusal claim (ADR-0029): a pick on the Menu that the workflow's current state does not
-// allow is delivered and answered with the CORRECTION RECEIPT — "`<pick>` is not allowed in the
+// allow is answered with the CORRECTION RECEIPT — "`<pick>` is not allowed in the
 // workflow's current state, whatever its arguments … Allowed now: …" — and a correct Agent's next
 // call is an allowed pick, not the same pick again.
 //

@@ -198,7 +198,7 @@ export const codingTemplate = jr2Setup({
         }),
       },
       // The Menu is derived from the INVOKING state's transitions (ADR-0015), so they live here,
-      // on the state that holds the Turn; the substates record how far the turn got, and `.review`
+      // on the state that holds the Turn; its modes record how far the turn got, and `.review`
       // is an internal target, so the pick that moves the record does not restart the Turn. The
       // guard is what makes the second `request_review` a pick that moves nothing (ADR-0029): one
       // review per Turn, and the Menu the next Submission lists narrows to `done`.
