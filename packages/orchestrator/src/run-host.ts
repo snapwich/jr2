@@ -891,9 +891,10 @@ export class RunHost {
    *
    * "Right now" is the Allowed picks' half (ADR-0029): the registered defs are the state's
    * VOCABULARY, derived statically from its transitions, and the guards on those transitions are
-   * asked here. The pick has not happened yet, so the question is `mayMove`, not `wouldMove`: a
-   * guard that would have judged the Agent's arguments is left allowed and settled at delivery. The
-   * Menu does not move with them — it is the conversation's, fixed at the Machine's build.
+   * asked here, as this Agent's sender (`allowedPicks`, ADR-0015). The pick has not happened yet, so
+   * the question is payload-blind: a guard that would have judged the Agent's arguments is left
+   * allowed and settled at delivery. The Menu does not move with them — it is the conversation's,
+   * fixed at the Machine's build.
    */
   agentSurface(instanceId: string): AgentSurfaceView | undefined {
     const reg = this.table.lookup(agentAddress(instanceId));

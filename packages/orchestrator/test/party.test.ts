@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
+import { allNodes, mayTake, partiesAt } from "../src/party.ts";
 import { NotTakenError } from "../src/registration.ts";
 import type { AnyStateMachine } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
@@ -282,7 +283,29 @@ test("a Gate's payload that turns selection outward to another party's writing i
   await r.until("byGate");
 });
 
-test("S11 with sentBy each party's name maps to its own writings; the Agent cannot ship through the Gate's writing", async () => {
+test("S11 each party's name maps to its own writings only; one party's own override stays its own (and warns)", () => {
+  /** For each seat, the writings of `name` it may take — what it could run with that name. */
+  const writingsPerParty = (m: AnyStateMachine, name: string): Record<string, string[]> => {
+    const nodes = allNodes(m);
+    const out: Record<string, string[]> = {};
+    for (const seat of nodes)
+      for (const sender of partiesAt(seat, m))
+        out[`${sender.party}:${sender.id}`] = nodes
+          .filter((n) => n.transitions.has(name) && mayTake(m, sender, seat, n, name))
+          .map((n) => n.id);
+    return out;
+  };
+  assert.deepEqual(writingsPerParty(s2(placeholder("coder"), "marked"), "approve"), {
+    "gate:review-1": ["s2.release"],
+    "agent:coder": ["s2.release.work.draft"],
+  });
+  assert.deepEqual(writingsPerParty(s4(placeholder("coder")), "cancel"), {
+    "agent:coder": ["s4.work", "s4.work.draft"],
+  });
+  assert.ok(loadWarningsOf(s4(placeholder("coder"))).some((w) => w.includes("reads one description for both")));
+});
+
+test("S11 the fail-open shape: the Agent cannot ship through a Gate child's payload-guarded writing", async () => {
   // `work` (the Agent's) and its Gate child both write `approve`, the child's behind a payload guard.
   // The payload guard is UNKNOWN to the payload-blind selection, so the child's writing is
   // selected, and it is not the Agent's: not Allowed, and the Agent's approve with the Gate's

@@ -8,6 +8,13 @@
 // Machine's own (no sender). xstate's own rule does the rest: a false guard on the deepest writing
 // lets selection move outward. It can only make a writing DECLINE other senders; it never gives a
 // writing to a party — position does that (`mayTake`).
+//
+// What jr2 computes with it:
+//   - `mayTake`: may this sender take this writing? ADR-0015's position rule, per writing.
+//   - `takesNow`: an Agent's Allowed picks and a Gate's `acceptsNow`, payload-blind (ADR-0029).
+//   - `notTaken`: at delivery, exact — a delivery whose selection holds another party's writing is
+//     refused before the Machine sees it.
+//   - `partyWarnings`: the load walk's warnings over parties and writings.
 
 import type { AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyStateMachine } from "xstate";
 import { SENDER_KEY, type Sender } from "@jr2/agent-protocol";
