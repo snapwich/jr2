@@ -126,13 +126,15 @@ executes nothing in it. A `command` Effect does not run in it. Two placements: t
 Effector. _Avoid_: Courier, Actuator, Clerk, machine container
 
 **Sandbox Effector**: The Effector as a container in a Sandbox pod, with the Worktree mounted read-only — for `push`,
-`upload`, and an `http` Effect whose body is a Worktree file. Present only when a Machine needs it.
+`upload`, and an `http` Effect whose body is a Worktree file. Present only when a Machine needs it. _Avoid_: sidecar,
+worker, runner
 
 **Instance Effector**: The Effector as its own stateless pod, one per Instance — for an `http` Effect that reads no
-Worktree file.
+Worktree file. _Avoid_: sidecar, worker, runner
 
 **Effect secret**: A secret as an Effect uses it — the real value, in an Effector. A placement, not a kind: one secret
 is a Held secret where an Agent's pod names it and an Effect secret where an Effect names it, and it can be both.
+_Avoid_: secret (unqualified), injected secret
 
 **Kit image**: One of the two jr2-owned images an Instance deploys but never authors — `jr2-harness`, `jr2-operator`.
 Built from the checkout in checkout mode; installed, pulled at published `<kitversion>` tags from the canonical home
@@ -227,11 +229,12 @@ pick outside them moves nothing, and its answer names them. _Avoid_: menu (the f
 legal moves
 
 **mode**: A child state of an Agent's state with no invoke. The Agent is at Rest there, with a different set of Allowed
-picks.
+picks. _Avoid_: substate, phase
 
 **Rest**: The condition of an Agent's state under which a pick is answered: no state below it is running something (an
 Effect, a Gate, another Agent, a child Machine), and no pending timer will move the workflow to another state inside it.
-A condition jr2 reads from the Machine, not a state: a state named `rest` means nothing to jr2.
+A condition jr2 reads from the Machine, not a state: a state named `rest` means nothing to jr2. _Avoid_: idle, the rest
+state
 
 **outstanding**: A pick that is delivered and not yet answered. _Avoid_: held pick (collides with Held secret), pending
 
@@ -255,7 +258,8 @@ Turn, which of its Menu it may pick), and nothing about the task. A standing par
 Agent's `instructions`; a Turn part follows the Frame's prompt and carries its Allowed picks and its **notices**, and
 the Harness restates its Allowed picks at a step boundary when they changed under the Agent (ADR-0029). Always on: no
 author can turn it off. _Avoid_: system prompt (the mechanism, and the Turn part is not in it), preamble, header,
-instructions (identity's word), nudge (a re-prompt after a Submission ended with the Turn open and picks left)
+instructions (identity's word), nudge (a re-prompt after a Submission ended with the Turn open: at once when picks are
+left, or when one opens later)
 
 **Working tools**: The file and shell tools (read, write, edit, bash, grep, glob) the Harness executes in its own
 container — what the Agent may **do**; filtered by the definition's `workspace` access (ADR-0028; `"none"` withholds
