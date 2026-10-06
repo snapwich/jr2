@@ -79,10 +79,11 @@ export function standingBriefing(facts: SeatFacts): StandingBriefing {
 function composeStanding(facts: SeatFacts, workspace: Workspace): string {
   const lines = [
     "jr2 runs the workflow you are part of. These are facts about your seat, not your task.",
-    "- Your Turn ends with exactly one pick from your Menu: a call to one of the workflow's tools, one " +
-      "that the <jr2-turn> block after each prompt allows now. When a pick ends your Turn, stop — call no other tool.",
-    "- Some picks move the workflow and leave your Turn open; their answer says so and lists what is allowed now. " +
-      'The newest "Allowed now" you read is the one that holds.',
+    // How the Agent acts on the workflow, in one statement that stays true when a pick keeps the
+    // Turn open (ADR-0024) or nothing is allowed — the wake asks it again then (ADR-0016).
+    "- You act on the workflow by picking from your Menu: a call to one of the workflow's tools that the newest " +
+      '"Allowed now" lists. Each pick\'s answer says if your Turn is over. If it is over, stop and call no other ' +
+      "tool. If it is not, continue. If nothing is allowed, stop: the workflow prompts you again when something is.",
   ];
   if (workspace === "none") {
     lines.push("- You have no Working tools: no shell and no files. You act only by picking from your Menu.");

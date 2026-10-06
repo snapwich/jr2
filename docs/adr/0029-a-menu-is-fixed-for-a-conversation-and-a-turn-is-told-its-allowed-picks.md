@@ -32,7 +32,8 @@ whole history again. It also left the history calling tools the request no longe
   (`GET /agents/:iid/surface` → `menu` and `allowed`); the Harness presents `menu` as the tools block and states
   `allowed` in the Briefing's Turn part, after the Frame's prompt
   ([ADR-0062](0062-jr2-briefs-the-agent-on-its-seat-never-on-its-task.md)). It rides the newest message, so it never
-  touches the cached prefix.
+  touches the cached prefix. The Briefing's standing part says how to read every such list: a pick is a call that the
+  newest "Allowed now" lists, and each pick's answer says if the Turn is over.
 - **The Orchestrator enforces, at delivery, and only there.** A pick off the Menu is refused. A pick on the Menu is not
   refused before delivery: one inside the invoking state's derived set that the Machine does not take — a pick of
   another mode included — is delivered and answered `moved: false`; one that only another state of this Agent handles is

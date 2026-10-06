@@ -327,6 +327,16 @@ test("the Briefing: the standing part follows the instructions; the Turn part na
   const system = systemText(provider.calls[0]);
   assert.ok(system.startsWith(`${definitions[AGENT]!.instructions}\n\n<jr2-briefing>\n`), system);
   assert.doesNotMatch(system, /review_verdict/, "no Menu names in the standing part");
+  // The one pick line, as the model reads it through the real turn loop.
+  assert.ok(
+    system.includes(
+      "- You act on the workflow by picking from your Menu: a call to one of the workflow's tools that the newest " +
+        '"Allowed now" lists. Each pick\'s answer says if your Turn is over. If it is over, stop and call no other ' +
+        "tool. If it is not, continue. If nothing is allowed, stop: the workflow prompts you again when something is.",
+    ),
+    system,
+  );
+  assert.doesNotMatch(system, /exactly one pick|Some picks move the workflow/, "both earlier lines are gone");
   const turn = lastUserText(provider.calls[0]);
   assert.ok(turn.startsWith("Carry on.\n\n<jr2-turn>\n"), turn);
   assert.ok(turn.includes(`Working directory: ${cwd}`), turn);
@@ -868,8 +878,8 @@ test("step boundary: a model that stopped with no pick while the list changed is
 });
 
 test("ask-again rule: a model that stopped while the list became EMPTY is not asked again inside the Submission", async () => {
-  // The Orchestrator's half (its nudge) reads the same list after the settle and, empty, asks
-  // nothing either: one rule, two seats.
+  // The Orchestrator's half reads the same list after the settle: empty, it asks nothing yet, and
+  // its wake asks once a pick opens (ADR-0016). One rule.
   provider.reset([bashCall("w1", "echo one"), { text: "Waiting for the review." }]);
   sandbox.reset(surfaceAllowing(MODES_MENU, CODING));
   sandbox.surfaceByRead((read) => surfaceAllowing(MODES_MENU, read <= 2 ? CODING : []));

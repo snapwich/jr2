@@ -29,7 +29,7 @@ test("the standing part follows the instructions, delimited, and is byte-identic
 
 test("the standing part says how a Turn ends, and the Sandbox's CPUs and Size â€” not the node's cores", () => {
   const part = standingBriefing({ cpus: 2, memoryBytes: 4 * GI }).part("write");
-  assert.match(part, /exactly one/i);
+  assert.match(part, /says if your Turn is over/);
   assert.match(part, /2 CPUs/);
   assert.match(part, /4Gi of memory/);
   assert.match(part, /node's core count is not your budget/);
@@ -37,16 +37,20 @@ test("the standing part says how a Turn ends, and the Sandbox's CPUs and Size â€
   assert.doesNotMatch(part, /mcp__jr2__|\d{4}-\d{2}-\d{2}|Turn \d/);
 });
 
-test("the standing part says that some picks leave the Turn open, and that the newest Allowed list holds (ADR-0062)", () => {
+test("the standing part's pick line: one statement, true with picks that leave the Turn open (ADR-0062)", () => {
   for (const workspace of ["write", "none"] as const) {
     const part = standingBriefing({}).part(workspace);
     assert.ok(
       part.includes(
-        "- Some picks move the workflow and leave your Turn open; their answer says so and lists what is allowed now. " +
-          'The newest "Allowed now" you read is the one that holds.',
+        "- You act on the workflow by picking from your Menu: a call to one of the workflow's tools that the newest " +
+          '"Allowed now" lists. Each pick\'s answer says if your Turn is over. If it is over, stop and call no other ' +
+          "tool. If it is not, continue. If nothing is allowed, stop: the workflow prompts you again when something is.",
       ),
       part,
     );
+    // It replaces both earlier lines: "exactly one pick" is false once a pick can keep the Turn open.
+    assert.doesNotMatch(part, /exactly one/i);
+    assert.doesNotMatch(part, /Some picks move the workflow/);
   }
 });
 
@@ -61,7 +65,7 @@ test("a Menu-only Agent's standing part: no Working tools, and no CPUs or Size t
   const part = standingBriefing({ cpus: 2, memoryBytes: 4 * GI }).part("none");
   assert.match(part, /no Working tools/);
   assert.doesNotMatch(part, /CPU|memory/);
-  assert.match(part, /exactly one/i);
+  assert.match(part, /says if your Turn is over/);
 });
 
 test("the Turn part follows the prompt, delimited: working directory, Allowed picks, notices", () => {

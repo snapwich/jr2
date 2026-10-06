@@ -10,17 +10,23 @@ whose processes are gone, with no way to know why.
 ## Decision
 
 - **jr2 has its own text to the model, the Briefing.** It says a fact only if a correct Agent would act differently
-  knowing it **and** cannot find it out for itself: how a Turn ends (one Menu pick), that some picks leave the Turn open
-  and the newest "Allowed now" the Agent read is the one that holds, the Sandbox's CPUs and Size, the working directory,
-  that a Menu-only Agent has no Working tools, and what happened to the last Turn. Nothing about the task — that is the
-  Frame's — and nothing about style or care — that is identity's. Stand-ins are left out: the only change that knowing
-  could cause is an attempt to go around the Custodian.
+  knowing it **and** cannot find it out for itself: how it acts on the workflow, the Sandbox's CPUs and Size, the
+  working directory, that a Menu-only Agent has no Working tools, and what happened to the last Turn. Nothing about the
+  task — that is the Frame's — and nothing about style or care — that is identity's. Stand-ins are left out: the only
+  change that knowing could cause is an attempt to go around the Custodian.
 - **Two parts, placed by how often they change.** The standing part is the same on every Turn of a seat; it follows
   `instructions` in the system prompt, in its own delimited section, and is byte-stable (no timestamps, no counters, no
   Menu names). The Turn part follows the Frame's prompt in a delimited block: the working directory, the Turn's Allowed
   picks ([ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)) and the notices.
   So the Briefing never breaks the provider's prompt cache — the Turn part sits in the newest message, which is uncached
   anyway, and stays unchanged in the history after.
+- **How the Agent acts on the workflow is one standing statement**, true whether a pick ends the Turn or keeps it open
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): "You act on the workflow by picking from
+  your Menu: a call to one of the workflow's tools that the newest "Allowed now" lists. Each pick's answer says if your
+  Turn is over. If it is over, stop and call no other tool. If it is not, continue. If nothing is allowed, stop: the
+  workflow prompts you again when something is." The last sentence is safe because the wake asks a model that stopped
+  with nothing allowed when a pick opens ([ADR-0016](0016-agent-turn-mechanics-are-internal.md)). A line that says a
+  Turn ends with exactly one pick would be false for a pick that keeps the Turn open.
 - **The Turn part is written once per Submission, and restated when its Allowed picks change.** When something other
   than the Agent's own pick changes them inside the Turn, the Harness appends the Allowed picks again at the next step
   boundary, in a `<jr2-turn>` block of their own: "The workflow's state changed since you last read the Allowed picks.
