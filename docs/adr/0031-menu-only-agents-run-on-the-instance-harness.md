@@ -66,6 +66,18 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   the history messages. The record is the contract; the engine part is not. A Submission in flight at the restart
   settles `failed` (the typed error `harness_restarted`, which the Agent actor reads as "Turn lost") on the rebuilt
   stream, so the Orchestrator reads a Settlement, not a 404, and the conversation's next Turn continues it.
+- **A restart while the Agent's state is busy cuts the Turn and is no fault.** When the Agent's state is not at Rest —
+  its pick is outstanding, or work it started in runs below it — or its pick's answer was read and never reached the
+  model, the Agent actor raises no `agent.fault` for a restart: the Machine would route it and stop the work the Turn
+  did not want stopped (ADR-0024). It waits for Rest, then re-admits the Agent on the same conversation, which the
+  rebuilt Harness holds: a jr2 prompt ("Your previous turn was cut: the process that ran you restarted while the
+  workflow was busy. The workflow did not stop. Continue your task from here.") with the answer as a `pick-answer`
+  notice (`cut: true`) in the Briefing's Turn part, and the Allowed picks after it (ADR-0062). In the rebuilt session
+  the cut Menu call has no result; the Harness answers it in the history with jr2's text — the pick reached the
+  workflow, which does not run it twice, and its result comes in the next message — before pi would answer "No result
+  provided", which reads as a failed pick. The same holds for a Sandbox's Harness, whose restart the watch sees
+  (ADR-0021). A restart at Rest with nothing unread is the fault it always was. A route that leaves the Agent's state
+  ends the Turn while it waits, as any route does.
 - **Both placements persist, to different volumes.** The Instance Harness to a PersistentVolumeClaim of its own; a
   Sandbox's Harness to an emptyDir mounted into the Harness container alone (the User Container must not read it), so a
   Harness container that restarts inside a living pod keeps its conversations. A pod that is gone takes the emptyDir
@@ -125,7 +137,8 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   (deterministic Service DNS) → enclosing `workspace()`'s ambient handles → loud error naming the definition's
   `workspace` value.
 - **A `"none"` conversation survives the Instance Harness pod's restart**: the StatefulSet restores the endpoint and the
-  volume restores the history. A Turn in flight at the restart settles `failed`; nothing is continued silently.
+  volume restores the history. A Turn in flight at the restart settles `failed`; nothing is continued silently — a Turn
+  whose state is busy is re-admitted with a prompt that says it was cut.
 - **An instance with no `"none"` definitions deploys nothing new.** The feature is invisible until the first
   `agent({ ..., workspace: "none" })` a Machine carries, which is its entire user-facing surface.
 - **The harness conformance suite (ADR-0027) gains the Menu-only shape**: a Turn whose definition withholds every

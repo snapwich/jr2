@@ -43,7 +43,11 @@ later adds the third: runaway):
 
 - **Infra faults** (stream drop, pod restart, provider error): provider-stream retry lives inside the turn in the
   Harness, and `wait` reconnects from the offset ledger without a deadline; a restarted Harness or a lost Workspace ends
-  the Turn through the Sandbox watch (ADR-0021), and a Harness that answers 404 is a lost conversation (ADR-0027).
+  the Turn through the Sandbox watch (ADR-0021), and a Harness that answers 404 is a lost conversation (ADR-0027). The
+  one exception is a restarted Harness while the Agent's state is busy, or with a pick's answer unread: that cuts the
+  Turn and faults nothing — the actor waits for Rest and **re-admits** on the same conversation, with the answer as a
+  notice (ADR-0024, ADR-0031). A re-admission is mechanism, like a nudge: telemetry on the feed, no marker, and it
+  spends no budget, because the model did nothing wrong.
 - **No-signal** (the agent stops while its Turn is still open — jr's dominant failure mode): the wire treats that as a
   normal completed Submission, so recovery is jr2's. **The ask-again rule**: while the Turn is open, a model that
   stopped is asked again once its Allowed picks are not empty, and never with an empty list. A delivered pick does not
@@ -56,9 +60,10 @@ later adds the third: runaway):
     "Your previous turn ended, and the workflow is still waiting for your pick." — absorbing ADR-0006's "forced final
     pick is a Machine-level re-prompt" into the actor.
   - **The wake.** The Submission settled with none left: the model stopped correctly, and the Turn waits on a Gate, a
-    child's invoke or a timer. The actor watches the invoking Machine and admits the same nudge the first time its
-    Allowed picks are not empty. The watch ends with the state, so a Turn that ended is never woken, and a Turn that was
-    never meant to pick waits until its state exits.
+    child's invoke or a timer — the Allowed picks are empty while the Agent's state is not at Rest (ADR-0024). The actor
+    watches the invoking Machine and admits the same nudge the first time its Allowed picks are not empty. The watch
+    ends with the state, so a Turn that ended is never woken, and a Turn that was never meant to pick waits until its
+    state exits.
 
   The nudge and the wake are one Submission kind and spend one budget: a Machine that opens and closes picks under a
   stopped model cannot ask it without bound. All three read one Allowed list, the one the surface serves (ADR-0029).

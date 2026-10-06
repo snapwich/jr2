@@ -12,10 +12,11 @@ import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
 import { OutstandingError } from "../src/registration.ts";
+import { SUBMISSION_HARNESS_RESTARTED } from "../src/wire.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
-import type { SandboxPort } from "../src/workspace.ts";
+import type { HarnessRestarts, SandboxPort } from "../src/workspace.ts";
 import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const ev = (name: string, input: z.ZodObject = z.object({})) => defineEvent({ name, input });
@@ -311,4 +312,89 @@ test("an Orchestrator restart during a hold: the restored host refuses from the 
 test("a delivery that was never outstanding is unknown to the poll", async () => {
   const rig = await started();
   assert.equal(await rig.host.awaitDelivery(rig.iid, "no-such-delivery", 10), undefined);
+});
+
+// --- A Harness restart while the Agent's state is busy (ADR-0031) ---------------------------------
+
+test("a Harness restart while a pick is outstanding is no agent.fault: at Rest, jr2 re-admits the same conversation with the answer", async () => {
+  const rig = await started();
+  const asking = rig.host.sendToAgent(rig.iid, { type: "ask" });
+  assert.equal(asking.outstanding, true);
+  // The Instance Harness came back: its rebuilt stream settles the cut Submission failed (ADR-0031).
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted (pod restart)");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(value(rig), JSON.stringify({ work: "asking" }), "no fault routed: the Gate still waits");
+  assert.equal(rig.coder.admits.length, 1, "nobody is asked while the workflow is busy");
+
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "lgtm" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  const readmit = rig.coder.admits[1]!;
+  assert.equal(readmit.instanceId, rig.iid, "the same conversation: the rebuilt Harness holds it");
+  assert.match(readmit.prompt ?? "", /^Your previous turn was cut: the process that ran you restarted/);
+  assert.deepEqual(rig.coder.notices[1], [
+    {
+      kind: "pick-answer",
+      scope: "conversation",
+      pick: "ask",
+      cut: true,
+      answer: { kind: "event", event: "approve", sender: { party: "gate", id: "review" }, payload: { note: "lgtm" } },
+    },
+  ]);
+  assert.equal(rig.host.status(rig.runId)?.status, "active");
+  // The re-admitted Turn picks on: `finish` is taken, the Turn ends.
+  assert.equal(rig.host.sendToAgent(rig.iid, { type: "finish" }).turnComplete, true);
+});
+
+test("a Harness restart after the answer was read at Rest but never reached the model: re-admitted at once", async () => {
+  const rig = await started();
+  const testing = rig.host.sendToAgent(rig.iid, { type: "run_tests" });
+  rig.tests.settle("3 passed");
+  await waitFor(() => value(rig) === JSON.stringify({ work: "rest" }));
+  // Answered at Rest — but the poll that would have carried it died with the Harness.
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted");
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(rig.coder.notices[1]?.[0], {
+    kind: "pick-answer",
+    scope: "conversation",
+    pick: "run_tests",
+    cut: true,
+    answer: { kind: "output", actor: "tests", output: "3 passed" },
+  });
+  assert.equal(value(rig), JSON.stringify({ work: "rest" }));
+  void testing;
+});
+
+test("a Harness restart at Rest with nothing unread is the fault it always was", async () => {
+  const rig = await started();
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted");
+  await waitFor(() => rig.host.status(rig.runId) === undefined);
+  assert.equal((await rig.host.read(rig.runId))?.value, "faulted");
+});
+
+test("a Sandbox Harness restart the watch sees while a pick is outstanding: no fault, the same Turn re-admitted at Rest (ADR-0021, ADR-0031)", async () => {
+  const listeners = new Set<(seen: HarnessRestarts) => void>();
+  let seen: HarnessRestarts = { restartCount: 0 };
+  const port = {
+    harnessRestarts: (_name: string, listener: (seen: HarnessRestarts) => void) => {
+      listeners.add(listener);
+      queueMicrotask(() => listeners.has(listener) && listener(seen));
+      return () => listeners.delete(listener);
+    },
+    memoryFault: async () => undefined,
+  } as unknown as SandboxPort;
+  const rig = await started(undefined, port);
+  await new Promise((r) => setTimeout(r, 5));
+  rig.host.sendToAgent(rig.iid, { type: "run_tests" });
+  seen = { restartCount: 1, lastTerminated: { reason: "Error", exitCode: 137, finishedAt: "2026-10-06T10:00:00Z" } };
+  for (const l of listeners) l(seen);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(value(rig), JSON.stringify({ work: "testing" }), "no fault: the command still runs");
+  assert.equal(rig.tests.runs(), 1);
+  rig.tests.settle("green");
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.equal(rig.coder.admits[1]!.instanceId, rig.iid);
+  assert.equal(rig.coder.notices[1]?.[0]?.kind, "pick-answer");
+  // The re-admitted Turn is held to the new mark: the same restart does not cut it again.
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(rig.host.status(rig.runId)?.status, "active");
 });

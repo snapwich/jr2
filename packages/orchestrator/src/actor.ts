@@ -56,6 +56,7 @@ import { INSTANCE_HARNESS_SERVICE } from "./names.ts";
 import { SENDER_KEY } from "@jr2/agent-protocol";
 import { agentAddress, continuedIid, allowedPicks, resolveAccepts, runBindingOf } from "./registration.ts";
 import type { NoticeScope } from "./notices.ts";
+import { restOf } from "./rest.ts";
 import { SUBMISSION_HARNESS_RESTARTED, SUBMISSION_RUNAWAY, type Notice } from "./wire.ts";
 
 /**
@@ -416,6 +417,16 @@ const NUDGE_PROMPT =
   `Pick the one that matches the true state of your work and call it now.`;
 
 /**
+ * The re-admission after a Harness restart cut the Turn while the workflow was busy (ADR-0031). The
+ * Harness writes a cut call's history result itself ("its result comes in the next message") and the
+ * answer rides this admission as a `pick-answer` notice in the Briefing's Turn part, with the Allowed
+ * picks after it; this prompt says only what happened to the Turn.
+ */
+const READMIT_PROMPT =
+  `Your previous turn was cut: the process that ran you restarted while the workflow was busy. ` +
+  `The workflow did not stop. Continue your task from here.`;
+
+/**
  * Where this Turn works — the Frame's other half (ADR-0057), resolved before admission.
  *
  * The state's own `cwd` IS the Frame and wins outright, for every Agent: what is resolved here is
@@ -640,7 +651,8 @@ export function agentActorWith(
     const turnStarted = new Date();
     const memoryFault = (name: string): Promise<MemoryKill | undefined> =>
       binding.sandbox?.memoryFault(name, turnStarted).catch(() => undefined) ?? Promise.resolve(undefined);
-    const controller = new AbortController();
+    // Replaced after a Harness restart that cut the Turn while its state was busy: the cut aborted it.
+    let controller = new AbortController();
 
     // Shared per run, created on demand so the ordering guarantee holds for any binding.
     const pendingAborts = (binding.pendingAborts ??= new Map<string, Promise<void>>());
@@ -720,14 +732,17 @@ export function agentActorWith(
     // actor ends the Turn before the Harness reads that iid's surface, the Harness finds the Turn
     // over and settles it with no model asked (ADR-0026) — so `abandon` raises them again.
     let carried: { iid: string; notices: Notice[] } | undefined;
-    const admitTurn = async (turn: AgentRunInput, opts: { notices: boolean } = { notices: true }) => {
+    const admitTurn = async (turn: AgentRunInput, opts: { notices: boolean; extra?: Notice[] } = { notices: true }) => {
       const taken = (opts.notices ? binding.takeNotices?.(noticeScope) : undefined) ?? { ids: [], notices: [] };
+      // `extra`: a notice this admission carries straight from the actor, never kept — the answer a
+      // cut pick never got (ADR-0031), whose one road to the model is this admission.
+      const notices = [...taken.notices, ...(opts.extra ?? [])];
       let admission: AgentAdmission;
       try {
         admission = await client.admit(turn, {
           definition,
           signal: controller.signal,
-          ...(taken.notices.length ? { notices: taken.notices } : {}),
+          ...(notices.length ? { notices } : {}),
         });
       } catch (err) {
         binding.releaseNotices?.(taken.ids);
@@ -807,6 +822,81 @@ export function agentActorWith(
         if (sub === undefined) finish([]);
       });
 
+    // Resolves once the Agent's state is back at Rest — its outstanding pick answered, or nothing
+    // running below it — or has been left, or with nothing once this actor stops. Read a microtask
+    // after each snapshot of the invoking Machine: the mailbox has drained (rest.ts).
+    const agentState = { invoker: self._parent, invokeId: self.id };
+    const untilRest = (): Promise<void> =>
+      new Promise((resolve) => {
+        let done = false;
+        let sub: { unsubscribe(): void } | undefined;
+        const finish = (): void => {
+          if (done) return;
+          done = true;
+          const at = disposers.indexOf(finish);
+          if (at >= 0) disposers.splice(at, 1);
+          sub?.unsubscribe();
+          resolve();
+        };
+        const check = (): void => {
+          if (stopped) return finish();
+          const held = binding.heldPick?.(currentIid);
+          if (held !== undefined && !held.fetched && !held.answered) return;
+          if (restOf(agentState) !== "busy") finish();
+        };
+        disposers.push(finish);
+        check();
+        if (done) return;
+        sub = self._parent?.subscribe({ next: () => queueMicrotask(check), error: finish, complete: finish });
+        if (sub === undefined) finish();
+      });
+
+    // A Harness restart cut this Turn (ADR-0031). It is NOT an `agent.fault` when the Agent's state is
+    // busy — something it started runs below it — or its pick's answer has not reached the model:
+    // faulting would route the Machine out of the state and stop the work the Turn did not want
+    // stopped. jr2 waits for Rest, then re-admits the Agent on the same conversation, which the
+    // rebuilt Harness holds, with the answer as a notice. Undefined: not this case, the caller faults.
+    let cuts = 0;
+    const readmitAfterCut = async (err: unknown): Promise<AgentAdmission | "stopped" | undefined> => {
+      if (stopped) return "stopped";
+      if (restarted === undefined && settledByRestart(err) === undefined) return undefined;
+      const unread = (): boolean => {
+        const held = binding.heldPick?.(currentIid);
+        return held !== undefined && !held.fetched;
+      };
+      if (restOf(agentState) !== "busy" && !unread()) return undefined;
+      await untilRest();
+      if (stopped) return "stopped";
+      const held = binding.heldPick?.(currentIid);
+      const notice: Notice[] =
+        held !== undefined && !held.fetched && held.answered && !held.turnComplete
+          ? [
+              {
+                kind: "pick-answer",
+                scope: "conversation",
+                pick: held.pick,
+                cut: true,
+                ...(held.answer !== undefined ? { answer: held.answer } : {}),
+              },
+            ]
+          : [];
+      cuts++;
+      binding.telemetry?.({
+        kind: "retry",
+        child: self._parent?.id ?? self.id,
+        attempt: cuts,
+        reason: "re-admitted after a Harness restart",
+      });
+      restarted = undefined;
+      controller = new AbortController();
+      const admission = await admitTurn(
+        { ...framed, attach: undefined, instanceId: currentIid, prompt: READMIT_PROMPT },
+        { notices: false, extra: notice },
+      );
+      binding.heldAnswerDelivered?.(currentIid);
+      return admission;
+    };
+
     // Down-channel: interrupts only (ADR-0002 split-channel model).
     receive((event) => {
       if (event.type === "CANCEL") abandon();
@@ -881,6 +971,14 @@ export function agentActorWith(
             // settlement). It also closes when restore dropped `prompt` (`attach` rides instead):
             // there is nothing identical to replay, and the thrown settlement still carries the
             // legible runaway reason.
+            // A Harness restart that cut the Turn while its state was busy (ADR-0031): no fault. The
+            // workflow did not stop, so neither does the Turn — it waits for Rest, then re-admits.
+            const readmitted = await readmitAfterCut(err);
+            if (readmitted === "stopped") return;
+            if (readmitted !== undefined) {
+              admission = readmitted;
+              continue;
+            }
             const reason = stopped || signaled ? undefined : runawayReason(err);
             if (reason === undefined || input.continuation || input.prompt === undefined || rerolls >= runawayBudget)
               throw err;
