@@ -221,12 +221,12 @@ bill the whole history again (ADR-0029). What one Turn may actually pick is a pa
 tools (unqualified), tool list
 
 **Allowed picks**: The part of the Menu one Turn may pick now — the invoking state's derived set (its own, its
-ancestors' and its modes' picks — ADR-0015), narrowed to those the live Machine would currently accept (ADR-0029). So
-they follow the active mode and the guards: one Turn can allow different picks as the Machine moves inside the invoking
-state; the Menu does not change. Stated to the model in the Briefing's Turn part, in every answer to a pick that leaves
-the Turn open, and again at a step boundary when they changed since the model last read them; enforced at the pick: a
-pick outside them moves nothing, and its answer names them. _Avoid_: menu (the fixed set), open picks, active tools,
-legal moves
+ancestors' and its modes' picks — ADR-0015), narrowed to those the live Machine would currently accept from this Agent
+(ADR-0029). So they follow the active mode and the guards: one Turn can allow different picks as the Machine moves
+inside the invoking state; the Menu does not change. Stated to the model in the Briefing's Turn part, in every answer to
+a pick that leaves the Turn open, and again at a step boundary when they changed since the model last read them;
+enforced at the pick: a pick outside them moves nothing, and its answer names them. _Avoid_: menu (the fixed set), open
+picks, active tools, legal moves
 
 **mode**: A child state of an Agent's state with no invoke. The Agent is at Rest there, with a different set of Allowed
 picks. _Avoid_: substate, phase
@@ -245,6 +245,11 @@ explicit one gives a pick to the other party or holds a root pick back (ADR-0015
 Agent's Menu are drawn from, and what a delivery is validated against. A nested Machine keeps its own; the Machine that
 invokes it never sees or merges it. _Avoid_: events (unqualified — the mechanism also delivers `agent.fault`-class
 events no author declared), event manifest (the retired module export), schema
+
+**writing**: One `on` key on one state — one name may have several writings, on one path or apart. A writing belongs to
+the party its state, or the nearest state above it, invokes, and to both at the root; xstate runs the deepest active
+writing of a name, and a delivery that would run a writing its sender may not take is refused (ADR-0015). A def means
+one thing at every writing its party can reach.
 
 **Machine shape**: The facts about a Machine that decide whether a persisted snapshot can still be read by it — state
 ids and nesting, invoke ids and srcs, transition targets — as a digest stamped on every save and compared on restore
