@@ -38,26 +38,40 @@ const NAMESPACE = "jr2-e2e-seed";
 const GIT_IMAGE = "alpine/git:v2.47.2";
 const HTTP_IMAGE = "nginx:1.27-alpine";
 
-const MAKE_REPO = [
-  "git init -q -b main /tmp/w",
-  "echo '# app' > /tmp/w/README.md",
-  // A small project with ONE failing test (ADR-0066): the @model tier's ticket. `greet()` returns
-  // the wrong string, `node --test` says so, and the run's coder is asked to make it pass. Every
-  // other tier reads the seed's refs and never its files, so they are indifferent to it.
-  `printf '%s\\n' '{ "name": "app", "private": true, "type": "module", "scripts": { "test": "node --test" } }' > /tmp/w/package.json`,
-  `printf '%s\\n' 'export function greet(name) {' '  return "Hello " + name;' '}' > /tmp/w/greet.js`,
-  `printf '%s\\n' 'import test from "node:test";' 'import assert from "node:assert/strict";' 'import { greet } from "./greet.js";' '' 'test("greets by name", () => {' '  assert.equal(greet("ada"), "hello, ada");' '});' '' 'test("greets the world by default", () => {' '  assert.equal(greet(), "hello, world");' '});' > /tmp/w/test.js`,
-  "git -C /tmp/w add -A",
-  "git -C /tmp/w -c user.email=e2e@jr2 -c user.name=e2e commit -qm init",
-  "git clone -q --bare /tmp/w /srv/app.git",
-  "git -C /srv/app.git update-server-info",
-  // A SECOND repository, same content, its own identity (ADR-0051): every kind workflow binds
-  // `app.git`, so in every scenario's namespace that Repo is bound and `jr2 gc` never evicts it.
-  // The eviction scenario needs a Repo nothing binds, and a per-run url spelling `app.git`
-  // differently would normalize to the same identity — so it names this one instead.
-  "git clone -q --bare /tmp/w /srv/other.git",
-  "git -C /srv/other.git update-server-info",
-].join(" && ");
+/**
+ * The init container's script: make each served repository under `srv` from a work tree at `work`.
+ * Idempotent, because it runs again whenever the pod's sandbox restarts — a node restart re-runs
+ * init containers on the SAME emptyDir — and the repositories there may hold branches a scenario
+ * pushed (ADR-0053). So a repository that exists is kept as it is, and a new one appears at its
+ * path only once complete: it is cloned beside it and renamed into place, so a run cut halfway
+ * leaves nothing a second run would mistake for done.
+ */
+export function makeRepoScript(srv = "/srv", work = "/tmp/w"): string {
+  const serve = (name: string): string =>
+    `[ -d ${srv}/${name} ] || { rm -rf ${srv}/${name}.new && git clone -q --bare ${work} ${srv}/${name}.new && ` +
+    `git -C ${srv}/${name}.new update-server-info && mv ${srv}/${name}.new ${srv}/${name}; }`;
+  return [
+    `rm -rf ${work}`,
+    `git init -q -b main ${work}`,
+    `echo '# app' > ${work}/README.md`,
+    // A small project with ONE failing test (ADR-0066): the @model tier's ticket. `greet()` returns
+    // the wrong string, `node --test` says so, and the run's coder is asked to make it pass. Every
+    // other tier reads the seed's refs and never its files, so they are indifferent to it.
+    `printf '%s\\n' '{ "name": "app", "private": true, "type": "module", "scripts": { "test": "node --test" } }' > ${work}/package.json`,
+    `printf '%s\\n' 'export function greet(name) {' '  return "Hello " + name;' '}' > ${work}/greet.js`,
+    `printf '%s\\n' 'import test from "node:test";' 'import assert from "node:assert/strict";' 'import { greet } from "./greet.js";' '' 'test("greets by name", () => {' '  assert.equal(greet("ada"), "hello, ada");' '});' '' 'test("greets the world by default", () => {' '  assert.equal(greet(), "hello, world");' '});' > ${work}/test.js`,
+    `git -C ${work} add -A`,
+    `git -C ${work} -c user.email=e2e@jr2 -c user.name=e2e commit -qm init`,
+    serve("app.git"),
+    // A SECOND repository, same content, its own identity (ADR-0051): every kind workflow binds
+    // `app.git`, so in every scenario's namespace that Repo is bound and `jr2 gc` never evicts it.
+    // The eviction scenario needs a Repo nothing binds, and a per-run url spelling `app.git`
+    // differently would normalize to the same identity — so it names this one instead.
+    serve("other.git"),
+  ].join(" && ");
+}
+
+const MAKE_REPO = makeRepoScript();
 
 const MANIFEST = `
 apiVersion: v1
