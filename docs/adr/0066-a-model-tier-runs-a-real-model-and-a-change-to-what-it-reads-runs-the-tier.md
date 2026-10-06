@@ -121,19 +121,30 @@ recover, finish — are exercised only one scripted tool call at a time.
   step-boundary claims (home-lab vLLM, 2026-10-05) changed two:
   - `mode-stop`. Its Turn asked for a review and told the model to wait; the stop happened in about 1 trial of 3 —
     models picked straight through (`ask_review submit`) or looped `ask_review`/`revise` — and the claim fell to 5 of 10
-    twice. `ask_review` now enters a mode with nothing to pick, where the Briefing tells a model to stop, and a timer
-    then opens `revise` and `submit`, so the wake asks it with the nudge's text (ADR-0016). The prompt is unchanged: it
-    is the claim's fixed data. What counts is unchanged: the trial is measured at the first ask after the model's
-    `ask_review`, and void without one, and it passes when the first Menu call after that ask is a pick the mode active
-    at the ask allows. The driver reads the modes from the workflow, not from a copy of them, and replays the model's
-    calls through them: it takes the timer where a restated Turn part shows that it fired, and follows it at the ask
-    when the wake asked in a mode with nothing to pick.
+    twice. `ask_review` now enters a mode whose `revise` and `submit` are closed, where the Briefing tells a model to
+    stop, and a timer then opens them, so the wake asks it with the nudge's text (ADR-0016). The timer has no target: it
+    assigns, and the picks' guards read it. A timer that moved the workflow to a mode inside the Agent's state holds
+    Rest (ADR-0024), so `ask_review` would stay outstanding until it fired and its answer would carry the open picks on
+    the same call; no model would stop. The prompt is unchanged: it is the claim's fixed data. What counts is unchanged:
+    the trial is measured at the first ask after the model's `ask_review`, and void without one, and it passes when the
+    first Menu call after that ask is a pick the mode active at the ask allows. The driver reads the modes from the
+    workflow, not from a copy of them, and replays the model's calls through them: a mode with a targetless timer has
+    its picks closed from each entry until the timer fires; the driver takes the timer where a restated Turn part shows
+    that it fired, and follows it at the ask when the wake asked with nothing allowed.
   - `push-wake`. The step answered the board as soon as the Turn's prompt printed. In two runs, 8 and 9 trials had no
     restatement, each with one `hold` or `release` as its whole conversation: the answer had landed before the model's
     first pick, so the pick was taken and nothing needed restating. Five were replaced as void and the rest counted
     against the floor (7 and 5 of 10). The step now answers once the Turn's first step has ended with a Menu call, so a
     later step boundary must carry the change. The pass is unchanged: the first Menu call after the restatement is
     `release` or `hold`, with no ask before it.
+
+  The Rest rule (ADR-0024) changed a third, `mode-refusal`, before any run under it. Its timer moved `reviewing` on to
+  `approved` while the model composed its next call; under Rest that timer holds `ask_review` outstanding until it
+  fires, so the stale list the claim needs never reaches the model and every trial would be void. The timer now has no
+  target: it shuts the review window, and the guards of `revise`, `submit` and `publish` read it, so after it fires only
+  `publish` is allowed in `reviewing`. The prompt, the floor and the pass are unchanged: the call after the correction
+  receipt is `publish`. Neither the new `mode-stop` setup nor this one has run yet.
+
 - The drivers' readings of the printed conversation and of a workflow's modes are plain functions in
   `features/lib/model-said.ts`, with unit tests beside them that need no cluster and no model.
 - The run has a second form, `ticket-modes`: one coder Turn walks three modes of its state to a verified commit.

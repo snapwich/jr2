@@ -113,8 +113,10 @@ export type StateNodeLike = {
 };
 
 /** One mode by what moves it: each pick it allows and where that pick goes, and where its timers
- * go. A target that is not a sibling mode is named by its state id. */
-export type Modes = Record<string, { picks: Record<string, string>; after: string[] }>;
+ * go. A target that is not a sibling mode is named by its state id. `opens`: the mode has a timer
+ * with no target — in a claim workflow, the timer that opens the mode's guarded picks, which are
+ * closed from each entry until it fires (a timer with a target would hold Rest, ADR-0024). */
+export type Modes = Record<string, { picks: Record<string, string>; after: string[]; opens?: true }>;
 
 /** The modes of the Agent's state `node`, read from the built Machine — never a hand copy. */
 export function modesOf(node: StateNodeLike): Modes {
@@ -128,7 +130,11 @@ export function modesOf(node: StateNodeLike): Modes {
       const target = ts.find((t) => t.target?.length)?.target?.[0];
       if (target !== undefined) picks[event] = name(target);
     }
-    out[key] = { picks, after: mode.after.flatMap((t) => (t.target?.length ? [name(t.target[0])] : [])) };
+    out[key] = {
+      picks,
+      after: mode.after.flatMap((t) => (t.target?.length ? [name(t.target[0])] : [])),
+      ...(mode.after.some((t) => !t.target?.length) ? { opens: true as const } : {}),
+    };
   }
   return out;
 }
@@ -136,30 +142,41 @@ export function modesOf(node: StateNodeLike): Modes {
 /**
  * The mode active when the model was asked again, replayed from `initial` over `said` up to the ask
  * (its calls and its restated Turn parts, in order):
- *   - a Menu call (`menu` names them) the mode allows moves the mode; one it does not allow is
- *     refused and moves nothing;
+ *   - a Menu call (`menu` names them) the mode allows moves the mode; one it does not allow, or one
+ *     made while an `opens` mode's picks are still closed, is refused and moves nothing;
  *   - a restated Turn part (ADR-0029) says the Allowed picks changed under the model with no pick
- *     of its own. In a claim workflow only a timer does that, so the mode's timer is taken there;
- *   - at the ask: a model asked in a mode with no picks was woken (ADR-0016), and the wake waits
- *     for a pick to open, so the mode's timers are followed to the first mode that has one.
+ *     of its own. In a claim workflow only a timer does that, so the mode's timer is taken there:
+ *     it opens a closed mode's picks, or moves to its target;
+ *   - at the ask: a model asked with nothing allowed was woken (ADR-0016), and the wake waits for a
+ *     pick to open, so the mode's timers are followed to the first open mode that has one.
  * A timer that fires between a step boundary's read and the model's next call is seen by neither;
  * the replay cannot tell it, and a claim's timer is long enough that it is rare.
  */
 export function modeAtAsk(modes: Modes, initial: string, said: readonly Said[], menu: ReadonlySet<string>): string {
   let mode = initial;
+  let closed = modes[mode]?.opens === true;
+  const enter = (next: string): void => {
+    mode = next;
+    closed = modes[next]?.opens === true;
+  };
   const timer = (): boolean => {
+    if (closed) {
+      closed = false;
+      return true;
+    }
     const next = modes[mode]?.after[0];
     if (next === undefined) return false;
-    mode = next;
+    enter(next);
     return true;
   };
   for (const s of said) {
     if ("call" in s) {
-      if (menu.has(s.call)) mode = modes[mode]?.picks[s.call] ?? mode;
+      const next = menu.has(s.call) && !closed ? modes[mode]?.picks[s.call] : undefined;
+      if (next !== undefined) enter(next);
     } else if (isRestatement(s)) timer();
   }
   const seen = new Set<string>();
-  while (modes[mode] && Object.keys(modes[mode]!.picks).length === 0 && !seen.has(mode)) {
+  while (modes[mode] && (closed || Object.keys(modes[mode]!.picks).length === 0) && !seen.has(mode)) {
     seen.add(mode);
     if (!timer()) break;
   }

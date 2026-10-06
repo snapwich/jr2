@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createMachine } from "xstate";
+import { assign, createMachine } from "xstate";
 import {
   askAfter,
   follow,
@@ -64,7 +64,7 @@ test("a followed process keeps all it printed after it ends — a reaped pod's l
   assert.deepEqual(saidIn(f.text, "coder", "m"), [{ call: "bash" }]);
 });
 
-/** The mode-stop shape: `ask_review` enters a mode with nothing to pick that a timer leaves. */
+/** A timer that moves the mode: `ask_review` enters a mode with nothing to pick that a timer leaves. */
 const notes = createMachine({
   id: "w",
   initial: "notes",
@@ -117,6 +117,58 @@ test("the mode at the ask takes the timer where the Turn part was restated, not 
   );
   // A restatement in a mode with no timer moves nothing.
   assert.equal(modeAtAsk(modes, "drafting", [restated, { call: "ask_review" }], menu), "reviewing");
+});
+
+/** The mode-stop shape: `ask_review` enters a mode whose guarded picks a timer with no target opens —
+ * a timer with a target would hold Rest (ADR-0024), and the model would never stop. */
+const guarded = createMachine({
+  id: "g",
+  context: { read: false },
+  initial: "notes",
+  states: {
+    notes: {
+      initial: "drafting",
+      states: {
+        drafting: { on: { ask_review: "reviewing" } },
+        reviewing: {
+          entry: assign({ read: false }),
+          after: { 30_000: { actions: assign({ read: true }) } },
+          on: {
+            revise: { guard: ({ context }) => context.read, target: "drafting" },
+            submit: { guard: ({ context }) => context.read, target: "#g.submitted" },
+          },
+        },
+      },
+    },
+    submitted: { type: "final" },
+  },
+}).root.states.notes as unknown as StateNodeLike;
+
+test("a mode with a timer that has no target opens its picks: closed from each entry until the timer fires", () => {
+  const modes = modesOf(guarded);
+  assert.deepEqual(modes, {
+    drafting: { picks: { ask_review: "reviewing" }, after: [] },
+    reviewing: { picks: { revise: "drafting", submit: "g.submitted" }, after: [], opens: true },
+  });
+  const menu = new Set(["ask_review", "revise", "submit"]);
+  const restated = { prompt: "<jr2-turn>" };
+  // `ask_review`, nothing allowed, the model stopped: the wake asks once the picks open, in reviewing.
+  assert.equal(modeAtAsk(modes, "drafting", [{ call: "ask_review" }], menu), "reviewing");
+  // A pick made while the picks are closed is refused and moves nothing.
+  assert.equal(modeAtAsk(modes, "drafting", [{ call: "ask_review" }, { call: "revise" }], menu), "reviewing");
+  // The timer fired while the model worked: the restatement opened the picks, `revise` took it to
+  // drafting, where it stopped with a pick left — the nudge asks it there.
+  assert.equal(modeAtAsk(modes, "drafting", [{ call: "ask_review" }, restated, { call: "revise" }], menu), "drafting");
+  // A second entry closes the picks again until the timer fires again.
+  assert.equal(
+    modeAtAsk(
+      modes,
+      "drafting",
+      [{ call: "ask_review" }, restated, { call: "revise" }, { call: "ask_review" }, { call: "submit" }],
+      menu,
+    ),
+    "reviewing",
+  );
 });
 
 test("mode-stop measures the first ask AFTER the model's `ask_review`; a trial with none is void", () => {

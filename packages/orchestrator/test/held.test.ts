@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createMachine, fromPromise } from "xstate";
+import { assign, createMachine, fromPromise } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -413,6 +413,63 @@ test("a Sandbox Harness restart the watch sees while a pick is outstanding: no f
   // The re-admitted Turn is held to the new mark: the same restart does not cut it again.
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(rig.host.status(rig.runId)?.status, "active");
+});
+
+test("a timer with no target holds nothing: the pick is answered at once, and the timer's assign opens the guarded picks later", async () => {
+  const revise = ev("revise");
+  const submit = ev("submit");
+  const endpoint = "http://harness.invalid";
+  const machineWith = (coder: ReturnType<typeof agentActorWith>) =>
+    jr2Setup({
+      types: {} as { context: { read: boolean } },
+      events: [ask, revise, submit],
+      actors: { coder },
+    }).createMachine({
+      id: "wf",
+      context: { read: false },
+      initial: "notes",
+      states: {
+        notes: {
+          invoke: { src: "coder", input: { prompt: "Notes.", endpoint, continue: true } },
+          initial: "drafting",
+          states: {
+            drafting: { on: { ask: "reviewing" } },
+            reviewing: {
+              entry: assign({ read: false }),
+              after: { 30: { actions: assign({ read: true }) } },
+              on: {
+                revise: { guard: ({ context }) => context.read, target: "drafting" },
+                submit: { guard: ({ context }) => context.read, target: "#wf.done" },
+              },
+            },
+          },
+        },
+        done: { type: "final" },
+      },
+    });
+  const clients: MockFlueClient[] = [];
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "guarded",
+    machine: machineWith(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+    provide: () => {
+      const coder = new MockFlueClient();
+      clients.push(coder);
+      return { actors: { coder: agentActorWith(() => coder, coderDefinition) } };
+    },
+  });
+  await host.start("guarded");
+  await waitFor(() => (clients[0]?.admits.length ?? 0) > 0);
+  const iid = clients[0]!.admits[0]!.instanceId;
+
+  const asked = host.sendToAgent(iid, { type: "ask" });
+  assert.equal(asked.outstanding, undefined, "answered at once: the timer moves the workflow to no state");
+  assert.deepEqual(asked.allowed, [], "nothing is allowed yet");
+  const early = host.sendToAgent(iid, { type: "submit" });
+  assert.deepEqual({ moved: early.moved, allowed: early.allowed }, { moved: false, allowed: [] }, "the correction");
+  await waitFor(() => (host.agentSurface(iid)?.allowed.length ?? 0) > 0);
+  assert.deepEqual([...(host.agentSurface(iid)?.allowed ?? [])].sort(), ["revise", "submit"]);
+  await host.close();
 });
 
 // --- The answer comes from below the Agent's state (ADR-0024) -------------------------------------

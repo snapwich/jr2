@@ -414,9 +414,8 @@ const modeFollow: Driver = async (world, input) => {
 };
 
 /**
- * mode-refusal (ADR-0029): the pick made from `reviewing`'s list lands after the Machine moved on
- * to `approved`, so it is delivered, moves nothing, and gets the correction receipt; the call after
- * it is `publish`. The ledger tells a refused pick from a taken one: it records only what the
+ * mode-refusal (ADR-0029): the pick made from `reviewing`'s list lands after the review window
+ * shut, so it moves nothing and gets the correction receipt; the call after it is `publish`. The ledger tells a refused pick from a taken one: it records only what the
  * Machine took. A pick that landed before the move was taken, so nothing was refused (`void`).
  */
 const modeRefusal: Driver = async (world, input) => {
@@ -452,8 +451,8 @@ async function modeStopNotes(): Promise<StateNodeLike & { initial: { target: Sta
 /**
  * mode-stop (ADR-0016's ask-again rule): a model that stopped while its Turn is open is asked again,
  * and its first Menu call after the ask is a pick the mode active at the ask allows. The ask
- * measured is the first one AFTER the model's `ask_review`: that call takes the Turn into a mode with
- * nothing to pick, so the model stops; a timer then opens picks, and the wake asks it with the
+ * measured is the first one AFTER the model's `ask_review`: that call takes the Turn into a mode whose
+ * picks are closed, so the model stops; a timer then opens them, and the wake asks it with the
  * nudge's text. The mode at the ask is replayed from the Menu calls and the restated Turn parts
  * before it, with the modes read from the workflow. A trial with no ask after an `ask_review` — the model never asked for the
  * review, or it heard the change at a step boundary instead and was never asked — is `void`.

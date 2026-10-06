@@ -148,6 +148,28 @@ test("a timer that leaves the Agent's state (a Turn timeout) does not hold a pic
   actor.stop();
 });
 
+test("a timer with no target moves the workflow to no state: it does not hold, though its assign may change the Allowed picks", async () => {
+  const machine = setup({ actors: { agentA: idle } }).createMachine({
+    id: "m",
+    context: { open: false },
+    initial: "s",
+    states: {
+      s: {
+        invoke: { src: "agentA", id: "agent" },
+        initial: "idle",
+        on: { go: ".x" },
+        states: { idle: {}, x: { after: { 10: { actions: assign({ open: true }) } } } },
+      },
+    },
+  });
+  const actor = await picked(machine as unknown as AnyStateMachine);
+  assert.equal(pendingTimers(actor).length, 1, "the timer is pending");
+  assert.equal(reading(actor), "rest");
+  await sleep(30);
+  assert.deepEqual(actor.getSnapshot().context, { open: true });
+  actor.stop();
+});
+
 test("the Agent's state no longer active reads `gone`: the Turn is over", async () => {
   const actor = await picked(shape({ x: {} }, {}, { leave: "#m.out" }));
   actor.send({ type: "leave" });

@@ -4,13 +4,17 @@
 // call is an allowed pick, not the same pick again.
 //
 // The refusal is made to happen, not hoped for: a model obeys a list it read last (ADR-0062), so a
-// prompt that argued for a wrong pick would rarely get one. Instead the Machine moves under the
-// Agent. `ask_review` takes the Turn into `reviewing`, whose receipt says `revise` and `submit` are
-// allowed; a timer then moves it on to `approved`, where only `publish` is — the shape of a Gate
-// answered while the Agent composed its next call. The timer is short enough to land before any
-// model has composed that call, and long enough to land after the step-boundary read that follows
-// the receipt (which would otherwise restate the list and spare the refusal). So the Agent's next
-// pick, from the list it just read, is refused, and the call after that is the measurement.
+// prompt that argued for a wrong pick would rarely get one. Instead the Allowed picks change under
+// the Agent. `ask_review` takes the Turn into `reviewing`, whose receipt says `revise` and `submit`
+// are allowed; a timer then closes the review window, after which only `publish` is — the shape of
+// a Gate answered while the Agent composed its next call. The timer has NO target: it only assigns
+// the window shut, and the picks' guards read it. A timer that moved the workflow to another state
+// inside the Agent's state would hold Rest (ADR-0024), so `ask_review` would be outstanding until it
+// fired and its answer would carry the new list: nothing stale to refuse. The timer is short enough
+// to land before any model has composed that call, and long enough to land after the step-boundary
+// read that follows the receipt (which would otherwise restate the list and spare the refusal). So
+// the Agent's next pick, from the list it just read, is refused, and the call after that is the
+// measurement.
 //
 // Filename `mode-refusal.ts` → workflow "mode-refusal".
 
@@ -20,7 +24,7 @@ import { agent, defineEvent, jr2Setup, type HostInjectedInput } from "@jr2/orche
 import { advisor } from "./_agents.ts";
 import { dialFor, type ThinkingCell } from "./_profile.ts";
 
-/** How long `reviewing` holds before it moves on, in ms — see the header. */
+/** How long `reviewing`'s window stays open, in ms — see the header. */
 export const REVIEW_WINDOW_MS = 400;
 
 const askReview = defineEvent({
@@ -50,8 +54,9 @@ const door = z.object({
 });
 
 type Input = z.infer<typeof door> & HostInjectedInput;
-/** `picks`: every pick the Machine TOOK, in order — a refused pick never reaches it. */
-type Ctx = Input & { picks: string[]; fault?: string };
+/** `picks`: every pick the Machine TOOK, in order — a refused pick never reaches it. `closed`: the
+ * review window has shut (see the header). */
+type Ctx = Input & { picks: string[]; closed: boolean; fault?: string };
 
 export const machine = jr2Setup({
   types: {} as { context: Ctx; input: Input },
@@ -60,7 +65,7 @@ export const machine = jr2Setup({
 }).createMachine({
   id: "mode-refusal",
   input: door,
-  context: ({ input }) => ({ ...input, picks: [] }),
+  context: ({ input }) => ({ ...input, picks: [], closed: false }),
   initial: "notes",
   states: {
     notes: {
@@ -94,10 +99,25 @@ export const machine = jr2Setup({
           },
         },
         reviewing: {
-          after: { [REVIEW_WINDOW_MS]: "approved" },
+          entry: assign({ closed: false }),
+          // No target: the window shuts and the guards below read it; Rest is not held.
+          after: { [REVIEW_WINDOW_MS]: { actions: assign({ closed: true }) } },
           on: {
-            revise: { target: "drafting", actions: assign({ picks: ({ context }) => [...context.picks, "revise"] }) },
-            submit: { target: "approved", actions: assign({ picks: ({ context }) => [...context.picks, "submit"] }) },
+            revise: {
+              guard: ({ context }) => !context.closed,
+              target: "drafting",
+              actions: assign({ picks: ({ context }) => [...context.picks, "revise"] }),
+            },
+            submit: {
+              guard: ({ context }) => !context.closed,
+              target: "approved",
+              actions: assign({ picks: ({ context }) => [...context.picks, "submit"] }),
+            },
+            publish: {
+              guard: ({ context }) => context.closed,
+              target: "#mode-refusal.published",
+              actions: assign({ picks: ({ context }) => [...context.picks, "publish"] }),
+            },
           },
         },
         approved: {
