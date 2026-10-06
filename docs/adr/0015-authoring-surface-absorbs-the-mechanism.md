@@ -74,6 +74,16 @@ event. The walk computes every party's seat — per state, who may send what —
 `jr2 up` prints it for every registered Machine and every Machine it composes. An explicit `accepts:` on a Gate's input
 remains an escape hatch.
 
+**`sentBy(id)`: a writing that declines other senders.** Every event a party delivers carries its sender (ADR-0011):
+`sender: { party, id }`, the Agent's slot or the Gate's invoke id. `jr2Setup` registers one guard, `jr2.sentBy`, and the
+author writes it on a writing as `guard: sentBy("coder")` — a named guard with params, alone or inside `and([...])`. It
+is true for an event whose `sender.id` is `id` and for an event with no sender (the Machine's own: `raise`, `sendTo`
+itself, a child's `sendParent`), and false otherwise, so xstate's own selection moves outward to the next writing of the
+name. It can only make a writing decline; it never gives a writing to a party — position does. `id` is an Agent slot or
+a Gate's invoke id of this Machine, and a `sentBy` that names neither is refused at load, like an unknown event key.
+Under `or()` or `not()`, or in an author's own guard that reads `event.sender`, it works at run time but the walk cannot
+read it. A `.provide()` test sends as a party by writing the field: `{ type, sender: { party, id } }`.
+
 **Load checks on modes and audience.** `createMachine` refuses a registered event that no state handles: it is in no
 derived set, so it is on no Menu and no Gate. It refuses a parallel region below a state that invokes an Agent — the
 Agent's state itself being parallel included, since its regions are below it: the shape is reserved for picks the Agent
@@ -99,7 +109,9 @@ not a mark written in it, so it is not the per-transition demarcation rejected b
 
 Considered and rejected: per-transition demarcation (xstate transitions have no typed metadata slot for it without
 inventing jr2-only config inside the transition table — a DSL by the back door) and purely structural
-own-transitions-only derivation (breaks ADR-0011's blessed handle-`report_blocked`-once-at-an-ancestor idiom).
+own-transitions-only derivation (breaks ADR-0011's blessed handle-`report_blocked`-once-at-an-ancestor idiom). Position
+stays the default and the owner of every writing. `sentBy` is not demarcation: it is an ordinary xstate guard, written
+only where a writing must decline other senders, and it cannot give a writing to anyone.
 
 ## Why there is no injection model (the retired ADR-0003)
 

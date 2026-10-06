@@ -18,6 +18,8 @@ export * from "./config.ts";
 export * from "./repo-identity.ts";
 export * from "./pool.ts";
 export * from "./setup.ts";
+// The author's routing guard (ADR-0015).
+export { sentBy } from "./party.ts";
 export * from "./vocabulary.ts";
 export * from "./tokens.ts";
 export * from "./durability.ts";

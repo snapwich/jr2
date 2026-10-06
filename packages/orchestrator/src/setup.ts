@@ -46,6 +46,7 @@ import { eventMap, type EventDef, type EventFrom, type Sender } from "@jr2/agent
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { gate } from "./gate.ts";
+import { refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
 import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } from "./vocabulary.ts";
 
@@ -70,6 +71,10 @@ export type WorkspaceLost = { type: "workspace.lost"; reason?: string; message?:
 export type WorkflowEvent<TDefs extends readonly EventDef[]> =
   | (EventFrom<TDefs[number]> & { readonly sender?: Sender })
   | MechanismEvent;
+
+/** The guard jr2Setup registers for every Machine — `sentBy(id)` (ADR-0015) — in the typed guard
+ * map, so `sentBy("coder")` and `and([sentBy("coder"), "ready"])` type-check with no cast. */
+type SentByGuards = { [SENT_BY]: { id: string } };
 
 /** The jr2 actor every workflow can invoke by name without listing it (ADR-0015). `gate` is the
  * whole set: an Agent is not pre-registered, because it is not one logic — it is the slot the
@@ -148,7 +153,7 @@ export function jr2Setup<
   MergedActors<TActors>,
   {},
   TActions,
-  TGuards,
+  TGuards & SentByGuards,
   TDelay,
   TTag,
   TInput,
@@ -160,7 +165,8 @@ export function jr2Setup<
     types: def.types,
     actors: { ...jr2Actors, ...(def.actors ?? {}) },
     actions: def.actions,
-    guards: def.guards,
+    // `sentBy(id)` is a named guard with params, so the load walk can READ it (ADR-0015).
+    guards: { ...(def.guards ?? {}), [SENT_BY]: sentByGuard },
     delays: def.delays,
   } as never);
 
@@ -215,6 +221,7 @@ export function jr2Setup<
     }
 
     refuseParallelBelowAgents(machine, def.actors ?? {});
+    refuseUnknownSentBy(machine);
 
     const idOf = (path: readonly string[]): string => stateAt(machine, path).id;
     attachVocabulary(machine, defs);
@@ -238,7 +245,7 @@ export function jr2Setup<
     MergedActors<TActors>,
     {},
     TActions,
-    TGuards,
+    TGuards & SentByGuards,
     TDelay,
     TTag,
     TInput,
