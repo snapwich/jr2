@@ -187,10 +187,13 @@ conversation id, session id, conversation pin, scope
 
 **Turn**: One Agent's answer to the frame a Machine state set for it — the prompt, the work, and the single menu pick
 that ends it (ADR-0006). A turn belongs to the state that asked for it: when that state stops waiting, the turn is over,
-whatever made it stop (ADR-0024). So a pick whose target stays inside that state — a mode, a pick with no target — keeps
-the turn open, and other picks may come before the one that ends it. It rides on one Submission but is not the same
-thing — a Submission is the Harness's durable unit, and an Agent whose turn has ended can still be generating, which is
-the failure ADR-0024 closes. _Avoid_: session (a conversation spans turns), generation, request
+whatever made it stop (ADR-0024). So a pick whose target stays inside that state — a mode, a child that runs something,
+a pick with no target — keeps the turn open, and other picks may come before the one that ends it, one at a time: a pick
+that runs work there is outstanding until the state is at Rest again, and its answer (the last reply since the pick, and
+the Allowed picks after the route) comes back on the same call. A Harness restart while the state is busy cuts the turn
+and faults nothing: jr2 re-admits it at Rest, on the same conversation (ADR-0031). It rides on one Submission but is not
+the same thing — a Submission is the Harness's durable unit, and an Agent whose turn has ended can still be generating,
+which is the failure ADR-0024 closes. _Avoid_: session (a conversation spans turns), generation, request
 
 **Submission**: One admitted prompt on a conversation — the Harness's unit of work. A Turn rides on exactly one; a
 conversation (Instance ID) spans many. Per-conversation queue, processed in admission order; an abort sweeps the active
@@ -224,10 +227,12 @@ tools (unqualified), tool list
 **Allowed picks**: The part of the Menu one Turn may pick now — the invoking state's derived set (its own, its
 ancestors' and its modes' picks — ADR-0015), narrowed to those the live Machine would currently accept from this Agent
 (ADR-0029). So they follow the active mode and the guards: one Turn can allow different picks as the Machine moves
-inside the invoking state; the Menu does not change. Stated to the model in the Briefing's Turn part, in every answer to
-a pick that leaves the Turn open, and again at a step boundary when they changed since the model last read them;
-enforced at the pick: a pick outside them moves nothing, and its answer names them. _Avoid_: menu (the fixed set), open
-picks, active tools, legal moves
+inside the invoking state; the Menu does not change. Empty while the invoking state is not at Rest — a pick is
+outstanding, or something else runs below it — because every pick is refused then (ADR-0024). Stated to the model in the
+Briefing's Turn part, in every answer to a pick that leaves the Turn open (an outstanding pick's answer reads them after
+the route), and again at a step boundary when they changed since the model last read them; enforced at the pick: a pick
+outside them moves nothing, and its answer names them. _Avoid_: menu (the fixed set), open picks, active tools, legal
+moves
 
 **mode**: A child state of an Agent's state with no invoke. The Agent is at Rest there, with a different set of Allowed
 picks. _Avoid_: substate, phase
