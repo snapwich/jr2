@@ -337,5 +337,115 @@ export function notTaken(reg: PartySeat, event: AnyEventObject): NotTakenWriting
   }
 }
 
+// --- The load walk's warnings over parties and writings (ADR-0015) --------------------------------
+
+/** Neither above the other, and their nearest common state is parallel: two regions. */
+function orthogonal(a: Node, b: Node): boolean {
+  if (isAncestorOrSelf(a, b) || isAncestorOrSelf(b, a)) return false;
+  for (let n: Node | undefined = a.parent; n; n = n.parent) if (isAncestorOrSelf(n, b)) return n.type === "parallel";
+  return false;
+}
+
+/** Can the two states be active at the same time? */
+const together = (a: Node, b: Node): boolean => isAncestorOrSelf(a, b) || isAncestorOrSelf(b, a) || orthogonal(a, b);
+
+/** One writing: one `on` key on one state, with its candidates (an array writing has several). */
+type Writing = { node: Node; name: string; candidates: Transition[] };
+
+function writingsOf(machine: AnyStateMachine): Writing[] {
+  const defs = vocabularyOf(machine);
+  const out: Writing[] = [];
+  for (const node of allNodes(machine))
+    for (const [name, candidates] of node.transitions)
+      if (defs?.has(name) ?? (!name.includes(".") && name !== "*"))
+        out.push({ node, name, candidates: candidates as Transition[] });
+  return out;
+}
+
+const targetsOf = (w: Writing): string =>
+  [...new Set(w.candidates.flatMap((t) => (t.target ?? []).map((target) => target.id)))].sort().join(", ");
+
+/** The line the warning shows: the deeper writing, declining every sender but its own party. */
+function correctedLine(w: Writing, id: string): string {
+  const guard = `sentBy("${id}")`;
+  const only = w.candidates.length === 1 ? w.candidates[0]! : undefined;
+  const target = only?.target?.length === 1 ? `, target: "#${only.target[0]!.id}"` : ", …";
+  const body =
+    only === undefined
+      ? `[{ guard: ${guard}, … }, …]  (on each candidate)`
+      : only.guard === undefined
+        ? `{ guard: ${guard}${target} }`
+        : `{ guard: and([${guard}, <its guard>])${target} }`;
+  return `  ${w.node.key}: { on: { ${w.name}: ${body} } }`;
+}
+
+/**
+ * The load walk's party warnings (ADR-0015). Warnings, never refusals: the Machine is legal, and
+ * delivery refuses what would misroute.
+ *
+ * - **Two parties' writings of one name that can be active together.** A seat — one party on its
+ *   state — may take a writing of a name, and ANOTHER party's writing of that name can be active
+ *   with the seat's state and is selected first: deeper on the same path, or in another parallel
+ *   region. Unless that writing declines the seat's sender with `sentBy`, xstate selects it for
+ *   the seat's event, delivery refuses the event, and the seat cannot send the name while it is
+ *   active. The warning names both writings and shows the corrected line; the guard goes on the
+ *   DEEPER writing, because xstate selects deepest first. A root writing is both parties', so the
+ *   root-writing shape (a root `cancel`, a Gate below, the Agent's `cancel` in a mode) is the same
+ *   case.
+ * - **One def, one meaning.** One party may take two writings of one name on one path with
+ *   different targets: its sender reads one description for both.
+ *
+ * `derivedGateIds` are the Gate invoke ids the walk named: the line says how to name one instead.
+ */
+export function partyWarnings(machine: AnyStateMachine, derivedGateIds: ReadonlySet<string> = new Set()): string[] {
+  const writings = writingsOf(machine);
+  const seats = allNodes(machine).flatMap((node) => partiesAt(node, machine).map((sender) => ({ node, sender })));
+  const warnings = new Map<string, string>();
+  for (const seat of seats) {
+    const reader =
+      seat.sender.party === "agent" ? `Agent "${seat.sender.id}"` : `the caller of Gate "${seat.sender.id}"`;
+    for (const own of writings) {
+      if (!mayTake(machine, seat.sender, seat.node, own.node, own.name)) continue;
+      for (const other of writings) {
+        if (other.name !== own.name || other === own) continue;
+        if (mayTake(machine, seat.sender, seat.node, other.node, other.name)) {
+          // One def, one meaning: the same party, one path, different targets.
+          if (!isAncestorOrSelf(own.node, other.node) || targetsOf(own) === targetsOf(other)) continue;
+          warnings.set(
+            `meaning:${seat.sender.party}:${seat.sender.id}:${own.name}:${own.node.id}:${other.node.id}`,
+            `"${own.name}" is written for ${senderText(seat.sender)} on "${own.node.id}" (→ ${targetsOf(own) || "no target"}) ` +
+              `and on "${other.node.id}" (→ ${targetsOf(other) || "no target"}): ${reader} reads one description for both ` +
+              `— make the def's description true at each writing, or give them distinct names`,
+          );
+          continue;
+        }
+        const deeper = isAncestorOrSelf(own.node, other.node) && own.node !== other.node;
+        const parallel = orthogonal(own.node, other.node);
+        if ((!deeper && !parallel) || !together(seat.node, other.node)) continue;
+        if (other.candidates.every((t) => declines((t as { guard?: unknown }).guard, seat.sender.id))) continue;
+        const owners = (() => {
+          const owner = ownerOf(other.node, machine);
+          return owner ? partiesAt(owner, machine) : [];
+        })();
+        const owner = owners.find((p) => p.id !== seat.sender.id) ?? owners[0];
+        const named = owner?.party === "gate" && derivedGateIds.has(owner.id);
+        warnings.set(
+          `party:${seat.sender.party}:${seat.sender.id}:${other.name}:${other.node.id}`,
+          `"${own.name}" on "${own.node.id}" (${senderText(seat.sender)}) and on "${other.node.id}" ` +
+            `(${owners.map(senderText).join(" and ")}) can be active together${parallel ? " (parallel regions)" : ""}; ` +
+            `${senderText(seat.sender)}'s "${own.name}" would run ${owner ? `${senderText(owner)}'s` : "the other"} writing` +
+            `${parallel ? " too" : ""}, so jr2 refuses it while both are active. Make the ` +
+            `${parallel ? `writing on "${other.node.id}"` : "deeper writing"} decline other senders:\n` +
+            correctedLine(other, owner?.id ?? "<its party>") +
+            (named
+              ? `\n(the Gate's invoke id "${owner!.id}" is derived from its state; give its invoke an \`id\` to name it)`
+              : ""),
+        );
+      }
+    }
+  }
+  return [...warnings.values()];
+}
+
 /** How a sender reads in a message: `Agent "coder"`, `Gate "review"`. */
 export const senderText = (s: Sender): string => (s.party === "agent" ? `Agent "${s.id}"` : `Gate "${s.id}"`);

@@ -46,7 +46,7 @@ import { eventMap, type EventDef, type EventFrom, type Sender } from "@jr2/agent
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { gate } from "./gate.ts";
-import { refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
+import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
 import { attachInputSchema, attachLoadWarnings, attachSeats, attachVocabulary } from "./vocabulary.ts";
 
@@ -232,6 +232,7 @@ export function jr2Setup<
     attachLoadWarnings(machine, [
       ...unenteredModes(machine, def.actors ?? {}),
       ...derived.warnings.map((warning) => warning(idOf)),
+      ...partyWarnings(machine, derived.derivedGateIds),
     ]);
     if (inputSchema) attachInputSchema(machine, inputSchema);
     return machine;
@@ -326,7 +327,7 @@ function deriveMenus(
   config: unknown,
   defs: Map<string, EventDef>,
   actors: Record<string, UnknownActorLogic>,
-): { config: unknown; seats: Seat[]; warnings: Warning[] } {
+): { config: unknown; seats: Seat[]; warnings: Warning[]; derivedGateIds: Set<string> } {
   const pick = (reach: Reach, kind: "agent" | "external", self: string): string[] =>
     [...reach]
       .filter(([name, owners]) => {
@@ -342,12 +343,10 @@ function deriveMenus(
   // The load warnings this walk can see (ADR-0015), each rendered once the states have ids. Keyed,
   // so a writing seen from two paths is one warning.
   const warnings = new Map<string, Warning>();
-  // Which parties each owner mark's state invokes — what a warning names.
+  // Which parties each owner mark's state invokes — what the Gate-above warning reads.
   const parties = new Map<string, { agents: string[]; gate: boolean }>();
-  const partyOf = (mark: string): string => {
-    const { agents, gate } = parties.get(mark)!;
-    return [...agents.map((agent) => `Agent "${agent}"`), ...(gate ? ["a Gate"] : [])].join(" and ");
-  };
+  // The Gate invoke ids this walk names: a party warning says how to name one instead.
+  const derivedGateIds = new Set<string>();
 
   const walk = (
     node: LooseState,
@@ -362,20 +361,6 @@ function deriveMenus(
     const written: Writings = new Map([...writtenAbove].map(([name, at]) => [name, [...at]]));
     for (const name of ownPicks(node)) {
       names.set(name, (names.get(name) ?? new Set<string>()).add(owner));
-      // One name written for two parties on one path: audience says who may SEND it, and xstate
-      // runs the deepest active handler whoever sent it — so while the deeper state is active, the
-      // shallower party's send runs the transition written for the deeper one.
-      for (const above of written.get(name) ?? []) {
-        if (above.owner === owner || above.owner === NOBODY || owner === NOBODY) continue;
-        warnings.set(
-          `two:${name}:${above.path.join(".")}:${path.join(".")}`,
-          (idOf) =>
-            `"${name}" is written on "${idOf(above.path)}" for ${partyOf(above.owner)} and on "${idOf(path)}" for ` +
-            `${partyOf(owner)}: whoever sends it, the deepest active handler runs, so while "${idOf(path)}" is ` +
-            `active ${partyOf(above.owner)}'s "${name}" runs the transition written for ${partyOf(owner)} — give ` +
-            `the two distinct names`,
-        );
-      }
       written.set(name, [...(written.get(name) ?? []), { path, owner }]);
     }
 
@@ -395,25 +380,6 @@ function deriveMenus(
           for (const name of modePicks(node, actors))
             reach.set(name, (reach.get(name) ?? new Set<string>()).add(owner));
           const derived = pick(reach, "agent", owner);
-          // One name written on a mode for this Agent and below a party-invoking child of this
-          // state for another party: not one path, but the same effect as the check above — the
-          // name is in this Agent's derived set through the mode, so while that child is active
-          // the Agent's send reaches the Machine and runs the transition written for the other
-          // party (the Agent answers its own Gate, or picks for the Agent nested below it).
-          for (const mode of modeWritings(node, path, actors)) {
-            if (!derived.includes(mode.name)) continue;
-            for (const other of partyWritings(node, path, actors)) {
-              if (other.name !== mode.name || other.owner === owner) continue;
-              warnings.set(
-                `two:${mode.name}:${mode.path.join(".")}:${other.path.join(".")}`,
-                (idOf) =>
-                  `"${mode.name}" is written on "${idOf(mode.path)}" for ${partyOf(owner)} and on ` +
-                  `"${idOf(other.path)}" for ${partyOf(other.owner)}: whoever sends it, the deepest active handler ` +
-                  `runs, so while "${idOf(other.path)}" is active ${partyOf(owner)}'s "${mode.name}" runs the ` +
-                  `transition written for ${partyOf(other.owner)} — give the two distinct names`,
-              );
-            }
-          }
           // A Gate above that takes a writing from this Agent: the Gate's caller owns it, so the
           // Agent below — which reaches it — cannot send it. Legal, and the one narrowing of the
           // audience rule an author may not expect.
@@ -450,6 +416,7 @@ function deriveMenus(
           if (inv.id == null && path.length) {
             const key = path.join(".");
             wrapped.id = unnamedGates > 1 ? `${key}.${ordinal++}` : key;
+            derivedGateIds.add(wrapped.id as string);
           }
           return wrapped;
         }
@@ -467,7 +434,7 @@ function deriveMenus(
   };
 
   const out = walk(config as LooseState, new Map(), new Map(), [], NOBODY);
-  return { config: out, seats, warnings: [...warnings.values()] };
+  return { config: out, seats, warnings: [...warnings.values()], derivedGateIds };
 }
 
 /**
@@ -631,29 +598,6 @@ function modeWritings(
     }
   };
   descend(node, path);
-  return out;
-}
-
-/** The writings where {@link modePicks} stops: at and below each child (at any depth through the
- * modes) that invokes a party, each with its owner mark — the nearest party-invoking state at or
- * above it. */
-function partyWritings(
-  node: LooseState,
-  path: readonly string[],
-  actors: Record<string, UnknownActorLogic>,
-): Array<{ name: string; path: readonly string[]; owner: string }> {
-  const out: Array<{ name: string; path: readonly string[]; owner: string }> = [];
-  // `owner` is undefined while the descent is still in the modes.
-  const below = (n: LooseState, at: readonly string[], owner: string | undefined): void => {
-    for (const [key, child] of Object.entries(n.states ?? {})) {
-      const childPath = [...at, key];
-      const childOwner = invokesParty(child, actors) ? ownerMark(childPath) : owner;
-      if (childOwner !== undefined)
-        for (const name of ownPicks(child)) out.push({ name, path: childPath, owner: childOwner });
-      below(child, childPath, childOwner);
-    }
-  };
-  below(node, path, undefined);
   return out;
 }
 

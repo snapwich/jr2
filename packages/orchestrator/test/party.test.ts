@@ -8,7 +8,10 @@ import assert from "node:assert/strict";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { NotTakenError } from "../src/registration.ts";
+import type { AnyStateMachine } from "xstate";
 import { jr2Setup } from "../src/setup.ts";
+import { loadWarningsOf } from "../src/vocabulary.ts";
+import { release, rooted } from "./_sent-by-author.ts";
 import { partyHost, placeholder, post, receipt } from "./_party.ts";
 import { payloadBelow, rootShape, s1, s2, s3, s4, s5, s8, twoGatesParallel, twoGatesPath } from "./_party-machines.ts";
 
@@ -320,4 +323,62 @@ test("two Gates in parallel regions: plain refuses both callers (one never moves
   await r.until({ left: "b", right: "a" });
   h.host.sendToGate(r.runId, "right", { type: "approve" });
   await r.until({ left: "b", right: "b" });
+});
+
+test("the walk's party warnings over the scenarios: each plain shape that shadows a seat warns; marked, none", () => {
+  const party = (m: AnyStateMachine) => loadWarningsOf(m).filter((w) => w.includes("can be active together"));
+  const coder = placeholder("coder");
+  const reviewer = placeholder("reviewer");
+  assert.deepEqual(
+    {
+      s1: party(s1(coder)).length,
+      s2plain: party(s2(coder, "plain")).length,
+      s2marked: party(s2(coder, "marked")).length,
+      s3: party(s3(coder)).length,
+      s4: party(s4(coder)).length,
+      s5plain: party(s5(coder, "plain")).length,
+      s5marked: party(s5(coder, "marked")).length,
+      s6plain: party(s2(coder, "plain", { any: true })).length,
+      s8plain: party(s8(coder, reviewer, "plain")).length,
+      s8marked: party(s8(coder, reviewer, "marked")).length,
+      rootPlain: party(rootShape(coder, "plain")).length,
+      rootMarked: party(rootShape(coder, "marked")).length,
+      twoGatesPath: party(twoGatesPath("plain")).length,
+      twoGatesPathMarked: party(twoGatesPath("marked")).length,
+      twoGatesParallel: party(twoGatesParallel("plain")).length,
+      twoGatesParallelMarked: party(twoGatesParallel("marked")).length,
+      payloadBelow: party(payloadBelow(coder)).length,
+      author: party(release).length + party(rooted).length,
+    },
+    {
+      s1: 0,
+      s2plain: 1,
+      s2marked: 0,
+      s3: 0,
+      s4: 0,
+      s5plain: 2,
+      s5marked: 0,
+      s6plain: 1,
+      s8plain: 1,
+      s8marked: 0,
+      rootPlain: 1,
+      rootMarked: 0,
+      twoGatesPath: 1,
+      twoGatesPathMarked: 0,
+      twoGatesParallel: 2,
+      twoGatesParallelMarked: 0,
+      payloadBelow: 1,
+      author: 0,
+    },
+  );
+  // S3 keeps ADR-0015's Gate-above warning: the Agent below cannot send the Gate's `approve`.
+  assert.ok(
+    loadWarningsOf(s3(coder)).some((w) => /Agent "coder" on "s3\.release\.work" cannot send "approve"/.test(w)),
+  );
+  assert.deepEqual(party(s2(coder, "plain")), [
+    `"approve" on "s2.release" (Gate "review-1") and on "s2.release.work.draft" (Agent "coder") can be active ` +
+      `together; Gate "review-1"'s "approve" would run Agent "coder"'s writing, so jr2 refuses it while both are ` +
+      `active. Make the deeper writing decline other senders:\n` +
+      `  draft: { on: { approve: { guard: sentBy("coder"), target: "#s2.doneB" } } }`,
+  ]);
 });

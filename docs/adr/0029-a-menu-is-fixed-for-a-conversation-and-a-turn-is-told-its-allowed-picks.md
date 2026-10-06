@@ -25,7 +25,8 @@ whole history again. It also left the history calling tools the request no longe
   union of the derived sets of every state that invokes an Agent of that name — the same scope as its continued
   conversation's id (ADR-0057). `jr2Setup.createMachine` derives it in ADR-0015's walk, in a fixed order, so it is
   byte-stable for every Turn of the conversation and for every fresh conversation of that Agent. The descriptions are
-  the event defs' own and do not vary by state.
+  the event defs' own and do not vary by state, so a def's description must hold at every writing of it the Agent can
+  reach; the load warns where its writings on one path differ (ADR-0015).
 - **What one Turn may pick is its Allowed picks**: the invoking state's derived set (its own, its ancestors' and its
   modes' picks — ADR-0015), narrowed to what the live Machine would currently accept **from this Agent**: xstate's
   selection for an event that carries the Agent's sender, a guard that reads the payload counted as passing, must move

@@ -32,6 +32,9 @@ export type MachineTransitionDoc = {
   label: string;
   /** Normalized guard name, if guarded. */
   guard?: string;
+  /** xstate's own transition `description`, as authored: what this writing does, where one name
+   * has writings that differ (ADR-0015's "one def, one meaning"). */
+  description?: string;
   kind: "event" | "always" | "after" | "done" | "error";
 };
 
@@ -180,6 +183,7 @@ function serializeTransition(t: TransitionDefinition<any, any>): MachineTransiti
     kind,
   };
   if (guard !== undefined) doc.guard = guard;
+  if (t.description !== undefined) doc.description = t.description;
   return doc;
 }
 

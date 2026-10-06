@@ -69,7 +69,8 @@ events and not the Agent's picks, and a nested Agent does not get the outer Agen
 give a pick to the other party, or to hold a root pick back.** An explicit `audience` overrides by kind over the whole
 reach: `agent` reaches every Agent whose reach holds a writing of the event, `external` every Gate's, `any` both — so
 `submit: "any"` lets an in-Turn Gate's caller send the Agent's pick, and `report_blocked: "agent"` keeps a root pick
-from the Gates. The reach itself is unchanged by the rule — own and ancestors, plus the states below with no
+from the Gates. A def means one thing: its description must be true at every writing its party can reach, and two
+meanings are two defs. The reach itself is unchanged by the rule — own and ancestors, plus the states below with no
 party-invoking state between (an Agent's modes, a Gate's plain children) — and the rule only filters inside it, so no
 case widens who can send a pick; a test scans every shipped Machine and fixture for it, both the derived names and the
 writings each party may take at run time. The walk computes every party's seat — per state, who may send what — and the
@@ -107,11 +108,39 @@ stays legal, and the doc carries the warning and `jr2 up` prints it — about a 
 no state the Machine can enter has a transition into it or a state inside it — so neither the mode's own `initial` nor
 its transition into itself counts: its picks are on the Menu and never allowed); about a Gate above an Agent's state
 that takes an unset-audience writing the Agent reaches (the one narrowing of the audience rule an author may not
-expect); and about one name written for two parties on one path (whoever sends it, the deepest active handler runs). The
-same warning covers a name written on a mode for the Agent and on a sibling child that invokes a Gate or another Agent:
-the name is in the Agent's derived set through the mode, so while that child is active the Agent's send reaches the
-Machine and runs the other party's transition. A child with no `onDone` that strands the Agent in it — a one-way mode —
-is legal and silent on purpose.
+expect); about two parties' writings of one name that can be active together; and about one party's writings of one name
+that mean two things. A child with no `onDone` that strands the Agent in it — a one-way mode — is legal and silent on
+purpose.
+
+- **Two parties' writings of one name that can be active together** — one above the other on one path, or in parallel
+  regions — where the deeper writing (each other region's, for parallel regions) does not decline the other sender with
+  a `sentBy` the walk can read. xstate would select it for the other party's event, so delivery refuses that event while
+  both are active. The warning names both writings and shows the corrected line, with the guard on the DEEPER writing,
+  because xstate selects deepest first and only a declining deeper writing lets selection move outward:
+
+  ```
+  "approve" on "s2.release" (Gate "review-1") and on "s2.release.work.draft" (Agent "coder") can be active together;
+  Gate "review-1"'s "approve" would run Agent "coder"'s writing, so jr2 refuses it while both are active. Make the
+  deeper writing decline other senders:
+    draft: { on: { approve: { guard: sentBy("coder"), target: "#s2.doneB" } } }
+  ```
+
+  A root writing is both parties', so the root-writing shape — a root `cancel`, a Gate below it, the Agent's `cancel` in
+  a mode — is the same case: the line goes on the mode's writing, and the Gate's caller's `cancel` then runs the root
+  writing. Siblings (a mode and a Gate's or another Agent's sibling state) are not the case: neither writing is ever
+  selected for the other, and delivery answers a send there like any pick the state does not take. A Gate whose invoke
+  id the walk derived is named so in the line; giving its invoke an `id` names it. A `sentBy` under `or()` or `not()`
+  leaves the warning in place.
+
+- **One def, one meaning.** One party's writings of one name on one path with different targets: its sender reads one
+  description for both, and only the deepest active writing runs. The warning says to make the def's description true at
+  each writing or to give them distinct names. xstate's own transition `description` rides the Machine doc beside each
+  writing.
+
+Known limits, not built: two states on one path that invoke one Agent slot share one sender id, so `sentBy` cannot tell
+their Turns apart; and a child Machine that forwards a party's event to its parent (`sendParent`) hands it the child's
+sender, whose id names a slot or Gate of the child — if the parent has one of that name, `sentBy` matches it. Only
+author code forwards an event.
 
 Considered and rejected for modes: a Menu per mode (the tools block would change inside a conversation and bill its
 history again — ADR-0029), and refusing picks written below an Agent's state at build (that shape is a mode).
