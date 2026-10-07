@@ -460,9 +460,28 @@ function noticesOf(value: unknown): { notices?: Notice[] } {
     if (kind === "memory-limit") {
       return scope === "workspace" && str(agent) && str(limit) && (peak === undefined || str(peak));
     }
+    if (kind === "pick-answer") {
+      const { pick, cut, answer } = n as Record<string, unknown>;
+      return scope === "conversation" && str(pick) && typeof cut === "boolean" && isPickAnswer(answer);
+    }
     return kind === "conversation-new" && scope === "conversation" && str(reason);
   });
   return notices.length > 0 ? { notices } : {};
+}
+
+/** A pick answer's facts (ADR-0024): absent (no reply came), a party's event with its payload, or a
+ * child's output. */
+function isPickAnswer(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const { kind, event, payload, sender, actor } = value as Record<string, unknown>;
+  if (kind === "output") return typeof actor === "string" && "output" in value;
+  if (kind !== "event" || typeof event !== "string") return false;
+  if (typeof payload !== "object" || payload === null) return false;
+  if (sender === undefined) return true;
+  if (typeof sender !== "object" || sender === null) return false;
+  const { party, id } = sender as Record<string, unknown>;
+  return (party === "agent" || party === "gate") && typeof id === "string";
 }
 
 function streamHeaders(view: UpdatesView): Record<string, string> {

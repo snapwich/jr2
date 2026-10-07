@@ -279,18 +279,49 @@ test("the notices ride the admit body to the turn, typed; one this Harness canno
   const { app, runs } = scripted();
   const memory = { kind: "memory-limit", scope: "workspace", agent: "coder", peak: "1.9Gi", limit: "2Gi" };
   const fresh = { kind: "conversation-new", scope: "conversation", reason: "the last one was lost" };
+  // A pick's answer that never reached its call (ADR-0024, ADR-0031): with a Gate's event, with a
+  // child's output, and with no reply at all.
+  const cut = {
+    kind: "pick-answer",
+    scope: "conversation",
+    pick: "run_audit",
+    cut: true,
+    answer: { kind: "event", event: "audited", sender: { party: "gate", id: "auditor" }, payload: { findings: "f" } },
+  };
+  const left = {
+    kind: "pick-answer",
+    scope: "conversation",
+    pick: "ship",
+    cut: false,
+    answer: { kind: "output", actor: "tests", output: { pushed: "abc" } },
+  };
+  const silent = { kind: "pick-answer", scope: "conversation", pick: "ship", cut: false };
   const res = await app.request("/agents/coder/i1", {
     method: "POST",
     body: JSON.stringify({
       message: "go",
       definition: CODER,
       // A newer Orchestrator's kind, and a known kind missing its facts: neither can be worded.
-      notices: [memory, { kind: "disk-full", scope: "workspace" }, { kind: "memory-limit", agent: "x" }, fresh],
+      notices: [
+        memory,
+        { kind: "disk-full", scope: "workspace" },
+        { kind: "memory-limit", agent: "x" },
+        fresh,
+        cut,
+        left,
+        silent,
+        { kind: "pick-answer", scope: "conversation", cut: true },
+        { kind: "pick-answer", scope: "conversation", pick: "ship", cut: false, answer: { kind: "event" } },
+      ],
     }),
     headers: { "content-type": "application/json" },
   });
   assert.equal(res.status, 200);
-  assert.deepEqual(runs[0]!.submission, { definition: CODER, message: "go", notices: [memory, fresh] });
+  assert.deepEqual(runs[0]!.submission, {
+    definition: CODER,
+    message: "go",
+    notices: [memory, fresh, cut, left, silent],
+  });
   // Garbage in the slot is no notices, as a garbage dial is no dial.
   await app.request("/agents/coder/i2", {
     method: "POST",
