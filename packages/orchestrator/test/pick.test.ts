@@ -10,7 +10,7 @@ import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
 import { arg, commandWith, type CommandOutput } from "../src/effect.ts";
-import { answer, fromPick, isPickMapper, paramsOf } from "../src/pick.ts";
+import { answer, fromPick, isAnswer, isPickMapper, paramsOf, seatsOfAnswer } from "../src/pick.ts";
 import { RunHost } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { fakeWorkspace, FakeHarnessExec } from "./_effects.ts";
@@ -291,4 +291,67 @@ test("an `answer` below one Agent's state never shapes another Agent's outstandi
   fake.settle({ outcome: "exited", code: 0, tail: "built" });
   const answered = await host.awaitDelivery(iid, picked.deliveryId);
   assert.equal(answered?.answer?.kind, "output", "A reads its own command's output, not B's answer");
+});
+
+// An `answer` written below no Agent's state may shape any Agent's pick (ADR-0067, ADR-0024): its
+// seat is `null`. A root `after` runs one while the pick is outstanding; the Agent reads it, not the
+// command's output.
+test("an `answer` written below no Agent's state shapes the outstanding pick", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const build = defineEvent({ name: "build", input: z.object({}) });
+  const machine = jr2Setup({
+    events: [build],
+    actors: {
+      ws: fakeWorkspace(),
+      coder: agentActorWith(() => a, coderDefinition),
+      builder: commandWith(fake.factory, ["pnpm", "build"]),
+    },
+  }).createMachine({
+    id: "rooted",
+    invoke: { src: "ws" },
+    after: { 150: { actions: answer(() => "from root") } },
+    initial: "working",
+    states: {
+      working: {
+        invoke: { src: "coder", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: { rest: {}, building: { invoke: { src: "builder", onDone: "rest" } } },
+        on: { build: ".building" },
+      },
+    },
+  });
+  const fromRoot = machine.root.after[0]!.actions[0];
+  assert.ok(isAnswer(fromRoot));
+  assert.deepEqual([...seatsOfAnswer(machine, fromRoot)], [null], "the walk seats it at no Agent's state");
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "rooted", machine, provide: () => ({}) });
+  await host.start("rooted");
+  await waitFor(() => a.admits.length === 1);
+  const iid = a.admits[0]!.instanceId;
+  const picked = host.sendToAgent(iid, { type: "build" });
+  assert.equal(picked.outstanding, true);
+  await waitFor(() => fake.starts.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  fake.settle({ outcome: "exited", code: 0, tail: "built" });
+  const answered = await host.awaitDelivery(iid, picked.deliveryId);
+  assert.deepEqual(answered?.answer, { kind: "answer", value: "from root" });
+});
+
+// An `answer` the walk did not find written in the Machine is read as written below no Agent's
+// state: its seat is `null`.
+test("an `answer` the walk did not find is seated at no Agent's state", () => {
+  const machine = jr2Setup({ events: [], actors: { ws: fakeWorkspace() } }).createMachine({
+    id: "bare",
+    invoke: { src: "ws" },
+  });
+  assert.deepEqual(
+    [
+      ...seatsOfAnswer(
+        machine,
+        answer(() => "x"),
+      ),
+    ],
+    [null],
+  );
 });

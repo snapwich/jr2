@@ -102,7 +102,7 @@ type Node = AnyStateMachine["root"];
  * Where an `answer` is written, as the Agents' states it is below: for each place the action is
  * written (a state's entry or exit, a transition on a state, a state's initial transition), the
  * nearest state at or above it that invokes an Agent — `null` where none does. An `answer` shapes
- * only a pick of an Agent seated at one of these (ADR-0067); one written above every Agent's state
+ * only a pick of an Agent seated at one of these (ADR-0067); one written below no Agent's state
  * (`null`) may shape any. Read once per Machine, by the action's identity: one `answer` object
  * written in two places carries both.
  */
