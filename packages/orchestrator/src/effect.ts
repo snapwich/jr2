@@ -11,12 +11,12 @@
 //   - THE LEDGER. The run host keeps one row per Effect, in the run's blob beside the snapshot
 //     (`RunBlob.effects`): an INTENT row written before the call — in the same persist as the
 //     snapshot whose state invoked it, saved at the write — and a SETTLED row written with the
-//     output, saved at the write before the transition it drives. A restore reads the row, never
-//     guesses: settled → deliver the output; intent → re-attach to the exec by id, or, when the
-//     Harness no longer knows it, settle `unknown`; no row → nothing left, so it starts. A command
-//     never runs twice: it runs the Agent's code, which may spend a Stand-in. A row lives only while
-//     the saved snapshot holds its Effect running (`pruneLedger`), so a looping Machine's blob
-//     stays flat, and an Effect settled in place (no `onDone`) keeps no row.
+//     output, saved at the write before the transition it drives and kept by the save that carries
+//     that transition. A restore reads the row, never guesses: settled → deliver the output;
+//     intent → re-attach to the exec by id, or, when the Harness no longer knows it, settle
+//     `unknown`; no row → nothing left, so it starts. A command never runs twice: it runs the
+//     Agent's code, which may spend a Stand-in. No row is dropped: the settled and aborted rows are
+//     the record of what the run's Effects did.
 //   - D1. The Effect stops when its state exits — xstate stops the child, and this logic kills the
 //     exec's process group: the kill is sent until the Harness keeps it, and a kill that arrives
 //     before its start keeps that start from running (a fast exit). The abort goes to the ledger
@@ -94,41 +94,13 @@ export type CommandOutput = ExecOutcome | Unknown;
 /**
  * One Effect's row. `intent` names where the call went — the Harness's URL and the placement whose
  * bearer reaches it — so a restore re-attaches without the Workspace's handles. `settled` keeps the
- * output for a restore whose transition was not saved. `aborted`: its state exited while it ran.
+ * output: a restore whose transition was not saved delivers it, and it is the record of what ran.
+ * `aborted`: its state exited while it ran. A row replaces the one before it; none is dropped.
  */
 export type EffectRow =
   | { state: "intent"; kind: EffectParts["kind"]; slot: string; endpoint: string; placement: string; at: string }
   | { state: "settled"; kind: EffectParts["kind"]; slot: string; output: unknown; at: string }
   | { state: "aborted"; kind: EffectParts["kind"]; slot: string; at: string };
-
-/**
- * Drop, in place, every row the persisted snapshot no longer needs. A restore reads a row only for
- * an Effect child that snapshot holds ACTIVE (its `effectId`, at any depth): a restored child that
- * is done or stopped never starts. So a row is read by nothing once the saved snapshot holds its
- * Effect settled or not at all: a settled row once the persist that carries its settle is written
- * (the transition it drives, or — with no `onDone` — the child done in place, which xstate keeps in
- * `children`), an aborted row once the stop is saved. `unsaved` rows were written since the last
- * save and are kept for it — each row reaches the disk once. Without this a looping Machine grows
- * its blob each pass.
- */
-export function pruneLedger(
-  effects: Record<string, EffectRow>,
-  persisted: unknown,
-  unsaved: ReadonlySet<string>,
-): void {
-  const held = new Set<string>();
-  const walk = (snapshot: unknown): void => {
-    const children = (snapshot as { children?: Record<string, { snapshot?: unknown } | undefined> } | null)?.children;
-    if (!children || typeof children !== "object") return;
-    for (const child of Object.values(children)) {
-      const { effectId, status } = (child?.snapshot ?? {}) as { effectId?: unknown; status?: unknown };
-      if (typeof effectId === "string" && status === "active") held.add(effectId);
-      walk(child?.snapshot);
-    }
-  };
-  walk(persisted);
-  for (const id of Object.keys(effects)) if (!held.has(id) && !unsaved.has(id)) delete effects[id];
-}
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
  * carry the stream; `aborted` and an `unknown` settle say the outside world may have acted. */

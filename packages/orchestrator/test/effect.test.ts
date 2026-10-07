@@ -164,7 +164,15 @@ test("write-ahead: the intent row is on disk, with the snapshot that holds the E
     saved.some((rows) => Object.values(rows).some((r) => r.state === "settled")),
     "the settled row reached the disk",
   );
-  assert.deepEqual(await ledger(store, rig.runId), {}, "and the persist that carries its transition drops it");
+  // The settled row rides the persist that carries its transition, and stays: the record of what ran.
+  const blob = (await store.load(rig.runId))!.snapshot as { snapshot: { value?: unknown } };
+  assert.equal(blob.snapshot.value, "done", "this persist carries the transition");
+  const rows = Object.values(await ledger(store, rig.runId));
+  assert.deepEqual(
+    rows.map((r) => [r.state, r.slot, (r as { output?: unknown }).output]),
+    [["settled", "tests", { outcome: "exited", code: 0, tail: "" }]],
+    "and it holds the settled row",
+  );
 });
 
 test("D1: its state exits while it runs — the exec is killed, the ledger and the feed say `outcome unknown`, the Machine hears nothing", async () => {
@@ -183,6 +191,11 @@ test("D1: its state exits while it runs — the exec is killed, the ledger and t
     saved.flatMap((rows) => Object.values(rows).map((r) => r.state)).filter((s, i, all) => s !== all[i - 1]),
     ["intent", "aborted"],
     "the abort reached the ledger on disk",
+  );
+  assert.deepEqual(
+    Object.values(await ledger(store, rig.runId)).map((r) => r.state),
+    ["aborted"],
+    "and it stays there: the record that it was cut",
   );
   const aborted = rig.feed.find((e) => e.kind === "effect" && e.phase === "aborted");
   assert.match((aborted as { text: string }).text, /outcome unknown/);
@@ -329,21 +342,20 @@ test("real processes through the Harness's own exec: a metacharacter stays insid
   assert.deepEqual(JSON.parse((result as { tail: string }).tail), ["a; echo pwned $(id) | cat"]);
 });
 
-test("the ledger keeps only the rows a restore can read: a Machine that loops does not grow its blob", async () => {
-  // Each pass settles at once with a 3000-character tail, then re-enters the state that runs it.
-  const big = "x".repeat(3000);
+test("the ledger keeps every row: a Machine that loops leaves one settled row per pass, the record of what ran", async () => {
+  // Each pass settles at once, then re-enters the state that runs it.
   const instant: ExecPortFactory = () => ({
     start: async () => {},
     read: async () => ({
       state: "settled",
-      stream: big,
-      next: big.length,
-      output: { outcome: "exited", code: 0, tail: big },
+      stream: "ok\n",
+      next: 3,
+      output: { outcome: "exited", code: 0, tail: "ok\n" },
     }),
     kill: async () => {},
     forget: async () => {},
   });
-  const loop = commandWith(instant, ["make"], { tail: 4096 });
+  const loop = commandWith(instant, ["make"]);
   const machine = jr2Setup({
     types: {} as { context: { n: number } },
     events: [begin],
@@ -359,7 +371,7 @@ test("the ledger keeps only the rows a restore can read: a Machine that loops do
         invoke: {
           src: "loop",
           onDone: [
-            { guard: ({ context }) => context.n >= 39, target: "done" },
+            { guard: ({ context }) => context.n >= 4, target: "done" },
             { target: "running", reenter: true, actions: assign({ n: ({ context }) => context.n + 1 }) },
           ],
         },
@@ -368,18 +380,18 @@ test("the ledger keeps only the rows a restore can read: a Machine that loops do
     },
   });
   const store = await mkStore();
-  const saved = savedLedgers(store);
   const host = new RunHost({ store });
   host.register({ name: "loop", machine, provide: () => ({}) });
   const { runId } = await host.start("loop");
   host.sendToGate(runId, "start", { type: "begin" });
   await waitFor(() => host.status(runId)?.value === "done");
-  assert.equal((host.status(runId)?.context as { n: number }).n, 39, "forty passes");
-  const most = Math.max(...saved.map((rows) => Object.keys(rows).length));
-  assert.ok(most <= 2, `at most a live row and the one just settled per save, got ${most}`);
-  assert.deepEqual(await ledger(store, runId), {}, "nothing left once no Effect runs");
-  const bytes = JSON.stringify((await store.load(runId))!.snapshot).length;
-  assert.ok(bytes < 8_000, `the blob stays flat: ${bytes} bytes`);
+  assert.equal((host.status(runId)?.context as { n: number }).n, 4, "five passes");
+  const rows = Object.values(await ledger(store, runId));
+  assert.equal(rows.length, 5, "one row per pass, each by its own id");
+  assert.ok(
+    rows.every((r) => r.state === "settled" && r.slot === "loop"),
+    JSON.stringify(rows.map((r) => r.state)),
+  );
 });
 
 test("D1 holds a fast exit through the real exec: a kill that overtakes its start keeps it from running", async () => {
@@ -467,7 +479,7 @@ test("D1: a kill lost to a transport fault is sent again until the Harness keeps
   assert.equal(valueOf(rig), "left");
 });
 
-test("an Effect with no onDone settles in place: xstate keeps the done child, and the ledger keeps no row for it", async () => {
+test("an Effect with no onDone settles in place: xstate keeps the done child, and the ledger keeps its settled row", async () => {
   const fake = new FakeHarnessExec();
   const lint = commandWith(fake.factory, ["pnpm", "lint"]);
   const machine = jr2Setup({
@@ -504,7 +516,11 @@ test("an Effect with no onDone settles in place: xstate keeps the done child, an
   const blob = (await store.load(runId))!.snapshot as { snapshot: unknown };
   assert.match(JSON.stringify(blob.snapshot), /"status":"done"/, "the settled child is still in the snapshot");
   assert.equal(host.status(runId)?.value, "linting", "settled in place: no route");
-  assert.deepEqual(await ledger(store, runId), {}, "and its row is gone from the disk");
+  assert.deepEqual(
+    Object.values(await ledger(store, runId)).map((r) => r.state),
+    ["settled"],
+    "and its settled row is on the disk",
+  );
 });
 
 /** A one-state Machine that runs `logic` once `begin` arrives and keeps its output. */

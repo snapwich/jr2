@@ -36,14 +36,13 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   output; the full stream goes to the run's feed (Instance-token band).
 - **A write-ahead ledger; no second fire.** One row per Effect in the run's blob (ADR-0007, ADR-0065): an `intent` row
   saved at the write, with the snapshot that holds the Effect, before the request leaves; a `settled` row with the
-  output, saved at the write just before the transition it drives, so a restart that loses the transition's save still
-  delivers the output and runs nothing. On restore: settled → the output is delivered; intent → re-attach to the exec by
-  id, or settle `unknown` when the Harness no longer knows it (it restarted); no row → nothing was sent, so it starts. A
-  command is never run again by jr2: it runs the Agent's code, which may spend a Stand-in. Retry is the author's choice
-  — a route back into the state. A row is kept only while the saved snapshot holds its Effect running: the save of the
-  transition a `settled` row drives drops it — or, for an Effect with no `onDone` that settles in place, the save that
-  holds the done child — and the save after an `aborted` row's own drops that one, so a Machine that loops does not grow
-  its blob.
+  output, saved at the write just before the transition it drives and kept by the save that carries that transition, so
+  a restart that loses the transition's save still delivers the output and runs nothing. On restore: settled → the
+  output is delivered; intent → re-attach to the exec by id, or settle `unknown` when the Harness no longer knows it (it
+  restarted); no row → nothing was sent, so it starts. A command is never run again by jr2: it runs the Agent's code,
+  which may spend a Stand-in. Retry is the author's choice — a route back into the state. No row is dropped: the settled
+  and aborted rows are the record of what the run's Effects did, and the ledger grows by one row per Effect the run
+  starts.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start

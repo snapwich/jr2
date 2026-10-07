@@ -71,7 +71,7 @@ import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import type { AgentAdmission } from "./actor.ts";
-import { pruneLedger, type EffectRow } from "./effect.ts";
+import type { EffectRow } from "./effect.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
 
 /** The actors filled into a run's named slots — `.provide()` is the unit-test seam (ADR-0015);
@@ -641,8 +641,8 @@ type RunBlob = {
    * The Effect LEDGER (ADR-0067): one row per Effect, by its id — `intent` before the call,
    * `settled` with its output, `aborted` when its state exited while it ran. Same blob for the
    * snapshot's atomicity: an intent row is saved with the snapshot that holds its Effect, so a restore
-   * reads which Effects may have acted and runs none of them twice. Only the rows of Effects the
-   * snapshot holds running are kept (`pruneLedger`): it never grows with the run's history.
+   * reads which Effects may have acted and runs none of them twice. A row is never dropped: the
+   * settled and aborted rows are the record of what the run's Effects did.
    */
   effects?: Record<string, EffectRow>;
   fault?: string;
@@ -665,8 +665,6 @@ type LiveRun = {
   holds: Map<string, Hold>;
   /** The Effect ledger (ADR-0067): persisted as `RunBlob.effects`, seeded on restore. */
   effects: Record<string, EffectRow>;
-  /** Ledger rows written since the last save: kept by that save, whatever its snapshot holds. */
-  effectsUnsaved: Set<string>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
@@ -1893,10 +1891,7 @@ export class RunHost {
       recordEffect: (effectId, row) => {
         effects[effectId] = row;
         const run = this.runs.get(record.runId);
-        if (run && run.effects === effects) {
-          run.effectsUnsaved.add(effectId);
-          this.persist(run);
-        }
+        if (run && run.effects === effects) this.persist(run);
       },
       heldAnswerDelivered: (instanceId) => {
         const hold = holds.get(instanceId);
@@ -2023,7 +2018,6 @@ export class RunHost {
       notices,
       holds,
       effects,
-      effectsUnsaved: new Set(),
       binding,
       listeners: new Set(),
       feedSoFar: [],
@@ -2080,11 +2074,6 @@ export class RunHost {
       stripContext: (ctx) => ctx, // see ADR-0007: live infra lives in `.provide` closures, not context
       stripChildInput: (input) => input,
     });
-    // The ledger keeps only the rows this snapshot's RUNNING Effects can read (ADR-0067): a settled
-    // or aborted row is dropped by the first save after its own whose snapshot holds its Effect done
-    // or not at all, so a looping Machine's blob stays flat.
-    pruneLedger(run.effects, snapshot, run.effectsUnsaved);
-    run.effectsUnsaved.clear();
     const blob: RunBlob = {
       workflow: run.record.workflow,
       instanceId: run.record.instanceId,

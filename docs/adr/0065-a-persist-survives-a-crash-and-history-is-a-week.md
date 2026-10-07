@@ -23,8 +23,9 @@ upserts cost 0.04 ms (1 KB) and 0.18 ms (100 KB). A run's blob is about 1 KB; a 
   the next `invoke` fires, on every persist.
 - **One blob per run stays.** The snapshot is a tree that xstate restores from its root, and one row keeps it atomic —
   with the ledgers beside it (admissions, epochs, notices, timers, outstanding picks, Effects); a Pool's cost at 40
-  workers is 0.2 ms, so its workers do not become rows of their own. The Effect ledger holds only the rows of Effects
-  the snapshot holds (ADR-0067), so a Machine that loops through an Effect keeps its blob at its size.
+  workers is 0.2 ms, so its workers do not become rows of their own. The Effect ledger keeps a row for every Effect the
+  run started (ADR-0067), so a Machine that loops through an Effect grows its blob by one row, with the Effect's output,
+  per pass.
 - **`restore()` reads live rows only.** The store answers `WHERE status = 'live'`; terminal rows are not parsed at boot.
 - **A finished run's row lives 7 days, fixed.** Every non-live status — `done`, `error`, `cancelled`, `lost`, `drifted`
   — ages from its terminal write, and a sweep at boot and every hour deletes what is older. A `live` row is never swept:
