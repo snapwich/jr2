@@ -7,9 +7,10 @@
 //
 //   1. argv, never shell text. `spawn(argv[0], argv.slice(1))` with no shell: a metacharacter in an
 //      argument is that argument's bytes. `sh -c` is the author's explicit choice, in the argv.
-//   2. One id runs once. The Orchestrator names each exec by its Effect's id and may ask again (a
-//      retried request, a re-attach after its own restart); a second start of a known id runs
-//      nothing. This is the Harness's half of "no second fire" — the ledger is the Orchestrator's.
+//   2. One id runs once IN THIS PROCESS. The Orchestrator names each exec by its Effect's id; a
+//      second start of a known id runs nothing. This is the Harness's half of "no second fire" — the
+//      ledger is the Orchestrator's, and so is the other half: a restarted Harness knows no id, so
+//      the Orchestrator never sends a start again that may have reached one (it reads by id instead).
 //   3. The process group ends with the exec. Each exec leads its own group (`detached`); its timeout,
 //      a kill, and its top process's exit each SIGKILL the whole group, so nothing it started
 //      outlives the Effect — there is no fire-and-forget form (ADR-0067).

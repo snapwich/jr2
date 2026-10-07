@@ -642,7 +642,7 @@ type RunBlob = {
    * `settled` with its output, `aborted` when its state exited while it ran. Same blob for the
    * snapshot's atomicity: an intent row is saved with the snapshot that holds its Effect, so a restore
    * reads which Effects may have acted and runs none of them twice. Only the rows of Effects the
-   * snapshot holds are kept (`pruneLedger`): it never grows with the run's history.
+   * snapshot holds running are kept (`pruneLedger`): it never grows with the run's history.
    */
   effects?: Record<string, EffectRow>;
   fault?: string;
@@ -2080,8 +2080,9 @@ export class RunHost {
       stripContext: (ctx) => ctx, // see ADR-0007: live infra lives in `.provide` closures, not context
       stripChildInput: (input) => input,
     });
-    // The ledger keeps only the rows this snapshot's Effects can read (ADR-0067): a settled or
-    // aborted row is dropped by the first save after its own, so a looping Machine's blob stays flat.
+    // The ledger keeps only the rows this snapshot's RUNNING Effects can read (ADR-0067): a settled
+    // or aborted row is dropped by the first save after its own whose snapshot holds its Effect done
+    // or not at all, so a looping Machine's blob stays flat.
     pruneLedger(run.effects, snapshot, run.effectsUnsaved);
     run.effectsUnsaved.clear();
     const blob: RunBlob = {

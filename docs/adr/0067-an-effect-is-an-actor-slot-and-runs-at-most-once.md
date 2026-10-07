@@ -36,12 +36,19 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   output; the full stream goes to the run's feed (Instance-token band).
 - **A write-ahead ledger; no second fire.** One row per Effect in the run's blob (ADR-0007, ADR-0065): an `intent` row
   saved at the write, with the snapshot that holds the Effect, before the request leaves; a `settled` row with the
-  output, which the transition's persist carries too. On restore: settled → the output is delivered; intent → re-attach
-  to the exec by id, or settle `unknown` when the Harness no longer knows it (it restarted); no row → nothing was sent,
-  so it starts. A command is never run again by jr2: it runs the Agent's code, which may spend a Stand-in. The Harness
-  runs one id once, so a start is safe to send again. Retry is the author's choice — a route back into the state. A row
-  is kept only while the saved snapshot holds its Effect: the first save after a `settled` or `aborted` row's own save
-  drops it, so a Machine that loops does not grow its blob.
+  output, saved at the write just before the transition it drives, so a restart that loses the transition's save still
+  delivers the output and runs nothing. On restore: settled → the output is delivered; intent → re-attach to the exec by
+  id, or settle `unknown` when the Harness no longer knows it (it restarted); no row → nothing was sent, so it starts. A
+  command is never run again by jr2: it runs the Agent's code, which may spend a Stand-in. Retry is the author's choice
+  — a route back into the state. A row is kept only while the saved snapshot holds its Effect running: the save of the
+  transition a `settled` row drives drops it — or, for an Effect with no `onDone` that settles in place, the save that
+  holds the done child — and the save after an `aborted` row's own drops that one, so a Machine that loops does not grow
+  its blob.
+- **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
+  restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
+  connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start
+  the Harness ran: the Orchestrator reads the exec by id instead, follows it when the Harness knows it, and settles
+  `unknown` when it does not. It then sends a kill for that id, which keeps a start still on the wire from running.
 - **D1: an Effect is stopped when its state exits.** The exec's group is killed. The kill is sent again until the
   Harness keeps it, for at most the command's timeout (past it the Harness's own timer has ended the group); a kill that
   never reaches it is said on the feed. A fast exit can send the kill while the start is still on the wire: the Harness
@@ -58,9 +65,10 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
 - **Rest counts an Effect like any child.** A running Effect below an Agent's state holds the Agent's pick (ADR-0024); a
   settled Effect with no `onDone` is Rest. An Effect is not a long-lived invoke, and the load walk does not warn on one.
 - **The load walk checks what a pick hands an Effect** (ADR-0015): a pick param nothing reads (with `fromPick`, one that
-  is no key of the Effect's input and that `fill` does not read) and a `fill` that overwrites a param are refused, a
-  mapper the probe cannot run is a warning, and a child of an Agent's state that invokes something and that nothing
-  enters is refused.
+  is no key of the Effect's input and that `fill` does not read; a guard on the entering transition and an `assign`
+  count as reads) and a `fill` that overwrites a param are refused; code the probe cannot or does not run — a mapper
+  that throws in it, an action other than an `assign` — is a warning, and a child of an Agent's state that invokes
+  something and that nothing enters is refused.
 
 ## Considered options
 

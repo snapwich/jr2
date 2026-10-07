@@ -15,7 +15,8 @@
 //     guesses: settled → deliver the output; intent → re-attach to the exec by id, or, when the
 //     Harness no longer knows it, settle `unknown`; no row → nothing left, so it starts. A command
 //     never runs twice: it runs the Agent's code, which may spend a Stand-in. A row lives only while
-//     the saved snapshot holds its Effect (`pruneLedger`), so a looping Machine's blob stays flat.
+//     the saved snapshot holds its Effect running (`pruneLedger`), so a looping Machine's blob
+//     stays flat, and an Effect settled in place (no `onDone`) keeps no row.
 //   - D1. The Effect stops when its state exits — xstate stops the child, and this logic kills the
 //     exec's process group: the kill is sent until the Harness keeps it, and a kill that arrives
 //     before its start keeps that start from running (a fast exit). The abort goes to the ledger
@@ -102,10 +103,13 @@ export type EffectRow =
 
 /**
  * Drop, in place, every row the persisted snapshot no longer needs. A restore reads a row only for
- * an Effect child that snapshot holds (its `effectId`, at any depth), so a row whose Effect is gone
- * is read by nothing: a settled row once the persist that carries its transition is written, an
- * aborted row once the stop is saved. `unsaved` rows were written since the last save and are kept
- * for it — each row reaches the disk once. Without this a looping Machine grows its blob each pass.
+ * an Effect child that snapshot holds ACTIVE (its `effectId`, at any depth): a restored child that
+ * is done or stopped never starts. So a row is read by nothing once the saved snapshot holds its
+ * Effect settled or not at all: a settled row once the persist that carries its settle is written
+ * (the transition it drives, or — with no `onDone` — the child done in place, which xstate keeps in
+ * `children`), an aborted row once the stop is saved. `unsaved` rows were written since the last
+ * save and are kept for it — each row reaches the disk once. Without this a looping Machine grows
+ * its blob each pass.
  */
 export function pruneLedger(
   effects: Record<string, EffectRow>,
@@ -117,8 +121,8 @@ export function pruneLedger(
     const children = (snapshot as { children?: Record<string, { snapshot?: unknown } | undefined> } | null)?.children;
     if (!children || typeof children !== "object") return;
     for (const child of Object.values(children)) {
-      const id = (child?.snapshot as { effectId?: unknown } | undefined)?.effectId;
-      if (typeof id === "string") held.add(id);
+      const { effectId, status } = (child?.snapshot ?? {}) as { effectId?: unknown; status?: unknown };
+      if (typeof effectId === "string" && status === "active") held.add(effectId);
       walk(child?.snapshot);
     }
   };
@@ -140,7 +144,8 @@ export type EffectMarker = {
 // --- The port -----------------------------------------------------------------------------------
 
 /** The Harness's exec, as the Effect drives it. `read` answers undefined for an exec the Harness
- * does not know (404): it restarted, and jr2 settles `unknown`. */
+ * does not know (404): it restarted, and jr2 settles `unknown`. `start` rejects with `ExecNotSent`
+ * only when the request certainly never reached the Harness — the one failure it is sent again on. */
 export interface ExecPort {
   start(id: string, req: ExecRequest, signal: AbortSignal): Promise<void>;
   read(id: string, offset: number | undefined, signal: AbortSignal): Promise<ExecRead | undefined>;
@@ -344,16 +349,53 @@ async function drive<I, O>(
   });
   run.started = true;
   mark({ phase: "started", text: req.argv.join(" ") });
-  // A start is safe to ask again: the Harness runs one id once.
-  await retrying(() => port.start(id, req, signal), signal);
+  const sent = await startOnce(port, id, req, signal);
   if (signal.aborted) return;
   const first = await retrying(() => port.read(id, 0, signal), signal);
   if (signal.aborted) return;
   if (first === undefined) {
-    settle({ outcome: "unknown", reason: "the Harness lost it after it started (it restarted); not run again" });
+    if (sent === "uncertain") {
+      // The start may still be on its way to the Harness that answers now: a kill keeps it from
+      // running there (exec.ts keeps an unknown id killed). Best effort — `unknown` either way.
+      void killUntilKept(port, id, parts.timeoutMs).catch(() => {});
+    }
+    settle({
+      outcome: "unknown",
+      reason:
+        sent === "uncertain"
+          ? "its start may have reached the Harness, which no longer knows it (it restarted); not run again"
+          : "the Harness lost it after it started (it restarted); not run again",
+    });
     return;
   }
   await follow(port, id, first, signal, mark, settle);
+}
+
+/**
+ * Send the start ONCE where it may have reached the Harness. The Harness runs one id once only
+ * inside one process: a start that reached a Harness which then restarted, sent again, would run
+ * the command a second time in the new one. So a start is sent again only when it certainly never
+ * left (`ExecNotSent`: the connection was refused, the name did not resolve). Any other failure is
+ * `uncertain`, and the caller reads by id: found, it follows; unknown, it settles `unknown`.
+ */
+async function startOnce(
+  port: ExecPort,
+  id: string,
+  req: ExecRequest,
+  signal: AbortSignal,
+): Promise<"sent" | "uncertain"> {
+  for (let wait = 250; ; wait = Math.min(wait * 2, RETRY_MAX_MS)) {
+    try {
+      await port.start(id, req, signal);
+      return "sent";
+    } catch (err) {
+      if (signal.aborted) throw err;
+      if (err instanceof ExecRefused) throw err;
+      if (!(err instanceof ExecNotSent)) return "uncertain";
+      await new Promise((resolve) => setTimeout(resolve, wait / 2 + Math.random() * (wait / 2)));
+      if (signal.aborted) throw err;
+    }
+  }
 }
 
 /** Read the exec to its end: each chunk of stream to the feed, the output to the Machine. */
@@ -482,8 +524,8 @@ function cwdOf(slot: string, parts: CommandParts, ambient: AmbientHandles): { cw
   );
 }
 
-/** Ask again on a transport failure, with backoff, until it answers or the Effect stops. A start
- * and a read are both safe to repeat: the Harness runs one id once. */
+/** Ask again on a transport failure, with backoff, until it answers or the Effect stops. For a
+ * read only: a read runs nothing. A start goes through `startOnce`. */
 async function retrying<T>(call: () => Promise<T>, signal: AbortSignal): Promise<T> {
   for (let wait = 250; ; wait = Math.min(wait * 2, RETRY_MAX_MS)) {
     try {
@@ -499,6 +541,11 @@ async function retrying<T>(call: () => Promise<T>, signal: AbortSignal): Promise
 
 /** The Harness refused the request itself (a 4xx other than 404): a jr2 defect, never retried. */
 export class ExecRefused extends Error {}
+
+/** The request certainly never reached the Harness (the connection was refused, the name did not
+ * resolve): a start that failed so is safe to send again. Any other transport failure may have
+ * reached it. */
+export class ExecNotSent extends Error {}
 
 function parseDuration(d: Duration): number {
   const n = Number.parseFloat(d);

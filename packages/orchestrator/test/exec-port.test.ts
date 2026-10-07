@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { harnessApp } from "@jr2/harness/app";
 import { Execs } from "@jr2/harness/exec";
-import { ExecRefused } from "../src/effect.ts";
+import { ExecNotSent, ExecRefused } from "../src/effect.ts";
 import { createExecPort } from "../src/harness-client.ts";
 
 function wired(checkBearer: (b: string | undefined) => boolean = (b) => b === "bearer") {
@@ -57,4 +57,24 @@ test("an exec the Harness does not know reads undefined; a refused request is Ex
   );
   const refused = wired(() => false);
   await assert.rejects(() => refused.start("x", { argv: ["true"], timeoutMs: 1_000, tail: 0 }, signal), ExecRefused);
+});
+
+test("a start is ExecNotSent only when it never reached the wire; a reset is not — it may have run", async () => {
+  const failing = (cause: { code: string; syscall?: string }) =>
+    createExecPort({
+      baseUrl: "http://harness.invalid",
+      fetch: (async () => {
+        throw new TypeError("fetch failed", { cause: Object.assign(new Error(cause.code), cause) });
+      }) as typeof fetch,
+    });
+  const signal = new AbortController().signal;
+  const req = { argv: ["true"], timeoutMs: 1_000, tail: 0 };
+  await assert.rejects(
+    () => failing({ code: "ECONNREFUSED", syscall: "connect" }).start("a", req, signal),
+    ExecNotSent,
+  );
+  await assert.rejects(
+    () => failing({ code: "ECONNRESET", syscall: "read" }).start("b", req, signal),
+    (err: unknown) => err instanceof Error && !(err instanceof ExecNotSent) && !(err instanceof ExecRefused),
+  );
 });

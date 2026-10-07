@@ -48,6 +48,7 @@ import type {
 import type { AgentDeclaration, AgentDefinition, ThinkingLevel } from "./agent.ts";
 import {
   commandWith,
+  ExecNotSent,
   ExecRefused,
   type Arg,
   type CommandInput,
@@ -526,10 +527,12 @@ export function agent(declaration: AgentDeclaration): AgentLogic {
 }
 
 /**
- * The Harness's exec (ADR-0067), as a `command` Effect drives it: `POST /exec/:id` to start (the
- * Harness runs one id once, so a start is safe to send again), `GET /exec/:id` long-polled by
- * offset, `POST /exec/:id/kill` when the Effect's state exits (sent again until the Harness keeps
- * it), `DELETE /exec/:id` once the output is ledgered. A transport failure or a 5xx rejects, and the Effect asks again; a 404 on a read is
+ * The Harness's exec (ADR-0067), as a `command` Effect drives it: `POST /exec/:id` to start,
+ * `GET /exec/:id` long-polled by offset, `POST /exec/:id/kill` when the Effect's state exits (sent
+ * again until the Harness keeps it), `DELETE /exec/:id` once the output is ledgered. A start that
+ * never reached the wire rejects `ExecNotSent`, the one start failure sent again: a Harness runs one
+ * id once only within its own process, so a start that reached one that then restarted would run
+ * twice. A read's transport failure or 5xx rejects, and the Effect asks again; a 404 on a read is
  * an exec the Harness does not know (it restarted); any other 4xx is a jr2 defect, never retried.
  */
 export function createExecPort(options: {
@@ -559,7 +562,11 @@ export function createExecPort(options: {
   };
   return {
     start: async (id, req: ExecRequest, signal) => {
-      const res = await call(url(id), { method: "POST", body: JSON.stringify(req), signal });
+      const res = await call(url(id), { method: "POST", body: JSON.stringify(req), signal }).catch((err: unknown) => {
+        // Only a request that never reached the wire is safe to send again (see `startOnce`).
+        if (!signal.aborted && neverDelivered(err)) throw new ExecNotSent((err as Error).message, { cause: err });
+        throw err;
+      });
       if (!res.ok) return refusedOrRetry(res, "exec");
       await res.json().catch(() => undefined);
     },

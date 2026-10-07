@@ -5,14 +5,22 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assign } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { Execs } from "@jr2/harness/exec";
-import { arg, commandWith, type CommandOutput, type EffectRow, type ExecPortFactory } from "../src/effect.ts";
+import {
+  arg,
+  commandWith,
+  ExecNotSent,
+  type CommandOutput,
+  type EffectLogic,
+  type EffectRow,
+  type ExecPortFactory,
+} from "../src/effect.ts";
 import { RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
@@ -457,4 +465,151 @@ test("D1: a kill lost to a transport fault is sent again until the Harness keeps
   assert.equal(attempts, 3, "sent again after each fault");
   assert.deepEqual(fake.kills, [fake.starts[0]!.id], "and kept once");
   assert.equal(valueOf(rig), "left");
+});
+
+test("an Effect with no onDone settles in place: xstate keeps the done child, and the ledger keeps no row for it", async () => {
+  const fake = new FakeHarnessExec();
+  const lint = commandWith(fake.factory, ["pnpm", "lint"]);
+  const machine = jr2Setup({
+    types: {} as { context: Ctx },
+    events: [begin, leave],
+    actors: { ws: fakeWorkspace(handles()), lint },
+  }).createMachine({
+    id: "inplace",
+    context: {},
+    invoke: { src: "ws" },
+    initial: "idle",
+    states: {
+      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "linting" } },
+      linting: {
+        invoke: [
+          { src: "lint", id: "lint" },
+          { src: "gate", id: "ctl" },
+        ],
+        on: { leave: "left" },
+      },
+      left: {},
+    },
+  });
+  const store = await mkStore();
+  const saved = savedLedgers(store);
+  const host = new RunHost({ store });
+  host.register({ name: "inplace", machine, provide: () => ({}) });
+  const { runId } = await host.start("inplace");
+  host.sendToGate(runId, "start", { type: "begin" });
+  await waitFor(() => fake.starts.length === 1);
+  fake.settle({ outcome: "exited", code: 0, tail: "" });
+  await waitFor(() => saved.some((rows) => Object.values(rows).some((r) => r.state === "settled")));
+  await new Promise((r) => setTimeout(r, 20));
+  const blob = (await store.load(runId))!.snapshot as { snapshot: unknown };
+  assert.match(JSON.stringify(blob.snapshot), /"status":"done"/, "the settled child is still in the snapshot");
+  assert.equal(host.status(runId)?.value, "linting", "settled in place: no route");
+  assert.deepEqual(await ledger(store, runId), {}, "and its row is gone from the disk");
+});
+
+/** A one-state Machine that runs `logic` once `begin` arrives and keeps its output. */
+function onceMachine(id: string, logic: EffectLogic<void, CommandOutput>) {
+  return jr2Setup({
+    types: {} as { context: Ctx },
+    events: [begin],
+    actors: { ws: fakeWorkspace(handles({})), logic },
+  }).createMachine({
+    id,
+    context: {},
+    invoke: { src: "ws" },
+    initial: "idle",
+    states: {
+      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
+      running: {
+        invoke: { src: "logic", onDone: { target: "done", actions: assign({ result: ({ event }) => event.output }) } },
+      },
+      done: {},
+    },
+  });
+}
+
+async function runOnce(id: string, logic: EffectLogic<void, CommandOutput>): Promise<CommandOutput> {
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: id, machine: onceMachine(id, logic), provide: () => ({}) });
+  const { runId } = await host.start(id);
+  host.sendToGate(runId, "start", { type: "begin" });
+  await waitFor(() => host.status(runId)?.value === "done");
+  return (host.status(runId)?.context as Ctx).result!;
+}
+
+/** argv that appends one "x" to `file` each time it runs. */
+const appendsTo = (file: string) => [
+  process.execPath,
+  "-e",
+  `require("node:fs").appendFileSync(${JSON.stringify(file)}, "x")`,
+];
+
+test("no second fire: a start that reached a Harness which then restarted is never sent again — `unknown`, one run", async () => {
+  const marks = join(mkdtempSync(join(tmpdir(), "jr2-fx-")), "marks");
+  let execs = new Execs();
+  let starts = 0;
+  // The first start runs the command, then the Harness restarts before it answers.
+  const restarting: ExecPortFactory = (endpoint, bearer) => {
+    const live = () => execsPort(execs)(endpoint, bearer);
+    return {
+      start: async (id, req, signal) => {
+        starts++;
+        await live().start(id, req, signal);
+        await waitFor(() => existsSync(marks));
+        execs = new Execs();
+        throw new Error("harness exec POST /exec/x failed: ECONNRESET");
+      },
+      read: (id, offset, signal) => live().read(id, offset, signal),
+      kill: (id) => live().kill(id),
+      forget: (id) => live().forget(id),
+    };
+  };
+  const result = await runOnce("restarting", commandWith(restarting, appendsTo(marks)));
+  assert.equal(result.outcome, "unknown");
+  assert.match((result as { reason: string }).reason, /may have reached the Harness.*not run again/);
+  assert.equal(starts, 1, "the start was not sent again");
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(readFileSync(marks, "utf8"), "x", "the command ran once");
+});
+
+test("a start whose answer was lost while its Harness lives on: it is read by id and followed — one run, its real output", async () => {
+  const marks = join(mkdtempSync(join(tmpdir(), "jr2-fx-")), "marks");
+  const execs = new Execs();
+  let starts = 0;
+  const lossy: ExecPortFactory = (endpoint, bearer) => {
+    const port = execsPort(execs)(endpoint, bearer);
+    return {
+      ...port,
+      start: async (id, req, signal) => {
+        starts++;
+        await port.start(id, req, signal);
+        throw new Error("harness exec POST /exec/x failed: ECONNRESET");
+      },
+    };
+  };
+  const result = await runOnce("lossy", commandWith(lossy, appendsTo(marks)));
+  assert.deepEqual(result, { outcome: "exited", code: 0, tail: "" });
+  assert.equal(starts, 1);
+  assert.equal(readFileSync(marks, "utf8"), "x");
+});
+
+test("a start that never left (the connection was refused) is sent again until it lands — one run", async () => {
+  const marks = join(mkdtempSync(join(tmpdir(), "jr2-fx-")), "marks");
+  const execs = new Execs();
+  let starts = 0;
+  const refusing: ExecPortFactory = (endpoint, bearer) => {
+    const port = execsPort(execs)(endpoint, bearer);
+    return {
+      ...port,
+      start: async (id, req, signal) => {
+        starts++;
+        if (starts === 1) throw new ExecNotSent("connect ECONNREFUSED");
+        return port.start(id, req, signal);
+      },
+    };
+  };
+  const result = await runOnce("refusing", commandWith(refusing, appendsTo(marks)));
+  assert.deepEqual(result, { outcome: "exited", code: 0, tail: "" });
+  assert.equal(starts, 2, "sent again after the refused connection");
+  assert.equal(readFileSync(marks, "utf8"), "x");
 });
