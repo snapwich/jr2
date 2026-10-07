@@ -14,12 +14,13 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
 - **Between a pick and its work: `fromPick`, `paramsOf`, `answer`.** All optional; a plain mapper is legal.
   `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
   `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security
-  boundary in one expression (what the Agent supplies, what the Machine adds). `paramsOf(event, def)` reads the same
-  params for a plain mapper. `answer(({ context, event, chain }) => …)` is an xstate action that sets what the Agent
-  reads when its pick is answered (ADR-0024); `chain` is every reply since the pick, oldest first, each a link typed by
-  its slot (`{ kind: "output", src, output }`) or by the Machine's events (`{ kind: "event", event }`); its order and
-  length are not typed. A link is a reply from outside the Machine; the events it sent itself are skipped. The value is
-  JSON on the wire and in the hold; one with no JSON form sets nothing.
+  boundary in one expression (what the Agent supplies, what the Machine adds). The type check catches a missing or
+  mistyped key; it accepts an extra one, so the load walk refuses a param that is no key of the input (below).
+  `paramsOf(event, def)` reads the same params for a plain mapper. `answer(({ context, event, chain }) => …)` is an
+  xstate action that sets what the Agent reads when its pick is answered (ADR-0024); `chain` is every reply since the
+  pick, oldest first, each a link typed by its slot (`{ kind: "output", src, output }`) or by the Machine's events
+  (`{ kind: "event", event }`); its order and length are not typed. A link is a reply from outside the Machine; the
+  events it sent itself are skipped. The value is JSON on the wire and in the hold; one with no JSON form sets nothing.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.
@@ -38,8 +39,13 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   output, which the transition's persist carries too. On restore: settled → the output is delivered; intent → re-attach
   to the exec by id, or settle `unknown` when the Harness no longer knows it (it restarted); no row → nothing was sent,
   so it starts. A command is never run again by jr2: it runs the Agent's code, which may spend a Stand-in. The Harness
-  runs one id once, so a start is safe to send again. Retry is the author's choice — a route back into the state.
-- **D1: an Effect is stopped when its state exits.** The exec's group is killed; the abort goes to the ledger
+  runs one id once, so a start is safe to send again. Retry is the author's choice — a route back into the state. A row
+  is kept only while the saved snapshot holds its Effect: the first save after a `settled` or `aborted` row's own save
+  drops it, so a Machine that loops does not grow its blob.
+- **D1: an Effect is stopped when its state exits.** The exec's group is killed. The kill is sent again until the
+  Harness keeps it, for at most the command's timeout (past it the Harness's own timer has ended the group); a kill that
+  never reaches it is said on the feed. A fast exit can send the kill while the start is still on the wire: the Harness
+  keeps a kill of an id it does not know, and the start that arrives after it runs nothing. The abort goes to the ledger
   (`aborted`) and the feed, "outcome unknown"; the Machine does not get it — the state that asked has left. Two stops
   are not exits: the host parking the run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor).
   The Effect then re-attaches on restore, or settles `unknown`. There is no "finally": cleanup is a state.
@@ -51,9 +57,10 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   is orphaned after a final state — each breaks D1 or the ledger.
 - **Rest counts an Effect like any child.** A running Effect below an Agent's state holds the Agent's pick (ADR-0024); a
   settled Effect with no `onDone` is Rest. An Effect is not a long-lived invoke, and the load walk does not warn on one.
-- **The load walk checks what a pick hands an Effect** (ADR-0015): a pick param nothing reads and a `fill` that
-  overwrites a param are refused, a mapper the probe cannot run is a warning, and a child of an Agent's state that
-  invokes something and that nothing enters is refused.
+- **The load walk checks what a pick hands an Effect** (ADR-0015): a pick param nothing reads (with `fromPick`, one that
+  is no key of the Effect's input and that `fill` does not read) and a `fill` that overwrites a param are refused, a
+  mapper the probe cannot run is a warning, and a child of an Agent's state that invokes something and that nothing
+  enters is refused.
 
 ## Considered options
 

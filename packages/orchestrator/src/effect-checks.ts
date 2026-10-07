@@ -1,8 +1,9 @@
 // The load walk's Effect checks (ADR-0067), run inside `jr2Setup.createMachine` beside ADR-0015's.
 //
 //   - A PICK PARAM THAT NOTHING READS. Every param of every pick that enters a state invoking an
-//     Effect is read by that invoke's input — `fromPick` by construction, a plain mapper probed with
-//     a recording event — or stored by an `assign` on the entering transition or the state's entry.
+//     Effect is read by that invoke's input — `fromPick` for each param that is a key of the Effect's
+//     input (a command's argv slots) or that its `fill` reads, a plain mapper probed with a recording
+//     event — or stored by an `assign` on the entering transition or the state's entry.
 //     Else the Agent supplies it and nothing uses it: refused. A `fill` that sets a key that is also a
 //     param drops the Agent's value: refused. A `fromPick` of another pick than the one that enters
 //     the state reads params that are not there: refused. A mapper or an assign the probe cannot run
@@ -19,7 +20,7 @@
 import type { AnyStateMachine, UnknownActorLogic } from "xstate";
 import type { EventDef } from "@jr2/agent-protocol";
 import { isAgent } from "./agent.ts";
-import { isEffect } from "./effect.ts";
+import { inputKeysOf, isEffect } from "./effect.ts";
 import { isAnswer, isPickMapper } from "./pick.ts";
 
 type Node = AnyStateMachine["root"];
@@ -65,7 +66,9 @@ export function effectChecks(
   for (const n of all) {
     const configs = [n.config.invoke ?? []].flat() as Array<{ input?: unknown } | undefined>;
     n.invoke.forEach((inv, i) => {
-      if (!isEffect(logicOf(inv.src))) return;
+      const logic = logicOf(inv.src);
+      if (!isEffect(logic)) return;
+      const keys = inputKeysOf(logic.effect);
       const slot = typeof inv.src === "string" ? inv.src : inv.id;
       const mapper = configs[i]?.input;
       for (const [event, actions] of entering.get(n) ?? []) {
@@ -84,7 +87,9 @@ export function effectChecks(
         const read = new Set<string>();
         let probed = true;
         if (isPickMapper(mapper)) {
-          for (const p of params) read.add(p);
+          // Params flow by NAME: one that is no key of the Effect's input reaches nothing, and
+          // TypeScript does not reject an extra key on a spread. Only `fill` can still read it.
+          for (const p of params) if (keys.includes(p)) read.add(p);
           if (mapper.fill) {
             try {
               const filled = mapper.fill({ context: anything(), params: recorder(params, read) });
@@ -100,7 +105,7 @@ export function effectChecks(
             } catch (err) {
               probed = false;
               warnings.push(
-                `${where}: could not probe fromPick's fill (${messageOf(err)}); a param it overwrites is unchecked`,
+                `${where}: could not probe fromPick's fill (${messageOf(err)}); a param it reads or overwrites is unchecked`,
               );
             }
           }
@@ -126,7 +131,13 @@ export function effectChecks(
           }
         }
         const lost = params.filter((p) => !read.has(p));
-        if (probed && lost.length) {
+        if (probed && lost.length && isPickMapper(mapper)) {
+          errors.push(
+            `${where} with fromPick: ${lost.map((p) => `"${p}"`).join(", ")} is no key of the Effect's input ` +
+              `(${keys.join(", ") || "none"}), and nothing else reads it — the Agent supplies it and it reaches ` +
+              `nothing; name an argv slot for it, read it in \`fill\`, store it with assign, or drop it from the def`,
+          );
+        } else if (probed && lost.length) {
           errors.push(
             `${where}, which never reads ${lost.map((p) => `"${p}"`).join(", ")}: the Agent supplies it and nothing ` +
               `uses it — map it in the invoke's input, store it with assign, or drop it from the def`,

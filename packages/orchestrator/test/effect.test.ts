@@ -5,6 +5,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { assign } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
@@ -88,6 +91,17 @@ async function started(
   return { host, store: s, runId, feed };
 }
 
+/** Every ledger the store was asked to save, in order: what reached the disk, row by row. */
+function savedLedgers(store: SnapshotStore): Array<Record<string, EffectRow>> {
+  const saved: Array<Record<string, EffectRow>> = [];
+  const save = store.save.bind(store);
+  store.save = (runId, blob, status) => {
+    saved.push(structuredClone((blob as { effects?: Record<string, EffectRow> }).effects ?? {}));
+    return save(runId, blob, status);
+  };
+  return saved;
+}
+
 const ledger = async (store: SnapshotStore, runId: string): Promise<Record<string, EffectRow>> =>
   ((await store.load(runId))?.snapshot as { effects?: Record<string, EffectRow> }).effects ?? {};
 const valueOf = (rig: Rig) => rig.host.status(rig.runId)?.value;
@@ -135,18 +149,21 @@ test("write-ahead: the intent row is on disk, with the snapshot that holds the E
   await waitFor(() => seen.length === 1);
   assert.equal(seen[0]!.row?.state, "intent");
   assert.ok(seen[0]!.child, "the same persist holds the Effect child and its id");
+  const saved = savedLedgers(store);
   fake.settle({ outcome: "exited", code: 0, tail: "" });
   await waitFor(() => valueOf(rig) === "done");
-  const rows = Object.values(await ledger(store, rig.runId));
-  assert.deepEqual(
-    rows.map((r) => r.state),
-    ["settled"],
+  assert.ok(
+    saved.some((rows) => Object.values(rows).some((r) => r.state === "settled")),
+    "the settled row reached the disk",
   );
+  assert.deepEqual(await ledger(store, rig.runId), {}, "and the persist that carries its transition drops it");
 });
 
 test("D1: its state exits while it runs — the exec is killed, the ledger and the feed say `outcome unknown`, the Machine hears nothing", async () => {
   const fake = new FakeHarnessExec();
-  const rig = await started(fake.factory);
+  const store = await mkStore();
+  const saved = savedLedgers(store);
+  const rig = await started(fake.factory, store);
   await waitFor(() => fake.starts.length === 1);
   rig.host.sendToGate(rig.runId, "ctl", { type: "leave" });
   await waitFor(() => fake.kills.length === 1);
@@ -154,10 +171,10 @@ test("D1: its state exits while it runs — the exec is killed, the ledger and t
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(valueOf(rig), "left");
   assert.equal(contextOf(rig).result, undefined, "the Machine never got the abort");
-  const rows = Object.values(await ledger(rig.store, rig.runId));
   assert.deepEqual(
-    rows.map((r) => r.state),
-    ["aborted"],
+    saved.flatMap((rows) => Object.values(rows).map((r) => r.state)).filter((s, i, all) => s !== all[i - 1]),
+    ["intent", "aborted"],
+    "the abort reached the ledger on disk",
   );
   const aborted = rig.feed.find((e) => e.kind === "effect" && e.phase === "aborted");
   assert.match((aborted as { text: string }).text, /outcome unknown/);
@@ -302,4 +319,142 @@ test("real processes through the Harness's own exec: a metacharacter stays insid
   const result = (host.status(runId)?.context as Ctx).result!;
   assert.equal(result.outcome, "exited");
   assert.deepEqual(JSON.parse((result as { tail: string }).tail), ["a; echo pwned $(id) | cat"]);
+});
+
+test("the ledger keeps only the rows a restore can read: a Machine that loops does not grow its blob", async () => {
+  // Each pass settles at once with a 3000-character tail, then re-enters the state that runs it.
+  const big = "x".repeat(3000);
+  const instant: ExecPortFactory = () => ({
+    start: async () => {},
+    read: async () => ({
+      state: "settled",
+      stream: big,
+      next: big.length,
+      output: { outcome: "exited", code: 0, tail: big },
+    }),
+    kill: async () => {},
+    forget: async () => {},
+  });
+  const loop = commandWith(instant, ["make"], { tail: 4096 });
+  const machine = jr2Setup({
+    types: {} as { context: { n: number } },
+    events: [begin],
+    actors: { ws: fakeWorkspace(handles()), loop },
+  }).createMachine({
+    id: "loop",
+    context: { n: 0 },
+    invoke: { src: "ws" },
+    initial: "idle",
+    states: {
+      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
+      running: {
+        invoke: {
+          src: "loop",
+          onDone: [
+            { guard: ({ context }) => context.n >= 39, target: "done" },
+            { target: "running", reenter: true, actions: assign({ n: ({ context }) => context.n + 1 }) },
+          ],
+        },
+      },
+      done: {},
+    },
+  });
+  const store = await mkStore();
+  const saved = savedLedgers(store);
+  const host = new RunHost({ store });
+  host.register({ name: "loop", machine, provide: () => ({}) });
+  const { runId } = await host.start("loop");
+  host.sendToGate(runId, "start", { type: "begin" });
+  await waitFor(() => host.status(runId)?.value === "done");
+  assert.equal((host.status(runId)?.context as { n: number }).n, 39, "forty passes");
+  const most = Math.max(...saved.map((rows) => Object.keys(rows).length));
+  assert.ok(most <= 2, `at most a live row and the one just settled per save, got ${most}`);
+  assert.deepEqual(await ledger(store, runId), {}, "nothing left once no Effect runs");
+  const bytes = JSON.stringify((await store.load(runId))!.snapshot).length;
+  assert.ok(bytes < 8_000, `the blob stays flat: ${bytes} bytes`);
+});
+
+test("D1 holds a fast exit through the real exec: a kill that overtakes its start keeps it from running", async () => {
+  const execs = new Execs();
+  const dir = mkdtempSync(join(tmpdir(), "jr2-fx-"));
+  const marker = join(dir, "ran");
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let kills = 0;
+  // The start is on the wire, held; the state exits and the kill reaches the Harness first.
+  const racing: ExecPortFactory = (endpoint, bearer) => {
+    const port = execsPort(execs)(endpoint, bearer);
+    return {
+      ...port,
+      start: async (id, req, signal) => {
+        await held;
+        return port.start(id, req, signal);
+      },
+      kill: async (id) => {
+        kills++;
+        return port.kill(id);
+      },
+    };
+  };
+  const writes = commandWith(racing, [
+    process.execPath,
+    "-e",
+    `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "x")`,
+  ]);
+  const machine = jr2Setup({
+    types: {} as { context: Ctx },
+    events: [begin, leave],
+    actors: { ws: fakeWorkspace(handles({})), writes },
+  }).createMachine({
+    id: "fast",
+    context: {},
+    invoke: { src: "ws" },
+    initial: "idle",
+    states: {
+      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
+      running: {
+        invoke: [
+          { src: "writes", onDone: "done" },
+          { src: "gate", id: "ctl" },
+        ],
+        on: { leave: "left" },
+      },
+      done: {},
+      left: {},
+    },
+  });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({ name: "fast", machine, provide: () => ({}) });
+  const { runId } = await host.start("fast");
+  host.sendToGate(runId, "start", { type: "begin" });
+  await waitFor(() => host.status(runId)?.value === "running");
+  host.sendToGate(runId, "ctl", { type: "leave" });
+  await waitFor(() => kills === 1);
+  release();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(host.status(runId)?.value, "left");
+  assert.equal(existsSync(marker), false, "the late start ran nothing");
+});
+
+test("D1: a kill lost to a transport fault is sent again until the Harness keeps it", async () => {
+  const fake = new FakeHarnessExec();
+  let attempts = 0;
+  const flaky: ExecPortFactory = (endpoint, bearer) => {
+    const port = fake.port(endpoint, bearer);
+    return {
+      ...port,
+      kill: async (id) => {
+        attempts++;
+        if (attempts < 3) throw new Error("harness exec POST /exec/x/kill failed: ECONNRESET");
+        return port.kill(id);
+      },
+    };
+  };
+  const rig = await started(flaky);
+  await waitFor(() => fake.starts.length === 1);
+  rig.host.sendToGate(rig.runId, "ctl", { type: "leave" });
+  for (let i = 0; i < 40 && fake.kills.length === 0; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(attempts, 3, "sent again after each fault");
+  assert.deepEqual(fake.kills, [fake.starts[0]!.id], "and kept once");
+  assert.equal(valueOf(rig), "left");
 });

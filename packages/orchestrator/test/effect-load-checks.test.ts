@@ -48,7 +48,7 @@ function build(input: unknown, actions: unknown[] = [], entry: unknown[] = []) {
   });
 }
 
-test("fromPick reads every param by construction: no refusal", () => {
+test("fromPick reads every param that is a key of the Effect's input: no refusal", () => {
   const m = build(fromPick(send));
   assert.deepEqual(loadWarningsOf(m), []);
 });
@@ -79,6 +79,44 @@ test("a `fill` that overwrites a param is refused: the Machine's value wins and 
     () => build(fromPick(send, () => ({ subject: "from the Machine" }))),
     /`fill` sets "subject", which is also a param of the pick/,
   );
+});
+
+/** `send_email` with a third param, `cc`, that `mail`'s argv has no slot for. */
+const sendCc = defineEvent({
+  name: "send_email",
+  input: z.object({ to: z.string(), subject: z.string(), cc: z.string() }),
+});
+function buildCc(input: unknown) {
+  return jr2Setup({ events: [sendCc, finish], actors: { coder: coder(), mail } }).createMachine({
+    id: "wf",
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "rest",
+        states: { rest: {}, sending: { invoke: { src: "mail", input: input as never, onDone: "rest" } } },
+        on: { send_email: ".sending", finish: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+}
+
+test("a fromPick param that is no key of the Effect's input is refused: it reaches no argv slot", () => {
+  assert.throws(
+    () => buildCc(fromPick(sendCc)),
+    (err: Error) => {
+      assert.match(err.message, /pick "send_email" enters state "wf\.w\.sending" \(Effect "mail"\) with fromPick/);
+      assert.match(err.message, /"cc" is no key of the Effect's input \(subject, to\)/);
+      assert.doesNotMatch(err.message, /"to"|"subject" is no key/);
+      return true;
+    },
+  );
+});
+
+test("a fromPick param that is no key still counts as read when `fill` reads it", () => {
+  const m = buildCc(fromPick(sendCc, ({ params }) => (params.cc.length > 0 ? {} : {})));
+  assert.deepEqual(loadWarningsOf(m), []);
 });
 
 test("a fromPick of ANOTHER pick is refused: the state is entered on an event that does not carry its params", () => {

@@ -137,14 +137,15 @@ legal and silent on purpose, an Effect child included.
 
 **Load checks on Effects** (ADR-0067). `createMachine` refuses a child of an Agent's state that invokes something and
 that nothing enters: what it invokes never runs (a mode nothing enters is only the warning above). Where a pick enters a
-state that invokes an Effect, every param of the pick must be read — by that invoke's input (`fromPick` reads them all
-by construction; a plain mapper is probed with a recording event) or by an `assign` on the entering transition or the
-state's entry — else the Agent supplies it and nothing uses it: refused. It refuses a `fill` that sets a key that is
-also a param (the Machine's value would drop the Agent's), and a `fromPick` of a pick other than the event that enters
-the state. A mapper or an assign the probe cannot run is a warning: its params are unchecked. It warns where an Agent's
-state answers on a mode's entry (`answer`) and an Effect below it has no `onDone`: the Effect settles in place, that
-mode is not entered again, and the Agent reads the Effect's output, not the answer. A pick that enters no Effect is not
-checked for its params.
+state that invokes an Effect, every param of the pick must be read — by that invoke's input (`fromPick` reads each param
+that is a key of the Effect's input, a command's argv slots, and each one its `fill` reads; a plain mapper is probed
+with a recording event) or by an `assign` on the entering transition or the state's entry — else the Agent supplies it
+and nothing uses it: refused. TypeScript does not catch a `fromPick` param that is no key of the input: it accepts an
+extra key on a spread. It refuses a `fill` that sets a key that is also a param (the Machine's value would drop the
+Agent's), and a `fromPick` of a pick other than the event that enters the state. A mapper or an assign the probe cannot
+run is a warning: its params are unchecked. It warns where an Agent's state answers on a mode's entry (`answer`) and an
+Effect below it has no `onDone`: the Effect settles in place, that mode is not entered again, and the Agent reads the
+Effect's output, not the answer. A pick that enters no Effect is not checked for its params.
 
 > > > > > > > f64828a (feat(orchestrator): load checks on Effects — a pick param nothing reads, a fill that overwrites
 > > > > > > > one, a child nothing enters are refused; the narrow no-onDone warning (ADR-0015, ADR-0067))

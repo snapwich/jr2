@@ -2,10 +2,12 @@
 // plain xstate — an input mapper, no answer — is legal.
 //
 //   - `fromPick(def, fill)` — the `input` of a state a pick enters. The pick's params flow into the
-//     invoked actor's input BY NAME, by construction; `fill` returns only what the MACHINE adds. So
-//     the security boundary reads in one expression: the def is what the Agent supplies, `fill` is
-//     what the Machine adds, and the sum is checked against the invoked actor's input type. The
-//     load walk refuses a param `fill` overwrites (setup.ts).
+//     invoked actor's input BY NAME; `fill` returns only what the MACHINE adds. So the security
+//     boundary reads in one expression: the def is what the Agent supplies, `fill` is what the
+//     Machine adds, and the sum is checked against the invoked actor's input type — for a missing or
+//     mistyped key only: TypeScript accepts an extra key on a spread. The load walk refuses the rest
+//     (effect-checks.ts): a param that is no key of an Effect's input and that `fill` does not read,
+//     and a param `fill` overwrites.
 //   - `paramsOf(event, def)` — the same params, for a plain mapper that wants them.
 //   - `answer(fn)` — an xstate action that sets what the Agent reads when its pick is answered
 //     (ADR-0024). Absent, it reads the last reply since the pick. `fn` gets `{ context, event, chain }`:

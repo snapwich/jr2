@@ -528,8 +528,8 @@ export function agent(declaration: AgentDeclaration): AgentLogic {
 /**
  * The Harness's exec (ADR-0067), as a `command` Effect drives it: `POST /exec/:id` to start (the
  * Harness runs one id once, so a start is safe to send again), `GET /exec/:id` long-polled by
- * offset, `POST /exec/:id/kill` when the Effect's state exits, `DELETE /exec/:id` once the output
- * is ledgered. A transport failure or a 5xx rejects, and the Effect asks again; a 404 on a read is
+ * offset, `POST /exec/:id/kill` when the Effect's state exits (sent again until the Harness keeps
+ * it), `DELETE /exec/:id` once the output is ledgered. A transport failure or a 5xx rejects, and the Effect asks again; a 404 on a read is
  * an exec the Harness does not know (it restarted); any other 4xx is a jr2 defect, never retried.
  */
 export function createExecPort(options: {
@@ -576,7 +576,9 @@ export function createExecPort(options: {
       return (await res.json()) as ExecRead;
     },
     kill: async (id) => {
+      // Not kept until the Harness answers 2xx: the Effect sends it again until then.
       const res = await call(url(id, "/kill"), { method: "POST" });
+      if (!res.ok) return refusedOrRetry(res, "exec kill");
       await res.body?.cancel();
     },
     forget: async (id) => {

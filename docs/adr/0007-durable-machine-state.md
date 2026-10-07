@@ -25,7 +25,9 @@ snapshot in the same save (ADR-0016). Iids are globally unique, so restore needs
 together, before the request leaves; a `settled` row is written with the output; an `aborted` row when the Effect's
 state exited while it ran. A restore reads the row and never guesses: settled → the output is delivered; intent → a
 command re-attaches to its exec by id, or settles `unknown` when the Harness no longer knows it; no row → nothing was
-sent, so it starts. Nothing an Effect started is run twice by jr2.
+sent, so it starts. Nothing an Effect started is run twice by jr2. A row is kept only while the saved snapshot holds its
+Effect: each row reaches the disk once, and the first save after a `settled` or `aborted` row's own save drops it, since
+no restore can read it. The ledger is as large as the Effects running now, never the run's history.
 
 **Pending timers** do not ride the snapshot either. The host persists a **timer table** beside it in the same save: one
 row per pending `after`, named delay, delayed `raise` or delayed `sendTo` in the run's tree, with its absolute deadline.

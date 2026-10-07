@@ -11,16 +11,18 @@
 //   - THE LEDGER. The run host keeps one row per Effect, in the run's blob beside the snapshot
 //     (`RunBlob.effects`): an INTENT row written before the call — in the same persist as the
 //     snapshot whose state invoked it, saved at the write — and a SETTLED row written with the
-//     output, saved by the persist the transition it drives makes. A restore reads the row, never
+//     output, saved at the write before the transition it drives. A restore reads the row, never
 //     guesses: settled → deliver the output; intent → re-attach to the exec by id, or, when the
 //     Harness no longer knows it, settle `unknown`; no row → nothing left, so it starts. A command
-//     never runs twice: it runs the Agent's code, which may spend a Stand-in.
+//     never runs twice: it runs the Agent's code, which may spend a Stand-in. A row lives only while
+//     the saved snapshot holds its Effect (`pruneLedger`), so a looping Machine's blob stays flat.
 //   - D1. The Effect stops when its state exits — xstate stops the child, and this logic kills the
-//     exec's process group. The abort goes to the ledger and the feed, "outcome unknown"; the
-//     Machine does not get it, because the state that asked has left. Two stops are NOT exits: the
-//     host parking the run (`hostStopping`, ADR-0024) and an Orchestrator that dies (it stops no
-//     actor) — the Effect re-attaches on restore, or settles `unknown`. There is no "finally":
-//     cleanup is a state.
+//     exec's process group: the kill is sent until the Harness keeps it, and a kill that arrives
+//     before its start keeps that start from running (a fast exit). The abort goes to the ledger
+//     and the feed, "outcome unknown"; the Machine does not get it, because the state that asked
+//     has left. Two stops are NOT exits: the host parking the run (`hostStopping`, ADR-0024) and an
+//     Orchestrator that dies (it stops no actor) — the Effect re-attaches on restore, or settles
+//     `unknown`. There is no "finally": cleanup is a state.
 //   - EVERY OUTCOME IS OUTPUT: `exited | timeout | killed | unknown`. `onError` is a jr2 or config
 //     defect only — a command outside a Workspace, an argv slot with no value.
 //
@@ -72,6 +74,11 @@ export function argvText(argv: readonly (string | Arg)[]): string[] {
   return argv.map((a) => (typeof a === "string" ? a : `<${a.arg}>`));
 }
 
+/** The keys an Effect's input has, read off its parts: a command's argv slot names. */
+export function inputKeysOf(parts: EffectParts): string[] {
+  return parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg]));
+}
+
 // --- Output -------------------------------------------------------------------------------------
 
 /** The outside world may have acted, and jr2 cannot tell: the Harness lost the exec, or its state
@@ -92,6 +99,32 @@ export type EffectRow =
   | { state: "intent"; kind: EffectParts["kind"]; slot: string; endpoint: string; placement: string; at: string }
   | { state: "settled"; kind: EffectParts["kind"]; slot: string; output: unknown; at: string }
   | { state: "aborted"; kind: EffectParts["kind"]; slot: string; at: string };
+
+/**
+ * Drop, in place, every row the persisted snapshot no longer needs. A restore reads a row only for
+ * an Effect child that snapshot holds (its `effectId`, at any depth), so a row whose Effect is gone
+ * is read by nothing: a settled row once the persist that carries its transition is written, an
+ * aborted row once the stop is saved. `unsaved` rows were written since the last save and are kept
+ * for it — each row reaches the disk once. Without this a looping Machine grows its blob each pass.
+ */
+export function pruneLedger(
+  effects: Record<string, EffectRow>,
+  persisted: unknown,
+  unsaved: ReadonlySet<string>,
+): void {
+  const held = new Set<string>();
+  const walk = (snapshot: unknown): void => {
+    const children = (snapshot as { children?: Record<string, { snapshot?: unknown } | undefined> } | null)?.children;
+    if (!children || typeof children !== "object") return;
+    for (const child of Object.values(children)) {
+      const id = (child?.snapshot as { effectId?: unknown } | undefined)?.effectId;
+      if (typeof id === "string") held.add(id);
+      walk(child?.snapshot);
+    }
+  };
+  walk(persisted);
+  for (const id of Object.keys(effects)) if (!held.has(id) && !unsaved.has(id)) delete effects[id];
+}
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
  * carry the stream; `aborted` and an `unknown` settle say the outside world may have acted. */
@@ -155,8 +188,9 @@ const DEFAULT_TAIL = 4096;
 /** How long a re-asked request waits, at most, after a transport failure. */
 const RETRY_MAX_MS = 10_000;
 
-/** The running side of one live Effect actor — what its stop reads. */
-type Running = { controller: AbortController; port?: ExecPort; started: boolean };
+/** The running side of one live Effect actor — what its stop reads. `timeoutMs`: how long its stop
+ * keeps sending the kill — past it the Harness's own timer has ended the group. */
+type Running = { controller: AbortController; port?: ExecPort; started: boolean; timeoutMs: number };
 const running = new WeakMap<AnyActorRef, Running>();
 
 /**
@@ -210,7 +244,7 @@ export function commandWith<const A extends readonly (string | Arg)[]>(
     },
     start: (snapshot, { self, system }) => {
       if (snapshot.status !== "active") return;
-      const run: Running = { controller: new AbortController(), started: false };
+      const run: Running = { controller: new AbortController(), started: false, timeoutMs: parts.timeoutMs };
       running.set(self, run);
       void drive(self, system, snapshot, parts, portFactory, run).catch((error: unknown) => {
         if (run.controller.signal.aborted) return;
@@ -362,7 +396,19 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
   if (binding?.hostStopping) return;
   const row = binding?.effectRow?.(effectId);
   if (row?.state !== "intent") return;
-  void run?.port?.kill(effectId).catch(() => {});
+  const port = run?.port;
+  if (port) {
+    void killUntilKept(port, effectId, run.timeoutMs).then((kept) => {
+      if (kept) return;
+      binding?.marker?.({
+        kind: "effect",
+        slot: row.slot,
+        effect: effectId,
+        phase: "aborted",
+        text: "the kill did not reach its Harness; it may run until its timeout",
+      });
+    });
+  }
   // Written after the transition that stopped it, never inside it: a save mid-transition reads the
   // Machine before its route.
   const aborted: EffectRow = { state: "aborted", kind: row.kind, slot: row.slot, at: new Date().toISOString() };
@@ -374,6 +420,25 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
     phase: "aborted",
     text: "its state exited while it ran: stopped; outcome unknown",
   });
+}
+
+/**
+ * Send the kill until the Harness keeps it. The start may still be on the wire, so the kill can
+ * reach the Harness first — it keeps an unknown id as killed, and that start then runs nothing — or
+ * be lost to a transport fault, so it is sent again with backoff. Bounded by the command's timeout:
+ * past it the Harness's own timer has ended the group. False when it never reached the Harness.
+ */
+async function killUntilKept(port: ExecPort, id: string, withinMs: number): Promise<boolean> {
+  const deadline = Date.now() + withinMs;
+  for (let wait = 250; ; wait = Math.min(wait * 2, RETRY_MAX_MS)) {
+    try {
+      await port.kill(id);
+      return true;
+    } catch (err) {
+      if (err instanceof ExecRefused || Date.now() + wait > deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, wait / 2 + Math.random() * (wait / 2)).unref());
+    }
+  }
 }
 
 /** argv with each slot filled from the input — one argument per entry. */
