@@ -11,6 +11,7 @@
 // (`POST /attach`): the Workspace's Repos into `/work`, run here instead of over `kubectl exec`.
 // Plus ADR-0031's lifetime: each conversation persisted to a directory and rebuilt from it on boot,
 // the Orchestrator's live set (`PUT /agents`) freeing the rest, and a drain that stops admitting.
+// Plus ADR-0067's exec (`/exec/:id`): a Machine's `command` Effect, run as a child of this process.
 // Turn execution and the attach are injected, so this module owns routing alone — wire tests drive it socket-free via `app.request()` and never touch
 // pi.
 
@@ -18,6 +19,7 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import { AttachFault, attachFault } from "./attach.ts";
 import { Conversation, type RunSubmission, type UpdatesView } from "./conversation.ts";
+import { Execs } from "./exec.ts";
 import { renderEchoEvent, type PrinterOut } from "./printer.ts";
 import {
   conversationDir,
@@ -49,6 +51,7 @@ import {
   type AttachError,
   type AttachRequest,
   type AttachResponse,
+  type ExecRequest,
   type HistoryMessage,
   type LiveConversation,
   type LiveSetResponse,
@@ -105,6 +108,9 @@ export type HarnessAppDeps = {
   /** Run the attach (ADR-0063) — `attach.ts`'s `attacher()` in production, a stub in wire tests.
    * Omitted, `POST /attach` answers 501: this Harness does not attach. */
   attach?: (req: AttachRequest) => Promise<AttachResponse>;
+  /** The execs a `command` Effect runs as (ADR-0067) — one `Execs` per process in production.
+   * Omitted, `/exec/*` answers 501: this Harness runs no command. */
+  execs?: Execs;
   /** Hear the memory guard's kills (ADR-0061, layer 4) — `MemoryGuard.onKill` in production. Each
    * lands on the stream of every conversation whose Submission is running, where the Orchestrator
    * reads it and keeps a workspace notice (ADR-0062). Omitted, no kill is reported. */
@@ -227,6 +233,18 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   app.use("/agents/*", gate);
   app.use("/echo", gate);
   app.use("/attach", gate);
+  app.use("/exec/*", gate);
+
+  /** The process's execs, or the refusal a Harness that runs none answers. */
+  const execsOrRefusal = (c: Context): Execs | Response => {
+    if (deps.menuOnly) {
+      return c.json(
+        { error: "this is the Instance Harness, which holds no Workspace — no command runs here (ADR-0031)" },
+        403,
+      );
+    }
+    return deps.execs ?? c.json({ error: "this Harness runs no command (ADR-0067)" }, 501);
+  };
 
   // Readiness (ADR-0063): the probe asks THIS route, not the port. A pod has one network
   // namespace, so another container that takes the Harness's port answers a socket probe and
@@ -400,6 +418,48 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
     }
   });
 
+  // The exec (ADR-0067): a Machine's `command` Effect, run here as a child of this process — the
+  // Agent's user and its Stand-ins, never a shell. Named by the Effect's id, so a second start of a
+  // known id runs nothing; read by offset, long-polled like a stream; killed with its process group
+  // when its state exits. The Instance Harness holds no Workspace, so it runs none (ADR-0031).
+  app.post("/exec/:id", async (c) => {
+    const execs = execsOrRefusal(c);
+    if (!(execs instanceof Execs)) return execs;
+    const body = await c.req.json().catch(() => undefined);
+    const fault = execFault(body);
+    if (fault) return c.json({ error: fault }, 400);
+    return c.json(
+      { id: c.req.param("id") },
+      execs.start(c.req.param("id"), body as ExecRequest) === "started" ? 201 : 200,
+    );
+  });
+  app.get("/exec/:id", async (c) => {
+    const execs = execsOrRefusal(c);
+    if (!(execs instanceof Execs)) return execs;
+    const raw = c.req.query("offset");
+    const offset = raw === undefined ? undefined : Number(raw);
+    if (offset !== undefined && !(Number.isInteger(offset) && offset >= 0)) {
+      return c.json({ error: `offset must be a whole number, got ${raw}` }, 400);
+    }
+    const read = await execs.read(c.req.param("id"), {
+      ...(offset !== undefined ? { offset } : {}),
+      waitMs: c.req.query("live") === LIVE_LONG_POLL ? longPollMs : 0,
+    });
+    return read === undefined ? c.json({ error: "no such exec" }, 404) : c.json(read);
+  });
+  app.post("/exec/:id/kill", (c) => {
+    const execs = execsOrRefusal(c);
+    if (!(execs instanceof Execs)) return execs;
+    const killed = execs.kill(c.req.param("id"));
+    return killed === undefined ? c.json({ error: "no such exec" }, 404) : c.json({ killed });
+  });
+  app.delete("/exec/:id", (c) => {
+    const execs = execsOrRefusal(c);
+    if (!(execs instanceof Execs)) return execs;
+    execs.forget(c.req.param("id"));
+    return c.body(null, 204);
+  });
+
   // Registered after the handlers, so only methods the wire does not speak land here (the
   // stub's 405). Not on the abort path: the stub answers a GET there 404, and so does this.
   app.all("/agents/:name/:id", (c) => c.json({ error: `harness: ${c.req.method} not supported` }, 405));
@@ -490,6 +550,20 @@ function isPickAnswer(value: unknown): boolean {
   if (typeof sender !== "object" || sender === null) return false;
   const { party, id } = sender as Record<string, unknown>;
   return (party === "agent" || party === "gate") && typeof id === "string";
+}
+
+/** Why a body is not an `ExecRequest`, or undefined. argv is a non-empty list of strings — never a
+ * string, which a shell would read; a `cwd` is absolute, as a Turn's Frame is (ADR-0057). */
+function execFault(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null) return "the body is not an exec request";
+  const { argv, cwd, timeoutMs, tail } = body as Record<string, unknown>;
+  if (!Array.isArray(argv) || argv.length === 0 || !argv.every((a) => typeof a === "string")) {
+    return "argv must be a non-empty list of strings — each one argument, never shell text";
+  }
+  if (cwd !== undefined && (typeof cwd !== "string" || !cwd.startsWith("/"))) return "cwd must be an absolute path";
+  if (typeof timeoutMs !== "number" || !(timeoutMs > 0)) return "timeoutMs must be a positive number";
+  if (typeof tail !== "number" || !(tail >= 0)) return "tail must be a number, 0 or more";
+  return undefined;
 }
 
 function streamHeaders(view: UpdatesView): Record<string, string> {

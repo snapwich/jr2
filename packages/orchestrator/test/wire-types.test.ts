@@ -48,6 +48,9 @@ const attachSlot: Mutual<client.AttachSlot, harness.AttachSlot> = agree;
 const attachRequest: Mutual<client.AttachRequest, harness.AttachRequest> = agree;
 const attachResponse: Mutual<client.AttachResponse, harness.AttachResponse> = agree;
 const attachError: Mutual<client.AttachError, harness.AttachError> = agree;
+const execRequest: Mutual<client.ExecRequest, harness.ExecRequest> = agree;
+const execOutcome: Mutual<client.ExecOutcome, harness.ExecOutcome> = agree;
+const execRead: Mutual<client.ExecRead, harness.ExecRead> = agree;
 const liveConversation: Mutual<client.LiveConversation, harness.LiveConversation> = agree;
 const liveSetRequest: Mutual<client.LiveSetRequest, harness.LiveSetRequest> = agree;
 const liveSetResponse: Mutual<client.LiveSetResponse, harness.LiveSetResponse> = agree;
@@ -85,6 +88,9 @@ test("the client's wire shapes and the Harness's are one contract", () => {
     attachRequest,
     attachResponse,
     attachError,
+    execRequest,
+    execOutcome,
+    execRead,
     liveConversation,
     liveSetRequest,
     liveSetResponse,

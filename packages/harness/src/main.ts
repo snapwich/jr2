@@ -13,6 +13,7 @@
 import { createHash } from "node:crypto";
 import { harnessServer } from "./app.ts";
 import { attacher } from "./attach.ts";
+import { Execs } from "./exec.ts";
 import { seatFacts, standingBriefing } from "./briefing.ts";
 import { clearShm, podMemoryGuard } from "./memory-guard.ts";
 import { admissionFault, modelsFor } from "./provider.ts";
@@ -80,6 +81,9 @@ const harnessWire = harnessServer({
   memoryKills: (listener) => guard.onKill(listener),
   // The attach (ADR-0063): the Workspace's Repos into `/work`, on the Orchestrator's call.
   attach: attacher(),
+  // The exec (ADR-0067): a Machine's `command` Effects, run as children of this process — the
+  // Agent's user and its Stand-ins. The Instance Harness refuses them (`menuOnly`).
+  execs: new Execs(),
   checkAdmission: (resolved) => admissionFault(models, resolved),
   // Set on the Instance Harness StatefulSet alone (deploy.ts, ADR-0031): this placement admits
   // Menu-only Agents and refuses every other definition — the gate that keeps "no code

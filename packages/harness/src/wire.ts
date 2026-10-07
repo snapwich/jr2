@@ -249,3 +249,32 @@ export type AttachResponse = { repos: Record<string, string>; review?: Record<st
 /** What a failed attach answers: 400 for a body that is not an `AttachRequest`, 500 when a step
  * failed — `slot` names the Repo Slot, and `error` carries the step and git's own stderr. */
 export type AttachError = { error: string; slot?: string };
+
+// --- the exec (a `command` Effect, ADR-0067) ----------------------------------------------------
+// A Machine's `command` Effect runs here, in the Harness container of its Workspace's Sandbox: a
+// child of the Harness process, so the Agent's user and the same Stand-ins, never through a shell.
+// The Orchestrator names each exec by its Effect's id, so one id runs once whoever asks again.
+// Same bearer as every Harness route (ADR-0058).
+
+/** What `POST /exec/:id` accepts. `argv` is never shell text: each entry is one argument. `cwd` is
+ * absolute, or absent for the Harness's own (`/work`). `tail`: how many characters of the end of
+ * the stream the output keeps. */
+export type ExecRequest = { argv: string[]; cwd?: string; timeoutMs: number; tail: number };
+
+/** How an exec ended: it exited (a command not found is exit 127), its timeout killed its process
+ * group, or a signal ended it. Every one is output; none is a fault. */
+export type ExecOutcome =
+  | { outcome: "exited"; code: number; tail: string }
+  | { outcome: "timeout"; tail: string }
+  | { outcome: "killed"; signal: string; tail: string };
+
+/** What `GET /exec/:id` answers: the stream from `offset` (stdout and stderr, in arrival order) up
+ * to `next`, and the output once settled. `dropped`: characters before `offset` the Harness no
+ * longer keeps. A read with no `offset` starts at the end — a re-attach reads what comes next. */
+export type ExecRead = {
+  state: "running" | "settled";
+  stream: string;
+  next: number;
+  dropped?: number;
+  output?: ExecOutcome;
+};
