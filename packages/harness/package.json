@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     "./wire": "./src/wire.ts",
-    "./exec": "./src/exec.ts"
+    "./exec": "./src/exec.ts",
+    "./app": "./src/app.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

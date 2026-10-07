@@ -29,6 +29,10 @@ same-name-different-payload pair into a collision that the per-Machine defs had 
 `defineEvent` also carries the TypeScript side: `jr2Setup` derives the machine's event union from the defs — one source
 of truth, no schema/type drift, and the machine stays fully typed for xstate tooling.
 
+A def's `input` is what its sender supplies, and nothing the Machine adds. Where a pick starts work,
+`fromPick(def, fill)` carries those params into the invoked Effect's input by name, and `fill` adds the Machine's part;
+the load walk refuses a param nothing reads and a `fill` that overwrites one (ADR-0067, ADR-0015).
+
 There is no jr2-blessed event vocabulary. `request_review`, `review_verdict`, `approve` are the _coding workflow's_
 words; another workflow defines others. jr2 owns only definition, transport, validation, and delivery.
 
