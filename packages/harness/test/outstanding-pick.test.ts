@@ -220,6 +220,15 @@ test("an answer that left the Agent's state ends the Turn; the answer's words na
     "Its answer: `advice` from Agent `reviewer`.",
   );
   assert.equal(answerText(undefined), "No reply came back for it.");
+  // The Machine's `answer` (ADR-0067): a string is its own words; anything else is its JSON.
+  assert.equal(
+    answerText({ kind: "answer", value: "Preview at https://p.example/1." }),
+    "Its answer: Preview at https://p.example/1.",
+  );
+  assert.equal(
+    answerText({ kind: "answer", value: { url: "https://p.example/1" } }),
+    'Its answer: {"url":"https://p.example/1"}',
+  );
 });
 
 test('a guard straight back alone reads "moved; nothing ran"; a move to a mode reads as the plain receipt', () => {

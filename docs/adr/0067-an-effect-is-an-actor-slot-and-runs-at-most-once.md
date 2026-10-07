@@ -11,6 +11,15 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   exits, its input persists with the snapshot, a `src` typo is a compile error, and `.provide()` is the unit-test seam.
   The slot carries its parts as plain data — kind, argv, timeout, Repo Slot — which `jr2 up` prints and the Machine doc
   carries, read without running anything.
+- **Between a pick and its work: `fromPick`, `paramsOf`, `answer`.** All optional; a plain mapper is legal.
+  `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
+  `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security
+  boundary in one expression (what the Agent supplies, what the Machine adds). `paramsOf(event, def)` reads the same
+  params for a plain mapper. `answer(({ context, event, chain }) => …)` is an xstate action that sets what the Agent
+  reads when its pick is answered (ADR-0024); `chain` is every reply since the pick, oldest first, each a link typed by
+  its slot (`{ kind: "output", src, output }`) or by the Machine's events (`{ kind: "event", event }`); its order and
+  length are not typed. A link is a reply from outside the Machine; the events it sent itself are skipped. The value is
+  JSON on the wire and in the hold; one with no JSON form sets nothing.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.
@@ -58,5 +67,7 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
 - A command a Harness restart cut settles `unknown`; the stream before the restart is on the feed.
 - An Orchestrator restart mid-command gives one run: the restored Effect reads the exec from its current end and settles
   with its output.
+- Not built: an `answer` in a Machine where two Agents have a pick outstanding at once. Which pick it shapes is not
+  decided; today it sets nothing, and each pick keeps its default answer.
 - Owed, not built: the other kinds (`http`, `upload`, `push`) and the Effectors that run them; an Open argv bound by
   `customize()`.

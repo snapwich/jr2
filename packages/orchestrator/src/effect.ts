@@ -363,7 +363,10 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
   const row = binding?.effectRow?.(effectId);
   if (row?.state !== "intent") return;
   void run?.port?.kill(effectId).catch(() => {});
-  binding?.recordEffect?.(effectId, { state: "aborted", kind: row.kind, slot: row.slot, at: new Date().toISOString() });
+  // Written after the transition that stopped it, never inside it: a save mid-transition reads the
+  // Machine before its route.
+  const aborted: EffectRow = { state: "aborted", kind: row.kind, slot: row.slot, at: new Date().toISOString() };
+  queueMicrotask(() => binding?.recordEffect?.(effectId, aborted));
   binding?.marker?.({
     kind: "effect",
     slot: row.slot,

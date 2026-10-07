@@ -56,6 +56,7 @@ import {
   type LiveConversation,
   type LiveSetResponse,
   type Notice,
+  type PickAnswer,
 } from "./wire.ts";
 
 /** One conversation's identity and stream seam, as the app hands it to the turn factory. */
@@ -537,13 +538,14 @@ function noticesOf(value: unknown): { notices?: Notice[] } {
   return notices.length > 0 ? { notices } : {};
 }
 
-/** A pick answer's facts (ADR-0024): absent (no reply came), a party's event with its payload, or a
- * child's output. */
-function isPickAnswer(value: unknown): boolean {
+/** A pick answer's facts this Harness can word (ADR-0024, ADR-0067): absent (no reply came), a
+ * party's event with its payload, a child's output, or what the Machine's `answer` action set. */
+function isPickAnswer(value: unknown): value is PickAnswer | undefined {
   if (value === undefined) return true;
   if (typeof value !== "object" || value === null) return false;
   const { kind, event, payload, sender, actor } = value as Record<string, unknown>;
   if (kind === "output") return typeof actor === "string" && "output" in value;
+  if (kind === "answer") return "value" in value;
   if (kind !== "event" || typeof event !== "string") return false;
   if (typeof payload !== "object" || payload === null) return false;
   if (sender === undefined) return true;

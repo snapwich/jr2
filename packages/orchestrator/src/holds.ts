@@ -5,9 +5,9 @@
 //
 // A hold is plain data on the run (`RunBlob.holds`), saved with the snapshot, so a park or an
 // Orchestrator restart is a longer wait in the same Turn: the restored host reads the same Rest off
-// the restored Machine, and answers the same poll. What a hold keeps beside the delivery id is the
-// LAST reply from below the Agent's state since the pick (`last`) — the answer's default — because the
-// events that carried it are gone after a restart.
+// the restored Machine, and answers the same poll. What a hold keeps beside the delivery id is EVERY
+// reply from below the Agent's state since the pick (`chain`) — the last is the answer's default —
+// because the events that carried them are gone after a restart.
 //
 // The answer is the last reply since the pick, rendered by the Harness: a party's event (a Gate's
 // answer, a nested Agent's pick) with its payload, or a child's output (a child Machine, an Effect
@@ -44,8 +44,12 @@ export type Hold = {
   /** The continued conversation (ADR-0057) the picking Turn is part of: where a route out of its
    * state leaves the answer as a notice for its next Turn. Absent for a fresh Turn: no notice. */
   conversation?: string;
-  /** The last reply since the pick: the answer's default. */
-  last?: PickAnswer;
+  /** Every reply since the pick, oldest first (ADR-0024): the last is the answer's default, and
+   * the whole is the `chain` an `answer` action reads (ADR-0067). */
+  chain?: PickAnswer[];
+  /** What the Machine's `answer` action set since the pick (ADR-0067): it replaces the default.
+   * Wrapped, so an answer of `null` is still one. */
+  shaped?: { value: unknown };
   /** The last event the Machine took while the Agent's state was the hold's, with work still running
    * below it, was no reply from below and no event a Machine sent itself at once: a timer the Machine
    * set, an event from outside the states below, a party's event, the Agent's own end. If the Machine
@@ -59,6 +63,16 @@ export type Hold = {
   /** The answer reached the model: the poll read it, or a re-admission carried it (ADR-0031). */
   fetched?: boolean;
 };
+
+/** A pick's answer from what the Machine did since it: the author's `answer` when one ran, else the
+ * last reply; undefined when neither — the answer then carries no reply. */
+export function answerOf(record: {
+  chain?: readonly PickAnswer[];
+  shaped?: { value: unknown };
+}): PickAnswer | undefined {
+  if (record.shaped !== undefined) return { kind: "answer", value: record.shaped.value };
+  return record.chain?.at(-1);
+}
 
 /** The answer to an outstanding pick: the receipt's facts at the moment of Rest (ADR-0024). */
 export type HeldAnswer = {

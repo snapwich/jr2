@@ -325,6 +325,9 @@ export function answerText(answer: PickAnswer | undefined): string {
     }
     case "output":
       return `Its answer: the output of \`${answer.actor}\`: ${JSON.stringify(answer.output) ?? "nothing"}.`;
+    // The Machine shaped it (ADR-0067): its words, as the workflow wrote them.
+    case "answer":
+      return `Its answer: ${typeof answer.value === "string" ? answer.value : (JSON.stringify(answer.value) ?? "nothing")}`;
   }
 }
 

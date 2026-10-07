@@ -497,6 +497,16 @@ export type RunBinding = {
    */
   hostStopping?: boolean;
   /**
+   * Every reply since the pick that `machine`'s Agent has outstanding, or is delivering now, oldest
+   * first (ADR-0024) — what an `answer` action reads as its `chain` (ADR-0067). Undefined when no
+   * pick of an Agent that `machine` invokes is being answered, or when more than one is: then the
+   * action cannot tell whose answer it shapes, and sets none.
+   */
+  chainOf?: (machine: AnyActorRef) => PickAnswer[] | undefined;
+  /** Set what that pick's answer is (ADR-0067): it replaces the default, and the last call wins.
+   * Kept with the hold, so a restore answers the same. */
+  setAnswer?: (machine: AnyActorRef, value: unknown) => void;
+  /**
    * The Effect ledger's READ half (ADR-0067): one Effect's row, by its id — what a restored Effect
    * reads to deliver its output, re-attach, or settle `unknown`, and never to run twice.
    */

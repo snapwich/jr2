@@ -42,12 +42,14 @@ export type MemoryLimitNotice = {
 /** This conversation is new and earlier context is gone — stated to that Agent's next Turn. */
 export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversation"; reason: string };
 
-/** The last reply from below the Agent's state since a pick (ADR-0024): a party's event with its
- * payload, or a child's output — what an outstanding pick's answer carries. Absent: no reply came,
- * which says nothing of whether work ran. */
+/** What a pick's answer carries (ADR-0024): by default the last reply from below the Agent's state
+ * since the pick — a party's event with its payload, or a child's output; or the value the
+ * Machine's `answer` action set (ADR-0067). Absent: no reply came, which says nothing of whether
+ * work ran. */
 export type PickAnswer =
   | { kind: "event"; event: string; sender?: { party: "agent" | "gate"; id: string }; payload: Record<string, unknown> }
-  | { kind: "output"; actor: string; output: unknown };
+  | { kind: "output"; actor: string; output: unknown }
+  | { kind: "answer"; value: unknown };
 
 /** A pick's answer that never reached its call — `cut`: this Harness restarted while the workflow
  * ran it, and the re-admission carries it; else the route left the Agent's state, and the next

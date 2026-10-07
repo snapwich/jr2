@@ -335,6 +335,37 @@ test("the notices ride the admit body to the turn, typed; one this Harness canno
   assert.deepEqual(runs[1]!.submission, { definition: CODER, message: "go" });
 });
 
+test("a pick's answer rides the admit body as a notice — the cut call's, and a route's out of the Agent's state (ADR-0024, ADR-0067)", async () => {
+  const { app, runs } = scripted();
+  const cut = {
+    kind: "pick-answer",
+    scope: "conversation",
+    pick: "run_tests",
+    cut: true,
+    answer: { kind: "output", actor: "tests", output: { outcome: "exited", code: 0, tail: "" } },
+  };
+  const left = { kind: "pick-answer", scope: "conversation", pick: "ship", cut: false };
+  const shaped = {
+    kind: "pick-answer",
+    scope: "conversation",
+    pick: "deploy",
+    cut: false,
+    answer: { kind: "answer", value: "Preview at https://p.example/1." },
+  };
+  const res = await app.request("/agents/coder/i1", {
+    method: "POST",
+    body: JSON.stringify({
+      message: "go",
+      definition: CODER,
+      // Missing its facts, or an answer of a kind this Harness cannot word: dropped.
+      notices: [cut, left, shaped, { kind: "pick-answer", scope: "conversation" }, { ...left, answer: { kind: "x" } }],
+    }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(runs[0]!.submission.notices, [cut, left, shaped]);
+});
+
 test("a guard kill lands on the stream of the conversation whose Submission runs (ADR-0061/0062)", async () => {
   let report: ((kill: { peak: string; limit: string }) => void) | undefined;
   const { app, runs } = scripted({

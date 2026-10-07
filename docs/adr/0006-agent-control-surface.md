@@ -24,8 +24,9 @@ A named event schema must compile to a flat tagged object (an `enum` discriminat
 
 A def states what the Agent supplies (`input`) and nothing about what comes back. Every pick is `ack`: delivered and
 answered on the same call. A pick that moves the workflow to work inside the Agent's state is answered when that work is
-done (ADR-0024), and the answer is the Machine's: the last reply since the pick. So a def has no `output` schema and no
-`deferred` semantics; `defineEvent` refuses both. `poll` stays reserved (ADR-0013).
+done (ADR-0024), and the answer is the Machine's: the last reply since the pick, or what its `answer` action sets
+(ADR-0067). So a def has no `output` schema and no `deferred` semantics; `defineEvent` refuses both. `poll` stays
+reserved (ADR-0013).
 
 ## One path: every conversation lives on the agent wire
 

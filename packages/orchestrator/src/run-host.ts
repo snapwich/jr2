@@ -33,7 +33,7 @@ import { SENDER_KEY, type EventDef, type EventSemantics } from "@jr2/agent-proto
 import { seatOf, senderText } from "./party.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
-import { childErrorOf, replyOf, type Hold } from "./holds.ts";
+import { answerOf, childErrorOf, replyOf, type Hold } from "./holds.ts";
 import { restOf, runningBelow } from "./rest.ts";
 import {
   acceptsNow,
@@ -217,6 +217,21 @@ function stopTree(actor: AnyActorRef): void {
 /** One outstanding pick, as `RunStatus.held` reports it: the Agent slot, its pick, and the ISO time
  * it was delivered. */
 export type RunHeld = { agent: string; pick: string; since: string };
+
+/** The pick being delivered now (ADR-0024): its registration, every reply from below its Agent's
+ * state inside its own send, and what an `answer` action set there (ADR-0067). */
+type Sending = { reg: Registration; pick: string; chain: PickAnswer[]; shaped?: { value: unknown } };
+
+/** An `answer` action's value as the hold keeps it: JSON, because it rides the run blob and the
+ * wire (ADR-0067). `undefined`, or a value with no JSON form, sets no answer — the default stands. */
+function jsonOf(value: unknown): { value: unknown } | undefined {
+  try {
+    const text = JSON.stringify(value);
+    return text === undefined ? undefined : { value: JSON.parse(text) as unknown };
+  } catch {
+    return undefined;
+  }
+}
 
 /** The outstanding picks among a run's holds. */
 function heldOf(holds: Iterable<Hold>): RunHeld[] {
@@ -710,7 +725,7 @@ export class RunHost {
   /** The pick being delivered now, and the last reply from below its Agent's state inside its own
    * send (ADR-0024). A child that settles in the same macrostep as the pick — a decision Machine
    * that is final as it starts — replies before a hold can exist, so the chain records it here. */
-  private sending: { reg: Registration; pick: string; last?: PickAnswer } | undefined;
+  private sending: Sending | undefined;
   /** `<iid> <deliveryId>` of every outstanding pick of a run this host parked (`stop`). */
   private readonly parked = new Set<string>();
   #stopping = false;
@@ -1084,10 +1099,7 @@ export class RunHost {
     const before = targets.length > 0 ? stateValueOf(invoking?.invoker) : undefined;
 
     const outer = this.sending;
-    const sending: { reg: Registration; pick: string; last?: PickAnswer } | undefined = invoking && {
-      reg: invoking,
-      pick: type,
-    };
+    const sending: Sending | undefined = invoking && { reg: invoking, pick: type, chain: [] };
     this.sending = sending;
     try {
       this.table.deliver(address, type, payload);
@@ -1124,7 +1136,7 @@ export class RunHost {
     const turnComplete = this.table.lookup(address) !== invoking;
     // A reply from below the Agent's state inside the pick's own send (ADR-0024): a child that
     // settled in the same macrostep. It is the answer's default as any later reply would be.
-    const replied = moved ? sending?.last : undefined;
+    const replied = moved && sending ? answerOf(sending) : undefined;
     // Where the answer goes if the route leaves the Agent's state: the conversation the picking
     // Turn continues. A fresh Turn has none — its conversation is never heard again, and a later
     // continued Turn of the same slot never made this pick.
@@ -1145,7 +1157,8 @@ export class RunHost {
         ...(invoking.sandbox !== undefined ? { sandbox: invoking.sandbox } : {}),
         ...(invoking.invokeId !== undefined ? { invokeId: invoking.invokeId } : {}),
         ...(conversation !== undefined ? { conversation } : {}),
-        ...(replied !== undefined ? { last: replied } : {}),
+        ...(sending && sending.chain.length > 0 ? { chain: [...sending.chain] } : {}),
+        ...(sending?.shaped !== undefined ? { shaped: sending.shaped } : {}),
       };
       this.closeHold(run.holds.get(instanceId));
       run.holds.set(instanceId, hold);
@@ -1242,10 +1255,11 @@ export class RunHost {
       }
       const reading = same ? restOf(reg!) : "gone";
       if (reading === "busy") continue;
-      // The answer's default is the last reply since the pick (ADR-0024); with none, the answer carries
-      // no reply. Never `straightBack`: an outstanding pick's work was running, so "nothing ran" is
-      // not this answer's to say.
-      const answer = hold.last ? { answer: hold.last } : {};
+      // The answer's default is the last reply since the pick, whatever moved the Machine after it
+      // (ADR-0024); with none, the answer carries no reply. Never `straightBack`: an outstanding
+      // pick's work was running, so "nothing ran" is not this answer's to say.
+      const answered = answerOf(hold);
+      const answer = answered ? { answer: answered } : {};
       if (reading === "gone") {
         // Left by the route of the last reply — its own events and the events it sent itself at once
         // included — or by something else while work below still ran (a timer the Machine set, an
@@ -1271,6 +1285,23 @@ export class RunHost {
       }
       this.closeHold(hold);
     }
+  }
+
+  /**
+   * The pick an `answer` action in `machine` shapes (ADR-0067): the pick being delivered now, when
+   * its Agent's state is in `machine`; else the one outstanding pick of an Agent `machine` invokes.
+   * Two outstanding at once (two Agents' states active in one Machine) is no answer at all: the
+   * action cannot say whose it shapes.
+   */
+  private answeringIn(machine: AnyActorRef, runId: string, holds: Map<string, Hold>): Sending | Hold | undefined {
+    const sending = this.sending;
+    if (sending && sending.reg.runId === runId && sending.reg.invoker === machine) return sending;
+    const open = [...holds.values()].filter(
+      (hold) =>
+        hold.answer === undefined &&
+        (this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId)))?.invoker === machine,
+    );
+    return open.length === 1 ? open[0] : undefined;
   }
 
   /** Wake every long poll on a hold: it was answered, replaced, or the host is going away. */
@@ -1837,6 +1868,21 @@ export class RunHost {
           }
         );
       },
+      // The `answer` action's two halves (ADR-0067): the chain of the one pick of `machine`'s Agent
+      // being answered — the one in its own send first, else the one outstanding — and the value
+      // that replaces its default answer.
+      chainOf: (machine) => {
+        const pick = this.answeringIn(machine, record.runId, holds);
+        if (pick === undefined) return undefined;
+        return "reg" in pick ? [...pick.chain] : [...(pick.chain ?? [])];
+      },
+      setAnswer: (machine, value) => {
+        const pick = this.answeringIn(machine, record.runId, holds);
+        if (pick === undefined) return;
+        // Not saved here: the action runs inside a transition, and the persist that follows it carries
+        // the value — a save now would read the Machine before its route, and answer too early.
+        pick.shaped = jsonOf(value);
+      },
       // The Effect ledger's two halves (ADR-0067). A write is saved AT THE WRITE, like an admission:
       // an intent row must be on disk, with the snapshot that holds its Effect, before the call
       // leaves — and a row written around stop/untrack lands in memory and skips the save.
@@ -1921,7 +1967,7 @@ export class RunHost {
             const live = this.table.lookup(agentAddress(hold.instanceId));
             const reg = this.holdRegs.get(hold) ?? live;
             const reply = replyTo(reg);
-            if (reply) hold.last = reply;
+            if (reply) hold.chain = [...(hold.chain ?? []), reply];
             errorTo(reg, hold.pick);
             // While the Agent's state is still the hold's, each event the Machine takes says who would
             // move it out (`cutShort`), when the Machine that invokes the Agent or one above it takes
@@ -1941,7 +1987,7 @@ export class RunHost {
           }
           const sending = this.sending;
           const reply = sending && replyTo(sending.reg);
-          if (sending && reply) sending.last = reply;
+          if (sending && reply) sending.chain.push(reply);
           if (sending) errorTo(sending.reg, sending.pick);
         }
         if (ev.type === "@xstate.snapshot") schedule();

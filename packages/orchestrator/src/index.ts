@@ -10,8 +10,10 @@
 // `jr2Setup`, `workspace`, … all import from "@jr2/orchestrator" — ADR-0015).
 export * from "@jr2/agent-protocol";
 export * from "./agent.ts";
-// The Effect surface (ADR-0067): `command` itself is the wire-bound one, from harness-client.ts.
+// The Effect surface (ADR-0067): `command` itself is the wire-bound one, from harness-client.ts;
+// `fromPick`, `paramsOf` and `answer` are what an author writes between a pick and its work.
 export * from "./effect.ts";
+export * from "./pick.ts";
 export * from "./parts.ts";
 export * from "./size.ts";
 export * from "./customize.ts";

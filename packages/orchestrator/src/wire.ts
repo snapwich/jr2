@@ -93,11 +93,13 @@ export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversa
  * the pick — a party's event (a Gate's answer, a nested Agent's pick) with its payload, or a child's
  * output (a child Machine, an Effect stand-in) — named by who sent it. A child's error is no reply (a
  * defect, ADR-0024). Absent where nothing replied: the answer carries no reply, and says nothing of
- * whether work ran. Plain data; the Harness writes the words.
+ * whether work ran. Plain data; the Harness writes the words. `answer`: the value the Machine's
+ * `answer` action set (ADR-0067), which replaces the default.
  */
 export type PickAnswer =
   | { kind: "event"; event: string; sender?: { party: "agent" | "gate"; id: string }; payload: Record<string, unknown> }
-  | { kind: "output"; actor: string; output: unknown };
+  | { kind: "output"; actor: string; output: unknown }
+  | { kind: "answer"; value: unknown };
 
 /**
  * A pick's answer that did not reach the pick's call (ADR-0024): `cut` — the Harness restarted while
