@@ -33,8 +33,8 @@ import type {
 import { between, ToldPicks } from "./between-steps.ts";
 import { briefedPrompt, standingBriefing, turnPart, type StandingBriefing } from "./briefing.ts";
 import { compactIfOver, compactionSettingsFor, summaryRetryPolicy } from "./compaction.ts";
-import { RunawayError, TurnOverError, type RunSubmission } from "./conversation.ts";
-import { cutPickResult, readMenu, type MenuOptions } from "./menu.ts";
+import { RunawayError, TurnOverError, type RunSubmission, type SubmissionSeat } from "./conversation.ts";
+import { cutPickResult, readMenu, type MenuItem, type MenuOptions } from "./menu.ts";
 import { MENU_TOOL_PREFIX, menuToolName, menuTools } from "./menu-tools.ts";
 import { attachPrinter, printLines, renderCompaction, type PrinterOut } from "./printer.ts";
 import { piSession } from "./pi-engine.ts";
@@ -141,6 +141,23 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
       watch.streak = 0;
       watch.signature = "";
     },
+    onPolling: (polling) => {
+      work.polls += polling ? 1 : -1;
+      work.report();
+    },
+  };
+  /** Per Submission: the tool calls pi is executing, and how many of them only poll an outstanding
+   * pick's answer. When every running call only polls, the Turn's only pending work is the pick's
+   * answer, and the Conversation hears it (`SubmissionSeat.waiting`): a stopping Harness cuts that
+   * Turn at once (ADR-0031). pi executes a message's calls after the message is complete, so while
+   * any runs the model is not generating. Reset when each Submission starts. */
+  const work = {
+    running: new Set<string>(),
+    polls: 0,
+    seat: undefined as SubmissionSeat | undefined,
+    report(): void {
+      this.seat?.waiting(this.running.size > 0 && this.running.size === this.polls);
+    },
   };
   /** Per Submission: a pick's answer said the Turn is over (`turnComplete`, or a 404). From then on
    * the step boundary reads nothing — under `continue: true` the next state re-registers the SAME
@@ -151,8 +168,11 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
    * once-per-conversation `tool_call` hook reads it through this seat, like `current.definition`. */
   const watch = { steps: 0, streak: 0, signature: "", tripped: "" };
 
-  return async (submission, signal) => {
+  return async (submission, signal, seat) => {
     const { message } = submission;
+    work.running.clear();
+    work.polls = 0;
+    work.seat = seat;
     // Each Submission earns a fresh runaway budget (ADR-0035) — the watch is per-turn state.
     watch.steps = 0;
     watch.streak = 0;
@@ -226,6 +246,13 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
         await harness.steer(text).catch((err: unknown) => {
           console.error(`[${deps.agentName}] could not restate the Allowed picks:`, err);
         });
+      });
+      // What is executing (`work`): every tool call between its start and its end.
+      harness.subscribe((event) => {
+        if (event.type === "tool_execution_start") work.running.add(event.toolCallId);
+        else if (event.type === "tool_execution_end") work.running.delete(event.toolCallId);
+        else return;
+        work.report();
       });
       harness.subscribe((event) => {
         if (event.type !== "message_end") return;
@@ -334,7 +361,8 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     // The whole Menu, never the Allowed picks: the tools lead the provider's prefix cache, so they
     // are the same bytes on every Turn of the conversation (ADR-0029). What this Turn may pick is
     // said in the Turn part below, and enforced at delivery.
-    const tools = [...workingToolsFor(definition, definition.cwd, { guard: deps.guard }), ...menuTools(read.menu)];
+    const menu = seat ? read.menu.map((item) => cutWith(item, seat.cut)) : read.menu;
+    const tools = [...workingToolsFor(definition, definition.cwd, { guard: deps.guard }), ...menuTools(menu)];
     // The active names go explicitly: without them setTools KEEPS the previous active set, which
     // is empty on a harness constructed with no tools — every tool would ride to pi inactive.
     await harness.setTools(
@@ -386,6 +414,26 @@ export function runSubmissionFor(deps: TurnDeps): RunSubmission {
     } finally {
       signal.removeEventListener("abort", onAbort);
     }
+  };
+}
+
+/**
+ * A Menu item whose pick a stopping Harness can cut (ADR-0031): `cut` aborts the pick's requests —
+ * the poll ends unanswered, so the Orchestrator does not count its answer as read — and the call
+ * then never returns. pi gets no result for it, writes none to the session, and asks the model
+ * nothing more; the next process answers the call with jr2's text (`settleCutPicks`), and the
+ * re-admission carries the answer.
+ */
+function cutWith(item: MenuItem, cut: AbortSignal): MenuItem {
+  return {
+    ...item,
+    pick: (params, signal) =>
+      new Promise<string>((resolve, reject) => {
+        item.pick(params, signal ? AbortSignal.any([signal, cut]) : cut).then(
+          (text) => cut.aborted || resolve(text),
+          (err: unknown) => cut.aborted || reject(err),
+        );
+      }),
   };
 }
 

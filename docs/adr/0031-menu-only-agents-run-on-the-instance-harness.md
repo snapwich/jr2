@@ -95,15 +95,23 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   the Orchestrator already absorbs an admission refused at the connection (ADR-0042), so a rollout delays a Turn and
   faults nothing.
 - **A rollout drains Turns.** On SIGTERM the Harness stops admitting, finishes the Turns it holds (the queued ones too),
-  then exits; the termination grace is a Turn's worst case. It refuses an admission with a 503 before it reads or queues
-  anything, and closes that connection, so the Orchestrator re-sends it on ADR-0042's ladder and the re-send dials the
-  Service anew. Readiness stays up (the probe is the Harness's own `/healthz`, which it keeps answering), and the dialed
-  Service is a ClusterIP one, which kube-proxy still routes to a terminating pod that serves while no other is ready —
-  so reads keep answering and a `wait` on the draining pod still reads its Settlement. A headless name would not: DNS
-  stops naming a terminating pod, so the StatefulSet's headless governing Service is a second one, dialed by no one. The
-  Custodian is a native sidecar, stopped only after the Harness exits, so the drain keeps its Menu and its model to the
-  end. A deploy loses no Turn and, with the volume, no conversation — as long as the drain and the replacement's start
-  fit ADR-0042's window; a longer one faults the waiting admission with the Harness's own 503 words.
+  then exits; the termination grace is a Turn's worst case. A Turn still generating or running a tool keeps that
+  graceful wait. A Turn whose only pending work is an outstanding pick's poll — whatever the pick waits on: a Gate, an
+  Effect, a child Machine — is cut at once, or as soon as it comes to that: its answer can wait on a human (a Gate),
+  often the one who is stopping the Harness, so no grace period would help. The cut drops the poll unanswered (the
+  answer stays unread at the Orchestrator), leaves the Menu call without a result, asks the model nothing more, and
+  settles the Submission `failed`, `harness_restarted`, with everything queued behind it. To the Orchestrator it is a
+  restart while the Agent's state is busy (the bullet above): the pick stays outstanding, and once the workflow is back
+  at Rest jr2 re-admits the Agent on the same conversation with the answer, and the replacement Harness answers the cut
+  call with jr2's text. It refuses an admission with a 503 before it reads or queues anything, and closes that
+  connection, so the Orchestrator re-sends it on ADR-0042's ladder and the re-send dials the Service anew. Readiness
+  stays up (the probe is the Harness's own `/healthz`, which it keeps answering), and the dialed Service is a ClusterIP
+  one, which kube-proxy still routes to a terminating pod that serves while no other is ready — so reads keep answering
+  and a `wait` on the draining pod still reads its Settlement. A headless name would not: DNS stops naming a terminating
+  pod, so the StatefulSet's headless governing Service is a second one, dialed by no one. The Custodian is a native
+  sidecar, stopped only after the Harness exits, so the drain keeps its Menu and its model to the end. A deploy loses no
+  Turn and, with the volume, no conversation — as long as the drain and the replacement's start fit ADR-0042's window; a
+  longer one faults the waiting admission with the Harness's own 503 words.
 - **The Orchestrator states the live set; the Harness frees the rest.** After every restore and every 5 minutes (the
   Lease's cadence) the Orchestrator tells the Instance Harness which conversations its live runs hold — from the
   admission ledgers in memory, never from the store — and the Harness frees memory and files of every other one.

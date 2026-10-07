@@ -225,6 +225,8 @@ export type FakeSandbox = {
   pollWith: (serve: (poll: number, deliveryId: string) => unknown | Promise<unknown>) => void;
   /** Every delivery poll since the last `reset`, by delivery id. */
   polls: string[];
+  /** The polls whose caller closed the connection before they were answered, since the last `reset`. */
+  pollsGone: () => number;
   /** Rearm for the next scenario: this surface, live, responding, nothing delivered. */
   reset: (surface: Surface) => void;
   close: () => Promise<void>;
@@ -241,6 +243,7 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
   let byRead: ((read: number) => Surface | number | Promise<Surface | number>) | undefined;
   let byPoll: ((poll: number, deliveryId: string) => unknown | Promise<unknown>) | undefined;
   const polls: string[] = [];
+  let pollsGone = 0;
   const delivered: Array<Record<string, unknown>> = [];
   const bearers: string[] = [];
   const server: Server = createServer((req, res) => {
@@ -271,6 +274,9 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
       const poll = /\/deliveries\/([^/?]+)/.exec(req.url ?? "");
       if (poll) {
         polls.push(decodeURIComponent(poll[1]!));
+        res.on("close", () => {
+          if (!res.writableEnded) pollsGone += 1;
+        });
         if (!byPoll) return json(404, { error: "no delivery" });
         void Promise.resolve(byPoll(polls.length, polls.at(-1)!)).then((served) =>
           typeof served === "number" ? json(served, { error: "scripted" }) : json(200, served),
@@ -301,6 +307,7 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
     surfaceByRead: (serve) => (byRead = serve),
     pollWith: (serve) => (byPoll = serve),
     polls,
+    pollsGone: () => pollsGone,
     reset: (next) => {
       surface = next;
       live = true;
@@ -309,6 +316,7 @@ export async function startFakeCustodian(initialSurface: Surface): Promise<FakeS
       byRead = undefined;
       byPoll = undefined;
       polls.length = 0;
+      pollsGone = 0;
       surfaceFault = undefined;
       stopping = 0;
       surfaceReads = 0;

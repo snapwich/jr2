@@ -127,8 +127,9 @@ export type HarnessAppDeps = {
 export type HarnessServer = {
   app: Hono;
   /** Stop admitting — every admission answers 503 from this call on — and resolve once every
-   * Submission already admitted has settled. Nothing here bounds it: the pod's termination grace
-   * is a Turn's worst case, and the kubelet ends what outlives it. */
+   * Submission already admitted has settled. A Turn whose only pending work is its pick's poll is
+   * cut at once and settles `harness_restarted` (ADR-0031). Nothing else here bounds it: the pod's
+   * termination grace is a Turn's worst case, and the kubelet ends what outlives it. */
   drain: () => Promise<void>;
 };
 
@@ -407,9 +408,10 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
 
   const drain = async (): Promise<void> => {
     draining = true;
-    // A conversation's idle waits out its queue as well: those Submissions were admitted, so the
-    // drain owes them their Turns exactly as it owes the running one.
-    await Promise.all([...conversations.values()].map((conversation) => conversation.idle()));
+    // A conversation's drain waits out its queue as well: those Submissions were admitted, so the
+    // drain owes them their Turns exactly as it owes the running one — except a Turn that waits
+    // only on its pick's answer, which it cuts at once (`Conversation.drain`).
+    await Promise.all([...conversations.values()].map((conversation) => conversation.drain()));
   };
 
   return { app, drain };

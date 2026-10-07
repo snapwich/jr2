@@ -149,6 +149,9 @@ export type MenuOptions = {
   /** Hears that an outstanding pick was answered (ADR-0024): the world moved, so the Runaway guard's
    * identical-call streak starts again (ADR-0035). */
   onAnswered?: () => void;
+  /** Hears that a pick's call starts, or stops, long-polling an outstanding pick's answer — the one
+   * wait a stopping Harness cuts at once (ADR-0031). */
+  onPolling?: (polling: boolean) => void;
   /** One delivery poll's own bound, past the Orchestrator's ~25 s long-poll (ADR-0013). Default
    * 60s; tests shrink it. The poll itself has no window: it asks again while the Turn lives. */
   pollTimeoutMs?: number;
@@ -239,7 +242,16 @@ function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent, cl
         try {
           // The name last: an argument called `type` cannot make this pick another event.
           const sent = await deliver(opts, instanceId, { ...((params ?? {}) as object), type: event.name }, pickSignal);
-          const receipt = sent.outstanding === true ? await awaitAnswer(opts, instanceId, sent, pickSignal) : sent;
+          let receipt = sent;
+          if (sent.outstanding === true) {
+            // The pick is outstanding: from here to its answer, this call only polls (ADR-0031).
+            opts.onPolling?.(true);
+            try {
+              receipt = await awaitAnswer(opts, instanceId, sent, pickSignal);
+            } finally {
+              opts.onPolling?.(false);
+            }
+          }
           // The world moved (ADR-0035): an outstanding pick answered on its poll, or a child that
           // replied inside the pick's own send. A guard straight back is answered too, but nothing
           // ran and the state is where it was: the same call again is the same question.

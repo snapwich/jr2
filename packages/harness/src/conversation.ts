@@ -27,7 +27,24 @@ import {
  * `failed` — unless the signal fired, which settles `aborted`. The signal is how an abort reaches
  * the active pi run. Takes the whole admitted request, not just its prompt: this Submission's
  * definition and dials frame the turn exactly as the prompt does (ADR-0018/0049). */
-export type RunSubmission = (submission: AdmissionRequest, signal: AbortSignal) => Promise<void>;
+export type RunSubmission = (submission: AdmissionRequest, signal: AbortSignal, seat?: SubmissionSeat) => Promise<void>;
+
+/**
+ * What a running Submission tells its Conversation, and what a stopping Harness asks of it
+ * (ADR-0031). A Turn whose only pending work is an outstanding pick's poll says so (`waiting`): a
+ * drain cuts it at once rather than waiting on an answer that can take a human's time. `cut` fires
+ * then: the Turn stops where it is — the poll is dropped unanswered, so the Orchestrator still holds
+ * the answer for the re-admission, and nothing more reaches the model or the conversation.
+ */
+export type SubmissionSeat = {
+  waiting: (onPickOnly: boolean) => void;
+  cut: AbortSignal;
+};
+
+/** What a cut Submission's settlement says (ADR-0031): typed as a restart, which is what it is to
+ * the Orchestrator — the Turn was cut while the workflow ran its pick. */
+export const SUBMISSION_CUT_MESSAGE =
+  "the Harness stopped while this Turn waited only on its pick's answer; the workflow runs on (ADR-0031)";
 
 /** A Turn the Harness itself ended because it would not conclude (ADR-0035) — a runaway trigger
  * tripped in the turn loop. `turn.ts` throws it; the pump maps it to a `failed` settlement typed
@@ -65,7 +82,18 @@ export class Conversation {
   private readonly queue: SubmissionRecord[] = [];
   /** The running Submission. Stays set until its `runSubmission` promise settles — even after an
    * abort sweep settled the record — so two turns never overlap (pi is one-prompt-at-a-time). */
-  private active: { record: SubmissionRecord; controller: AbortController } | undefined;
+  private active:
+    | {
+        record: SubmissionRecord;
+        controller: AbortController;
+        /** The run says its only pending work is an outstanding pick's poll (`SubmissionSeat`). */
+        onPickOnly: boolean;
+        /** Fired when a stopping Harness cuts it (`drain`). */
+        cut: AbortController;
+      }
+    | undefined;
+  /** Set by `drain`: a Turn that waits only on its pick's answer is cut, now or when it comes to. */
+  private stopping = false;
   /** The append-only stream. An offset is the log index as an opaque string. */
   private readonly log: StreamEvent[] = [];
   /** The history view's best-effort `messages`, kept beside the log (the log carries the wire's
@@ -123,10 +151,38 @@ export class Conversation {
   }
 
   /** Resolves once the conversation holds no Submission — every admitted one settled and its run
-   * wound down. What a drain waits on (ADR-0031). */
+   * wound down. */
   idle(): Promise<void> {
     if (!this.busy) return Promise.resolve();
     return new Promise((resolve) => this.idleWaiters.add(resolve));
+  }
+
+  /**
+   * What a stopping Harness waits on (ADR-0031): every admitted Submission's Turn, the queued ones
+   * too — except a Turn whose only pending work is an outstanding pick's poll. That one is cut at
+   * once, or as soon as it comes to that: its answer can wait on a human (a Gate), often the one
+   * who is stopping the Harness, so no grace period would help. The cut settles it `failed`,
+   * `harness_restarted`, as a restart would, with everything queued behind it: the pick stays in the
+   * Orchestrator, which re-admits the Agent on this conversation with the answer once the workflow
+   * is back at Rest. A Turn still generating or running a tool keeps the graceful wait.
+   */
+  drain(): Promise<void> {
+    this.stopping = true;
+    this.cutIfOnPick();
+    return this.idle();
+  }
+
+  /** Cut the running Turn if a drain is on and its only pending work is its pick's poll. */
+  private cutIfOnPick(): void {
+    const active = this.active;
+    if (!this.stopping || !active?.onPickOnly || active.cut.signal.aborted) return;
+    active.cut.abort();
+    const error = { type: SUBMISSION_HARNESS_RESTARTED, message: SUBMISSION_CUT_MESSAGE };
+    for (const record of [active.record, ...this.queue]) this.settle(record, "failed", error);
+    // The run is left where it stopped — parked on a poll that will never answer — and the process
+    // exits: nothing it did after this could reach the model or the record.
+    this.active = undefined;
+    this.pump();
   }
 
   /** Accept and queue (ADR-0027): mint the Admission and answer immediately — running comes
@@ -240,10 +296,18 @@ export class Conversation {
       return;
     }
     const controller = new AbortController();
-    this.active = { record, controller };
+    const active = { record, controller, onPickOnly: false, cut: new AbortController() };
+    this.active = active;
+    const seat: SubmissionSeat = {
+      waiting: (onPickOnly) => {
+        active.onPickOnly = onPickOnly;
+        if (this.active === active) this.cutIfOnPick();
+      },
+      cut: active.cut.signal,
+    };
     void (async () => {
       try {
-        await this.runSubmission(record.submission, controller.signal);
+        await this.runSubmission(record.submission, controller.signal, seat);
         this.settle(record, "completed");
       } catch (err) {
         // A rejection caused by the signal is the swept turn winding down, not a failure. The
@@ -261,8 +325,11 @@ export class Conversation {
           });
         }
       } finally {
-        this.active = undefined;
-        this.pump();
+        // A cut run already left the seat (`cutIfOnPick`), and another may hold it now.
+        if (this.active === active) {
+          this.active = undefined;
+          this.pump();
+        }
       }
     })();
   }

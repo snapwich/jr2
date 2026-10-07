@@ -698,6 +698,43 @@ test("a poll whose caller went away read nothing: the Harness restart that cut i
   assert.equal(rig.host.status(rig.runId)?.status, "active", "no agent.fault");
 });
 
+test("a stopping Harness cut a Turn that waited on a Gate: its poll read nothing, and the Gate's later answer re-admits the same conversation with it (ADR-0031)", async () => {
+  const rig = await started();
+  const asking = rig.host.sendToAgent(rig.iid, { type: "ask" });
+  // The draining Harness drops the poll it holds, then settles the Turn as a restart.
+  const cut = new AbortController();
+  const polled = rig.host.awaitDelivery(rig.iid, asking.deliveryId, 60_000, cut.signal);
+  cut.abort();
+  assert.equal((await polled)?.outstanding, true, "the dropped poll took no answer");
+  rig.coder.faultSettled(
+    SUBMISSION_HARNESS_RESTARTED,
+    "the Harness stopped while this Turn waited only on its pick's answer; the workflow runs on (ADR-0031)",
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(value(rig), JSON.stringify({ work: "asking" }), "no fault: the Gate still waits on its human");
+  assert.equal(rig.coder.admits.length, 1, "nobody is asked while the workflow is busy");
+
+  rig.host.sendToGate(rig.runId, "review", { type: "approve", note: "after the rollout" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.equal(rig.coder.admits[1]!.instanceId, rig.iid, "the same conversation");
+  assert.match(rig.coder.admits[1]!.prompt ?? "", /^Your previous turn was cut/);
+  assert.deepEqual(rig.coder.notices[1], [
+    {
+      kind: "pick-answer",
+      scope: "conversation",
+      pick: "ask",
+      cut: true,
+      answer: {
+        kind: "event",
+        event: "approve",
+        sender: { party: "gate", id: "review" },
+        payload: { note: "after the rollout" },
+      },
+    },
+  ]);
+  assert.equal(rig.host.status(rig.runId)?.status, "active");
+});
+
 test("a Harness restart at Rest with nothing unread is the fault it always was", async () => {
   const rig = await started();
   rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted");

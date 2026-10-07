@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Hono } from "hono";
 import type { Surface } from "../src/menu.ts";
-import { harnessApp } from "../src/app.ts";
+import { harnessServer, type HarnessServer } from "../src/app.ts";
 import { admissionFault, modelsFor } from "../src/provider.ts";
 import type { AgentDefinition, HarnessSpec } from "../src/spec.ts";
 import { runSubmissionFor } from "../src/turn.ts";
@@ -100,6 +100,8 @@ let boundedCompactApp: Hono;
 /** The same composition persisting under a directory (ADR-0031) — a second one over the same
  * directory is the Harness after a restart. */
 let appOver: (conversationsDir: string) => Hono;
+/** The same, with the drain a SIGTERM runs (ADR-0031). */
+let serverOver: (conversationsDir: string) => HarnessServer;
 /** Small enough that the cut lands near the tail of a scripted transcript. */
 const KEEP_RECENT = 12;
 /** What each conversation printed (ADR-0023) — the pod log, keyed by iid. */
@@ -126,11 +128,11 @@ before(async () => {
     },
   };
   const models = modelsFor(harness, {});
-  const appWith = (
+  const serverWith = (
     seams?: { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number },
     conversationsDir?: string,
-  ): Hono =>
-    harnessApp({
+  ): HarnessServer =>
+    harnessServer({
       ...(conversationsDir ? { conversationsDir } : {}),
       longPollMs: 250,
       // The turn loop is under test here; the wire's gate is `auth.test.ts`'s (ADR-0058).
@@ -151,11 +153,16 @@ before(async () => {
           ...seat,
         }),
     });
+  const appWith = (
+    seams?: { stepBudget?: number; identicalCallLimit?: number; keepRecentTokens?: number },
+    conversationsDir?: string,
+  ): Hono => serverWith(seams, conversationsDir).app;
   app = appWith();
   boundedApp = appWith({ stepBudget: 3 });
   compactApp = appWith({ keepRecentTokens: KEEP_RECENT });
   boundedCompactApp = appWith({ stepBudget: 3, keepRecentTokens: KEEP_RECENT });
   appOver = (conversationsDir) => appWith(undefined, conversationsDir);
+  serverOver = (conversationsDir) => serverWith(undefined, conversationsDir);
   process.on("unhandledRejection", onRejection);
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array, ...rest: never[]) => {
@@ -1770,4 +1777,115 @@ test("a guard straight back resets no streak: nothing ran, so the same pick four
   assert.equal(sandbox.polls.length, 0, "nothing was outstanding, so nothing was polled");
   const result = JSON.stringify((provider.calls[1]?.messages ?? []).find((m) => m.role === "tool"));
   assert.match(result, /It moved the workflow, and nothing ran: the workflow is back in the state/);
+});
+
+// ─── a stopping Harness (ADR-0031) ───────────────────────────────────────────────────────────────────
+
+/** The answer a Gate gave, as the Orchestrator's re-admission carries it (ADR-0024, ADR-0062). */
+const auditedNotice = {
+  kind: "pick-answer",
+  scope: "conversation",
+  pick: "run_audit",
+  cut: true,
+  answer: { kind: "event", event: "audited", sender: { party: "gate", id: "auditor" }, payload: { findings: "f" } },
+};
+
+test("a stopping Harness cuts at once a Turn that waits only on its pick's answer; the re-admission continues the conversation with the answer (ADR-0031)", async () => {
+  const iid = "conf/drain-cut";
+  const dir = await mkdtemp(join(tmpdir(), "jr2-conversations-"));
+  provider.reset([
+    {
+      text: "Asking the auditor.",
+      toolCall: { id: "call_audit", name: "mcp__jr2__run_audit", args: '{"verdict":"go"}' },
+    },
+  ]);
+  sandbox.reset(surfaceWith("run_audit", "file_report"));
+  sandbox.answerWith(outstandingReceipt);
+  // A Gate: the answer waits on a human, often the one who is stopping the Harness.
+  sandbox.pollWith(() => new Promise<never>(() => {}));
+  const before = serverOver(dir);
+  const admission = await admit(iid, "Audit the expenses.", undefined, DECISIONER, before.app);
+  await until(() => sandbox.polls.length > 0, "the pick's answer to be polled");
+
+  const started = performance.now();
+  await before.drain();
+  assert.ok(performance.now() - started < 2_000, "cut at once: no grace period for a pick's answer");
+  const settlement = await settled(iid, admission, DECISIONER, before.app);
+  assert.deepEqual(
+    { outcome: settlement.outcome, type: settlement.error?.type },
+    { outcome: "failed", type: "harness_restarted" },
+    "settled as a restart: the Orchestrator re-admits it, and raises no agent.fault",
+  );
+  await until(() => sandbox.pollsGone() === 1, "the poll to end unanswered, so its answer stays unread");
+  assert.equal(provider.calls.length, 1, "the model was asked nothing after the cut");
+
+  // The replacement, once the workflow is back at Rest: the Orchestrator re-admits the same
+  // conversation with the answer as a notice.
+  provider.reset([
+    { toolCall: { id: "call_report", name: "mcp__jr2__file_report", args: '{"verdict":"filed"}' } },
+    { text: "Filed." },
+  ]);
+  sandbox.reset(surfaceWith("run_audit", "file_report"));
+  const after = appOver(dir);
+  const res = await after.request(conversationPath(iid, DECISIONER), {
+    method: "POST",
+    body: JSON.stringify({
+      message: "Your previous turn was cut: the process that ran you restarted while the workflow was busy.",
+      definition: definitions[DECISIONER],
+      notices: [auditedNotice],
+    }),
+    headers: { "content-type": "application/json" },
+  });
+  assert.equal(res.status, 200);
+  const readmitted = (await res.json()) as { offset: string; submissionId: string };
+  assert.equal((await settled(iid, readmitted, DECISIONER, after)).outcome, "completed");
+  const sent = provider.calls[0]?.messages ?? [];
+  const cut = sent.find((m) => m.role === "tool" && m.tool_call_id === "call_audit");
+  assert.match(JSON.stringify(cut), /This pick reached the workflow, but its answer did not reach you/);
+  assert.match(lastUserText(provider.calls[0]), /Your previous turn was cut/);
+  assert.match(lastUserText(provider.calls[0]), /`mcp__jr2__run_audit` that was cut from your last turn/);
+  assert.match(lastUserText(provider.calls[0]), /`audited` from Gate `auditor`/);
+});
+
+test("a stopping Harness keeps the graceful wait for a Turn that is running a tool — beside a polled pick too (ADR-0031)", async () => {
+  // A tool running alone: the Turn finishes, and settles completed.
+  {
+    const iid = "conf/drain-tool";
+    provider.reset([bashCall("b1", "sleep 0.6"), { text: "Slept." }]);
+    sandbox.reset(surfaceWith("review_verdict"));
+    const server = serverOver(await mkdtemp(join(tmpdir(), "jr2-conversations-")));
+    const admission = await admit(iid, "Sleep, then stop.", undefined, AGENT, server.app);
+    await until(() => provider.calls.length === 1, "the bash call to be made");
+    await server.drain();
+    assert.equal((await settled(iid, admission, AGENT, server.app)).outcome, "completed");
+    assert.equal(provider.calls.length, 2, "the model read the tool's result: nothing was cut");
+  }
+  // A pick polled while a tool still runs beside it: the wait holds until the tool ends; then the
+  // poll is all that is left, and the Turn is cut.
+  {
+    const iid = "conf/drain-tool-and-pick";
+    provider.reset([
+      {
+        toolCalls: [
+          { id: "p1", name: "mcp__jr2__run_audit", args: '{"verdict":"go"}' },
+          { id: "b2", name: "bash", args: JSON.stringify({ command: "sleep 0.6" }) },
+        ],
+      },
+    ]);
+    sandbox.reset(surfaceWith("run_audit", "file_report"));
+    sandbox.answerWith(outstandingReceipt);
+    sandbox.pollWith(() => new Promise<never>(() => {}));
+    const server = serverOver(await mkdtemp(join(tmpdir(), "jr2-conversations-")));
+    const admission = await admit(iid, "Audit and sleep.", undefined, AGENT, server.app);
+    await until(() => sandbox.polls.length > 0, "the pick's answer to be polled");
+    const started = performance.now();
+    await server.drain();
+    assert.ok(performance.now() - started >= 300, "the drain waited for the running tool");
+    const settlement = await settled(iid, admission, AGENT, server.app);
+    assert.deepEqual(
+      { outcome: settlement.outcome, type: settlement.error?.type },
+      { outcome: "failed", type: "harness_restarted" },
+    );
+    assert.equal(provider.calls.length, 1, "the model was asked nothing after the cut");
+  }
 });
