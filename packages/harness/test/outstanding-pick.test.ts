@@ -85,7 +85,7 @@ test("an outstanding pick: the POST answers at once, and the one tool call polls
   assert.equal(calls.filter((c) => c.url.endsWith("/deliveries/d-1")).length, 4, "polled until answered");
   assert.equal(
     text,
-    'Delivered "run_tests" to the workflow (delivery d-1). The workflow ran it and is back in the state that asked ' +
+    'Delivered "run_tests" to the workflow (delivery d-1). The workflow took it and is back in the state that asked ' +
       'for this turn. Its answer: the output of `tests`: {"passed":3}. Your turn is not over. Allowed now: ' +
       "`mcp__jr2__run_tests`, `mcp__jr2__finish`.",
   );
@@ -116,10 +116,16 @@ test("a guard straight back is answered, but the Runaway guard does not hear it:
   let answered = 0;
   const { fetch } = fakeFetch((call) => {
     if (call.url.endsWith("/surface")) return Response.json(SURFACE);
-    return Response.json({ ...outstanding, outstanding: undefined, answered: true, allowed: ["run_tests"] });
+    return Response.json({
+      ...outstanding,
+      outstanding: undefined,
+      answered: true,
+      straightBack: true,
+      allowed: ["run_tests"],
+    });
   });
   const read = await readMenu(opts(fetch, { onAnswered: () => answered++ }), "run-1/coder");
-  for (let n = 0; n < 4; n++) assert.match(await read!.menu[0]!.pick({}), /It moved, and nothing ran\./);
+  for (let n = 0; n < 4; n++) assert.match(await read!.menu[0]!.pick({}), /It moved the workflow, and nothing ran:/);
   assert.equal(answered, 0, "the identical-call streak runs on");
 });
 
@@ -145,7 +151,7 @@ test("the Harness claims one pick at a time, in message order: the second call o
   });
   await new Promise((r) => setTimeout(r, 5));
   release?.();
-  assert.match(await first, /It moved, and nothing ran\./);
+  assert.match(await first, /No reply came back for it\./);
   assert.deepEqual(
     calls.filter((c) => c.method === "POST").map((c) => c.url),
     ["http://127.0.0.1:8081/agents/run-1%2Fcoder/events"],
@@ -202,7 +208,7 @@ test("an answer that left the Agent's state ends the Turn; the answer's words na
   };
   assert.equal(
     receiptProse(receipt, menuToolName),
-    'Delivered "ship" to the workflow (delivery d). The workflow ran it and moved on: your turn is over. Stop here — ' +
+    'Delivered "ship" to the workflow (delivery d). The workflow took it and moved on: your turn is over. Stop here — ' +
       "do not call this or any other tool again.",
   );
   assert.equal(
@@ -213,16 +219,15 @@ test("an answer that left the Agent's state ends the Turn; the answer's words na
     answerText({ kind: "event", event: "advice", sender: { party: "agent", id: "reviewer" }, payload: {} }),
     "Its answer: `advice` from Agent `reviewer`.",
   );
-  assert.equal(answerText({ kind: "error", actor: "tests", error: "boom" }), "Its answer: `tests` failed: boom.");
-  assert.equal(answerText(undefined), "It moved, and nothing ran.");
+  assert.equal(answerText(undefined), "No reply came back for it.");
 });
 
-test("a guard straight back reads as answered, it moved and nothing ran; a move to a mode reads as the plain receipt", () => {
+test('a guard straight back alone reads "moved; nothing ran"; a move to a mode reads as the plain receipt', () => {
   const base = { delivered: true as const, event: "bounce", moved: true, turnComplete: false, deliveryId: "d" };
   assert.equal(
-    receiptProse({ ...base, allowed: ["run_tests"], answered: true }, menuToolName),
-    'Delivered "bounce" to the workflow (delivery d). The workflow ran it and is back in the state that asked for ' +
-      "this turn. It moved, and nothing ran. Your turn is not over. Allowed now: `mcp__jr2__run_tests`.",
+    receiptProse({ ...base, allowed: ["run_tests"], answered: true, straightBack: true }, menuToolName),
+    'Delivered "bounce" to the workflow (delivery d). It moved the workflow, and nothing ran: the workflow is back ' +
+      "in the state that asked for this turn. Your turn is not over. Allowed now: `mcp__jr2__run_tests`.",
   );
   assert.equal(
     receiptProse({ ...base, event: "draft", allowed: ["finish"] }, menuToolName),
@@ -235,13 +240,37 @@ test("a pick's answer that never reached its call is a notice: cut by a restart,
   const answer = { kind: "output" as const, actor: "tests", output: "pass" };
   assert.equal(
     noticeText({ kind: "pick-answer", scope: "conversation", pick: "run_tests", cut: true, answer }, menuToolName),
-    "Notice: The workflow finished `mcp__jr2__run_tests`, the pick that was cut from your last turn. It ran once. " +
-      'Its answer: the output of `tests`: "pass".',
+    "Notice: The pick `mcp__jr2__run_tests` that was cut from your last turn is no longer outstanding: the " +
+      'workflow took it once. Its answer: the output of `tests`: "pass".',
   );
   assert.equal(
     noticeText({ kind: "pick-answer", scope: "conversation", pick: "ship", cut: false }, menuToolName),
-    "Notice: Your pick `mcp__jr2__ship` ran to its end after your last turn was over. It moved, and nothing ran.",
+    "Notice: The workflow left the state of your last turn while your pick `mcp__jr2__ship` was outstanding. " +
+      "No reply came back for it.",
   );
+});
+
+test("work that something stopped before it replied is never told it did not run, nor that it ran to its end (ADR-0024)", () => {
+  // An outstanding pick whose work a per-step `after`, a Turn timeout or an outside event stopped:
+  // answered with no reply and no `straightBack`. Its words state what is known, no more.
+  const stopped: DeliveryReceipt = {
+    delivered: true,
+    event: "run_tests",
+    moved: true,
+    turnComplete: false,
+    allowed: ["run_tests"],
+    deliveryId: "d",
+    answered: true,
+  };
+  const texts = [
+    receiptProse(stopped, menuToolName),
+    noticeText({ kind: "pick-answer", scope: "conversation", pick: "run_tests", cut: false }, menuToolName),
+    noticeText({ kind: "pick-answer", scope: "conversation", pick: "run_tests", cut: true }, menuToolName),
+  ];
+  for (const text of texts) {
+    assert.doesNotMatch(text, /nothing ran|ran to its end|finished|ran it|ran once/, text);
+    assert.match(text, /No reply came back for it\./, text);
+  }
 });
 
 test("a Menu call a restart cut gets jr2's result in the history; a Working-tool call is left to pi", () => {

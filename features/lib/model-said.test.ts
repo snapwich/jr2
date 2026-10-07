@@ -186,7 +186,7 @@ test("after a Harness restart: what the model said after the re-admission prompt
   const log = [
     "[advisor] [prompt] Your previous turn was cut: the process that ran you restarted while the workflow was busy.",
     "[advisor] <jr2-turn>",
-    "[advisor] Notice: The workflow finished `mcp__jr2__run_audit`, the pick that was cut from your last turn.",
+    "[advisor] Notice: The pick `mcp__jr2__run_audit` that was cut from your last turn is no longer outstanding: the workflow took it once.",
     "[advisor] </jr2-turn>",
     '[advisor] [file_report] {"summary":"s"}',
     "[advisor] [prompt] [t1-bbbbbb] The next trial.",

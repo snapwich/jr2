@@ -108,7 +108,10 @@ export type DeliveryReceipt = {
   /** This receipt is an outstanding pick's answer: the workflow is back at Rest in the state that
    * asked for this Turn (`turnComplete: false`), or it has left it. */
   answered?: boolean;
-  /** The last reply since the pick; absent with `answered`: it moved, and nothing ran. */
+  /** With `answered`: a guard straight back — the pick entered a state below the Agent's and came
+   * back inside its own send, nothing replying. The one answer that reads "moved; nothing ran". */
+  straightBack?: boolean;
+  /** The last reply since the pick; absent with `answered`: no reply came. */
   answer?: PickAnswer;
 };
 
@@ -289,9 +292,13 @@ export function cutPickResult(tool: string): string {
   );
 }
 
-/** What an outstanding pick's answer says, in words (ADR-0024): the last reply since the pick. */
+/**
+ * What an outstanding pick's answer says, in words (ADR-0024): the last reply since the pick. With
+ * none it says only that: work that a timer or an outside event stopped did run, so "nothing ran"
+ * is a guard straight back's words alone (`receiptProse`).
+ */
 export function answerText(answer: PickAnswer | undefined): string {
-  if (answer === undefined) return "It moved, and nothing ran.";
+  if (answer === undefined) return "No reply came back for it.";
   switch (answer.kind) {
     case "event": {
       const from = answer.sender
@@ -302,8 +309,6 @@ export function answerText(answer: PickAnswer | undefined): string {
     }
     case "output":
       return `Its answer: the output of \`${answer.actor}\`: ${JSON.stringify(answer.output) ?? "nothing"}.`;
-    case "error":
-      return `Its answer: \`${answer.actor}\` failed: ${answer.error}.`;
   }
 }
 
@@ -360,12 +365,17 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
       `unchanged — change the arguments, pick a different tool, or do more work first.${allowed}`
     );
   }
-  // An outstanding pick's answer (ADR-0024): the workflow ran it, then routed — back to Rest in the
-  // state that asked for this Turn, with the Allowed picks read after the route, or out of it.
+  // A pick's answer (ADR-0024): the workflow took it, then routed — back to Rest in the state that
+  // asked for this Turn, with the Allowed picks read after the route, or out of it. A guard straight
+  // back is the one answer that says nothing ran.
   if (receipt.answered === true) {
-    return receipt.turnComplete
-      ? `${delivered} The workflow ran it and moved on: your turn is over. Stop here — do not call this or any other tool again.`
-      : `${delivered} The workflow ran it and is back in the state that asked for this turn. ` +
+    if (receipt.turnComplete) {
+      return `${delivered} The workflow took it and moved on: your turn is over. Stop here — do not call this or any other tool again.`;
+    }
+    return receipt.straightBack === true
+      ? `${delivered} It moved the workflow, and nothing ran: the workflow is back in the state that asked for ` +
+          `this turn. Your turn is not over.${allowed}`
+      : `${delivered} The workflow took it and is back in the state that asked for this turn. ` +
           `${answerText(receipt.answer)} Your turn is not over.${allowed}`;
   }
   return receipt.turnComplete

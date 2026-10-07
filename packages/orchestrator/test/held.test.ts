@@ -278,6 +278,7 @@ test("a guard straight back: answered, it moved and nothing ran; a move to a mod
     { moved: back.moved, answered: back.answered, answer: back.answer, turnComplete: back.turnComplete },
     { moved: true, answered: true, answer: undefined, turnComplete: false },
   );
+  assert.equal(back.straightBack, true, "the one answer that says nothing ran");
   assert.equal(back.outstanding, undefined, "back at Rest before the POST answers: nothing to poll");
   assert.ok(back.allowed.includes("run_tests"), "the Allowed picks after the route: back in `rest`");
   assert.equal(value(rig), JSON.stringify({ work: "rest" }));
@@ -318,13 +319,14 @@ test("a child that replies inside the pick's own send and routes out: the Turn i
   ]);
 });
 
-test("a timer the Machine set itself holds the pick, and no reply came: it moved, and nothing ran", async () => {
+test("a timer the Machine set itself holds the pick, and no reply came: answered with no reply, never a guard straight back", async () => {
   const rig = await started();
   const waiting = rig.host.sendToAgent(rig.iid, { type: "wait" });
   assert.equal(waiting.outstanding, true, "the `after` back into the Agent's state holds Rest");
   const answer = await rig.host.awaitDelivery(rig.iid, waiting.deliveryId);
   assert.equal(answer?.answered, true);
   assert.equal(answer?.answer, undefined, "the Machine's own timer is no reply");
+  assert.equal(answer?.straightBack, undefined, "it was outstanding: not a guard straight back");
   assert.equal(value(rig), JSON.stringify({ work: "rest" }));
 });
 
@@ -847,7 +849,7 @@ test("a reply from outside the states below the Agent's is no link: a sibling re
   host.sendToGate(runId, "side", { type: "note", text: "unrelated" });
   const answer = await polled;
   assert.equal(answer?.answered, true);
-  assert.equal(answer?.answer, undefined, "it moved, and nothing ran below the Agent's state");
+  assert.equal(answer?.answer, undefined, "no reply came from below the Agent's state");
   await host.close();
 });
 
@@ -873,11 +875,14 @@ async function routeRig(
   });
   const work = fromPromise(async () => ({ built: true }));
   const never = fromPromise(() => new Promise<never>(() => {}));
+  const fail = fromPromise<never>(async () => {
+    throw new Error("secret-ish internals");
+  });
   const machine = (coder: ReturnType<typeof agentActorWith>) =>
     jr2Setup({
       types: {} as { context: Record<string, never> },
       events: [go, out, abort, finish],
-      actors: { coder, side, work, never },
+      actors: { coder, side, work, never, fail },
     }).createMachine({
       id: "t",
       context: {},
@@ -907,7 +912,7 @@ async function routeRig(
     provide: () => {
       const coder = new MockFlueClient();
       coders.push(coder);
-      return { actors: { coder: agentActorWith(() => coder, coderDefinition), side, work, never } };
+      return { actors: { coder: agentActorWith(() => coder, coderDefinition), side, work, never, fail } };
     },
   });
   await host.start("route");
@@ -980,4 +985,31 @@ test("something else leaves while the work below still runs: the answer is the l
     answeredBuilt,
     "a chain cut by a Turn timeout",
   );
+});
+
+test('work stopped back at Rest before it replied, or a child that errs: answered with no reply, never "nothing ran" (ADR-0024)', async () => {
+  // A per-step `after` back to Rest stops `never` while it runs; an `onError` back to Rest takes a
+  // child's error, which is a defect and no reply — its message never reaches the model.
+  const cases: Record<string, Record<string, unknown>> = {
+    "a per-step `after` back to Rest": { running: { invoke: { src: "never" }, after: { 30: "rest" } } },
+    "a child's error": { running: { invoke: { src: "fail", onError: "rest" } } },
+  };
+  for (const [name, states] of Object.entries(cases)) {
+    const rig = await routeRig(states);
+    const going = rig.host.sendToAgent(rig.iid, { type: "go" });
+    assert.equal(going.outstanding, true, `${name}: the pick is outstanding`);
+    const answer = await rig.host.awaitDelivery(rig.iid, going.deliveryId);
+    await rig.host.close();
+    assert.deepEqual(
+      {
+        answered: answer?.answered,
+        turnComplete: answer?.turnComplete,
+        answer: answer?.answer,
+        straightBack: answer?.straightBack,
+      },
+      { answered: true, turnComplete: false, answer: undefined, straightBack: undefined },
+      name,
+    );
+    assert.doesNotMatch(JSON.stringify(answer), /secret-ish internals/, `${name}: no error text in the answer`);
+  }
 });

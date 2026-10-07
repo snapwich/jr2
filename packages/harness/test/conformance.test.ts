@@ -1682,7 +1682,7 @@ test("an outstanding pick through the real loop: ONE tool call long-polls the an
   );
   assert.equal(sandbox.polls.length, 3, "polled until answered, all inside one tool call");
   const result = JSON.stringify((provider.calls[1]?.messages ?? []).find((m) => m.role === "tool"));
-  assert.match(result, /The workflow ran it and is back in the state that asked for this turn/);
+  assert.match(result, /The workflow took it and is back in the state that asked for this turn/);
   assert.match(result, /Its answer: the output of `tests`: \{\\"passed\\":3\}/);
   assert.match(result, /Allowed now: `mcp__jr2__finish`/);
   assert.equal(provider.calls.length, 2, "the model was asked once more, after the answer — never mid-wait");
@@ -1756,6 +1756,7 @@ test("a guard straight back resets no streak: nothing ran, so the same pick four
     moved: true,
     turnComplete: false,
     answered: true,
+    straightBack: true,
     allowed: ["run_tests", "finish"],
     event: event.type,
   }));
@@ -1767,4 +1768,6 @@ test("a guard straight back resets no streak: nothing ran, so the same pick four
   assert.match(settlement.error?.message ?? "", /repeated an identical tool call 4 times/);
   assert.equal(sandbox.delivered.length, 3, "the 4th identical call trips before it leaves");
   assert.equal(sandbox.polls.length, 0, "nothing was outstanding, so nothing was polled");
+  const result = JSON.stringify((provider.calls[1]?.messages ?? []).find((m) => m.role === "tool"));
+  assert.match(result, /It moved the workflow, and nothing ran: the workflow is back in the state/);
 });

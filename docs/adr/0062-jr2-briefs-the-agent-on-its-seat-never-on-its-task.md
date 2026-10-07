@@ -43,8 +43,9 @@ whose processes are gone, with no way to know why.
   - **Conversation scope** ("this conversation is new; earlier context is gone") goes to that Agent's next Turn. So does
     a pick's answer that never reached its call
     ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): the route left the Agent's state, and
-    the next Turn of the conversation the picking Turn continued hears "your pick ran to its end after your last turn
-    was over", with the answer. A fresh picking Turn has no such conversation, and its answer is no notice.
+    the next Turn of the conversation the picking Turn continued hears "the workflow left the state of your last turn
+    while your pick was outstanding", with the answer. No pick-answer notice says the work ran to its end: a timer or an
+    outside event may have stopped it. A fresh picking Turn has no such conversation, and its answer is no notice.
   - **Workspace scope** ("the Sandbox's processes were killed at its memory limit during `coder`'s Turn; `/dev/shm` was
     cleared") goes to the next Turn of any Agent in that Workspace. A Menu-only Agent outside a Workspace receives
     conversation notices only.
@@ -61,9 +62,10 @@ whose processes are gone, with no way to know why.
   (`notices: [{ kind: "memory-limit", scope, agent, peak?, limit } | { kind: "conversation-new", reason } | { kind: "pick-answer", pick, cut, answer? } …]`),
   and the Harness renders both parts. An outstanding pick's answer is data too — the last reply since the pick, a
   party's event with its payload or a child's output (ADR-0024) — and its words ("Its answer: `approve` from Gate
-  `review`, with {…}", "It moved, and nothing ran.") are the Harness's, in the receipt and in the notice alike. The
-  standing part needs no wire: the Harness already holds its limits (cgroup and Downward API env), the definition's
-  `workspace` access, and the Menu. The wording lives in one place, and Harness conformance checks it (ADR-0027).
+  `review`, with {…}", "No reply came back for it.") are the Harness's, in the receipt and in the notice alike; "it
+  moved the workflow, and nothing ran" is a guard straight back's receipt alone. The standing part needs no wire: the
+  Harness already holds its limits (cgroup and Downward API env), the definition's `workspace` access, and the Menu. The
+  wording lives in one place, and Harness conformance checks it (ADR-0027).
 
 ## Considered options
 

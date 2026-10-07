@@ -373,7 +373,11 @@ export type AgentDeliveryReceipt = {
   /** This receipt is a pick's answer, read at Rest (or once the Turn left the Agent's state): an outstanding
    * pick's, a reply inside the pick's own send, or a guard straight back with no reply. */
   answered?: true;
-  /** The last reply since the pick (ADR-0024); absent with `answered`: it moved, nothing ran. */
+  /** With `answered`: a guard straight back (ADR-0024) — the pick entered a state below the Agent's
+   * and came back inside its own send, nothing replying. The one answer that says "moved; nothing
+   * ran"; an outstanding pick's answer never carries it. */
+  straightBack?: true;
+  /** The last reply since the pick (ADR-0024); absent with `answered`: no reply came. */
   answer?: PickAnswer;
   delivered: true;
   /** The event delivered — the Agent reads its own pick back, by name. */
@@ -1181,6 +1185,7 @@ export class RunHost {
         allowed: allowedOf(invoking),
         deliveryId: this.newId(),
         answered: true,
+        straightBack: true,
       };
     }
     return {
@@ -1220,7 +1225,8 @@ export class RunHost {
       const reading = same ? restOf(reg!) : "gone";
       if (reading === "busy") continue;
       // The answer's default is the last reply since the pick, whatever moved the Machine after it
-      // (ADR-0024); with none, the answer carries no reply.
+      // (ADR-0024); with none, the answer carries no reply. Never `straightBack`: an outstanding
+      // pick's work was running, so "nothing ran" is not this answer's to say.
       const answer = hold.last ? { answer: hold.last } : {};
       if (reading === "gone") {
         hold.answer = { turnComplete: true, allowed: [], ...answer };

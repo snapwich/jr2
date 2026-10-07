@@ -71,27 +71,31 @@ single-threaded.
   Gate's event and payload, another Agent's pick, a child's output — and the Harness writes the words. A reply comes
   from a child invoked on an active state below the Agent's state, or from a party whose Gate invoke id or Agent slot is
   invoked there (its sender, ADR-0015). The events the Machine sent itself (a `raise`, a `sendTo(self)`, a timer) are no
-  reply, and neither is an event from outside that set (a Gate in a sibling region, a root Gate, an outside send); with
-  none, the pick moved the workflow and nothing ran. The pick's `POST` answers at once with `outstanding` and a delivery
-  id, and the Harness long-polls the answer inside the one tool call (ADR-0002, ADR-0013). A child that settles inside
-  the pick's own send — a decision Machine that is final as it starts — replies before the `POST` answers: when that
-  reply leaves the workflow at Rest, or out of the Agent's state, the `POST` itself is the answer, with `answered` and
-  nothing to poll. So is a guard straight back: a pick that enters a state and leaves it again inside its own send (an
-  `always` back), with no reply, leaves the state value as it was, and is answered "it moved, and nothing ran". A pick
-  that changes the state value moved to a mode, and gets the plain receipt with its Allowed picks; a pick with no target
-  went nowhere, and gets the same, as does a pick whose target is the state it was taken in (it enters nothing it
-  leaves). A route that leaves the Agent's state ends the Turn like any other: the poll reads `turnComplete`, the next
-  state's prompt is the author's, and the answer is a `pick-answer` notice to the Agent that picked: the next Turn of
-  the conversation the picking Turn continued (`continue: true`, ADR-0062). A FRESH picking Turn's conversation is never
-  heard again, and a later continued Turn of the same slot never made the pick, so its answer goes nowhere: the ledger
-  keeps no notice for it. The answer is the last reply since the pick whatever moves the Machine after it — that reply's
-  route (with the events the Machine sends itself as it runs), a timer the Machine set (a Turn timeout `after` on the
-  Agent's state, a per-step timeout on the child state), an event from outside the states below, a Gate's event, the
-  Agent's own end — out of the Agent's state or back to Rest inside it. An earlier link's reply is never dropped because
-  a later link was stopped (an invoke is stopped when its state exits); with no reply since the pick, the answer carries
-  none. A restored hold is the Turn of the first registration of its address in the restored tree: a restore that ends
-  that Turn and starts another at the same address before anything settles answers the pick with `turnComplete`. There
-  is no default time bound on a held Turn; the Console shows each outstanding pick "held since".
+  reply, and neither is an event from outside that set (a Gate in a sibling region, a root Gate, an outside send), nor a
+  child's error: every outcome of work is its output, and an error is a jr2 or config defect, so its message never
+  reaches the model. With none, the answer carries no reply, and its words say only that ("No reply came back for it"):
+  never that nothing ran, because a timer or an outside event may have stopped work that did run. The pick's `POST`
+  answers at once with `outstanding` and a delivery id, and the Harness long-polls the answer inside the one tool call
+  (ADR-0002, ADR-0013). A child that settles inside the pick's own send — a decision Machine that is final as it starts
+  — replies before the `POST` answers: when that reply leaves the workflow at Rest, or out of the Agent's state, the
+  `POST` itself is the answer, with `answered` and nothing to poll. So is a guard straight back: a pick that enters a
+  state and leaves it again inside its own send (an `always` back), with no reply, leaves the state value as it was, and
+  is answered with `straightBack` — the one answer that says "it moved the workflow, and nothing ran". An outstanding
+  pick's answer never carries it. A pick that changes the state value moved to a mode, and gets the plain receipt with
+  its Allowed picks; a pick with no target went nowhere, and gets the same, as does a pick whose target is the state it
+  was taken in (it enters nothing it leaves). A route that leaves the Agent's state ends the Turn like any other: the
+  poll reads `turnComplete`, the next state's prompt is the author's, and the answer is a `pick-answer` notice to the
+  Agent that picked: the next Turn of the conversation the picking Turn continued (`continue: true`, ADR-0062). A FRESH
+  picking Turn's conversation is never heard again, and a later continued Turn of the same slot never made the pick, so
+  its answer goes nowhere: the ledger keeps no notice for it. The answer is the last reply since the pick whatever moves
+  the Machine after it — that reply's route (with the events the Machine sends itself as it runs), a timer the Machine
+  set (a Turn timeout `after` on the Agent's state, a per-step timeout on the child state), an event from outside the
+  states below, a Gate's event, the Agent's own end — out of the Agent's state or back to Rest inside it. An earlier
+  link's reply is never dropped because a later link was stopped (an invoke is stopped when its state exits); with no
+  reply since the pick, the answer carries none. A restored hold is the Turn of the first registration of its address in
+  the restored tree: a restore that ends that Turn and starts another at the same address before anything settles
+  answers the pick with `turnComplete`. There is no default time bound on a held Turn; the Console shows each
+  outstanding pick "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,
