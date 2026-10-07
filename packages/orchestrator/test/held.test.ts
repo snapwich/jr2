@@ -12,6 +12,7 @@ import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
 import { OutstandingError } from "../src/registration.ts";
+import { answer } from "../src/pick.ts";
 import { SUBMISSION_HARNESS_RESTARTED } from "../src/wire.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
@@ -1108,6 +1109,26 @@ test("a child's error below the Agent's state gives the answer no reply; the ope
   assert.deepEqual(feed, [
     { kind: "child-error", agent: "coder", pick: "go", child: "fail", error: "secret-ish internals" },
   ]);
+});
+
+test("an author tells the Agent a child's error explicitly: `answer(...)` on the `onError` route is the answer (ADR-0024, ADR-0067)", async () => {
+  const told = answer(({ event }) => {
+    const { error } = event as { error?: unknown };
+    return { failed: error instanceof Error ? error.message : String(error) };
+  });
+  const rig = await routeRig({ running: { invoke: { src: "fail", onError: { target: "rest", actions: told } } } });
+  const runId = rig.host.agentSurface(rig.iid)!.runId;
+  const feed: unknown[] = [];
+  rig.host.subscribe(runId, (e) => {
+    if (e.kind === "child-error") feed.push(e);
+  });
+  const going = rig.host.sendToAgent(rig.iid, { type: "go" });
+  assert.equal(going.outstanding, true);
+  const answered = await rig.host.awaitDelivery(rig.iid, going.deliveryId);
+  await rig.host.close();
+  assert.deepEqual(answered?.answer, { kind: "answer", value: { failed: "secret-ish internals" } });
+  assert.equal(answered?.turnComplete, false, "back at Rest: the Turn goes on");
+  assert.equal(feed.length, 1, "the operator still reads the error on the feed");
 });
 
 test('work stopped back at Rest before it replied, or a child that errs: answered with no reply, never "nothing ran" (ADR-0024)', async () => {
