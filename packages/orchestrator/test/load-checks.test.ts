@@ -179,6 +179,44 @@ test('the same Machine with `audience: "any"` on the pick: both may send it, no 
 });
 
 test("two parties' writings of one name on one path: a warning naming both, with the sentBy line on the DEEPER writing", () => {
+  // The Gate is seated ABOVE the Agent's state: while the Agent works in `draft`, the reviewer may
+  // send `approve`, and xstate selects the deeper writing — the Agent's — first.
+  const build = (marked: boolean) =>
+    jr2Setup({ events: [ev("approve")], actors: { coder: slot() } }).createMachine({
+      id: "same",
+      initial: "release",
+      states: {
+        release: {
+          invoke: { src: "gate", id: "review" },
+          on: { approve: "shipped" },
+          initial: "work",
+          states: {
+            work: {
+              invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+              initial: "draft",
+              states: {
+                draft: { on: { approve: { target: "#same.mine", ...(marked ? { guard: sentBy("coder") } : {}) } } },
+              },
+            },
+          },
+        },
+        shipped: { type: "final" },
+        mine: { type: "final" },
+      },
+    });
+  const party = (m: AnyStateMachine) => loadWarningsOf(m).filter((w) => w.includes("can be active together"));
+  assert.deepEqual(party(build(false)), [
+    `"approve" on "same.release" (Gate "review") and on "same.release.work.draft" (Agent "coder") can be active ` +
+      `together; Gate "review"'s "approve" would run Agent "coder"'s writing, so jr2 refuses it while both are ` +
+      `active. Make the deeper writing decline other senders:\n  draft: { on: { approve: { guard: sentBy("coder"), target: "#same.mine" } } }`,
+  ]);
+  assert.deepEqual(party(build(true)), [], "the deeper writing declines: the reviewer's approve runs release's");
+});
+
+test("the Agent's writing above a party seated below the Agent's state: no warning — the Agent's state is busy there (ADR-0024)", () => {
+  // While the Gate runs in `asking`, `t` is not at Rest: every pick of the Agent is refused,
+  // whatever its guard, so the Agent never sends `stop` while the deeper writing is active. A
+  // `sentBy` on it would change nothing, and the warning would ask for one.
   const build = (marked: boolean) =>
     jr2Setup({ events: [ev("stop"), ev("ask")], actors: { coder: slot() } }).createMachine({
       id: "same",
@@ -199,26 +237,23 @@ test("two parties' writings of one name on one path: a warning naming both, with
         agentStopped: { type: "final" },
       },
     });
-  assert.deepEqual(loadWarningsOf(build(false)), [
-    `"stop" on "same.t" (Agent "coder") and on "same.t.asking" (Gate "review") can be active together; Agent ` +
-      `"coder"'s "stop" would run Gate "review"'s writing, so jr2 refuses it while both are active. Make the deeper ` +
-      `writing decline other senders:\n  asking: { on: { stop: { guard: sentBy("review"), target: "#same.t.coding" } } }`,
-  ]);
-  assert.deepEqual(loadWarningsOf(build(true)), [], "the deeper writing declines: the Agent's stop runs t's");
+  assert.deepEqual(loadWarningsOf(build(false)), []);
+  assert.deepEqual(loadWarningsOf(build(true)), []);
 });
 
 test("the warning names a derived Gate id and says how to name the invoke", () => {
-  const m = jr2Setup({ events: [ev("stop"), ev("ask")], actors: { coder: slot() } }).createMachine({
+  // Two Gates on one path: the inner one, unnamed, is selected first for the outer caller's `stop`.
+  const m = jr2Setup({ events: [ev("stop"), ev("ask")] }).createMachine({
     id: "same",
     initial: "t",
     states: {
       t: {
-        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
-        on: { stop: "agentStopped" },
+        invoke: { src: "gate", id: "operator" },
+        on: { stop: "stopped" },
         initial: "coding",
         states: { coding: { on: { ask: "asking" } }, asking: { invoke: { src: "gate" }, on: { stop: "coding" } } },
       },
-      agentStopped: { type: "final" },
+      stopped: { type: "final" },
     },
   });
   const warnings = loadWarningsOf(m);
@@ -340,29 +375,30 @@ test("parallel regions: one warning per region, each line on the other region's 
 
 test("a sentBy the walk cannot read — under or() — leaves the warning in place", () => {
   const m = jr2Setup({
-    events: [ev("stop"), ev("ask")],
+    events: [ev("approve")],
     actors: { coder: slot() },
     guards: { never: () => false },
   }).createMachine({
     id: "same",
-    initial: "t",
+    initial: "release",
     states: {
-      t: {
-        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
-        on: { stop: "agentStopped" },
-        initial: "coding",
+      release: {
+        invoke: { src: "gate", id: "review" },
+        on: { approve: "shipped" },
+        initial: "work",
         states: {
-          coding: { on: { ask: "asking" } },
-          asking: {
-            invoke: { src: "gate", id: "review" },
-            on: { stop: { target: "coding", guard: or([sentBy("review"), "never"]) } },
+          work: {
+            invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+            initial: "draft",
+            states: { draft: { on: { approve: { target: "#same.mine", guard: or([sentBy("coder"), "never"]) } } } },
           },
         },
       },
-      agentStopped: { type: "final" },
+      shipped: { type: "final" },
+      mine: { type: "final" },
     },
   });
-  assert.equal(loadWarningsOf(m).length, 1);
+  assert.equal(loadWarningsOf(m).filter((w) => w.includes("can be active together")).length, 1);
 });
 
 test("one def, one meaning: one party's writings of one name on one path with different targets warn", () => {

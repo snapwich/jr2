@@ -398,7 +398,8 @@ function correctedLine(w: Writing, id: string): string {
  *   active. The warning names both writings and shows the corrected line; the guard goes on the
  *   DEEPER writing, because xstate selects deepest first. A root writing is both parties', so the
  *   root-writing shape (a root `cancel`, a Gate below, the Agent's `cancel` in a mode) is the same
- *   case.
+ *   case. Not when the seat is an Agent and the deeper writing's party is seated below the Agent's
+ *   state: that state is busy while the party runs, so every Agent pick is refused there (ADR-0024).
  * - **One def, one meaning.** One party may take two writings of one name on one path with
  *   different targets: its sender reads one description for both.
  *
@@ -430,10 +431,19 @@ export function partyWarnings(machine: AnyStateMachine, derivedGateIds: Readonly
         const parallel = orthogonal(own.node, other.node);
         if ((!deeper && !parallel) || !together(seat.node, other.node)) continue;
         if (other.candidates.every((t) => declines((t as { guard?: unknown }).guard, seat.sender.id))) continue;
-        const owners = (() => {
-          const owner = ownerOf(other.node, machine);
-          return owner ? partiesAt(owner, machine) : [];
-        })();
+        const ownerNode = ownerOf(other.node, machine);
+        // Under the Rest rule (ADR-0024) a party seated BELOW the Agent's state keeps that state
+        // busy while it is active, so every pick of the Agent is refused there, whatever its guard:
+        // the Agent never sends this name while the deeper writing is active, and no `sentBy` on it
+        // would change that. Nothing to warn about.
+        if (
+          seat.sender.party === "agent" &&
+          ownerNode !== undefined &&
+          ownerNode !== seat.node &&
+          isAncestorOrSelf(seat.node, ownerNode)
+        )
+          continue;
+        const owners = ownerNode ? partiesAt(ownerNode, machine) : [];
         const owner = owners.find((p) => p.id !== seat.sender.id) ?? owners[0];
         const named = owner?.party === "gate" && derivedGateIds.has(owner.id);
         warnings.set(

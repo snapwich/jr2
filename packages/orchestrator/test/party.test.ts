@@ -383,7 +383,7 @@ test("the walk's party warnings over the scenarios: each plain shape that shadow
       s5plain: 2,
       s5marked: 0,
       s6plain: 1,
-      s8plain: 1,
+      s8plain: 0,
       s8marked: 0,
       rootPlain: 1,
       rootMarked: 0,
@@ -391,7 +391,7 @@ test("the walk's party warnings over the scenarios: each plain shape that shadow
       twoGatesPathMarked: 0,
       twoGatesParallel: 2,
       twoGatesParallelMarked: 0,
-      payloadBelow: 1,
+      payloadBelow: 0,
       author: 0,
     },
   );

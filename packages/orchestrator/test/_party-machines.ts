@@ -194,7 +194,8 @@ export function s5(coder: AgentLogic, mode: Mode): AnyStateMachine {
 
 /** S8, a nested Agent: `outer` invokes `coder` and writes `submit`; `outer.inner` invokes
  * `reviewer`, whose mode `check` writes `submit`. `marked`: the inner writing carries
- * `sentBy("reviewer")`. */
+ * `sentBy("reviewer")`, which the walk does not ask for here: while `reviewer` runs, `outer` is not
+ * at Rest, so every pick of `coder` is refused whatever the guard (ADR-0024). */
 export function s8(coder: AgentLogic, reviewer: AgentLogic, mode: Mode): AnyStateMachine {
   return jr2Setup({ types, events: [submit!], actors: { coder, reviewer } }).createMachine({
     id: "s8",

@@ -133,10 +133,12 @@ the Agent in it — a one-way mode — is legal and silent on purpose.
 
   A root writing is both parties', so the root-writing shape — a root `cancel`, a Gate below it, the Agent's `cancel` in
   a mode — is the same case: the line goes on the mode's writing, and the Gate's caller's `cancel` then runs the root
-  writing. Siblings (a mode and a Gate's or another Agent's sibling state) are not the case: neither writing is ever
-  selected for the other, and delivery answers a send there like any pick the state does not take. A Gate whose invoke
-  id the walk derived is named so in the line; giving its invoke an `id` names it. A `sentBy` under `or()` or `not()`
-  leaves the warning in place.
+  writing. The Agent's writing above a party seated BELOW the Agent's state — a Gate, a nested Agent — is not the case:
+  while that party runs, the Agent's state is not at Rest, so every pick of the Agent is refused whatever its guard, and
+  a `sentBy` on the deeper writing would change nothing; the walk does not warn there. Siblings (a mode and a Gate's or
+  another Agent's sibling state) are not the case: neither writing is ever selected for the other, and delivery answers
+  a send there like any pick the state does not take. A Gate whose invoke id the walk derived is named so in the line;
+  giving its invoke an `id` names it. A `sentBy` under `or()` or `not()` leaves the warning in place.
 
 - **One def, one meaning.** One party's writings of one name on one path with different targets: its sender reads one
   description for both, and only the deepest active writing runs. The warning says to make the def's description true at
