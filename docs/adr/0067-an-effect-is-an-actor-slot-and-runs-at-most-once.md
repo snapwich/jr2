@@ -51,6 +51,9 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   is orphaned after a final state — each breaks D1 or the ledger.
 - **Rest counts an Effect like any child.** A running Effect below an Agent's state holds the Agent's pick (ADR-0024); a
   settled Effect with no `onDone` is Rest. An Effect is not a long-lived invoke, and the load walk does not warn on one.
+- **The load walk checks what a pick hands an Effect** (ADR-0015): a pick param nothing reads and a `fill` that
+  overwrites a param are refused, a mapper the probe cannot run is a warning, and a child of an Agent's state that
+  invokes something and that nothing enters is refused.
 
 ## Considered options
 
@@ -69,5 +72,4 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   with its output.
 - Not built: an `answer` in a Machine where two Agents have a pick outstanding at once. Which pick it shapes is not
   decided; today it sets nothing, and each pick keeps its default answer.
-- Owed, not built: the other kinds (`http`, `upload`, `push`) and the Effectors that run them; an Open argv bound by
-  `customize()`.
+- Owed, not built: Effect kinds beyond `command`, and an Open argv bound by `customize()`.
