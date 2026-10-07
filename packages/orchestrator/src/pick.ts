@@ -18,6 +18,8 @@
 import type {
   ActionFunction,
   AnyActorRef,
+  AnyMachineSnapshot,
+  AnyStateMachine,
   EventObject,
   MachineContext,
   OutputFrom,
@@ -26,6 +28,7 @@ import type {
 } from "xstate";
 import type { z } from "zod";
 import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
+import { isAgent } from "./agent.ts";
 import { boundRun } from "./registration.ts";
 import type { PickAnswer } from "./wire.ts";
 
@@ -93,6 +96,58 @@ function linksOf(chain: readonly PickAnswer[]): unknown[] {
   });
 }
 
+type Node = AnyStateMachine["root"];
+
+/**
+ * Where an `answer` is written, as the Agents' states it is below: for each place the action is
+ * written (a state's entry or exit, a transition on a state, a state's initial transition), the
+ * nearest state at or above it that invokes an Agent — `null` where none does. An `answer` shapes
+ * only a pick of an Agent seated at one of these (ADR-0067); one written above every Agent's state
+ * (`null`) may shape any. Read once per Machine, by the action's identity: one `answer` object
+ * written in two places carries both.
+ */
+export type AnswerSeats = ReadonlySet<Node | null>;
+
+const seatsCache = new WeakMap<AnyStateMachine, Map<unknown, Set<Node | null>>>();
+
+export function seatsOfAnswer(machine: AnyStateMachine, action: unknown): AnswerSeats {
+  let byAction = seatsCache.get(machine);
+  if (byAction === undefined) {
+    byAction = new Map();
+    seatsCache.set(machine, byAction);
+    const actors = (machine.implementations?.actors ?? {}) as Record<string, unknown>;
+    const named = (machine.implementations?.actions ?? {}) as Record<string, unknown>;
+    const resolve = (a: unknown): unknown => {
+      const type = typeof a === "string" ? a : typeof a === "object" && a !== null ? (a as { type?: unknown }).type : a;
+      return typeof type === "string" ? named[type] : a;
+    };
+    const seatAbove = (n: Node): Node | null => {
+      for (let p: Node | undefined = n; p; p = p.parent)
+        if (p.invoke.some((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))) return p;
+      return null;
+    };
+    const visit = (n: Node): void => {
+      const written = [
+        ...n.entry,
+        ...n.exit,
+        ...[...n.transitions.values()].flat().flatMap((t) => t.actions),
+        ...(n.always ?? []).flatMap((t) => t.actions),
+        ...(n.initial?.actions ?? []),
+      ];
+      for (const a of written) {
+        const fn = resolve(a);
+        if (!isAnswer(fn)) continue;
+        const seats = byAction!.get(fn) ?? new Set<Node | null>();
+        seats.add(seatAbove(n));
+        byAction!.set(fn, seats);
+      }
+      for (const child of Object.values(n.states)) visit(child);
+    };
+    if (machine?.root) visit(machine.root);
+  }
+  return byAction.get(action) ?? new Set<Node | null>([null]);
+}
+
 /** The brand the load walk reads: this action is an `answer`. */
 export type AnswerAction = { readonly jr2Answer: true };
 
@@ -111,13 +166,15 @@ export function answer<
 ): ActionFunction<TContext, TExpressionEvent, TEvent, TParams, TActor, never, never, never, never> & AnswerAction {
   const action = ({ context, event, self }: { context: TContext; event: TExpressionEvent; self: AnyActorRef }) => {
     const binding = boundRun(self.system);
+    // The Agents' states this action is written below: it shapes only a pick of one of those.
+    const seats = seatsOfAnswer((self.getSnapshot() as AnyMachineSnapshot).machine as AnyStateMachine, action);
     // No pick of this Machine's Agent is being answered (the state's first entry, a later Turn's):
     // there is nothing to shape, and nothing runs.
-    const chain = binding?.chainOf?.(self);
+    const chain = binding?.chainOf?.(self, seats);
     if (chain === undefined) return;
     // Kit-internal: the host records links by slot name, which is what ChainLink states.
     const links = linksOf(chain) as unknown as readonly ChainLink<TActor, TEvent>[];
-    binding?.setAnswer?.(self, fn({ context, event, chain: links }));
+    binding?.setAnswer?.(self, seats, fn({ context, event, chain: links }));
   };
   return Object.assign(action, { jr2Answer: true as const }) as unknown as ActionFunction<
     TContext,

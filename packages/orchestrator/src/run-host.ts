@@ -31,6 +31,7 @@ import {
 } from "xstate";
 import { SENDER_KEY, type EventDef, type EventSemantics } from "@jr2/agent-protocol";
 import { seatOf, senderText } from "./party.ts";
+import type { AnswerSeats } from "./pick.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
 import { answerOf, childErrorOf, replyOf, type Hold } from "./holds.ts";
@@ -1295,18 +1296,31 @@ export class RunHost {
   }
 
   /**
-   * The pick an `answer` action in `machine` shapes (ADR-0067): the pick being delivered now, when
-   * its Agent's state is in `machine`; else the one outstanding pick of an Agent `machine` invokes.
-   * Two outstanding at once (two Agents' states active in one Machine) is no answer at all: the
-   * action cannot say whose it shapes.
+   * The pick an `answer` action in `machine` shapes (ADR-0067): only a pick of an Agent seated at
+   * one of `seats`, the Agents' states the action is written below (`null`: written below none, so
+   * any of `machine`'s Agents). The pick being delivered now, when it is such a pick; else the one
+   * such pick outstanding. Two outstanding at once is no answer at all: the action cannot say whose
+   * it shapes.
    */
-  private answeringIn(machine: AnyActorRef, runId: string, holds: Map<string, Hold>): Sending | Hold | undefined {
+  private answeringIn(
+    machine: AnyActorRef,
+    seats: AnswerSeats,
+    runId: string,
+    holds: Map<string, Hold>,
+  ): Sending | Hold | undefined {
+    const seatedFor = (reg: Registration | undefined): boolean => {
+      if (reg?.invoker !== machine) return false;
+      if (seats.has(null)) return true;
+      const snapshot = machine.getSnapshot() as AnyMachineSnapshot;
+      const seat = reg.invokeId !== undefined ? seatOf(snapshot, reg.invokeId) : undefined;
+      return seat !== undefined && seats.has(seat);
+    };
     const sending = this.sending;
-    if (sending && sending.reg.runId === runId && sending.reg.invoker === machine) return sending;
+    if (sending && sending.reg.runId === runId && seatedFor(sending.reg)) return sending;
     const open = [...holds.values()].filter(
       (hold) =>
         hold.answer === undefined &&
-        (this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId)))?.invoker === machine,
+        seatedFor(this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId))),
     );
     return open.length === 1 ? open[0] : undefined;
   }
@@ -1875,16 +1889,16 @@ export class RunHost {
           }
         );
       },
-      // The `answer` action's two halves (ADR-0067): the chain of the one pick of `machine`'s Agent
-      // being answered — the one in its own send first, else the one outstanding — and the value
-      // that replaces its default answer.
-      chainOf: (machine) => {
-        const pick = this.answeringIn(machine, record.runId, holds);
+      // The `answer` action's two halves (ADR-0067): the chain of the one pick being answered of an
+      // Agent whose state the action is written below — the one in its own send first, else the one
+      // outstanding — and the value that replaces its default answer.
+      chainOf: (machine, seats) => {
+        const pick = this.answeringIn(machine, seats, record.runId, holds);
         if (pick === undefined) return undefined;
         return "reg" in pick ? [...pick.chain] : [...(pick.chain ?? [])];
       },
-      setAnswer: (machine, value) => {
-        const pick = this.answeringIn(machine, record.runId, holds);
+      setAnswer: (machine, seats, value) => {
+        const pick = this.answeringIn(machine, seats, record.runId, holds);
         if (pick === undefined) return;
         // Not saved here: the action runs inside a transition, and the persist that follows it carries
         // the value — a save now would read the Machine before its route, and answer too early.

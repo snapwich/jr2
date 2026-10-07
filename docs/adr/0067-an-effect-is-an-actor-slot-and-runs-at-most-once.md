@@ -21,7 +21,9 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   pick, oldest first, each a link typed by its slot (`{ kind: "output", src, output }`) or by the Machine's events
   (`{ kind: "event", event }`); its order and length are not typed. A link is a reply from outside the Machine; the
   events it sent itself are skipped. The value is JSON on the wire and in the hold; one with no JSON form sets nothing.
-  A child's error is no link, and by default the Agent is not told (ADR-0024); an author who wants it told writes
+  An `answer` shapes only the pick of the Agent whose state it is written below (on a state's entry or exit, or on a
+  transition of a state, at or below that Agent's state); one written below no Agent's state may shape any Agent's. A
+  child's error is no link, and by default the Agent is not told (ADR-0024); an author who wants it told writes
   `answer(...)` on the `onError` route. An Effect never takes that route for an outcome: every outcome is output.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
@@ -92,6 +94,7 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
 - A command a Harness restart cut settles `unknown`; the stream before the restart is on the feed.
 - An Orchestrator restart mid-command gives one run: the restored Effect reads the exec from its current end and settles
   with its output.
-- Not built: an `answer` in a Machine where two Agents have a pick outstanding at once. Which pick it shapes is not
-  decided; today it sets nothing, and each pick keeps its default answer.
+- Not built: an `answer` that may shape two Agents' picks while both are outstanding at once — one written below no
+  Agent's state, or one action object written below two Agents' states. Which pick it shapes is not decided; today it
+  sets nothing, and each pick keeps its default answer.
 - Owed, not built: Effect kinds beyond `command`, and an Open argv bound by `customize()`.

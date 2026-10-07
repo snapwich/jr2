@@ -241,3 +241,54 @@ test("the fromPick sum is checked against the Effect's input type: a missing or 
     });
   assert.equal(typeof typed, "function");
 });
+
+// An `answer` shapes the pick of the Agent whose state it is written below, never another Agent's
+// (ADR-0067, ADR-0024). Two Agents in parallel root regions: A's pick is outstanding; an `answer`
+// in B's region runs. It sets nothing for A, and A reads its own command's output.
+test("an `answer` below one Agent's state never shapes another Agent's outstanding pick", async () => {
+  const fake = new FakeHarnessExec();
+  const a = new MockFlueClient();
+  const b = new MockFlueClient();
+  const build = defineEvent({ name: "build", input: z.object({}) });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "two",
+    machine: jr2Setup({
+      events: [build],
+      actors: {
+        ws: fakeWorkspace(),
+        coderA: agentActorWith(() => a, coderDefinition),
+        coderB: agentActorWith(() => b, coderDefinition),
+        builder: commandWith(fake.factory, ["pnpm", "build"]),
+      },
+    }).createMachine({
+      id: "two",
+      invoke: { src: "ws" },
+      type: "parallel",
+      states: {
+        ra: {
+          invoke: { src: "coderA", input: { prompt: "A", endpoint: "http://harness.invalid" } },
+          initial: "rest",
+          states: { rest: {}, building: { invoke: { src: "builder", onDone: "rest" } } },
+          on: { build: ".building" },
+        },
+        rb: {
+          invoke: { src: "coderB", input: { prompt: "B", endpoint: "http://harness.invalid" } },
+          initial: "idle",
+          states: { idle: { after: { 50: "rest" } }, rest: { entry: answer(() => "B's answer") } },
+        },
+      },
+    }),
+    provide: () => ({}),
+  });
+  await host.start("two");
+  await waitFor(() => a.admits.length === 1 && b.admits.length === 1);
+  const iid = a.admits[0]!.instanceId;
+  const picked = host.sendToAgent(iid, { type: "build" });
+  assert.equal(picked.outstanding, true);
+  await waitFor(() => fake.starts.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  fake.settle({ outcome: "exited", code: 0, tail: "built" });
+  const answered = await host.awaitDelivery(iid, picked.deliveryId);
+  assert.equal(answered?.answer?.kind, "output", "A reads its own command's output, not B's answer");
+});
