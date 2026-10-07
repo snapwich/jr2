@@ -30,13 +30,15 @@ recover, finish — are exercised only one scripted tool call at a time.
   notice changes what the next Turn does ([ADR-0061](0061-a-memory-kill-ends-the-agents-processes-not-the-harness.md),
   ADR-0062); a Turn follows its modes — after a pick changes the mode, after a correction receipt, and after a model
   that stopped is asked again ([ADR-0015](0015-authoring-surface-absorbs-the-mechanism.md), ADR-0029,
-  [ADR-0016](0016-agent-turn-mechanics-are-internal.md)); and a Turn hears its Allowed picks change under it at a step
-  boundary, follows them without a refused pick, and picks inside the same Submission when a Gate's answer opens a pick
-  while it works (ADR-0029). A claim qualifies when an ADR states what a correct Agent does differently for it and a
-  step can observe the difference from outside the pod. **The run** is one `workspace()` workflow through to `done` on a
-  real task: a ticket the seed Repo carries as a failing test, a planner's pick, a coder that edits in the Worktree,
-  runs the test, commits on the run's branch and names the commit — a guard refuses a `submit` that names none — and a
-  reviewer in the same Sandbox, read-only
+  [ADR-0016](0016-agent-turn-mechanics-are-internal.md)); a model that stopped with nothing allowed is woken when a
+  Gate's answer opens a pick, and picks (the wake, ADR-0016); a Turn hears its Allowed picks change under it at a step
+  boundary and follows them without a refused pick (ADR-0029); and a pick that runs work is answered at Rest and the
+  Agent acts on the answer, after a chain of replies and after a Harness restart cut the pick
+  ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md), ADR-0031). A claim qualifies when an ADR
+  states what a correct Agent does differently for it and a step can observe the difference from outside the pod. **The
+  run** is one `workspace()` workflow through to `done` on a real task: a ticket the seed Repo carries as a failing
+  test, a planner's pick, a coder that edits in the Worktree, runs the test, commits on the run's branch and names the
+  commit — a guard refuses a `submit` that names none — and a reviewer in the same Sandbox, read-only
   ([ADR-0028](0028-what-an-agent-may-do-to-the-workspace-is-part-of-its-definition.md)), that runs the test itself and
   approves or rejects, bounded. Approval parks at a Gate, and the witness is the pod (parking is retention, ADR-0012):
   the branch is ahead of `main`, its head is the named commit, the tree is clean, and the test passes when the suite
@@ -108,14 +110,18 @@ recover, finish — are exercised only one scripted tool call at a time.
   model works, a mode moved while it composes) voids the trials whose setup lost the race; voids are bounded, and a void
   past the bound counts against the floor.
 - One trial may measure two claims: `push-follow` and `push-no-refusal` are two cells of one scenario's trials.
-- The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link),
-  `refused-outstanding` (a pick refused while another was outstanding is picked again after the answer) and `cut-pick`
-  (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step deletes the
-  Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last, and the refusal's carries
-  ADR-0029's recovery after one refusal. The first run (home-lab vLLM, 2026-10-07) confirmed two: `chain-answer` 10 of
-  10 and `cut-pick` 10 of 10, now baselines. `refused-outstanding` is open: its setup is a model that makes both calls
-  in one message, and in all 15 trials of each of three runs the model made them one after the other, so no trial
-  reached the refusal the claim measures.
+- The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link) and
+  `cut-pick` (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step
+  deletes the Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last. The first run
+  (home-lab vLLM, 2026-10-07) confirmed both, 10 of 10, now baselines.
+- **The refusal of a second pick while one is outstanding is not a claim.** It is jr2's mechanism, not something a model
+  does with what it reads: the Harness claims picks in message order and refuses the second before it leaves, and
+  nothing of it reaches the Machine (ADR-0024). Harness conformance proves it with a scripted provider that sends two
+  picks in one message: the second is refused with the outstanding text, and only the first is delivered. A claim for it
+  (`refused-outstanding`: the refused pick is picked again once the answer comes) ran once, on 2026-10-07: in all 15
+  trials of that run the model called `book_room`, read its answer, then called `send_invite`, so no call was ever
+  refused and its setup never happened. It left the tier with no cell; no floor was lowered. A model that makes parallel
+  calls would need a claim of its own: what it does after the refusal.
 - **A claim's setup may change; its floor and what counts as a pass may not.** A setup is the part of a trial that
   brings the model to the moment the claim measures. When a claim falls below its floor because that moment seldom
   happens, its workflow and its driver may change for the setup alone, and the reason is recorded here. A setup that no
@@ -133,12 +139,18 @@ recover, finish — are exercised only one scripted tool call at a time.
     workflow, not from a copy of them, and replays the model's calls through them: a mode with a targetless timer has
     its picks closed from each entry until the timer fires; the driver takes the timer where a restated Turn part shows
     that it fired, and follows it at the ask when the wake asked with nothing allowed.
-  - `push-wake`. The step answered the board as soon as the Turn's prompt printed. In two runs, 8 and 9 trials had no
-    restatement, each with one `hold` or `release` as its whole conversation: the answer had landed before the model's
-    first pick, so the pick was taken and nothing needed restating. Five were replaced as void and the rest counted
-    against the floor (7 and 5 of 10). The step now answers once the Turn's first step has ended with a Menu call, so a
-    later step boundary must carry the change. The pass is unchanged: the first Menu call after the restatement is
-    `release` or `hold`, with no ask before it.
+  - `push-wake`, since replaced by `wake`. It measured a Menu-only Turn that started with nothing allowed and picked
+    inside the same Submission once a Gate's answer was restated at a step boundary. The step first answered the board
+    as soon as the Turn's prompt printed; in two runs, 8 and 9 trials had no restatement, each with one `hold` or
+    `release` as its whole conversation (7 and 5 of 10). It then answered once the Turn's first step had ended with a
+    Menu call, and the claim fell to 2 of 10. The cause is the standing Briefing, rewritten after the claim was written
+    (ADR-0062): "If nothing is allowed, stop: the workflow prompts you again when something is." A correct model with
+    nothing allowed now stops, so the in-Submission moment the claim measured is rare, and the model that skips it is
+    the correct one. What the Briefing promises instead is the wake (ADR-0016), and `wake` measures that: the model
+    stopped with nothing allowed; once its Submission has settled, the step answers the board; and the first Menu call
+    after the wake is `release` or `hold`. A model that never stopped is void. Its floor is `push-follow`'s, 9 of 10.
+    `push-follow` keeps the restatement case: a list that changes while the model is still working. `push-wake` had no
+    baseline cell.
 
   The Rest rule (ADR-0024) changed a third, `mode-refusal`, before any run under it. Its timer moved `reviewing` on to
   `approved` while the model composed its next call; under Rest that timer holds `ask_review` outstanding until it

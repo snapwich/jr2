@@ -1,19 +1,16 @@
-// The push-wake claim (ADR-0029's step-boundary check, ADR-0016's ask-again rule): a Menu-only
-// Turn starts with NOTHING allowed — its picks wait on a release board, a Gate on the state above.
-// The Agent writes, with no pick to make. When the board's answer lands while the model is still
-// writing, the Harness's read at that step's boundary finds the Allowed picks changed and restates
-// the Turn part, which keeps the Submission going; a correct Agent then picks inside the SAME
-// Submission, with no nudge.
+// The wake claim (ADR-0016's ask-again rule, ADR-0062's standing Briefing): a Menu-only Turn starts
+// with NOTHING allowed — its picks wait on a release board, a Gate on the state above. The standing
+// Briefing tells a model with nothing allowed to stop, and the workflow to prompt it again when
+// something is. The prompt says nothing of either. A correct Agent stops; the step answers the board
+// once the Turn's Submission has settled; jr2 then wakes the model once, with the nudge's text and a
+// Turn part that states the Allowed picks last; and the first Menu call after the wake is one of
+// them.
 //
-// The step answers the Gate once the Turn's first step has ended with a Menu call — refused, since
-// nothing is allowed yet — so the change lands after that step, and a later step boundary must
-// carry it. Answered sooner, the answer can land before the model's first pick, which is then
-// simply taken and nothing is restated. A model whose first step made no Menu call ended its
-// Submission with nothing allowed — nothing restates an empty list to a model that stopped — and
-// the wake asks it again in a second Submission once the answer opens a pick (ADR-0016): that
-// trial never reached the moment the claim measures (`void`).
+// A model that did not stop — still working, or calling picks that are refused — never reached the
+// moment the claim measures (`void`). The prompt is fixed data: it is not tuned to make a model
+// stop or pick.
 //
-// Filename `push-wake.ts` → workflow "push-wake".
+// Filename `wake.ts` → workflow "wake".
 
 import { z } from "zod";
 import { assign } from "xstate";
@@ -47,7 +44,7 @@ export const machine = jr2Setup({
   events: [release, hold, cleared],
   actors: { advisor: agent(advisor) },
 }).createMachine({
-  id: "push-wake",
+  id: "wake",
   input: door,
   context: ({ input }) => ({ ...input, cleared: false }),
   initial: "board",
@@ -64,21 +61,20 @@ export const machine = jr2Setup({
             src: "advisor",
             input: ({ context }) => ({
               prompt:
-                `[${context.marker}] v2.3 is waiting on the release board. While it waits, write a risk ` +
-                `assessment of about 200 words for these changes:\n\n` +
+                `[${context.marker}] v2.3 is waiting on the release board. Its changes:\n\n` +
                 `- The cache moves from disk to memory.\n` +
                 `- The config loader rejects unknown keys.\n` +
                 `- The HTTP client retries idempotent requests twice.\n\n` +
-                `Release or hold v2.3 once the workflow allows it.`,
+                `Release or hold v2.3.`,
               continue: true,
               ...dialFor(context.thinking as ThinkingCell),
             }),
           },
           on: {
-            release: { guard: ({ context }) => context.cleared, target: "#push-wake.released" },
-            hold: { guard: ({ context }) => context.cleared, target: "#push-wake.held" },
+            release: { guard: ({ context }) => context.cleared, target: "#wake.released" },
+            hold: { guard: ({ context }) => context.cleared, target: "#wake.held" },
             "agent.fault": {
-              target: "#push-wake.faulted",
+              target: "#wake.faulted",
               actions: assign({ fault: ({ event }) => (event as { reason?: string }).reason }),
             },
           },

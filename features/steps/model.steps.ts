@@ -149,12 +149,19 @@ async function harnessAuth(world: E2EWorld, placement: string): Promise<Record<s
   return { authorization: `Bearer ${harnessToken(signingKey, placement)}` };
 }
 
-/** How many of the conversation's Submissions have settled at the run's Sandbox — 0 while the
- * first Turn runs, which is when a memory kill lands on its stream (ADR-0061). `undefined` while
- * the Harness holds no such conversation yet. */
-async function settledTurns(world: E2EWorld, pod: string, agent: string, iid: string): Promise<number | undefined> {
+/** How many of the conversation's Submissions have settled at a Harness pod — 0 while the first
+ * Turn runs, which is when a memory kill lands on its stream (ADR-0061). `undefined` while the
+ * Harness holds no such conversation yet. `placement` is the bearer's (ADR-0058): a Sandbox's pod
+ * name, or the Instance Harness's Service. */
+async function settledTurns(
+  world: E2EWorld,
+  pod: string,
+  agent: string,
+  iid: string,
+  placement = pod,
+): Promise<number | undefined> {
   assert.ok(world.namespace);
-  const headers = await harnessAuth(world, pod);
+  const headers = await harnessAuth(world, placement);
   const child = spawn("kubectl", ["--namespace", world.namespace, "port-forward", `pod/${pod}`, ":8080"]);
   try {
     const local = await new Promise<string>((resolve, reject) => {
@@ -264,10 +271,9 @@ const FINISHED: Record<string, (s: Status) => boolean> = {
   "mode-follow": (s) => s.status === "done" && s.value === "submitted",
   "mode-refusal": (s) => s.status === "done" && s.value === "published",
   "mode-stop": (s) => s.status === "done" && s.value === "submitted",
-  "push-wake": (s) => s.status === "done" && (s.value === "released" || s.value === "held"),
+  wake: (s) => s.status === "done" && (s.value === "released" || s.value === "held"),
   "push-follow": (s) => s.status === "done" && s.context.output?.outcome === "submitted",
   "chain-answer": (s) => s.status === "done" && (s.value === "held" || s.value === "released"),
-  "refused-outstanding": (s) => s.status === "done" && s.value === "invited",
   "cut-pick": (s) => s.status === "done" && s.value === "filed",
 };
 
@@ -501,54 +507,46 @@ async function saidUntil(
   }
 }
 
-/** The push-wake workflow's Menu (`push-wake.ts`). */
+/** The wake workflow's Menu (`wake.ts`). */
 const WAKE_MENU = new Set(["release", "hold"]);
 
 /**
- * push-wake (ADR-0029's step-boundary check): the Turn starts with nothing allowed. The step answers
- * the release board once the Turn's first step has ended with a Menu call (refused: nothing is
- * allowed yet), so the change lands after that step and a later step boundary must carry it: the
- * read finds picks and restates the Turn part, and the model picks in the same Submission — the
- * first Menu call after the restatement is `release` or `hold`, with no ask before it. A first step
- * with no Menu call ended the Submission with nothing allowed: the step answers anyway, the wake
- * asks the model in a second Submission (ADR-0016), and the trial never reached the moment the
- * claim measures (`void`).
+ * wake (ADR-0016's ask-again rule): the Turn starts with nothing allowed, and the standing Briefing
+ * tells the model to stop. The step waits until the Turn's Submission has settled on the Instance
+ * Harness — the model stopped — and only then answers the release board, which opens `release` and
+ * `hold`; jr2 wakes the model once, with the nudge's text. The first Menu call after the wake is
+ * the measurement. A model that never stopped never reached that moment (`void`); one that stopped
+ * and was never woken is a failure of the claim.
  */
-const pushWake: Driver = async (world, input) => {
-  const runId = await startRun(world, "push-wake", input);
+const wake: Driver = async (world, input) => {
+  const runId = await startRun(world, "wake", input);
   const opened = await waitFor(world, runId, (s) => gateNamed(s, "board") !== undefined, 120_000);
   const board = gateNamed(opened.last, "board");
   if (!board) return { runId, measured: false, finished: false, note: `no board Gate: ${opened.last.status}` };
-  const shown = await saidUntil(world, "advisor", input.marker, () => true, 120_000);
-  if (!shown.hit) {
+  // The Agent's state is the root's child: its continued conversation is `<runId>/root/advisor`.
+  const iid = `${runId}/root/advisor`;
+  const deadline = Date.now() + 300_000;
+  let stopped = false;
+  while (!stopped && Date.now() < deadline) {
+    stopped = ((await settledTurns(world, `${INSTANCE_HARNESS}-0`, "advisor", iid, INSTANCE_HARNESS)) ?? 0) > 0;
+    if (!stopped) await sleep(2000);
+  }
+  if (!stopped) {
+    const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
     await world.runCli(["send", runId, "--event", "CANCEL"]);
-    return { runId, measured: false, finished: false, note: "the Turn's prompt never printed" };
+    return { runId, measured: false, finished: false, void: true, note: `never stopped: ${told(said)}` };
   }
-  // The first step has ended once its Menu call printed: a call prints when its message ends.
-  await saidUntil(
-    world,
-    "advisor",
-    input.marker,
-    (said) => menuCalls(said, WAKE_MENU).length > 0,
-    120_000,
-    INSTANCE_LOG,
-    200,
-  );
   await sendToGate(world, runId, board.gate, "cleared");
-  const { hit, last } = await waitFor(world, runId, settled, 300_000);
+  const { last } = await waitFor(world, runId, settled, 300_000);
   const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
-  const restated = said.findIndex(isRestatement);
-  if (restated === -1) {
-    if (!hit) await world.runCli(["send", runId, "--event", "CANCEL"]);
-    return { runId, measured: false, finished: false, void: true, note: `no restatement: ${told(said)}` };
-  }
-  const first = menuCalls(said, WAKE_MENU, restated)[0];
-  const askedFirst = said.slice(0, first?.at ?? said.length).some(isNudge);
+  const asked = said.findIndex(isNudge);
+  const first = asked === -1 ? undefined : menuCalls(said, WAKE_MENU, asked)[0]?.call;
+  const seen = asked === -1 ? "never woken" : `first after the wake ${first ?? "none"}`;
   return {
     runId,
-    measured: first !== undefined && !askedFirst,
-    finished: FINISHED["push-wake"]!(last),
-    note: `said ${told(said)}; ended ${last.status}/${String(last.value)}`,
+    measured: first !== undefined,
+    finished: FINISHED.wake!(last),
+    note: `said ${told(said)}; ${seen}; ended ${last.status}/${String(last.value)}`,
   };
 };
 
@@ -655,37 +653,6 @@ const chainAnswer: Driver = async (world, input) => {
   };
 };
 
-/** The refused-outstanding workflow's Menu (`refused-outstanding.ts`). */
-const BOOK_MENU = new Set(["book_room", "send_invite"]);
-
-/**
- * refused-outstanding (ADR-0024): a `send_invite` made while `book_room` was outstanding was refused
- * before it left — it never reached the Machine — and the call after it, once the booking answered,
- * is `send_invite` again, taken. The printed conversation shows every call; the ledger only what the
- * Machine took, so a `send_invite` printed and not taken was the refused one. A model that called
- * them one after the other was never refused (`void`), and so was one that tried `send_invite`
- * before `book_room` (a correction receipt, another claim).
- */
-const refusedOutstanding: Driver = async (world, input) => {
-  const runId = await startRun(world, "refused-outstanding", input);
-  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const said = (await saidAfter(world, "advisor", input.marker)) ?? [];
-  const calls = menuCalls(said, BOOK_MENU);
-  const ledger = ((last.context as { picks?: string[] }).picks ?? []) as string[];
-  const booked = calls.findIndex((c) => c.call === "book_room");
-  const invites = calls.filter((c) => c.call === "send_invite");
-  const taken = ledger.includes("send_invite");
-  const first = calls.findIndex((c) => c.call === "send_invite");
-  const setup = booked !== -1 && first > booked && (invites.length >= 2 || !taken);
-  return {
-    runId,
-    measured: setup && calls[first + 1]?.call === "send_invite" && taken,
-    finished: FINISHED["refused-outstanding"]!(last),
-    ...(setup ? {} : { void: true }),
-    note: `said ${told(said)}; took ${ledger.join(" ")}; ended ${last.status}/${String(last.value)}`,
-  };
-};
-
 /** The cut-pick workflow's Menu (`cut-pick.ts`), and how jr2's re-admission prompt opens (actor.ts). */
 const AUDIT_MENU = new Set(["run_audit", "file_report"]);
 const READMITTED = "Your previous turn was cut";
@@ -746,10 +713,9 @@ const DRIVERS: Record<string, Driver> = {
   "mode-follow": modeFollow,
   "mode-refusal": modeRefusal,
   "mode-stop": modeStop,
-  "push-wake": pushWake,
+  wake,
   "push-follow": pushFollow,
   "chain-answer": chainAnswer,
-  "refused-outstanding": refusedOutstanding,
   "cut-pick": cutPick,
 };
 
@@ -760,9 +726,8 @@ const SERIAL = new Set([
   "mode-follow",
   "mode-refusal",
   "mode-stop",
-  "push-wake",
+  "wake",
   "chain-answer",
-  "refused-outstanding",
   "cut-pick",
 ]);
 
@@ -906,13 +871,6 @@ Then(
 );
 
 Then(
-  "the pick refused while another was outstanding was picked again, and taken, in at least {int} trials",
-  function (this: E2EWorld, floor: number): void {
-    atLeast(claimOf(this), floor, "the refused pick was picked again after the answer", (t) => t.measured);
-  },
-);
-
-Then(
   "the first pick after the re-admission was not the cut pick in at least {int} trials",
   function (this: E2EWorld, floor: number): void {
     atLeast(claimOf(this), floor, "the first pick after the re-admission used the answer", (t) => t.measured);
@@ -958,9 +916,9 @@ Then("no stale pick followed the restatement in at least {int} trials", function
 });
 
 Then(
-  "the Agent picked inside the same Submission in at least {int} trials",
+  "the first Menu call after the wake was an allowed pick in at least {int} trials",
   function (this: E2EWorld, floor: number): void {
-    atLeast(claimOf(this), floor, "the Agent picked inside the same Submission", (t) => t.measured);
+    atLeast(claimOf(this), floor, "the first Menu call after the wake was an allowed pick", (t) => t.measured);
   },
 );
 

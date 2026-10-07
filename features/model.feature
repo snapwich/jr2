@@ -134,6 +134,19 @@ Feature: a real model drives the kit
       And every trial finished
       And the cell "mode-stop/off" is written to the scorecard
 
+    Scenario: a model that stopped with nothing allowed is woken when a Gate's answer opens a pick, and picks
+      ADR-0016's ask-again rule, the wake. The `wake` Turn starts with nothing allowed — its picks
+      wait on a release board, a Gate on the state above — and the standing Briefing tells a model
+      with nothing allowed to stop. Once the Turn's Submission has settled, the step answers the
+      board, which allows `release` and `hold`, and jr2 asks the model once, with the nudge's text.
+      The first Menu call after the wake is the measurement. A model that never stopped is void.
+      The floor is push-follow's: a list read last, 10/10, rounded down to 9.
+      Given the model instance is serving
+      When I run the "wake" workflow 10 times with thinking off
+      Then the first Menu call after the wake was an allowed pick in at least 9 trials
+      And every trial finished
+      And the cell "wake/off" is written to the scorecard
+
   Rule: a Turn hears its Allowed picks change under it, at the next step boundary
     ADR-0029. When something other than the Agent's own pick changes its Allowed picks — here a
     Gate's answer — the Harness reads the surface after each step's tool results and restates the
@@ -154,29 +167,15 @@ Feature: a real model drives the kit
       And the cell "push-follow/off" is written to the scorecard
       And the cell "push-no-refusal/off" is written to the scorecard
 
-    Scenario: a Menu-only Turn with nothing to pick picks in the same Submission when a Gate's answer allows a pick
-      The `push-wake` Turn starts with nothing allowed and is asked to write while it waits; the
-      step answers the release board once the Turn's first step has ended with a Menu call, so a
-      later step boundary carries the change. The first Menu call after the restatement, with no
-      nudge before it, is the measurement. A model whose first step made no Menu call ended its
-      Submission with nothing allowed, and the wake asks it in a second Submission: void.
-      Given the model instance is serving
-      When I run the "push-wake" workflow 10 times with thinking off
-      Then the Agent picked inside the same Submission in at least 9 trials
-      And every trial finished
-      And the cell "push-wake/off" is written to the scorecard
-
   Rule: a pick that runs work is answered at Rest, and the Agent acts on the answer
     ADR-0024. A pick whose target runs something inside the Agent's state is outstanding until the
     workflow is back at Rest there; its answer — the last reply since the pick, and the Allowed
     picks read after the route — comes back on the same call. While it is out, every other pick is
-    refused. A Harness restart while it is out cuts the Turn and faults nothing: jr2 re-admits the
-    Agent on the same conversation with the answer (ADR-0031). Each floor is ADR-0029/0062's
-    measurement of a list read last — 10/10 obeyed — rounded down as ADR-0066 rounds it, because
-    the answer and its Allowed picks are the newest thing the model read; the refusal's is
-    ADR-0029's recovery after one refusal naming the Allowed picks (57 of 58). The first run
-    confirmed `chain-answer` and `cut-pick` at 10/10; `refused-outstanding` is open, its setup never
-    reached (ADR-0066).
+    refused — jr2's mechanism, which Harness conformance proves (ADR-0066). A Harness restart while
+    it is out cuts the Turn and faults nothing: jr2 re-admits the Agent on the same conversation
+    with the answer (ADR-0031). Each floor is ADR-0029/0062's measurement of a list read last —
+    10/10 obeyed — rounded down as ADR-0066 rounds it, because the answer and its Allowed picks are
+    the newest thing the model read.
 
     Scenario: the answer is the last reply since the pick, and the next pick follows it
       The `chain-answer` workflow's `run_checks` is outstanding through two child Machines: lint
@@ -189,18 +188,6 @@ Feature: a real model drives the kit
       Then the first pick after the checks answered was the one their last result called for in at least 9 trials
       And every trial finished
       And the cell "chain-answer/off" is written to the scorecard
-
-    Scenario: a pick refused while another is outstanding is picked again once the answer comes
-      The `refused-outstanding` prompt asks for `book_room` and `send_invite` now. A model that
-      makes both calls in one message has `send_invite` refused before it leaves: the booking is
-      still running. The booking answers a few seconds later, allowing `send_invite`; the call after
-      the refused one is the measurement: `send_invite`, taken. A model that made the calls one
-      after the other was never refused: void.
-      Given the model instance is serving
-      When I run the "refused-outstanding" workflow 10 times with thinking off
-      Then the pick refused while another was outstanding was picked again, and taken, in at least 9 trials
-      And every trial finished
-      And the cell "refused-outstanding/off" is written to the scorecard
 
     Scenario: after a restart cut its pick, the Agent uses the answer and does not pick it again
       The `cut-pick` workflow's `run_audit` waits on the auditor's Gate below the Agent's state. Once

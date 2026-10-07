@@ -1698,7 +1698,9 @@ test("an outstanding pick through the real loop: ONE tool call long-polls the an
 test("two picks in ONE message: the Harness claims the first in message order and refuses the second before it leaves — `finish` included", async () => {
   // pi runs one message's calls in parallel; over separate sockets the arrival order is not the
   // message order (measured: `finish` first in 1 of 50). The claim is taken before the first await,
-  // in message order, so the result is fixed: every trial the same.
+  // in message order, so the result is fixed: every trial the same. This is where the refusal of a
+  // second pick while one is outstanding is proved: it is jr2's mechanism, not a model's choice, so
+  // it is no `@model` claim (ADR-0066).
   for (let trial = 0; trial < 5; trial++) {
     provider.reset([
       {
@@ -1727,7 +1729,7 @@ test("two picks in ONE message: the Harness claims the first in message order an
     const finishResult = JSON.stringify(results.find((m) => m.tool_call_id === "call_b"));
     assert.match(
       finishResult,
-      /`mcp__jr2__finish` was NOT delivered: your pick `mcp__jr2__run_tests` is still running/,
+      /`mcp__jr2__finish` was NOT delivered: your pick `mcp__jr2__run_tests` is still running in the workflow, and no other pick is taken until it answers\. Wait for its answer, then pick again\./,
     );
   }
 });
