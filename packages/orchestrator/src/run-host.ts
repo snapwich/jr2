@@ -33,7 +33,7 @@ import { SENDER_KEY, type EventDef, type EventSemantics } from "@jr2/agent-proto
 import { seatOf, senderText } from "./party.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
-import { replyOf, type Hold } from "./holds.ts";
+import { childErrorOf, replyOf, type Hold } from "./holds.ts";
 import { restOf, runningBelow } from "./rest.ts";
 import {
   acceptsNow,
@@ -701,7 +701,7 @@ export class RunHost {
   /** The pick being delivered now, and the last reply from below its Agent's state inside its own
    * send (ADR-0024). A child that settles in the same macrostep as the pick — a decision Machine
    * that is final as it starts — replies before a hold can exist, so the chain records it here. */
-  private sending: { reg: Registration; last?: PickAnswer } | undefined;
+  private sending: { reg: Registration; pick: string; last?: PickAnswer } | undefined;
   /** `<iid> <deliveryId>` of every outstanding pick of a run this host parked (`stop`). */
   private readonly parked = new Set<string>();
   #stopping = false;
@@ -1073,7 +1073,10 @@ export class RunHost {
     const before = targets.length > 0 ? stateValueOf(invoking?.invoker) : undefined;
 
     const outer = this.sending;
-    const sending: { reg: Registration; last?: PickAnswer } | undefined = invoking && { reg: invoking };
+    const sending: { reg: Registration; pick: string; last?: PickAnswer } | undefined = invoking && {
+      reg: invoking,
+      pick: type,
+    };
     this.sending = sending;
     try {
       this.table.deliver(address, type, payload);
@@ -1880,6 +1883,16 @@ export class RunHost {
             const seat = seatOf(reg.invoker.getSnapshot() as AnyMachineSnapshot, reg.invokeId);
             return seat && replyOf(ev.event, ev.sourceRef as AnyActorRef | undefined, reg.invoker, seat);
           };
+          // A child's error from below the Agent's state is no reply: the pick's answer carries none,
+          // and the operator reads it on the run's feed (ADR-0024).
+          const errorTo = (reg: Registration | undefined, pick: string): void => {
+            if (!reg?.invoker || !reg.invokeId || reg.invoker !== ev.actorRef) return;
+            const seat = seatOf(reg.invoker.getSnapshot() as AnyMachineSnapshot, reg.invokeId);
+            const failed = seat && childErrorOf(ev.event, ev.sourceRef as AnyActorRef | undefined, reg.invoker, seat);
+            const run = this.runs.get(record.runId);
+            if (!failed || !run || run.binding !== binding) return;
+            this.feed(run, { kind: "child-error", agent: reg.sender?.id ?? "", pick, ...failed });
+          };
           // Every relayed event is asked, so the watch forgets each timer as it fires.
           const timer = firedTimer?.(ev.sourceRef, ev.event) === true;
           for (const hold of holds.values()) {
@@ -1888,6 +1901,7 @@ export class RunHost {
             const reg = this.holdRegs.get(hold) ?? live;
             const reply = replyTo(reg);
             if (reply) hold.last = reply;
+            errorTo(reg, hold.pick);
             // While the Agent's state is still the hold's, each event the Machine takes says who would
             // move it out (`cutShort`), when the Machine that invokes the Agent or one above it takes
             // it — events between the children below do not move it; once the state is gone, the next
@@ -1907,6 +1921,7 @@ export class RunHost {
           const sending = this.sending;
           const reply = sending && replyTo(sending.reg);
           if (sending && reply) sending.last = reply;
+          if (sending) errorTo(sending.reg, sending.pick);
         }
         if (ev.type === "@xstate.snapshot") schedule();
       },

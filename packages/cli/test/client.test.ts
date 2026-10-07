@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { JR2Client, type RunFeedEvent } from "../src/client.ts";
+import { childErrorActivity } from "../src/commands/run.ts";
 import { mkHarness } from "./_fixtures.ts";
 
 test("workflows() and list() report registered + live runs", async () => {
@@ -155,4 +156,25 @@ test("events() ends on `gone`: a parked run's feed is its own end, not one to re
   }
   assert.deepEqual(statuses, ["active"], "the parked run's status came once");
   assert.equal(attaches, 1, "and the feed was NOT re-attached: `gone` ended it");
+});
+
+test("events() carries a child's error below an Agent's state, which the Agent's answer does not (ADR-0024)", async () => {
+  const failed = { kind: "child-error", agent: "coder", pick: "go", child: "lint", error: "lint crashed" } as const;
+  const terminal = {
+    runId: "r",
+    workflow: "w",
+    instanceId: "i",
+    status: "done",
+    value: "x",
+    context: {},
+    children: [],
+  };
+  const body =
+    `event: child-error\ndata: ${JSON.stringify(failed)}\n\n` + `event: status\ndata: ${JSON.stringify(terminal)}\n\n`;
+  const client = new JR2Client("http://test", async () => new Response(body, { status: 200 }));
+  const seen: RunFeedEvent[] = [];
+  for await (const ev of client.events("r")) seen.push(ev);
+  assert.deepEqual(seen[0], failed);
+  assert.equal(seen[1]?.kind, "status");
+  assert.equal(childErrorActivity(failed), "child-error: `lint` failed below coder's pick `go` — lint crashed");
 });

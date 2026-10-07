@@ -543,8 +543,16 @@ export type PlacingMarker =
   | { kind: "placing"; child: string; on: "node" | "quota"; message: string; since: string }
   | { kind: "placed"; child: string; since: string; after: number };
 
+/**
+ * A child below an Agent's state failed while a pick of that Agent was outstanding (ADR-0024): the
+ * pick's answer carries no reply for it — the Agent is not told — so the operator reads it here: the
+ * Agent, its pick, the child (its slot, or its invoke id) and the error's message. Instance-token
+ * class like the Turn markers: an error message is mechanism text, as `fault` is.
+ */
+export type ChildErrorMarker = { kind: "child-error"; agent: string; pick: string; child: string; error: string };
+
 /** Every marker a run's mechanism puts on its per-run feed. */
-export type RunMarker = TurnMarker | PlacingMarker;
+export type RunMarker = TurnMarker | PlacingMarker | ChildErrorMarker;
 
 const bindings = new WeakMap<AnyActorSystem, RunBinding>();
 

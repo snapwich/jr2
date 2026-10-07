@@ -114,3 +114,26 @@ export function replyOf(
   const payload = Object.fromEntries(Object.entries(event).filter(([key]) => key !== "type" && key !== SENDER_KEY));
   return { kind: "event", event: event.type, ...(sender ? { sender: { ...sender } } : {}), payload };
 }
+
+/**
+ * The error one event is, when it is a child's error from below the Agent's state (`seat`) — or
+ * undefined. It is no reply (`replyOf`): the Agent is not told by default, and the operator reads it
+ * on the run's feed (ADR-0024). The child is named as `replyOf` names it.
+ */
+export function childErrorOf(
+  event: AnyEventObject,
+  source: AnyActorRef | undefined,
+  machine: AnyActorRef,
+  seat: Node,
+): { child: string; error: string } | undefined {
+  const failed = /^xstate\.error\.actor\.(.+)$/.exec(event.type);
+  if (!failed || source === undefined || source === machine) return undefined;
+  const below = activeBelow(machine.getSnapshot() as AnyMachineSnapshot, seat).flatMap((node) => node.invoke);
+  if (!below.some((inv) => inv.id === source.id)) return undefined;
+  const src = (source as { src?: unknown }).src;
+  const error = (event as { error?: unknown }).error;
+  return {
+    child: typeof src === "string" ? src : failed[1]!,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}

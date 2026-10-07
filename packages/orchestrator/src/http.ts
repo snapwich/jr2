@@ -558,6 +558,9 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     // A wait for capacity's lines carry the scheduler's words (ADR-0064): behind the token. The
     // open band sees `placing` lit in the status's children, and nothing more.
     if (ev.kind === "placing" || ev.kind === "placed") return undefined;
+    // A child's error below an Agent's state (ADR-0024) is mechanism text, like `fault`: behind the
+    // token.
+    if (ev.kind === "child-error") return undefined;
     return sseFrame("status", observe(ev.status));
   });
 
@@ -711,6 +714,9 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     // A wait for capacity starting and ending (ADR-0064) — Instance-token band too: the message is
     // the scheduler's or the quota's own words.
     if (ev.kind === "placing" || ev.kind === "placed") return sseFrame(ev.kind, ev);
+    // A child's error below an Agent's state, which the Agent's answer does not carry (ADR-0024):
+    // the operator reads it here, with its message.
+    if (ev.kind === "child-error") return sseFrame(ev.kind, ev);
     return sseFrame("status", ev.status);
   });
 

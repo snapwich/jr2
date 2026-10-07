@@ -8,7 +8,7 @@ import { JR2Client } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
 import { resolveRunId } from "../run-id.ts";
-import { placingActivity } from "./run.ts";
+import { childErrorActivity, placingActivity } from "./run.ts";
 
 export async function logs(args: string[], io: Io): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -42,6 +42,10 @@ export async function logs(args: string[], io: Io): Promise<number> {
       }
       if (ev.kind === "placing" || ev.kind === "placed") {
         activity(io, placingActivity(ev));
+        continue;
+      }
+      if (ev.kind === "child-error") {
+        activity(io, childErrorActivity(ev));
         continue;
       }
       result(io, ev.status);

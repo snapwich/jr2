@@ -6,7 +6,7 @@
 // `fetchImpl` is injectable so tests drive it with a hono `app.request` (no socket) the same way the
 // orchestrator's own http tests do; in production it defaults to the global `fetch`.
 
-import type { MachineDoc, PlacingMarker, RepoStatus, RunChild, RunWaiting } from "@jr2/orchestrator";
+import type { ChildErrorMarker, MachineDoc, PlacingMarker, RepoStatus, RunChild, RunWaiting } from "@jr2/orchestrator";
 import { parseSSE } from "./sse.ts";
 
 /** A run's current observable state — mirrors the orchestrator's `RunStatus` (run-host.ts). */
@@ -32,7 +32,8 @@ export type RunFeedEvent =
   | { kind: "status"; status: RunStatus }
   | { kind: "emit"; event: { type: string } & Record<string, unknown> }
   | { kind: "retry"; child: string; attempt: number; reason: string }
-  | PlacingMarker;
+  | PlacingMarker
+  | ChildErrorMarker;
 
 /** A run-control event posted to a live run (ADR-0013): CANCEL is the vocabulary that is left.
  * `keep` leaves a cancelled run's Workspaces instead of destroying them (ADR-0025). */
@@ -202,6 +203,9 @@ export class JR2Client {
         } else if (frame.event === "placing" || frame.event === "placed") {
           // A wait for capacity starting and ending (ADR-0064) — activity, never a status.
           yield { ...(JSON.parse(frame.data) as object), kind: frame.event } as PlacingMarker;
+        } else if (frame.event === "child-error") {
+          // A child's error below an Agent's state, which the Agent's answer does not carry (ADR-0024).
+          yield { ...(JSON.parse(frame.data) as object), kind: "child-error" } as ChildErrorMarker;
         } else if (frame.event === "gone") {
           // The run left the live set without settling — stopped, parked for the next boot's
           // restore (ADR-0025). This end is the run's own (ADR-0022): nothing to re-attach to.

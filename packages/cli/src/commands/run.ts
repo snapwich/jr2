@@ -9,7 +9,7 @@
 // going server-side.
 
 import { parseArgs } from "node:util";
-import type { PlacingMarker } from "@jr2/orchestrator";
+import type { ChildErrorMarker, PlacingMarker } from "@jr2/orchestrator";
 import { JR2Client } from "../client.ts";
 import { resolveTarget, TARGET_ARGS, targetOptions } from "../instance.ts";
 import { activity, result, type Io } from "../output.ts";
@@ -56,6 +56,10 @@ export async function run(args: string[], io: Io): Promise<number> {
         activity(io, `  ${placingActivity(ev)}`);
         continue;
       }
+      if (ev.kind === "child-error") {
+        activity(io, `  ${childErrorActivity(ev)}`);
+        continue;
+      }
       activity(io, `  → ${ev.status.status} ${JSON.stringify(ev.status.value)}`);
       if (ev.status.status !== "active") {
         result(io, ev.status);
@@ -84,4 +88,12 @@ export function placingActivity(ev: PlacingMarker): string {
   const who = ev.child ? ` ${ev.child}` : "";
   if (ev.kind === "placed") return `placed${who} after ${Math.round(ev.after / 1000)}s`;
   return `placing${who}: waits for ${ev.on === "quota" ? "quota" : "a node"} — ${ev.message}`;
+}
+
+/**
+ * A child's error below an Agent's state as one activity line (ADR-0024): the pick's answer carries
+ * no reply for it, so the Agent is not told, and this line is where the operator reads it.
+ */
+export function childErrorActivity(ev: ChildErrorMarker): string {
+  return `child-error: \`${ev.child}\` failed below ${ev.agent}'s pick \`${ev.pick}\` — ${ev.error}`;
 }

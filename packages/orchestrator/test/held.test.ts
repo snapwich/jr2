@@ -1037,6 +1037,23 @@ test("a guard straight back is still answered `straightBack`: nothing ran, so no
   );
 });
 
+test("a child's error below the Agent's state gives the answer no reply; the operator reads it on the run's feed (ADR-0024)", async () => {
+  const rig = await routeRig({ running: { invoke: { src: "fail", onError: "rest" } } });
+  const runId = rig.host.agentSurface(rig.iid)!.runId;
+  const feed: unknown[] = [];
+  rig.host.subscribe(runId, (e) => {
+    if (e.kind === "child-error") feed.push(e);
+  });
+  const going = rig.host.sendToAgent(rig.iid, { type: "go" });
+  const answer = await rig.host.awaitDelivery(rig.iid, going.deliveryId);
+  await rig.host.close();
+  assert.equal(answer?.answer, undefined, "no reply: the Agent is not told");
+  assert.doesNotMatch(JSON.stringify(answer), /secret-ish internals/);
+  assert.deepEqual(feed, [
+    { kind: "child-error", agent: "coder", pick: "go", child: "fail", error: "secret-ish internals" },
+  ]);
+});
+
 test('work stopped back at Rest before it replied, or a child that errs: answered with no reply, never "nothing ran" (ADR-0024)', async () => {
   // A per-step `after` back to Rest stops `never` while it runs; an `onError` back to Rest takes a
   // child's error, which is a defect and no reply — its message never reaches the model.
