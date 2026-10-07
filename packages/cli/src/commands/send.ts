@@ -4,8 +4,8 @@
 //   jr2 send <runId|abbrev> --gate <gate> --event <name> [--input '<json>'] deliver to an open Gate
 //
 // Run control used to carry APPROVE and STEER too. Those rode the `deferred` (held tool result)
-// and `poll` (steer inbox) semantics, which ADR-0013 reserves but does not build — so they are
-// gone rather than left pretending. Workflow-defined events reach a run through its GATES
+// and `poll` (steer inbox) semantics: `deferred` is retired (ADR-0006) and `poll` is reserved but
+// not built (ADR-0013) — so they are gone rather than left pretending. Workflow-defined events reach a run through its GATES
 // (`POST /runs/:id/gates/:gate/events` — ADR-0011): the gate names the pending decision, the
 // event name must be in its derived accepts, and the input is validated against the event's
 // schema host-side. An answer the run would not take now is refused (409, ADR-0013) and prints as

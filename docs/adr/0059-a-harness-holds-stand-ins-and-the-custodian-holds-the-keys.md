@@ -38,9 +38,9 @@ decision generalizes that container. It holds every credential the Harness uses,
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md),
   [ADR-0029](0029-a-menu-is-fixed-for-a-conversation-and-a-turn-is-told-its-allowed-picks.md)), the surface read retries
   on the ladder with the `jr2.routability` line
-  ([ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md)), and a `deferred` or `poll` event
-  refuses the turn. The event's own JSON Schema is the tool's parameters, so the model sees the contract the
-  Orchestrator validates against.
+  ([ADR-0042](0042-ready-is-not-routable-an-admission-retries-its-connection.md)), and a `poll` event refuses the turn
+  (`deferred` is retired, ADR-0006). The event's own JSON Schema is the tool's parameters, so the model sees the
+  contract the Orchestrator validates against.
 - **The control listener forwards four routes and no other.** `127.0.0.1:8081`, plain HTTP, to the Orchestrator's
   Service (`jr2-orchestrator.<ns>.svc:4000`, written into the bootstrap by `jr2 up`):
 

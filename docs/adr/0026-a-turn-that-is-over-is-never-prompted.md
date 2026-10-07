@@ -49,8 +49,8 @@ false: the Orchestrator was going away, not the Turn.
 ## Consequences
 
 - **A failed surface read means something.** An unanswered read past ADR-0042's window, a 403, or a surface offering an
-  event the Harness refuses to present (a `deferred`/`poll` def, ADR-0013) settles the Submission `failed` before the
-  model is asked.
+  event the Harness refuses to present (a `poll` def, ADR-0013) settles the Submission `failed` before the model is
+  asked.
 - **An Orchestrator rollout no longer tells a live Turn it is over.** The surface read waits it out; a pick in the
   window is retried by the model on a clear transport-class error, and the no-signal nudge (ADR-0016) still catches a
   Turn that ended without one.

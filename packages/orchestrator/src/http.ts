@@ -50,7 +50,8 @@ import { observe, type RunFeedEvent, type RunHost, type RunStatus, type Workflow
 import { KIT_VERSION } from "./config.ts";
 
 /** A `POST /runs/:id/events` body: the down-channel event. CANCEL is all that is left of it
- * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery, which is reserved, not built.
+ * (ADR-0013): APPROVE and STEER rode the deferred/poll machinery: `deferred`
+ * is retired (ADR-0006), `poll` reserved but not built.
  * `keep` leaves the cancelled run's Workspaces for inspection instead of destroying them (ADR-0025). */
 type RunEventBody = { type?: string; keep?: unknown };
 

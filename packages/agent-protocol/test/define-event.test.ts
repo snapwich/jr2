@@ -4,6 +4,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { defineEvent, eventMap, isEventDef, type EventFrom } from "../src/define-event.ts";
 
@@ -38,6 +41,20 @@ test("`deferred` and `output` are retired: a pick's answer is the Machine's, nev
     () => loose({ name: "request_approval", input: z.object({}), output: z.object({ decision: z.string() }) }),
     /declares an `output`, which is retired/,
   );
+});
+
+test("no ADR names `deferred` beside `poll` as a semantics a def can still declare", async () => {
+  // `deferred` is retired (ADR-0006) and `poll` is reserved (ADR-0013). Prose that lists the two
+  // together (`deferred`/`poll`, `deferred` or `poll`) says a def can still declare `deferred`.
+  const adrs = fileURLToPath(new URL("../../../docs/adr/", import.meta.url));
+  const files = (await readdir(adrs)).filter((f) => f.endsWith(".md"));
+  assert.ok(files.length > 0, "the ADRs are where this test looks for them");
+  const stale: string[] = [];
+  for (const file of files) {
+    const text = (await readFile(join(adrs, file), "utf8")).replace(/\s+/g, " ");
+    if (/`deferred`\s*(\/|,|or|and)\s*`poll`|`poll`\s*(\/|,|or|and)\s*`deferred`/.test(text)) stale.push(file);
+  }
+  assert.deepEqual(stale, [], `these ADRs name \`deferred\` as live: ${stale.join(", ")}`);
 });
 
 test("eventMap resolves a manifest and rejects duplicates + non-defs, naming the Machine", () => {
