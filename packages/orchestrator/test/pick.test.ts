@@ -201,3 +201,43 @@ test("the chain is typed by slot and by kind", () => {
   });
   assert.ok(true);
 });
+
+// The fromPick sum's type (ADR-0067): the params plus what `fill` returns are checked against the
+// Effect's input. A missing or mistyped key does not compile; `fill` can supply the missing key.
+// `tsc` is the assertion, so the Machine is never built: the load walk would refuse `misnamed` too
+// (its `pth` reaches nothing), which is the load check's test, not this one.
+test("the fromPick sum is checked against the Effect's input type: a missing or mistyped key does not compile", () => {
+  const fake = new FakeHarnessExec();
+  const misnamed = defineEvent({ name: "misnamed", input: z.object({ pth: z.string() }) });
+  const mistyped = defineEvent({ name: "mistyped", input: z.object({ path: z.number() }) });
+  const bare = defineEvent({ name: "bare", input: z.object({}) });
+  const typed = () =>
+    jr2Setup({
+      types: {} as { context: { dir: string } },
+      events: [lint, misnamed, mistyped, bare],
+      actors: { ws: fakeWorkspace(), linter: commandWith(fake.factory, ["pnpm", "lint", arg("path")]) },
+    }).createMachine({
+      id: "sum",
+      context: { dir: "src" },
+      invoke: { src: "ws" },
+      initial: "idle",
+      states: {
+        idle: { on: { lint: "byName", misnamed: "missing", mistyped: "wrongType", bare: "filled" } },
+        byName: { invoke: { src: "linter", input: fromPick(lint) } },
+        missing: {
+          // @ts-expect-error — the pick has no `path`, and `fill` adds none
+          invoke: { src: "linter", input: fromPick(misnamed) },
+        },
+        wrongType: {
+          // @ts-expect-error — `path` is a number; the command reads a string
+          invoke: { src: "linter", input: fromPick(mistyped) },
+        },
+        filled: { invoke: { src: "linter", input: fromPick(bare, ({ context }) => ({ path: context.dir })) } },
+        badFill: {
+          // @ts-expect-error — `fill` returns `path` as a number
+          invoke: { src: "linter", input: fromPick(bare, () => ({ path: 1 })) },
+        },
+      },
+    });
+  assert.equal(typeof typed, "function");
+});
