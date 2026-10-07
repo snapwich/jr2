@@ -42,5 +42,9 @@
   "ticket-modes/on": {
     "passed": 1,
     "trials": 1
+  },
+  "mode-stop/off": {
+    "passed": 10,
+    "trials": 10
   }
 }
