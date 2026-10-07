@@ -32,6 +32,8 @@ const ship = ev("ship");
 const decide = ev("decide");
 const settle = ev("settle");
 const finish = ev("finish");
+const bounce = ev("bounce");
+const draft = ev("draft");
 
 /** A command stand-in the test settles by hand: each run waits on the next `settle`. */
 function controllable() {
@@ -61,7 +63,22 @@ function heldMachine(
   const endpoint = "http://harness.invalid";
   return jr2Setup({
     types: {} as { context: Record<string, never> },
-    events: [run_tests, ask, approve, consult, advice, delegate, wait, chain, ship, decide, settle, finish],
+    events: [
+      run_tests,
+      ask,
+      approve,
+      consult,
+      advice,
+      delegate,
+      wait,
+      chain,
+      ship,
+      decide,
+      settle,
+      finish,
+      bounce,
+      draft,
+    ],
     actors: { coder, reviewer, tests, child, decider },
   }).createMachine({
     id: "wf",
@@ -84,8 +101,14 @@ function heldMachine(
               ship: "shipping",
               decide: "deciding",
               settle: "settling",
+              bounce: "bouncing",
+              draft: "drafting",
             },
           },
+          // A guard straight back: entered and left inside the pick's own send.
+          bouncing: { always: "rest" },
+          // A mode: no invoke, at Rest there, with other Allowed picks.
+          drafting: { on: { finish: "#wf.done" } },
           testing: { invoke: { src: "tests", onDone: "rest" } },
           asking: { invoke: { src: "gate", id: "review", input: {} }, on: { approve: "rest" } },
           consulting: {
@@ -245,6 +268,25 @@ test("a child that replies inside the pick's own send: the receipt is the answer
   assert.ok(receipt.allowed.includes("run_tests"), "the Allowed picks after the route: back in `rest`");
   assert.equal(value(rig), JSON.stringify({ work: "rest" }));
   assert.deepEqual(rig.host.status(rig.runId)?.held, [], "nothing is held");
+});
+
+test("a guard straight back: answered, it moved and nothing ran; a move to a mode: the plain receipt", async () => {
+  const rig = await started();
+  const back = rig.host.sendToAgent(rig.iid, { type: "bounce" });
+  assert.deepEqual(
+    { moved: back.moved, answered: back.answered, answer: back.answer, turnComplete: back.turnComplete },
+    { moved: true, answered: true, answer: undefined, turnComplete: false },
+  );
+  assert.equal(back.outstanding, undefined, "back at Rest before the POST answers: nothing to poll");
+  assert.ok(back.allowed.includes("run_tests"), "the Allowed picks after the route: back in `rest`");
+  assert.equal(value(rig), JSON.stringify({ work: "rest" }));
+
+  const mode = rig.host.sendToAgent(rig.iid, { type: "draft" });
+  assert.deepEqual(
+    { moved: mode.moved, answered: mode.answered, turnComplete: mode.turnComplete, allowed: mode.allowed },
+    { moved: true, answered: undefined, turnComplete: false, allowed: ["finish"] },
+  );
+  assert.equal(value(rig), JSON.stringify({ work: "drafting" }));
 });
 
 test("a child that replies inside the pick's own send and routes out: the Turn is over, and the answer goes as a notice", async () => {

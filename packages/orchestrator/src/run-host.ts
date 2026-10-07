@@ -48,6 +48,7 @@ import {
   refuseSenderField,
   UnknownAddressError,
   wouldMove,
+  wouldTarget,
   type Registration,
   type RetryTelemetry,
   type RunBinding,
@@ -290,6 +291,15 @@ function menuOf(reg: Registration): Map<string, EventDef> {
   return reg.menu ?? reg.defs;
 }
 
+/** The invoking Machine's state value, as one comparable string; undefined when it cannot be read. */
+function stateValueOf(invoker: AnyActorRef | undefined): string | undefined {
+  try {
+    return invoker ? JSON.stringify(invoker.getSnapshot().value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The Allowed picks (ADR-0029), as the Agent actor's nudge and wake read them too. */
 function allowedOf(reg: Registration): string[] {
   return allowedPicks(reg);
@@ -359,7 +369,8 @@ export type AgentDeliveryReceipt = {
   outstanding?: true;
   /** ISO time the pick was delivered — with `outstanding`. */
   since?: string;
-  /** This receipt is an outstanding pick's answer, read at Rest (or once the Turn left the Agent's state). */
+  /** This receipt is a pick's answer, read at Rest (or once the Turn left the Agent's state): an outstanding
+   * pick's, a reply inside the pick's own send, or a guard straight back with no reply. */
   answered?: true;
   /** The last reply since the pick (ADR-0024); absent with `answered`: it moved, nothing ran. */
   answer?: PickAnswer;
@@ -1041,10 +1052,15 @@ export class RunHost {
     // makes this unreliable and `deliver` throws on the next line anyway — so it fails open.
     const def = invoking?.defs.get(type);
     const parsed = def?.input.safeParse(payload ?? {});
-    const moved = wouldMove(invoking?.invoker, {
+    const probe = {
       ...(parsed?.success ? { type, ...parsed.data } : { type, ...payload }),
       ...(invoking?.sender ? { [SENDER_KEY]: invoking.sender } : {}),
-    });
+    };
+    const moved = wouldMove(invoking?.invoker, probe);
+    // A pick that names a target, and the state value it leaves: after the send, the same value
+    // means it went somewhere and came straight back (ADR-0024); a new one, an in-Turn mode move.
+    const targeted = moved && wouldTarget(invoking?.invoker, probe);
+    const before = targeted ? stateValueOf(invoking?.invoker) : undefined;
 
     const outer = this.sending;
     const sending: { reg: Registration; last?: PickAnswer } | undefined = invoking && { reg: invoking };
@@ -1142,6 +1158,20 @@ export class RunHost {
         deliveryId: this.newId(),
         answered: true,
         answer: replied,
+      };
+    }
+    // It entered a state below the Agent's and came straight back inside its own send — a guard
+    // back (an `always`), nothing replying: answered, "moved; nothing ran" (ADR-0024). A pick that
+    // changed the state value moved to a mode, and its receipt is the plain one below.
+    if (!turnComplete && invoking && before !== undefined && stateValueOf(invoking.invoker) === before) {
+      return {
+        delivered: true,
+        event: type,
+        moved: true,
+        turnComplete: false,
+        allowed: allowedOf(invoking),
+        deliveryId: this.newId(),
+        answered: true,
       };
     }
     return {

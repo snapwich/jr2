@@ -24,7 +24,7 @@
 // `resolveAccepts` reads them off the invoking Machine below and a nested Machine's names are
 // never the root's problem.
 
-import type { ActorSystem, AnyActorRef, AnyEventObject } from "xstate";
+import type { ActorSystem, AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyStateMachine } from "xstate";
 import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
 import type { NoticeScope, TakenNotices } from "./notices.ts";
@@ -128,6 +128,24 @@ export function wouldMove(invoker: AnyActorRef | undefined, event: AnyEventObjec
     return invoker.getSnapshot().can(event);
   } catch {
     return true;
+  }
+}
+
+/**
+ * Would this exact event take a transition that names a target — enter a state, even one it leaves
+ * again in the same macrostep? What tells a pick that went somewhere and came straight back (an
+ * `always` back to where it was) from one with no target, which went nowhere (ADR-0024). Fails
+ * CLOSED: a read that cannot be made reads as no target, the plain receipt.
+ */
+export function wouldTarget(invoker: AnyActorRef | undefined, event: AnyEventObject): boolean {
+  if (!invoker) return false;
+  try {
+    const snapshot = invoker.getSnapshot() as AnyMachineSnapshot;
+    return (snapshot.machine as AnyStateMachine)
+      .getTransitionData(snapshot, event)
+      .some((t) => (t.target?.length ?? 0) > 0);
+  } catch {
+    return false;
   }
 }
 

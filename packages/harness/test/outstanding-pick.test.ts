@@ -206,6 +206,20 @@ test("an answer that left the Agent's state ends the Turn; the answer's words na
   assert.equal(answerText(undefined), "It moved, and nothing ran.");
 });
 
+test("a guard straight back reads as answered, it moved and nothing ran; a move to a mode reads as the plain receipt", () => {
+  const base = { delivered: true as const, event: "bounce", moved: true, turnComplete: false, deliveryId: "d" };
+  assert.equal(
+    receiptProse({ ...base, allowed: ["run_tests"], answered: true }, menuToolName),
+    'Delivered "bounce" to the workflow (delivery d). The workflow ran it and is back in the state that asked for ' +
+      "this turn. It moved, and nothing ran. Your turn is not over. Allowed now: `mcp__jr2__run_tests`.",
+  );
+  assert.equal(
+    receiptProse({ ...base, event: "draft", allowed: ["finish"] }, menuToolName),
+    'Delivered "draft" to the workflow (delivery d). The workflow is still in the state that asked for this turn, ' +
+      "so it is not over yet. Allowed now: `mcp__jr2__finish`.",
+  );
+});
+
 test("a pick's answer that never reached its call is a notice: cut by a restart, or after the Turn was over", () => {
   const answer = { kind: "output" as const, actor: "tests", output: "pass" };
   assert.equal(
