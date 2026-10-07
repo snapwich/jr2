@@ -127,7 +127,7 @@ function heldMachine(
       },
       next: {
         invoke: { src: "coder", input: { prompt: "Carry on.", endpoint, continue: true } },
-        on: { finish: "#wf.done" },
+        on: { finish: "#wf.done", "agent.fault": "#wf.faulted" },
       },
       done: { type: "final" },
       faulted: { type: "final" },
@@ -508,6 +508,79 @@ test("something other than the pick's route leaves the Agent's state while the w
   }
 });
 
+test('a timer the Machine set moves it back to Rest INSIDE the Agent\'s state while the work runs: the work was stopped, never "nothing ran"', async () => {
+  const go = ev("go");
+  const endpoint = "http://harness.invalid";
+  const rig = async () => {
+    const coders: MockFlueClient[] = [];
+    const never = fromPromise(() => new Promise<never>(() => {}));
+    const machine = (coder: ReturnType<typeof agentActorWith>) =>
+      jr2Setup({
+        types: {} as { context: Record<string, never> },
+        events: [go, finish],
+        actors: { coder, never },
+      }).createMachine({
+        id: "t",
+        context: {},
+        initial: "w",
+        states: {
+          w: {
+            invoke: { src: "coder", input: { prompt: "Fix the ticket.", endpoint, sandbox: "ws-1" } },
+            on: { finish: "#t.done" },
+            initial: "rest",
+            states: {
+              rest: { on: { go: "going" } },
+              // A per-step timeout: it exits the work and comes back to Rest inside the Agent's state.
+              going: { invoke: { src: "never", onDone: "rest" }, after: { 40: "rest" } },
+            },
+          },
+          done: { type: "final" },
+        },
+      });
+    const host = new RunHost({ store: await mkStore() });
+    host.register({
+      name: "step-timeout",
+      machine: machine(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+      provide: () => {
+        const coder = new MockFlueClient();
+        coders.push(coder);
+        return { actors: { coder: agentActorWith(() => coder, coderDefinition) } };
+      },
+    });
+    const { runId } = await host.start("step-timeout");
+    await waitFor(() => coders[0]?.admits.length === 1);
+    return { host, runId, coder: coders[0]!, iid: coders[0]!.admits[0]!.instanceId };
+  };
+
+  // The poll reads it.
+  {
+    const { host, iid } = await rig();
+    const going = host.sendToAgent(iid, { type: "go" });
+    assert.equal(going.outstanding, true);
+    const answer = await host.awaitDelivery(iid, going.deliveryId);
+    assert.deepEqual(
+      {
+        turnComplete: answer?.turnComplete,
+        stopped: answer?.stopped,
+        answer: answer?.answer,
+        allowed: answer?.allowed,
+      },
+      { turnComplete: false, stopped: true, answer: undefined, allowed: ["finish", "go"] },
+    );
+  }
+  // A Harness restart cut the poll: the re-admission's notice says the same.
+  {
+    const { host, runId, coder, iid } = await rig();
+    host.sendToAgent(iid, { type: "go" });
+    coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted");
+    await waitFor(() => coder.admits.length === 2);
+    assert.deepEqual(coder.notices[1], [
+      { kind: "pick-answer", scope: "conversation", pick: "go", cut: true, stopped: true },
+    ]);
+    assert.equal(host.status(runId)?.status, "active");
+  }
+});
+
 test("an Orchestrator restart during a hold: the restored host refuses from the Machine, and answers the same poll", async () => {
   const rig = await started();
   const receipt = rig.host.sendToAgent(rig.iid, { type: "ask" });
@@ -677,6 +750,22 @@ test("a Harness restart at Rest with nothing unread is the fault it always was",
   rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted");
   await waitFor(() => rig.host.status(rig.runId) === undefined);
   assert.equal((await rig.host.read(rig.runId))?.value, "faulted");
+});
+
+test("a Harness restart at Rest in the NEXT continued Turn: the earlier Turn's answer, gone as a notice, is not unread — the fault it always was", async () => {
+  const rig = await started();
+  const shipping = rig.host.sendToAgent(rig.iid, { type: "ship" });
+  assert.equal(shipping.outstanding, true);
+  // The route leaves the Agent's state: the Turn-end abort cuts the poll, so nothing reads the hold.
+  rig.tests.settle({ pushed: "abc123" });
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.equal(rig.coder.admits[1]!.instanceId, rig.iid, "the next Turn continues the same address");
+  assert.equal(rig.coder.notices[1]?.[0]?.kind, "pick-answer", "the answer went as a notice");
+  // At Rest in `next`, nothing running and nothing unread of THIS Turn.
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted");
+  await waitFor(() => rig.host.status(rig.runId) === undefined);
+  assert.equal((await rig.host.read(rig.runId))?.value, "faulted");
+  assert.equal(rig.coder.admits.length, 2, "nobody is re-admitted");
 });
 
 test("a Sandbox Harness restart the watch sees while a pick is outstanding: no fault, the same Turn re-admitted at Rest (ADR-0021, ADR-0031)", async () => {

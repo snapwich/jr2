@@ -456,10 +456,11 @@ export type RunBinding = {
   takeNotices?: (scope: NoticeScope) => TakenNotices;
   releaseNotices?: (ids: readonly string[]) => void;
   /**
-   * The pick this conversation has outstanding, or answered and not yet read (ADR-0024): what the
-   * Agent actor asks when its Harness restarted under a Turn — a Turn whose pick is still out, or
-   * whose answer never reached the model, is cut, not faulted (ADR-0031). Read after the host settles
-   * its holds, so `answered` is the Rest rule's verdict now. Absent outside a RunHost.
+   * The pick the Turn now at this address has outstanding, or answered and not yet read (ADR-0024):
+   * what the Agent actor asks when its Harness restarted under a Turn — a Turn whose pick is still
+   * out, or whose answer never reached the model, is cut, not faulted (ADR-0031). Read after the host
+   * settles its holds, so `answered` is the Rest rule's verdict now. An earlier Turn's pick on the
+   * same continued address is not this Turn's: its answer went as a notice. Absent outside a RunHost.
    */
   outstandingOf?: (instanceId: string) => OutstandingPick | undefined;
   /** The held answer reached the model by another road — a re-admission's notice — so the poll's
@@ -512,6 +513,8 @@ export type OutstandingPick = {
   answered: boolean;
   turnComplete: boolean;
   answer?: PickAnswer;
+  /** A state exit stopped the pick's work: no reply answers it (ADR-0024). */
+  stopped?: true;
   fetched: boolean;
 };
 

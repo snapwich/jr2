@@ -271,6 +271,32 @@ test("an outstanding pick whose work an exit stopped: the poll's answer says so,
   assert.doesNotMatch(text, /ran it/);
 });
 
+test('an outstanding pick whose work a move INSIDE the Agent\'s state stopped: never "nothing ran", never that it ran', () => {
+  const receipt = {
+    delivered: true as const,
+    event: "go",
+    moved: true,
+    turnComplete: false,
+    deliveryId: "d",
+    allowed: ["go", "finish"],
+    answered: true,
+    stopped: true,
+  };
+  const text = receiptProse(receipt, menuToolName);
+  assert.equal(
+    text,
+    'Delivered "go" to the workflow (delivery d). The workflow started it, but something else moved the workflow ' +
+      "while it ran, and that stopped the pick's work before it finished. The workflow is back in the state that " +
+      "asked for this turn. Your turn is not over. Allowed now: `mcp__jr2__go`, `mcp__jr2__finish`.",
+  );
+  assert.doesNotMatch(text, /nothing ran|ran it/);
+  assert.equal(
+    noticeText({ kind: "pick-answer", scope: "conversation", pick: "go", cut: true, stopped: true }, menuToolName),
+    "Notice: The workflow did not finish `mcp__jr2__go`, the pick that was cut from your last turn: something else " +
+      "moved the workflow while it ran, and that stopped it. It is not run again.",
+  );
+});
+
 test("a Menu call a restart cut gets jr2's result in the history; a Working-tool call is left to pi", () => {
   const messages = [
     { role: "user", content: "go", timestamp: 1 },

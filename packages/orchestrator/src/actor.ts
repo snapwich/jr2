@@ -885,6 +885,7 @@ export function agentActorWith(
                 pick: held.pick,
                 cut: true,
                 ...(held.answer !== undefined ? { answer: held.answer } : {}),
+                ...(held.stopped ? { stopped: true as const } : {}),
               },
             ]
           : [];

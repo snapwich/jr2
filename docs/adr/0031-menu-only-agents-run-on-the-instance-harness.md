@@ -78,8 +78,10 @@ change is a volume the actor reloads on a cold boot. These decisions take that s
   has no result; the Harness answers it in the history with jr2's text — the pick reached the workflow, which does not
   run it twice, and its result comes in the next message — before pi would answer "No result provided", which reads as a
   failed pick. The same holds for a Sandbox's Harness, whose restart the watch sees (ADR-0021). A restart at Rest with
-  nothing unread is the fault it always was. A route that leaves the Agent's state ends the Turn while it waits, as any
-  route does.
+  nothing unread is the fault it always was. Only the Turn's OWN pick counts as unread: a pick of an earlier Turn on the
+  same continued address, whose route left the Agent's state, was answered as a notice to this Turn, and a restart at
+  Rest in this Turn is still the fault. A route that leaves the Agent's state ends the Turn while it waits, as any route
+  does.
 - **Both placements persist, to different volumes.** The Instance Harness to a PersistentVolumeClaim of its own; a
   Sandbox's Harness to an emptyDir mounted into the Harness container alone (the User Container must not read it), so a
   Harness container that restarts inside a living pod keeps its conversations. A pod that is gone takes the emptyDir

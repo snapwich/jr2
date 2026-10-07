@@ -375,8 +375,9 @@ export type AgentDeliveryReceipt = {
   answered?: true;
   /** The last reply since the pick (ADR-0024); absent with `answered`: it moved, nothing ran. */
   answer?: PickAnswer;
-  /** With `answered` and `turnComplete`: the Machine left the Agent's state while the pick's work ran —
-   * not by the route of a reply — so the exit stopped that work, and nothing answered it. */
+  /** With `answered`: something other than the route of a reply moved the Machine while the pick's
+   * work ran — out of the Agent's state (`turnComplete`), or back to Rest inside it — so the exit
+   * stopped that work, and nothing answered it. */
   stopped?: true;
   delivered: true;
   /** The event delivered — the Agent reads its own pick back, by name. */
@@ -1205,7 +1206,8 @@ export class RunHost {
    *
    *   - The Agent's state is busy: still outstanding.
    *   - Back at Rest in it: answered with the last reply since the pick and the Allowed picks read
-   *     AFTER the route — the guards read the context the route wrote (ADR-0029).
+   *     AFTER the route — the guards read the context the route wrote (ADR-0029); or `stopped`, when
+   *     no reply's route brought it back (a timer the Machine set exited the work).
    *   - It left the Agent's state (the registration is gone, or is another invocation's): the Turn
    *     is over, and the answer goes as a notice to the next Turn of the conversation the picking
    *     Turn continued; a fresh picking Turn's answer goes nowhere (ADR-0062).
@@ -1222,12 +1224,13 @@ export class RunHost {
       }
       const reading = same ? restOf(reg!) : "gone";
       if (reading === "busy") continue;
+      // Moved by the route of the last reply — its own events and the events it sent itself at once
+      // included — or by something else while work below still ran (a timer the Machine set, an
+      // outside event): then a state exit stopped that work, and no reply is its answer. The same
+      // fact whether the Machine left the Agent's state or came back to Rest inside it.
+      const stopped = hold.cutShort === true;
+      const answer = !stopped && hold.last ? { answer: hold.last } : {};
       if (reading === "gone") {
-        // Left by the route of the last reply — its own events and the events it sent itself at
-        // once included — or by something else while work below still ran (a timer the Machine set,
-        // an outside event): then the exit stopped that work, and no reply is its answer.
-        const stopped = hold.cutShort === true;
-        const answer = !stopped && hold.last ? { answer: hold.last } : {};
         hold.answer = { turnComplete: true, allowed: [], ...answer, ...(stopped ? { stopped: true as const } : {}) };
         if (hold.conversation !== undefined) {
           run.notices.raise(
@@ -1243,7 +1246,12 @@ export class RunHost {
           );
         }
       } else {
-        hold.answer = { turnComplete: false, allowed: allowedOf(reg!), ...(hold.last ? { answer: hold.last } : {}) };
+        hold.answer = {
+          turnComplete: false,
+          allowed: allowedOf(reg!),
+          ...answer,
+          ...(stopped ? { stopped: true as const } : {}),
+        };
       }
       this.closeHold(hold);
     }
@@ -1786,17 +1794,22 @@ export class RunHost {
       },
       // The run-narrative echo attach (ADR-0023), called from `workspace()`'s registrar.
       echo: (endpoint, placement) => this.attachEcho(record.runId, endpoint, placement),
-      // The outstanding picks, as the Agent actor reads them when its Harness restarted (ADR-0024/0031).
+      // The outstanding pick of the Turn now at this address, as the Agent actor reads it when its
+      // Harness restarted (ADR-0024/0031). Settled first, so a hold whose Turn is over reads
+      // `turnComplete`: that is an EARLIER Turn's pick (a route left its state, and the answer went as
+      // a notice to the next Turn, or nowhere) — never this Turn's, whatever it continues.
       outstandingOf: (instanceId) => {
         const run = this.runs.get(record.runId);
         if (run && run.holds === holds) this.settleHolds(run);
         const hold = holds.get(instanceId);
+        if (hold?.answer?.turnComplete) return undefined;
         return (
           hold && {
             pick: hold.pick,
             answered: hold.answer !== undefined,
             turnComplete: hold.answer?.turnComplete ?? false,
             ...(hold.answer?.answer !== undefined ? { answer: hold.answer.answer } : {}),
+            ...(hold.answer?.stopped ? { stopped: true as const } : {}),
             fetched: hold.fetched === true,
           }
         );

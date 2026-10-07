@@ -90,11 +90,14 @@ single-threaded.
   still runs — a timer the Machine set (a Turn timeout `after`, a named delay, a delayed `raise` or `sendTo(self)`), an
   event from outside the states below, a Gate's event, the Agent's own end. The exit stops that work (an invoke is
   stopped when its state exits), so no reply answers the pick, and the poll and the notice carry `stopped` — the pick's
-  work did not finish — never "it ran". The run host tells a fired timer from an event sent at once by the scheduler's
-  own table: it watches what the actor system arms, cancels and fires (`timers.ts`, the same xstate internals as the
-  timer table, ADR-0007). A restored hold is the Turn of the first registration of its address in the restored tree: a
-  restore that ends that Turn and starts another at the same address before anything settles answers the pick with
-  `turnComplete`. There is no default time bound on a held Turn; the Console shows each outstanding pick "held since".
+  work did not finish — never "it ran". The same holds inside the Agent's state: a timer the Machine set that exits the
+  work and comes back to Rest there (a per-step timeout `after` on the child state) stopped the work, and the poll's
+  answer carries `stopped` with the Allowed picks — never "it moved, and nothing ran". The run host tells a fired timer
+  from an event sent at once by the scheduler's own table: it watches what the actor system arms, cancels and fires
+  (`timers.ts`, the same xstate internals as the timer table, ADR-0007). A restored hold is the Turn of the first
+  registration of its address in the restored tree: a restore that ends that Turn and starts another at the same address
+  before anything settles answers the pick with `turnComplete`. There is no default time bound on a held Turn; the
+  Console shows each outstanding pick "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

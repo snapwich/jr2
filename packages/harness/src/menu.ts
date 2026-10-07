@@ -110,8 +110,9 @@ export type DeliveryReceipt = {
   answered?: boolean;
   /** The last reply since the pick; absent with `answered`: it moved, and nothing ran. */
   answer?: PickAnswer;
-  /** With `answered` and `turnComplete`: the workflow left the state that asked for this Turn while
-   * the pick's work ran — not by the pick's route — and that exit stopped the work. */
+  /** With `answered`: something other than the route of a reply moved the workflow while the pick's
+   * work ran — out of the state that asked for this Turn (`turnComplete`), or back to Rest inside it
+   * — and that exit stopped the work. */
   stopped?: boolean;
 };
 
@@ -370,6 +371,15 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
       return (
         `${delivered} The workflow left the state that asked for this turn while it ran your pick, and that ` +
         `stopped the pick's work before it finished: your turn is over. Stop here — do not call this or any other tool again.`
+      );
+    }
+    // Something else moved the workflow inside the state while the pick's work ran (a timer the
+    // workflow set): that stopped the work, so no answer came, and the work did not run to its end.
+    if (receipt.stopped === true) {
+      return (
+        `${delivered} The workflow started it, but something else moved the workflow while it ran, and that ` +
+        `stopped the pick's work before it finished. The workflow is back in the state that asked for this turn. ` +
+        `Your turn is not over.${allowed}`
       );
     }
     return receipt.turnComplete

@@ -58,8 +58,8 @@ export type PickAnswerNotice = {
   pick: string;
   cut: boolean;
   answer?: PickAnswer;
-  /** The route did not leave the Agent's state: something else did while the pick's work ran, and
-   * the exit stopped that work. No reply answers it. */
+  /** No reply's route moved the workflow: something else did while the pick's work ran (out of the
+   * Agent's state, or back to Rest inside it), and the exit stopped that work. No reply answers it. */
   stopped?: true;
 };
 

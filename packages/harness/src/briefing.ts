@@ -166,6 +166,9 @@ export function noticeText(notice: Notice, toolName: (name: string) => string = 
       // Harness restart, the route left the Agent's state before the answer could ride it, or
       // something else left it while the pick ran.
       const tool = `\`${toolName(sanitizeToolNamePart(notice.pick))}\``;
+      if (notice.cut && notice.stopped === true) {
+        return `Notice: The workflow did not finish ${tool}, the pick that was cut from your last turn: something else moved the workflow while it ran, and that stopped it. It is not run again.`;
+      }
       if (notice.cut) {
         return `Notice: The workflow finished ${tool}, the pick that was cut from your last turn. It ran once. ${answerText(notice.answer)}`;
       }

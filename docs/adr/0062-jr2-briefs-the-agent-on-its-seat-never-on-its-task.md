@@ -46,7 +46,9 @@ whose processes are gone, with no way to know why.
     the next Turn of the conversation the picking Turn continued hears "your pick ran to its end after your last turn
     was over", with the answer — or, when something other than the route left the state while the work ran, "your pick
     did not finish: the workflow left the state that asked for your last turn while it ran, and that stopped it"
-    (`stopped`). A fresh picking Turn has no such conversation, and its answer is no notice.
+    (`stopped`). A fresh picking Turn has no such conversation, and its answer is no notice. A cut pick whose work a
+    timer stopped inside the Agent's state is told so too: "the workflow did not finish it … something else moved the
+    workflow while it ran, and that stopped it. It is not run again." (`cut` and `stopped`).
   - **Workspace scope** ("the Sandbox's processes were killed at its memory limit during `coder`'s Turn; `/dev/shm` was
     cleared") goes to the next Turn of any Agent in that Workspace. A Menu-only Agent outside a Workspace receives
     conversation notices only.

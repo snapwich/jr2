@@ -47,8 +47,8 @@ export type Hold = {
   /** The last event the Machine took while the Agent's state was the hold's, and while work still ran
    * below it, was no reply from below it and no event a Machine sent itself at once: a timer the
    * Machine set, an event from outside the states below, a party's event, the Agent's own end. If the
-   * Machine then left the Agent's state, the pick's route did not take it out: the exit stopped the
-   * work below. An event a Machine sent itself at once (`sendTo(self)`) is part of the route of the
+   * Machine then left the Agent's state, or came back to Rest inside it, the pick's route did not take
+   * it there: the exit stopped the work below. An event a Machine sent itself at once (`sendTo(self)`) is part of the route of the
    * event whose actions sent it, and changes nothing here; a reply clears it. */
   cutShort?: true;
   /** The answer, once the Machine is back at Rest or has left the Agent's state. */
@@ -64,7 +64,8 @@ export type HeldAnswer = {
   /** The Allowed picks read AFTER the route (ADR-0029); empty once the Turn is over. */
   allowed: string[];
   answer?: PickAnswer;
-  /** The Machine left the Agent's state while the work ran: the exit stopped it (`cutShort`). */
+  /** Something other than a reply's route moved the Machine while the work ran — out of the Agent's
+   * state, or back to Rest inside it: the exit stopped the work (`cutShort`). */
   stopped?: true;
 };
 
