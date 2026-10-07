@@ -21,6 +21,8 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   pick, oldest first, each a link typed by its slot (`{ kind: "output", src, output }`) or by the Machine's events
   (`{ kind: "event", event }`); its order and length are not typed. A link is a reply from outside the Machine; the
   events it sent itself are skipped. The value is JSON on the wire and in the hold; one with no JSON form sets nothing.
+  A child's error is no link, and by default the Agent is not told (ADR-0024); an author who wants it told writes
+  `answer(...)` on the `onError` route. An Effect never takes that route for an outcome: every outcome is output.
 - **argv, never shell text.** Each entry is one argument; `arg("x")` is one argument filled from the invoke's input. The
   Harness spawns `argv[0]` with no shell. `sh -c` is the author's explicit choice, in the argv, and its result is not a
   trusted verdict.
