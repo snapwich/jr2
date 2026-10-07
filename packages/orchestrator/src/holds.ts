@@ -44,9 +44,12 @@ export type Hold = {
   conversation?: string;
   /** The last reply since the pick: the answer's default. */
   last?: PickAnswer;
-  /** The last event the Machine took while the Agent's state was the hold's was no reply from below
-   * it. If the Machine then left the Agent's state, the pick's route did not take it out: the exit
-   * stopped the work below (a timer that leaves, an outside event, the Agent's own end). */
+  /** The last event the Machine took while the Agent's state was the hold's, and while work still ran
+   * below it, was no reply from below it and no event a Machine sent itself at once: a timer the
+   * Machine set, an event from outside the states below, a party's event, the Agent's own end. If the
+   * Machine then left the Agent's state, the pick's route did not take it out: the exit stopped the
+   * work below. An event a Machine sent itself at once (`sendTo(self)`) is part of the route of the
+   * event whose actions sent it, and changes nothing here; a reply clears it. */
   cutShort?: true;
   /** The answer, once the Machine is back at Rest or has left the Agent's state. */
   answer?: HeldAnswer;

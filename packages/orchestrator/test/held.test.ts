@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assign, createMachine, fromPromise } from "xstate";
+import { assign, createMachine, fromCallback, fromPromise, raise, sendTo } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -541,6 +541,66 @@ test("an Orchestrator restart during a hold: the restored host refuses from the 
   });
 });
 
+test("a restore that ends the held Turn and starts another at the same address before anything settles: the hold is the first Turn's", async () => {
+  const go = ev("go");
+  const bounce = ev("bounce");
+  const endpoint = "http://harness.invalid";
+  // The child below the Agent's state sends `bounce` as it starts — on the restore only. `bounce`
+  // re-enters the Agent's state: the restored Turn ends, and a new one registers the same address
+  // (`continue: true`), all before the first persist after the restore.
+  let restoring = false;
+  const bouncer = fromCallback(({ sendBack }) => {
+    if (restoring) sendBack({ type: "bounce" });
+  });
+  const coders: MockFlueClient[] = [];
+  const def = (): WorkflowDef => ({
+    name: "bounce",
+    machine: jr2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [go, bounce, finish],
+      actors: { coder: agentActorWith(() => new MockFlueClient(), coderDefinition), bouncer },
+    }).createMachine({
+      id: "t",
+      context: {},
+      initial: "w",
+      states: {
+        w: {
+          invoke: { src: "coder", input: { prompt: "Fix the ticket.", endpoint, sandbox: "ws-1", continue: true } },
+          on: { bounce: { target: "#t.w", reenter: true }, finish: "#t.done" },
+          initial: "rest",
+          states: { rest: { on: { go: "running" } }, running: { invoke: { src: "bouncer" } } },
+        },
+        done: { type: "final" },
+      },
+    }),
+    provide: () => {
+      const coder = new MockFlueClient();
+      coders.push(coder);
+      return { actors: { coder: agentActorWith(() => coder, coderDefinition), bouncer } };
+    },
+  });
+  const store = await mkStore();
+  const first = new RunHost({ store });
+  first.register(def());
+  const { runId } = await first.start("bounce");
+  await waitFor(() => coders[0]?.admits.length === 1);
+  const iid = coders[0]!.admits[0]!.instanceId;
+  const going = first.sendToAgent(iid, { type: "go" });
+  assert.equal(going.outstanding, true);
+  await new Promise((r) => setTimeout(r, 5));
+  await first.stop(runId);
+
+  restoring = true;
+  const second = new RunHost({ store });
+  second.register(def());
+  assert.deepEqual((await second.restore()).reattached, [runId]);
+  const answer = await second.awaitDelivery(iid, going.deliveryId, 1_000);
+  assert.equal(answer?.answered, true, "answered, not held by a Turn that is not the pick's");
+  assert.equal(answer?.turnComplete, true, "the restored Turn ended; the Turn at the same address is another");
+  assert.deepEqual(answer?.allowed, []);
+  await second.close();
+});
+
 test("a delivery that was never outstanding is unknown to the poll", async () => {
   const rig = await started();
   assert.equal(await rig.host.awaitDelivery(rig.iid, "no-such-delivery", 10), undefined);
@@ -773,4 +833,127 @@ test("a reply from outside the states below the Agent's is no link: a sibling re
   assert.equal(answer?.answered, true);
   assert.equal(answer?.answer, undefined, "it moved, and nothing ran below the Agent's state");
   await host.close();
+});
+
+// --- Who moved the Machine out: the route of the last reply, or something that stopped the work ---
+
+/**
+ * A pick `go` from `w.rest` into `w.running`, whose child states the case writes. The Agent's state
+ * `w` leaves to `next` on `out` (a Machine-own event, or a timer), on `abort` from the `side` child
+ * invoked ON `w` (outside the states below the Agent's), and on a Turn-timeout `after` when asked.
+ */
+async function routeRig(
+  states: Record<string, unknown>,
+  opts: { turnTimeout?: number } = {},
+): Promise<{ host: RunHost; iid: string; coder: MockFlueClient; poke: () => void }> {
+  const go = ev("go");
+  const out = ev("out");
+  const abort = ev("abort");
+  const endpoint = "http://harness.invalid";
+  const coders: MockFlueClient[] = [];
+  let poke = () => {};
+  const side = fromCallback(({ sendBack }) => {
+    poke = () => sendBack({ type: "abort" });
+  });
+  const work = fromPromise(async () => ({ built: true }));
+  const never = fromPromise(() => new Promise<never>(() => {}));
+  const machine = (coder: ReturnType<typeof agentActorWith>) =>
+    jr2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [go, out, abort, finish],
+      actors: { coder, side, work, never },
+    }).createMachine({
+      id: "t",
+      context: {},
+      initial: "w",
+      states: {
+        w: {
+          invoke: [
+            { src: "coder", input: { prompt: "Fix the ticket.", endpoint, sandbox: "ws-1", continue: true } },
+            { src: "side", id: "side" },
+          ],
+          on: { out: "#t.next", abort: "#t.next" },
+          ...(opts.turnTimeout !== undefined ? { after: { [opts.turnTimeout]: "#t.next" } } : {}),
+          initial: "rest",
+          states: { rest: { on: { go: "running" } }, ...states } as never,
+        },
+        next: {
+          invoke: { src: "coder", input: { prompt: "Carry on.", endpoint, continue: true } },
+          on: { finish: "#t.done" },
+        },
+        done: { type: "final" },
+      },
+    });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "route",
+    machine: machine(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+    provide: () => {
+      const coder = new MockFlueClient();
+      coders.push(coder);
+      return { actors: { coder: agentActorWith(() => coder, coderDefinition), side, work, never } };
+    },
+  });
+  await host.start("route");
+  await waitFor(() => coders[0]?.admits.length === 1);
+  return { host, iid: coders[0]!.admits[0]!.instanceId, coder: coders[0]!, poke: () => poke() };
+}
+
+/** Pick `go`, run `then` while the pick is outstanding, and read the answer and the next Turn's notice. */
+async function picked(rig: Awaited<ReturnType<typeof routeRig>>, then: () => void = () => {}) {
+  const going = rig.host.sendToAgent(rig.iid, { type: "go" });
+  assert.equal(going.outstanding, true, "the pick is outstanding");
+  const polled = rig.host.awaitDelivery(rig.iid, going.deliveryId);
+  then();
+  const answer = await polled;
+  await waitFor(() => rig.coder.admits.length === 2);
+  await rig.host.close();
+  return {
+    answer: { turnComplete: answer?.turnComplete, stopped: answer?.stopped, answer: answer?.answer },
+    notice: rig.coder.notices[1],
+  };
+}
+
+const built = { kind: "output", actor: "work", output: { built: true } } as const;
+const ranToItsEnd = {
+  answer: { turnComplete: true, stopped: undefined, answer: built },
+  notice: [{ kind: "pick-answer", scope: "conversation", pick: "go", cut: false, answer: built }],
+};
+const stoppedIt = {
+  answer: { turnComplete: true, stopped: true, answer: undefined },
+  notice: [{ kind: "pick-answer", scope: "conversation", pick: "go", cut: false, stopped: true }],
+};
+
+test("the reply's own route leaves through an immediate event the Machine sends itself: the answer is the reply, nothing was stopped", async () => {
+  const self = sendTo(({ self }) => self, { type: "out" });
+  const cases: Record<string, Record<string, unknown>> = {
+    "sendTo(self) in onDone": { running: { invoke: { src: "work", onDone: { actions: self } } } },
+    "sendTo(self) in the next state's entry": {
+      running: { invoke: { src: "work", onDone: "after" } },
+      after: { entry: self },
+    },
+    "raise in onDone": { running: { invoke: { src: "work", onDone: { actions: raise({ type: "out" }) } } } },
+  };
+  for (const [name, states] of Object.entries(cases)) {
+    assert.deepEqual(await picked(await routeRig(states)), ranToItsEnd, name);
+  }
+});
+
+test("something else leaves while the work below still runs: the work was stopped", async () => {
+  const running = { running: { invoke: { src: "never" } } };
+  assert.deepEqual(await picked(await routeRig(running, { turnTimeout: 30 })), stoppedIt, "a Turn-timeout `after`");
+  const outside = await routeRig(running);
+  assert.deepEqual(await picked(outside, outside.poke), stoppedIt, "an event from outside the states below");
+  // A chain: the first link replied, and its route started the second; a delayed event the Machine
+  // sent itself fires while the second still runs.
+  for (const [name, timer] of [
+    ["delayed sendTo(self)", sendTo(({ self }) => self, { type: "out" }, { delay: 30 })],
+    ["delayed raise", raise({ type: "out" }, { delay: 30 })],
+  ] as const) {
+    const chain = {
+      running: { invoke: { src: "work", onDone: "second" } },
+      second: { entry: timer, invoke: { src: "never" } },
+    };
+    assert.deepEqual(await picked(await routeRig(chain)), stoppedIt, `a chain cut by a ${name}`);
+  }
 });
