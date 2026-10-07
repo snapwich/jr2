@@ -40,9 +40,10 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   a restart that loses the transition's save still delivers the output and runs nothing. On restore: settled → the
   output is delivered; intent → re-attach to the exec by id, or settle `unknown` when the Harness no longer knows it (it
   restarted); no row → nothing was sent, so it starts. A command is never run again by jr2: it runs the Agent's code,
-  which may spend a Stand-in. Retry is the author's choice — a route back into the state. No row is dropped: the settled
-  and aborted rows are the record of what the run's Effects did, and the ledger grows by one row per Effect the run
-  starts.
+  which may spend a Stand-in. Retry is the author's choice — a route back into the state. No row is dropped: each
+  settled or aborted row keeps the Effect's id, kind and outcome for the run's life, the record of what the run's
+  Effects did. A settled row's output tail is dropped once the save that carries its transition is on disk; the full
+  stream is on the feed. So an Effect in a loop grows the blob by one short row per pass, never by its tails.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start
@@ -52,9 +53,10 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   Harness keeps it, for at most the command's timeout (past it the Harness's own timer has ended the group); a kill that
   never reaches it is said on the feed. A fast exit can send the kill while the start is still on the wire: the Harness
   keeps a kill of an id it does not know, and the start that arrives after it runs nothing. The abort goes to the ledger
-  (`aborted`) and the feed, "outcome unknown"; the Machine does not get it — the state that asked has left. Two stops
-  are not exits: the host parking the run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor).
-  The Effect then re-attaches on restore, or settles `unknown`. There is no "finally": cleanup is a state.
+  (`aborted`, saved with the transition that exited the state — a cancel's final save carries it) and the feed, "outcome
+  unknown"; the Machine does not get it — the state that asked has left. Two stops are not exits: the host parking the
+  run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor). The Effect then re-attaches on
+  restore, or settles `unknown`. There is no "finally": cleanup is a state.
 - **Must-finish is a pattern.** An Effect that must not be cut goes in its own state, whose only exit is its `onDone`,
   and that state handles the ancestor's events itself.
 - **No fire-and-forget form.** Two patterns keep D1: an Effect in its own state; or a second invoke with no `onDone`

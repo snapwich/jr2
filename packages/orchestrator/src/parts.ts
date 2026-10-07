@@ -187,9 +187,10 @@ export function sandboxPartsOf(machine: AnyStateMachine | undefined): SandboxPar
  * `sandboxPartsOf(m)` naming no image: a wrapper that names neither image still owns the two
  * seats, which is what `customize({ image })` retunes (ADR-0049) — and it always carries at least
  * one Repo Slot (ADR-0051). Also the data-plane switch, read off the walk: an Instance needs
- * Sandboxes exactly when a registered Machine composes one. */
+ * Sandboxes exactly when a registered Machine composes one. A logic with no `config` (an Effect's,
+ * ADR-0067) composes none. */
 export function composesSandbox(machine: AnyStateMachine): boolean {
-  return (machine.config as Stamped)[SANDBOX_PARTS] !== undefined;
+  return (machine.config as Stamped | undefined)?.[SANDBOX_PARTS] !== undefined;
 }
 
 // The slot a jr2 WRAPPER is transparent to (ADR-0049): `workspace()`'s `body`, `pool()`'s

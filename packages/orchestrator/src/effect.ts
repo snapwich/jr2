@@ -15,8 +15,10 @@
 //     that transition. A restore reads the row, never guesses: settled → deliver the output;
 //     intent → re-attach to the exec by id, or, when the Harness no longer knows it, settle
 //     `unknown`; no row → nothing left, so it starts. A command never runs twice: it runs the
-//     Agent's code, which may spend a Stand-in. No row is dropped: the settled and aborted rows are
-//     the record of what the run's Effects did.
+//     Agent's code, which may spend a Stand-in. No row is dropped: the settled and aborted rows keep
+//     id, kind and outcome for the run's life, the record of what the run's Effects did. A settled
+//     row's output tail is dropped once the save that carries its transition is on disk
+//     (`dropSavedTails`): the full stream is on the feed.
 //   - D1. The Effect stops when its state exits — xstate stops the child, and this logic kills the
 //     exec's process group: the kill is sent until the Harness keeps it, and a kill that arrives
 //     before its start keeps that start from running (a fast exit). The abort goes to the ledger
@@ -94,13 +96,44 @@ export type CommandOutput = ExecOutcome | Unknown;
 /**
  * One Effect's row. `intent` names where the call went — the Harness's URL and the placement whose
  * bearer reaches it — so a restore re-attaches without the Workspace's handles. `settled` keeps the
- * output: a restore whose transition was not saved delivers it, and it is the record of what ran.
- * `aborted`: its state exited while it ran. A row replaces the one before it; none is dropped.
+ * output: a restore whose transition was not saved delivers it; once that transition is saved, the
+ * output less its tail is the record of what ran (`dropSavedTails`). `aborted`: its state exited
+ * while it ran. A row replaces the one before it; none is dropped.
  */
 export type EffectRow =
   | { state: "intent"; kind: EffectParts["kind"]; slot: string; endpoint: string; placement: string; at: string }
   | { state: "settled"; kind: EffectParts["kind"]; slot: string; output: unknown; at: string }
   | { state: "aborted"; kind: EffectParts["kind"]; slot: string; at: string };
+
+/**
+ * Retention (ADR-0067): drop, in place, the output tail of every settled row once a save on disk
+ * carries the transition its output drove — `persisted` is the snapshot that save held, and it no
+ * longer holds the Effect running (its transition, or with no `onDone` the child done in place). A
+ * restore reads a settled row's output only for an Effect its saved snapshot holds running, so
+ * nothing reads the tail after that save; the full stream is on the feed. The row keeps its id,
+ * kind and outcome — a command's exit code, signal or reason — for the run's life: the record of
+ * what ran. So an Effect in a loop grows the blob by one short row per pass, never by its tails.
+ */
+export function dropSavedTails(effects: Record<string, EffectRow>, persisted: unknown): void {
+  const running = new Set<string>();
+  const walk = (snapshot: unknown): void => {
+    const children = (snapshot as { children?: Record<string, { snapshot?: unknown } | undefined> } | null)?.children;
+    if (!children || typeof children !== "object") return;
+    for (const child of Object.values(children)) {
+      const { effectId, status } = (child?.snapshot ?? {}) as { effectId?: unknown; status?: unknown };
+      if (typeof effectId === "string" && status === "active") running.add(effectId);
+      walk(child?.snapshot);
+    }
+  };
+  walk(persisted);
+  for (const [id, row] of Object.entries(effects)) {
+    if (row.state !== "settled" || running.has(id)) continue;
+    const output = row.output as { tail?: unknown } | null;
+    if (typeof output !== "object" || output === null || !("tail" in output)) continue;
+    const { tail: _tail, ...outcome } = output;
+    effects[id] = { ...row, output: outcome };
+  }
+}
 
 /** One Effect line on the run's feed (Instance-token band, like the Turn markers). `output` lines
  * carry the stream; `aborted` and an `unknown` settle say the outside world may have acted. */
@@ -423,10 +456,10 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
       });
     });
   }
-  // Written after the transition that stopped it, never inside it: a save mid-transition reads the
-  // Machine before its route.
+  // Written now, saved with the transition that stopped it — never inside it: a save mid-transition
+  // reads the Machine before its route. A cancel's final save carries it.
   const aborted: EffectRow = { state: "aborted", kind: row.kind, slot: row.slot, at: new Date().toISOString() };
-  queueMicrotask(() => binding?.recordEffect?.(effectId, aborted));
+  binding?.recordEffect?.(effectId, aborted, "with-transition");
   binding?.marker?.({
     kind: "effect",
     slot: row.slot,

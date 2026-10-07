@@ -201,6 +201,23 @@ test("D1: its state exits while it runs — the exec is killed, the ledger and t
   assert.match((aborted as { text: string }).text, /outcome unknown/);
 });
 
+test("D1: a cancel mid-command kills the exec, and the aborted row reaches the disk before the run is untracked", async () => {
+  const fake = new FakeHarnessExec();
+  const store = await mkStore();
+  const rig = await started(fake.factory, store);
+  await waitFor(() => fake.starts.length === 1);
+  await rig.host.cancel(rig.runId);
+  await waitFor(() => fake.kills.length === 1);
+  assert.equal(fake.kills[0], fake.starts[0]!.id);
+  const stored = await store.load(rig.runId);
+  assert.equal(stored?.status, "cancelled");
+  assert.deepEqual(
+    Object.values(await ledger(store, rig.runId)).map((r) => r.state),
+    ["aborted"],
+    "the cancel's final save carries the abort",
+  );
+});
+
 test("park is not an exit: the exec runs on, and the restored run re-attaches by id — one run", async () => {
   const fake = new FakeHarnessExec();
   const rig = await started(fake.factory);
@@ -342,15 +359,16 @@ test("real processes through the Harness's own exec: a metacharacter stays insid
   assert.deepEqual(JSON.parse((result as { tail: string }).tail), ["a; echo pwned $(id) | cat"]);
 });
 
-test("the ledger keeps every row: a Machine that loops leaves one settled row per pass, the record of what ran", async () => {
-  // Each pass settles at once, then re-enters the state that runs it.
+test("the ledger keeps every row, and drops each output tail once its transition is saved: a loop does not grow the blob by its tails", async () => {
+  // Each pass settles at once, with a large tail, then re-enters the state that runs it.
+  const tail = "x".repeat(50_000);
   const instant: ExecPortFactory = () => ({
     start: async () => {},
     read: async () => ({
       state: "settled",
-      stream: "ok\n",
-      next: 3,
-      output: { outcome: "exited", code: 0, tail: "ok\n" },
+      stream: tail,
+      next: tail.length,
+      output: { outcome: "exited", code: 0, tail },
     }),
     kill: async () => {},
     forget: async () => {},
@@ -380,6 +398,7 @@ test("the ledger keeps every row: a Machine that loops leaves one settled row pe
     },
   });
   const store = await mkStore();
+  const saved = savedLedgers(store);
   const host = new RunHost({ store });
   host.register({ name: "loop", machine, provide: () => ({}) });
   const { runId } = await host.start("loop");
@@ -388,10 +407,15 @@ test("the ledger keeps every row: a Machine that loops leaves one settled row pe
   assert.equal((host.status(runId)?.context as { n: number }).n, 4, "five passes");
   const rows = Object.values(await ledger(store, runId));
   assert.equal(rows.length, 5, "one row per pass, each by its own id");
-  assert.ok(
-    rows.every((r) => r.state === "settled" && r.slot === "loop"),
-    JSON.stringify(rows.map((r) => r.state)),
+  // Each finished row keeps its id, kind and outcome; the tail is on the feed. The last pass's row
+  // still has its tail on disk: the save that carries its transition is the run's last.
+  assert.deepEqual(
+    rows.slice(0, 4).map((r) => [r.state, r.kind, r.slot, (r as { output?: unknown }).output]),
+    Array.from({ length: 4 }, () => ["settled", "command", "loop", { outcome: "exited", code: 0 }]),
   );
+  // No save carries more than one tail: the tail of the pass that settles, never the passes before.
+  const tails = saved.map((rows) => Object.values(rows).filter((r) => JSON.stringify(r).includes(tail)).length);
+  assert.ok(Math.max(...tails) === 1, JSON.stringify(tails));
 });
 
 test("D1 holds a fast exit through the real exec: a kill that overtakes its start keeps it from running", async () => {

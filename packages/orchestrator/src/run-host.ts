@@ -71,7 +71,7 @@ import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import type { AgentAdmission } from "./actor.ts";
-import type { EffectRow } from "./effect.ts";
+import { dropSavedTails, type EffectRow } from "./effect.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
 
 /** The actors filled into a run's named slots — `.provide()` is the unit-test seam (ADR-0015);
@@ -642,7 +642,8 @@ type RunBlob = {
    * `settled` with its output, `aborted` when its state exited while it ran. Same blob for the
    * snapshot's atomicity: an intent row is saved with the snapshot that holds its Effect, so a restore
    * reads which Effects may have acted and runs none of them twice. A row is never dropped: the
-   * settled and aborted rows are the record of what the run's Effects did.
+   * settled and aborted rows keep id, kind and outcome, the record of what the run's Effects did; a
+   * settled row's output tail is dropped once a save carries its transition (`dropSavedTails`).
    */
   effects?: Record<string, EffectRow>;
   fault?: string;
@@ -1886,12 +1887,18 @@ export class RunHost {
       },
       // The Effect ledger's two halves (ADR-0067). A write is saved AT THE WRITE, like an admission:
       // an intent row must be on disk, with the snapshot that holds its Effect, before the call
-      // leaves — and a row written around stop/untrack lands in memory and skips the save.
+      // leaves. A row written inside a transition (an abort) waits for the save that carries that
+      // transition — a cancel's final save included, which untracks the run — and is saved after
+      // it only when nothing else did. A row written around a park lands in memory and skips the save.
       effectRow: (effectId) => effects[effectId],
-      recordEffect: (effectId, row) => {
+      recordEffect: (effectId, row, save = "now") => {
         effects[effectId] = row;
-        const run = this.runs.get(record.runId);
-        if (run && run.effects === effects) this.persist(run);
+        const persist = (): void => {
+          const run = this.runs.get(record.runId);
+          if (run && run.effects === effects) this.persist(run);
+        };
+        if (save === "now") persist();
+        else queueMicrotask(persist);
       },
       heldAnswerDelivered: (instanceId) => {
         const hold = holds.get(instanceId);
@@ -2091,6 +2098,9 @@ export class RunHost {
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);
     void this.store.save(run.record.runId, blob, status);
+    // The save is on disk (the store writes synchronously, ADR-0065): a settled row whose transition
+    // it carries keeps no tail in the next one (ADR-0067).
+    dropSavedTails(run.effects, snapshot);
 
     // Feed per-run observers (SSE/CLI watch). On the terminal transition emit the final status
     // BEFORE untrack drops the run from the registry, then drop the now-useless listener set.

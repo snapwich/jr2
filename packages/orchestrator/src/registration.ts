@@ -512,11 +512,14 @@ export type RunBinding = {
    */
   effectRow?: (effectId: string) => EffectRow | undefined;
   /**
-   * The Effect ledger's WRITE half (ADR-0067): saved AT THE WRITE, in the same RunBlob as the
-   * snapshot — so an intent row is on disk, with the snapshot that holds its Effect, before the
-   * call leaves. Optional: a bare binding keeps no ledger, and nothing it runs is durable.
+   * The Effect ledger's WRITE half (ADR-0067), in the same RunBlob as the snapshot. `"now"` (the
+   * default) saves AT THE WRITE — so an intent row is on disk, with the snapshot that holds its
+   * Effect, before the call leaves. `"with-transition"` is for a row written INSIDE a transition (an
+   * abort, D1): it is kept in memory for the save that carries that transition — a save now would
+   * read the Machine before its route — and saved after the transition if nothing else saves it.
+   * Optional: a bare binding keeps no ledger, and nothing it runs is durable.
    */
-  recordEffect?: (effectId: string, row: EffectRow) => void;
+  recordEffect?: (effectId: string, row: EffectRow, save?: "now" | "with-transition") => void;
   /**
    * iid → the abort still in flight for it (ADR-0024). The Agent actor fills this on the way out and
    * waits on it before admitting, so an abort can never overtake the next turn on the same
