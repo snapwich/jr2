@@ -1,6 +1,6 @@
 // Rest (rest.ts, ADR-0024): the condition of an Agent's state under which a pick is answered — read
-// off raw xstate, one shape per child kind. `s` invokes the Agent (an idle callback, invoke id
-// `agent`) and starts in `idle`; the pick `go` enters the case's child `x`. Every reading is taken
+// off raw xstate, one shape per child kind. `s` invokes the Agent (a silent callback, invoke id
+// `agent`) and starts in `ready`; the pick `go` enters the case's child `x`. Every reading is taken
 // after the mailbox drained.
 
 import { test } from "node:test";
@@ -21,7 +21,7 @@ import {
 import { restOf } from "../src/rest.ts";
 import { pendingTimers, startAndRearm } from "../src/timers.ts";
 
-const idle = fromCallback(() => () => {});
+const silent = fromCallback(() => () => {});
 
 function controllable() {
   let settle: ((v: unknown) => void) | undefined;
@@ -30,15 +30,15 @@ function controllable() {
 }
 
 function shape(children: Record<string, unknown>, actors: Record<string, unknown> = {}, sOn: object = {}) {
-  return setup({ actors: { agentA: idle, ...actors } as never }).createMachine({
+  return setup({ actors: { agentA: silent, ...actors } as never }).createMachine({
     id: "m",
     initial: "s",
     states: {
       s: {
         invoke: { src: "agentA", id: "agent" },
-        initial: "idle",
+        initial: "ready",
         on: { go: ".x", ...sOn } as never,
-        states: { idle: {}, ...children } as never,
+        states: { ready: {}, ...children } as never,
       },
       out: {},
     },
@@ -59,7 +59,7 @@ async function picked(machine: AnyStateMachine): Promise<AnyActor> {
 
 test("an Effect stand-in (a promise) with onDone back: busy while it runs, Rest when it settles", async () => {
   const p = controllable();
-  const actor = await picked(shape({ x: { invoke: { src: "p", onDone: "idle" } } }, { p: p.logic }));
+  const actor = await picked(shape({ x: { invoke: { src: "p", onDone: "ready" } } }, { p: p.logic }));
   assert.equal(reading(actor), "busy");
   p.settle("ok");
   await sleep(5);
@@ -79,7 +79,7 @@ test("a settled child with no onDone is Rest: a forgotten route cannot hang a Tu
 });
 
 test("a Gate (an invoked callback) holds until its answer routes; an answer with no target keeps it open", async () => {
-  const routed = await picked(shape({ x: { invoke: { src: "g" }, on: { approve: "idle" } } }, { g: idle }));
+  const routed = await picked(shape({ x: { invoke: { src: "g" }, on: { approve: "ready" } } }, { g: silent }));
   assert.equal(reading(routed), "busy");
   routed.send({ type: "approve" });
   await drained();
@@ -87,7 +87,7 @@ test("a Gate (an invoked callback) holds until its answer routes; an answer with
   routed.stop();
 
   const stays = await picked(
-    shape({ x: { invoke: { src: "g" }, on: { approve: { actions: assign({}) } } } }, { g: idle }),
+    shape({ x: { invoke: { src: "g" }, on: { approve: { actions: assign({}) } } } }, { g: silent }),
   );
   stays.send({ type: "approve" });
   await drained();
@@ -100,14 +100,14 @@ test("another Agent and a child Machine are each running something", async () =>
     const t = setTimeout(() => sendBack({ type: "advice" }), 5);
     return () => clearTimeout(t);
   });
-  const nested = await picked(shape({ x: { invoke: { src: "adv" }, on: { advice: "idle" } } }, { adv: advisor }));
+  const nested = await picked(shape({ x: { invoke: { src: "adv" }, on: { advice: "ready" } } }, { adv: advisor }));
   assert.equal(reading(nested), "busy");
   await sleep(20);
   assert.equal(reading(nested), "rest");
   nested.stop();
 
   const kid = createMachine({ initial: "w", states: { w: { after: { 5: "f" } }, f: { type: "final" } } });
-  const child = await picked(shape({ x: { invoke: { src: "k", onDone: "idle" } } }, { k: kid }));
+  const child = await picked(shape({ x: { invoke: { src: "k", onDone: "ready" } } }, { k: kid }));
   assert.equal(reading(child), "busy");
   await sleep(20);
   assert.equal(reading(child), "rest");
@@ -116,9 +116,9 @@ test("another Agent and a child Machine are each running something", async () =>
 
 test("a timer holds when it moves the workflow inside the Agent's state — `after`, a delayed raise, a delayed sendTo(self)", async () => {
   for (const x of [
-    { after: { 10: "idle" } },
-    { entry: raise({ type: "TICK" }, { delay: 10 }), on: { TICK: "idle" } },
-    { entry: sendTo(({ self }) => self, { type: "TICK" }, { delay: 10 }), on: { TICK: "idle" } },
+    { after: { 10: "ready" } },
+    { entry: raise({ type: "TICK" }, { delay: 10 }), on: { TICK: "ready" } },
+    { entry: sendTo(({ self }) => self, { type: "TICK" }, { delay: 10 }), on: { TICK: "ready" } },
   ]) {
     const actor = await picked(shape({ x }));
     assert.equal(reading(actor), "busy", JSON.stringify(Object.keys(x)));
@@ -129,16 +129,16 @@ test("a timer holds when it moves the workflow inside the Agent's state — `aft
 });
 
 test("a timer that leaves the Agent's state (a Turn timeout) does not hold a pick", async () => {
-  const machine = setup({ actors: { agentA: idle } }).createMachine({
+  const machine = setup({ actors: { agentA: silent } }).createMachine({
     id: "m",
     initial: "s",
     states: {
       s: {
         invoke: { src: "agentA", id: "agent" },
         after: { 60_000: "out" },
-        initial: "idle",
+        initial: "ready",
         on: { go: ".x" },
-        states: { idle: {}, x: {} },
+        states: { ready: {}, x: {} },
       },
       out: {},
     },
@@ -149,16 +149,16 @@ test("a timer that leaves the Agent's state (a Turn timeout) does not hold a pic
 });
 
 test("a timer with no target moves the workflow to no state: it does not hold, though its assign may change the Allowed picks", async () => {
-  const machine = setup({ actors: { agentA: idle } }).createMachine({
+  const machine = setup({ actors: { agentA: silent } }).createMachine({
     id: "m",
     context: { open: false },
     initial: "s",
     states: {
       s: {
         invoke: { src: "agentA", id: "agent" },
-        initial: "idle",
+        initial: "ready",
         on: { go: ".x" },
-        states: { idle: {}, x: { after: { 10: { actions: assign({ open: true }) } } } },
+        states: { ready: {}, x: { after: { 10: { actions: assign({ open: true }) } } } },
       },
     },
   });
@@ -180,7 +180,7 @@ test("the Agent's state no longer active reads `gone`: the Turn is over", async 
 
 test("Rest is computed over the SET of active states below the Agent's state: one region busy is busy", async () => {
   const p = controllable();
-  const machine = setup({ actors: { agentA: idle, p: p.logic } }).createMachine({
+  const machine = setup({ actors: { agentA: silent, p: p.logic } }).createMachine({
     id: "m",
     initial: "s",
     states: {
@@ -205,7 +205,7 @@ test("Rest is computed over the SET of active states below the Agent's state: on
 });
 
 test("the same reading after a restore: the timer table comes back, and so does the hold", async () => {
-  const machine = shape({ x: { after: { 200: "idle" } } });
+  const machine = shape({ x: { after: { 200: "ready" } } });
   const first = await picked(machine);
   assert.equal(reading(first), "busy");
   const snapshot = first.getPersistedSnapshot();
