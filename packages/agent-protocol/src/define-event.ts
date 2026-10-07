@@ -10,11 +10,13 @@ import { z } from "zod";
 
 /**
  * How delivering the event resolves for the caller (ADR-0006):
- * - `ack`      fire-and-acknowledge; the caller does not wait on a meaningful result.
- * - `deferred` the result is held open until the Machine answers (solicited down-channel).
- * - `poll`     the caller pulls queued down-channel messages (cooperative steer checkpoint).
+ * - `ack`  the pick is delivered and answered. A pick that moves the workflow to work inside the
+ *          Agent's state is answered when that work is done (ADR-0024): the answer is the Machine's,
+ *          never a schema on the pick, so no pick declares an output.
+ * - `poll` the caller pulls queued down-channel messages (cooperative steer checkpoint). Reserved,
+ *          not built (ADR-0013).
  */
-export type EventSemantics = "ack" | "deferred" | "poll";
+export type EventSemantics = "ack" | "poll";
 
 /**
  * Who may deliver the event, stated BY KIND (ADR-0015): `agent` (an Agent's pick), `external` (a
@@ -38,8 +40,6 @@ export type EventDef<Name extends string = string, Input extends z.ZodObject = z
   readonly semantics: EventSemantics;
   /** Absent: each writing's state decides who may send it (see {@link EventAudience}). */
   readonly audience?: EventAudience;
-  /** Result schema for `deferred` events (the held tool result the Machine answers with). */
-  readonly output?: z.ZodType;
 };
 
 /**
@@ -82,7 +82,6 @@ export function defineEvent<const Name extends string, Input extends z.ZodObject
   semantics?: EventSemantics;
   /** Default: unset — each writing's state decides (see {@link EventAudience}). */
   audience?: EventAudience;
-  output?: z.ZodType;
 }): EventDef<Name, Input> {
   if (!NAME_RE.test(def.name)) {
     throw new Error(
@@ -96,9 +95,13 @@ export function defineEvent<const Name extends string, Input extends z.ZodObject
         `on every delivered event (who sent it); name the payload field something else`,
     );
   }
-  if (def.semantics === "deferred" && !def.output) {
+  // Retired (ADR-0006): a pick's answer is the Machine's — the last reply since the pick, or what an
+  // `answer` action sets (ADR-0024) — so a schema on the pick would promise a shape nothing keeps.
+  const loose = def as { semantics?: unknown; output?: unknown };
+  if (loose.semantics === "deferred" || loose.output !== undefined) {
     throw new Error(
-      `defineEvent: "${def.name}" is deferred but has no output schema — a deferred event's result IS its output`,
+      `defineEvent: "${def.name}" declares ${loose.output !== undefined ? "an `output`" : "`deferred`"}, which is retired — ` +
+        `every pick is answered when the work it started is done, and the answer is the Machine's, not the def's`,
     );
   }
   return Object.freeze({ semantics: "ack" as const, ...def });
@@ -123,13 +126,11 @@ export function isEventDef(value: unknown): value is EventDef {
  * Workflow: a nested Machine is reached by `import` and never carries the name `jr2 run` addresses
  * (ADR-0049), so naming it a workflow here would misreport where the bad def lives.
  *
- * `deferred` and `poll` are RESERVED, not implemented (ADR-0013): the wire leaves room for them —
- * a surface listing ships each def's `semantics`, a delivery returns an addressable receipt — but
- * nothing answers a held call today, and how a Machine should is deliberately undesigned (there is
- * no consumer to design it against, and flue's 60s MCP timeout means the answer will be
- * poll-with-progress rather than a held socket). Registering one therefore FAILS here. Quietly
- * downgrading it to `ack` would be worse than useless: the Agent would be handed a tool whose
- * contract — "this call returns the Machine's answer" — is a lie.
+ * `poll` is RESERVED, not implemented (ADR-0013): the wire leaves room for it — a surface listing
+ * ships each def's `semantics` — but nothing drains a steer inbox today. Registering one therefore
+ * FAILS here. Quietly downgrading it to `ack` would hand the Agent a tool whose contract is a lie.
+ * (A pick whose answer waits on the Machine's work needs no semantics of its own: every `ack` pick
+ * is answered at Rest, ADR-0024.)
  */
 export function eventMap(machine: string, events: readonly unknown[]): Map<string, EventDef> {
   const map = new Map<string, EventDef>();
@@ -141,8 +142,8 @@ export function eventMap(machine: string, events: readonly unknown[]): Map<strin
     if (def.semantics !== "ack") {
       throw new Error(
         `machine "${machine}": event "${def.name}" is \`${def.semantics}\`, which is reserved but ` +
-          `NOT IMPLEMENTED (ADR-0013). Only \`ack\` events can be delivered today; there is nothing to ` +
-          `answer a held call with, and degrading it to \`ack\` would hand the Agent a lying tool contract.`,
+          `NOT IMPLEMENTED (ADR-0013). Only \`ack\` events can be delivered today; nothing drains a ` +
+          `steer inbox, and degrading it to \`ack\` would hand the Agent a lying tool contract.`,
       );
     }
     map.set(def.name, def);

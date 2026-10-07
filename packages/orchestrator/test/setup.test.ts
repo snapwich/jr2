@@ -98,17 +98,12 @@ test("duplicate and reserved-semantics defs fail at createMachine, naming the ma
     /machine "wf": duplicate event "approve"/,
   );
 
-  // ADR-0013 reserves `deferred`/`poll`; degrading one to `ack` would hand the Agent a lying
-  // tool contract, so the machine refuses to build.
-  const held = defineEvent({
-    name: "request_approval",
-    semantics: "deferred",
-    input: z.object({ action: z.string() }),
-    output: z.object({ decision: z.string() }),
-  });
+  // ADR-0013 reserves `poll`; degrading it to `ack` would hand the Agent a lying tool contract, so
+  // the machine refuses to build.
+  const steer = defineEvent({ name: "steer", semantics: "poll", input: z.object({ text: z.string() }) });
   assert.throws(
-    () => jr2Setup({ events: [held] }).createMachine({ id: "wf", initial: "a", states: { a: {} } }),
-    /"request_approval" is `deferred`.*NOT IMPLEMENTED/s,
+    () => jr2Setup({ events: [steer] }).createMachine({ id: "wf", initial: "a", states: { a: {} } }),
+    /"steer" is `poll`.*NOT IMPLEMENTED/s,
   );
 });
 

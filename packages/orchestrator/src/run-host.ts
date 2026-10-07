@@ -323,8 +323,7 @@ export type GateView = {
 };
 
 /** One event on an Agent's Menu, as the surface serves it: a tool, its `input` schema the tool's
- * parameters. `semantics` rides along so the Harness can tell an awaiting tool from a
- * fire-and-forget one — the room ADR-0006's deferred results will land in, unbuilt today. */
+ * parameters. `semantics` rides along so the Harness refuses a reserved one (ADR-0013). */
 export type SurfaceEvent = { name: string; description?: string; input: unknown; semantics: EventSemantics };
 
 /**
@@ -999,7 +998,7 @@ export class RunHost {
   /**
    * Deliver one event from an Agent's Harness (`POST /agents/:iid/events` — ADR-0013). Validation
    * and delivery are the table's; this only agent-scopes the address and mints the receipt. (A
-   * `deferred` event never reaches here: `jr2Setup` refuses to build a Machine that declares one —
+   * `poll` event never reaches here: `jr2Setup` refuses to build a Machine that declares one —
    * ADR-0013.)
    */
   sendToAgent(instanceId: string, event: { type?: unknown } & Record<string, unknown>): AgentDeliveryReceipt {

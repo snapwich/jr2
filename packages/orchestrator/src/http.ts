@@ -769,8 +769,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
   });
 
   // Run control (ADR-0002). CANCEL is the only event left on this seam: APPROVE and STEER answered
-  // held `deferred` calls and drained `poll` inboxes, and ADR-0013 reserves both semantics without
-  // building them. Workflow-defined events reach a run through its GATES, not through here.
+  // held calls and drained `poll` inboxes; a held call is now every pick answered at Rest (ADR-0024),
+  // and `poll` stays reserved (ADR-0013). Workflow-defined events reach a run through its GATES.
   //
   // It ENDS the run (ADR-0025): the Agents' turns end with it, the run does not come back on the
   // next restore, and its Workspaces are destroyed unless the body says `keep: true`. `RunHost.stop()` — park it, keep it restorable — is a different verb, and
@@ -842,8 +842,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
 
   // The Agent's pick, delivered into the state that invoked it. The receipt describes itself
   // (ADR-0024): what was delivered, and whether that ended the turn — which the Harness renders as
-  // prose. Its `deliveryId` still makes an outcome addressable after the fact, the room a deferred
-  // result will need when it lands.
+  // prose. Its `deliveryId` makes an outstanding pick addressable after the fact: its answer is
+  // polled at `GET /agents/:iid/deliveries/:id`.
   app.post("/agents/:instanceId/events", authenticated, async (c) => {
     const { error } = agentRegistration(c);
     if (error) return error;

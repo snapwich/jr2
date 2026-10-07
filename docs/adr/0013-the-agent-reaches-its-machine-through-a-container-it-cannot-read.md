@@ -110,10 +110,10 @@ is needed either (ADR-0006).
 - **A Machine-answered tool result is the held answer, for every pick that runs work.** No def declares it: a pick whose
   target runs something inside the Agent's state is outstanding until the workflow is back at Rest, and the Harness
   polls its delivery inside the one tool call (ADR-0002, ADR-0024). The gates surface answers `{ ok: true }` for a send
-  the run took and 409 for one it would not — external callers need no receipt. ADR-0006's `deferred`/`poll` semantics
-  are still in the model and the surface listing still ships each def's `semantics`; registering a `deferred` or `poll`
-  def **fails loudly as unimplemented** — a silent downgrade to `ack` would be a lying tool contract — and the Harness
-  refuses a turn whose surface offers one.
+  the run took and 409 for one it would not — external callers need no receipt. `deferred` is retired (ADR-0006). `poll`
+  is still in the model and the surface listing still ships each def's `semantics`; registering a `poll` def **fails
+  loudly as unimplemented** — a silent downgrade to `ack` would be a lying tool contract — and the Harness refuses a
+  turn whose surface offers one.
 
 ## Considered options
 

@@ -61,7 +61,7 @@ export type SurfaceEvent = {
   description?: string;
   /** The event's input schema, as JSON Schema — this becomes the tool's parameters. */
   input: unknown;
-  semantics: "ack" | "deferred" | "poll";
+  semantics: "ack" | "poll";
 };
 
 /**
@@ -219,9 +219,9 @@ type PickClaim = { held?: string };
 
 function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent, claim: PickClaim): MenuItem {
   if (event.semantics !== "ack") {
-    // ADR-0013: `deferred`/`poll` are reserved in the model and have room on the wire, but nothing
-    // answers a held call yet. Offering one as a plain tool would promise the Agent a result that
-    // never comes, so the whole turn is refused rather than served a lying contract.
+    // ADR-0013: `poll` is reserved in the model and has room on the wire, but nothing drains a
+    // steer inbox yet. Offering one as a plain tool would promise the Agent a contract nothing
+    // keeps, so the whole turn is refused rather than served a lying one.
     throw new Error(
       `event "${event.name}" is \`${event.semantics}\`, which the Harness does not implement ` +
         `(ADR-0013: reserved, not built — an Agent must not be handed a tool whose contract is a lie)`,

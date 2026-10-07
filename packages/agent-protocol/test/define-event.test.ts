@@ -28,18 +28,16 @@ test("rejects names outside the MCP/xstate-safe charset (dots stay jr2's namespa
   assert.throws(() => defineEvent({ name: "", input: z.object({}) }), /invalid name/);
 });
 
-test("deferred requires an output schema (the held result IS the output)", () => {
+test("`deferred` and `output` are retired: a pick's answer is the Machine's, never the def's", () => {
+  const loose = defineEvent as (def: Record<string, unknown>) => unknown;
   assert.throws(
-    () => defineEvent({ name: "request_approval", semantics: "deferred", input: z.object({ action: z.string() }) }),
-    /deferred but has no output/,
+    () => loose({ name: "request_approval", semantics: "deferred", input: z.object({ action: z.string() }) }),
+    /declares `deferred`, which is retired/,
   );
-  const ok = defineEvent({
-    name: "request_approval",
-    semantics: "deferred",
-    input: z.object({ action: z.string() }),
-    output: z.object({ decision: z.string() }),
-  });
-  assert.equal(ok.semantics, "deferred");
+  assert.throws(
+    () => loose({ name: "request_approval", input: z.object({}), output: z.object({ decision: z.string() }) }),
+    /declares an `output`, which is retired/,
+  );
 });
 
 test("eventMap resolves a manifest and rejects duplicates + non-defs, naming the Machine", () => {

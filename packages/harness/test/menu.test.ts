@@ -4,7 +4,7 @@
 // the item's parameters, the Menu and the Allowed picks read apart — and an older Orchestrator's
 // `accepts` read as both (ADR-0029's skew) — a pick as one delivery whose receipt reads as prose and
 // names the Allowed picks, that a turn that is over reads as NO surface rather than an empty Menu
-// (ADR-0026), that a pick against a settled turn fails, that a deferred event refuses the turn, and
+// (ADR-0026), that a pick against a settled turn fails, that a poll event refuses the turn, and
 // the surface read's retry ladder (ADR-0042) — including the Custodian's own word that the
 // Orchestrator never answered, and a stopping Orchestrator's 503 — while a pick is never retried.
 
@@ -274,10 +274,10 @@ test("an Orchestrator refusal is loud — a 403 is not an empty Menu", async () 
   await assert.rejects(() => readMenu(opts(fetch), "run-1/reviewer"), /this token cannot speak/);
 });
 
-test("a deferred event refuses the turn — a tool whose result never comes is a lie (ADR-0013)", async () => {
-  const deferred = { ...SURFACE, menu: [{ ...SURFACE.menu![0]!, semantics: "deferred" as const }] };
-  const { fetch } = fakeFetch(() => Response.json(deferred));
-  await assert.rejects(() => readMenu(opts(fetch), "run-1/reviewer"), /`deferred`.*reserved, not built/);
+test("a poll event refuses the turn — a tool whose contract nothing keeps is a lie (ADR-0013)", async () => {
+  const polled = { ...SURFACE, menu: [{ ...SURFACE.menu![0]!, semantics: "poll" as const }] };
+  const { fetch } = fakeFetch(() => Response.json(polled));
+  await assert.rejects(() => readMenu(opts(fetch), "run-1/reviewer"), /`poll`.*reserved, not built/);
 });
 
 test("a surface read that never got an answer is retried, and what it cost is logged once (ADR-0042)", async () => {

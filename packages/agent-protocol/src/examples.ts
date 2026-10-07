@@ -3,9 +3,9 @@
 // a workflow's own `jr2Setup({ events })` list (ADR-0015). ADR-0006's "standard library" framing
 // is retired: nothing in jr2 consumes these by name.
 //
-// All `ack` — outcomes an Agent reports and moves on from. The other two semantics (`deferred`,
-// `poll`) are reserved and NOT implemented (ADR-0013), so machine-build refuses one; an example
-// that could not be used in a workflow would be a trap, not a starting point.
+// All `ack`, as every pick is. The other semantics (`poll`) is reserved and NOT implemented
+// (ADR-0013), so machine-build refuses it; an example that could not be used in a workflow would
+// be a trap, not a starting point.
 
 import { z } from "zod";
 import { defineEvent } from "./define-event.ts";

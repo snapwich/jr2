@@ -20,6 +20,13 @@ A named event schema must compile to a flat tagged object (an `enum` discriminat
   every retry. A flat object is satisfied first try. A conditional contract ("`notes` required iff `request_changes`")
   is enforced by jr2 after the pick, not by the tool schema.
 
+## A pick declares its input, never its answer
+
+A def states what the Agent supplies (`input`) and nothing about what comes back. Every pick is `ack`: delivered and
+answered on the same call. A pick that moves the workflow to work inside the Agent's state is answered when that work is
+done (ADR-0024), and the answer is the Machine's: the last reply since the pick. So a def has no `output` schema and no
+`deferred` semantics; `defineEvent` refuses both. `poll` stays reserved (ADR-0013).
+
 ## One path: every conversation lives on the agent wire
 
 The wire has exactly one conversation surface (ADR-0027): `POST /agents/:name/:id`, resumable by `(name, iid) + offset`.

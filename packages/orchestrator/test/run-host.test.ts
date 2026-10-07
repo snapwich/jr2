@@ -41,7 +41,7 @@ test("an Agent's delivery routes into the owning run's Machine", async () => {
   const iid = await admittedIid(clients.get(instanceId)!);
 
   const receipt = host.sendToAgent(iid, { type: "request_review", summary: "PR up" });
-  // Every delivery is addressable after the fact — the room a deferred result needs (ADR-0013).
+  // Every delivery is addressable after the fact — an outstanding pick is polled by it (ADR-0013).
   assert.ok(receipt.deliveryId, "a delivery answers with a receipt");
   await waitFor(() => JSON.stringify(host.status(runId)?.value).includes("review"));
 
