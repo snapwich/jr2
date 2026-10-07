@@ -46,6 +46,7 @@ import { eventMap, type EventDef, type EventFrom, type Sender } from "@jr2/agent
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
 import { isEffect } from "./effect.ts";
+import { effectChecks } from "./effect-checks.ts";
 import { gate } from "./gate.ts";
 import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
@@ -223,6 +224,10 @@ export function jr2Setup<
 
     refuseParallelBelowAgents(machine, def.actors ?? {});
     refuseUnknownSentBy(machine);
+    // The Effect checks (ADR-0067): a pick param nothing reads, a `fill` that overwrites one, a
+    // `fromPick` of another pick — refused; a mapper the probe cannot run — warned.
+    const effects = effectChecks(machine, def.actors ?? {}, defs);
+    if (effects.errors.length) throw new Error(`machine "${machine.id}": ${effects.errors.join("; ")}`);
 
     const idOf = (path: readonly string[]): string => stateAt(machine, path).id;
     attachVocabulary(machine, defs);
@@ -233,6 +238,7 @@ export function jr2Setup<
     attachLoadWarnings(machine, [
       ...unenteredModes(machine, def.actors ?? {}),
       ...restWarnings(machine, def.actors ?? {}),
+      ...effects.warnings,
       ...derived.warnings.map((warning) => warning(idOf)),
       ...partyWarnings(machine, derived.derivedGateIds),
     ]);
@@ -442,7 +448,8 @@ function deriveMenus(
 /**
  * A mode that nothing enters (ADR-0015): a child of an Agent's state with no invoke that the Machine
  * can never enter. Its picks are on the Menu and never allowed. A warning, not a refusal: the Machine
- * is legal, and a mode left unwired is often work in progress.
+ * is legal, and a mode left unwired is often work in progress. A child that INVOKES something and that
+ * nothing enters is refused (ADR-0067): what it invokes never runs, which is never work in progress.
  *
  * "Can enter" is reachability from the root, to a fixed point. A state is entered when its parent is
  * entered and it is the parent's initial state or a region of a parallel parent, or when a transition
@@ -529,13 +536,26 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
   const invokedAgent = (node: Node): string | undefined =>
     node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))?.src as string | undefined;
 
+  const refused: string[] = [];
   for (const node of all) {
     const agent = invokedAgent(node);
     // An Agent's state the Machine never enters is a larger defect than its modes, and not this check.
     if (agent === undefined || !entered.has(node)) continue;
     const descend = (parent: Node): void => {
       for (const child of Object.values(parent.states)) {
-        if (child.invoke.length > 0 || child.type === "history") continue;
+        if (child.type === "history") continue;
+        if (child.invoke.length > 0) {
+          // A child that invokes something and that nothing enters (ADR-0067): what it invokes never
+          // runs — a refusal, where a mode nothing enters is only a warning.
+          if (!entered.has(child)) {
+            const what = child.invoke.map((inv) => (typeof inv.src === "string" ? inv.src : inv.id)).join(", ");
+            refused.push(
+              `state "${child.id}" below Agent "${agent}"'s state "${node.id}" is entered by nothing, so what it ` +
+                `invokes (${what}) never runs — target it from a pick or a route, or delete it`,
+            );
+          }
+          continue;
+        }
         if (!entered.has(child)) {
           const picks = [...child.transitions.keys()].filter((key) => !key.includes(".") && key !== "*");
           out.push(
@@ -550,6 +570,7 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
     };
     descend(node);
   }
+  if (refused.length) throw new Error(`machine "${machine.id}": ${refused.join("; ")}`);
   return out;
 }
 

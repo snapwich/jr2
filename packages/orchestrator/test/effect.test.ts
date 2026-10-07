@@ -18,6 +18,7 @@ import { mkStore, waitFor } from "./_fixtures.ts";
 
 const go = defineEvent({ name: "go", input: z.object({ filter: z.string() }) });
 const leave = defineEvent({ name: "leave", input: z.object({}) });
+const begin = defineEvent({ name: "begin", input: z.object({}) });
 
 type Ctx = { filter?: string; result?: CommandOutput; fault?: string };
 
@@ -228,12 +229,12 @@ test("restore of a settled row whose transition was not saved: the output is del
 test("refused outside a Workspace, and under several Repo Slots with none named: an error, never output", async () => {
   const fake = new FakeHarnessExec();
   const tests = commandWith(fake.factory, ["true"]);
-  const bare = jr2Setup({ types: {} as { context: Ctx }, events: [go], actors: { tests } }).createMachine({
+  const bare = jr2Setup({ types: {} as { context: Ctx }, events: [begin], actors: { tests } }).createMachine({
     id: "bare",
     context: {},
     initial: "idle",
     states: {
-      idle: { invoke: { src: "gate", id: "start" }, on: { go: "running" } },
+      idle: { invoke: { src: "gate", id: "start" }, on: { begin: "running" } },
       running: {
         invoke: {
           src: "tests",
@@ -246,7 +247,7 @@ test("refused outside a Workspace, and under several Repo Slots with none named:
   const host = new RunHost({ store: await mkStore() });
   host.register({ name: "bare", machine: bare, provide: () => ({}) });
   const { runId } = await host.start("bare");
-  host.sendToGate(runId, "start", { type: "go", filter: "x" });
+  host.sendToGate(runId, "start", { type: "begin" });
   await waitFor(() => host.status(runId)?.value === "faulted");
   assert.match((host.status(runId)?.context as Ctx).fault!, /not inside a workspace\(\)/);
 

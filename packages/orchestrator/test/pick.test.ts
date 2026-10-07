@@ -191,7 +191,7 @@ test("the chain is typed by slot and by kind", () => {
               }),
             ),
           },
-          building: { invoke: { src: "build", onDone: "rest" } },
+          building: { invoke: { src: "build", onDone: "asking" } },
           asking: { invoke: { src: "gate", input: {} }, on: { skip: "rest" } },
         },
         on: { deploy_preview: ".building", finish: "#typed.done" },
