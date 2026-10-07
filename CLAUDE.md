@@ -78,11 +78,11 @@ key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone and never a file
 are CLAIMS — an ADR's measured claim as N trials with a floor: `obedience` (Allowed picks obeyed, thinking off and on),
 `advised` (a Menu-only Agent's first call is its pick), `workdir` (a relative write lands in the Worktree), `noticed` (a
 memory-kill notice is acted on), the mode and step-boundary claims (`mode-follow`, `mode-refusal`, `mode-stop`,
-`push-follow`, `push-wake`), and the held-answer claims (`chain-answer`, `refused-outstanding`, `cut-pick`; written, not
-yet run). Two are THE RUN — `ticket`: planner, coder, reviewer, and a commit verified in the pod (branch ahead of
-`main`, HEAD is the named commit, tree clean, `node --test` passes); and `ticket-modes`, one coder Turn through three
-modes. The tier was about 90 minutes on the home lab before the held-answer claims; the Menu-only claims are a few
-minutes each.
+`push-follow`, `push-wake`), and the held-answer claims (`chain-answer`, `refused-outstanding`, `cut-pick`). Two are THE
+RUN — `ticket`: planner, coder, reviewer, and a commit verified in the pod (branch ahead of `main`, HEAD is the named
+commit, tree clean, `node --test` passes); and `ticket-modes`, one coder Turn through three modes. The whole tier is
+about three hours on the home lab: `cut-pick` alone is over an hour and a half, since each of its trials waits out the
+deleted pod's termination grace; the other Menu-only claims are a few minutes each.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
 `scorecard: <model> <cell>: k/N`. Two thresholds, two meanings:

@@ -111,9 +111,11 @@ recover, finish — are exercised only one scripted tool call at a time.
 - The held-answer claims of ADR-0024 and ADR-0031 — `chain-answer` (the next pick follows the answer's last link),
   `refused-outstanding` (a pick refused while another was outstanding is picked again after the answer) and `cut-pick`
   (after a Harness restart cut the pick, the Agent uses the answer and does not pick it again; the step deletes the
-  Instance Harness pod) — are written and have not run. No measurement of their own exists yet, so each floor carries
-  ADR-0029/0062's measurement of a list read last, and the refusal's carries ADR-0029's recovery after one refusal; the
-  first run confirms or corrects them in the change that records their baselines.
+  Instance Harness pod). Each floor carries ADR-0029/0062's measurement of a list read last, and the refusal's carries
+  ADR-0029's recovery after one refusal. The first run (home-lab vLLM, 2026-10-07) confirmed two: `chain-answer` 10 of
+  10 and `cut-pick` 10 of 10, now baselines. `refused-outstanding` is open: its setup is a model that makes both calls
+  in one message, and in all 15 trials of each of three runs the model made them one after the other, so no trial
+  reached the refusal the claim measures.
 - **A claim's setup may change; its floor and what counts as a pass may not.** A setup is the part of a trial that
   brings the model to the moment the claim measures. When a claim falls below its floor because that moment seldom
   happens, its workflow and its driver may change for the setup alone, and the reason is recorded here. A setup that no
@@ -143,7 +145,7 @@ recover, finish — are exercised only one scripted tool call at a time.
   fires, so the stale list the claim needs never reaches the model and every trial would be void. The timer now has no
   target: it shuts the review window, and the guards of `revise`, `submit` and `publish` read it, so after it fires only
   `publish` is allowed in `reviewing`. The prompt, the floor and the pass are unchanged: the call after the correction
-  receipt is `publish`. Neither the new `mode-stop` setup nor this one has run yet.
+  receipt is `publish`. Both setups have run: `mode-stop` and `mode-refusal` cleared their floors 10 of 10.
 
 - The drivers' readings of the printed conversation and of a workflow's modes are plain functions in
   `features/lib/model-said.ts`, with unit tests beside them that need no cluster and no model.

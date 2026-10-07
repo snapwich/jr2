@@ -171,12 +171,12 @@ Feature: a real model drives the kit
     workflow is back at Rest there; its answer — the last reply since the pick, and the Allowed
     picks read after the route — comes back on the same call. While it is out, every other pick is
     refused. A Harness restart while it is out cuts the Turn and faults nothing: jr2 re-admits the
-    Agent on the same conversation with the answer (ADR-0031). Written, not yet run: no floor here
-    has a measurement of its own. Each is ADR-0029/0062's measurement of a list read last — 10/10
-    obeyed — rounded down as ADR-0066 rounds it, because the answer and its Allowed picks are the
-    newest thing the model read; the refusal's is ADR-0029's recovery after one refusal naming the
-    Allowed picks (57 of 58). The first run confirms or corrects each, in the change that records
-    its baseline.
+    Agent on the same conversation with the answer (ADR-0031). Each floor is ADR-0029/0062's
+    measurement of a list read last — 10/10 obeyed — rounded down as ADR-0066 rounds it, because
+    the answer and its Allowed picks are the newest thing the model read; the refusal's is
+    ADR-0029's recovery after one refusal naming the Allowed picks (57 of 58). The first run
+    confirmed `chain-answer` and `cut-pick` at 10/10; `refused-outstanding` is open, its setup never
+    reached (ADR-0066).
 
     Scenario: the answer is the last reply since the pick, and the next pick follows it
       The `chain-answer` workflow's `run_checks` is outstanding through two child Machines: lint
