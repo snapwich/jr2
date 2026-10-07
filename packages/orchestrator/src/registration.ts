@@ -28,6 +28,7 @@ import { getStateNodes } from "xstate";
 import type { ActorSystem, AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyStateMachine } from "xstate";
 import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
+import type { EffectMarker, EffectRow } from "./effect.ts";
 import type { NoticeScope, TakenNotices } from "./notices.ts";
 import type { Notice, PickAnswer } from "./wire.ts";
 import type { SandboxPort } from "./workspace.ts";
@@ -496,6 +497,17 @@ export type RunBinding = {
    */
   hostStopping?: boolean;
   /**
+   * The Effect ledger's READ half (ADR-0067): one Effect's row, by its id — what a restored Effect
+   * reads to deliver its output, re-attach, or settle `unknown`, and never to run twice.
+   */
+  effectRow?: (effectId: string) => EffectRow | undefined;
+  /**
+   * The Effect ledger's WRITE half (ADR-0067): saved AT THE WRITE, in the same RunBlob as the
+   * snapshot — so an intent row is on disk, with the snapshot that holds its Effect, before the
+   * call leaves. Optional: a bare binding keeps no ledger, and nothing it runs is durable.
+   */
+  recordEffect?: (effectId: string, row: EffectRow) => void;
+  /**
    * iid → the abort still in flight for it (ADR-0024). The Agent actor fills this on the way out and
    * waits on it before admitting, so an abort can never overtake the next turn on the same
    * instance — flue QUEUES per instance, and an abort that lost that race would settle the new
@@ -551,8 +563,9 @@ export type PlacingMarker =
  */
 export type ChildErrorMarker = { kind: "child-error"; agent: string; pick: string; child: string; error: string };
 
-/** Every marker a run's mechanism puts on its per-run feed. */
-export type RunMarker = TurnMarker | PlacingMarker | ChildErrorMarker;
+/** Every marker a run's mechanism puts on its per-run feed — an Effect's lines among them
+ * (ADR-0067): its start, its stream, its output, its abort. */
+export type RunMarker = TurnMarker | PlacingMarker | ChildErrorMarker | EffectMarker;
 
 const bindings = new WeakMap<AnyActorSystem, RunBinding>();
 
@@ -571,6 +584,12 @@ export function boundRunId(system: AnyActorSystem): string | undefined {
  * burned) — the SOFT read `jr2Setup`'s iid minting uses, beside {@link boundRunId}. */
 export function boundEpoch(system: AnyActorSystem, conversation: string): number {
   return bindings.get(system)?.epochOf?.(conversation) ?? 0;
+}
+
+/** The bound run, or undefined outside a jr2 host — the SOFT read an Effect uses: with no host it
+ * keeps no ledger and writes no feed, and still runs. */
+export function boundRun(system: AnyActorSystem): RunBinding | undefined {
+  return bindings.get(system);
 }
 
 /** Actor-side: resolve the run this actor tree belongs to. Throws outside a jr2 host. */

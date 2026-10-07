@@ -42,6 +42,7 @@ import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AnyActorRef, AnyStateMachine, StateNode, UnknownActorLogic } from "xstate";
 import { isAgent, isOpenAgent, type AgentDeclaration } from "./agent.ts";
+import { argvText, isEffect, placementOf, type EffectParts, type Placement } from "./effect.ts";
 import { isImageContext } from "./images.ts";
 import { open } from "./open.ts";
 import { repoIdentity } from "./repo-identity.ts";
@@ -363,9 +364,24 @@ export type CarriedSize = {
   user?: Size;
 };
 
+/** One Effect slot a Machine carries (ADR-0067), by its slot key and the `customize()` route to its
+ * Machine, with the plain data `jr2 up` prints: the kind, where it runs, a command's argv (an argv
+ * slot reads `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one. */
+export type CarriedEffect = {
+  name: string;
+  path: readonly string[] | undefined;
+  kind: EffectParts["kind"];
+  placement: Placement;
+  argv: string[];
+  timeoutMs: number;
+  slot?: string;
+};
+
 /** Everything the registered Machines carry that a converge or a boot must act on. */
 export type CarriedParts = {
   agents: CarriedAgent[];
+  /** Every Effect slot, in walk order — one per Machine and slot key. */
+  effects: CarriedEffect[];
   images: CarriedImage[];
   /** Every bound Repo, deduped by identity, in walk order. */
   repos: CarriedRepo[];
@@ -427,6 +443,7 @@ function canonical(value: unknown): string {
  */
 export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   const agents: CarriedAgent[] = [];
+  const effects: CarriedEffect[] = [];
   const images: CarriedImage[] = [];
   const repos: CarriedRepo[] = [];
   const openSlots: OpenSlot[] = [];
@@ -516,7 +533,18 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     const body = wrapperBodyOf(machine);
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(path, name, logic.definition);
-      else {
+      else if (isEffect(logic)) {
+        const { kind, argv, timeoutMs, slot } = logic.effect;
+        effects.push({
+          name,
+          path,
+          kind,
+          placement: placementOf(logic.effect),
+          argv: argvText(argv),
+          timeoutMs,
+          ...(slot !== undefined ? { slot } : {}),
+        });
+      } else {
         const child = asMachine(logic);
         if (child) walk(child, path === undefined ? undefined : name === body ? path : [...path, name]);
       }
@@ -525,5 +553,5 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
   };
 
   for (const machine of machines) walk(machine, []);
-  return { agents, images, repos, openSlots, openAgents, sizes, composesSandbox: sandboxed };
+  return { agents, effects, images, repos, openSlots, openAgents, sizes, composesSandbox: sandboxed };
 }

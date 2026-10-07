@@ -18,10 +18,12 @@ upserts cost 0.04 ms (1 KB) and 0.18 ms (100 KB). A run's blob is about 1 KB; a 
   also ends every Sandbox on that node.
 - **The write stays synchronous and on the event loop.** At 0.2 ms for a Pool's blob there is nothing to move off the
   loop, and the ordering matters: the row is on disk before the Machine's next side effect runs, which is what lets an
-  epoch bump (ADR-0057) or an admission (ADR-0016) be saved "at the write". A worker thread, an asynchronous driver or a
-  network store would land the row after the next `invoke` fires, on every persist.
-- **One blob per run stays.** The snapshot is a tree that xstate restores from its root, and one row keeps it atomic; a
-  Pool's cost at 40 workers is 0.2 ms, so its workers do not become rows of their own.
+  epoch bump (ADR-0057), an admission (ADR-0016) or an Effect's intent row (ADR-0067) be saved "at the write" — the
+  intent row before its call leaves. A worker thread, an asynchronous driver or a network store would land the row after
+  the next `invoke` fires, on every persist.
+- **One blob per run stays.** The snapshot is a tree that xstate restores from its root, and one row keeps it atomic —
+  with the ledgers beside it (admissions, epochs, notices, timers, outstanding picks, Effects); a Pool's cost at 40
+  workers is 0.2 ms, so its workers do not become rows of their own.
 - **`restore()` reads live rows only.** The store answers `WHERE status = 'live'`; terminal rows are not parsed at boot.
 - **A finished run's row lives 7 days, fixed.** Every non-live status — `done`, `error`, `cancelled`, `lost`, `drifted`
   — ages from its terminal write, and a sweep at boot and every hour deletes what is older. A `live` row is never swept:

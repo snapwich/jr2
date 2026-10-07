@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./wire": "./src/wire.ts"
+    "./wire": "./src/wire.ts",
+    "./exec": "./src/exec.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

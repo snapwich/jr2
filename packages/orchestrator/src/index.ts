@@ -10,6 +10,8 @@
 // `jr2Setup`, `workspace`, … all import from "@jr2/orchestrator" — ADR-0015).
 export * from "@jr2/agent-protocol";
 export * from "./agent.ts";
+// The Effect surface (ADR-0067): `command` itself is the wire-bound one, from harness-client.ts.
+export * from "./effect.ts";
 export * from "./parts.ts";
 export * from "./size.ts";
 export * from "./customize.ts";

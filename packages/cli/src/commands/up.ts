@@ -236,6 +236,21 @@ export async function up(args: string[], io: Io): Promise<number> {
       return 1;
     }
   }
+  // What each registered Machine runs outside itself (ADR-0067): every Effect slot, with the plain
+  // data it carries — a command's argv, its timeout, the Repo Slot it runs in — read, never run.
+  for (const w of workflows) {
+    const effects = partsOf([w.machine]).effects;
+    if (!effects.length) continue;
+    activity(io, `effects: workflow "${w.name}" — what it runs outside itself (ADR-0067)`);
+    for (const e of effects) {
+      const where = e.path?.length ? ` (on ${e.path.map((k) => `"${k}"`).join(" → ")})` : "";
+      const slot = e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
+      activity(
+        io,
+        `  ${e.name}${where}: ${e.kind} ${JSON.stringify(e.argv)} — ${e.timeoutMs / 1000}s, in the Harness${slot}`,
+      );
+    }
+  }
   // Who may send what, per state (ADR-0015): the audience rule's answer for each registered
   // Machine and every Machine it composes, as its doc carries it — so an author reads who holds a
   // pick before a run finds out. Then what the build found legal and suspect: a warning, never a

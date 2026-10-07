@@ -47,11 +47,23 @@ import type {
 } from "./actor.ts";
 import type { AgentDeclaration, AgentDefinition, ThinkingLevel } from "./agent.ts";
 import {
+  commandWith,
+  ExecRefused,
+  type Arg,
+  type CommandInput,
+  type CommandOptions,
+  type CommandOutput,
+  type EffectLogic,
+  type ExecPort,
+} from "./effect.ts";
+import {
   LIVE_LONG_POLL,
   STREAM_NEXT_OFFSET_HEADER,
   VIEW_HISTORY,
   VIEW_UPDATES,
   type EchoEvent,
+  type ExecRead,
+  type ExecRequest,
   type LiveConversation,
   type LiveSetRequest,
   type LiveSetResponse,
@@ -510,6 +522,86 @@ export function agent(declaration: AgentDeclaration): AgentLogic {
   return agentActorWith(
     (endpoint, bearer) => createHarnessAgentRunClient({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
     declaration,
+  );
+}
+
+/**
+ * The Harness's exec (ADR-0067), as a `command` Effect drives it: `POST /exec/:id` to start (the
+ * Harness runs one id once, so a start is safe to send again), `GET /exec/:id` long-polled by
+ * offset, `POST /exec/:id/kill` when the Effect's state exits, `DELETE /exec/:id` once the output
+ * is ledgered. A transport failure or a 5xx rejects, and the Effect asks again; a 404 on a read is
+ * an exec the Harness does not know (it restarted); any other 4xx is a jr2 defect, never retried.
+ */
+export function createExecPort(options: {
+  baseUrl: string;
+  /** The Workspace's Harness bearer (ADR-0058). Absent only against a Harness that checks nothing. */
+  token?: string;
+  /** Injectable for socket-free tests. Default: global `fetch`. */
+  fetch?: typeof fetch;
+}): ExecPort {
+  const fetchImpl = options.fetch ?? fetch;
+  const headers = {
+    "content-type": "application/json",
+    ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+  };
+  const url = (id: string, suffix = "") => new URL(`/exec/${encodeURIComponent(id)}${suffix}`, options.baseUrl);
+  const call = async (target: URL, init: RequestInit): Promise<Response> =>
+    fetchImpl(target.toString(), { ...init, headers }).catch((err: unknown) => {
+      throw new Error(`harness exec ${init.method ?? "GET"} ${target.pathname} failed: ${transportDetail(err)}`, {
+        cause: err,
+      });
+    });
+  const refusedOrRetry = async (res: Response, what: string): Promise<never> => {
+    const detail = await errorDetail(res);
+    if (res.status >= 400 && res.status < 500)
+      throw new ExecRefused(`harness refused the ${what} (${res.status}): ${detail}`);
+    throw new Error(`harness ${what} failed (${res.status}): ${detail}`);
+  };
+  return {
+    start: async (id, req: ExecRequest, signal) => {
+      const res = await call(url(id), { method: "POST", body: JSON.stringify(req), signal });
+      if (!res.ok) return refusedOrRetry(res, "exec");
+      await res.json().catch(() => undefined);
+    },
+    read: async (id, offset, signal) => {
+      const target = url(id);
+      if (offset !== undefined) target.searchParams.set("offset", String(offset));
+      target.searchParams.set("live", LIVE_LONG_POLL);
+      const res = await call(target, { method: "GET", signal });
+      if (res.status === 404) {
+        await res.body?.cancel();
+        return undefined;
+      }
+      if (!res.ok) return refusedOrRetry(res, "exec read");
+      return (await res.json()) as ExecRead;
+    },
+    kill: async (id) => {
+      const res = await call(url(id, "/kill"), { method: "POST" });
+      await res.body?.cancel();
+    },
+    forget: async (id) => {
+      const res = await call(url(id), { method: "DELETE" });
+      await res.body?.cancel();
+    },
+  };
+}
+
+/**
+ * THE authoring surface for a `command` Effect (ADR-0067): `actors: { tests: command(["pnpm",
+ * "test"]) }`, invoked as `src: "tests"`. `argv` is never shell text — an `arg("x")` entry is ONE
+ * argument, filled from the invoke's input — and `sh -c` is the author's explicit choice. It runs
+ * in the Harness container of the enclosing Workspace's Sandbox, in a Repo Slot's Worktree
+ * (`slot`, needed only where the Workspace carries several); outside a Workspace it is refused.
+ * Every outcome is output: `exited | timeout | killed | unknown`.
+ */
+export function command<const A extends readonly (string | Arg)[]>(
+  argv: A,
+  options: CommandOptions = {},
+): EffectLogic<CommandInput<A>, CommandOutput> {
+  return commandWith(
+    (endpoint, bearer) => createExecPort({ baseUrl: endpoint, ...(bearer ? { token: bearer } : {}) }),
+    argv,
+    options,
   );
 }
 

@@ -20,6 +20,13 @@ The store's own durability — what a persist survives, and how long a finished 
 Durable **agent handles** do not ride Machine context at all: the host persists an `iid → admission` ledger beside the
 snapshot in the same save (ADR-0016). Iids are globally unique, so restore needs no context-tree walking to find them.
 
+**Effects** keep a **ledger** beside the snapshot in the same save (ADR-0067): one row per Effect, by its id. An
+`intent` row is written before the call — saved at the write, so the snapshot that holds the Effect and the row land
+together, before the request leaves; a `settled` row is written with the output; an `aborted` row when the Effect's
+state exited while it ran. A restore reads the row and never guesses: settled → the output is delivered; intent → a
+command re-attaches to its exec by id, or settles `unknown` when the Harness no longer knows it; no row → nothing was
+sent, so it starts. Nothing an Effect started is run twice by jr2.
+
 **Pending timers** do not ride the snapshot either. The host persists a **timer table** beside it in the same save: one
 row per pending `after`, named delay, delayed `raise` or delayed `sendTo` in the run's tree, with its absolute deadline.
 The author writes plain xstate `after`; there is no kit timer actor, and `after` is refused nowhere.
@@ -72,6 +79,8 @@ The author writes plain xstate `after`; there is no kit timer actor, and `after`
 - Actors may not stash live connections in context for convenience; anything live is rebuilt per-invocation from
   serializable input (the Harness client from an `endpoint`, the kube client from ambient config) — which is also why a
   mock↔real swap happens at the wire (ADR-0011's stub Harness), never inside actor code.
-- The known durability edge stands: a crash between "run admitted" and "admission persisted" degrades to an at-most-once
-  re-POST (a live-run probe replays from `-1`; a genuinely-absent run re-POSTs), and an in-flight POST at the instant of
-  the kill is the irreducible at-most-once sliver.
+- An Effect has no at-most-once sliver: its intent row is on disk before the call leaves, so a restart either finds no
+  row (nothing was sent) or finds the intent and settles `unknown` when it cannot re-attach.
+- The known durability edge stands for Agents: a crash between "run admitted" and "admission persisted" degrades to an
+  at-most-once re-POST (a live-run probe replays from `-1`; a genuinely-absent run re-POSTs), and an in-flight POST at
+  the instant of the kill is the irreducible at-most-once sliver.

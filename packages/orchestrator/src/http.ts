@@ -561,6 +561,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     // A child's error below an Agent's state (ADR-0024) is mechanism text, like `fault`: behind the
     // token.
     if (ev.kind === "child-error") return undefined;
+    // An Effect's lines (ADR-0067) carry argv and output — working data: behind the token.
+    if (ev.kind === "effect") return undefined;
     return sseFrame("status", observe(ev.status));
   });
 
@@ -717,6 +719,8 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     // A child's error below an Agent's state, which the Agent's answer does not carry (ADR-0024):
     // the operator reads it here, with its message.
     if (ev.kind === "child-error") return sseFrame(ev.kind, ev);
+    // An Effect's lines (ADR-0067): its start, its stream, its output, an abort — Instance-token band.
+    if (ev.kind === "effect") return sseFrame("effect", ev);
     return sseFrame("status", ev.status);
   });
 

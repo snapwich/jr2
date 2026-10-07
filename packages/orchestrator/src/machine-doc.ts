@@ -18,6 +18,7 @@
 import type { AnyStateMachine, StateNode, TransitionDefinition } from "xstate";
 import { z } from "zod";
 import type { EventAudience } from "@jr2/agent-protocol";
+import { argvText, isEffect } from "./effect.ts";
 import { loadWarningsOf, seatsOf, vocabularyOf, type MachineSeat } from "./vocabulary.ts";
 
 /** One transition of the Machine, id-addressed at both ends. */
@@ -38,6 +39,10 @@ export type MachineTransitionDoc = {
   kind: "event" | "always" | "after" | "done" | "error";
 };
 
+/** An Effect slot's parts, as the doc carries them (ADR-0067): a command's argv (an argv slot reads
+ * `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one. */
+export type EffectDoc = { kind: "command"; argv: string[]; timeoutMs: number; slot?: string };
+
 /** One state of the Machine; `states` nests in document order. */
 export type MachineStateDoc = {
   /** Unique state id (custom `id:` respected). */
@@ -47,7 +52,9 @@ export type MachineStateDoc = {
   type: "atomic" | "compound" | "parallel" | "final" | "history";
   /** Initial child state id (compound only). */
   initial?: string;
-  invoke: Array<{ id: string; src: string }>;
+  /** Each invoke's id and slot; an Effect's carries its plain-data parts (ADR-0067) — what it runs,
+   * where, and for how long, read without running anything. */
+  invoke: Array<{ id: string; src: string; effect?: EffectDoc }>;
   tags: string[];
   description?: string;
   states: MachineStateDoc[];
@@ -299,7 +306,13 @@ function serializeState(node: StateNode<any, any>, into: MachineTransitionDoc[],
     id: node.id,
     key: node.key,
     type: node.type,
-    invoke: node.invoke.map((inv) => ({ id: inv.id, src: srcName(inv.src) })),
+    invoke: node.invoke.map((inv) => {
+      const logic = typeof inv.src === "string" ? scope.actors[inv.src] : undefined;
+      if (!isEffect(logic)) return { id: inv.id, src: srcName(inv.src) };
+      const { argv, timeoutMs, slot } = logic.effect;
+      const effect: EffectDoc = { kind: "command", argv: argvText(argv), timeoutMs, ...(slot ? { slot } : {}) };
+      return { id: inv.id, src: srcName(inv.src), effect };
+    }),
     tags: [...node.tags],
     states: children.map((child) => serializeState(child, into, scope)),
     children: childMachines(node, scope),

@@ -71,6 +71,7 @@ import { fingerprintOf } from "./fingerprint.ts";
 import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import type { AgentAdmission } from "./actor.ts";
+import type { EffectRow } from "./effect.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
 
 /** The actors filled into a run's named slots — `.provide()` is the unit-test seam (ADR-0015);
@@ -621,6 +622,13 @@ type RunBlob = {
    * snapshot's atomicity: a restored host answers the same poll from the same Machine.
    */
   holds?: Hold[];
+  /**
+   * The Effect LEDGER (ADR-0067): one row per Effect, by its id — `intent` before the call,
+   * `settled` with its output, `aborted` when its state exited while it ran. Same blob for the
+   * snapshot's atomicity: an intent row is saved with the snapshot that holds its Effect, so a restore
+   * reads which Effects may have acted and runs none of them twice.
+   */
+  effects?: Record<string, EffectRow>;
   fault?: string;
 };
 
@@ -639,6 +647,8 @@ type LiveRun = {
   notices: NoticeLedger;
   /** The outstanding picks by Agent address (ADR-0024): persisted as `RunBlob.holds`, seeded on restore. */
   holds: Map<string, Hold>;
+  /** The Effect ledger (ADR-0067): persisted as `RunBlob.effects`, seeded on restore. */
+  effects: Record<string, EffectRow>;
   /** The error that killed the run, if it errored (xstate serializes Error to `{}`, so the
    * message is captured here at the observer and persisted onto the blob for `read`). */
   fault?: string;
@@ -874,6 +884,8 @@ export class RunHost {
           blob.notices,
           // …and the outstanding picks (ADR-0024): the restored Machine says when each is answered.
           blob.holds,
+          // …and the Effect ledger (ADR-0067): a restored Effect reads its row and never runs twice.
+          blob.effects ?? {},
         );
         // `start()`, then the pending timers again (ADR-0007, see `startAndRearm`). The next save
         // records them again.
@@ -1735,6 +1747,7 @@ export class RunHost {
     epochs: Record<string, number> = {},
     noticeState?: NoticeLedgerState,
     holdState: Hold[] = [],
+    effects: Record<string, EffectRow> = {},
   ): AnyActor {
     const notices = new NoticeLedger(noticeState, this.newId);
     const holds = new Map(holdState.map((hold) => [hold.instanceId, hold]));
@@ -1823,6 +1836,15 @@ export class RunHost {
             fetched: hold.fetched === true,
           }
         );
+      },
+      // The Effect ledger's two halves (ADR-0067). A write is saved AT THE WRITE, like an admission:
+      // an intent row must be on disk, with the snapshot that holds its Effect, before the call
+      // leaves — and a row written around stop/untrack lands in memory and skips the save.
+      effectRow: (effectId) => effects[effectId],
+      recordEffect: (effectId, row) => {
+        effects[effectId] = row;
+        const run = this.runs.get(record.runId);
+        if (run && run.effects === effects) this.persist(run);
       },
       heldAnswerDelivered: (instanceId) => {
         const hold = holds.get(instanceId);
@@ -1925,7 +1947,7 @@ export class RunHost {
         if (ev.type === "@xstate.snapshot") schedule();
       },
     });
-    live = this.track(record, actor, def, agents, epochs, notices, binding, holds);
+    live = this.track(record, actor, def, agents, epochs, notices, binding, holds, effects);
     return actor;
   }
 
@@ -1938,6 +1960,7 @@ export class RunHost {
     notices: NoticeLedger,
     binding: RunBinding,
     holds: Map<string, Hold>,
+    effects: Record<string, EffectRow>,
   ): LiveRun {
     const run: LiveRun = {
       record,
@@ -1947,6 +1970,7 @@ export class RunHost {
       epochs,
       notices,
       holds,
+      effects,
       binding,
       listeners: new Set(),
       feedSoFar: [],
@@ -2015,6 +2039,7 @@ export class RunHost {
       notices: run.notices.state(),
       timers: pendingTimers(run.actor, this.now()),
       holds: [...run.holds.values()],
+      effects: run.effects,
       fault: run.fault,
     };
     const status = terminal ?? (machineStatus === "active" ? "live" : machineStatus);

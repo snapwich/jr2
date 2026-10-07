@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { fromPromise, setup } from "xstate";
 import { customizeLine, open, partsOf } from "../src/parts.ts";
 import { agent } from "../src/harness-client.ts";
+import { arg, commandWith } from "../src/effect.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { pool, source } from "../src/pool.ts";
 import { workspace } from "../src/workspace.ts";
@@ -130,6 +131,7 @@ test("the walk terminates on a Machine that composes itself", () => {
 
 const NOTHING = {
   agents: [],
+  effects: [],
   images: [],
   repos: [],
   openSlots: [],
@@ -254,6 +256,7 @@ test("a workspace() inside a jr2Setup() inside a pool() — every part, at every
       { name: "coder", definition: def("vllm/qwen") },
       { name: "reviewer", definition: def("anthropic/claude-x", "read") },
     ],
+    effects: [],
     images: [
       { url: "file:///srv/pkg/tools", dir: "/srv/pkg/tools", name: "tools" },
       { url: "file:///srv/pkg/sshd", dir: "/srv/pkg/sshd", name: "sshd" },
@@ -526,4 +529,28 @@ test("the walk reports every workspace()'s Size and User Container split, locate
   ]);
   // The object form's image is still a part the walk collects — a `file:` context would be built.
   assert.equal(partsOf([carrier("plain", "coder", "p/m")]).sizes.length, 0, "no workspace(), no Size");
+});
+
+// --- the Effects (ADR-0067) ---------------------------------------------------------------------
+
+test("an Effect slot is carried as plain data: its kind, where it runs, its argv, its timeout, its Repo Slot", () => {
+  const lint = commandWith(
+    () => {
+      throw new Error("never run");
+    },
+    ["pnpm", "lint", arg("path")],
+    { timeout: "2m", slot: "docs" },
+  );
+  const machine = setup({ actors: { lint } }).createMachine({ id: "m", initial: "a", states: { a: {} } });
+  assert.deepEqual(partsOf([machine]).effects, [
+    {
+      name: "lint",
+      path: [],
+      kind: "command",
+      placement: "harness",
+      argv: ["pnpm", "lint", "<path>"],
+      timeoutMs: 120_000,
+      slot: "docs",
+    },
+  ]);
 });

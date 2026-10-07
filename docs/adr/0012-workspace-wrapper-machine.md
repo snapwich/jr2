@@ -48,6 +48,13 @@ own injection into a root machine's input (`instanceId`) counts as handed over f
 actually reaches this body depends on where the wrapper sits and no type can see that
 ([ADR-0033](0033-a-machine-declares-the-input-that-starts-it.md)).
 
+## A command runs in the Workspace's Harness
+
+A `command` Effect in the body (ADR-0067) resolves the same ambient handles an Agent does: it runs in the Harness
+container of the enclosing Workspace's Sandbox, as the Agent's user. Its cwd follows the Turn's rule (ADR-0057): the one
+Repo Slot's Worktree, or the slot the command names with `slot`; a Workspace with several and none named refuses it. A
+command outside any `workspace()` is refused at invoke, as an error, never as output.
+
 ## There is no retain policy: parking is retention
 
 Teardown fires **only when the body reaches a final state**. A body that needs its Sandbox kept alive — escalation, a

@@ -10,6 +10,30 @@ import { defineEvent } from "@jr2/agent-protocol";
 import { fingerprintOf } from "../src/fingerprint.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { opaqueStates, serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
+import { arg, commandWith } from "../src/effect.ts";
+
+test("an Effect's invoke carries its parts — argv, timeout, Repo Slot — read without running it (ADR-0067)", () => {
+  const lint = commandWith(
+    () => {
+      throw new Error("never run");
+    },
+    ["pnpm", "lint", arg("path")],
+    { timeout: "90s", slot: "app" },
+  );
+  const machine = setup({ actors: { lint } }).createMachine({
+    id: "m",
+    initial: "a",
+    states: { a: { invoke: { src: "lint", id: "lint", input: { path: "src" } } } },
+  });
+  const [a] = serializeMachine("wf", machine).root.states;
+  assert.deepEqual(a!.invoke, [
+    {
+      id: "lint",
+      src: "lint",
+      effect: { kind: "command", argv: ["pnpm", "lint", "<path>"], timeoutMs: 90_000, slot: "app" },
+    },
+  ]);
+});
 
 /** A fixture exercising every serialization path. */
 const fixture = setup({

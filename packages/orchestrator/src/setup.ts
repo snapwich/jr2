@@ -45,6 +45,7 @@ import type { z } from "zod";
 import { eventMap, type EventDef, type EventFrom, type Sender } from "@jr2/agent-protocol";
 import type { AgentRunInput, AgentTurnInput, FaultTelemetry } from "./actor.ts";
 import { isAgent } from "./agent.ts";
+import { isEffect } from "./effect.ts";
 import { gate } from "./gate.ts";
 import { partyWarnings, refuseUnknownSentBy, SENT_BY, sentByGuard } from "./party.ts";
 import { boundEpoch, boundRunId, continuedIid } from "./registration.ts";
@@ -580,7 +581,7 @@ function settlesOnItsOwn(logic: unknown): boolean {
  *
  * - **A Gate whose answer has no target.** The Gate stays open after its answer, and the Agent's
  *   state is not at Rest again until the Gate's state exits.
- * - **A long-lived invoke** — an actor that runs until its state exits: not a promise (it settles),
+ * - **A long-lived invoke** — an actor that runs until its state exits: not a promise or an Effect (each settles),
  *   a Gate, an Agent or a child Machine. While it runs, the Agent's state is never at Rest.
  *
  * The descent below an Agent's state stops at a child that invokes another Agent: below it is that
@@ -614,7 +615,8 @@ function restWarnings(machine: AnyStateMachine, actors: Record<string, UnknownAc
               }
               continue;
             }
-            if (isAgent(logic) || (logic as { root?: unknown } | undefined)?.root !== undefined) continue;
+            if (isAgent(logic) || isEffect(logic) || (logic as { root?: unknown } | undefined)?.root !== undefined)
+              continue;
             if (settlesOnItsOwn(logic)) continue;
             out.push(
               `"${child.id}", below Agent "${agent}"'s state "${node.id}", invokes "${name}", which runs until its ` +
