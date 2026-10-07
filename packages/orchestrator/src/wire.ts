@@ -91,13 +91,13 @@ export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversa
 /**
  * What an outstanding pick's answer is (ADR-0024): the LAST reply from below the Agent's state since
  * the pick — a party's event (a Gate's answer, a nested Agent's pick) with its payload, or a child's
- * output (a child Machine, an Effect stand-in) — named by who sent it. Absent where nothing replied:
- * the pick moved the workflow and nothing ran. Plain data; the Harness writes the words.
+ * output (a child Machine, an Effect stand-in) — named by who sent it. A child's error is no reply (a
+ * defect, ADR-0024). Absent where nothing replied: the answer carries no reply, and says nothing of
+ * whether work ran. Plain data; the Harness writes the words.
  */
 export type PickAnswer =
   | { kind: "event"; event: string; sender?: { party: "agent" | "gate"; id: string }; payload: Record<string, unknown> }
-  | { kind: "output"; actor: string; output: unknown }
-  | { kind: "error"; actor: string; error: string };
+  | { kind: "output"; actor: string; output: unknown };
 
 /**
  * A pick's answer that did not reach the pick's call (ADR-0024): `cut` — the Harness restarted while

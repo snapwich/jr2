@@ -13,7 +13,9 @@
 // answer, a nested Agent's pick) with its payload, or a child's output (a child Machine, an Effect
 // stand-in). A chain link is a reply from below the Agent's state — from the set of active states
 // under it, never from a sibling region or the root; the events the Machine sent itself (`raise`,
-// `sendTo(self)`, a timer) are skipped. With no link, the pick moved the workflow and nothing ran.
+// `sendTo(self)`, a timer) are skipped, and so is a child's error: every outcome of work is its
+// output, and an error is a jr2 or config defect, never an answer. With no link, the answer carries
+// no reply — it does not say whether work ran.
 
 import type { AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyStateMachine } from "xstate";
 import { SENDER_KEY, type Sender } from "@jr2/agent-protocol";
@@ -70,9 +72,10 @@ export type HeldAnswer = {
  *     active state below the seat (the event's `sender`, ADR-0015).
  *
  * Everything else is skipped: the Machine's own events (`source` is the Machine itself: a `raise`, a
- * `sendTo(self)`, a timer), an xstate event other than a child's end, and an event from outside the
- * set — a Gate in a sibling region, a root Gate, an outside `jr2 send`. Read it as the event is
- * relayed, before the Machine processes it: the states the reply came from are still active. A
+ * `sendTo(self)`, a timer), an xstate event other than a child's output — a child's error
+ * (`xstate.error.actor.*`) is a defect, never a reply, so its message never reaches the model — and
+ * an event from outside the set: a Gate in a sibling region, a root Gate, an outside `jr2 send`.
+ * Read it as the event is relayed, before the Machine processes it: the states the reply came from are still active. A
  * child is named by its slot (`src`) where it has one, else by its invoke id.
  */
 export function replyOf(
@@ -89,13 +92,11 @@ export function replyOf(
     sender !== undefined &&
     below.some((inv) => (sender.party === "gate" ? inv.id === sender.id : inv.src === sender.id));
   if (!fromChild && !fromParty) return undefined;
-  const done = /^xstate\.(done|error)\.actor\.(.+)$/.exec(event.type);
+  const done = /^xstate\.done\.actor\.(.+)$/.exec(event.type);
   if (done) {
     const src = (source as { src?: unknown } | undefined)?.src;
-    const actor = typeof src === "string" ? src : done[2]!;
-    if (done[1] === "done") return { kind: "output", actor, output: (event as { output?: unknown }).output };
-    const error = (event as { error?: unknown }).error;
-    return { kind: "error", actor, error: error instanceof Error ? error.message : String(error) };
+    const actor = typeof src === "string" ? src : done[1]!;
+    return { kind: "output", actor, output: (event as { output?: unknown }).output };
   }
   if (event.type.startsWith("xstate.")) return undefined;
   const payload = Object.fromEntries(Object.entries(event).filter(([key]) => key !== "type" && key !== SENDER_KEY));

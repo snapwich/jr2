@@ -43,11 +43,11 @@ export type MemoryLimitNotice = {
 export type ConversationNewNotice = { kind: "conversation-new"; scope: "conversation"; reason: string };
 
 /** The last reply from below the Agent's state since a pick (ADR-0024): a party's event with its
- * payload, or a child's output — what an outstanding pick's answer carries. Absent: nothing ran. */
+ * payload, or a child's output — what an outstanding pick's answer carries. Absent: no reply came,
+ * which says nothing of whether work ran. */
 export type PickAnswer =
   | { kind: "event"; event: string; sender?: { party: "agent" | "gate"; id: string }; payload: Record<string, unknown> }
-  | { kind: "output"; actor: string; output: unknown }
-  | { kind: "error"; actor: string; error: string };
+  | { kind: "output"; actor: string; output: unknown };
 
 /** A pick's answer that never reached its call — `cut`: this Harness restarted while the workflow
  * ran it, and the re-admission carries it; else the route left the Agent's state, and the next
