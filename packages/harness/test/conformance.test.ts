@@ -1745,3 +1745,26 @@ test("an outstanding pick's answer resets the identical-call streak: the same pi
   assert.equal(settlement.outcome, "completed", JSON.stringify(settlement));
   assert.equal(sandbox.delivered.length, 4, "four identical picks, each answered by the world");
 });
+
+test("a guard straight back resets no streak: nothing ran, so the same pick four times is a Runaway (ADR-0035)", async () => {
+  // The run host's guard-back receipt: answered on the POST, never outstanding, no reply. The
+  // state value did not change, so the 4th identical call is the same question again.
+  const call = { name: "mcp__jr2__run_tests", args: '{"verdict":"go"}' };
+  provider.reset([1, 2, 3, 4, 5].map((n) => ({ toolCall: { id: `g${n}`, ...call } })));
+  sandbox.reset(surfaceWith("run_tests", "finish"));
+  sandbox.answerWith((event) => ({
+    moved: true,
+    turnComplete: false,
+    answered: true,
+    allowed: ["run_tests", "finish"],
+    event: event.type,
+  }));
+  const iid = "conf/guard-back-streak";
+  const admission = await admit(iid, "Run the tests.");
+  const settlement = await settled(iid, admission);
+  assert.equal(settlement.outcome, "failed", JSON.stringify(settlement));
+  assert.equal(settlement.error?.type, "runaway");
+  assert.match(settlement.error?.message ?? "", /repeated an identical tool call 4 times/);
+  assert.equal(sandbox.delivered.length, 3, "the 4th identical call trips before it leaves");
+  assert.equal(sandbox.polls.length, 0, "nothing was outstanding, so nothing was polled");
+});

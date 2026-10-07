@@ -33,7 +33,9 @@ collapses into repetition.
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)) is one call however long the workflow runs
   it — the guard has no clock, so a held Turn is never a Runaway for waiting — and its answer **resets the
   identical-call streak**: the world moved, so the same pick again is a new question. Four `run_tests` in a row, each
-  answered by a flaky suite, is a model reading answers, not a loop.
+  answered by a flaky suite, is a model reading answers, not a loop. A pick whose child replies inside the pick's own
+  send resets it the same way. A guard straight back does not: it is answered, but nothing ran and the state is where it
+  was, so the same pick four times is a Runaway.
 - **Tripping settles the Submission `failed` with `SettlementError.type: "runaway"`** and a legible message ("repeated
   an identical tool call 4 times", "exceeded 256 steps"). No fourth `SettlementOutcome`: `aborted` stays the ADR-0024
   sweep's word, and the typed error is what lets `agentRun` switch on the class without parsing prose.

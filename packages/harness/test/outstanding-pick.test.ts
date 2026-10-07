@@ -112,6 +112,17 @@ test("a pick answered on its own POST (the child settled inside the send): no po
   assert.equal(answered, 1, "the identical-call streak starts again");
 });
 
+test("a guard straight back is answered, but the Runaway guard does not hear it: nothing ran (ADR-0035)", async () => {
+  let answered = 0;
+  const { fetch } = fakeFetch((call) => {
+    if (call.url.endsWith("/surface")) return Response.json(SURFACE);
+    return Response.json({ ...outstanding, outstanding: undefined, answered: true, allowed: ["run_tests"] });
+  });
+  const read = await readMenu(opts(fetch, { onAnswered: () => answered++ }), "run-1/coder");
+  for (let n = 0; n < 4; n++) assert.match(await read!.menu[0]!.pick({}), /It moved, and nothing ran\./);
+  assert.equal(answered, 0, "the identical-call streak runs on");
+});
+
 test("the Harness claims one pick at a time, in message order: the second call of a message is refused before it leaves — `finish` included", async () => {
   let release: (() => void) | undefined;
   const { fetch, calls } = fakeFetch(async (call) => {

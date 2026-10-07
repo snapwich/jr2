@@ -233,8 +233,12 @@ function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent, cl
           // The name last: an argument called `type` cannot make this pick another event.
           const sent = await deliver(opts, instanceId, { ...((params ?? {}) as object), type: event.name }, pickSignal);
           const receipt = sent.outstanding === true ? await awaitAnswer(opts, instanceId, sent, pickSignal) : sent;
-          // Answered on its poll, or on the POST itself when the child settled inside the send.
-          if (receipt.answered === true) opts.onAnswered?.();
+          // The world moved (ADR-0035): an outstanding pick answered on its poll, or a child that
+          // replied inside the pick's own send. A guard straight back is answered too, but nothing
+          // ran and the state is where it was: the same call again is the same question.
+          if (receipt.answered === true && (sent.outstanding === true || receipt.answer !== undefined)) {
+            opts.onAnswered?.();
+          }
           return receiptProse(receipt, opts.toolName);
         } finally {
           claim.held = undefined;
