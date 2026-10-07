@@ -107,8 +107,9 @@ function heldMachine(
           },
           // A guard straight back: entered and left inside the pick's own send.
           bouncing: { always: "rest" },
-          // A mode: no invoke, at Rest there, with other Allowed picks.
-          drafting: { on: { finish: "#wf.done" } },
+          // A mode: no invoke, at Rest there, with other Allowed picks — `draft` again targets the
+          // state it is taken in, and enters nothing it leaves.
+          drafting: { on: { finish: "#wf.done", draft: "drafting" } },
           testing: { invoke: { src: "tests", onDone: "rest" } },
           asking: { invoke: { src: "gate", id: "review", input: {} }, on: { approve: "rest" } },
           consulting: {
@@ -284,7 +285,16 @@ test("a guard straight back: answered, it moved and nothing ran; a move to a mod
   const mode = rig.host.sendToAgent(rig.iid, { type: "draft" });
   assert.deepEqual(
     { moved: mode.moved, answered: mode.answered, turnComplete: mode.turnComplete, allowed: mode.allowed },
-    { moved: true, answered: undefined, turnComplete: false, allowed: ["finish"] },
+    { moved: true, answered: undefined, turnComplete: false, allowed: ["draft", "finish"] },
+  );
+  assert.equal(value(rig), JSON.stringify({ work: "drafting" }));
+
+  // A target to the state the pick is taken in: the same state value, and its target still active.
+  // It entered nothing it left, so it is no guard straight back: the plain receipt.
+  const self = rig.host.sendToAgent(rig.iid, { type: "draft" });
+  assert.deepEqual(
+    { moved: self.moved, answered: self.answered, turnComplete: self.turnComplete, allowed: self.allowed },
+    { moved: true, answered: undefined, turnComplete: false, allowed: ["draft", "finish"] },
   );
   assert.equal(value(rig), JSON.stringify({ work: "drafting" }));
 });

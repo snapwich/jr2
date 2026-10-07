@@ -79,12 +79,13 @@ single-threaded.
   nothing to poll. So is a guard straight back: a pick that enters a state and leaves it again inside its own send (an
   `always` back), with no reply, leaves the state value as it was, and is answered "it moved, and nothing ran". A pick
   that changes the state value moved to a mode, and gets the plain receipt with its Allowed picks; a pick with no target
-  went nowhere, and gets the same. A route that leaves the Agent's state ends the Turn like any other: the poll reads
-  `turnComplete`, the next state's prompt is the author's, and the answer is a `pick-answer` notice to the Agent that
-  picked: the next Turn of the conversation the picking Turn continued (`continue: true`, ADR-0062). A FRESH picking
-  Turn's conversation is never heard again, and a later continued Turn of the same slot never made the pick, so its
-  answer goes nowhere: the ledger keeps no notice for it. There is no default time bound on a held Turn; the Console
-  shows each outstanding pick "held since".
+  went nowhere, and gets the same, as does a pick whose target is the state it was taken in (it enters nothing it
+  leaves). A route that leaves the Agent's state ends the Turn like any other: the poll reads `turnComplete`, the next
+  state's prompt is the author's, and the answer is a `pick-answer` notice to the Agent that picked: the next Turn of
+  the conversation the picking Turn continued (`continue: true`, ADR-0062). A FRESH picking Turn's conversation is never
+  heard again, and a later continued Turn of the same slot never made the pick, so its answer goes nowhere: the ledger
+  keeps no notice for it. There is no default time bound on a held Turn; the Console shows each outstanding pick "held
+  since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

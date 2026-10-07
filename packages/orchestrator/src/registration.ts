@@ -24,6 +24,7 @@
 // `resolveAccepts` reads them off the invoking Machine below and a nested Machine's names are
 // never the root's problem.
 
+import { getStateNodes } from "xstate";
 import type { ActorSystem, AnyActorRef, AnyEventObject, AnyMachineSnapshot, AnyStateMachine } from "xstate";
 import { SENDER_KEY, type EventDef, type Sender } from "@jr2/agent-protocol";
 import type { AgentAdmission } from "./actor.ts";
@@ -132,18 +133,35 @@ export function wouldMove(invoker: AnyActorRef | undefined, event: AnyEventObjec
 }
 
 /**
- * Would this exact event take a transition that names a target — enter a state, even one it leaves
- * again in the same macrostep? What tells a pick that went somewhere and came straight back (an
- * `always` back to where it was) from one with no target, which went nowhere (ADR-0024). Fails
- * CLOSED: a read that cannot be made reads as no target, the plain receipt.
+ * The states this exact event's transitions name as targets, by id — empty for a pick with no
+ * target. Read before the send and checked after it with `leftAgain`: what tells a pick that entered
+ * a state and left it again inside its own send (an `always` back to where it was) from one that
+ * stayed where it went or went nowhere (ADR-0024). Fails CLOSED: a read that cannot be made reads
+ * as no target, the plain receipt.
  */
-export function wouldTarget(invoker: AnyActorRef | undefined, event: AnyEventObject): boolean {
-  if (!invoker) return false;
+export function targetsOf(invoker: AnyActorRef | undefined, event: AnyEventObject): string[] {
+  if (!invoker) return [];
   try {
     const snapshot = invoker.getSnapshot() as AnyMachineSnapshot;
     return (snapshot.machine as AnyStateMachine)
       .getTransitionData(snapshot, event)
-      .some((t) => (t.target?.length ?? 0) > 0);
+      .flatMap((t) => (t.target ?? []).map((node) => node.id));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Is some state of `targets` no longer active — entered by the send and left again inside it? A
+ * target to the state the pick was taken in (`drafting: { on: { note: "drafting" } }`) is still
+ * active, so it is not. Fails CLOSED: false, the plain receipt.
+ */
+export function leftAgain(invoker: AnyActorRef | undefined, targets: readonly string[]): boolean {
+  if (!invoker || targets.length === 0) return false;
+  try {
+    const snapshot = invoker.getSnapshot() as AnyMachineSnapshot;
+    const active = new Set(getStateNodes(snapshot.machine.root, snapshot.value).map((node) => node.id));
+    return targets.some((id) => !active.has(id));
   } catch {
     return false;
   }

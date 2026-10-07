@@ -48,7 +48,8 @@ import {
   refuseSenderField,
   UnknownAddressError,
   wouldMove,
-  wouldTarget,
+  targetsOf,
+  leftAgain,
   type Registration,
   type RetryTelemetry,
   type RunBinding,
@@ -1057,10 +1058,11 @@ export class RunHost {
       ...(invoking?.sender ? { [SENDER_KEY]: invoking.sender } : {}),
     };
     const moved = wouldMove(invoking?.invoker, probe);
-    // A pick that names a target, and the state value it leaves: after the send, the same value
-    // means it went somewhere and came straight back (ADR-0024); a new one, an in-Turn mode move.
-    const targeted = moved && wouldTarget(invoking?.invoker, probe);
-    const before = targeted ? stateValueOf(invoking?.invoker) : undefined;
+    // The states the pick names as targets, and the state value it leaves: after the send, the same
+    // value with a target no longer active means it entered a state and came straight back
+    // (ADR-0024); a new value, an in-Turn mode move.
+    const targets = moved ? targetsOf(invoking?.invoker, probe) : [];
+    const before = targets.length > 0 ? stateValueOf(invoking?.invoker) : undefined;
 
     const outer = this.sending;
     const sending: { reg: Registration; last?: PickAnswer } | undefined = invoking && { reg: invoking };
@@ -1162,8 +1164,15 @@ export class RunHost {
     }
     // It entered a state below the Agent's and came straight back inside its own send — a guard
     // back (an `always`), nothing replying: answered, "moved; nothing ran" (ADR-0024). A pick that
-    // changed the state value moved to a mode, and its receipt is the plain one below.
-    if (!turnComplete && invoking && before !== undefined && stateValueOf(invoking.invoker) === before) {
+    // changed the state value moved to a mode, and one whose target is still active (the state it
+    // was taken in) entered nothing it left: both get the plain receipt below.
+    if (
+      !turnComplete &&
+      invoking &&
+      before !== undefined &&
+      stateValueOf(invoking.invoker) === before &&
+      leftAgain(invoking.invoker, targets)
+    ) {
       return {
         delivered: true,
         event: type,
