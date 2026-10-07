@@ -143,6 +143,86 @@ test("a fromPick param that is no key still counts as read when `fill` reads it"
   assert.deepEqual(loadWarningsOf(m), []);
 });
 
+/**
+ * An Agent's state whose `send_email` pick targets `pick` (a path below `w`), where `work` is a
+ * compound state: `work` and `inner` are given as configs.
+ */
+function buildNested(pick: string, work: Record<string, unknown>) {
+  return jr2Setup({
+    types: {} as { context: { to?: string; subject?: string } },
+    events: [send, finish],
+    actors: { coder: coder(), mail },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "rest",
+        states: { rest: {}, work: work as never },
+        on: { send_email: pick, finish: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+}
+
+test("an assign on the entry of an ANCESTOR the pick enters counts as read: the pick targets it, its initial child invokes", () => {
+  const m = buildNested(".work", {
+    entry: assign({
+      to: ({ event }: { event: { to: string } }) => event.to,
+      subject: ({ event }: { event: { subject: string } }) => event.subject,
+    }),
+    initial: "run",
+    states: { run: { invoke: { src: "mail", input: { to: "fixed@x", subject: "fixed" }, onDone: "#wf.w.rest" } } },
+  });
+  assert.deepEqual(loadWarningsOf(m), []);
+});
+
+test("a pick that targets a NON-initial child of the state that invokes enters that state too: its unread params are refused", () => {
+  const work = {
+    invoke: { src: "mail", input: { to: "fixed@x", subject: "fixed" }, onDone: "rest" },
+    initial: "a",
+    states: { a: {}, inner: {} },
+  };
+  for (const pick of [".work", ".work.inner"]) {
+    assert.throws(
+      () => buildNested(pick, work),
+      (err: Error) => {
+        assert.match(err.message, /pick "send_email" enters state "wf\.w\.work" \(Effect "mail"\)/, pick);
+        assert.match(err.message, /never reads "to", "subject"/, pick);
+        return true;
+      },
+    );
+  }
+});
+
+test("a transition inside the state that invokes does not enter it: the Effect is not started by that pick", () => {
+  // `send_email` moves `work.a` to `work.inner`; `work` stays active and its Effect keeps running.
+  const m = jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
+    id: "wf",
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "work",
+        states: {
+          work: {
+            invoke: { src: "mail", input: { to: "fixed@x", subject: "fixed" }, onDone: "rest" },
+            initial: "a",
+            states: { a: { on: { send_email: "inner" } }, inner: {} },
+          },
+          rest: {},
+        },
+        on: { finish: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+  assert.deepEqual(loadWarningsOf(m), []);
+});
+
 test("a fromPick of ANOTHER pick is refused: the state is entered on an event that does not carry its params", () => {
   assert.throws(() => build(fromPick(finish)), /reads the params of pick "finish" but is entered on "send_email"/);
 });

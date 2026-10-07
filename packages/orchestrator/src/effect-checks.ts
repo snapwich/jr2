@@ -4,7 +4,8 @@
 //     Effect is read by that invoke's input — `fromPick` for each param that is a key of the Effect's
 //     input (a command's argv slots) or that its `fill` reads, a plain mapper probed with a recording
 //     event — or read by the entering transition's guard, or stored by an `assign` on the entering
-//     transition or the state's entry. Else the Agent supplies it and nothing uses it: refused. A
+//     transition or on the entry of any state it enters (its targets, their ancestors below the
+//     transition's domain, their initial descendants — xstate's entry set). Else the Agent supplies it and nothing uses it: refused. A
 //     `fill` that sets a key that is also a param drops the Agent's value: refused. A `fromPick` of
 //     another pick than the one that enters the state reads params that are not there: refused.
 //     Code the probe cannot or does not run — a mapper or guard that throws, any action other than
@@ -45,24 +46,24 @@ export function effectChecks(
   collect(machine.root);
   const logicOf = (src: unknown): unknown => (typeof src === "string" ? actors[src] : src);
 
-  // Who enters each state, by event, with the entering transitions' guards and actions. A target
-  // that is a compound or parallel state also enters its initial descendants.
-  const enteredBy = (t: Node): Node[] => {
-    if (t.type === "parallel") return [t, ...Object.values(t.states).flatMap(enteredBy)];
-    if (t.type === "compound") return [t, ...t.initial.target.flatMap(enteredBy)];
-    return [t];
-  };
-  type Entering = { guards: unknown[]; actions: unknown[] };
+  // Who enters each state, by event: the entering transitions' guards and actions, and the entry
+  // actions of every state those transitions enter. A transition enters what xstate enters (its
+  // entry set), so a pick that targets a compound state enters the child that invokes, and a pick
+  // that targets a child enters the ancestor that invokes.
+  type Entering = { guards: unknown[]; actions: unknown[]; entries: unknown[] };
   const entering = new Map<Node, Map<string, Entering>>();
   for (const n of all) {
     for (const [event, candidates] of n.transitions) {
       for (const t of candidates) {
-        for (const target of (t.target ?? []).flatMap(enteredBy)) {
+        const entered = entrySetOf(t, machine.root);
+        const entries = [...entered].flatMap((s) => s.entry);
+        for (const target of entered) {
           const byEvent = entering.get(target) ?? new Map<string, Entering>();
-          const seen = byEvent.get(event) ?? { guards: [], actions: [] };
+          const seen = byEvent.get(event) ?? { guards: [], actions: [], entries: [] };
           byEvent.set(event, {
             guards: t.guard === undefined ? seen.guards : [...seen.guards, t.guard],
             actions: [...seen.actions, ...t.actions],
+            entries: [...new Set([...seen.entries, ...entries])],
           });
           entering.set(target, byEvent);
         }
@@ -79,7 +80,7 @@ export function effectChecks(
       const keys = inputKeysOf(logic.effect);
       const slot = typeof inv.src === "string" ? inv.src : inv.id;
       const mapper = configs[i]?.input;
-      for (const [event, { guards, actions }] of entering.get(n) ?? []) {
+      for (const [event, { guards, actions, entries }] of entering.get(n) ?? []) {
         if (isPickMapper(mapper) && mapper.pick.name !== event) {
           errors.push(
             `state "${n.id}" (Effect "${slot}") reads the params of pick "${mapper.pick.name}" but is entered on ` +
@@ -129,8 +130,9 @@ export function effectChecks(
             warnings.push(`${where}: could not probe the input mapper (${messageOf(err)}); its params are unchecked`);
           }
         }
-        // A param the entering transition's guard READS, or an assign on it or the state's entry
-        // STORES, reaches the Machine too. A guard and an assign are pure by contract: both are run.
+        // A param the entering transition's guard READS, or an assign on it or on the entry of a
+        // state it enters STORES, reaches the Machine too. A guard and an assign are pure by
+        // contract: both are run.
         for (const guard of guards) {
           try {
             probeGuard(guard, recordingEvent(event, params, read), namedGuards);
@@ -140,7 +142,7 @@ export function effectChecks(
           }
         }
         const unrun: string[] = [];
-        for (const action of [...actions, ...n.entry]) {
+        for (const action of [...actions, ...entries]) {
           if (!isAssign(action)) {
             unrun.push(actionName(action));
             continue;
@@ -206,6 +208,65 @@ export function effectChecks(
     }
   }
   return { errors, warnings };
+}
+
+type Transition = { source: Node; target?: readonly Node[] | undefined; reenter: boolean };
+
+const isDescendant = (s: Node, of: Node): boolean => {
+  for (let p = s.parent; p; p = p.parent) if (p === of) return true;
+  return false;
+};
+const properAncestors = (s: Node, upTo?: Node): Node[] => {
+  const out: Node[] = [];
+  for (let p = s.parent; p && p !== upTo; p = p.parent) out.push(p);
+  return out;
+};
+
+/**
+ * The states a transition enters: xstate's own entry set (`computeEntrySet`), less history. A
+ * target is entered unless it is the source of a transition that does not reenter; below each
+ * entered state, its initial child (compound) or every region (parallel); above each target, its
+ * ancestors below the transition's domain, with every other region of a parallel one. A history
+ * target enters what was last active, which the walk cannot know: it is skipped.
+ */
+function entrySetOf(t: Transition, root: Node): Set<Node> {
+  const targets = (t.target ?? []).filter((s) => s.type !== "history");
+  const enter = new Set<Node>();
+  const domain = ((): Node | undefined => {
+    if (!t.reenter && targets.every((s) => s === t.source || isDescendant(s, t.source))) return t.source;
+    const [head, ...tail] = [...targets, t.source];
+    for (const anc of properAncestors(head!)) if (tail.every((s) => isDescendant(s, anc))) return anc;
+    return t.reenter ? undefined : root;
+  })();
+  const regions = (p: Node): void => {
+    for (const region of Object.values(p.states)) {
+      if (region.type === "history" || [...enter].some((s) => isDescendant(s, region))) continue;
+      enter.add(region);
+      descend(region);
+    }
+  };
+  const descend = (s: Node): void => {
+    if (s.type === "compound") {
+      const initial = s.initial.target[0];
+      if (!initial || initial.type === "history") return;
+      enter.add(initial);
+      descend(initial);
+    } else if (s.type === "parallel") regions(s);
+  };
+  for (const s of targets) {
+    if (s !== t.source || t.source !== domain || t.reenter) enter.add(s);
+    descend(s);
+  }
+  const within = !t.source.parent && t.reenter ? undefined : domain;
+  for (const s of targets) {
+    const ancestors = properAncestors(s, domain);
+    if (domain?.type === "parallel") ancestors.push(domain);
+    for (const anc of ancestors) {
+      if (!within || isDescendant(anc, within)) enter.add(anc);
+      if (anc.type === "parallel") regions(anc);
+    }
+  }
+  return enter;
 }
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));

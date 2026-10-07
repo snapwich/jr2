@@ -140,16 +140,19 @@ that nothing enters: what it invokes never runs (a mode nothing enters is only t
 state that invokes an Effect, every param of the pick must be read — by that invoke's input (`fromPick` reads each param
 that is a key of the Effect's input, a command's argv slots, and each one its `fill` reads; a plain mapper is probed
 with a recording event), by the entering transition's guard (inline, named, or inside `and`/`or`/`not`), or by an
-`assign` on the entering transition or the state's entry — else the Agent supplies it and nothing uses it: refused. A
-guard and an assign are pure by contract, so the probe runs them; it runs no other action. TypeScript does not catch a
-`fromPick` param that is no key of the input: it accepts an extra key on a spread. It refuses a `fill` that sets a key
-that is also a param (the Machine's value would drop the Agent's), and a `fromPick` of a pick other than the event that
-enters the state. Code the probe cannot or does not run may read a param, so it gives a warning, never a refusal: a
-mapper, guard or assign that throws in the probe, and — where a param is left unread — any other action on the entering
-transition or the state's entry, named in the warning. Its params are unchecked. It warns where an Agent's state answers
-on a mode's entry (`answer`) and an Effect below it has no `onDone`: the Effect settles in place, that mode is not
-entered again, and the Agent reads the Effect's output, not the answer. A pick that enters no Effect is not checked for
-its params.
+`assign` on the entering transition or on the entry of a state it enters — else the Agent supplies it and nothing uses
+it: refused. A pick enters what xstate enters: its target, the target's ancestors below the transition's domain, and
+their initial descendants. So a pick that targets a compound state enters the child that invokes, a pick that targets a
+child enters the ancestor that invokes, and a transition inside the invoking state does not enter it. A guard and an
+assign are pure by contract, so the probe runs them; it runs no other action. TypeScript does not catch a `fromPick`
+param that is no key of the input: it accepts an extra key on a spread. It refuses a `fill` that sets a key that is also
+a param (the Machine's value would drop the Agent's), and a `fromPick` of a pick other than the event that enters the
+state. Code the probe cannot or does not run may read a param, so it gives a warning, never a refusal: a mapper, guard
+or assign that throws in the probe, and — where a param is left unread — any other action on the entering transition or
+on the entry of a state it enters, named in the warning. Its params are unchecked. It warns where an Agent's state
+answers on a mode's entry (`answer`) and an Effect below it has no `onDone`: the Effect settles in place, that mode is
+not entered again, and the Agent reads the Effect's output, not the answer. A pick that enters no Effect is not checked
+for its params.
 
 > > > > > > > f64828a (feat(orchestrator): load checks on Effects — a pick param nothing reads, a fill that overwrites
 > > > > > > > one, a child nothing enters are refused; the narrow no-onDone warning (ADR-0015, ADR-0067))
