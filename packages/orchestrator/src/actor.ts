@@ -799,9 +799,12 @@ export function agentActorWith(
     // The Allowed picks NOW (ADR-0029), read as the surface reads them: one list for the surface,
     // the receipts, the nudge and the wake.
     const allowedNow = (): string[] => allowedPicks({ defs, menu, invoker: self._parent, ...seat });
-    // Resolves with the Allowed picks the first time they are not empty — read on every snapshot of
-    // the invoking Machine, so a Gate's answer, an outside event, a settled child or a timer each
-    // count — or with `[]` once this actor stops. Its own disposer, so `abandon` ends the wait.
+    // Resolves with the Allowed picks the first time they are not empty — read a microtask after
+    // every snapshot of the invoking Machine, so a Gate's answer, an outside event, a settled child
+    // or a timer each count — or with `[]` once this actor stops. Never inside the subscriber: a
+    // snapshot between macrosteps (a state that sends to itself) is not Rest until the mailbox
+    // drains (rest.ts), and a wake with an empty list spends the nudge's budget for nothing. Its own
+    // disposer, so `abandon` ends the wait.
     const picksOpen = (): Promise<string[]> =>
       new Promise((resolve) => {
         let done = false;
@@ -823,7 +826,7 @@ export function agentActorWith(
         disposers.push(dispose);
         check();
         if (done) return;
-        sub = self._parent?.subscribe({ next: check, error: dispose, complete: dispose });
+        sub = self._parent?.subscribe({ next: () => queueMicrotask(check), error: dispose, complete: dispose });
         if (sub === undefined) finish([]);
       });
 

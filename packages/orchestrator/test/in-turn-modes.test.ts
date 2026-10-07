@@ -9,7 +9,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createActor, fromPromise, type AnyActorRef } from "xstate";
+import { createActor, fromPromise, sendTo, type AnyActorRef } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -624,6 +624,62 @@ test("no wake after the Turn ended: a Gate's answer that leaves the Agent's stat
   await waitFor(() => host.status(runId) === undefined);
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(client.admits.length, 1, "the Turn is over: no wake");
+});
+
+test("no wake from a snapshot between macrosteps: Rest is read after the mailbox drains, so a state that sends to itself into busy work wakes nobody (ADR-0016, ADR-0024)", async () => {
+  // `booting` runs work; when it settles, `mid` sends `go` to the Machine itself (the mailbox), which
+  // moves on into `busy2`, more work. The snapshot with `mid` active is not Rest: its mailbox holds `go`.
+  const go = defineEvent({ name: "go", audience: "external", input: z.object({}) });
+  const clients = new Map<string, MockFlueClient>();
+  const tests = controllableTests();
+  const never = fromPromise<string>(() => new Promise<string>(() => {}));
+  const machineWith = (coder: ReturnType<typeof agentActorWith>) =>
+    jr2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [go, submit],
+      actors: { coder, tests: tests.logic, never },
+    }).createMachine({
+      id: "wf",
+      context: {},
+      initial: "ticket",
+      states: {
+        ticket: {
+          invoke: { src: "coder", input: { prompt: "go", endpoint: "http://harness.invalid" } },
+          on: { submit: "#wf.done", "agent.fault": "#wf.faulted" },
+          initial: "booting",
+          states: {
+            booting: { invoke: { src: "tests", onDone: "mid" } },
+            mid: { entry: sendTo(({ self }: { self: AnyActorRef }) => self, { type: "go" }), on: { go: "busy2" } },
+            busy2: { invoke: { src: "never" } },
+          },
+        },
+        done: { type: "final" },
+        faulted: { type: "final" },
+      },
+    });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "self-send",
+    machine: machineWith(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+    provide: ({ instanceId }) => {
+      const client = new MockFlueClient();
+      clients.set(instanceId, client);
+      return { actors: { coder: agentActorWith(() => client, coderDefinition), tests: tests.logic, never } };
+    },
+  });
+  const { runId, instanceId } = await host.start("self-send");
+  const client = clients.get(instanceId)!;
+  const iid = await admittedIid(client);
+  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "booting: nothing to pick");
+  client.complete(); // correct: nothing to pick, so it stops
+  await new Promise((r) => setTimeout(r, 30));
+
+  tests.settle("ok");
+  await waitFor(() => JSON.stringify(host.status(runId)?.value) === JSON.stringify({ ticket: "busy2" }));
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(host.agentSurface(iid)?.allowed, [], "busy2: nothing to pick");
+  assert.equal(client.admits.length, 1, "the list never opened at Rest: nobody is asked");
+  assert.equal(host.status(runId)?.status, "active", "no fault");
 });
 
 test("a pick on the Menu that ANOTHER state of the Agent handles: answered with the correction receipt, never delivered to the Machine (ADR-0029) — and refused while a nested Agent runs below (ADR-0024)", async () => {

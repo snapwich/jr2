@@ -61,7 +61,8 @@ later adds the third: runaway):
     pick is a Machine-level re-prompt" into the actor.
   - **The wake.** The Submission settled with none left: the model stopped correctly, and the Turn waits on a Gate, a
     child's invoke or a timer — the Allowed picks are empty while the Agent's state is not at Rest (ADR-0024). The actor
-    watches the invoking Machine and admits the same nudge the first time its Allowed picks are not empty. The watch
+    watches the invoking Machine and admits the same nudge the first time its Allowed picks are not empty, read after
+    the mailbox drains like Rest itself, so a state that sends to itself on its way to more work wakes nobody. The watch
     ends with the state, so a Turn that ended is never woken, and a Turn that was never meant to pick waits until its
     state exits.
 
