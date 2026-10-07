@@ -102,7 +102,8 @@ export type PickAnswer =
 /**
  * A pick's answer that did not reach the pick's call (ADR-0024): `cut` — the Harness restarted while
  * the workflow ran it, and jr2 re-admits the Agent on the same conversation with this notice; or the
- * route left the Agent's state, and the next continued Turn hears it. Conversation scope.
+ * route left the Agent's state, and the next Turn of the conversation the picking Turn continued
+ * hears it. Conversation scope.
  */
 export type PickAnswerNotice = {
   kind: "pick-answer";

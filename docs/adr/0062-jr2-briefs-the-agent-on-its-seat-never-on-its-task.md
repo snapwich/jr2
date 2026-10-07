@@ -43,7 +43,8 @@ whose processes are gone, with no way to know why.
   - **Conversation scope** ("this conversation is new; earlier context is gone") goes to that Agent's next Turn. So does
     a pick's answer that never reached its call
     ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)): the route left the Agent's state, and
-    the next continued Turn hears "your pick ran to its end after your last turn was over", with the answer.
+    the next Turn of the conversation the picking Turn continued hears "your pick ran to its end after your last turn
+    was over", with the answer. A fresh picking Turn has no such conversation, and its answer is no notice.
   - **Workspace scope** ("the Sandbox's processes were killed at its memory limit during `coder`'s Turn; `/dev/shm` was
     cleared") goes to the next Turn of any Agent in that Workspace. A Menu-only Agent outside a Workspace receives
     conversation notices only.

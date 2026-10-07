@@ -602,6 +602,9 @@ export function agentActorWith(
     // Who this Turn's picks are from (ADR-0015): the slot, written on every event it delivers; and
     // the invoke id that finds its state in the Machine. Both static, so a restore recomputes them.
     const seat = { sender: { party: "agent", id: input.agentName } as const, invokeId: self.id };
+    // This Agent's continued conversation in this Machine (ADR-0057) — the base id the epoch ledger
+    // burns. This Turn is PART of it only when it continues it: a fresh Turn is new by definition.
+    const conversation = continuedIid(self._parent, binding.runId, input.agentName);
     // The iids whose surface the Harness has read (see `carried` below).
     const served = new Set<string>();
     const registerSurface = (iid: string) =>
@@ -637,6 +640,9 @@ export function agentActorWith(
           // walk above uses; structural, so a sibling's snapshot is unreachable.
           invoker: self._parent,
           ...seat,
+          // Where a pick's answer goes when its route leaves the Agent's state (ADR-0024): the
+          // conversation this Turn continues, and none for a fresh Turn — no later Turn heard it.
+          ...(input.continuation ? { conversation } : {}),
         }),
       );
     registerSurface(currentIid);
@@ -701,7 +707,6 @@ export function agentActorWith(
     // epoch ledger burns — only when it CONTINUES one: a fresh Turn is new by definition, and the
     // notice waits for the `continue` whose context is gone. Its Workspace's only when it works in
     // one: a Menu-only Agent hears conversation notices alone.
-    const conversation = continuedIid(self._parent, binding.runId, input.agentName);
     const noticeWorkspace = workspace !== "none" ? sandbox : undefined;
     const noticeScope: NoticeScope = {
       ...(input.continuation ? { conversation } : {}),

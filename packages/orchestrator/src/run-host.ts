@@ -40,7 +40,6 @@ import {
   agentAddress,
   allowedPicks,
   bindRun,
-  continuedIid,
   EventValidationError,
   gateAddress,
   NotTakenError,
@@ -1086,10 +1085,10 @@ export class RunHost {
     // A reply from below the Agent's state inside the pick's own send (ADR-0024): a child that
     // settled in the same macrostep. It is the answer's default as any later reply would be.
     const replied = moved ? sending?.last : undefined;
-    const conversation =
-      invoking?.sender?.party === "agent"
-        ? continuedIid(invoking.invoker, invoking.runId, invoking.sender.id)
-        : undefined;
+    // Where the answer goes if the route leaves the Agent's state: the conversation the picking
+    // Turn continues. A fresh Turn has none — its conversation is never heard again, and a later
+    // continued Turn of the same slot never made this pick.
+    const conversation = invoking?.conversation;
     // The pick moved the workflow to work inside the Agent's state (ADR-0024): it is OUTSTANDING,
     // answered once the workflow is back at Rest there — read after the mailbox drains, by the
     // persist that follows every transition (`settleHolds`). The POST answers now, with the delivery
@@ -1125,7 +1124,8 @@ export class RunHost {
     }
     // The child replied and the route ran inside the send: the pick is answered on its own POST,
     // as its poll would have answered it — back at Rest with the Allowed picks read after the
-    // route, or out of the Agent's state with the answer as a notice to the next continued Turn.
+    // route, or out of the Agent's state with the answer as a notice to the conversation the picking
+    // Turn continued (none for a fresh Turn).
     if (replied !== undefined && invoking) {
       if (turnComplete && conversation !== undefined && run) {
         run.notices.raise(
@@ -1165,7 +1165,8 @@ export class RunHost {
    *   - Back at Rest in it: answered with the last reply since the pick and the Allowed picks read
    *     AFTER the route — the guards read the context the route wrote (ADR-0029).
    *   - It left the Agent's state (the registration is gone, or is another invocation's): the Turn
-   *     is over, and the answer goes as a notice to the Agent's next continued Turn (ADR-0062).
+   *     is over, and the answer goes as a notice to the next Turn of the conversation the picking
+   *     Turn continued; a fresh picking Turn's answer goes nowhere (ADR-0062).
    */
   private settleHolds(run: LiveRun): void {
     for (const hold of run.holds.values()) {

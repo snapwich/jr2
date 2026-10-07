@@ -77,8 +77,11 @@ single-threaded.
   the pick's own send — a decision Machine that is final as it starts — replies before the `POST` answers: when that
   reply leaves the workflow at Rest, or out of the Agent's state, the `POST` itself is the answer, with `answered` and
   nothing to poll. A route that leaves the Agent's state ends the Turn like any other: the poll reads `turnComplete`,
-  the next state's prompt is the author's, and the answer is a `pick-answer` notice to the Agent's next continued Turn
-  (ADR-0062). There is no default time bound on a held Turn; the Console shows each outstanding pick "held since".
+  the next state's prompt is the author's, and the answer is a `pick-answer` notice to the Agent that picked: the next
+  Turn of the conversation the picking Turn continued (`continue: true`, ADR-0062). A FRESH picking Turn's conversation
+  is never heard again, and a later continued Turn of the same slot never made the pick, so its answer goes nowhere: the
+  ledger keeps no notice for it. There is no default time bound on a held Turn; the Console shows each outstanding pick
+  "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

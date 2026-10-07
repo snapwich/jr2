@@ -39,8 +39,8 @@ export type Hold = {
   /** The invoke id of the Agent's state when the pick was made: a re-registration of the same
    * address by another state is another Turn. */
   invokeId?: string;
-  /** The Agent's continued conversation (ADR-0057): where a route out of its state leaves the
-   * answer as a notice for the next continued Turn. */
+  /** The continued conversation (ADR-0057) the picking Turn is part of: where a route out of its
+   * state leaves the answer as a notice for its next Turn. Absent for a fresh Turn: no notice. */
   conversation?: string;
   /** The last reply since the pick: the answer's default. */
   last?: PickAnswer;

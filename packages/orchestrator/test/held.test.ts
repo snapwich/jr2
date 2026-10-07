@@ -319,6 +319,69 @@ test("a route that leaves the Agent's state: the Turn is over, and the answer go
   ]);
 });
 
+test("a FRESH picking Turn whose route leaves: no notice — a later continued Turn of the same slot never made the pick", async () => {
+  const tests = controllable();
+  const coders: MockFlueClient[] = [];
+  const endpoint = "http://harness.invalid";
+  const machine = (coder: ReturnType<typeof agentActorWith>) =>
+    jr2Setup({
+      types: {} as { context: Record<string, never> },
+      events: [ship, settle, finish],
+      actors: { coder, tests: tests.logic, decider },
+    }).createMachine({
+      id: "wf",
+      context: {},
+      initial: "work",
+      states: {
+        work: {
+          // No `continue`: this Turn's conversation is its own, and ends with it.
+          invoke: { src: "coder", input: { prompt: "Fix the ticket.", endpoint, sandbox: "ws-1" } },
+          initial: "rest",
+          states: {
+            rest: { on: { ship: "shipping", settle: "settling" } },
+            shipping: { invoke: { src: "tests", onDone: "#wf.next" } },
+            settling: { invoke: { src: "decider", onDone: "#wf.next" } },
+          },
+        },
+        next: {
+          invoke: { src: "coder", input: { prompt: "Carry on.", endpoint, continue: true } },
+          on: { finish: "#wf.done" },
+        },
+        done: { type: "final" },
+      },
+    });
+  const host = new RunHost({ store: await mkStore() });
+  host.register({
+    name: "fresh",
+    machine: machine(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+    provide: () => {
+      const coder = new MockFlueClient();
+      coders.push(coder);
+      return { actors: { coder: agentActorWith(() => coder, coderDefinition), tests: tests.logic } };
+    },
+  });
+
+  // Held, then answered out of the Agent's state.
+  await host.start("fresh");
+  await waitFor(() => coders[0]!.admits.length === 1);
+  const shipping = host.sendToAgent(coders[0]!.admits[0]!.instanceId, { type: "ship" });
+  assert.equal(shipping.outstanding, true);
+  const polled = host.awaitDelivery(coders[0]!.admits[0]!.instanceId, shipping.deliveryId);
+  tests.settle({ pushed: "abc123" });
+  assert.equal((await polled)?.turnComplete, true);
+  await waitFor(() => coders[0]!.admits.length === 2);
+  assert.equal(coders[0]!.admits[1]!.prompt, "Carry on.");
+  assert.deepEqual(coders[0]!.notices[1], [], "the continued Turn hears no pick it never made");
+
+  // Answered inside the pick's own send, out of the Agent's state.
+  await host.start("fresh");
+  await waitFor(() => coders[1]!.admits.length === 1);
+  const settled = host.sendToAgent(coders[1]!.admits[0]!.instanceId, { type: "settle" });
+  assert.equal(settled.turnComplete, true);
+  await waitFor(() => coders[1]!.admits.length === 2);
+  assert.deepEqual(coders[1]!.notices[1], [], "nor one answered in the pick's own send");
+});
+
 test("an Orchestrator restart during a hold: the restored host refuses from the Machine, and answers the same poll", async () => {
   const rig = await started();
   const receipt = rig.host.sendToAgent(rig.iid, { type: "ask" });

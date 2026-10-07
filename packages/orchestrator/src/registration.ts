@@ -97,6 +97,13 @@ export type Registration = {
   /** The invoke id of the actor that registered: what finds its state — its seat — in the
    * Machine, for the party questions (`party.ts`). */
   invokeId?: string;
+  /**
+   * An Agent's: the continued conversation ({@link continuedIid}) this Turn is part of — set only
+   * when the Turn continues one (`continue: true`). A pick whose route leaves the Agent's state is
+   * answered by a notice to it (ADR-0024); a fresh Turn's conversation is never heard again, so its
+   * answer has nowhere to go.
+   */
+  conversation?: string;
 };
 
 /**
