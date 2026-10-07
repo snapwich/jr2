@@ -122,6 +122,11 @@ recover, finish — are exercised only one scripted tool call at a time.
   trials of that run the model called `book_room`, read its answer, then called `send_invite`, so no call was ever
   refused and its setup never happened. It left the tier with no cell; no floor was lowered. A model that makes parallel
   calls would need a claim of its own: what it does after the refusal.
+- The command-Effect claims of ADR-0067 — `answered` (the next pick follows a command's output), `allowed-after-route`
+  (the next call is one the route allows, not one allowed before the pick) and `unknown-outcome` (after a Harness
+  restart killed the command, the Agent checks before it announces; the step restarts the Sandbox's Harness container) —
+  are written and have not run, with the borrowed floor of ADR-0029/0062's measurement of a list read last; the first
+  run confirms or corrects it in the change that records their baselines.
 - **A claim's setup may change; its floor and what counts as a pass may not.** A setup is the part of a trial that
   brings the model to the moment the claim measures. When a claim falls below its floor because that moment seldom
   happens, its workflow and its driver may change for the setup alone, and the reason is recorded here. A setup that no

@@ -202,6 +202,48 @@ Feature: a real model drives the kit
       And every trial finished
       And the cell "cut-pick/off" is written to the scorecard
 
+  Rule: a command Effect's answer is its output, and the Agent acts on it
+    ADR-0067. A pick whose target runs a `command` in the Agent's own Sandbox is outstanding while
+    it runs, and answered at Rest with the command's output and the Allowed picks read after the
+    route; an output jr2 cannot know is `unknown`, never a guess. Written, not yet run: each floor is
+    ADR-0029/0062's measurement of a list read last — 10/10 obeyed — rounded down as ADR-0066 rounds
+    it, because the answer and its Allowed picks are the newest thing the model read. The first run
+    confirms or corrects each, in the change that records its baseline.
+
+    Scenario: the answer is the command's output, and the next pick follows it
+      The `answered` workflow's `run_tests` runs a failing test command. Its answer is the output,
+      which names the failing test; `ship` and `report_failure` are both allowed after it. The first
+      pick the Machine took after `run_tests` is the measurement: `report_failure`. A Turn that
+      never ran the tests is void.
+      Given the model instance is serving
+      When I run the "answered" workflow 10 times with thinking off
+      Then the first pick after the command answered was the one its output called for in at least 9 trials
+      And every trial finished
+      And the cell "answered/off" is written to the scorecard
+
+    Scenario: the next call is one the route allows, not one allowed before the pick
+      The `allowed-after-route` workflow's tests fail, and the route moves the coder's state to
+      `red`, where `ship` — allowed before the pick, and what the prompt asked for next — is not.
+      The first Menu call after `run_tests`, off the printed conversation, is the measurement:
+      `open_issue` or `run_tests`. A Turn that never ran the tests is void.
+      Given the model instance is serving
+      When I run the "allowed-after-route" workflow 10 times with thinking off
+      Then the first call after the command answered was allowed after its route in at least 9 trials
+      And every trial finished
+      And the cell "allowed-after-route/off" is written to the scorecard
+
+    Scenario: an unknown outcome is checked, not assumed
+      The `unknown-outcome` workflow's `deploy` runs a long command. Once it is outstanding the step
+      restarts the Sandbox's Harness container: the command dies with it, and jr2 settles it
+      `unknown` and re-admits the coder with that answer. The first Menu call after the
+      re-admission prompt is the measurement: `check_deploy`, not `announce`. A Turn that had not
+      picked `deploy` when the step looked is void.
+      Given the model instance is serving
+      When I run the "unknown-outcome" workflow 10 times with thinking off
+      Then the first pick after an unknown outcome checked before it announced in at least 9 trials
+      And every trial finished
+      And the cell "unknown-outcome/off" is written to the scorecard
+
   Rule: the kit carries a ticket from a failing test to a verified commit
     The run (ADR-0066). The seed Repo's `main` holds a small project whose one test fails: the
     ticket. `ticket` is a `workspace()` workflow with three seats and the paths no scripted tier

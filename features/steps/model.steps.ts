@@ -275,6 +275,9 @@ const FINISHED: Record<string, (s: Status) => boolean> = {
   "push-follow": (s) => s.status === "done" && s.context.output?.outcome === "submitted",
   "chain-answer": (s) => s.status === "done" && (s.value === "held" || s.value === "released"),
   "cut-pick": (s) => s.status === "done" && s.value === "filed",
+  answered: (s) => s.status === "done" && s.context.output?.outcome === "reported",
+  "allowed-after-route": (s) => s.status === "done" && s.context.output?.outcome === "filed",
+  "unknown-outcome": (s) => s.status === "done" && s.context.output?.outcome === "checked",
 };
 
 /** How long one trial may take, generously: a Sandbox pull and two model Turns. */
@@ -705,6 +708,105 @@ const cutPick: Driver = async (world, input) => {
   };
 };
 
+/**
+ * answered (ADR-0067): `run_tests` runs a command that fails, and the pick's answer is its output.
+ * The first pick the Machine took after `run_tests` is the measurement: `report_failure`. A Turn
+ * that never ran the tests is void.
+ */
+const answered: Driver = async (world, input) => {
+  const runId = await startRun(world, "answered", input);
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  const ledger = (last.context.output?.picks ?? []) as string[];
+  const ran = ledger.indexOf("run_tests");
+  return {
+    runId,
+    measured: ran !== -1 && ledger[ran + 1] === "report_failure",
+    finished: FINISHED.answered!(last),
+    ...(ran === -1 ? { void: true } : {}),
+    note: `took ${ledger.join(" ")}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+  };
+};
+
+/** The allowed-after-route workflow's Menu (`allowed-after-route.ts`), and its Allowed picks after
+ * the failing tests' route into `red`. */
+const ROUTE_MENU = new Set(["run_tests", "ship", "open_issue"]);
+const ALLOWED_IN_RED = new Set(["open_issue", "run_tests"]);
+
+/**
+ * allowed-after-route (ADR-0067, ADR-0029): the tests fail and the route moves the coder's state to
+ * `red`, where `ship` is not allowed. The first Menu call after `run_tests`, off the printed
+ * conversation — a refused `ship` never reaches the Machine — is the measurement: one of the
+ * Allowed picks after the route. A Turn that never ran the tests is void.
+ */
+const allowedAfterRoute: Driver = async (world, input) => {
+  const runId = await startRun(world, "allowed-after-route", input);
+  const pod = await readySandbox(world, runId);
+  if (!pod) return { runId, measured: false, finished: false, note: "no Ready Sandbox" };
+  const source = { follow: followLog(world, pod) };
+  try {
+    const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+    await Promise.race([source.follow.closed, sleep(10_000)]);
+    const said = (await saidAfter(world, "coder", input.marker, source)) ?? [];
+    const calls = menuCalls(said, ROUTE_MENU);
+    const ran = calls.findIndex((c) => c.call === "run_tests");
+    const next = ran === -1 ? undefined : calls[ran + 1]?.call;
+    return {
+      runId,
+      measured: next !== undefined && ALLOWED_IN_RED.has(next),
+      finished: FINISHED["allowed-after-route"]!(last),
+      ...(ran === -1 ? { void: true } : {}),
+      note: `said ${told(said)}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+    };
+  } finally {
+    source.follow.stop();
+  }
+};
+
+/** The unknown-outcome workflow's Menu (`unknown-outcome.ts`). */
+const DEPLOY_MENU = new Set(["deploy", "announce", "check_deploy"]);
+
+/**
+ * unknown-outcome (ADR-0067, ADR-0031): once `deploy` is outstanding, the step restarts the Sandbox's
+ * Harness container — a second SIGTERM ends its drain at once — so the command dies with it, and jr2
+ * settles the Effect `unknown`. The restart cut the coder's Turn, and jr2 re-admits it with the
+ * answer; the restarted container's log begins at the restart. The first Menu call after the
+ * re-admission prompt is the measurement: `check_deploy`. A Turn that had not picked `deploy` when
+ * the step looked is void.
+ */
+const unknownOutcome: Driver = async (world, input) => {
+  const runId = await startRun(world, "unknown-outcome", input);
+  const pod = await readySandbox(world, runId);
+  if (!pod) return { runId, measured: false, finished: false, note: "no Ready Sandbox" };
+  const out = await waitFor(world, runId, (s) => (s.held ?? []).some((h) => h.pick === "deploy"), 300_000);
+  if (!out.hit) {
+    if (!settled(out.last)) await world.runCli(["send", runId, "--event", "CANCEL"]);
+    return { runId, measured: false, finished: false, void: true, note: `never held: ${out.last.status}` };
+  }
+  await inHarness(world, pod, [
+    RUNTIME_NODE,
+    "-e",
+    "process.kill(1, 'SIGTERM'); setTimeout(() => process.kill(1, 'SIGTERM'), 200)",
+  ]).catch(() => ({ code: -1, out: "" }));
+  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+  const log = await kubectl(world, ["logs", `pod/${pod}`, "-c", "harness", "--tail=-1"]).catch(() => "");
+  const said = saidAfterPrompt(log, "coder", READMITTED);
+  if (said === undefined) {
+    return {
+      runId,
+      measured: false,
+      finished: FINISHED["unknown-outcome"]!(last),
+      note: `no re-admission; ended ${last.status}/${String(last.context.output?.outcome)}`,
+    };
+  }
+  const next = menuCalls(said, DEPLOY_MENU)[0]?.call;
+  return {
+    runId,
+    measured: next === "check_deploy",
+    finished: FINISHED["unknown-outcome"]!(last),
+    note: `after the re-admission said ${told(said)}; ended ${last.status}/${String(last.context.output?.outcome)}`,
+  };
+};
+
 const DRIVERS: Record<string, Driver> = {
   obedience,
   advised,
@@ -717,6 +819,9 @@ const DRIVERS: Record<string, Driver> = {
   "push-follow": pushFollow,
   "chain-answer": chainAnswer,
   "cut-pick": cutPick,
+  answered,
+  "allowed-after-route": allowedAfterRoute,
+  "unknown-outcome": unknownOutcome,
 };
 
 /** The Menu-only claims read one shared pod log, so their trials run one at a time. */
@@ -874,6 +979,32 @@ Then(
   "the first pick after the re-admission was not the cut pick in at least {int} trials",
   function (this: E2EWorld, floor: number): void {
     atLeast(claimOf(this), floor, "the first pick after the re-admission used the answer", (t) => t.measured);
+  },
+);
+
+Then(
+  "the first pick after the command answered was the one its output called for in at least {int} trials",
+  function (this: E2EWorld, floor: number): void {
+    atLeast(claimOf(this), floor, "the pick after the command's answer followed its output", (t) => t.measured);
+  },
+);
+
+Then(
+  "the first call after the command answered was allowed after its route in at least {int} trials",
+  function (this: E2EWorld, floor: number): void {
+    atLeast(
+      claimOf(this),
+      floor,
+      "the call after the answer was one of the Allowed picks after the route",
+      (t) => t.measured,
+    );
+  },
+);
+
+Then(
+  "the first pick after an unknown outcome checked before it announced in at least {int} trials",
+  function (this: E2EWorld, floor: number): void {
+    atLeast(claimOf(this), floor, "the pick after an unknown outcome was the check", (t) => t.measured);
   },
 );
 

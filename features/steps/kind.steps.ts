@@ -953,6 +953,62 @@ Then("the run's body settled as {string}", async function (this: E2EWorld, outco
   assert.equal(settled.context.output?.outcome, outcome, "the wrapper forwards the body's output verbatim");
 });
 
+// --- a command Effect in a real Sandbox (ADR-0067) -------------------------------------------------
+
+/** Start a workflow with a run input, detached, and keep its id — the `commanded` workflow's mode. */
+When(
+  "I start the {string} workflow with input {string} detached",
+  async function (this: E2EWorld, wf: string, input: string): Promise<void> {
+    await this.runCli(["run", wf, "--detach", "--input", input]);
+    this.runId = this.resultJson<{ runId: string }>().runId;
+  },
+);
+
+/** The command's output, as the body routed on it and the wrapper forwarded it. */
+async function commandOutput(world: E2EWorld): Promise<{ outcome?: string; code?: number; tail?: string }> {
+  const settled = await waitSettled(world);
+  assert.equal(settled.status, "done", `the run settled ${settled.status}`);
+  return (settled.context.output ?? {}) as { outcome?: string; code?: number; tail?: string };
+}
+
+Then("the command exited with code {int}", async function (this: E2EWorld, code: number): Promise<void> {
+  const output = await commandOutput(this);
+  assert.equal(output.outcome, "exited");
+  assert.equal(output.code, code, "the exit code is output, and the Machine routed on it");
+});
+
+Then("the command received {string} as one argument", async function (this: E2EWorld, text: string): Promise<void> {
+  const output = await commandOutput(this);
+  assert.equal(output.outcome, "exited");
+  assert.deepEqual(JSON.parse(output.tail ?? "null"), [text], "argv, never shell text");
+});
+
+/** The `restart` command has run far enough to mark its run in the Worktree — so a restart from
+ * here cuts a command that is surely running, not one whose request has yet to leave. */
+Then("the command has started in the Sandbox", async function (this: E2EWorld): Promise<void> {
+  const pod = (await waitForReadySandbox(this)).metadata.name;
+  for (let i = 0; i < 60; i++) {
+    const out = await kubectl(this, [
+      "exec",
+      `pod/${pod}`,
+      "-c",
+      "harness",
+      "--",
+      "sh",
+      "-c",
+      "cat /work/*/*/.jr2-e2e-runs 2>/dev/null || true",
+    ]).catch(() => "");
+    if (out.includes("x")) return;
+    await sleep(500);
+  }
+  throw new Error("the command never marked its run in the Worktree");
+});
+
+Then("the command's tail is {string}", async function (this: E2EWorld, tail: string): Promise<void> {
+  const output = await commandOutput(this);
+  assert.equal(output.tail?.trim(), tail);
+});
+
 Then("the run's body is in {string}", async function (this: E2EWorld, value: string): Promise<void> {
   let last: WsStatus | undefined;
   for (let i = 0; i < 120; i++) {

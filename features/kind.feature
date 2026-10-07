@@ -130,6 +130,37 @@ Feature: a workspace() run drives a real Sandbox on kind
       Then the run's status shows "done"
       And the run's Sandbox is destroyed
 
+  Rule: a command Effect runs in the Harness container of its Workspace, at most once
+    ADR-0067. `command(argv)` is an actor slot: the Harness spawns argv[0] with no shell, as the
+    Agent's user, in the one Repo Slot's Worktree, and every outcome is output the Machine routes
+    on. The `commanded` workflow has no Agent; its body's final output IS the command's output.
+
+    Scenario: the exit code is output, and the Machine routes on it
+      Given the kind instance is serving
+      When I start the "commanded" workflow with input '{"mode":"exit","code":"3"}' detached
+      Then the command exited with code 3
+      And the run's Sandbox is destroyed
+
+    Scenario: an argument with shell metacharacters stays one argument
+      Given the kind instance is serving
+      When I start the "commanded" workflow with input '{"mode":"argv","text":"a; touch /tmp/pwned && echo $(id) | cat"}' detached
+      Then the command received "a; touch /tmp/pwned && echo $(id) | cat" as one argument
+
+    Scenario: the timeout kills the process group and settles as output
+      Given the kind instance is serving
+      When I start the "commanded" workflow with input '{"mode":"timeout"}' detached
+      Then the run's body settled as "timeout"
+
+    Scenario: an orchestrator restart in the middle of a command gives one run
+      Given the kind instance is serving
+      When I start the "commanded" workflow with input '{"mode":"restart"}' detached
+      Then the run's body is in "restart"
+      And the command has started in the Sandbox
+      When the orchestrator restarts
+      # The command counts its own runs in the Worktree and prints the count when it ends: a second
+      # run would have appended a second mark before either printed.
+      Then the command's tail is "x"
+
   Rule: a Sandbox reaped while the orchestrator is down is never silently re-provisioned
 
     Scenario: the restored body is told its workspace is lost

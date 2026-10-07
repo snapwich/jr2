@@ -74,15 +74,16 @@ and exits 0 — report that skip in your handoff exactly as you would a result; 
 key, if the endpoint wants one, rides `JR2_MODEL_API_KEY` alone and never a file. Reachability from the PODS is
 `jr2 up`'s own provider preflight, per scenario.
 
-**What it runs.** Fourteen scenarios in `features/model.feature`, serial (the endpoint is one shared capacity). Twelve
+**What it runs.** Seventeen scenarios in `features/model.feature`, serial (the endpoint is one shared capacity). Fifteen
 are CLAIMS — an ADR's measured claim as N trials with a floor: `obedience` (Allowed picks obeyed, thinking off and on),
 `advised` (a Menu-only Agent's first call is its pick), `workdir` (a relative write lands in the Worktree), `noticed` (a
 memory-kill notice is acted on), the mode and step-boundary claims (`mode-follow`, `mode-refusal`, `mode-stop`, `wake`,
-`push-follow`), and the held-answer claims (`chain-answer`, `cut-pick`). Two are THE RUN — `ticket`: planner, coder,
-reviewer, and a commit verified in the pod (branch ahead of `main`, HEAD is the named commit, tree clean, `node --test`
-passes); and `ticket-modes`, one coder Turn through three modes. The whole tier is about three hours on the home lab:
-`cut-pick` alone is over an hour and a half, since each of its trials waits out the deleted pod's termination grace; the
-other Menu-only claims are a few minutes each.
+`push-follow`), the held-answer claims (`chain-answer`, `cut-pick`), and the command-Effect claims (`answered`,
+`allowed-after-route`, `unknown-outcome`; written, not yet run). Two are THE RUN — `ticket`: planner, coder, reviewer,
+and a commit verified in the pod (branch ahead of `main`, HEAD is the named commit, tree clean, `node --test` passes);
+and `ticket-modes`, one coder Turn through three modes. The whole tier is about three hours on the home lab: `cut-pick`
+alone is over an hour and a half, since each of its trials waits out the deleted pod's termination grace; the other
+Menu-only claims are a few minutes each.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
 `scorecard: <model> <cell>: k/N`. Two thresholds, two meanings:
