@@ -7,7 +7,11 @@
 //     transition or on the entry of any state it enters (its targets, their ancestors below the
 //     transition's domain, their initial descendants — xstate's entry set — and what an eventless
 //     `always` on an entered state enters next, with that transition's guard and actions). Else the
-//     Agent supplies it and nothing uses it: refused. A pick that targets a history state enters what
+//     Agent supplies it and nothing uses it: refused. A pick is a writing an Agent may send (ADR-0015's
+//     position rule); a Gate's event is a human's and is not checked. The walk does not carry a pick's
+//     params across a timer: where an `after` on a state the pick entered moves on to an Effect's
+//     state, only a guard or assign BEFORE the timer reads them (the Effect's input reads the timer's
+//     event), so a param nothing stores before it is refused. A pick that targets a history state enters what
 //     was last active, which the walk cannot know: where that may be an Effect's state, a warning. A
 //     `fill` that sets a key that is also a param drops the Agent's value: refused. A `fromPick` of
 //     another pick than the one that enters the state reads params that are not there: refused.
@@ -27,6 +31,7 @@ import type { AnyStateMachine, UnknownActorLogic } from "xstate";
 import type { EventDef } from "@jr2/agent-protocol";
 import { isAgent } from "./agent.ts";
 import { inputKeysOf, isEffect } from "./effect.ts";
+import { mayTake, partiesAt } from "./party.ts";
 import { isAnswer, isPickMapper } from "./pick.ts";
 
 type Node = AnyStateMachine["root"];
@@ -56,38 +61,85 @@ export function effectChecks(
   // An eventless transition (`always`) on a state the event entered runs in the same macrostep, with
   // the same event: what it enters, the event enters too, and its guard and actions read the event.
   // History is the one target the walk cannot follow: it enters what was last active.
-  type Entering = { guards: unknown[]; actions: unknown[]; entries: unknown[] };
+  // A PICK is a writing an Agent may send (ADR-0015's position rule, `mayTake`): only a pick's
+  // params are checked — a Gate's event is a human's, and nothing says the Agent supplies it. A pick
+  // that enters a state whose `after` moves on to an Effect's state reaches that Effect too, but
+  // across the timer: the Effect's input, and every guard and action from the timer on, read the
+  // timer's event. Only what read the pick before the timer counts (CROSSED).
+  type Reads = { guards: unknown[]; actions: unknown[]; entries: unknown[] };
+  type Entering = Reads & { pick: boolean };
+  type Crossed = { reads: Reads; via: Node };
   const entering = new Map<Node, Map<string, Entering>>();
-  const record = (event: string, entered: Set<Node>, path: readonly Transition[]): void => {
-    const entries = [...entered].flatMap((s) => s.entry);
-    const guards = path.flatMap((t) => (t.guard === undefined ? [] : [t.guard]));
-    const actions = path.flatMap((t) => t.actions);
+  const crossing = new Map<Node, Map<string, Crossed[]>>();
+  const agentSeats = all.flatMap((node) =>
+    partiesAt(node, machine)
+      .filter((p) => p.party === "agent")
+      .map((sender) => ({ sender, node })),
+  );
+  const isPick = (source: Node, event: string): boolean =>
+    defs.has(event) && agentSeats.some(({ sender, node }) => mayTake(machine, sender, node, source, event));
+  const readsOf = (path: readonly Transition[], entered: readonly Node[]): Reads => ({
+    guards: path.flatMap((t) => (t.guard === undefined ? [] : [t.guard])),
+    actions: path.flatMap((t) => t.actions),
+    entries: [...new Set(entered.flatMap((s) => s.entry.filter((a) => !isTimerArm(a))))],
+  });
+  const record = (event: string, entered: Set<Node>, reads: Reads, pick: boolean): void => {
     for (const target of entered) {
       const byEvent = entering.get(target) ?? new Map<string, Entering>();
-      const seen = byEvent.get(event) ?? { guards: [], actions: [], entries: [] };
+      const seen = byEvent.get(event) ?? { guards: [], actions: [], entries: [], pick: false };
       byEvent.set(event, {
-        guards: [...seen.guards, ...guards],
-        actions: [...seen.actions, ...actions],
-        entries: [...new Set([...seen.entries, ...entries])],
+        guards: [...seen.guards, ...reads.guards],
+        actions: [...seen.actions, ...reads.actions],
+        entries: [...new Set([...seen.entries, ...reads.entries])],
+        pick: seen.pick || pick,
       });
       entering.set(target, byEvent);
     }
   };
-  const follow = (event: string, t: Transition, path: readonly Transition[], seen: Set<Transition>): void => {
+  const recordCrossed = (event: string, entered: Set<Node>, crossed: Crossed): void => {
+    for (const target of entered) {
+      const byEvent = crossing.get(target) ?? new Map<string, Crossed[]>();
+      byEvent.set(event, [...(byEvent.get(event) ?? []), crossed]);
+      crossing.set(target, byEvent);
+    }
+  };
+  type Walk = { pick: boolean; crossed?: Crossed };
+  const follow = (
+    event: string,
+    t: Transition,
+    path: readonly Transition[],
+    before: readonly Node[],
+    seen: Set<Transition>,
+    walk: Walk,
+  ): void => {
     const entered = entrySetOf(t, machine.root);
     const here = [...path, t];
-    record(event, entered, here);
+    const sofar = [...before, ...entered];
+    if (walk.crossed) recordCrossed(event, entered, walk.crossed);
+    else record(event, entered, readsOf(here, sofar), walk.pick);
     for (const s of entered) {
       for (const next of s.always ?? []) {
         if (seen.has(next)) continue;
-        follow(event, next, here, new Set([...seen, next]));
+        follow(event, next, here, sofar, new Set([...seen, next]), walk);
+      }
+      // A pick's params do not cross a timer: the walk follows the `after` of a state the pick
+      // entered, and marks what it reaches as crossed.
+      if (!walk.pick) continue;
+      for (const [type, candidates] of s.transitions) {
+        if (!type.startsWith("xstate.after.")) continue;
+        for (const next of candidates) {
+          if (seen.has(next)) continue;
+          const crossed = walk.crossed ?? { reads: readsOf(here, sofar), via: s };
+          follow(event, next, here, sofar, new Set([...seen, next]), { pick: true, crossed });
+        }
       }
     }
+    if (walk.crossed) return;
     // A history target: what it enters is not known at load, so an Effect it may enter is
     // unchecked — a warning, never silence.
     for (const h of (t.target ?? []).filter((s) => s.type === "history")) {
       const def = defs.get(event);
-      if (!def || Object.keys(def.input.shape).length === 0 || !h.parent) continue;
+      if (!walk.pick || !def || Object.keys(def.input.shape).length === 0 || !h.parent) continue;
       const effects = below(h.parent).filter((s) => s.invoke.some((inv) => isEffect(logicOf(inv.src))));
       if (!effects.length) continue;
       warnings.push(
@@ -100,10 +152,51 @@ export function effectChecks(
   const below = (p: Node): Node[] => Object.values(p.states).flatMap((c) => [c, ...below(c)]);
   for (const n of all) {
     for (const [event, candidates] of n.transitions) {
-      for (const t of candidates) follow(event, t, [], new Set());
+      for (const t of candidates) follow(event, t, [], [], new Set([t]), { pick: isPick(n, event) });
     }
   }
   const namedGuards = (machine.implementations?.guards ?? {}) as Record<string, unknown>;
+
+  /**
+   * Probe what reads a pick's params before its Effect starts: the entering guards, run; the
+   * assigns, run; any other action, named and not run. Returns what was read, whether every probe
+   * ran, and the actions it did not run.
+   */
+  const probeReads = (
+    where: string,
+    event: string,
+    params: readonly string[],
+    reads: Reads,
+    read: Set<string>,
+  ): { probed: boolean; unrun: string[] } => {
+    let probed = true;
+    for (const guard of reads.guards) {
+      try {
+        probeGuard(guard, recordingEvent(event, params, read), namedGuards);
+      } catch (err) {
+        probed = false;
+        warnings.push(`${where}: could not probe a guard (${messageOf(err)}); its params are unchecked`);
+      }
+    }
+    const unrun: string[] = [];
+    for (const action of [...reads.actions, ...reads.entries]) {
+      if (!isAssign(action)) {
+        unrun.push(actionName(action));
+        continue;
+      }
+      try {
+        probeAssign(action, recordingEvent(event, params, read));
+      } catch (err) {
+        probed = false;
+        warnings.push(`${where}: could not probe an assign (${messageOf(err)}); its params are unchecked`);
+      }
+    }
+    return { probed, unrun };
+  };
+  const unrunWarning = (where: string, lost: readonly string[], unrun: readonly string[]): string =>
+    `${where}: nothing the walk can run reads ${lost.map((p) => `"${p}"`).join(", ")}; an action it does ` +
+    `not run (${unrun.join(", ")}) may — unchecked. If none reads it, the Agent supplies it and nothing ` +
+    `uses it`;
 
   for (const n of all) {
     const configs = [n.config.invoke ?? []].flat() as Array<{ input?: unknown } | undefined>;
@@ -113,7 +206,7 @@ export function effectChecks(
       const keys = inputKeysOf(logic.effect);
       const slot = typeof inv.src === "string" ? inv.src : inv.id;
       const mapper = configs[i]?.input;
-      for (const [event, { guards, actions, entries }] of entering.get(n) ?? []) {
+      for (const [event, { pick, ...reads }] of entering.get(n) ?? []) {
         if (isPickMapper(mapper) && mapper.pick.name !== event) {
           errors.push(
             `state "${n.id}" (Effect "${slot}") reads the params of pick "${mapper.pick.name}" but is entered on ` +
@@ -122,7 +215,7 @@ export function effectChecks(
           continue;
         }
         const def = defs.get(event);
-        if (!def) continue;
+        if (!def || !pick) continue;
         const params = Object.keys(def.input.shape);
         if (params.length === 0) continue;
         const where = `pick "${event}" enters state "${n.id}" (Effect "${slot}")`;
@@ -166,35 +259,12 @@ export function effectChecks(
         // A param the entering transition's guard READS, or an assign on it or on the entry of a
         // state it enters STORES, reaches the Machine too. A guard and an assign are pure by
         // contract: both are run.
-        for (const guard of guards) {
-          try {
-            probeGuard(guard, recordingEvent(event, params, read), namedGuards);
-          } catch (err) {
-            probed = false;
-            warnings.push(`${where}: could not probe a guard (${messageOf(err)}); its params are unchecked`);
-          }
-        }
-        const unrun: string[] = [];
-        for (const action of [...actions, ...entries]) {
-          if (!isAssign(action)) {
-            unrun.push(actionName(action));
-            continue;
-          }
-          try {
-            probeAssign(action, recordingEvent(event, params, read));
-          } catch (err) {
-            probed = false;
-            warnings.push(`${where}: could not probe an assign (${messageOf(err)}); its params are unchecked`);
-          }
-        }
+        const probe = probeReads(where, event, params, reads, read);
+        probed &&= probe.probed;
         const lost = params.filter((p) => !read.has(p));
-        if (probed && lost.length && unrun.length) {
+        if (probed && lost.length && probe.unrun.length) {
           // Any other action may do work, so the probe never runs one; it may read the param.
-          warnings.push(
-            `${where}: nothing the walk can run reads ${lost.map((p) => `"${p}"`).join(", ")}; an action it does ` +
-              `not run (${unrun.join(", ")}) may — unchecked. If none reads it, the Agent supplies it and nothing ` +
-              `uses it`,
-          );
+          warnings.push(unrunWarning(where, lost, probe.unrun));
         } else if (probed && lost.length && isPickMapper(mapper)) {
           errors.push(
             `${where} with fromPick: ${lost.map((p) => `"${p}"`).join(", ")} is no key of the Effect's input ` +
@@ -206,6 +276,32 @@ export function effectChecks(
             `${where}, which never reads ${lost.map((p) => `"${p}"`).join(", ")}: the Agent supplies it and nothing ` +
               `uses it — map it in the invoke's input, store it with assign, or drop it from the def`,
           );
+        }
+      }
+      // Across a timer: the Effect's input reads the timer's event, so only what read the pick
+      // before the timer counts. A `fromPick` here is refused above (it is entered on the timer's
+      // event, which does not carry the params).
+      if (isPickMapper(mapper)) return;
+      for (const [event, hops] of crossing.get(n) ?? []) {
+        const def = defs.get(event);
+        if (!def) continue;
+        const params = Object.keys(def.input.shape);
+        if (params.length === 0) continue;
+        for (const { reads, via } of hops) {
+          const where =
+            `pick "${event}" enters state "${via.id}", whose \`after\` moves on to state "${n.id}" ` +
+            `(Effect "${slot}")`;
+          const read = new Set<string>();
+          const probe = probeReads(where, event, params, reads, read);
+          const lost = params.filter((p) => !read.has(p));
+          if (!probe.probed || !lost.length) continue;
+          if (probe.unrun.length) warnings.push(unrunWarning(where, lost, probe.unrun));
+          else
+            errors.push(
+              `${where}, and nothing stores ${lost.map((p) => `"${p}"`).join(", ")} before the timer: the Effect's ` +
+                `input reads the timer's event, not the pick's, so the Agent supplies it and nothing uses it — ` +
+                `store it with assign on the pick's transition, or drop it from the def`,
+            );
         }
       }
     });
@@ -337,6 +433,13 @@ function recorder(params: readonly string[], read: Set<string>): never {
     },
   }) as never;
 }
+
+/** The delayed `raise` xstate adds to a state's entry for each `after`: xstate's own, it reads no
+ * param, and the walk neither runs nor names it. */
+const isTimerArm = (action: unknown): boolean => {
+  const { type, id } = (action ?? {}) as { type?: unknown; id?: unknown };
+  return type === "xstate.raise" && typeof id === "string" && id.startsWith("xstate.after.");
+};
 
 const isAssign = (action: unknown): boolean =>
   typeof action === "function" && (action as { type?: unknown }).type === "xstate.assign";

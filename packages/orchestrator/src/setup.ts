@@ -224,13 +224,14 @@ export function jr2Setup<
 
     refuseParallelBelowAgents(machine, def.actors ?? {});
     refuseUnknownSentBy(machine);
+    // Before the Effect checks: they ask who may send a writing (`mayTake`), which reads its audience.
+    attachVocabulary(machine, defs);
     // The Effect checks (ADR-0067): a pick param nothing reads, a `fill` that overwrites one, a
     // `fromPick` of another pick — refused; a mapper the probe cannot run — warned.
     const effects = effectChecks(machine, def.actors ?? {}, defs);
     if (effects.errors.length) throw new Error(`machine "${machine.id}": ${effects.errors.join("; ")}`);
 
     const idOf = (path: readonly string[]): string => stateAt(machine, path).id;
-    attachVocabulary(machine, defs);
     attachSeats(
       machine,
       derived.seats.map(({ path, ...seat }) => ({ state: idOf(path), ...seat })),

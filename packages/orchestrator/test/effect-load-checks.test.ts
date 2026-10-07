@@ -260,6 +260,115 @@ test("the `always` transition's guard reads the pick's event: a param it reads c
   assert.deepEqual(loadWarningsOf(m), []);
 });
 
+// The param check is a PICK's: a Gate's event is a human's, and the Agent supplies none of it.
+const approve = defineEvent({ name: "approve", audience: "external", input: z.object({ comment: z.string() }) });
+const tests = commandWith(never, ["pnpm", "test"]);
+
+test("a Gate's event that enters an Effect's state is no pick: its unread params are not refused, with no Agent", () => {
+  const m = jr2Setup({ events: [approve], actors: { tests } }).createMachine({
+    id: "g",
+    initial: "ask",
+    states: {
+      ask: { invoke: { src: "gate", id: "review", input: {} }, on: { approve: "testing" } },
+      testing: { invoke: { src: "tests", onDone: "done" } },
+      done: { type: "final" },
+    },
+  });
+  assert.deepEqual(loadWarningsOf(m), []);
+});
+
+test("a Gate's event below an Agent's state is no pick either; the Agent's pick there is still checked", () => {
+  const ok = defineEvent({ name: "ok", input: z.object({ comment: z.string() }) });
+  const ask = defineEvent({ name: "ask_review", input: z.object({}) });
+  const machine = (sendingInput: unknown) =>
+    jr2Setup({ events: [ok, ask, send, finish], actors: { coder: coder(), tests, mail } }).createMachine({
+      id: "wf",
+      initial: "w",
+      states: {
+        w: {
+          invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+          initial: "rest",
+          states: {
+            rest: {},
+            asking: { invoke: { src: "gate", id: "review", input: {} }, on: { ok: "testing" } },
+            testing: { invoke: { src: "tests", onDone: "rest" } },
+            sending: { invoke: { src: "mail", input: sendingInput as never, onDone: "rest" } },
+          },
+          on: { ask_review: ".asking", send_email: ".sending", finish: "done" },
+        },
+        done: { type: "final" },
+      },
+    });
+  assert.deepEqual(loadWarningsOf(machine(fromPick(send))), []);
+  assert.throws(
+    () => machine({ to: "a", subject: "b" }),
+    /pick "send_email" enters state "wf\.w\.sending".*never reads "to", "subject"/,
+  );
+});
+
+// The param check does not follow a pick's params across `after`: the Effect's input reads the
+// timer's event. A param that must cross is stored with assign on the pick's transition.
+const deployE = defineEvent({ name: "deploy", input: z.object({ env: z.string(), note: z.string() }) });
+const ship = commandWith(never, ["ship", arg("env")]);
+function afterHop(onPick: unknown, input: unknown = ({ event }: { event: { env?: string } }) => ({ env: event.env })) {
+  return jr2Setup({
+    types: {} as { context: { env?: string; note?: string } },
+    events: [deployE, finish],
+    actors: { coder: coder(), ship },
+  }).createMachine({
+    id: "wf",
+    context: {},
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "rest",
+        states: {
+          rest: {},
+          waiting: { after: { 10: "deploying" } },
+          deploying: { invoke: { src: "ship", input: input as never, onDone: "rest" } },
+        },
+        on: { deploy: onPick as never, finish: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+}
+
+test("a pick that reaches an Effect's state through an `after` is checked there: a param nothing stores before the timer is refused", () => {
+  assert.throws(
+    () => afterHop(".waiting"),
+    (err: Error) => {
+      assert.match(
+        err.message,
+        /pick "deploy" enters state "wf\.w\.waiting", whose `after` moves on to state "wf\.w\.deploying" \(Effect "ship"\), and nothing stores "env", "note" before the timer/,
+      );
+      return true;
+    },
+  );
+});
+
+test("a param stored with assign on the pick's transition crosses the timer; one left unstored is still refused", () => {
+  const both = assign({
+    env: ({ event }: { event: { env: string } }) => event.env,
+    note: ({ event }: { event: { note: string } }) => event.note,
+  });
+  const m = afterHop({ target: ".waiting", actions: both }, ({ context }: { context: { env: string } }) => ({
+    env: context.env,
+  }));
+  assert.deepEqual(loadWarningsOf(m), []);
+  const envOnly = assign({ env: ({ event }: { event: { env: string } }) => event.env });
+  assert.throws(() => afterHop({ target: ".waiting", actions: envOnly }), /nothing stores "note" before the timer/);
+});
+
+test("an action the walk does not run before the timer may read a param: a warning across `after`, never a refusal", () => {
+  const m = afterHop({ target: ".waiting", actions: () => {} });
+  assert.ok(
+    loadWarningsOf(m).some((w) => /whose `after` moves on to state "wf\.w\.deploying".*an inline action/.test(w)),
+    loadWarningsOf(m).join("\n"),
+  );
+});
+
 test("a pick that targets a history state that may enter an Effect's state is a warning, never silent", () => {
   const m = jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
     id: "wf",
