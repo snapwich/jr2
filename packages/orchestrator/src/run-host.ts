@@ -1285,6 +1285,11 @@ export class RunHost {
       } else {
         hold.answer = { turnComplete: false, allowed: allowedOf(reg!), ...answer };
       }
+      // The answer is fixed: nothing reads the chain or the shaped value again, so the next save
+      // drops them. A loop below the Agent's state grows the blob by its tails only while one pick
+      // is outstanding (ADR-0067, ADR-0065).
+      delete hold.chain;
+      delete hold.shaped;
       this.closeHold(hold);
     }
   }

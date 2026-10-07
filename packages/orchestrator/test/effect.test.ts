@@ -21,15 +21,17 @@ import {
   type EffectRow,
   type ExecPortFactory,
 } from "../src/effect.ts";
+import { agentActorWith } from "../src/actor.ts";
 import { RunHost, type RunFeedEvent, type WorkflowDef } from "../src/run-host.ts";
 import { jr2Setup } from "../src/setup.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 import { execsPort, fakeWorkspace, FakeHarnessExec, handles } from "./_effects.ts";
-import { mkStore, waitFor } from "./_fixtures.ts";
+import { coderDefinition, mkStore, MockFlueClient, waitFor } from "./_fixtures.ts";
 
 const go = defineEvent({ name: "go", input: z.object({ filter: z.string() }) });
 const leave = defineEvent({ name: "leave", input: z.object({}) });
 const begin = defineEvent({ name: "begin", input: z.object({}) });
+const build = defineEvent({ name: "build", input: z.object({}) });
 
 type Ctx = { filter?: string; result?: CommandOutput; fault?: string };
 
@@ -416,6 +418,85 @@ test("the ledger keeps every row, and drops each output tail once its transition
   // No save carries more than one tail: the tail of the pass that settles, never the passes before.
   const tails = saved.map((rows) => Object.values(rows).filter((r) => JSON.stringify(r).includes(tail)).length);
   assert.ok(Math.max(...tails) === 1, JSON.stringify(tails));
+});
+
+test("a loop below the Agent's state grows the blob by its tails only while the pick is outstanding: the answer drops the chain", async () => {
+  // The pick's state runs a command three times (a build loop), then rests. While the pick is
+  // outstanding, each pass's output rides the hold's chain whole — an `answer` action may read it
+  // after a restore. Once answered, no save carries the chain: one tail stays, the answer's.
+  const tail = "y".repeat(20_000);
+  const instant: ExecPortFactory = () => ({
+    start: async () => {},
+    read: async () => ({
+      state: "settled",
+      stream: tail,
+      next: tail.length,
+      output: { outcome: "exited", code: 0, tail },
+    }),
+    kill: async () => {},
+    forget: async () => {},
+  });
+  const coder = new MockFlueClient();
+  const machine = jr2Setup({
+    types: {} as { context: { n: number } },
+    events: [build],
+    actors: {
+      ws: fakeWorkspace(handles()),
+      coder: agentActorWith(() => coder, coderDefinition),
+      make: commandWith(instant, ["make"]),
+    },
+  }).createMachine({
+    id: "held-loop",
+    context: { n: 0 },
+    invoke: { src: "ws" },
+    initial: "working",
+    states: {
+      working: {
+        invoke: { src: "coder", input: { prompt: "Build it.", endpoint: "http://harness.invalid" } },
+        initial: "rest",
+        states: {
+          rest: {},
+          build: {
+            invoke: {
+              src: "make",
+              onDone: [
+                { guard: ({ context }) => context.n >= 2, target: "rest" },
+                { target: "build", reenter: true, actions: assign({ n: ({ context }) => context.n + 1 }) },
+              ],
+            },
+          },
+        },
+        on: { build: ".build" },
+      },
+    },
+  });
+  const store = await mkStore();
+  const saved: Array<Array<{ chain?: unknown[]; answer?: unknown }>> = [];
+  const save = store.save.bind(store);
+  store.save = (runId, blob, status) => {
+    saved.push(structuredClone((blob as { holds?: Array<{ chain?: unknown[]; answer?: unknown }> }).holds ?? []));
+    return save(runId, blob, status);
+  };
+  const host = new RunHost({ store });
+  host.register({ name: "held-loop", machine, provide: () => ({}) });
+  const { runId } = await host.start("held-loop");
+  await waitFor(() => coder.admits.length === 1);
+  const iid = coder.admits[0]!.instanceId;
+  const picked = host.sendToAgent(iid, { type: "build" });
+  assert.equal(picked.outstanding, true);
+  const answered = await host.awaitDelivery(iid, picked.deliveryId!);
+  assert.deepEqual(answered?.answer, { kind: "output", actor: "make", output: { outcome: "exited", code: 0, tail } });
+  assert.equal((host.status(runId)?.context as { n: number }).n, 2, "three passes");
+  // While outstanding: the chain grew by one whole link per pass. The third pass's link is read in
+  // the save that answers, so no save holds three.
+  const lengths = [...new Set(saved.map((holds) => holds[0]?.chain?.length ?? 0))].filter((n) => n > 0);
+  assert.deepEqual(lengths, [1, 2], "one link per pass while the pick is outstanding");
+  // Once answered: the saved hold keeps the answer and no chain — one tail, not one per pass.
+  const last = (await store.load(runId))?.snapshot as { holds?: Array<{ chain?: unknown; answer?: unknown }> };
+  assert.equal(last.holds?.length, 1);
+  assert.equal(last.holds![0]!.chain, undefined, "the answer drops the chain");
+  assert.ok(last.holds![0]!.answer !== undefined);
+  assert.equal(JSON.stringify(last.holds).split(tail).length - 1, 1, "one tail in the holds: the answer's");
 });
 
 test("D1 holds a fast exit through the real exec: a kill that overtakes its start keeps it from running", async () => {

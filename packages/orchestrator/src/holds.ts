@@ -45,7 +45,10 @@ export type Hold = {
    * state leaves the answer as a notice for its next Turn. Absent for a fresh Turn: no notice. */
   conversation?: string;
   /** Every reply since the pick, oldest first (ADR-0024): the last is the answer's default, and
-   * the whole is the `chain` an `answer` action reads (ADR-0067). */
+   * the whole is the `chain` an `answer` action reads (ADR-0067). Each link whole, a command's tail
+   * included, because the `answer` action may read it after a restore; dropped once `answer` is
+   * set. So a loop below the Agent's state grows the blob by one tail per pass while the pick is
+   * outstanding. */
   chain?: PickAnswer[];
   /** What the Machine's `answer` action set since the pick (ADR-0067): it replaces the default.
    * Wrapped, so an answer of `null` is still one. */

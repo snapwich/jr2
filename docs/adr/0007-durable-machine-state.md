@@ -33,7 +33,8 @@ finished Effect's row, and the settled and aborted rows keep the Effect's id, ki
 record of what the run's Effects did. A settled row's output TAIL is dropped once the save that carries its transition
 is on disk — that save's snapshot no longer holds the Effect running, so no restore reads it, and the full stream is on
 the run's feed. The ledger grows by one short row per Effect a run starts, never by its tails, and lives as long as the
-run's row (ADR-0065).
+run's row (ADR-0065). An outstanding pick's hold is saved in the same blob and keeps its `chain` whole until the pick is
+answered (ADR-0067); that is the only place an Effect's tails accumulate.
 
 **Pending timers** do not ride the snapshot either. The host persists a **timer table** beside it in the same save: one
 row per pending `after`, named delay, delayed `raise` or delayed `sendTo` in the run's tree, with its absolute deadline.

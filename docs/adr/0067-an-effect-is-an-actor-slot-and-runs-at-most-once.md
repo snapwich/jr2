@@ -45,7 +45,10 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   which may spend a Stand-in. Retry is the author's choice — a route back into the state. No row is dropped: each
   settled or aborted row keeps the Effect's id, kind and outcome for the run's life, the record of what the run's
   Effects did. A settled row's output tail is dropped once the save that carries its transition is on disk; the full
-  stream is on the feed. So an Effect in a loop grows the blob by one short row per pass, never by its tails.
+  stream is on the feed. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One
+  exception, bounded by one pick: while a pick is outstanding, its hold keeps the `chain` whole, tails included, because
+  an `answer` action may read it after a restore; a loop below the Agent's state then grows the hold by one tail per
+  pass. The hold drops its chain when the pick is answered.
 - **A start is sent once where it may have arrived.** A Harness runs one id once only within its own process; a
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start
