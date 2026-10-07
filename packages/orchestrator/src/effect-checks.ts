@@ -5,7 +5,10 @@
 //     input (a command's argv slots) or that its `fill` reads, a plain mapper probed with a recording
 //     event — or read by the entering transition's guard, or stored by an `assign` on the entering
 //     transition or on the entry of any state it enters (its targets, their ancestors below the
-//     transition's domain, their initial descendants — xstate's entry set). Else the Agent supplies it and nothing uses it: refused. A
+//     transition's domain, their initial descendants — xstate's entry set — and what an eventless
+//     `always` on an entered state enters next, with that transition's guard and actions). Else the
+//     Agent supplies it and nothing uses it: refused. A pick that targets a history state enters what
+//     was last active, which the walk cannot know: where that may be an Effect's state, a warning. A
 //     `fill` that sets a key that is also a param drops the Agent's value: refused. A `fromPick` of
 //     another pick than the one that enters the state reads params that are not there: refused.
 //     Code the probe cannot or does not run — a mapper or guard that throws, any action other than
@@ -50,24 +53,54 @@ export function effectChecks(
   // actions of every state those transitions enter. A transition enters what xstate enters (its
   // entry set), so a pick that targets a compound state enters the child that invokes, and a pick
   // that targets a child enters the ancestor that invokes.
+  // An eventless transition (`always`) on a state the event entered runs in the same macrostep, with
+  // the same event: what it enters, the event enters too, and its guard and actions read the event.
+  // History is the one target the walk cannot follow: it enters what was last active.
   type Entering = { guards: unknown[]; actions: unknown[]; entries: unknown[] };
   const entering = new Map<Node, Map<string, Entering>>();
+  const record = (event: string, entered: Set<Node>, path: readonly Transition[]): void => {
+    const entries = [...entered].flatMap((s) => s.entry);
+    const guards = path.flatMap((t) => (t.guard === undefined ? [] : [t.guard]));
+    const actions = path.flatMap((t) => t.actions);
+    for (const target of entered) {
+      const byEvent = entering.get(target) ?? new Map<string, Entering>();
+      const seen = byEvent.get(event) ?? { guards: [], actions: [], entries: [] };
+      byEvent.set(event, {
+        guards: [...seen.guards, ...guards],
+        actions: [...seen.actions, ...actions],
+        entries: [...new Set([...seen.entries, ...entries])],
+      });
+      entering.set(target, byEvent);
+    }
+  };
+  const follow = (event: string, t: Transition, path: readonly Transition[], seen: Set<Transition>): void => {
+    const entered = entrySetOf(t, machine.root);
+    const here = [...path, t];
+    record(event, entered, here);
+    for (const s of entered) {
+      for (const next of s.always ?? []) {
+        if (seen.has(next)) continue;
+        follow(event, next, here, new Set([...seen, next]));
+      }
+    }
+    // A history target: what it enters is not known at load, so an Effect it may enter is
+    // unchecked — a warning, never silence.
+    for (const h of (t.target ?? []).filter((s) => s.type === "history")) {
+      const def = defs.get(event);
+      if (!def || Object.keys(def.input.shape).length === 0 || !h.parent) continue;
+      const effects = below(h.parent).filter((s) => s.invoke.some((inv) => isEffect(logicOf(inv.src))));
+      if (!effects.length) continue;
+      warnings.push(
+        `pick "${event}" targets history state "${h.id}", which enters what was last active — the walk cannot ` +
+          `tell which of ${effects.map((s) => `"${s.id}"`).join(", ")} it enters, so whether each param of ` +
+          `"${event}" is read there is unchecked`,
+      );
+    }
+  };
+  const below = (p: Node): Node[] => Object.values(p.states).flatMap((c) => [c, ...below(c)]);
   for (const n of all) {
     for (const [event, candidates] of n.transitions) {
-      for (const t of candidates) {
-        const entered = entrySetOf(t, machine.root);
-        const entries = [...entered].flatMap((s) => s.entry);
-        for (const target of entered) {
-          const byEvent = entering.get(target) ?? new Map<string, Entering>();
-          const seen = byEvent.get(event) ?? { guards: [], actions: [], entries: [] };
-          byEvent.set(event, {
-            guards: t.guard === undefined ? seen.guards : [...seen.guards, t.guard],
-            actions: [...seen.actions, ...t.actions],
-            entries: [...new Set([...seen.entries, ...entries])],
-          });
-          entering.set(target, byEvent);
-        }
-      }
+      for (const t of candidates) follow(event, t, [], new Set());
     }
   }
   const namedGuards = (machine.implementations?.guards ?? {}) as Record<string, unknown>;
@@ -207,10 +240,16 @@ export function effectChecks(
       }
     }
   }
-  return { errors, warnings };
+  return { errors, warnings: [...new Set(warnings)] };
 }
 
-type Transition = { source: Node; target?: readonly Node[] | undefined; reenter: boolean };
+type Transition = {
+  source: Node;
+  target?: readonly Node[] | undefined;
+  reenter: boolean;
+  guard?: unknown;
+  actions: readonly unknown[];
+};
 
 const isDescendant = (s: Node, of: Node): boolean => {
   for (let p = s.parent; p; p = p.parent) if (p === of) return true;
@@ -227,7 +266,8 @@ const properAncestors = (s: Node, upTo?: Node): Node[] => {
  * target is entered unless it is the source of a transition that does not reenter; below each
  * entered state, its initial child (compound) or every region (parallel); above each target, its
  * ancestors below the transition's domain, with every other region of a parallel one. A history
- * target enters what was last active, which the walk cannot know: it is skipped.
+ * target enters what was last active, which the walk cannot know: it is skipped here, and the caller
+ * warns where it may enter an Effect.
  */
 function entrySetOf(t: Transition, root: Node): Set<Node> {
   const targets = (t.target ?? []).filter((s) => s.type !== "history");

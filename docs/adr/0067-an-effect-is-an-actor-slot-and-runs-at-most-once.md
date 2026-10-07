@@ -66,9 +66,10 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   settled Effect with no `onDone` is Rest. An Effect is not a long-lived invoke, and the load walk does not warn on one.
 - **The load walk checks what a pick hands an Effect** (ADR-0015): a pick param nothing reads (with `fromPick`, one that
   is no key of the Effect's input and that `fill` does not read; a guard on the entering transition and an `assign`
-  count as reads) and a `fill` that overwrites a param are refused; code the probe cannot or does not run — a mapper
-  that throws in it, an action other than an `assign` — is a warning, and a child of an Agent's state that invokes
-  something and that nothing enters is refused.
+  count as reads; a pick enters what an eventless `always` moves on to) and a `fill` that overwrites a param are
+  refused; code the probe cannot or does not run — a mapper that throws in it, an action other than an `assign` — and a
+  pick that targets a history state that may enter an Effect's state are a warning; and a state below an Agent's state
+  that invokes something and that nothing enters is refused.
 
 ## Considered options
 

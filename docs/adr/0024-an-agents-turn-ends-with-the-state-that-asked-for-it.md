@@ -49,15 +49,15 @@ single-threaded.
   Child or sibling says only this — same Turn or not — and never who may send what: that is the audience rule's, by the
   party each state invokes (ADR-0015).
 - **A pick that moves the workflow inside the Agent's state is answered at Rest.** Rest: no state below the Agent's
-  state is running something — an invoked child that is still active (a Gate, another Agent, a child Machine, a promise)
-  — and no pending timer will move the workflow to another state inside the Agent's state. A timer counts the same
-  whatever wrote it (`after`, a named delay, a delayed `raise`, a delayed `sendTo` back to the Machine): it holds Rest
-  when an active state at or below the Agent's state handles its event with a target inside it; a timer that leaves the
-  Agent's state (a Turn timeout) holds nothing. A settled child with no `onDone` is Rest, and a state named `rest` means
-  nothing to jr2, so a forgotten route cannot hang a Turn. Rest is read from the Machine, never kept: the snapshot and
-  the timer table (ADR-0007), after the mailbox drains (`rest.ts`), so a restored run gives the same answer as before
-  the restart. It is computed over the SET of active states below the Agent's state; nothing assumes the set has one
-  member. Known limit: a delayed `sendTo` to a child whose reply then moves the Machine is not counted.
+  state is running something — an invoked child that is still active (an Effect, a Gate, another Agent, a child Machine,
+  a promise) — and no pending timer will move the workflow to another state inside the Agent's state. A timer counts the
+  same whatever wrote it (`after`, a named delay, a delayed `raise`, a delayed `sendTo` back to the Machine): it holds
+  Rest when an active state at or below the Agent's state handles its event with a target inside it; a timer that leaves
+  the Agent's state (a Turn timeout) holds nothing. A settled child with no `onDone` is Rest, and a state named `rest`
+  means nothing to jr2, so a forgotten route cannot hang a Turn. Rest is read from the Machine, never kept: the snapshot
+  and the timer table (ADR-0007), after the mailbox drains (`rest.ts`), so a restored run gives the same answer as
+  before the restart. It is computed over the SET of active states below the Agent's state; nothing assumes the set has
+  one member. Known limit: a delayed `sendTo` to a child whose reply then moves the Machine is not counted.
 - **While a pick is outstanding — delivered and not yet answered — every other pick is refused**, `finish` included, and
   nothing is delivered; so is every pick while the Agent's state is busy with work it started in. xstate itself would
   take the pick, and one the Agent's state handles would exit the child state and stop the work running there, so the
@@ -221,9 +221,9 @@ matter:
   while the state is active (the wake) — so a pick that kept the Turn open can be followed by a nudge, and a pick that
   ended it never is: the abort and the nudge cannot fire against each other.
 - **A Machine author can hold a Turn for long by accident.** A Gate below the Agent's state whose answer has no target
-  stays open after it, and a long-lived invoke below it (not a promise, a Gate, an Agent or a child Machine) never
-  settles: either keeps the Agent's state from Rest, and every pick of the Agent waits. The load walk warns on both
-  (ADR-0015's walk); neither is refused, because either can be meant.
+  stays open after it, and a long-lived invoke below it (not a promise, an Effect, a Gate, an Agent or a child Machine)
+  never settles: either keeps the Agent's state from Rest, and every pick of the Agent waits. The load walk warns on
+  both (ADR-0015's walk); neither is refused, because either can be meant.
 - **Rest reads xstate internals**: the timer table (`system.getSnapshot()._scheduledEvents`, as ADR-0007's re-arm does)
   and the seat lookup's active nodes. The raw-xstate tests are the canary for a bump.
 - **Non-determinism dictates how this is tested.** "Did it stop calling?" proves nothing when a well-behaved agent stops

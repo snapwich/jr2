@@ -446,10 +446,12 @@ function deriveMenus(
 }
 
 /**
- * A mode that nothing enters (ADR-0015): a child of an Agent's state with no invoke that the Machine
- * can never enter. Its picks are on the Menu and never allowed. A warning, not a refusal: the Machine
- * is legal, and a mode left unwired is often work in progress. A child that INVOKES something and that
- * nothing enters is refused (ADR-0067): what it invokes never runs, which is never work in progress.
+ * A mode that nothing enters (ADR-0015): a state below an Agent's state with no invoke that the
+ * Machine can never enter. Its picks are on the Menu and never allowed. A warning, not a refusal: the
+ * Machine is legal, and a mode left unwired is often work in progress. A state below an Agent's state
+ * that INVOKES something and that nothing enters is refused (ADR-0067): what it invokes never runs,
+ * which is never work in progress. Both look below a state that invokes an Effect or a child Machine;
+ * neither looks below one that invokes another Agent or a Gate.
  *
  * "Can enter" is reachability from the root, to a fixed point. A state is entered when its parent is
  * entered and it is the parent's initial state or a region of a parallel parent, or when a transition
@@ -541,6 +543,9 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
     const agent = invokedAgent(node);
     // An Agent's state the Machine never enters is a larger defect than its modes, and not this check.
     if (agent === undefined || !entered.has(node)) continue;
+    // Every state below the Agent's state belongs to its Turn, down to a child that invokes another
+    // party (an Agent or a Gate): that child is checked, and below it is that party's. A state below
+    // an unentered one is not reported again.
     const descend = (parent: Node): void => {
       for (const child of Object.values(parent.states)) {
         if (child.type === "history") continue;
@@ -553,7 +558,12 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
               `state "${child.id}" below Agent "${agent}"'s state "${node.id}" is entered by nothing, so what it ` +
                 `invokes (${what}) never runs — target it from a pick or a route, or delete it`,
             );
+            continue;
           }
+          const party = child.invoke.some(
+            (inv) => inv.src === "gate" || (typeof inv.src === "string" && isAgent(actors[inv.src])),
+          );
+          if (!party) descend(child);
           continue;
         }
         if (!entered.has(child)) {
@@ -641,7 +651,7 @@ function restWarnings(machine: AnyStateMachine, actors: Record<string, UnknownAc
             if (settlesOnItsOwn(logic)) continue;
             out.push(
               `"${child.id}", below Agent "${agent}"'s state "${node.id}", invokes "${name}", which runs until its ` +
-                `state exits (not a promise, a Gate, an Agent or a child Machine): while it runs the Agent's state ` +
+                `state exits (not a promise, an Effect, a Gate, an Agent or a child Machine): while it runs the Agent's state ` +
                 `is never at rest, so it blocks every pick of the Agent — invoke it above the Agent's state`,
             );
           }

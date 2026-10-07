@@ -223,6 +223,75 @@ test("a transition inside the state that invokes does not enter it: the Effect i
   assert.deepEqual(loadWarningsOf(m), []);
 });
 
+/** `send_email` enters `prep`, whose eventless `always` enters `sending`, which runs `mail`. */
+function viaAlways(input: unknown, always: Record<string, unknown> = {}) {
+  return jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
+    id: "wf",
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "rest",
+        states: {
+          rest: {},
+          prep: { always: { target: "sending", ...always } as never },
+          sending: { invoke: { src: "mail", input: input as never, onDone: "rest" } },
+        },
+        on: { send_email: ".prep", finish: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+}
+
+test("a pick that reaches an Effect's state through an eventless `always` is checked there: an unread param is refused", () => {
+  assert.throws(
+    () => viaAlways(() => ({ to: "a", subject: "b" })),
+    /pick "send_email" enters state "wf\.w\.sending" \(Effect "mail"\), which never reads "to", "subject"/,
+  );
+  assert.throws(() => viaAlways(fromPick(finish)), /reads the params of pick "finish" but is entered on "send_email"/);
+  assert.deepEqual(loadWarningsOf(viaAlways(fromPick(send))), []);
+});
+
+test("the `always` transition's guard reads the pick's event: a param it reads counts as read", () => {
+  const m = viaAlways(({ event }: { event: { to: string } }) => ({ to: event.to, subject: "x" }), {
+    guard: ({ event }: { event: { subject: string } }) => event.subject !== "spam",
+  });
+  assert.deepEqual(loadWarningsOf(m), []);
+});
+
+test("a pick that targets a history state that may enter an Effect's state is a warning, never silent", () => {
+  const m = jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
+    id: "wf",
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "rest",
+        states: {
+          rest: {},
+          box: {
+            initial: "sending",
+            states: {
+              h: { type: "history" },
+              sending: { invoke: { src: "mail", input: { to: "a", subject: "b" }, onDone: "#wf.w.rest" } },
+            },
+          },
+        },
+        on: { send_email: ".box.h", finish: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+  const warnings = loadWarningsOf(m);
+  assert.ok(
+    warnings.some((w) =>
+      /pick "send_email" targets history state "wf\.w\.box\.h".*"wf\.w\.box\.sending".*unchecked/.test(w),
+    ),
+    warnings.join("\n"),
+  );
+});
+
 test("a fromPick of ANOTHER pick is refused: the state is entered on an event that does not carry its params", () => {
   assert.throws(() => build(fromPick(finish)), /reads the params of pick "finish" but is entered on "send_email"/);
 });
@@ -255,6 +324,55 @@ test("a child of an Agent's state that invokes something and that nothing enters
       }),
     /state "wf\.w\.orphan" below Agent "coder"'s state "wf\.w" is entered by nothing, so what it invokes \(mail\) never runs/,
   );
+});
+
+test("a state below an Effect's state that invokes something and that nothing enters is refused too", () => {
+  assert.throws(
+    () =>
+      jr2Setup({ events: [finish], actors: { coder: coder(), mail } }).createMachine({
+        id: "wf",
+        initial: "w",
+        states: {
+          w: {
+            invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+            initial: "rest",
+            states: {
+              rest: {},
+              outer: {
+                invoke: { src: "mail", input: { to: "a", subject: "b" } },
+                initial: "a",
+                states: { a: {}, orphan: { invoke: { src: "mail", input: { to: "a", subject: "b" } } } },
+              },
+            },
+            on: { finish: ".outer" },
+          },
+        },
+      }),
+    /state "wf\.w\.outer\.orphan" below Agent "coder"'s state "wf\.w" is entered by nothing/,
+  );
+});
+
+test("below a state that invokes a Gate the walk does not look: that state is the Gate's", () => {
+  const m = jr2Setup({ events: [finish], actors: { coder: coder(), mail } }).createMachine({
+    id: "wf",
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "rest",
+        states: {
+          rest: {},
+          review: {
+            invoke: { src: "gate", input: {} },
+            initial: "a",
+            states: { a: {}, orphan: { invoke: { src: "mail", input: { to: "a", subject: "b" } } } },
+          },
+        },
+        on: { finish: ".review" },
+      },
+    },
+  });
+  assert.ok(m);
 });
 
 test("the narrow no-onDone warning: an Effect child with no onDone where the Agent's state answers on a mode's entry", () => {
