@@ -52,10 +52,10 @@ The author writes plain xstate `after`; there is no kit timer actor, and `after`
 - **The re-arm reads an xstate internal** (`system.getSnapshot()._scheduledEvents`, `system.scheduler.schedule`, and
   `system.scheduler.cancel`, wrapped for the length of `start()`; `packages/orchestrator/src/timers.ts`). The same two
   scheduler functions are also wrapped for the life of the run's system, to tell a timer that fires from an event an
-  actor sends at once: both reach the inspection stream alike, and the scheduler forgets a timer as it fires it. A held
-  pick needs that difference (ADR-0024). Raw-xstate tests that show xstate itself dropping the timer are the canary for
-  an xstate bump. xstate 6 persists timers in the snapshot and re-arms them with the same deadline and clamp; on xstate
-  6 the timer table is deleted.
+  actor sends at once: both reach the inspection stream alike, and the scheduler forgets a timer as it fires it. An
+  outstanding pick needs that difference (ADR-0024). Raw-xstate tests that show xstate itself dropping the timer are the
+  canary for an xstate bump. xstate 6 persists timers in the snapshot and re-arms them with the same deadline and clamp;
+  on xstate 6 the timer table is deleted.
 - **Reconcile against the live world before re-attaching.** Restore is not blind resume: a present Sandbox CR →
   re-attach; an absent one → the defined failure path (`workspace.lost` into the body — ADR-0012), never a silent
   re-provision.
