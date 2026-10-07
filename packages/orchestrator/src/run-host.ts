@@ -1282,23 +1282,30 @@ export class RunHost {
    * the answer when the workflow is back at Rest in the Agent's state or has left it, else
    * `outstanding` after at most `waitMs`, and the Harness asks again. Undefined for a delivery this
    * host does not hold — a pick that was never outstanding, or a run that ended.
+   *
+   * `signal` is the poll's connection. A poll whose caller went away (a killed Harness) ends then,
+   * `outstanding`, and never marks the answer read: no model read it, so the re-admission after
+   * the restart must still carry it (ADR-0031).
    */
   async awaitDelivery(
     instanceId: string,
     deliveryId: string,
     waitMs = 25_000,
+    signal?: AbortSignal,
   ): Promise<AgentDeliveryReceipt | undefined> {
     const found = this.holdAt(instanceId, deliveryId);
     if (!found) return undefined;
     const { run, hold } = found;
     this.settleHolds(run);
-    if (hold.answer === undefined && !this.#stopping) {
+    if (hold.answer === undefined && !this.#stopping && !signal?.aborted) {
       await new Promise<void>((resolve) => {
         let waiters = this.holdWaiters.get(hold);
         if (!waiters) this.holdWaiters.set(hold, (waiters = new Set()));
         const timer = setTimeout(wake, waitMs);
+        signal?.addEventListener("abort", wake, { once: true });
         function wake(): void {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", wake);
           waiters!.delete(wake);
           resolve();
         }
@@ -1306,7 +1313,7 @@ export class RunHost {
       });
     }
     const base = { delivered: true as const, event: hold.pick, moved: true, deliveryId };
-    if (hold.answer === undefined) {
+    if (hold.answer === undefined || signal?.aborted) {
       return { ...base, turnComplete: false, allowed: [], outstanding: true, since: hold.since };
     }
     hold.fetched = true;

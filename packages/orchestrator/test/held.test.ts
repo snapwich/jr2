@@ -674,6 +674,30 @@ test("a Harness restart after the answer was read at Rest but never reached the 
   void testing;
 });
 
+test("a poll whose caller went away read nothing: the Harness restart that cut it re-admits with the answer (ADR-0031)", async () => {
+  const rig = await started();
+  const testing = rig.host.sendToAgent(rig.iid, { type: "run_tests" });
+  // The killed Harness's last poll: the Orchestrator still holds it when the answer lands, but the
+  // connection is gone, so no model reads what it would answer.
+  const gone = new AbortController();
+  const polled = rig.host.awaitDelivery(rig.iid, testing.deliveryId, 60_000, gone.signal);
+  gone.abort();
+  rig.tests.settle("3 passed");
+  await waitFor(() => value(rig) === JSON.stringify({ work: "rest" }));
+  assert.equal((await polled)?.outstanding, true, "the poll ended with its caller, before the answer");
+  // The rebuilt Harness's stream says the restart only now: at Rest, with the answer unread.
+  rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted");
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(rig.coder.notices[1]?.[0], {
+    kind: "pick-answer",
+    scope: "conversation",
+    pick: "run_tests",
+    cut: true,
+    answer: { kind: "output", actor: "tests", output: "3 passed" },
+  });
+  assert.equal(rig.host.status(rig.runId)?.status, "active", "no agent.fault");
+});
+
 test("a Harness restart at Rest with nothing unread is the fault it always was", async () => {
   const rig = await started();
   rig.coder.faultSettled(SUBMISSION_HARNESS_RESTARTED, "Harness restarted");

@@ -886,7 +886,7 @@ export function createApp(host: RunHost, auth?: Authenticator, opts: CreateAppOp
     if (!mayDeliverToAgent(principalOf(c), scope.sandbox)) {
       return c.json({ error: `this token cannot speak for instance "${instanceId}"` }, 403);
     }
-    const receipt = await host.awaitDelivery(instanceId, deliveryId, opts.deliveryWaitMs);
+    const receipt = await host.awaitDelivery(instanceId, deliveryId, opts.deliveryWaitMs, c.req.raw.signal);
     if (host.stopping) {
       return c.json({ error: `the Orchestrator is stopping — ask again for delivery "${deliveryId}"` }, 503);
     }

@@ -107,6 +107,24 @@ test("an outstanding pick: answered at once with its delivery id, refused 409 be
   });
 });
 
+test("a poll ends with its connection: the answer that lands after is not read by it (ADR-0031)", async () => {
+  const { host, app, iid, settle } = await rig();
+  const token = sandboxToken(KEY, "ws-1");
+  const receipt = (await (await app.request(`/agents/${iid}/events`, pick({ type: "run_tests" }, token))).json()) as {
+    deliveryId: string;
+  };
+  settle({ passed: 1 });
+  await waitFor(() => host.list()[0]?.held?.length === 0);
+  // The answer is there; a poll whose caller is already gone does not take it.
+  const gone = new AbortController();
+  gone.abort();
+  const poll = `/agents/${iid}/deliveries/${receipt.deliveryId}`;
+  const cut = await app.request(poll, { headers: auth(token), signal: gone.signal });
+  assert.equal(((await cut.json()) as { outstanding?: boolean }).outstanding, true);
+  const read = await app.request(poll, { headers: auth(token) });
+  assert.equal(((await read.json()) as { answered?: boolean }).answered, true, "the next poll reads it");
+});
+
 test("a stopping Orchestrator answers the poll 503: the Harness asks again, and the Turn is not over", async () => {
   const { host, app, iid } = await rig();
   const token = sandboxToken(KEY, "ws-1");
