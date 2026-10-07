@@ -84,8 +84,11 @@ single-threaded.
   state's prompt is the author's, and the answer is a `pick-answer` notice to the Agent that picked: the next Turn of
   the conversation the picking Turn continued (`continue: true`, ADR-0062). A FRESH picking Turn's conversation is never
   heard again, and a later continued Turn of the same slot never made the pick, so its answer goes nowhere: the ledger
-  keeps no notice for it. There is no default time bound on a held Turn; the Console shows each outstanding pick "held
-  since".
+  keeps no notice for it. Something other than the route can leave the Agent's state while the work runs — a Turn
+  timeout `after` on it, a Gate's event, the Agent's own end. The exit stops the work (an invoke is stopped when its
+  state exits), so no reply answers the pick: the last event the Machine took while the Agent's state was active was no
+  reply, and the poll and the notice carry `stopped` — the pick's work did not finish — never "it ran". There is no
+  default time bound on a held Turn; the Console shows each outstanding pick "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

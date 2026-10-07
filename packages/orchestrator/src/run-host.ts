@@ -375,6 +375,9 @@ export type AgentDeliveryReceipt = {
   answered?: true;
   /** The last reply since the pick (ADR-0024); absent with `answered`: it moved, nothing ran. */
   answer?: PickAnswer;
+  /** With `answered` and `turnComplete`: the Machine left the Agent's state while the pick's work ran —
+   * not by the route of a reply — so the exit stopped that work, and nothing answered it. */
+  stopped?: true;
   delivered: true;
   /** The event delivered — the Agent reads its own pick back, by name. */
   event: string;
@@ -1220,7 +1223,12 @@ export class RunHost {
       const reading = same ? restOf(reg!) : "gone";
       if (reading === "busy") continue;
       if (reading === "gone") {
-        hold.answer = { turnComplete: true, allowed: [], ...(hold.last ? { answer: hold.last } : {}) };
+        // Left by the pick's route once its work replied — or by something else while the work ran
+        // (a timer that leaves, an outside event): then the exit stopped that work, and no reply is
+        // its answer.
+        const stopped = hold.cutShort === true;
+        const answer = !stopped && hold.last ? { answer: hold.last } : {};
+        hold.answer = { turnComplete: true, allowed: [], ...answer, ...(stopped ? { stopped: true as const } : {}) };
         if (hold.conversation !== undefined) {
           run.notices.raise(
             {
@@ -1228,7 +1236,8 @@ export class RunHost {
               scope: "conversation",
               pick: hold.pick,
               cut: false,
-              ...(hold.last ? { answer: hold.last } : {}),
+              ...answer,
+              ...(stopped ? { stopped: true as const } : {}),
             },
             hold.conversation,
           );
@@ -1307,6 +1316,7 @@ export class RunHost {
       allowed: hold.answer.allowed,
       answered: true,
       ...(hold.answer.answer !== undefined ? { answer: hold.answer.answer } : {}),
+      ...(hold.answer.stopped ? { stopped: true as const } : {}),
     };
   }
 
@@ -1837,8 +1847,24 @@ export class RunHost {
           };
           for (const hold of holds.values()) {
             if (hold.answer !== undefined) continue;
-            const reply = replyTo(this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId)));
+            const live = this.table.lookup(agentAddress(hold.instanceId));
+            const reg = this.holdRegs.get(hold) ?? live;
+            const reply = replyTo(reg);
             if (reply) hold.last = reply;
+            // While the Agent's state is still the hold's, each event the Machine takes says who would
+            // move it out: a reply's route, or something else — a timer, an outside event, the
+            // Agent's own end — that stops the work below it (`cutShort`). The Machine that invokes
+            // the Agent or one above it takes the event; events between the children below do not
+            // move it. Once the state is gone, the next state's events are not the hold's.
+            if (
+              reg !== undefined &&
+              reg === live &&
+              reg.invoker &&
+              atOrBelow(reg.invoker, ev.actorRef as AnyActorRef)
+            ) {
+              if (reply) delete hold.cutShort;
+              else hold.cutShort = true;
+            }
           }
           const sending = this.sending;
           const reply = sending && replyTo(sending.reg);
@@ -1961,4 +1987,10 @@ export class RunHost {
       this.announce(run.record.workflow, { kind: "status", status: runStatus });
     }
   }
+}
+
+/** `actor` is `ref`, or `ref` is its parent, its parent's parent, and so on up to the root. */
+function atOrBelow(actor: AnyActorRef, ref: AnyActorRef): boolean {
+  for (let at: AnyActorRef | undefined = actor; at !== undefined; at = at._parent) if (at === ref) return true;
+  return false;
 }

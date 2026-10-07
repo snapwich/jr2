@@ -242,6 +242,33 @@ test("a pick's answer that never reached its call is a notice: cut by a restart,
     noticeText({ kind: "pick-answer", scope: "conversation", pick: "ship", cut: false }, menuToolName),
     "Notice: Your pick `mcp__jr2__ship` ran to its end after your last turn was over. It moved, and nothing ran.",
   );
+  // Not the pick's route: a timer or an outside event left the state while the work ran.
+  assert.equal(
+    noticeText({ kind: "pick-answer", scope: "conversation", pick: "ship", cut: false, stopped: true }, menuToolName),
+    "Notice: Your pick `mcp__jr2__ship` did not finish: the workflow left the state that asked for your last turn " +
+      "while it ran, and that stopped it.",
+  );
+});
+
+test("an outstanding pick whose work an exit stopped: the poll's answer says so, never that it ran", () => {
+  const receipt = {
+    delivered: true as const,
+    event: "go",
+    moved: true,
+    turnComplete: true,
+    deliveryId: "d",
+    allowed: [],
+    answered: true,
+    stopped: true,
+  };
+  const text = receiptProse(receipt, menuToolName);
+  assert.equal(
+    text,
+    'Delivered "go" to the workflow (delivery d). The workflow left the state that asked for this turn while it ' +
+      "ran your pick, and that stopped the pick's work before it finished: your turn is over. Stop here — do not " +
+      "call this or any other tool again.",
+  );
+  assert.doesNotMatch(text, /ran it/);
 });
 
 test("a Menu call a restart cut gets jr2's result in the history; a Working-tool call is left to pi", () => {

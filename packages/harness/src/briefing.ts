@@ -163,11 +163,17 @@ export function noticeText(notice: Notice, toolName: (name: string) => string = 
       return `Notice: This conversation is new; earlier context is gone (${notice.reason}).`;
     case "pick-answer": {
       // The answer an outstanding pick's call never got (ADR-0024, ADR-0031): the call was cut by a
-      // Harness restart, or the route left the Agent's state before the answer could ride it.
+      // Harness restart, the route left the Agent's state before the answer could ride it, or
+      // something else left it while the pick ran.
       const tool = `\`${toolName(sanitizeToolNamePart(notice.pick))}\``;
-      return notice.cut
-        ? `Notice: The workflow finished ${tool}, the pick that was cut from your last turn. It ran once. ${answerText(notice.answer)}`
-        : `Notice: Your pick ${tool} ran to its end after your last turn was over. ${answerText(notice.answer)}`;
+      if (notice.cut) {
+        return `Notice: The workflow finished ${tool}, the pick that was cut from your last turn. It ran once. ${answerText(notice.answer)}`;
+      }
+      // The exit was not the pick's route: a timer that leaves, or an outside event, stopped its work.
+      if (notice.stopped === true) {
+        return `Notice: Your pick ${tool} did not finish: the workflow left the state that asked for your last turn while it ran, and that stopped it.`;
+      }
+      return `Notice: Your pick ${tool} ran to its end after your last turn was over. ${answerText(notice.answer)}`;
     }
   }
 }

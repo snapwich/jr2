@@ -44,6 +44,10 @@ export type Hold = {
   conversation?: string;
   /** The last reply since the pick: the answer's default. */
   last?: PickAnswer;
+  /** The last event the Machine took while the Agent's state was the hold's was no reply from below
+   * it. If the Machine then left the Agent's state, the pick's route did not take it out: the exit
+   * stopped the work below (a timer that leaves, an outside event, the Agent's own end). */
+  cutShort?: true;
   /** The answer, once the Machine is back at Rest or has left the Agent's state. */
   answer?: HeldAnswer;
   /** The answer reached the model: the poll read it, or a re-admission carried it (ADR-0031). */
@@ -57,6 +61,8 @@ export type HeldAnswer = {
   /** The Allowed picks read AFTER the route (ADR-0029); empty once the Turn is over. */
   allowed: string[];
   answer?: PickAnswer;
+  /** The Machine left the Agent's state while the work ran: the exit stopped it (`cutShort`). */
+  stopped?: true;
 };
 
 /**

@@ -434,6 +434,80 @@ test("a FRESH picking Turn whose route leaves: no notice — a later continued T
   assert.deepEqual(coders[1]!.notices[1], [], "nor one answered in the pick's own send");
 });
 
+test("something other than the pick's route leaves the Agent's state while the work runs: the work was stopped, and the answer and the notice say so", async () => {
+  const cancel = ev("cancel");
+  const go = ev("go");
+  const endpoint = "http://harness.invalid";
+  /** `cutBy`: a Turn timeout on the Agent's state, or a Gate on it whose `cancel` leaves. */
+  const rig = async (cutBy: "timer" | "gate") => {
+    const coders: MockFlueClient[] = [];
+    const never = fromPromise(() => new Promise<never>(() => {}));
+    const machine = (coder: ReturnType<typeof agentActorWith>) =>
+      jr2Setup({
+        types: {} as { context: Record<string, never> },
+        events: cutBy === "gate" ? [go, cancel, finish] : [go, finish],
+        actors: { coder, never },
+      }).createMachine({
+        id: "t",
+        context: {},
+        initial: "w",
+        states: {
+          w: {
+            invoke: [
+              { src: "coder", input: { prompt: "Fix the ticket.", endpoint, sandbox: "ws-1", continue: true } },
+              ...(cutBy === "gate" ? [{ src: "gate" as const, id: "boss", input: {} }] : []),
+            ],
+            ...(cutBy === "timer"
+              ? { after: { 40: "#t.next" } }
+              : { on: { cancel: { target: "#t.next", audience: "gate" } } }),
+            initial: "rest",
+            states: {
+              rest: { on: { go: "running" } },
+              running: { invoke: { src: "never", onDone: "rest" } },
+            },
+          },
+          next: {
+            invoke: { src: "coder", input: { prompt: "Carry on.", endpoint, continue: true } },
+            on: { finish: "#t.done" },
+          },
+          done: { type: "final" },
+        },
+      });
+    const host = new RunHost({ store: await mkStore() });
+    host.register({
+      name: "cut",
+      machine: machine(agentActorWith(() => new MockFlueClient(), coderDefinition)),
+      provide: () => {
+        const coder = new MockFlueClient();
+        coders.push(coder);
+        return { actors: { coder: agentActorWith(() => coder, coderDefinition) } };
+      },
+    });
+    const { runId } = await host.start("cut");
+    await waitFor(() => coders[0]?.admits.length === 1);
+    return { host, runId, coder: coders[0]!, iid: coders[0]!.admits[0]!.instanceId };
+  };
+  for (const cutBy of ["timer", "gate"] as const) {
+    const { host, runId, coder, iid } = await rig(cutBy);
+    const going = host.sendToAgent(iid, { type: "go" });
+    assert.equal(going.outstanding, true, cutBy);
+    const polled = host.awaitDelivery(iid, going.deliveryId);
+    if (cutBy === "gate") host.sendToGate(runId, "boss", { type: "cancel" });
+    const answer = await polled;
+    assert.deepEqual(
+      { turnComplete: answer?.turnComplete, stopped: answer?.stopped, answer: answer?.answer },
+      { turnComplete: true, stopped: true, answer: undefined },
+      `${cutBy}: no reply answered it — the exit stopped the work`,
+    );
+    await waitFor(() => coder.admits.length === 2);
+    assert.deepEqual(
+      coder.notices[1],
+      [{ kind: "pick-answer", scope: "conversation", pick: "go", cut: false, stopped: true }],
+      `${cutBy}: the next continued Turn hears that its pick did not finish`,
+    );
+  }
+});
+
 test("an Orchestrator restart during a hold: the restored host refuses from the Machine, and answers the same poll", async () => {
   const rig = await started();
   const receipt = rig.host.sendToAgent(rig.iid, { type: "ask" });

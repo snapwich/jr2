@@ -111,6 +111,9 @@ export type PickAnswerNotice = {
   pick: string;
   cut: boolean;
   answer?: PickAnswer;
+  /** The route did not leave the Agent's state: something else did while the pick's work ran, and
+   * the exit stopped that work. No reply answers it. */
+  stopped?: true;
 };
 
 export type Notice = MemoryLimitNotice | ConversationNewNotice | PickAnswerNotice;
