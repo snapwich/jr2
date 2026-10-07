@@ -73,10 +73,12 @@ single-threaded.
   invoked there (its sender, ADR-0015). The events the Machine sent itself (a `raise`, a `sendTo(self)`, a timer) are no
   reply, and neither is an event from outside that set (a Gate in a sibling region, a root Gate, an outside send); with
   none, the pick moved the workflow and nothing ran. The pick's `POST` answers at once with `outstanding` and a delivery
-  id, and the Harness long-polls the answer inside the one tool call (ADR-0002, ADR-0013). A route that leaves the
-  Agent's state ends the Turn like any other: the poll reads `turnComplete`, the next state's prompt is the author's,
-  and the answer is a `pick-answer` notice to the Agent's next continued Turn (ADR-0062). There is no default time bound
-  on a held Turn; the Console shows each outstanding pick "held since".
+  id, and the Harness long-polls the answer inside the one tool call (ADR-0002, ADR-0013). A child that settles inside
+  the pick's own send — a decision Machine that is final as it starts — replies before the `POST` answers: when that
+  reply leaves the workflow at Rest, or out of the Agent's state, the `POST` itself is the answer, with `answered` and
+  nothing to poll. A route that leaves the Agent's state ends the Turn like any other: the poll reads `turnComplete`,
+  the next state's prompt is the author's, and the answer is a `pick-answer` notice to the Agent's next continued Turn
+  (ADR-0062). There is no default time bound on a held Turn; the Console shows each outstanding pick "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

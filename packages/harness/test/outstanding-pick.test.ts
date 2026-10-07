@@ -93,6 +93,25 @@ test("an outstanding pick: the POST answers at once, and the one tool call polls
   assert.equal(answered, 1, "the Runaway guard hears the answer");
 });
 
+test("a pick answered on its own POST (the child settled inside the send): no poll, the answer reads as prose, and the Runaway guard hears it", async () => {
+  let answered = 0;
+  const { fetch, calls } = fakeFetch((call) => {
+    if (call.url.endsWith("/surface")) return Response.json(SURFACE);
+    return Response.json({
+      ...outstanding,
+      outstanding: undefined,
+      answered: true,
+      allowed: ["run_tests", "finish"],
+      answer: { kind: "output", actor: "decider", output: { verdict: "sync" } },
+    });
+  });
+  const read = await readMenu(opts(fetch, { onAnswered: () => answered++ }), "run-1/coder");
+  const text = await read!.menu[0]!.pick({});
+  assert.equal(calls.filter((c) => c.url.includes("/deliveries/")).length, 0, "nothing to poll");
+  assert.match(text, /Its answer: the output of `decider`: \{"verdict":"sync"\}\. Your turn is not over\./);
+  assert.equal(answered, 1, "the identical-call streak starts again");
+});
+
 test("the Harness claims one pick at a time, in message order: the second call of a message is refused before it leaves — `finish` included", async () => {
   let release: (() => void) | undefined;
   const { fetch, calls } = fakeFetch(async (call) => {

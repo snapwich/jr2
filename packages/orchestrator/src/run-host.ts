@@ -679,6 +679,10 @@ export class RunHost {
   private readonly holdRegs = new WeakMap<Hold, Registration>();
   /** The long polls waiting on each open hold (ADR-0024). */
   private readonly holdWaiters = new Map<Hold, Set<() => void>>();
+  /** The pick being delivered now, and the last reply from below its Agent's state inside its own
+   * send (ADR-0024). A child that settles in the same macrostep as the pick — a decision Machine
+   * that is final as it starts — replies before a hold can exist, so the chain records it here. */
+  private sending: { reg: Registration; last?: PickAnswer } | undefined;
   /** `<iid> <deliveryId>` of every outstanding pick of a run this host parked (`stop`). */
   private readonly parked = new Set<string>();
   #stopping = false;
@@ -1043,6 +1047,9 @@ export class RunHost {
       ...(invoking?.sender ? { [SENDER_KEY]: invoking.sender } : {}),
     });
 
+    const outer = this.sending;
+    const sending: { reg: Registration; last?: PickAnswer } | undefined = invoking && { reg: invoking };
+    this.sending = sending;
     try {
       this.table.deliver(address, type, payload);
     } catch (err) {
@@ -1065,6 +1072,8 @@ export class RunHost {
       // everyday case, and this is the net under it.
       if (err instanceof EventValidationError && invoking) err.allowed = allowedOf(invoking);
       throw err;
+    } finally {
+      this.sending = outer;
     }
     // Read AFTER the delivery, off the SAME table the ADR-0024 guarantee uses — so the receipt
     // reports what happened rather than what was hoped. `deliver` reached the invoking state's
@@ -1074,6 +1083,13 @@ export class RunHost {
     // IDENTITY, not existence: under `continue: true` the next state re-registers the SAME
     // address for its own turn, and that is a new turn — this one still ended.
     const turnComplete = this.table.lookup(address) !== invoking;
+    // A reply from below the Agent's state inside the pick's own send (ADR-0024): a child that
+    // settled in the same macrostep. It is the answer's default as any later reply would be.
+    const replied = moved ? sending?.last : undefined;
+    const conversation =
+      invoking?.sender?.party === "agent"
+        ? continuedIid(invoking.invoker, invoking.runId, invoking.sender.id)
+        : undefined;
     // The pick moved the workflow to work inside the Agent's state (ADR-0024): it is OUTSTANDING,
     // answered once the workflow is back at Rest there — read after the mailbox drains, by the
     // persist that follows every transition (`settleHolds`). The POST answers now, with the delivery
@@ -1089,9 +1105,8 @@ export class RunHost {
         since,
         ...(invoking.sandbox !== undefined ? { sandbox: invoking.sandbox } : {}),
         ...(invoking.invokeId !== undefined ? { invokeId: invoking.invokeId } : {}),
-        ...(invoking.sender?.party === "agent"
-          ? { conversation: continuedIid(invoking.invoker, invoking.runId, invoking.sender.id) }
-          : {}),
+        ...(conversation !== undefined ? { conversation } : {}),
+        ...(replied !== undefined ? { last: replied } : {}),
       };
       this.closeHold(run.holds.get(instanceId));
       run.holds.set(instanceId, hold);
@@ -1106,6 +1121,27 @@ export class RunHost {
         deliveryId,
         outstanding: true,
         since,
+      };
+    }
+    // The child replied and the route ran inside the send: the pick is answered on its own POST,
+    // as its poll would have answered it — back at Rest with the Allowed picks read after the
+    // route, or out of the Agent's state with the answer as a notice to the next continued Turn.
+    if (replied !== undefined && invoking) {
+      if (turnComplete && conversation !== undefined && run) {
+        run.notices.raise(
+          { kind: "pick-answer", scope: "conversation", pick: type, cut: false, answer: replied },
+          conversation,
+        );
+      }
+      return {
+        delivered: true,
+        event: type,
+        moved: true,
+        turnComplete,
+        allowed: turnComplete ? [] : allowedOf(invoking),
+        deliveryId: this.newId(),
+        answered: true,
+        answer: replied,
       };
     }
     return {
@@ -1752,16 +1788,21 @@ export class RunHost {
         // outstanding — inspected as it is relayed, before the Machine processes it, so the states
         // it came from are still active — and the last is the answer's default. The Machine's own
         // events, and events from outside the states below the Agent's, are skipped (`replyOf`).
-        if (ev.type === "@xstate.event" && holds.size > 0) {
+        // A reply inside the pick's own send comes before any hold exists: `sending` records it.
+        if (ev.type === "@xstate.event") {
+          const replyTo = (reg: Registration | undefined): PickAnswer | undefined => {
+            if (!reg?.invoker || !reg.invokeId || reg.invoker !== ev.actorRef) return undefined;
+            const seat = seatOf(reg.invoker.getSnapshot() as AnyMachineSnapshot, reg.invokeId);
+            return seat && replyOf(ev.event, ev.sourceRef as AnyActorRef | undefined, reg.invoker, seat);
+          };
           for (const hold of holds.values()) {
             if (hold.answer !== undefined) continue;
-            const reg = this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId));
-            if (!reg?.invoker || !reg.invokeId || reg.invoker !== ev.actorRef) continue;
-            const seat = seatOf(reg.invoker.getSnapshot() as AnyMachineSnapshot, reg.invokeId);
-            if (!seat) continue;
-            const reply = replyOf(ev.event, ev.sourceRef as AnyActorRef | undefined, reg.invoker, seat);
+            const reply = replyTo(this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId)));
             if (reply) hold.last = reply;
           }
+          const sending = this.sending;
+          const reply = sending && replyTo(sending.reg);
+          if (sending && reply) sending.last = reply;
         }
         if (ev.type === "@xstate.snapshot") schedule();
       },

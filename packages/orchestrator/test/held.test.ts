@@ -29,6 +29,8 @@ const delegate = ev("delegate");
 const wait = ev("wait");
 const chain = ev("chain");
 const ship = ev("ship");
+const decide = ev("decide");
+const settle = ev("settle");
 const finish = ev("finish");
 
 /** A command stand-in the test settles by hand: each run waits on the next `settle`. */
@@ -44,6 +46,12 @@ const child = createMachine({
   states: { w: { after: { 10: "f" } }, f: { type: "final" } },
   output: () => ({ verdict: "fine" }),
 });
+/** A decision Machine that is final as it starts: its output replies inside the pick's own send. */
+const decider = createMachine({
+  initial: "f",
+  states: { f: { type: "final" } },
+  output: () => ({ verdict: "sync" }),
+});
 
 function heldMachine(
   coder: ReturnType<typeof agentActorWith>,
@@ -53,8 +61,8 @@ function heldMachine(
   const endpoint = "http://harness.invalid";
   return jr2Setup({
     types: {} as { context: Record<string, never> },
-    events: [run_tests, ask, approve, consult, advice, delegate, wait, chain, ship, finish],
-    actors: { coder, reviewer, tests, child },
+    events: [run_tests, ask, approve, consult, advice, delegate, wait, chain, ship, decide, settle, finish],
+    actors: { coder, reviewer, tests, child, decider },
   }).createMachine({
     id: "wf",
     context: {},
@@ -74,6 +82,8 @@ function heldMachine(
               wait: "waiting",
               chain: "first",
               ship: "shipping",
+              decide: "deciding",
+              settle: "settling",
             },
           },
           testing: { invoke: { src: "tests", onDone: "rest" } },
@@ -87,6 +97,8 @@ function heldMachine(
           first: { invoke: { src: "tests", onDone: "second" } },
           second: { invoke: { src: "gate", id: "second", input: {} }, on: { approve: "rest" } },
           shipping: { invoke: { src: "tests", onDone: "#wf.next" } },
+          deciding: { invoke: { src: "decider", onDone: "rest" } },
+          settling: { invoke: { src: "decider", onDone: "#wf.next" } },
         },
       },
       next: {
@@ -221,6 +233,37 @@ test("another Agent below: its pick is the answer; a child Machine: its output i
   assert.equal(delegating.outstanding, true);
   const output = await rig.host.awaitDelivery(rig.iid, delegating.deliveryId);
   assert.deepEqual(output?.answer, { kind: "output", actor: "child", output: { verdict: "fine" } });
+});
+
+test("a child that replies inside the pick's own send: the receipt is the answer — the reply is not lost", async () => {
+  const rig = await started();
+  const receipt = rig.host.sendToAgent(rig.iid, { type: "decide" });
+  assert.equal(receipt.outstanding, undefined, "back at Rest before the POST answers: nothing to poll");
+  assert.equal(receipt.answered, true);
+  assert.deepEqual(receipt.answer, { kind: "output", actor: "decider", output: { verdict: "sync" } });
+  assert.equal(receipt.turnComplete, false);
+  assert.ok(receipt.allowed.includes("run_tests"), "the Allowed picks after the route: back in `rest`");
+  assert.equal(value(rig), JSON.stringify({ work: "rest" }));
+  assert.deepEqual(rig.host.status(rig.runId)?.held, [], "nothing is held");
+});
+
+test("a child that replies inside the pick's own send and routes out: the Turn is over, and the answer goes as a notice", async () => {
+  const rig = await started();
+  const receipt = rig.host.sendToAgent(rig.iid, { type: "settle" });
+  assert.deepEqual(
+    { answered: receipt.answered, turnComplete: receipt.turnComplete, allowed: receipt.allowed },
+    { answered: true, turnComplete: true, allowed: [] },
+  );
+  await waitFor(() => rig.coder.admits.length === 2);
+  assert.deepEqual(rig.coder.notices[1], [
+    {
+      kind: "pick-answer",
+      scope: "conversation",
+      pick: "settle",
+      cut: false,
+      answer: { kind: "output", actor: "decider", output: { verdict: "sync" } },
+    },
+  ]);
 });
 
 test("a timer the Machine set itself holds the pick, and no reply came: it moved, and nothing ran", async () => {

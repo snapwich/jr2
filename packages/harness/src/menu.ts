@@ -233,6 +233,8 @@ function menuItem(opts: MenuOptions, instanceId: string, event: SurfaceEvent, cl
           // The name last: an argument called `type` cannot make this pick another event.
           const sent = await deliver(opts, instanceId, { ...((params ?? {}) as object), type: event.name }, pickSignal);
           const receipt = sent.outstanding === true ? await awaitAnswer(opts, instanceId, sent, pickSignal) : sent;
+          // Answered on its poll, or on the POST itself when the child settled inside the send.
+          if (receipt.answered === true) opts.onAnswered?.();
           return receiptProse(receipt, opts.toolName);
         } finally {
           claim.held = undefined;
@@ -532,7 +534,6 @@ async function awaitAnswer(
       if (receipt.outstanding === true) continue;
       if (Array.isArray(receipt.allowed)) opts.onAllowed?.(receipt.allowed);
       if (receipt.turnComplete === true) opts.onTurnOver?.();
-      opts.onAnswered?.();
       return receipt;
     } catch (err) {
       if (signal?.aborted) throw err;

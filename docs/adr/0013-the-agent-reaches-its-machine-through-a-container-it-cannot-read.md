@@ -68,10 +68,11 @@ is needed either (ADR-0006).
   when the POST answers — it moved the workflow to work inside the Agent's state
   ([ADR-0024](0024-an-agents-turn-ends-with-the-state-that-asked-for-it.md)) — is `outstanding`, and `deliveryId`
   addresses its answer: `GET /agents/:iid/deliveries/:id` holds up to about 25 s and answers either `outstanding` (ask
-  again) or the receipt with `answered`, the Allowed picks read after the route, and the answer. A stopping or parked
-  Orchestrator answers the poll 503, never 404, which says the Turn is over; the delivery is scoped to the Sandbox its
-  registration had when the pick was made, because the answer outlives a registration that a route out of the Agent's
-  state ends. A pick while one is outstanding, or while the Agent's state is busy, is answered
+  again) or the receipt with `answered`, the Allowed picks read after the route, and the answer. A child that replied
+  inside the pick's own send and left the workflow at Rest makes the POST receipt itself the `answered` one. A stopping
+  or parked Orchestrator answers the poll 503, never 404, which says the Turn is over; the delivery is scoped to the
+  Sandbox its registration had when the pick was made, because the answer outlives a registration that a route out of
+  the Agent's state ends. A pick while one is outstanding, or while the Agent's state is busy, is answered
   `409 { refused: "outstanding", outstanding?, allowed: [] }` and nothing is delivered. Lookup, validation, delivery and
   lifecycle are implemented once, in the table. The token's scope, the live registration, and the event's name and
   payload are judged here and nowhere else; the Custodian forwards and decides nothing about a pick. Neither surface
