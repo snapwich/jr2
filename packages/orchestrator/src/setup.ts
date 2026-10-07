@@ -448,6 +448,13 @@ function deriveMenus(
  * whose SOURCE can be entered targets it or a state inside it (entering a state enters its
  * ancestors). So a compound mode's own `initial` does not enter it, and neither does a transition
  * written on the mode into itself: neither runs unless the mode is already active.
+ *
+ * A transition into a history state enters what that history state restores. The walk follows its
+ * DEFAULT target — shallow or deep, what xstate enters when nothing is recorded yet — or, with none
+ * written, its parent's initial state, which entering the parent already covers. A recorded history
+ * restores only states that were entered another way. A default target the walk cannot resolve is a
+ * warning of its own: the modes behind it may read as unentered when they are not. A history state is
+ * no mode.
  */
 function unenteredModes(machine: AnyStateMachine, actors: Record<string, UnknownActorLogic>): string[] {
   type Node = AnyStateMachine["root"];
@@ -458,6 +465,7 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
   };
   collect(machine.root);
 
+  const out: string[] = [];
   const entered = new Set<Node>([machine.root]);
   const enter = (node: Node): boolean => {
     let added = false;
@@ -465,7 +473,43 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
       entered.add(n);
       added = true;
     }
+    if (node.type === "history") for (const target of historyDefault(node)) added = enter(target) || added;
     return added;
+  };
+  /** A history state's default target, resolved the way xstate resolves it: a path from its parent,
+   * or a `#id`. Unresolvable: warned once, and nothing is followed. */
+  const unresolved = new Set<Node>();
+  const historyDefault = (node: Node): Node[] => {
+    const written = (node.config as { target?: unknown }).target;
+    if (written === undefined) return [];
+    const targets = (Array.isArray(written) ? written : [written]) as unknown[];
+    const resolved: Node[] = [];
+    for (const target of targets) {
+      const found = typeof target === "string" ? resolvePath(node.parent!, target) : undefined;
+      if (found !== undefined) {
+        resolved.push(found);
+        continue;
+      }
+      if (unresolved.has(node)) continue;
+      unresolved.add(node);
+      out.push(
+        `history state "${node.id}" has a default target the load walk cannot follow (${JSON.stringify(target)}) — ` +
+          `a mode entered only through it is reported as unentered`,
+      );
+    }
+    return resolved;
+  };
+  const resolvePath = (parent: Node, target: string): Node | undefined => {
+    if (target.startsWith("#")) {
+      try {
+        return machine.getStateNodeById(target.slice(1)) as Node;
+      } catch {
+        return undefined;
+      }
+    }
+    let at: Node | undefined = parent;
+    for (const key of target.split(".")) at = at?.states[key];
+    return at;
   };
   for (let changed = true; changed; ) {
     changed = false;
@@ -484,14 +528,13 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
   const invokedAgent = (node: Node): string | undefined =>
     node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))?.src as string | undefined;
 
-  const out: string[] = [];
   for (const node of all) {
     const agent = invokedAgent(node);
     // An Agent's state the Machine never enters is a larger defect than its modes, and not this check.
     if (agent === undefined || !entered.has(node)) continue;
     const descend = (parent: Node): void => {
       for (const child of Object.values(parent.states)) {
-        if (child.invoke.length > 0) continue;
+        if (child.invoke.length > 0 || child.type === "history") continue;
         if (!entered.has(child)) {
           const picks = [...child.transitions.keys()].filter((key) => !key.includes(".") && key !== "*");
           out.push(

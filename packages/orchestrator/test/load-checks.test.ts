@@ -134,6 +134,61 @@ test("a mode entered by a target, by being initial, or through a child it contai
   assert.deepEqual(loadWarningsOf(m), []);
 });
 
+test("a mode entered only through a history state's default target is no warning — shallow or deep", () => {
+  const m = jr2Setup({
+    events: [ev("pause"), ev("resume"), ev("dig"), ev("submit")],
+    actors: { coder: slot() },
+  }).createMachine({
+    id: "wf",
+    initial: "ticket",
+    states: {
+      ticket: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "coding",
+        states: {
+          coding: { on: { pause: "paused", dig: "deep" } },
+          paused: { on: { resume: "back" } },
+          // Nothing targets `reviewing`: the history state's default target is its one entry.
+          back: { type: "history", target: "reviewing" },
+          reviewing: { on: { submit: "#wf.done" } },
+          // A deep history whose default target is a mode inside a compound mode.
+          deep: { on: { resume: "again" } },
+          again: { type: "history", history: "deep", target: "nested.inner" },
+          nested: { initial: "first", states: { first: {}, inner: { on: { submit: "#wf.done" } } } },
+          // A history with no target restores the parent's initial: nothing more to follow, and
+          // the history state itself is no mode.
+          plain: { type: "history" },
+        },
+      },
+      done: { type: "final" },
+    },
+  });
+  assert.deepEqual(loadWarningsOf(m), []);
+});
+
+test("a history default target the walk cannot follow is a warning that names it", () => {
+  const m = jr2Setup({ events: [ev("pause"), ev("resume"), ev("submit")], actors: { coder: slot() } }).createMachine({
+    id: "wf",
+    initial: "ticket",
+    states: {
+      ticket: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "coding",
+        states: {
+          coding: { on: { pause: "paused" } },
+          paused: { on: { resume: "back" } },
+          back: { type: "history", target: "nowhere" },
+          reviewing: { on: { submit: "#wf.done" } },
+        },
+      },
+      done: { type: "final" },
+    },
+  });
+  const warnings = loadWarningsOf(m).join("\n");
+  assert.match(warnings, /history state "wf\.ticket\.back".*"nowhere"/);
+  assert.match(warnings, /mode "wf\.ticket\.reviewing".*nothing enters it/);
+});
+
 test("a Gate above an Agent's state that takes an unset-audience writing from it is a warning", () => {
   const m = jr2Setup({ events: [ev("finish"), ev("abandon")], actors: { coder: slot() } }).createMachine({
     id: "c",

@@ -110,13 +110,15 @@ Agent's state itself being parallel included, since its regions are below it: th
 does not wait for, which jr2 does not build, and a background task goes above the Agent's state. It warns — the Machine
 stays legal, and the doc carries the warning and `jr2 up` prints it — about a mode that nothing enters (not initial, and
 no state the Machine can enter has a transition into it or a state inside it — so neither the mode's own `initial` nor
-its transition into itself counts: its picks are on the Menu and never allowed); about a Gate above an Agent's state
-that takes an unset-audience writing the Agent reaches (the one narrowing of the audience rule an author may not
-expect); about two parties' writings of one name that can be active together; about one party's writings of one name
-that mean two things; and about two shapes below an Agent's state that keep it from Rest, so every pick of the Agent
-waits (ADR-0024): a Gate whose answer has no target (the Gate stays open after it), and a long-lived invoke — one that
-runs until its state exits, not a promise, a Gate, an Agent or a child Machine. A child with no `onDone` that strands
-the Agent in it — a one-way mode — is legal and silent on purpose.
+its transition into itself counts: its picks are on the Menu and never allowed; a transition into a history state enters
+that history state's default target, shallow or deep, or its parent's initial state when it names none, and a default
+target the walk cannot resolve is its own warning); about a Gate above an Agent's state that takes an unset-audience
+writing the Agent reaches (the one narrowing of the audience rule an author may not expect); about two parties' writings
+of one name that can be active together; about one party's writings of one name that mean two things; and about two
+shapes below an Agent's state that keep it from Rest, so every pick of the Agent waits (ADR-0024): a Gate whose answer
+has no target (the Gate stays open after it), and a long-lived invoke — one that runs until its state exits, not a
+promise, a Gate, an Agent or a child Machine. A child with no `onDone` that strands the Agent in it — a one-way mode —
+is legal and silent on purpose.
 
 - **Two parties' writings of one name that can be active together** — one above the other on one path, or in parallel
   regions — where the deeper writing (each other region's, for parallel regions) does not decline the other sender with
