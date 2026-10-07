@@ -110,7 +110,11 @@ export type PickAnswerNotice = {
   scope: "conversation";
   pick: string;
   cut: boolean;
+  /** The last reply since the pick — with `stopped`, an earlier link's, kept. */
   answer?: PickAnswer;
+  /** Something other than the pick's route left the Agent's state while the pick's work ran, and
+   * that exit stopped the work before it finished (ADR-0024). */
+  stopped?: true;
 };
 
 export type Notice = MemoryLimitNotice | ConversationNewNotice | PickAnswerNotice;

@@ -46,6 +46,14 @@ export type Hold = {
   conversation?: string;
   /** The last reply since the pick: the answer's default. */
   last?: PickAnswer;
+  /** The last event the Machine took while the Agent's state was the hold's, with work still running
+   * below it, was no reply from below and no event a Machine sent itself at once: a timer the Machine
+   * set, an event from outside the states below, a party's event, the Agent's own end. If the Machine
+   * then left the Agent's state, the pick's route did not take it out: the exit stopped the work
+   * below (`HeldAnswer.stopped`). An event a Machine sends itself at once (`sendTo(self)`; a `raise`
+   * is never relayed) is part of the route of the event whose actions sent it and changes nothing
+   * here; a reply clears it. */
+  cutShort?: true;
   /** The answer, once the Machine is back at Rest or has left the Agent's state. */
   answer?: HeldAnswer;
   /** The answer reached the model: the poll read it, or a re-admission carried it (ADR-0031). */
@@ -58,7 +66,11 @@ export type HeldAnswer = {
   turnComplete: boolean;
   /** The Allowed picks read AFTER the route (ADR-0029); empty once the Turn is over. */
   allowed: string[];
+  /** The last reply since the pick — kept when the work was stopped after an earlier link replied. */
   answer?: PickAnswer;
+  /** With `turnComplete`: something other than the pick's route left the Agent's state while the
+   * pick's work ran, and that exit stopped the work before it finished (`Hold.cutShort`). */
+  stopped?: true;
 };
 
 /**

@@ -113,6 +113,10 @@ export type DeliveryReceipt = {
   straightBack?: boolean;
   /** The last reply since the pick; absent with `answered`: no reply came. */
   answer?: PickAnswer;
+  /** With `answered` and `turnComplete`: something other than the pick's route left the state that
+   * asked for this Turn while the pick's work ran, and that exit stopped the work. `answer`, if any,
+   * is an earlier link's reply, kept. */
+  stopped?: boolean;
 };
 
 export type MenuOptions = {
@@ -369,6 +373,16 @@ export function receiptProse(receipt: DeliveryReceipt, toolName?: (name: string)
   // asked for this Turn, with the Allowed picks read after the route, or out of it. A guard straight
   // back is the one answer that says nothing ran.
   if (receipt.answered === true) {
+    // Something other than the pick's route left the state while its work ran: that stopped it. An
+    // earlier link's reply, if any, is kept and stated.
+    if (receipt.turnComplete && receipt.stopped === true) {
+      const kept = receipt.answer === undefined ? "" : ` ${answerText(receipt.answer)}`;
+      return (
+        `${delivered} The workflow left the state that asked for this turn while it ran your pick, and that ` +
+        `stopped the pick's work before it finished: your turn is over.${kept} Stop here — do not call this or ` +
+        `any other tool again.`
+      );
+    }
     if (receipt.turnComplete) {
       return `${delivered} The workflow took it and moved on: your turn is over. Stop here — do not call this or any other tool again.`;
     }

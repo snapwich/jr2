@@ -877,7 +877,7 @@ test("a reply from outside the states below the Agent's is no link: a sibling re
   await host.close();
 });
 
-// --- Whatever moves the Machine out, the answer is the last reply since the pick (ADR-0024) -------
+// --- Who moved the Machine out: the route of the last reply, or something that stopped the work ---
 
 /**
  * A pick `go` from `w.rest` into `w.running`, whose child states the case writes. The Agent's state
@@ -953,24 +953,27 @@ async function picked(rig: Awaited<ReturnType<typeof routeRig>>, then: () => voi
   const answer = await polled;
   await waitFor(() => rig.coder.admits.length === 2);
   await rig.host.close();
-  assert.ok(answer && !("stopped" in answer), "no answer kind beyond the reply (ADR-0024)");
   return {
-    answer: { turnComplete: answer?.turnComplete, answer: answer?.answer },
+    answer: { turnComplete: answer?.turnComplete, stopped: answer?.stopped, answer: answer?.answer },
     notice: rig.coder.notices[1],
   };
 }
 
 const built = { kind: "output", actor: "work", output: { built: true } } as const;
 const answeredBuilt = {
-  answer: { turnComplete: true, answer: built },
+  answer: { turnComplete: true, stopped: undefined, answer: built },
   notice: [{ kind: "pick-answer", scope: "conversation", pick: "go", cut: false, answer: built }],
 };
-const noReply = {
-  answer: { turnComplete: true, answer: undefined },
-  notice: [{ kind: "pick-answer", scope: "conversation", pick: "go", cut: false }],
+const stoppedNoReply = {
+  answer: { turnComplete: true, stopped: true, answer: undefined },
+  notice: [{ kind: "pick-answer", scope: "conversation", pick: "go", cut: false, stopped: true }],
+};
+const stoppedAfterBuilt = {
+  answer: { turnComplete: true, stopped: true, answer: built },
+  notice: [{ kind: "pick-answer", scope: "conversation", pick: "go", cut: false, stopped: true, answer: built }],
 };
 
-test("the reply's own route leaves through an immediate event the Machine sends itself: the answer is the reply", async () => {
+test("the reply's own route leaves through an immediate event the Machine sends itself: the answer is the reply, never stopped", async () => {
   const self = sendTo(({ self }) => self, { type: "out" });
   const cases: Record<string, Record<string, unknown>> = {
     "sendTo(self) in onDone": { running: { invoke: { src: "work", onDone: { actions: self } } } },
@@ -985,14 +988,21 @@ test("the reply's own route leaves through an immediate event the Machine sends 
   }
 });
 
-test("something else leaves while the work below still runs: the answer is the last reply since the pick — none, or an earlier link's", async () => {
+test("something other than the pick's route leaves while the work below still runs: the work was stopped, and the answer says so", async () => {
   const running = { running: { invoke: { src: "never" } } };
-  assert.deepEqual(await picked(await routeRig(running, { turnTimeout: 30 })), noReply, "a Turn-timeout `after`");
+  assert.deepEqual(
+    await picked(await routeRig(running, { turnTimeout: 30 })),
+    stoppedNoReply,
+    "a Turn-timeout `after`",
+  );
   const outside = await routeRig(running);
-  assert.deepEqual(await picked(outside, outside.poke), noReply, "an event from outside the states below");
-  // A chain: the first link replied, and its route started the second; a delayed event the Machine
-  // sent itself fires while the second still runs. The first link's reply is the last since the
-  // pick: it is the answer, never dropped.
+  assert.deepEqual(await picked(outside, outside.poke), stoppedNoReply, "an event from outside the states below");
+});
+
+test("a chain stopped in its second link keeps the first link's reply: the answer says the work stopped, and carries it", async () => {
+  // The first link replied, and its route started the second; something other than a route leaves
+  // while the second still runs. The first link's reply is the last since the pick: kept, never
+  // dropped, and the answer says the pick's work did not finish.
   for (const [name, timer] of [
     ["delayed sendTo(self)", sendTo(({ self }) => self, { type: "out" }, { delay: 30 })],
     ["delayed raise", raise({ type: "out" }, { delay: 30 })],
@@ -1001,13 +1011,29 @@ test("something else leaves while the work below still runs: the answer is the l
       running: { invoke: { src: "work", onDone: "second" } },
       second: { entry: timer, invoke: { src: "never" } },
     };
-    assert.deepEqual(await picked(await routeRig(chain)), answeredBuilt, `a chain cut by a ${name}`);
+    assert.deepEqual(await picked(await routeRig(chain)), stoppedAfterBuilt, `a chain cut by a ${name}`);
   }
   const chain = { running: { invoke: { src: "work", onDone: "second" } }, second: { invoke: { src: "never" } } };
   assert.deepEqual(
     await picked(await routeRig(chain, { turnTimeout: 30 })),
-    answeredBuilt,
+    stoppedAfterBuilt,
     "a chain cut by a Turn timeout",
+  );
+  const outside = await routeRig(chain);
+  assert.deepEqual(
+    await picked(outside, () => setTimeout(outside.poke, 20)),
+    stoppedAfterBuilt,
+    "a chain cut by an event from outside the states below",
+  );
+});
+
+test("a guard straight back is still answered `straightBack`: nothing ran, so nothing was stopped", async () => {
+  const rig = await routeRig({ running: { always: "rest" } });
+  const back = rig.host.sendToAgent(rig.iid, { type: "go" });
+  await rig.host.close();
+  assert.deepEqual(
+    { answered: back.answered, straightBack: back.straightBack, stopped: back.stopped },
+    { answered: true, straightBack: true, stopped: undefined },
   );
 });
 

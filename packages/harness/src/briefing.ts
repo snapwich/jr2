@@ -165,6 +165,12 @@ export function noticeText(notice: Notice, toolName: (name: string) => string = 
       // The answer an outstanding pick's call never got (ADR-0024, ADR-0031): the call was cut by a
       // Harness restart, or the route left the Agent's state before the answer could ride it.
       const tool = `\`${toolName(sanitizeToolNamePart(notice.pick))}\``;
+      // Something other than the pick's route left the state while its work ran: that stopped it.
+      // An earlier link's reply, if any, is kept and stated.
+      if (notice.stopped === true) {
+        const kept = notice.answer === undefined ? "" : ` ${answerText(notice.answer)}`;
+        return `Notice: Your pick ${tool} did not finish: the workflow left the state that asked for your last turn while it ran, and that stopped it.${kept}`;
+      }
       // It states what is known — the pick was taken, once, and is no longer outstanding — never
       // that its work ran to its end: a timer or an outside event may have stopped it.
       return notice.cut

@@ -461,8 +461,14 @@ function noticesOf(value: unknown): { notices?: Notice[] } {
       return scope === "workspace" && str(agent) && str(limit) && (peak === undefined || str(peak));
     }
     if (kind === "pick-answer") {
-      const { pick, cut, answer } = n as Record<string, unknown>;
-      return scope === "conversation" && str(pick) && typeof cut === "boolean" && isPickAnswer(answer);
+      const { pick, cut, answer, stopped } = n as Record<string, unknown>;
+      return (
+        scope === "conversation" &&
+        str(pick) &&
+        typeof cut === "boolean" &&
+        isPickAnswer(answer) &&
+        (stopped === undefined || stopped === true)
+      );
     }
     return kind === "conversation-new" && scope === "conversation" && str(reason);
   });

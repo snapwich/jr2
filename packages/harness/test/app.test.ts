@@ -296,6 +296,8 @@ test("the notices ride the admit body to the turn, typed; one this Harness canno
     answer: { kind: "output", actor: "tests", output: { pushed: "abc" } },
   };
   const silent = { kind: "pick-answer", scope: "conversation", pick: "ship", cut: false };
+  // Stopped by an exit that was not the pick's route, with an earlier link's reply kept.
+  const stopped = { ...left, stopped: true };
   const res = await app.request("/agents/coder/i1", {
     method: "POST",
     body: JSON.stringify({
@@ -310,7 +312,9 @@ test("the notices ride the admit body to the turn, typed; one this Harness canno
         cut,
         left,
         silent,
+        stopped,
         { kind: "pick-answer", scope: "conversation", cut: true },
+        { kind: "pick-answer", scope: "conversation", pick: "ship", cut: false, stopped: "yes" },
         { kind: "pick-answer", scope: "conversation", pick: "ship", cut: false, answer: { kind: "event" } },
       ],
     }),
@@ -320,7 +324,7 @@ test("the notices ride the admit body to the turn, typed; one this Harness canno
   assert.deepEqual(runs[0]!.submission, {
     definition: CODER,
     message: "go",
-    notices: [memory, fresh, cut, left, silent],
+    notices: [memory, fresh, cut, left, silent, stopped],
   });
   // Garbage in the slot is no notices, as a garbage dial is no dial.
   await app.request("/agents/coder/i2", {

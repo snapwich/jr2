@@ -92,6 +92,44 @@ export function scheduledFor(ref: AnyActorRef): Array<{ id: string; event: Event
 }
 
 /**
+ * Watch a run's actor system for timers that FIRE: the returned function says whether one relayed
+ * event is a timer the system scheduled — an `after`, a named delay, a delayed `raise` or `sendTo` —
+ * and not an event an actor sent at once. Both reach the inspection stream from the same source with
+ * the same shape; only the scheduler knows the difference, and it forgets a timer as it fires it.
+ *
+ * So `scheduler.schedule` and `scheduler.cancel` are wrapped for the life of the system: each armed
+ * timer is kept by its key with the event object xstate relays when it fires (the same object, not
+ * a copy). A relayed event is a fired timer when its source and event object are an armed timer's
+ * and that timer is no longer in the scheduler's table; it is then forgotten. A re-armed timer
+ * (`startAndRearm`) goes through the same `schedule`, so a restored run recognises it too.
+ *
+ * Install it before `start()` (the root's creation event is early enough): a timer armed before the
+ * wrap is not seen. The same xstate internals as the rest of this module; the canary is the same.
+ */
+export function watchTimers(system: AnyActorRef["system"]): (source: unknown, event: unknown) => boolean {
+  const scheduler = system.scheduler;
+  const { schedule, cancel } = scheduler;
+  const armed = new Map<string, { source: AnyActorRef; event: EventObject }>();
+  scheduler.schedule = (source, target, event, delay, id = Math.random().toString(36).slice(2)) => {
+    schedule(source, target, event, delay, id);
+    armed.set(keyOf(source, id), { source, event });
+  };
+  scheduler.cancel = (source, id) => {
+    armed.delete(keyOf(source, id));
+    cancel(source, id);
+  };
+  return (source, event) => {
+    for (const [key, row] of armed) {
+      if (row.event !== event || row.source !== source) continue;
+      if (key in system.getSnapshot()._scheduledEvents) continue;
+      armed.delete(key);
+      return true;
+    }
+    return false;
+  };
+}
+
+/**
  * Start a restored run, then schedule each recorded timer again on it. One function, so the order
  * cannot be got wrong: re-armed BEFORE `start()`, a timer is armed twice and fires twice, because
  * the system's own `start()` schedules whatever is already in its table; and `start()` is where

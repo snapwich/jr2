@@ -250,6 +250,44 @@ test("a pick's answer that never reached its call is a notice: cut by a restart,
   );
 });
 
+test("a pick whose work an exit stopped: the poll and the next Turn's notice say so, and keep an earlier link's reply (ADR-0024)", () => {
+  const base = {
+    delivered: true as const,
+    event: "go",
+    moved: true,
+    turnComplete: true,
+    deliveryId: "d",
+    allowed: [],
+    answered: true,
+    stopped: true,
+  };
+  const stop = "Stop here — do not call this or any other tool again.";
+  const left =
+    'Delivered "go" to the workflow (delivery d). The workflow left the state that asked for this turn while it ' +
+    "ran your pick, and that stopped the pick's work before it finished: your turn is over.";
+  assert.equal(receiptProse(base, menuToolName), `${left} ${stop}`);
+  const built = { kind: "output" as const, actor: "build", output: { ok: true } };
+  assert.equal(
+    receiptProse({ ...base, answer: built }, menuToolName),
+    `${left} Its answer: the output of \`build\`: {"ok":true}. ${stop}`,
+  );
+  const notice = {
+    kind: "pick-answer" as const,
+    scope: "conversation" as const,
+    pick: "go",
+    cut: false,
+    stopped: true as const,
+  };
+  const didNot =
+    "Notice: Your pick `mcp__jr2__go` did not finish: the workflow left the state that asked for your last turn " +
+    "while it ran, and that stopped it.";
+  assert.equal(noticeText(notice, menuToolName), didNot);
+  assert.equal(
+    noticeText({ ...notice, answer: built }, menuToolName),
+    `${didNot} Its answer: the output of \`build\`: {"ok":true}.`,
+  );
+});
+
 test("work that something stopped before it replied is never told it did not run, nor that it ran to its end (ADR-0024)", () => {
   // An outstanding pick whose work a per-step `after`, a Turn timeout or an outside event stopped:
   // answered with no reply and no `straightBack`. Its words state what is known, no more.
