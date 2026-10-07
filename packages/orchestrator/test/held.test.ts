@@ -920,6 +920,7 @@ test("a reply from outside the states below the Agent's is no link: a sibling re
  * A pick `go` from `w.rest` into `w.running`, whose child states the case writes. The Agent's state
  * `w` leaves to `next` on `out` (a Machine-own event, or a timer), on `abort` from the `side` child
  * invoked ON `w` (outside the states below the Agent's), and on a Turn-timeout `after` when asked.
+ * A case may invoke `report` below: it replies `abort` once and keeps running.
  */
 async function routeRig(
   states: Record<string, unknown>,
@@ -935,6 +936,11 @@ async function routeRig(
     poke = () => sendBack({ type: "abort" });
   });
   const work = fromPromise(async () => ({ built: true }));
+  // A child below that replies `abort` and keeps running.
+  const report = fromCallback(({ sendBack }) => {
+    const t = setTimeout(() => sendBack({ type: "abort" }), 5);
+    return () => clearTimeout(t);
+  });
   const never = fromPromise(() => new Promise<never>(() => {}));
   const fail = fromPromise<never>(async () => {
     throw new Error("secret-ish internals");
@@ -943,7 +949,7 @@ async function routeRig(
     jr2Setup({
       types: {} as { context: Record<string, never> },
       events: [go, out, abort, finish],
-      actors: { coder, side, work, never, fail },
+      actors: { coder, side, work, report, never, fail },
     }).createMachine({
       id: "t",
       context: {},
@@ -973,7 +979,7 @@ async function routeRig(
     provide: () => {
       const coder = new MockFlueClient();
       coders.push(coder);
-      return { actors: { coder: agentActorWith(() => coder, coderDefinition), side, work, never, fail } };
+      return { actors: { coder: agentActorWith(() => coder, coderDefinition), side, work, report, never, fail } };
     },
   });
   await host.start("route");
@@ -1023,6 +1029,19 @@ test("the reply's own route leaves through an immediate event the Machine sends 
   for (const [name, states] of Object.entries(cases)) {
     assert.deepEqual(await picked(await routeRig(states)), answeredBuilt, name);
   }
+});
+
+test("a reply from a child that still runs, whose route sends the Machine an immediate event that leaves: the answer is the reply, never stopped", async () => {
+  // The work below still runs when the Machine's own event moves it out, so only the rule that the
+  // event is part of the reply's route keeps the answer from saying the work was stopped.
+  const abortReply = { kind: "event", event: "abort", payload: {} };
+  const states = {
+    running: { invoke: { src: "report" }, on: { abort: { actions: sendTo(({ self }) => self, { type: "out" }) } } },
+  };
+  assert.deepEqual(await picked(await routeRig(states)), {
+    answer: { turnComplete: true, stopped: undefined, answer: abortReply },
+    notice: [{ kind: "pick-answer", scope: "conversation", pick: "go", cut: false, answer: abortReply }],
+  });
 });
 
 test("something other than the pick's route leaves while the work below still runs: the work was stopped, and the answer says so", async () => {
