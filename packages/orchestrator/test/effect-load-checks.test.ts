@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assign } from "xstate";
+import { and, assign } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -24,7 +24,7 @@ const finish = defineEvent({ name: "finish", input: z.object({}) });
 const mail = commandWith(never, ["mail", "-s", arg("subject"), arg("to")]);
 
 /** An Agent's state whose `send_email` pick enters `sending`, which runs `mail` with `input`. */
-function build(input: unknown, actions: unknown[] = [], entry: unknown[] = []) {
+function build(input: unknown, actions: unknown[] = [], entry: unknown[] = [], guard?: unknown) {
   return jr2Setup({
     types: {} as { context: { subject?: string } },
     events: [send, finish],
@@ -41,7 +41,10 @@ function build(input: unknown, actions: unknown[] = [], entry: unknown[] = []) {
           rest: {},
           sending: { entry: entry as never, invoke: { src: "mail", input: input as never, onDone: "rest" } },
         },
-        on: { send_email: { target: ".sending", actions: actions as never }, finish: "done" },
+        on: {
+          send_email: { target: ".sending", actions: actions as never, ...(guard ? { guard: guard as never } : {}) },
+          finish: "done",
+        },
       },
       done: { type: "final" },
     },
@@ -68,6 +71,27 @@ test("a param stored by an assign on the entering transition, or on the state's 
   const store = assign({ subject: ({ event }: { event: { subject: string } }) => event.subject });
   build(({ event }: { event: { to: string } }) => ({ to: event.to, subject: "x" }), [store]);
   build(({ event }: { event: { to: string } }) => ({ to: event.to, subject: "x" }), [], [store]);
+});
+
+const toOnly = ({ event }: { event: { to: string } }) => ({ to: event.to, subject: "fixed" });
+
+test("a param the entering transition's guard reads counts as read: the guard is run, inline or inside and()", () => {
+  const spam = ({ event }: { event: { subject: string } }) => event.subject !== "spam";
+  assert.deepEqual(loadWarningsOf(build(toOnly, [], [], spam)), []);
+  assert.deepEqual(loadWarningsOf(build(toOnly, [], [], and([spam as never, () => true]))), []);
+});
+
+test("an action the walk does not run may read a param: a warning that names it, never a refusal", () => {
+  const onEntry = ({ event }: { event: { subject: string } }) => void String(event.subject);
+  for (const m of [build(toOnly, [], [onEntry]), build(toOnly, [onEntry])]) {
+    const warnings = loadWarningsOf(m);
+    assert.ok(
+      warnings.some((w) =>
+        /nothing the walk can run reads "subject"; an action it does not run \(an inline action\)/.test(w),
+      ),
+      warnings.join("\n"),
+    );
+  }
 });
 
 test("a plain mapper with paramsOf reads them all", () => {

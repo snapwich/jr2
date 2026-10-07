@@ -3,19 +3,21 @@
 //   - A PICK PARAM THAT NOTHING READS. Every param of every pick that enters a state invoking an
 //     Effect is read by that invoke's input — `fromPick` for each param that is a key of the Effect's
 //     input (a command's argv slots) or that its `fill` reads, a plain mapper probed with a recording
-//     event — or stored by an `assign` on the entering transition or the state's entry.
-//     Else the Agent supplies it and nothing uses it: refused. A `fill` that sets a key that is also a
-//     param drops the Agent's value: refused. A `fromPick` of another pick than the one that enters
-//     the state reads params that are not there: refused. A mapper or an assign the probe cannot run
-//     is a WARNING, never silent: its params are unchecked.
+//     event — or read by the entering transition's guard, or stored by an `assign` on the entering
+//     transition or the state's entry. Else the Agent supplies it and nothing uses it: refused. A
+//     `fill` that sets a key that is also a param drops the Agent's value: refused. A `fromPick` of
+//     another pick than the one that enters the state reads params that are not there: refused.
+//     Code the probe cannot or does not run — a mapper or guard that throws, any action other than
+//     an assign — may read a param, so where a param is left unread the walk WARNS, never refuses
+//     and never stays silent: its params are unchecked.
 //   - THE NARROW NO-onDone WARNING. Where an Agent's state answers on a mode's entry (`answer`), an
 //     Effect below it with no `onDone` settles in place: that mode is not entered again, and the
 //     Agent reads the Effect's output, not the answer. Everywhere else a settled child with no
 //     `onDone` is Rest, and the one-line form is correct — silent on purpose.
 //
 // The probe reads, it never runs work: a mapper is called with a Proxy event whose reads are
-// recorded, and a context and self that survive any read. An assign is pure by contract, and only
-// an assign is probed.
+// recorded, and a context and self that survive any read. A guard and an assign are pure by
+// contract, and only they are probed; any other action may do work, and is never run.
 
 import type { AnyStateMachine, UnknownActorLogic } from "xstate";
 import type { EventDef } from "@jr2/agent-protocol";
@@ -43,25 +45,31 @@ export function effectChecks(
   collect(machine.root);
   const logicOf = (src: unknown): unknown => (typeof src === "string" ? actors[src] : src);
 
-  // Who enters each state, by event, with the entering transitions' actions. A target that is a
-  // compound or parallel state also enters its initial descendants.
+  // Who enters each state, by event, with the entering transitions' guards and actions. A target
+  // that is a compound or parallel state also enters its initial descendants.
   const enteredBy = (t: Node): Node[] => {
     if (t.type === "parallel") return [t, ...Object.values(t.states).flatMap(enteredBy)];
     if (t.type === "compound") return [t, ...t.initial.target.flatMap(enteredBy)];
     return [t];
   };
-  const entering = new Map<Node, Map<string, unknown[]>>();
+  type Entering = { guards: unknown[]; actions: unknown[] };
+  const entering = new Map<Node, Map<string, Entering>>();
   for (const n of all) {
     for (const [event, candidates] of n.transitions) {
       for (const t of candidates) {
         for (const target of (t.target ?? []).flatMap(enteredBy)) {
-          const byEvent = entering.get(target) ?? new Map<string, unknown[]>();
-          byEvent.set(event, [...(byEvent.get(event) ?? []), ...t.actions]);
+          const byEvent = entering.get(target) ?? new Map<string, Entering>();
+          const seen = byEvent.get(event) ?? { guards: [], actions: [] };
+          byEvent.set(event, {
+            guards: t.guard === undefined ? seen.guards : [...seen.guards, t.guard],
+            actions: [...seen.actions, ...t.actions],
+          });
           entering.set(target, byEvent);
         }
       }
     }
   }
+  const namedGuards = (machine.implementations?.guards ?? {}) as Record<string, unknown>;
 
   for (const n of all) {
     const configs = [n.config.invoke ?? []].flat() as Array<{ input?: unknown } | undefined>;
@@ -71,7 +79,7 @@ export function effectChecks(
       const keys = inputKeysOf(logic.effect);
       const slot = typeof inv.src === "string" ? inv.src : inv.id;
       const mapper = configs[i]?.input;
-      for (const [event, actions] of entering.get(n) ?? []) {
+      for (const [event, { guards, actions }] of entering.get(n) ?? []) {
         if (isPickMapper(mapper) && mapper.pick.name !== event) {
           errors.push(
             `state "${n.id}" (Effect "${slot}") reads the params of pick "${mapper.pick.name}" but is entered on ` +
@@ -121,8 +129,22 @@ export function effectChecks(
             warnings.push(`${where}: could not probe the input mapper (${messageOf(err)}); its params are unchecked`);
           }
         }
-        // A param the entering transition or the state's entry STORES reaches the Machine too.
+        // A param the entering transition's guard READS, or an assign on it or the state's entry
+        // STORES, reaches the Machine too. A guard and an assign are pure by contract: both are run.
+        for (const guard of guards) {
+          try {
+            probeGuard(guard, recordingEvent(event, params, read), namedGuards);
+          } catch (err) {
+            probed = false;
+            warnings.push(`${where}: could not probe a guard (${messageOf(err)}); its params are unchecked`);
+          }
+        }
+        const unrun: string[] = [];
         for (const action of [...actions, ...n.entry]) {
+          if (!isAssign(action)) {
+            unrun.push(actionName(action));
+            continue;
+          }
           try {
             probeAssign(action, recordingEvent(event, params, read));
           } catch (err) {
@@ -131,7 +153,14 @@ export function effectChecks(
           }
         }
         const lost = params.filter((p) => !read.has(p));
-        if (probed && lost.length && isPickMapper(mapper)) {
+        if (probed && lost.length && unrun.length) {
+          // Any other action may do work, so the probe never runs one; it may read the param.
+          warnings.push(
+            `${where}: nothing the walk can run reads ${lost.map((p) => `"${p}"`).join(", ")}; an action it does ` +
+              `not run (${unrun.join(", ")}) may — unchecked. If none reads it, the Agent supplies it and nothing ` +
+              `uses it`,
+          );
+        } else if (probed && lost.length && isPickMapper(mapper)) {
           errors.push(
             `${where} with fromPick: ${lost.map((p) => `"${p}"`).join(", ")} is no key of the Effect's input ` +
               `(${keys.join(", ") || "none"}), and nothing else reads it — the Agent supplies it and it reaches ` +
@@ -208,9 +237,46 @@ function recorder(params: readonly string[], read: Set<string>): never {
   }) as never;
 }
 
-/** Run an `assign` against the probe's event: only assign is pure by contract, and only it is run. */
+const isAssign = (action: unknown): boolean =>
+  typeof action === "function" && (action as { type?: unknown }).type === "xstate.assign";
+
+/** How a warning names an action the probe does not run. */
+function actionName(action: unknown): string {
+  if (typeof action === "string") return `"${action}"`;
+  const type = (action as { type?: unknown } | null)?.type;
+  if (typeof type === "string") return type.startsWith("xstate.") ? type.slice("xstate.".length) : `"${type}"`;
+  return "an inline action";
+}
+
+/**
+ * Run a guard against the probe's event: a guard is pure by contract (xstate). Inline, named (by
+ * string or `{ type, params }`, from the Machine's own guards), and inside `and`/`or`/`not`. A
+ * guard that reads no event (`stateIn`) is nothing to probe. A named guard the Machine does not
+ * carry throws: the caller warns.
+ */
+function probeGuard(guard: unknown, event: unknown, named: Record<string, unknown>): void {
+  if (guard === undefined) return;
+  if (typeof guard === "string") return probeGuard({ type: guard }, event, named);
+  if (typeof guard === "function") {
+    const nested = (guard as { guards?: unknown }).guards;
+    if (Array.isArray(nested)) {
+      for (const g of nested) probeGuard(g, event, named);
+      return;
+    }
+    if ((guard as { check?: unknown }).check !== undefined) return;
+    (guard as (args: unknown, params: unknown) => unknown)({ context: anything(), event }, undefined);
+    return;
+  }
+  const { type, params } = guard as { type?: unknown; params?: unknown };
+  const impl = typeof type === "string" ? named[type] : undefined;
+  if (typeof impl !== "function") throw new Error(`no guard named ${JSON.stringify(type)}`);
+  const resolved = typeof params === "function" ? params({ context: anything(), event }) : params;
+  (impl as (args: unknown, params: unknown) => unknown)({ context: anything(), event }, resolved);
+}
+
+/** Run an `assign` against the probe's event: an assign is pure by contract, and is run. */
 function probeAssign(action: unknown, event: unknown): void {
-  if (typeof action !== "function" || (action as { type?: unknown }).type !== "xstate.assign") return;
+  if (!isAssign(action)) return;
   const assignment = (action as { assignment?: unknown }).assignment;
   const args = { event, context: anything(), self: anything(), spawn: anything() };
   const call = (f: unknown): void => {
