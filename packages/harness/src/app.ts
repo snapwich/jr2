@@ -451,8 +451,8 @@ export function harnessServer(deps: HarnessAppDeps): HarnessServer {
   app.post("/exec/:id/kill", (c) => {
     const execs = execsOrRefusal(c);
     if (!(execs instanceof Execs)) return execs;
-    const killed = execs.kill(c.req.param("id"));
-    return killed === undefined ? c.json({ error: "no such exec" }, 404) : c.json({ killed });
+    // Never 404: an id not seen yet is killed before its start (exec.ts), so a kill is always kept.
+    return c.json({ killed: execs.kill(c.req.param("id")) });
   });
   app.delete("/exec/:id", (c) => {
     const execs = execsOrRefusal(c);

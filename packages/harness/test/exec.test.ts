@@ -97,7 +97,40 @@ test("kill ends the group and settles `killed`", async () => {
   assert.equal(execs.kill("e5"), true);
   const { read } = await settled(execs, "e5");
   assert.deepEqual(read.output, { outcome: "killed", signal: "SIGKILL", tail: "" });
-  assert.equal(execs.kill("nope"), undefined, "an unknown id");
+  assert.equal(execs.kill("e5"), false, "already settled: nothing to kill");
+});
+
+test("its top process exits: the group ends with it, a grandchild included", async () => {
+  const execs = new Execs();
+  const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
+  const pidFile = join(dir, "child.pid");
+  // The top process starts a grandchild that would outlive it, detached from its pipes, and exits.
+  const script = [
+    "const { spawn } = require('node:child_process');",
+    `const c = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });`,
+    "c.unref();",
+    `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(c.pid));`,
+  ].join("\n");
+  execs.start("e5b", { argv: [node, "-e", script], timeoutMs: 60_000, tail: 4096 });
+  const { read } = await settled(execs, "e5b");
+  assert.deepEqual(read.output, { outcome: "exited", code: 0, tail: "" });
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  await sleep(50);
+  assert.throws(() => process.kill(pid, 0), /ESRCH/, "the grandchild did not outlive the exec");
+});
+
+test("a kill that arrives before its start: the start runs nothing (D1 holds a fast exit)", async () => {
+  const execs = new Execs();
+  const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
+  const marker = join(dir, "ran");
+  assert.equal(execs.kill("e5c"), true, "kept: this kill keeps it from running");
+  const argv = [node, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x')`];
+  assert.equal(execs.start("e5c", { argv, timeoutMs: 5_000, tail: 100 }), "exists");
+  const { read, stream } = await settled(execs, "e5c");
+  assert.deepEqual(read.output, { outcome: "killed", signal: "SIGKILL", tail: "" });
+  assert.match(stream, /killed before it started; nothing ran/);
+  await sleep(100);
+  assert.equal(existsSync(marker), false, "nothing ran");
 });
 
 test("one id runs once: a second start of the same id runs nothing", async () => {
@@ -199,12 +232,37 @@ test("the routes: start, read, kill, forget — and a relative cwd or a shell st
 
   assert.equal((await app.request("/exec/r1", json("DELETE"))).status, 204);
   assert.equal((await app.request("/exec/r1")).status, 404, "forgotten: unknown");
-  assert.equal((await app.request("/exec/r1/kill", json("POST"))).status, 404);
+  // A kill is never 404: an id not seen yet is killed before its start, and that start runs nothing.
+  const early = await app.request("/exec/r2/kill", json("POST"));
+  assert.equal(early.status, 200);
+  assert.deepEqual(await early.json(), { killed: true });
+  const late = await app.request("/exec/r2", json("POST", { argv: ["true"], timeoutMs: 1000, tail: 10 }));
+  assert.equal(late.status, 200, "known: the late start runs nothing");
 });
 
 test("the routes are gated on the bearer, like every other (ADR-0058)", async () => {
   const app = harnessApp({ checkBearer: () => false, runSubmissionFor: () => async () => {}, execs: new Execs() });
   assert.equal((await app.request("/exec/r1")).status, 401);
+});
+
+test("the Instance Harness holds no Workspace and refuses every exec route (ADR-0031)", async () => {
+  const app = harnessApp({
+    checkBearer: () => true,
+    runSubmissionFor: () => async () => {},
+    execs: new Execs(),
+    menuOnly: true,
+  });
+  const dir = mkdtempSync(join(tmpdir(), "jr2-exec-"));
+  const marker = join(dir, "ran");
+  const argv = [node, "-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x')`];
+  const start = await app.request("/exec/i1", json("POST", { argv, timeoutMs: 5_000, tail: 10 }));
+  assert.equal(start.status, 403);
+  assert.match(((await start.json()) as { error: string }).error, /Instance Harness/);
+  assert.equal((await app.request("/exec/i1")).status, 403);
+  assert.equal((await app.request("/exec/i1/kill", json("POST"))).status, 403);
+  assert.equal((await app.request("/exec/i1", json("DELETE"))).status, 403);
+  await sleep(100);
+  assert.equal(existsSync(marker), false, "nothing ran");
 });
 
 test("a Harness with no exec answers 501", async () => {

@@ -3,7 +3,7 @@
 // child is the Agent's user, sees the Sandbox Image's tools, and inherits this process's
 // environment — the same Stand-ins the Agent's `bash` holds (ADR-0059), and no credential of its own.
 //
-// Four claims, each a test in exec.test.ts:
+// Five claims, each a test in exec.test.ts:
 //
 //   1. argv, never shell text. `spawn(argv[0], argv.slice(1))` with no shell: a metacharacter in an
 //      argument is that argument's bytes. `sh -c` is the author's explicit choice, in the argv.
@@ -16,6 +16,9 @@
 //   4. A bounded tail is the output; the full stream is read by offset. stdout and stderr in arrival
 //      order, kept up to a cap the Orchestrator reads behind, and the last `tail` characters ride
 //      the output the Machine routes on.
+//   5. A kill holds whatever order it arrives in. The Effect's state can exit while its start is
+//      still on the wire, so a kill can reach this process first: it then marks the id killed, and
+//      the start that arrives after it runs nothing (D1, ADR-0067).
 //
 // What it does NOT keep: anything across a Harness restart. A restarted Harness knows no exec, and
 // the Orchestrator settles one it cannot find `unknown` — it never runs it again.
@@ -152,11 +155,20 @@ export class Execs {
     };
   }
 
-  /** Kill `id`'s process group (the Effect's state exited, ADR-0067). True when it was running,
-   * false when already settled, undefined for an unknown id. */
-  kill(id: string): boolean | undefined {
+  /**
+   * Kill `id`'s process group (the Effect's state exited, ADR-0067). True when this kill ended it,
+   * or kept it from running; false when it had already settled. An id this process does not know
+   * is killed before its start arrived: it is kept as settled `killed`, so that start runs nothing.
+   */
+  kill(id: string): boolean {
     const exec = this.execs.get(id);
-    if (!exec) return undefined;
+    if (!exec) {
+      const killed: Exec = { stream: "", base: 0, tailMax: 0, tail: "", ended: "killed", waiters: new Set() };
+      this.execs.set(id, killed);
+      this.append(killed, "jr2: killed before it started; nothing ran\n");
+      this.settle(killed, { outcome: "killed", signal: "SIGKILL", tail: "" });
+      return true;
+    }
     if (exec.output !== undefined || exec.child === undefined) return false;
     exec.ended ??= "killed";
     killGroup(exec.child);
