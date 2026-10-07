@@ -352,6 +352,57 @@ test("a state below an Effect's state that invokes something and that nothing en
   );
 });
 
+/** An Agent's state whose `send_email` pick enters history state `box.h`; `box`'s initial child is
+ * `idle`, and `sending` (which invokes `mail`) is entered only through `h`'s default `target`. */
+function historyBuild(target: unknown) {
+  return jr2Setup({ events: [send, finish], actors: { coder: coder(), mail } }).createMachine({
+    id: "wf",
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "rest",
+        states: {
+          rest: {},
+          box: {
+            initial: "idle",
+            states: {
+              h: { type: "history", target: target as never },
+              idle: {},
+              sending: { invoke: { src: "mail", input: { to: "a", subject: "b" }, onDone: "#wf.w.rest" } },
+            },
+          },
+        },
+        on: { send_email: ".box.h", finish: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+}
+
+test("a state that invokes and that a history state's default target enters is entered: no refusal", () => {
+  for (const target of ["sending", "#wf.w.box.sending"]) {
+    const warnings = loadWarningsOf(historyBuild(target));
+    assert.ok(!warnings.some((w) => /sending.*entered by nothing/.test(w)), warnings.join("\n"));
+  }
+});
+
+test("a history default the walk cannot follow makes the unentered-invoke check a warning, never a refusal", () => {
+  const warnings = loadWarningsOf(historyBuild("nowhere"));
+  assert.ok(
+    warnings.some((w) => /history state "wf\.w\.box\.h" has a default target the load walk cannot follow/.test(w)),
+    warnings.join("\n"),
+  );
+  assert.ok(
+    warnings.some((w) =>
+      /state "wf\.w\.box\.sending" below Agent "coder"'s state "wf\.w" may be entered by nothing.*history state "wf\.w\.box\.h"/.test(
+        w,
+      ),
+    ),
+    warnings.join("\n"),
+  );
+});
+
 test("below a state that invokes a Gate the walk does not look: that state is the Gate's", () => {
   const m = jr2Setup({ events: [finish], actors: { coder: coder(), mail } }).createMachine({
     id: "wf",

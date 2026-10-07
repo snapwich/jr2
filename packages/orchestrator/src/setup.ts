@@ -463,8 +463,9 @@ function deriveMenus(
  * DEFAULT target — shallow or deep, what xstate enters when nothing is recorded yet — or, with none
  * written, its parent's initial state, which entering the parent already covers. A recorded history
  * restores only states that were entered another way. A default target the walk cannot resolve is a
- * warning of its own: the modes behind it may read as unentered when they are not. A history state is
- * no mode.
+ * warning of its own: the modes behind it may read as unentered when they are not, and a state that
+ * invokes below that history state's parent is warned about, never refused — the walk refuses only
+ * what it knows nothing enters. A history state is no mode.
  */
 function unenteredModes(machine: AnyStateMachine, actors: Record<string, UnknownActorLogic>): string[] {
   type Node = AnyStateMachine["root"];
@@ -504,7 +505,7 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
       unresolved.add(node);
       out.push(
         `history state "${node.id}" has a default target the load walk cannot follow (${JSON.stringify(target)}) — ` +
-          `a mode entered only through it is reported as unentered`,
+          `a mode entered only through it is reported as unentered, and a state that invokes is warned, not refused`,
       );
     }
     return resolved;
@@ -537,6 +538,10 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
   }
   const invokedAgent = (node: Node): string | undefined =>
     node.invoke.find((inv) => typeof inv.src === "string" && isAgent(actors[inv.src]))?.src as string | undefined;
+  const isBelow = (node: Node, ancestor: Node): boolean => {
+    for (let n = node.parent; n !== undefined; n = n.parent) if (n === ancestor) return true;
+    return false;
+  };
 
   const refused: string[] = [];
   for (const node of all) {
@@ -554,10 +559,21 @@ function unenteredModes(machine: AnyStateMachine, actors: Record<string, Unknown
           // runs — a refusal, where a mode nothing enters is only a warning.
           if (!entered.has(child)) {
             const what = child.invoke.map((inv) => (typeof inv.src === "string" ? inv.src : inv.id)).join(", ");
-            refused.push(
-              `state "${child.id}" below Agent "${agent}"'s state "${node.id}" is entered by nothing, so what it ` +
-                `invokes (${what}) never runs — target it from a pick or a route, or delete it`,
-            );
+            // Where a history default the walk cannot follow may enter it, the walk does not know: a
+            // warning, never a refusal of a Machine that may be legal.
+            const unsure = [...unresolved].find((h) => isBelow(child, h.parent!));
+            if (unsure !== undefined) {
+              out.push(
+                `state "${child.id}" below Agent "${agent}"'s state "${node.id}" may be entered by nothing, so what ` +
+                  `it invokes (${what}) may never run — the walk cannot follow history state "${unsure.id}"'s ` +
+                  `default target, which may enter it`,
+              );
+            } else {
+              refused.push(
+                `state "${child.id}" below Agent "${agent}"'s state "${node.id}" is entered by nothing, so what it ` +
+                  `invokes (${what}) never runs — target it from a pick or a route, or delete it`,
+              );
+            }
             continue;
           }
           const party = child.invoke.some(
