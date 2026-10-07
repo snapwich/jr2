@@ -84,20 +84,14 @@ single-threaded.
   state's prompt is the author's, and the answer is a `pick-answer` notice to the Agent that picked: the next Turn of
   the conversation the picking Turn continued (`continue: true`, ADR-0062). A FRESH picking Turn's conversation is never
   heard again, and a later continued Turn of the same slot never made the pick, so its answer goes nowhere: the ledger
-  keeps no notice for it. The route of a reply includes the events the Machine sends itself AT ONCE while it runs (a
-  `raise`, or a `sendTo(self)` with no delay, in `onDone` or in the next state's entry): a reply whose route leaves the
-  Agent's state that way is the answer. Something other than the route can leave the Agent's state while work below it
-  still runs — a timer the Machine set (a Turn timeout `after`, a named delay, a delayed `raise` or `sendTo(self)`), an
-  event from outside the states below, a Gate's event, the Agent's own end. The exit stops that work (an invoke is
-  stopped when its state exits), so no reply answers the pick, and the poll and the notice carry `stopped` — the pick's
-  work did not finish — never "it ran". The same holds inside the Agent's state: a timer the Machine set that exits the
-  work and comes back to Rest there (a per-step timeout `after` on the child state) stopped the work, and the poll's
-  answer carries `stopped` with the Allowed picks — never "it moved, and nothing ran". The run host tells a fired timer
-  from an event sent at once by the scheduler's own table: it watches what the actor system arms, cancels and fires
-  (`timers.ts`, the same xstate internals as the timer table, ADR-0007). A restored hold is the Turn of the first
-  registration of its address in the restored tree: a restore that ends that Turn and starts another at the same address
-  before anything settles answers the pick with `turnComplete`. There is no default time bound on a held Turn; the
-  Console shows each outstanding pick "held since".
+  keeps no notice for it. The answer is the last reply since the pick whatever moves the Machine after it — that reply's
+  route (with the events the Machine sends itself as it runs), a timer the Machine set (a Turn timeout `after` on the
+  Agent's state, a per-step timeout on the child state), an event from outside the states below, a Gate's event, the
+  Agent's own end — out of the Agent's state or back to Rest inside it. An earlier link's reply is never dropped because
+  a later link was stopped (an invoke is stopped when its state exits); with no reply since the pick, the answer carries
+  none. A restored hold is the Turn of the first registration of its address in the restored tree: a restore that ends
+  that Turn and starts another at the same address before anything settles answers the pick with `turnComplete`. There
+  is no default time bound on a held Turn; the Console shows each outstanding pick "held since".
 - **The one exception is the Orchestrator ending it for its own reasons**, which is ADR-0007's requirement and exactly
   one place: `RunHost.stop()`. Process shutdown never stops actors at all (`instance.ts` calls `host.close()`, which
   ends observation feeds and nothing else), and restore is a fresh process. So "the host did this" is a flag it sets,

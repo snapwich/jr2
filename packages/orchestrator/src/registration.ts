@@ -513,8 +513,6 @@ export type OutstandingPick = {
   answered: boolean;
   turnComplete: boolean;
   answer?: PickAnswer;
-  /** A state exit stopped the pick's work: no reply answers it (ADR-0024). */
-  stopped?: true;
   fetched: boolean;
 };
 

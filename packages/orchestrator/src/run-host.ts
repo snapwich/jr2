@@ -34,7 +34,7 @@ import { seatOf, senderText } from "./party.ts";
 import { inputSchemaOf } from "./vocabulary.ts";
 import type { EchoEvent, EchoStatusChild, LiveConversation, PickAnswer } from "./wire.ts";
 import { replyOf, type Hold } from "./holds.ts";
-import { restOf, runningBelow } from "./rest.ts";
+import { restOf } from "./rest.ts";
 import {
   acceptsNow,
   agentAddress,
@@ -56,7 +56,7 @@ import {
   type RunMarker,
 } from "./registration.ts";
 import { NoticeLedger, type NoticeLedgerState } from "./notices.ts";
-import { pendingTimers, startAndRearm, watchTimers, type PendingTimer } from "./timers.ts";
+import { pendingTimers, startAndRearm, type PendingTimer } from "./timers.ts";
 import {
   DEFAULT_LEASE_INTERVAL_MS,
   WORKSPACE_WAIT_KEY,
@@ -375,10 +375,6 @@ export type AgentDeliveryReceipt = {
   answered?: true;
   /** The last reply since the pick (ADR-0024); absent with `answered`: it moved, nothing ran. */
   answer?: PickAnswer;
-  /** With `answered`: something other than the route of a reply moved the Machine while the pick's
-   * work ran — out of the Agent's state (`turnComplete`), or back to Rest inside it — so the exit
-   * stopped that work, and nothing answered it. */
-  stopped?: true;
   delivered: true;
   /** The event delivered — the Agent reads its own pick back, by name. */
   event: string;
@@ -1206,8 +1202,7 @@ export class RunHost {
    *
    *   - The Agent's state is busy: still outstanding.
    *   - Back at Rest in it: answered with the last reply since the pick and the Allowed picks read
-   *     AFTER the route — the guards read the context the route wrote (ADR-0029); or `stopped`, when
-   *     no reply's route brought it back (a timer the Machine set exited the work).
+   *     AFTER the route — the guards read the context the route wrote (ADR-0029).
    *   - It left the Agent's state (the registration is gone, or is another invocation's): the Turn
    *     is over, and the answer goes as a notice to the next Turn of the conversation the picking
    *     Turn continued; a fresh picking Turn's answer goes nowhere (ADR-0062).
@@ -1224,14 +1219,11 @@ export class RunHost {
       }
       const reading = same ? restOf(reg!) : "gone";
       if (reading === "busy") continue;
-      // Moved by the route of the last reply — its own events and the events it sent itself at once
-      // included — or by something else while work below still ran (a timer the Machine set, an
-      // outside event): then a state exit stopped that work, and no reply is its answer. The same
-      // fact whether the Machine left the Agent's state or came back to Rest inside it.
-      const stopped = hold.cutShort === true;
-      const answer = !stopped && hold.last ? { answer: hold.last } : {};
+      // The answer's default is the last reply since the pick, whatever moved the Machine after it
+      // (ADR-0024); with none, the answer carries no reply.
+      const answer = hold.last ? { answer: hold.last } : {};
       if (reading === "gone") {
-        hold.answer = { turnComplete: true, allowed: [], ...answer, ...(stopped ? { stopped: true as const } : {}) };
+        hold.answer = { turnComplete: true, allowed: [], ...answer };
         if (hold.conversation !== undefined) {
           run.notices.raise(
             {
@@ -1240,18 +1232,12 @@ export class RunHost {
               pick: hold.pick,
               cut: false,
               ...answer,
-              ...(stopped ? { stopped: true as const } : {}),
             },
             hold.conversation,
           );
         }
       } else {
-        hold.answer = {
-          turnComplete: false,
-          allowed: allowedOf(reg!),
-          ...answer,
-          ...(stopped ? { stopped: true as const } : {}),
-        };
+        hold.answer = { turnComplete: false, allowed: allowedOf(reg!), ...answer };
       }
       this.closeHold(hold);
     }
@@ -1324,7 +1310,6 @@ export class RunHost {
       allowed: hold.answer.allowed,
       answered: true,
       ...(hold.answer.answer !== undefined ? { answer: hold.answer.answer } : {}),
-      ...(hold.answer.stopped ? { stopped: true as const } : {}),
     };
   }
 
@@ -1809,7 +1794,6 @@ export class RunHost {
             answered: hold.answer !== undefined,
             turnComplete: hold.answer?.turnComplete ?? false,
             ...(hold.answer?.answer !== undefined ? { answer: hold.answer.answer } : {}),
-            ...(hold.answer?.stopped ? { stopped: true as const } : {}),
             fetched: hold.fetched === true,
           }
         );
@@ -1820,7 +1804,6 @@ export class RunHost {
       },
     };
     let bound = false;
-    let firedTimer: ((source: unknown, event: unknown) => boolean) | undefined;
     const actor = createActor(machine, {
       ...options,
       inspect: (ev) => {
@@ -1832,9 +1815,6 @@ export class RunHost {
         if (!bound && ev.type === "@xstate.actor") {
           bound = true;
           bindRun((ev.actorRef as AnyActorRef).system, binding);
-          // …and watch its scheduler before anything is armed: whether an event the Machine took
-          // was a timer it set, or an event an actor sent at once, decides `cutShort` below.
-          firedTimer = watchTimers((ev.actorRef as AnyActorRef).system);
         }
         // A restored hold is the Turn of the FIRST registration of its address in this tree: bind
         // it as soon as one exists, before an event can end that Turn and start another at the same
@@ -1872,29 +1852,10 @@ export class RunHost {
             const seat = seatOf(reg.invoker.getSnapshot() as AnyMachineSnapshot, reg.invokeId);
             return seat && replyOf(ev.event, ev.sourceRef as AnyActorRef | undefined, reg.invoker, seat);
           };
-          // Every relayed event is asked, so the watch forgets each timer as it fires.
-          const timer = firedTimer?.(ev.sourceRef, ev.event) === true;
           for (const hold of holds.values()) {
             if (hold.answer !== undefined) continue;
-            const live = this.table.lookup(agentAddress(hold.instanceId));
-            const reg = this.holdRegs.get(hold) ?? live;
-            const reply = replyTo(reg);
+            const reply = replyTo(this.holdRegs.get(hold) ?? this.table.lookup(agentAddress(hold.instanceId)));
             if (reply) hold.last = reply;
-            // While the Agent's state is still the hold's, each event the Machine takes says who would
-            // move it out (`cutShort`), when the Machine that invokes the Agent or one above it takes
-            // it — events between the children below do not move it; once the state is gone, the next
-            // state's events are not the hold's:
-            //   - a reply: its route;
-            //   - an event a Machine sent itself at once (`sendTo(self)`; a `raise` is never relayed):
-            //     part of the route of the event whose actions sent it — no change;
-            //   - anything else — a timer the Machine set, an event from outside the states below, a
-            //     party's event, the Agent's own end: it stops the work below, if any still runs.
-            const taker = ev.actorRef as AnyActorRef;
-            if (reg === undefined || reg !== live || !reg.invoker || !atOrBelow(reg.invoker, taker)) continue;
-            if (reply) delete hold.cutShort;
-            else if (!timer && ev.sourceRef === taker) continue;
-            else if (stillRunning(reg)) hold.cutShort = true;
-            else delete hold.cutShort;
           }
           const sending = this.sending;
           const reply = sending && replyTo(sending.reg);
@@ -2017,18 +1978,4 @@ export class RunHost {
       this.announce(run.record.workflow, { kind: "status", status: runStatus });
     }
   }
-}
-
-/** `actor` is `ref`, or `ref` is its parent, its parent's parent, and so on up to the root. */
-/** Does work still run below the Agent's state of `reg` — a live child of an active state under it?
- * A timer that holds Rest is no work: when the state exits, nothing it started is stopped. */
-function stillRunning(reg: Registration): boolean {
-  if (!reg.invoker || !reg.invokeId) return false;
-  const seat = seatOf(reg.invoker.getSnapshot() as AnyMachineSnapshot, reg.invokeId);
-  return seat !== undefined && runningBelow(reg.invoker, seat).length > 0;
-}
-
-function atOrBelow(actor: AnyActorRef, ref: AnyActorRef): boolean {
-  for (let at: AnyActorRef | undefined = actor; at !== undefined; at = at._parent) if (at === ref) return true;
-  return false;
 }

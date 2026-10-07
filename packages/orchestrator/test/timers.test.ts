@@ -29,7 +29,6 @@ import {
   sendParent,
   sendTo,
   setup,
-  type AnyActorRef,
 } from "xstate";
 import { z } from "zod";
 import { defineEvent, doneEvent, requestReviewEvent } from "@jr2/agent-protocol";
@@ -38,7 +37,7 @@ import { agent } from "../src/harness-client.ts";
 import { pool, source } from "../src/pool.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { RunHost, type WorkflowDef } from "../src/run-host.ts";
-import { pendingTimers, startAndRearm, watchTimers, type PendingTimer } from "../src/timers.ts";
+import { pendingTimers, startAndRearm, type PendingTimer } from "../src/timers.ts";
 import { coderDefinition, mkStore, MockFlueClient } from "./_fixtures.ts";
 import type { SnapshotStore } from "../src/snapshot-store.ts";
 
@@ -164,57 +163,6 @@ test("raw xstate + startAndRearm: a backwards wall clock cannot push a timer pas
   const t = await timeTo(() => restored.getSnapshot().value === "done");
   restored.stop();
   assertAbout(t, DELAY, "clamped to the delay");
-});
-
-test("raw xstate + watchTimers: a fired timer is told from an event sent at once", async () => {
-  const m = createMachine({
-    initial: "a",
-    states: {
-      a: {
-        entry: [sendTo(({ self }) => self, { type: "now" }), raise({ type: "later" }, { delay: 10 })],
-        after: { 20: "b" },
-        on: { now: {}, later: {} },
-      },
-      b: {},
-    },
-  });
-  const seen: Array<[string, boolean]> = [];
-  let fired: ((source: unknown, event: unknown) => boolean) | undefined;
-  const actor = createActor(m, {
-    inspect: (ev) => {
-      if (ev.type === "@xstate.actor" && !fired) fired = watchTimers((ev.actorRef as AnyActorRef).system);
-      if (ev.type === "@xstate.event" && !ev.event.type.startsWith("xstate.init"))
-        seen.push([ev.event.type, fired!(ev.sourceRef, ev.event)]);
-    },
-  }).start();
-  await sleep(40);
-  actor.stop();
-  assert.deepEqual(seen, [
-    ["now", false],
-    ["later", true],
-    ["xstate.after.20.(machine).a", true],
-  ]);
-});
-
-test("raw xstate + watchTimers: a re-armed timer is a timer too", async () => {
-  const first = createActor(waiting).start();
-  const timers = pendingTimers(first);
-  const persisted = JSON.parse(JSON.stringify(first.getPersistedSnapshot()));
-  first.stop();
-  const seen: Array<[string, boolean]> = [];
-  let fired: ((source: unknown, event: unknown) => boolean) | undefined;
-  const restored = createActor(waiting, {
-    snapshot: persisted,
-    inspect: (ev) => {
-      if (ev.type === "@xstate.actor" && !fired) fired = watchTimers((ev.actorRef as AnyActorRef).system);
-      if (ev.type === "@xstate.event" && !ev.event.type.startsWith("xstate.init"))
-        seen.push([ev.event.type, fired!(ev.sourceRef, ev.event)]);
-    },
-  });
-  startAndRearm(restored, timers);
-  await timeTo(() => restored.getSnapshot().value === "done");
-  restored.stop();
-  assert.deepEqual(seen, [[`xstate.after.${DELAY}.m.waiting`, true]]);
 });
 
 // ---- The run host, driven like a restart ----------------------------------------------------
