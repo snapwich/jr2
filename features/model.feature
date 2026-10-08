@@ -205,10 +205,11 @@ Feature: a real model drives the kit
   Rule: a command Effect's answer is its output, and the Agent acts on it
     ADR-0067. A pick whose target runs a `command` in the Agent's own Sandbox is outstanding while
     it runs, and answered at Rest with the command's output and the Allowed picks read after the
-    route; an output jr2 cannot know is `unknown`, never a guess. Written, not yet run: each floor is
-    ADR-0029/0062's measurement of a list read last — 10/10 obeyed — rounded down as ADR-0066 rounds
-    it, because the answer and its Allowed picks are the newest thing the model read. The first run
-    confirms or corrects each, in the change that records its baseline.
+    route; an output jr2 cannot know is `unknown`, never a guess. Each floor is ADR-0029/0062's
+    measurement of a list read last — 10/10 obeyed — rounded down as ADR-0066 rounds it, because the
+    answer and its Allowed picks are the newest thing the model read. `answered` and
+    `unknown-outcome` cleared it on their first runs; `allowed-after-route` did not, and is open
+    (ADR-0066 says why).
 
     Scenario: the answer is the command's output, and the next pick follows it
       The `answered` workflow's `run_tests` runs a failing test command. Its answer is the output,

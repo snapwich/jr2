@@ -54,5 +54,17 @@
   "cut-pick/off": {
     "passed": 10,
     "trials": 10
+  },
+  "wake/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "answered/off": {
+    "passed": 10,
+    "trials": 10
+  },
+  "unknown-outcome/off": {
+    "passed": 10,
+    "trials": 10
   }
 }

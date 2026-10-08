@@ -125,8 +125,25 @@ recover, finish — are exercised only one scripted tool call at a time.
 - The command-Effect claims of ADR-0067 — `answered` (the next pick follows a command's output), `allowed-after-route`
   (the next call is one the route allows, not one allowed before the pick) and `unknown-outcome` (after a Harness
   restart killed the command, the Agent checks before it announces; the step restarts the Sandbox's Harness container) —
-  are written and have not run, with the borrowed floor of ADR-0029/0062's measurement of a list read last; the first
-  run confirms or corrects it in the change that records their baselines.
+  carry the borrowed floor of ADR-0029/0062's measurement of a list read last. Their first runs (home-lab vLLM,
+  2026-10-07 and 08, four runs of the tier) read:
+  - `answered`: 10, 9, 10 and 10 of 10, now a baseline.
+  - `unknown-outcome`: 10 of 10 in both runs that read it whole, now a baseline. The Harness container restarts in
+    place, and the reap when the run settles deletes the pod with every log it held, so the step follows the restarted
+    container's log from the moment it runs. Read after the settle, the log was gone in 5 of 10 trials of the first run,
+    each a model that had checked.
+  - `allowed-after-route`: 3, 5 (a diagnostic run), 4 and 4 of 10, below its floor, and **open**. Every miss has one
+    shape: after the failing answer the coder reads the seed Repo, finds its failing test, fixes it with its Working
+    tools, sees it pass, and picks `ship` — the newest "Allowed now" it read (`open_issue`, `run_tests`) does not list
+    it. The correction receipt then sends it to `run_tests`, which fails again, and to `open_issue`. The setup mixes two
+    things: the test command is fixed data that always fails, and the Worktree holds a test the model can make pass.
+    Whether that is a model that disobeys the newest list or a setup that gives it a reason the claim did not mean is
+    not decided; no setup change is made without that decision.
+- **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
+  `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
+  wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but
+  name. A fault, a lost Workspace or an unsettled run never finished.
+- `wake` (below, under `push-wake`) has run four times, 10 of 10 each, and is a baseline.
 - **A claim's setup may change; its floor and what counts as a pass may not.** A setup is the part of a trial that
   brings the model to the moment the claim measures. When a claim falls below its floor because that moment seldom
   happens, its workflow and its driver may change for the setup alone, and the reason is recorded here. A setup that no
@@ -164,8 +181,9 @@ recover, finish — are exercised only one scripted tool call at a time.
   `publish` is allowed in `reviewing`. The prompt, the floor and the pass are unchanged: the call after the correction
   receipt is `publish`. Both setups have run: `mode-stop` and `mode-refusal` cleared their floors 10 of 10.
 
-- The drivers' readings of the printed conversation and of a workflow's modes are plain functions in
-  `features/lib/model-said.ts`, with unit tests beside them that need no cluster and no model.
+- The drivers' readings of the printed conversation, of a workflow's modes and of a restarted Harness container are
+  plain functions in `features/lib/model-said.ts`, and what each claim workflow means by "finished" is a table in
+  `features/lib/model-finished.ts`, with unit tests beside them that need no cluster and no model.
 - The run has a second form, `ticket-modes`: one coder Turn walks three modes of its state to a verified commit.
 - A claim whose notice no step can yet raise (Compaction's summary, a kernel group kill) is added when the step exists;
   the ADR does not wait on it.
