@@ -125,30 +125,31 @@ that nothing enters: what it invokes never runs (a mode nothing enters is only t
 reachability walk, history defaults included; where a history default the walk cannot resolve may enter such a state,
 the walk does not know, and it warns instead of refusing. Both checks look below a state that invokes an Effect or a
 child Machine, and stop at one that invokes another Agent or a Gate. Where a pick enters a state that invokes an Effect,
-every param of the pick must be read — by that invoke's input (`fromPick` reads each param that is a key of the Effect's
-input, a command's argv slots, and each one its `fill` reads; a plain mapper is probed with a recording event), by the
-entering transition's guard (inline, named, or inside `and`/`or`/`not`), or by an `assign` on the entering transition or
-on the entry of a state it enters — else the Agent supplies it and nothing uses it: refused. A pick enters what xstate
-enters: its target, the target's ancestors below the transition's domain, and their initial descendants — and what an
-eventless `always` on a state it entered enters next, in the same macrostep with the same event, whose guard and actions
-count as the entering transition's. So a pick that targets a compound state enters the child that invokes, a pick that
-targets a child enters the ancestor that invokes, a pick that targets a state whose `always` moves on enters where it
-moves, and a transition inside the invoking state does not enter it. A pick is a writing an Agent may send (the position
-rule above); a Gate's event is a human's, and its params are not checked. The walk does not carry a pick's params across
-a timer: where an `after` on a state the pick entered moves on to a state that invokes an Effect, the Effect's input and
-every guard and action from the timer on read the timer's event, so only a guard or `assign` before the timer reads them
-— a param that must cross is stored with `assign` on the pick's transition, and one nothing stores is refused. A pick
-that targets a history state enters what was last active, which the walk cannot know: where that may be a state that
-invokes an Effect, the pick's params there are unchecked, and it warns. A guard and an assign are pure by contract, so
-the probe runs them; it runs no other action. TypeScript does not catch a `fromPick` param that is no key of the input:
-it accepts an extra key on a spread. It refuses a `fill` that sets a key that is also a param (the Machine's value would
-drop the Agent's), and a `fromPick` of a pick other than the event that enters the state. Code the probe cannot or does
-not run may read a param, so it gives a warning, never a refusal: a mapper, guard or assign that throws in the probe,
-and — where a param is left unread — any other action on the entering transition or on the entry of a state it enters,
-named in the warning. Its params are unchecked. It warns where an Agent's state answers on a mode's entry (`answer`) and
-an Effect below it has no `onDone`: the Effect settles in place, that mode is not entered again, and the Agent reads the
-Effect's output, not the answer. A pick that enters no Effect, directly or across a timer, is not checked for its
-params.
+every param of the pick must be read by something — the check is per state, not per invoke — by the input of any invoke
+of that state, an Effect's or not, so a second invoke beside the state's work counts (`fromPick` reads each param that
+is a key of the Effect's input, a command's argv slots, and each one its `fill` reads; on an invoke that is no Effect it
+reads every param; a plain mapper is probed with a recording event), by the entering transition's guard (inline, named,
+or inside `and`/`or`/`not`), or by an `assign` on the entering transition or on the entry of a state it enters — else
+the Agent supplies it and nothing uses it: refused. A pick enters what xstate enters: its target, the target's ancestors
+below the transition's domain, and their initial descendants — and what an eventless `always` on a state it entered
+enters next, in the same macrostep with the same event, whose guard and actions count as the entering transition's. So a
+pick that targets a compound state enters the child that invokes, a pick that targets a child enters the ancestor that
+invokes, a pick that targets a state whose `always` moves on enters where it moves, and a transition inside the invoking
+state does not enter it. A pick is a writing an Agent may send (the position rule above); a Gate's event is a human's,
+and its params are not checked. The walk does not carry a pick's params across a timer: where an `after` on a state the
+pick entered moves on to a state that invokes an Effect, the Effect's input and every guard and action from the timer on
+read the timer's event, so only a guard or `assign` before the timer reads them — a param that must cross is stored with
+`assign` on the pick's transition, and one nothing stores is refused. A pick that targets a history state enters what
+was last active, which the walk cannot know: where that may be a state that invokes an Effect, the pick's params there
+are unchecked, and it warns. A guard and an assign are pure by contract, so the probe runs them; it runs no other
+action. TypeScript does not catch a `fromPick` param that is no key of the input: it accepts an extra key on a spread.
+It refuses a `fill` that sets a key that is also a param (the Machine's value would drop the Agent's), and a `fromPick`
+of a pick other than the event that enters the state. Code the probe cannot or does not run may read a param, so it
+gives a warning, never a refusal: a mapper, guard or assign that throws in the probe, and — where a param is left unread
+— any other action on the entering transition or on the entry of a state it enters, named in the warning. Its params are
+unchecked. It warns where an Agent's state answers on a mode's entry (`answer`) and an Effect below it has no `onDone`:
+the Effect settles in place, that mode is not entered again, and the Agent reads the Effect's output, not the answer. A
+pick that enters no Effect, directly or across a timer, is not checked for its params.
 
 - **Two parties' writings of one name that can be active together** — one above the other on one path, or in parallel
   regions — where the deeper writing (each other region's, for parallel regions) does not decline the other sender with

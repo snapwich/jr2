@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { and, assign } from "xstate";
+import { and, assign, fromPromise } from "xstate";
 import { z } from "zod";
 import { defineEvent } from "@jr2/agent-protocol";
 import { agentActorWith } from "../src/actor.ts";
@@ -133,6 +133,67 @@ test("a fromPick param that is no key of the Effect's input is refused: it reach
       assert.match(err.message, /pick "send_email" enters state "wf\.w\.sending" \(Effect "mail"\) with fromPick/);
       assert.match(err.message, /"cc" is no key of the Effect's input \(subject, to\)/);
       assert.doesNotMatch(err.message, /"to"|"subject" is no key/);
+      return true;
+    },
+  );
+});
+
+/** `send_email` enters `sending`, which invokes every one of `invokes` (the state's work, and a
+ * second invoke beside it with no `onDone`). */
+const audit = fromPromise(async () => undefined);
+function buildTwo(invokes: unknown[]) {
+  return jr2Setup({ events: [send, finish], actors: { coder: coder(), mail, audit } }).createMachine({
+    id: "wf",
+    initial: "w",
+    states: {
+      w: {
+        invoke: { src: "coder", input: { prompt: "p", endpoint: EP } },
+        initial: "rest",
+        states: { rest: {}, sending: { invoke: invokes as never } },
+        on: { send_email: ".sending", finish: "done" },
+      },
+      done: { type: "final" },
+    },
+  });
+}
+
+test("the check is per state: two invokes that each read a different param read them all — no refusal", () => {
+  const m = buildTwo([
+    { src: "mail", input: ({ event }: { event: { to: string } }) => ({ to: event.to, subject: "s" }), onDone: "rest" },
+    { src: "mail", input: ({ event }: { event: { subject: string } }) => ({ to: "x", subject: event.subject }) },
+  ]);
+  assert.deepEqual(loadWarningsOf(m), []);
+});
+
+test("an invoke beside the Effect that is no Effect reads a param too: no refusal", () => {
+  const m = buildTwo([
+    {
+      src: "mail",
+      input: ({ event }: { event: { to: string } }) => ({ to: event.to, subject: "s" }),
+      onDone: "rest",
+    },
+    { src: "audit", input: ({ event }: { event: { subject: string } }) => ({ line: event.subject }) },
+  ]);
+  assert.deepEqual(loadWarningsOf(m), []);
+});
+
+test("a param that no invoke of the state reads is still refused, once, naming every Effect", () => {
+  assert.throws(
+    () =>
+      buildTwo([
+        {
+          src: "mail",
+          input: ({ event }: { event: { to: string } }) => ({ to: event.to, subject: "s" }),
+          onDone: "rest",
+        },
+        { src: "mail", id: "again", input: { to: "x", subject: "y" } },
+      ]),
+    (err: Error) => {
+      assert.match(
+        err.message,
+        /pick "send_email" enters state "wf\.w\.sending" \(Effects "mail", "mail"\), which never reads "subject"/,
+      );
+      assert.equal(err.message.match(/never reads/g)?.length, 1);
       return true;
     },
   );

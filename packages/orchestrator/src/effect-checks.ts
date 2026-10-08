@@ -1,9 +1,11 @@
 // The load walk's Effect checks (ADR-0067), run inside `jr2Setup.createMachine` beside ADR-0015's.
 //
 //   - A PICK PARAM THAT NOTHING READS. Every param of every pick that enters a state invoking an
-//     Effect is read by that invoke's input — `fromPick` for each param that is a key of the Effect's
-//     input (a command's argv slots) or that its `fill` reads, a plain mapper probed with a recording
-//     event — or read by the entering transition's guard, or stored by an `assign` on the entering
+//     Effect is read by SOMETHING — the check is per state, not per invoke: by the input of any invoke
+//     of that state, an Effect's or not (a second invoke beside the state's work is a legal pattern)
+//     — `fromPick` for each param that is a key of the Effect's input (a command's argv slots) or that
+//     its `fill` reads, every param on an invoke that is no Effect, a plain mapper probed with a
+//     recording event — or read by the entering transition's guard, or stored by an `assign` on the entering
 //     transition or on the entry of any state it enters (its targets, their ancestors below the
 //     transition's domain, their initial descendants — xstate's entry set — and what an eventless
 //     `always` on an entered state enters next, with that transition's guard and actions). Else the
@@ -198,41 +200,57 @@ export function effectChecks(
     `not run (${unrun.join(", ")}) may — unchecked. If none reads it, the Agent supplies it and nothing ` +
     `uses it`;
 
+  // Per STATE, not per invoke: a param counts as read when ANY invoke of the state reads it (an
+  // Effect's or not — a second invoke beside the state's work is a legal pattern), or the entering
+  // transition's guard reads it, or an assign stores it. Only a param that NOTHING reads is refused.
   for (const n of all) {
     const configs = [n.config.invoke ?? []].flat() as Array<{ input?: unknown } | undefined>;
-    n.invoke.forEach((inv, i) => {
+    const invokes = n.invoke.map((inv, i) => {
       const logic = logicOf(inv.src);
-      if (!isEffect(logic)) return;
-      const keys = inputKeysOf(logic.effect);
-      const slot = typeof inv.src === "string" ? inv.src : inv.id;
-      const mapper = configs[i]?.input;
-      for (const [event, { pick, ...reads }] of entering.get(n) ?? []) {
-        if (isPickMapper(mapper) && mapper.pick.name !== event) {
-          errors.push(
-            `state "${n.id}" (Effect "${slot}") reads the params of pick "${mapper.pick.name}" but is entered on ` +
-              `"${event}" — that event does not carry them`,
-          );
-          continue;
-        }
-        const def = defs.get(event);
-        if (!def || !pick) continue;
-        const params = Object.keys(def.input.shape);
-        if (params.length === 0) continue;
-        const where = `pick "${event}" enters state "${n.id}" (Effect "${slot}")`;
-        const read = new Set<string>();
-        let probed = true;
+      const effect = isEffect(logic) ? logic.effect : undefined;
+      return {
+        effect,
+        keys: effect ? inputKeysOf(effect) : [],
+        slot: typeof inv.src === "string" ? inv.src : inv.id,
+        mapper: configs[i]?.input,
+      };
+    });
+    const effects = invokes.filter((inv) => inv.effect !== undefined);
+    if (!effects.length) continue;
+    const at = `state "${n.id}" (Effect${effects.length > 1 ? "s" : ""} ${effects.map((e) => `"${e.slot}"`).join(", ")})`;
+    for (const [event, { pick, ...reads }] of entering.get(n) ?? []) {
+      let misread = false;
+      for (const { effect, slot, mapper } of invokes) {
+        if (!isPickMapper(mapper) || mapper.pick.name === event) continue;
+        misread = true;
+        errors.push(
+          `state "${n.id}" (${effect ? "Effect" : "invoke"} "${slot}") reads the params of pick ` +
+            `"${mapper.pick.name}" but is entered on "${event}" — that event does not carry them`,
+        );
+      }
+      if (misread) continue;
+      const def = defs.get(event);
+      if (!def || !pick) continue;
+      const params = Object.keys(def.input.shape);
+      if (params.length === 0) continue;
+      const where = `pick "${event}" enters ${at}`;
+      const read = new Set<string>();
+      let probed = true;
+      for (const { effect, keys, slot, mapper } of invokes) {
+        const own = `pick "${event}" enters state "${n.id}" (${effect ? "Effect" : "invoke"} "${slot}")`;
         if (isPickMapper(mapper)) {
           // Params flow by NAME: one that is no key of the Effect's input reaches nothing, and
-          // TypeScript does not reject an extra key on a spread. Only `fill` can still read it.
-          for (const p of params) if (keys.includes(p)) read.add(p);
+          // TypeScript does not reject an extra key on a spread. Only `fill` can still read it. An
+          // invoke that is no Effect declares no keys: it gets every param.
+          const overwritten = new Set<string>();
           if (mapper.fill) {
             try {
               const filled = mapper.fill({ context: anything(), params: recorder(params, read) });
               for (const p of params) {
                 if (filled && typeof filled === "object" && p in filled) {
-                  read.delete(p);
+                  overwritten.add(p);
                   errors.push(
-                    `${where}: \`fill\` sets "${p}", which is also a param of the pick — the Machine's value wins ` +
+                    `${own}: \`fill\` sets "${p}", which is also a param of the pick — the Machine's value wins ` +
                       `and the Agent's is dropped; rename one, or drop it from the def`,
                   );
                 }
@@ -240,10 +258,11 @@ export function effectChecks(
             } catch (err) {
               probed = false;
               warnings.push(
-                `${where}: could not probe fromPick's fill (${messageOf(err)}); a param it reads or overwrites is unchecked`,
+                `${own}: could not probe fromPick's fill (${messageOf(err)}); a param it reads or overwrites is unchecked`,
               );
             }
           }
+          for (const p of params) if ((!effect || keys.includes(p)) && !overwritten.has(p)) read.add(p);
         } else if (typeof mapper === "function") {
           try {
             (mapper as (args: unknown) => unknown)({
@@ -253,58 +272,61 @@ export function effectChecks(
             });
           } catch (err) {
             probed = false;
-            warnings.push(`${where}: could not probe the input mapper (${messageOf(err)}); its params are unchecked`);
+            warnings.push(`${own}: could not probe the input mapper (${messageOf(err)}); its params are unchecked`);
           }
         }
-        // A param the entering transition's guard READS, or an assign on it or on the entry of a
-        // state it enters STORES, reaches the Machine too. A guard and an assign are pure by
-        // contract: both are run.
+      }
+      // A param the entering transition's guard READS, or an assign on it or on the entry of a
+      // state it enters STORES, reaches the Machine too. A guard and an assign are pure by
+      // contract: both are run.
+      const probe = probeReads(where, event, params, reads, read);
+      probed &&= probe.probed;
+      const lost = params.filter((p) => !read.has(p));
+      const picked = effects.filter((e) => isPickMapper(e.mapper));
+      if (probed && lost.length && probe.unrun.length) {
+        // Any other action may do work, so the probe never runs one; it may read the param.
+        warnings.push(unrunWarning(where, lost, probe.unrun));
+      } else if (probed && lost.length && picked.length) {
+        const inputs =
+          picked.length === 1
+            ? `the Effect's input (${picked[0]!.keys.join(", ") || "none"})`
+            : `any fromPick Effect's input (${picked.map((e) => `"${e.slot}": ${e.keys.join(", ") || "none"}`).join("; ")})`;
+        errors.push(
+          `${where} with fromPick: ${lost.map((p) => `"${p}"`).join(", ")} is no key of ${inputs}, and nothing ` +
+            `else reads it — the Agent supplies it and it reaches nothing; name an argv slot for it, read it in ` +
+            `\`fill\`, store it with assign, or drop it from the def`,
+        );
+      } else if (probed && lost.length) {
+        errors.push(
+          `${where}, which never reads ${lost.map((p) => `"${p}"`).join(", ")}: the Agent supplies it and nothing ` +
+            `uses it — map it in an invoke's input, store it with assign, or drop it from the def`,
+        );
+      }
+    }
+    // Across a timer: every invoke's input reads the timer's event, so only what read the pick
+    // before the timer counts. A `fromPick` here is refused above (it is entered on the timer's
+    // event, which does not carry the params).
+    if (invokes.some(({ mapper }) => isPickMapper(mapper))) continue;
+    for (const [event, hops] of crossing.get(n) ?? []) {
+      const def = defs.get(event);
+      if (!def) continue;
+      const params = Object.keys(def.input.shape);
+      if (params.length === 0) continue;
+      for (const { reads, via } of hops) {
+        const where = `pick "${event}" enters state "${via.id}", whose \`after\` moves on to ${at}`;
+        const read = new Set<string>();
         const probe = probeReads(where, event, params, reads, read);
-        probed &&= probe.probed;
         const lost = params.filter((p) => !read.has(p));
-        if (probed && lost.length && probe.unrun.length) {
-          // Any other action may do work, so the probe never runs one; it may read the param.
-          warnings.push(unrunWarning(where, lost, probe.unrun));
-        } else if (probed && lost.length && isPickMapper(mapper)) {
+        if (!probe.probed || !lost.length) continue;
+        if (probe.unrun.length) warnings.push(unrunWarning(where, lost, probe.unrun));
+        else
           errors.push(
-            `${where} with fromPick: ${lost.map((p) => `"${p}"`).join(", ")} is no key of the Effect's input ` +
-              `(${keys.join(", ") || "none"}), and nothing else reads it — the Agent supplies it and it reaches ` +
-              `nothing; name an argv slot for it, read it in \`fill\`, store it with assign, or drop it from the def`,
+            `${where}, and nothing stores ${lost.map((p) => `"${p}"`).join(", ")} before the timer: the ` +
+              `invokes' input reads the timer's event, not the pick's, so the Agent supplies it and nothing uses ` +
+              `it — store it with assign on the pick's transition, or drop it from the def`,
           );
-        } else if (probed && lost.length) {
-          errors.push(
-            `${where}, which never reads ${lost.map((p) => `"${p}"`).join(", ")}: the Agent supplies it and nothing ` +
-              `uses it — map it in the invoke's input, store it with assign, or drop it from the def`,
-          );
-        }
       }
-      // Across a timer: the Effect's input reads the timer's event, so only what read the pick
-      // before the timer counts. A `fromPick` here is refused above (it is entered on the timer's
-      // event, which does not carry the params).
-      if (isPickMapper(mapper)) return;
-      for (const [event, hops] of crossing.get(n) ?? []) {
-        const def = defs.get(event);
-        if (!def) continue;
-        const params = Object.keys(def.input.shape);
-        if (params.length === 0) continue;
-        for (const { reads, via } of hops) {
-          const where =
-            `pick "${event}" enters state "${via.id}", whose \`after\` moves on to state "${n.id}" ` +
-            `(Effect "${slot}")`;
-          const read = new Set<string>();
-          const probe = probeReads(where, event, params, reads, read);
-          const lost = params.filter((p) => !read.has(p));
-          if (!probe.probed || !lost.length) continue;
-          if (probe.unrun.length) warnings.push(unrunWarning(where, lost, probe.unrun));
-          else
-            errors.push(
-              `${where}, and nothing stores ${lost.map((p) => `"${p}"`).join(", ")} before the timer: the Effect's ` +
-                `input reads the timer's event, not the pick's, so the Agent supplies it and nothing uses it — ` +
-                `store it with assign on the pick's transition, or drop it from the def`,
-            );
-        }
-      }
-    });
+    }
   }
 
   // The narrow no-onDone warning, per Agent's state.
