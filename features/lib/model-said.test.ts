@@ -8,11 +8,13 @@ import { assign, createMachine } from "xstate";
 import {
   askAfter,
   follow,
+  harnessRestarts,
   isNudge,
   isRestatement,
   menuCalls,
   modeAtAsk,
   modesOf,
+  restartedHarnessRunning,
   saidAfterPrompt,
   saidIn,
   told,
@@ -194,4 +196,33 @@ test("after a Harness restart: what the model said after the re-admission prompt
   ].join("\n");
   assert.deepEqual(saidAfterPrompt(log, "advisor", "Your previous turn was cut"), [{ call: "file_report" }]);
   assert.equal(saidAfterPrompt("[advisor] [prompt] [t0-a] x", "advisor", "Your previous turn was cut"), undefined);
+});
+
+// A Sandbox's Harness container restarted in place keeps its pod, and the reap when the run settles
+// takes the pod and every log it held: the restarted container's log is followed while it lives.
+const sandboxPod = (restartCount: number, state: Record<string, unknown>) => ({
+  status: {
+    containerStatuses: [
+      { name: "repo-sync", restartCount: 9, state: { running: {} } },
+      { name: "harness", restartCount, state },
+    ],
+  },
+});
+
+test("harnessRestarts reads the Harness container's restart count, and nothing without that container", () => {
+  assert.equal(harnessRestarts(sandboxPod(2, { running: {} })), 2);
+  assert.equal(harnessRestarts({ status: { containerStatuses: [{ name: "repo-sync", restartCount: 1 }] } }), undefined);
+  assert.equal(harnessRestarts({}), undefined);
+});
+
+test("restartedHarnessRunning holds once the Harness container restarted past `before` and runs again", () => {
+  assert.equal(restartedHarnessRunning(sandboxPod(0, { running: {} }), 0), false, "not restarted yet");
+  assert.equal(
+    restartedHarnessRunning(sandboxPod(1, { waiting: { reason: "CrashLoopBackOff" } }), 0),
+    false,
+    "restarted, not running",
+  );
+  assert.equal(restartedHarnessRunning(sandboxPod(1, { running: {} }), 0), true);
+  assert.equal(restartedHarnessRunning(sandboxPod(3, { running: {} }), 2), true);
+  assert.equal(restartedHarnessRunning({}, 0), false, "no Harness container");
 });

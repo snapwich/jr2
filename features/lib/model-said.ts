@@ -100,6 +100,26 @@ export function follow(command: string, args: readonly string[]): Follow {
   return out;
 }
 
+/** The parts of a pod (`kubectl get pod -o json`) the restart reading uses. */
+export type PodLike = {
+  status?: { containerStatuses?: ReadonlyArray<{ name: string; restartCount?: number; state?: object }> };
+};
+
+const harnessStatus = (pod: PodLike) => pod.status?.containerStatuses?.find((c) => c.name === "harness");
+
+/** How many times a Sandbox pod's Harness container has restarted; `undefined` without one. */
+export const harnessRestarts = (pod: PodLike): number | undefined => harnessStatus(pod)?.restartCount;
+
+/**
+ * True once the Harness container restarted past `before` and runs again. A container restarted in
+ * place keeps its pod, so the reap when the run settles takes the restarted container's log with
+ * it: a step that reads what the model said after the restart follows that log from here.
+ */
+export function restartedHarnessRunning(pod: PodLike, before: number): boolean {
+  const harness = harnessStatus(pod);
+  return harness !== undefined && (harness.restartCount ?? 0) > before && "running" in (harness.state ?? {});
+}
+
 // --- a claim workflow's modes ----------------------------------------------------------------------
 
 /** The parts of an xstate state node the mode reading uses. */

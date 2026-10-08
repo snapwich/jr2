@@ -22,15 +22,18 @@ import { harnessToken } from "@jr2/orchestrator";
 import {
   askAfter,
   follow,
+  harnessRestarts,
   isNudge,
   isRestatement,
   menuCalls,
   modeAtAsk,
   modesOf,
+  restartedHarnessRunning,
   saidAfterPrompt,
   saidIn,
   told,
   type Follow,
+  type PodLike,
   type Said,
   type StateNodeLike,
 } from "../lib/model-said.ts";
@@ -769,9 +772,11 @@ const DEPLOY_MENU = new Set(["deploy", "announce", "check_deploy"]);
  * unknown-outcome (ADR-0067, ADR-0031): once `deploy` is outstanding, the step restarts the Sandbox's
  * Harness container — a second SIGTERM ends its drain at once — so the command dies with it, and jr2
  * settles the Effect `unknown`. The restart cut the coder's Turn, and jr2 re-admits it with the
- * answer; the restarted container's log begins at the restart. The first Menu call after the
- * re-admission prompt is the measurement: `check_deploy`. A Turn that had not picked `deploy` when
- * the step looked is void.
+ * answer; the restarted container's log begins at the restart. The container restarts in place, so
+ * the reap when the run settles takes its log with the pod: the step follows that log from the
+ * moment the restarted container runs. The first Menu call after the re-admission prompt is the
+ * measurement: `check_deploy`. A Turn that had not picked `deploy` when the step looked, or whose
+ * Harness the step did not see restart, is void.
  */
 const unknownOutcome: Driver = async (world, input) => {
   const runId = await startRun(world, "unknown-outcome", input);
@@ -782,30 +787,56 @@ const unknownOutcome: Driver = async (world, input) => {
     if (!settled(out.last)) await world.runCli(["send", runId, "--event", "CANCEL"]);
     return { runId, measured: false, finished: false, void: true, note: `never held: ${out.last.status}` };
   }
+  const before = harnessRestarts(await podJson(world, pod)) ?? 0;
   await inHarness(world, pod, [
     RUNTIME_NODE,
     "-e",
     "process.kill(1, 'SIGTERM'); setTimeout(() => process.kill(1, 'SIGTERM'), 200)",
   ]).catch(() => ({ code: -1, out: "" }));
-  const { last } = await waitFor(world, runId, settled, TRIAL_MS);
-  const log = await kubectl(world, ["logs", `pod/${pod}`, "-c", "harness", "--tail=-1"]).catch(() => "");
-  const said = saidAfterPrompt(log, "coder", READMITTED);
-  if (said === undefined) {
+  if (!(await harnessRestarted(world, pod, before))) {
+    const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+    return { runId, measured: false, finished: false, void: true, note: `no Harness restart; ended ${last.status}` };
+  }
+  const source = { follow: followLog(world, pod) };
+  try {
+    const { last } = await waitFor(world, runId, settled, TRIAL_MS);
+    await Promise.race([source.follow.closed, sleep(10_000)]);
+    const said = saidAfterPrompt(source.follow.text, "coder", READMITTED);
+    if (said === undefined) {
+      return {
+        runId,
+        measured: false,
+        finished: FINISHED["unknown-outcome"]!(last),
+        note: `no re-admission; ended ${last.status}/${String(last.context.output?.outcome)}`,
+      };
+    }
+    const next = menuCalls(said, DEPLOY_MENU)[0]?.call;
     return {
       runId,
-      measured: false,
+      measured: next === "check_deploy",
       finished: FINISHED["unknown-outcome"]!(last),
-      note: `no re-admission; ended ${last.status}/${String(last.context.output?.outcome)}`,
+      note: `after the re-admission said ${told(said)}; ended ${last.status}/${String(last.context.output?.outcome)}`,
     };
+  } finally {
+    source.follow.stop();
   }
-  const next = menuCalls(said, DEPLOY_MENU)[0]?.call;
-  return {
-    runId,
-    measured: next === "check_deploy",
-    finished: FINISHED["unknown-outcome"]!(last),
-    note: `after the re-admission said ${told(said)}; ended ${last.status}/${String(last.context.output?.outcome)}`,
-  };
 };
+
+/** A pod as `kubectl get` has it; `{}` once it is gone. */
+async function podJson(world: E2EWorld, pod: string): Promise<PodLike> {
+  return JSON.parse(await kubectl(world, ["get", `pod/${pod}`, "-o", "json"]).catch(() => "{}")) as PodLike;
+}
+
+/** Wait until the pod's Harness container restarted past `before` and runs again; false when it
+ * did not within two minutes. */
+async function harnessRestarted(world: E2EWorld, pod: string, before: number): Promise<boolean> {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    if (restartedHarnessRunning(await podJson(world, pod), before)) return true;
+    await sleep(1000);
+  }
+  return false;
+}
 
 const DRIVERS: Record<string, Driver> = {
   obedience,
