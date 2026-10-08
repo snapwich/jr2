@@ -37,6 +37,7 @@ import {
   type Said,
   type StateNodeLike,
 } from "../lib/model-said.ts";
+import { FINISHED } from "../lib/model-finished.ts";
 import { ensureSeed } from "./seed.ts";
 import { E2EWorld } from "./world.ts";
 
@@ -263,25 +264,6 @@ type Claim = { workflow: string; cell: string; thinking: string; trials: Trial[]
 
 /** A trial driver: start one run of the workflow with the cell's input and measure it. */
 type Driver = (world: E2EWorld, input: { thinking: string; marker: string }) => Promise<Trial>;
-
-/** What each claim workflow's body means by "finished" — the final state (a root Machine's
- * `value`) or the wrapper-forwarded outcome (a `workspace()` body's). */
-const FINISHED: Record<string, (s: Status) => boolean> = {
-  obedience: (s) => s.status === "done" && s.value === "held",
-  advised: (s) => s.status === "done" && s.value === "answered",
-  workdir: (s) => s.status === "done" && s.context.output?.outcome === "finished",
-  noticed: (s) => s.status === "done" && s.context.output?.outcome === "finished",
-  "mode-follow": (s) => s.status === "done" && s.value === "submitted",
-  "mode-refusal": (s) => s.status === "done" && s.value === "published",
-  "mode-stop": (s) => s.status === "done" && s.value === "submitted",
-  wake: (s) => s.status === "done" && (s.value === "released" || s.value === "held"),
-  "push-follow": (s) => s.status === "done" && s.context.output?.outcome === "submitted",
-  "chain-answer": (s) => s.status === "done" && (s.value === "held" || s.value === "released"),
-  "cut-pick": (s) => s.status === "done" && s.value === "filed",
-  answered: (s) => s.status === "done" && s.context.output?.outcome === "reported",
-  "allowed-after-route": (s) => s.status === "done" && s.context.output?.outcome === "filed",
-  "unknown-outcome": (s) => s.status === "done" && s.context.output?.outcome === "checked",
-};
 
 /** How long one trial may take, generously: a Sandbox pull and two model Turns. */
 const TRIAL_MS = 900_000;
