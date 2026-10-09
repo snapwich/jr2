@@ -166,8 +166,10 @@ Feature: a workspace() run drives a real Sandbox on kind
     workflows name it with `secret("echo-token")`, so `jr2 up` places it in the Instance Effector and
     in no other pod. The echo server in the seed namespace answers with every header and the url it
     received, each in the encodings the Effector scrubs, so what comes back is B3's proof: the
-    Bearer the Effector built, base64(user:password), the url with the secret in its path — each
-    named, never the value — in the run's snapshot, its feed, and the answer the model reads.
+    Bearer the Effector built, base64(user:password), the url with the secret in its path, a header
+    it filled from the secret — each named, never the value — in the run's snapshot, its feed, and
+    the answer the model reads. A step decodes every base64 and percent-encoded run it reads and
+    looks for the value inside, so a leak of what the Effector built cannot pass as clean.
 
     Scenario: a Bearer call's echo comes back with the secret named, in every form
       Given the kind instance is serving
@@ -176,7 +178,7 @@ Feature: a workspace() run drives a real Sandbox on kind
       And no form of the echo token reached the run, and the answer names it "[secret:echo-token]"
       And the run's feed carries no form of the echo token
 
-    Scenario: a secret in the url's path and in a Basic pair comes back named, in every form
+    Scenario: a secret in the url's path, in a Basic pair and in a header comes back named, in every form
       Given the kind instance is serving
       When I start the "called" workflow in mode "inpath" detached
       Then the http Effect's answer is a response from the echo

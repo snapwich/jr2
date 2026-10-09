@@ -2380,6 +2380,41 @@ function formsOf(value: string): string[] {
   ];
 }
 
+/**
+ * Where a value leaked into `seen`, or undefined. The value's own forms are not enough: what the
+ * Effector BUILT from it — `Bearer <value>`, `bot:<value>`, `/bot<value>/send/…`, `Key <value>` —
+ * the echo returns in base64, and base64 of a longer string holds no base64 form of the value
+ * alone. So every base64 run in `seen` is decoded, in both alphabets, and every percent-encoded run
+ * is decoded, and each result is searched the same way — twice deep, for the echo's base64 of the
+ * `Basic <base64(user:password)>` header.
+ */
+function leakOf(seen: string, value: string, depth = 0): string | undefined {
+  const direct = formsOf(value).find((form) => seen.includes(form));
+  if (direct !== undefined) return `a form of it (${direct.length} chars)`;
+  if (depth > 2) return undefined;
+  const decodedPct = percentDecoded(seen);
+  if (decodedPct !== seen) {
+    const inner = leakOf(decodedPct, value, depth + 1);
+    if (inner) return `percent-encoded: ${inner}`;
+  }
+  for (const run of seen.match(/[A-Za-z0-9+/_-]{12,}={0,2}/g) ?? []) {
+    const decoded = Buffer.from(run.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("latin1");
+    const inner = leakOf(decoded, value, depth + 1);
+    if (inner) return `base64 (${run.length} chars) of ${inner}`;
+  }
+  return undefined;
+}
+
+function percentDecoded(s: string): string {
+  return s.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run;
+    }
+  });
+}
+
 /** Start `called` in a mode, with a marker of this scenario's own that the echo counts. */
 When(
   "I start the {string} workflow in mode {string} detached",
@@ -2422,9 +2457,8 @@ Then(
     const output = await httpOutput(this);
     const status = await this.runCli(["status", this.runId!]);
     const seen = JSON.stringify(output) + status.stdout;
-    for (const form of formsOf(this.echoToken)) {
-      assert.ok(!seen.includes(form), `a form of the echo token (${form.length} chars) reached the run`);
-    }
+    const leak = leakOf(seen, this.echoToken);
+    assert.equal(leak, undefined, `the echo token reached the run: ${leak}`);
     assert.ok(String(output.body).includes(named), `the answer names the secret ${named}: ${String(output.body)}`);
     const headers = (output.headers ?? {}) as Record<string, string>;
     assert.ok(
@@ -2439,9 +2473,8 @@ Then("the run's feed carries no form of the echo token", async function (this: E
   assert.ok(this.echoToken);
   const feed = await this.runCli(["logs", this.runId!]);
   assert.equal(feed.code, 0, `jr2 logs failed: ${feed.stderr}`);
-  for (const form of formsOf(this.echoToken)) {
-    assert.ok(!(feed.stdout + feed.stderr).includes(form), "a form of the echo token reached the feed");
-  }
+  const leak = leakOf(feed.stdout + feed.stderr, this.echoToken);
+  assert.equal(leak, undefined, `the echo token reached the feed: ${leak}`);
 });
 
 /** The Agent's half of B3: the tool result the MODEL read on the next request carries the named
@@ -2456,8 +2489,9 @@ Then(
       provider.calls.some((c) => c.stream && c.raw.includes(named)),
       `no provider request carried ${named}`,
     );
-    for (const form of formsOf(this.echoToken)) {
-      assert.ok(!provider.calls.some((c) => c.raw.includes(form)), "a form of the echo token reached the model");
+    for (const call of provider.calls) {
+      const leak = leakOf(call.raw, this.echoToken);
+      assert.equal(leak, undefined, `the echo token reached the model: ${leak}`);
     }
   },
 );

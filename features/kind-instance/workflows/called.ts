@@ -1,11 +1,13 @@
 // The kind tier's HTTP workflow (ADR-0068): an `http` Effect in the Instance Effector, with no Agent
 // and no Workspace. The echo server the suite serves in-cluster (`steps/seed.ts`) answers with every
 // header and the url it received, each in the encodings the Effector scrubs — so what comes back is
-// the B3 proof: the Bearer it built, base64(user:password), and the url with the secret in its path,
-// each named `[secret:echo-token]` and never the value. The body's final output IS the Effect's.
+// the B3 proof: the Bearer it built, base64(user:password), the url with the secret in its path, and
+// a header it filled from the secret, each named `[secret:echo-token]` and never the value. The
+// body's final output IS the Effect's.
 //
 //   bearer   POST /echo/<marker> with `Authorization: Bearer <echo-token>` and a text body
-//   inpath   GET /bot<echo-token>/send/<marker> with `basic("bot", echo-token)`
+//   inpath   GET /bot<echo-token>/send/<marker> with `basic("bot", echo-token)` and
+//            `x-api-key: Key <echo-token>`
 //   slow     POST /slow/<marker>/20 — the echo holds it 20 s, so an Orchestrator restart or an
 //            Effector rollout lands while it runs; the echo counts each request by its marker
 //
@@ -52,6 +54,7 @@ export const machine = jr2Setup({
     inpath: http({
       method: "GET",
       url: text`${ECHO}/bot${token}/send`,
+      headers: { "x-api-key": text`Key ${token}` },
       auth: basic("bot", token),
       input: marked,
       request: ({ marker }) => ({ path: [marker] }),
