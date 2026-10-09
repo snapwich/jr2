@@ -11,6 +11,7 @@ import { fingerprintOf } from "../src/fingerprint.ts";
 import { jr2Setup } from "../src/setup.ts";
 import { opaqueStates, serializeMachine, type MachineStateDoc } from "../src/machine-doc.ts";
 import { arg, commandWith } from "../src/effect.ts";
+import { bearer, httpWith, secret } from "../src/http-effect.ts";
 
 test("an Effect's invoke carries its parts — argv, timeout, Repo Slot — read without running it (ADR-0067)", () => {
   const lint = commandWith(
@@ -31,6 +32,35 @@ test("an Effect's invoke carries its parts — argv, timeout, Repo Slot — read
       id: "lint",
       src: "lint",
       effect: { kind: "command", argv: ["pnpm", "lint", "<path>"], timeoutMs: 90_000, slot: "app" },
+    },
+  ]);
+});
+
+test("an http Effect's invoke carries its method, fixed target and secret names — never a value (ADR-0068)", () => {
+  const post = httpWith(
+    () => {
+      throw new Error("never run");
+    },
+    { method: "POST", url: "https://jira.example.com:8443/rest", auth: bearer(secret("jira")), idempotent: true },
+  );
+  const machine = setup({ actors: { post } }).createMachine({
+    id: "m",
+    initial: "a",
+    states: { a: { invoke: { src: "post", id: "post" } } },
+  });
+  const [a] = serializeMachine("wf", machine).root.states;
+  assert.deepEqual(a!.invoke, [
+    {
+      id: "post",
+      src: "post",
+      effect: {
+        kind: "http",
+        method: "POST",
+        target: "https://jira.example.com:8443",
+        secrets: ["jira"],
+        timeoutMs: 30_000,
+        idempotent: true,
+      },
     },
   ]);
 });
