@@ -149,6 +149,37 @@ func TestADefinitionHeaderWithASecretComesBackScrubbed(t *testing.T) {
 	}
 }
 
+// A response header's NAME is a string that leaves too. Go writes a name in its canonical case and
+// the Effector in lower case, so a secret with mixed case that a server echoes in a header name
+// would leave case-folded: the name is matched with case folded, and replaced.
+func TestASecretInAResponseHeaderNameComesBackNamed(t *testing.T) {
+	const pw = "pw-Secret_Value9"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header()["x-"+pw] = []string{"1"}
+		w.Header()["x-"+pw+"-b"] = []string{pw}
+		w.Header()["X-Plain"] = []string{"kept"}
+	}))
+	defer srv.Close()
+	r := runner(t, srv)
+	r.Secrets = map[string]string{"pw": pw}
+	r.Scrubber = scrub.New(r.Secrets)
+	out := r.Run(context.Background(), request(srv.URL))
+	if out.Outcome != wire.OutcomeResponse {
+		t.Fatalf("got %+v", out)
+	}
+	for name, value := range out.Response.Headers {
+		if strings.Contains(strings.ToLower(name), strings.ToLower(pw)) || strings.Contains(value, pw) {
+			t.Fatalf("the secret came back in a header: %q: %q (all: %v)", name, value, out.Response.Headers)
+		}
+	}
+	want := map[string]string{"x-[secret:pw]": "1", "x-[secret:pw]-b": "[secret:pw]", "x-plain": "kept"}
+	for name, value := range want {
+		if out.Response.Headers[name] != value {
+			t.Fatalf("header %q is %q, want %q (all: %v)", name, out.Response.Headers[name], value, out.Response.Headers)
+		}
+	}
+}
+
 // A secret sits only in the url's path (ADR-0067). One after a `?` or a `#` is refused, with
 // nothing sent: as a path segment it is encoded for a path, which a query would read differently.
 func TestASecretInTheUrlQueryIsRefusedWithNoSend(t *testing.T) {

@@ -63,9 +63,17 @@ func (r *Runner) Run(ctx context.Context, req *wire.StartRequest) wire.Output {
 	out := r.run(ctx, req, built)
 	s := r.Scrubber.With(built)
 	if out.Response != nil {
-		for k, v := range out.Response.Headers {
-			out.Response.Headers[k] = s.String(v)
+		// A header's name leaves too. It reached the Effector case-folded, so it is scrubbed with
+		// case folded; two names that become one after it keep both values.
+		headers := map[string]string{}
+		for _, k := range slices.Sorted(maps.Keys(out.Response.Headers)) {
+			name, value := s.Folded(k), s.String(out.Response.Headers[k])
+			if prev, ok := headers[name]; ok {
+				value = prev + ", " + value
+			}
+			headers[name] = value
 		}
+		out.Response.Headers = headers
 		out.Response.ContentType = s.String(out.Response.ContentType)
 	}
 	out.Reason = s.String(out.Reason)

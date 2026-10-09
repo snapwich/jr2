@@ -62,23 +62,24 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   name. A replica that gets SIGTERM refuses a new Effect (503, `error: stopping`, which starts nothing), finishes the
   Effects in flight, and stays until each outcome was read or `JR2_EFFECTOR_DRAIN_SECONDS` is spent. An outcome nobody
   reads is dropped 10 minutes after it settled: there is no cancel route.
-- **Scrubbing, last, before the answer is signed.** Every string that leaves goes through it: an http body, its headers,
-  error text — and then the whole encoded answer. It matches every secret the Effector holds, not only the ones the
-  current Effect names, in three kinds of form: the exact value; its usual encodings (base64 in both alphabets, padded
-  and not, alone or inside a longer encoded string — a server that base64-encodes a dump of the request's headers puts
-  the value at any byte offset, so the characters that hold only the value's own bits are a form at each of the three
-  offsets; percent-encoding; JSON-escaping); and what the Effector built from it for this Effect (the `Authorization`
-  value it sent, `base64(user:password)`, a definition header it filled from the secret, the url with the secret in its
-  path, and that url as the server sees it, its path and query), each with the same encodings. An encoding has more than
-  one spelling, and a server echoes in its own encoder's, so each common spelling is a form: percent-encoding that
-  leaves only the unreserved characters, or also `/` (Python's `quote`), or `!'()*` (`encodeURIComponent`), or the
-  reserved ones (`encodeURI`), or a path's characters, a form's `+` for a space, Go's query and path escapes, each in
-  upper and lower hex; JSON with or without `\/`, with or without `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026`, with or
-  without every non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u` forms, U+2028 and U+2029 as `\u2028` and
-  `\u2029` or as they are, and `\u` hex in either case. A match becomes `[secret:<name>]`. A body is scrubbed as it
-  streams, across chunk borders, with a window one byte shorter than the longest form. The Effector refuses to start
-  with a secret shorter than 8 characters, and names it: a shorter one would match ordinary text. A literal is refused
-  earlier, by `jr2 up`; a value from the user's own Secret is first seen here.
+- **Scrubbing, last, before the answer is signed.** Every string that leaves goes through it: an http body, its headers'
+  values and names (a name reaches the Effector case-folded, so it is matched with case folded), error text — and then
+  the whole encoded answer. It matches every secret the Effector holds, not only the ones the current Effect names, in
+  three kinds of form: the exact value; its usual encodings (base64 in both alphabets, padded and not, alone or inside a
+  longer encoded string — a server that base64-encodes a dump of the request's headers puts the value at any byte
+  offset, so the characters that hold only the value's own bits are a form at each of the three offsets;
+  percent-encoding; JSON-escaping); and what the Effector built from it for this Effect (the `Authorization` value it
+  sent, `base64(user:password)`, a definition header it filled from the secret, the url with the secret in its path, and
+  that url as the server sees it, its path and query), each with the same encodings. An encoding has more than one
+  spelling, and a server echoes in its own encoder's, so each common spelling is a form: percent-encoding that leaves
+  only the unreserved characters, or also `/` (Python's `quote`), or `!'()*` (`encodeURIComponent`), or the reserved
+  ones (`encodeURI`), or a path's characters, a form's `+` for a space, Go's query and path escapes, each in upper and
+  lower hex; JSON with or without `\/`, with or without `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026`, with or without
+  every non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u` forms, U+2028 and U+2029 as `\u2028` and `\u2029`
+  or as they are, and `\u` hex in either case. A match becomes `[secret:<name>]`. A body is scrubbed as it streams,
+  across chunk borders, with a window one byte shorter than the longest form. The Effector refuses to start with a
+  secret shorter than 8 characters, and names it: a shorter one would match ordinary text. A literal is refused earlier,
+  by `jr2 up`; a value from the user's own Secret is first seen here.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
   trailing `\n` or `\r\n` is taken off, as the Custodian does.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,

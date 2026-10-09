@@ -238,6 +238,19 @@ func (s *Scrubber) String(in string) string {
 	return in
 }
 
+// Folded scrubs a string that was case-folded before the scrubber saw it — a response header's
+// name, which Go canonicalizes and the Effector writes in lower case. It returns the string in
+// lower case, each form matched in lower case too.
+func (s *Scrubber) Folded(in string) string {
+	in = strings.ToLower(in)
+	for _, f := range s.forms {
+		if folded := strings.ToLower(f.value); strings.Contains(in, folded) {
+			in = strings.ReplaceAll(in, folded, Replacement(f.name))
+		}
+	}
+	return in
+}
+
 // Bytes scrubs one byte slice.
 func (s *Scrubber) Bytes(in []byte) []byte {
 	for _, f := range s.forms {
