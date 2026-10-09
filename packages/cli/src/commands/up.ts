@@ -68,6 +68,7 @@ import {
   machineBodies,
   matchCredential,
   partsOf,
+  targetText,
   harnessTokenDigest,
   formatCpu,
   formatMemory,
@@ -236,14 +237,24 @@ export async function up(args: string[], io: Io): Promise<number> {
       return 1;
     }
   }
-  // What each registered Machine runs outside itself (ADR-0067): every Effect slot, with the plain
-  // data it carries — a command's argv, its timeout, the Repo Slot it runs in — read, never run.
+  // What each registered Machine runs outside itself (ADR-0067, ADR-0068): every Effect slot, with
+  // the plain data it carries — a command's argv, its timeout, the Repo Slot it runs in; an http
+  // Effect's method, its fixed target and the secrets it names — read, never run.
   for (const w of workflows) {
     const effects = partsOf([w.machine]).effects;
     if (!effects.length) continue;
     activity(io, `effects: workflow "${w.name}" — what it runs outside itself (ADR-0067)`);
     for (const e of effects) {
       const where = e.path?.length ? ` (on ${e.path.map((k) => `"${k}"`).join(" → ")})` : "";
+      if (e.kind === "http") {
+        const names = e.secrets.length ? `, secrets ${e.secrets.map((n) => `"${n}"`).join(", ")}` : "";
+        activity(
+          io,
+          `  ${e.name}${where}: http ${e.method} ${targetText({ target: e.target })} — ${e.timeoutMs / 1000}s, ` +
+            `in the Instance Effector${names}${e.idempotent ? ", idempotent" : ""}`,
+        );
+        continue;
+      }
       const slot = e.slot !== undefined ? `, in Repo Slot "${e.slot}"` : "";
       activity(
         io,

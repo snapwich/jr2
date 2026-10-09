@@ -77,6 +77,18 @@ export function harnessTokenDigest(key: Buffer, placement: string): string {
   return createHash("sha256").update(harnessToken(key, placement)).digest("base64url");
 }
 
+/**
+ * The signing key of one Effector placement (ADR-0068): `HMAC(signing key, "effector:" + placement)`,
+ * as the Harness bearer is derived (ADR-0058). The Orchestrator signs every request to that
+ * Effector with it and verifies every answer; the Effector reads it from a file in its own mount,
+ * which `jr2 up` writes (`instance` → the `jr2-instance-effector` Secret). Derived, not stored: a
+ * restarted Orchestrator derives the key a live Effector already holds. The `effector:` prefix
+ * keeps it apart from every Sandbox token and Harness bearer. The key's bytes are this string's.
+ */
+export function effectorKey(key: Buffer, placement: string): string {
+  return sign(key, `effector:${placement}`);
+}
+
 /** Mint the per-boot Instance token (opaque and random — it names nothing, it just IS the trust). */
 export function mintInstanceToken(): string {
   return randomBytes(32).toString("base64url");

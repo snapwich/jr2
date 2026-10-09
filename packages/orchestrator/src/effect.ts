@@ -4,9 +4,10 @@
 // route on, the input kept in the persisted snapshot, a `src` typo as a compile error, and
 // `.provide()` as the unit-test seam.
 //
-// One kind exists: `command`, run in the Harness container of the enclosing Workspace's Sandbox
-// (the Harness's `/exec/:id`, ADR-0067). What this module adds to xstate is what makes an Effect
-// safe to restart:
+// Two kinds exist: `command`, run in the Harness container of the enclosing Workspace's Sandbox
+// (the Harness's `/exec/:id`, ADR-0067), here; and `http`, run in the Instance Effector
+// (http-effect.ts, ADR-0068). What this module adds to xstate is what makes an Effect safe to
+// restart:
 //
 //   - THE LEDGER. The run host keeps one row per Effect, in the run's blob beside the snapshot
 //     (`RunBlob.effects`): an INTENT row written before the call — in the same persist as the
@@ -36,6 +37,7 @@ import { randomUUID } from "node:crypto";
 import type { ActorLogic, AnyActorRef, EventObject, Snapshot } from "xstate";
 import { ambientHandlesFor, type AmbientHandles } from "./ambient.ts";
 import { boundRun, type AnyActorSystem } from "./registration.ts";
+import type { HttpMethod, HttpOutput, TextPart, WireAuth } from "./effector-wire.ts";
 import type { ExecOutcome, ExecRead, ExecRequest } from "./wire.ts";
 
 // --- Parts: what `jr2 up` and the Machine doc read off a slot, without running anything ---------
@@ -55,12 +57,38 @@ export type CommandParts = {
   readonly tail: number;
 };
 
-/** Every kind's parts. `command` is the one kind built. */
-export type EffectParts = CommandParts;
+/**
+ * An `http` Effect's plain data (ADR-0068): what `jr2 up` and the Machine doc read — the method,
+ * the fixed target (scheme, host, port), the url and headers as `text` parts (a secret is a part,
+ * by name), the auth, the secret names, the input's keys, the timeout, the body bound, and whether
+ * a restore may send it again.
+ */
+export type HttpParts = {
+  readonly kind: "http";
+  readonly method: HttpMethod;
+  readonly target: { readonly scheme: "http" | "https"; readonly host: string; readonly port: number };
+  readonly url: readonly TextPart[];
+  readonly headers: Readonly<Record<string, readonly TextPart[]>>;
+  readonly auth?: WireAuth;
+  /** Every secret the definition names, once each, in order — what places it (ADR-0068). */
+  readonly secrets: readonly string[];
+  /** The keys of the input schema: what a pick param may fill (ADR-0067's load walk reads them). */
+  readonly inputKeys: readonly string[];
+  readonly timeoutMs: number;
+  readonly maxBody: number;
+  /** Marked by the author: a restore that cannot find the Effect sends it again. */
+  readonly idempotent: boolean;
+};
 
-/** Where an Effect runs, derived from its kind and never authored. */
-export type Placement = "harness";
-export const placementOf = (_parts: EffectParts): Placement => "harness";
+/** Every kind's parts. */
+export type EffectParts = CommandParts | HttpParts;
+
+/**
+ * Where an Effect runs, derived from its kind and never authored (ADR-0067, ADR-0068): a `command`
+ * in the Harness container of its Workspace, an `http` Effect in the Instance Effector.
+ */
+export type Placement = "harness" | "instance";
+export const placementOf = (parts: EffectParts): Placement => (parts.kind === "http" ? "instance" : "harness");
 
 /** The brand an Effect slot carries, as `definition` marks an Agent slot (ADR-0049). */
 export type EffectSlot = { readonly effect: EffectParts };
@@ -69,7 +97,7 @@ export type EffectSlot = { readonly effect: EffectParts };
 export function isEffect(logic: unknown): logic is EffectSlot {
   if (typeof logic !== "object" || logic === null) return false;
   const effect = (logic as { effect?: { kind?: unknown } }).effect;
-  return typeof effect === "object" && effect !== null && effect.kind === "command";
+  return typeof effect === "object" && effect !== null && (effect.kind === "command" || effect.kind === "http");
 }
 
 /** argv as text a reader can print: an argv slot reads `<name>`. */
@@ -77,8 +105,17 @@ export function argvText(argv: readonly (string | Arg)[]): string[] {
   return argv.map((a) => (typeof a === "string" ? a : `<${a.arg}>`));
 }
 
-/** The keys an Effect's input has, read off its parts: a command's argv slot names. */
+/** An http Effect's target as text: `scheme://host` with the port when it is not the scheme's. */
+export function targetText(parts: { readonly target: HttpParts["target"] }): string {
+  const { scheme, host, port } = parts.target;
+  const standard = (scheme === "https" && port === 443) || (scheme === "http" && port === 80);
+  return `${scheme}://${host.includes(":") ? `[${host}]` : host}${standard ? "" : `:${port}`}`;
+}
+
+/** The keys an Effect's input has, read off its parts: a command's argv slot names; an http
+ * Effect's input schema keys. */
 export function inputKeysOf(parts: EffectParts): string[] {
+  if (parts.kind === "http") return [...parts.inputKeys];
   return parts.argv.flatMap((a) => (typeof a === "string" ? [] : [a.arg]));
 }
 
@@ -101,7 +138,10 @@ export type CommandOutput = ExecOutcome | Unknown;
  * while it ran. A row replaces the one before it; none is dropped.
  */
 export type EffectRow =
-  | { state: "intent"; kind: EffectParts["kind"]; slot: string; endpoint: string; placement: string; at: string }
+  | { state: "intent"; kind: "command"; slot: string; endpoint: string; placement: string; at: string }
+  /** An http Effect's intent names its placement and no replica (B2.4): a restore asks every
+   * replica. `idempotent` is the author's mark, which the restore rule reads. */
+  | { state: "intent"; kind: "http"; slot: string; placement: "instance"; idempotent: boolean; at: string }
   | { state: "settled"; kind: EffectParts["kind"]; slot: string; output: unknown; at: string }
   | { state: "aborted"; kind: EffectParts["kind"]; slot: string; at: string };
 
@@ -143,7 +183,7 @@ export type EffectMarker = {
   effect: string;
   stage: "started" | "output" | "settled" | "aborted";
   text?: string;
-  output?: CommandOutput;
+  output?: CommandOutput | HttpOutput;
 };
 
 // --- The port -----------------------------------------------------------------------------------
@@ -307,7 +347,7 @@ async function drive<I, O>(
     settle({ outcome: "unknown", reason: "its state exited while it ran; not run again" });
     return;
   }
-  if (row?.state === "intent") {
+  if (row?.state === "intent" && row.kind === "command") {
     // In flight at an Orchestrator restart: re-attach by id, or settle `unknown`. Never run again.
     const port = portFactory(row.endpoint, binding?.harnessBearer?.(row.placement));
     run.port = port;
@@ -442,7 +482,7 @@ function stopped(self: AnyActorRef, system: AnyActorSystem, effectId: string): v
   const binding = boundRun(system);
   if (binding?.hostStopping) return;
   const row = binding?.effectRow?.(effectId);
-  if (row?.state !== "intent") return;
+  if (row?.state !== "intent" || row.kind !== "command") return;
   const port = run?.port;
   if (port) {
     void killUntilKept(port, effectId, run.timeoutMs).then((kept) => {

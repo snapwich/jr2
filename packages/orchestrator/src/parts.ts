@@ -371,12 +371,20 @@ export type CarriedSize = {
 export type CarriedEffect = {
   name: string;
   path: readonly string[] | undefined;
-  kind: EffectParts["kind"];
   placement: Placement;
-  argv: string[];
   timeoutMs: number;
-  slot?: string;
-};
+} & (
+  | { kind: "command"; argv: string[]; slot?: string }
+  /** An http Effect (ADR-0068): its method, its fixed target, and the secrets it names — what
+   * places each secret, and what the Instance Effector's config allows. */
+  | {
+      kind: "http";
+      method: string;
+      target: { scheme: "http" | "https"; host: string; port: number };
+      secrets: string[];
+      idempotent: boolean;
+    }
+);
 
 /** Everything the registered Machines carry that a converge or a boot must act on. */
 export type CarriedParts = {
@@ -535,16 +543,32 @@ export function partsOf(machines: Iterable<AnyStateMachine>): CarriedParts {
     for (const [name, logic] of Object.entries(machine.implementations.actors as Record<string, unknown>)) {
       if (isAgent(logic)) collectAgent(path, name, logic.definition);
       else if (isEffect(logic)) {
-        const { kind, argv, timeoutMs, slot } = logic.effect;
-        effects.push({
-          name,
-          path,
-          kind,
-          placement: placementOf(logic.effect),
-          argv: argvText(argv),
-          timeoutMs,
-          ...(slot !== undefined ? { slot } : {}),
-        });
+        const parts = logic.effect;
+        const placement = placementOf(parts);
+        if (parts.kind === "http") {
+          effects.push({
+            name,
+            path,
+            kind: "http",
+            placement,
+            method: parts.method,
+            target: { ...parts.target },
+            secrets: [...parts.secrets],
+            idempotent: parts.idempotent,
+            timeoutMs: parts.timeoutMs,
+          });
+        } else {
+          const { argv, timeoutMs, slot } = parts;
+          effects.push({
+            name,
+            path,
+            kind: "command",
+            placement,
+            argv: argvText(argv),
+            timeoutMs,
+            ...(slot !== undefined ? { slot } : {}),
+          });
+        }
       } else {
         const child = asMachine(logic);
         if (child) walk(child, path === undefined ? undefined : name === body ? path : [...path, name]);

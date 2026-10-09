@@ -36,6 +36,8 @@ import {
   IMAGES_MOUNT,
   INSTANCE_HARNESS_PORT,
   INSTANCE_HARNESS_SERVICE,
+  INSTANCE_EFFECTOR,
+  EFFECTOR_PORT,
 } from "./names.ts";
 import { partsOf, type CarriedRepo } from "./parts.ts";
 import { kubeClient, type KubeClient } from "./kube-client.ts";
@@ -170,6 +172,9 @@ export async function serverMain(opts: ServerMainOptions): Promise<RunningInstan
     instanceHarness: namespace
       ? `http://${INSTANCE_HARNESS_SERVICE}.${namespace}.svc:${INSTANCE_HARNESS_PORT}`
       : undefined,
+    // Where an http Effect runs (ADR-0068): the Instance Effector's headless Service. `jr2 up`
+    // converges it whenever a registered Machine carries an http Effect.
+    ...(namespace ? { instanceEffector: `${INSTANCE_EFFECTOR}.${namespace}.svc:${EFFECTOR_PORT}` } : {}),
   });
   // The watch ends with the instance: its stream is the one thing here that never settles alone.
   if (stopWatch) {

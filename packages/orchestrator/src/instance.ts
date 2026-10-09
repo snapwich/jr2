@@ -30,7 +30,7 @@ import { RunHost } from "./run-host.ts";
 import type { RunRecord } from "./run-host.ts";
 import { SqliteSnapshotStore } from "./snapshot-store.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
-import { createAuthenticator, harnessToken, loadSigningKey, mintInstanceToken } from "./tokens.ts";
+import { createAuthenticator, effectorKey, harnessToken, loadSigningKey, mintInstanceToken } from "./tokens.ts";
 import type { SandboxPort } from "./workspace.ts";
 
 export type InstanceOptions = {
@@ -61,6 +61,9 @@ export type InstanceOptions = {
    * The entrypoint derives it from the pod's namespace (deterministic Service DNS); absent,
    * such a Turn without an explicit `endpoint` faults pointedly. */
   instanceHarness?: string;
+  /** The Instance Effector's headless Service, `host:port` (ADR-0068) — where an http Effect is sent.
+   * The entrypoint derives it from the pod's namespace; absent, an http Effect faults pointedly. */
+  instanceEffector?: string;
   /** The key Sandbox tokens are signed with (ADR-0013). Default: `<dir>/.jr2/secret`, minted on
    * first boot. Supply it when the instance folder must stay untouched (tests), or when the same
    * key must reach a `kubeSandbox` built before this call (it mints the tokens). */
@@ -136,6 +139,17 @@ export async function startInstance(opts: InstanceOptions): Promise<RunningInsta
     sandbox: opts.sandbox,
     instanceHarness: opts.instanceHarness,
     harnessBearer: (placement) => harnessToken(signingKey, placement),
+    // The Instance Effector (ADR-0068): its Service, and the placement's key the wire is signed with
+    // — derived from the signing key as the Harness bearer is, so nothing is stored.
+    ...(opts.instanceEffector
+      ? {
+          effector: (placement: "instance") => ({
+            placement,
+            service: opts.instanceEffector!,
+            key: effectorKey(signingKey, placement),
+          }),
+        }
+      : {}),
     // The run-narrative echo (ADR-0023): tee a run's feed to its enclosing Workspace's Harness,
     // bearing that Workspace's Harness bearer (ADR-0058) — never the Instance token, which would
     // otherwise pass through a process the Agent executes code beside. The wire push is here and

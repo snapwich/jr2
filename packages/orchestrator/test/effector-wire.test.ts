@@ -1,0 +1,196 @@
+// The Effector's wire from the Orchestrator's side (ADR-0068): the golden fixtures the Go tests
+// read too (`effector/testdata/wire/`), and the signed client against an in-process fake.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { z } from "zod";
+import {
+  createEffectorClient,
+  EffectorForged,
+  EffectorNotSent,
+  EffectorRefused,
+  EffectStateShape,
+  RefusalShape,
+  requestMac,
+  responseMac,
+  type EffectorTransport,
+} from "../src/effector-wire.ts";
+import { basic, bearer, httpParts, secret, startRequestOf, text } from "../src/http-effect.ts";
+import { effectorKey } from "../src/tokens.ts";
+import { EFFECTOR_KEY, FakeEffector } from "./_effector.ts";
+
+/** The fixtures, by the relative path the ADR names: one directory both languages read. */
+const FIXTURES = fileURLToPath(new URL("../../../effector/testdata/wire/", import.meta.url));
+const fixture = (name: string): unknown => JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
+const named = (prefix: string): string[] => readdirSync(FIXTURES).filter((f) => f.startsWith(prefix));
+
+test("the golden signatures: a request and an answer signed as the Go side signs them", () => {
+  const req = fixture("signature.request.json") as Record<string, string>;
+  const key = Buffer.from(req.key!, "base64");
+  assert.equal(requestMac(key, req.method!, req.path!, req.time!, req.nonce!, req.body!), req.signature);
+  const res = fixture("signature.response.json") as {
+    key: string;
+    status: number;
+    method: string;
+    path: string;
+    nonce: string;
+    body: string;
+    signature: string;
+  };
+  assert.equal(
+    responseMac(Buffer.from(res.key, "base64"), res.status, res.method, res.path, res.nonce, res.body),
+    res.signature,
+  );
+});
+
+test("every request fixture is what a definition encodes", () => {
+  const cases: Record<string, unknown> = {
+    "request.get-minimal.json": startRequestOf(
+      httpParts({ method: "GET", url: "https://api.example.com/v1/status" }),
+      {},
+    ),
+    "request.post-json-bearer.json": startRequestOf(
+      httpParts({
+        method: "POST",
+        url: "https://jira.example.com/rest/api/2/issue",
+        headers: { accept: "application/json" },
+        auth: bearer(secret("jira")),
+        input: z.object({ key: z.string(), body: z.string() }),
+      }),
+      { path: ["PROJ-7", "comment"], json: { body: "Tests pass.", visibility: null, labels: ["ci", 1, true] } },
+    ),
+    "request.basic-secret-in-url.json": startRequestOf(
+      httpParts({
+        method: "PUT",
+        url: text`https://api.telegram.org/bot${secret("telegram")}/sendMessage`,
+        auth: basic("bot", secret("telegram-password")),
+        timeout: "5s",
+        maxBody: 1024,
+      }),
+      { text: "hello, world\n" },
+    ),
+    "request.auth-text-and-secret-header.json": startRequestOf(
+      httpParts({
+        method: "DELETE",
+        url: "http://echo.jr2-seed.svc:8080/items",
+        headers: { "x-api-key": text`${secret("api-key")}`, "x-trace": text`run ${"42"}` },
+        auth: text`Token ${secret("api-key")} v2`,
+        timeout: "10m",
+        maxBody: 1,
+      }),
+      { path: ["a/b", "ü ñ", "%2e%2e", ".."] },
+    ),
+  };
+  assert.deepEqual(named("request.").sort(), Object.keys(cases).sort(), "one case per request fixture");
+  for (const [name, encoded] of Object.entries(cases)) {
+    assert.deepEqual(JSON.parse(JSON.stringify(encoded)), normalize(fixture(name)), name);
+  }
+});
+
+/** The fixture `x-trace` header is two literal parts; the `text` template joins adjacent text. */
+function normalize(v: unknown): unknown {
+  const req = v as { headers?: Record<string, Array<{ text?: string; secret?: string }>> };
+  for (const parts of Object.values(req.headers ?? {})) {
+    for (let i = parts.length - 1; i > 0; i--) {
+      if (parts[i]!.text !== undefined && parts[i - 1]!.text !== undefined) {
+        parts[i - 1]!.text += parts[i]!.text!;
+        parts.splice(i, 1);
+      }
+    }
+  }
+  return v;
+}
+
+test("every answer fixture decodes strictly; every reject fixture is refused", () => {
+  for (const name of named("response.")) {
+    const shape = name.includes("refusal") ? RefusalShape : EffectStateShape;
+    assert.ok(shape.safeParse(fixture(name)).success, name);
+  }
+  for (const name of named("reject.response")) {
+    assert.ok(!EffectStateShape.safeParse(fixture(name)).success, name);
+  }
+});
+
+test("the placement's key is derived, as the Harness bearer is: the same signing key gives the same key", () => {
+  const signing = Buffer.alloc(32, 7);
+  assert.equal(effectorKey(signing, "instance"), effectorKey(signing, "instance"));
+  assert.notEqual(effectorKey(signing, "instance"), effectorKey(signing, "sandbox-a"));
+  assert.notEqual(effectorKey(signing, "instance"), effectorKey(Buffer.alloc(32, 8), "instance"));
+});
+
+const req = startRequestOf(httpParts({ method: "GET", url: "https://api.example.com" }), {});
+const signal = new AbortController().signal;
+
+test("the client starts on a replica, which its answer names, and polls that replica", async () => {
+  const fake = new FakeEffector(["a", "b"]);
+  const client = createEffectorClient({ key: EFFECTOR_KEY, transport: fake.transport });
+  const started = await client.start("e1", req, signal);
+  assert.equal(started.state, "running");
+  const holder = fake.starts[0]!.replica;
+  assert.equal(started.replica.name, holder);
+  fake.settle({ outcome: "unknown", reason: "r" });
+  const polled = await client.poll(started.replica, "e1", signal);
+  assert.equal(polled.state, "settled");
+  assert.ok(fake.calls.filter((c) => c.method === "GET").every((c) => c.address === started.replica.address));
+});
+
+test("find asks every replica: the one that holds it, or none", async () => {
+  const fake = new FakeEffector(["a", "b", "c"]);
+  const client = createEffectorClient({ key: EFFECTOR_KEY, transport: fake.transport });
+  await client.start("e1", req, signal);
+  const found = await client.find("e1", signal);
+  assert.equal(found?.replica.name, fake.starts[0]!.replica);
+  assert.equal(await client.find("nobody", signal), undefined);
+  assert.equal(fake.calls.filter((c) => c.method === "GET" && c.path === "/effects/nobody").length, 3);
+});
+
+test("a stopping replica starts nothing, and another takes it; none left is EffectorNotSent", async () => {
+  const fake = new FakeEffector(["a", "b"]);
+  fake.replica("a").stopping = true;
+  const client = createEffectorClient({ key: EFFECTOR_KEY, transport: fake.transport });
+  const started = await client.start("e1", req, signal);
+  assert.equal(started.replica.name, "b");
+  fake.replica("b").stopping = true;
+  await assert.rejects(client.start("e2", req, signal), EffectorNotSent);
+  fake.replica("a").down = true;
+  fake.replica("b").down = true;
+  await assert.rejects(client.start("e3", req, signal), EffectorNotSent);
+});
+
+test("an answer that is not the Effector's signed answer is forged; a 400 is a refusal", async () => {
+  const wrongKey = new FakeEffector(["a"], "another-key-entirely");
+  await assert.rejects(
+    createEffectorClient({ key: EFFECTOR_KEY, transport: wrongKey.transport }).start("e1", req, signal),
+    EffectorForged,
+  );
+  const impostor: EffectorTransport = {
+    replicas: async () => ["10.0.0.9:8082"],
+    send: async () => ({
+      status: 202,
+      headers: {},
+      body: '{"effect":"e1","replica":{"name":"x","address":"y"},"state":"running"}',
+    }),
+  };
+  await assert.rejects(
+    createEffectorClient({ key: EFFECTOR_KEY, transport: impostor }).start("e1", req, signal),
+    EffectorForged,
+  );
+  const refusing: EffectorTransport = {
+    replicas: async () => ["10.0.0.1:8082"],
+    send: async (_a, method, path, headers) => {
+      const body = '{"error":"the request is malformed: x"}';
+      return {
+        status: 400,
+        headers: { "x-jr2-signature": responseMac(EFFECTOR_KEY, 400, method, path, headers["x-jr2-nonce"]!, body) },
+        body,
+      };
+    },
+  };
+  await assert.rejects(
+    createEffectorClient({ key: EFFECTOR_KEY, transport: refusing }).start("e1", req, signal),
+    EffectorRefused,
+  );
+});

@@ -2,15 +2,18 @@
 
 An Effect is work a Machine does outside itself. A Machine already runs Agents and Gates as actors (ADR-0049); work such
 as running the tests had no place of its own, so an author either asked an Agent to do it (and trusted its word) or
-wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `command`, run a program in the Workspace.
+wrote a raw xstate promise that a restart ran again. jr2 builds two kinds now: `command`, run a program in the
+Workspace, and `http`, call a URL from the Instance Effector
+([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
 
 ## Decision
 
 - **An Effect is an actor slot beside `agent()`.** `actors: { tests: command(["pnpm", "test"]) }`, invoked as
   `src: "tests"`, with an `onDone` that routes on its output. xstate gives the rest: the Effect stops when its state
   exits, its input persists with the snapshot, a `src` typo is a compile error, and `.provide()` is the unit-test seam.
-  The slot carries its parts as plain data — kind, argv, timeout, Repo Slot — which `jr2 up` prints and the Machine doc
-  carries, read without running anything.
+  The slot carries its parts as plain data — kind, placement, timeout; a `command`'s argv and Repo Slot; an `http`
+  Effect's method, fixed host and the names of the secrets it names — which `jr2 up` prints and the Machine doc carries,
+  read without running anything.
 - **Between a pick and its work: `fromPick`, `paramsOf`, `answer`.** All optional; a plain mapper is legal.
   `fromPick(def, fill)` is the `input` of a state a pick enters: the pick's params flow into the Effect's input by name,
   `fill` returns only what the Machine adds, and the sum is checked against the Effect's input type — the security
@@ -33,8 +36,18 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   own. The Harness serves it on `/exec/:id`, behind the same bearer as every Harness route (ADR-0058); the Instance
   Harness holds no Workspace and refuses it (ADR-0031). Outside a `workspace()` a command is refused at invoke. Its cwd
   is a Repo Slot's Worktree: the one slot, or the slot it names (`slot`); several and none named is refused (ADR-0051).
-- **Every outcome is output**: `exited | timeout | killed | unknown`. A command not found is `exited` 127 — an Agent's
-  param can cause it. `onError` is only a jr2 or config defect: no Workspace, an argv slot with no value.
+- **Every outcome is output**: `exited | timeout | killed | unknown` for a `command`;
+  `response | unreachable | refused | unknown` for an `http` Effect. A command not found is `exited` 127, and a path
+  segment that is `.`, `..` or empty is `refused` with nothing sent — an Agent's param can cause either. `onError` is
+  only a jr2 or config defect: no Workspace, an argv slot with no value, an input that misses the definition's schema,
+  no Effector to send to.
+- **An `http` Effect is a definition plus one function.**
+  `http({ method, url, headers?, auth?, input?, request?, timeout?, maxBody?, idempotent? })`. The url's scheme and host
+  are literal — a secret, named with `secret("name")`, may sit only in its path, through the `text` template — so the
+  host is fixed by the definition and never a param. `auth` is `bearer(secret(…))`, `basic(user, password)` or a `text`.
+  `request(input)` returns the run's part alone: `path` segments and a JSON or text body. So an Agent's param reaches a
+  path segment or a body, never the host, a header or a secret. It runs in the Instance Effector, which builds the
+  request and holds the secrets (ADR-0068); the Orchestrator signs the call and holds none.
 - **The process group ends with the exec.** Each exec leads its own group; its timeout, a kill, and its top process's
   exit each SIGKILL the group, so nothing it started outlives it. A bounded tail (default 4096 characters) is the
   output; the full stream goes to the run's feed (Instance-token band).
@@ -42,9 +55,12 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   saved at the write, with the snapshot that holds the Effect, before the request leaves; a `settled` row with the
   output, saved at the write just before the transition it drives and kept by the save that carries that transition, so
   a restart that loses the transition's save still delivers the output and runs nothing. On restore: settled → the
-  output is delivered; intent → re-attach to the exec by id, or settle `unknown` when the Harness no longer knows it (it
-  restarted); no row → nothing was sent, so it starts. A command is never run again by jr2: it runs the Agent's code,
-  which may spend a Stand-in. Retry is the author's choice — a route back into the state. No row is dropped: each
+  output is delivered; no row → nothing was sent, so it starts; intent → per kind. A `command` re-attaches to the exec
+  by id, or settles `unknown` when the Harness no longer knows it (it restarted); it is never run again by jr2: it runs
+  the Agent's code, which may spend a Stand-in. An `http` intent row names its placement and no replica: the Effect asks
+  every replica of that Effector for its id and follows the one that holds it; when none does, it is sent again only
+  when the author marked it `idempotent`, and any other settles `unknown`. Retry is the author's choice — a route back
+  into the state, or `idempotent` for a call that carries its own idempotency key or only reads. No row is dropped: each
   settled or aborted row keeps the Effect's id, kind and outcome for the run's life, the record of what the run's
   Effects did. A settled row's output tail is dropped once the save that carries its transition is on disk; the full
   stream is on the feed. So an Effect in a loop grows the ledger by one short row per pass, never by its tails. One
@@ -55,15 +71,21 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
   restarted Harness knows no id. So the Orchestrator sends a start again only when it certainly never left (the
   connection was refused, the name did not resolve). Any other failure — a reset, a 5xx, no answer — may follow a start
   the Harness ran: the Orchestrator reads the exec by id instead, follows it when the Harness knows it, and settles
-  `unknown` when it does not. It then sends a kill for that id, which keeps a start still on the wire from running.
+  `unknown` when it does not. It then sends a kill for that id, which keeps a start still on the wire from running. An
+  `http` start follows the same rule over the Effector's replicas: one that was never reached, or that answered it is
+  stopping (it starts nothing then), is sent to another; any other failure asks every replica first, and the restore
+  rule above decides when none holds it. A replica that stops answering for an Effect it was followed on — gone, or
+  restarted — is the same case.
 - **D1: an Effect is stopped when its state exits.** The exec's group is killed. The kill is sent again until the
   Harness keeps it, for at most the command's timeout (past it the Harness's own timer has ended the group); a kill that
   never reaches it is said on the feed. A fast exit can send the kill while the start is still on the wire: the Harness
   keeps a kill of an id it does not know, and the start that arrives after it runs nothing. The abort goes to the ledger
   (`aborted`, saved with the transition that exited the state — a cancel's final save carries it) and the feed, "outcome
-  unknown"; the Machine does not get it — the state that asked has left. Two stops are not exits: the host parking the
-  run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor). The Effect then re-attaches on
-  restore, or settles `unknown`. There is no "finally": cleanup is a state.
+  unknown"; the Machine does not get it — the state that asked has left. An `http` Effect has no cancel route: its
+  state's exit stops the polling, and the abort goes to the ledger and the feed the same way, "the Effector may still
+  send it; outcome unknown". The Effector finishes the call and drops an outcome nobody reads. Two stops are not exits:
+  the host parking the run (`hostStopping`, ADR-0024) and an Orchestrator shutdown (it stops no actor). The Effect then
+  re-attaches on restore, or settles `unknown`. There is no "finally": cleanup is a state.
 - **Must-finish is a pattern.** An Effect that must not be cut goes in its own state, whose only exit is its `onDone`,
   and that state handles the ancestor's events itself.
 - **No fire-and-forget form.** Two patterns keep D1: an Effect in its own state; or a second invoke with no `onDone`
@@ -99,4 +121,6 @@ wrote a raw xstate promise that a restart ran again. jr2 builds one kind now: `c
 - Not built: an `answer` that may shape two Agents' picks while both are outstanding at once — one written below no
   Agent's state, or one action object written below two Agents' states. Which pick it shapes is not decided; today it
   sets nothing, and each pick keeps its default answer.
-- Owed, not built: Effect kinds beyond `command`, and an Open argv bound by `customize()`.
+- An `http` call an Orchestrator restart caught in flight gives one send: the restored Effect finds it on the replica
+  that holds it. One the Effector lost gives `unknown`, or a second send when it is `idempotent`.
+- Owed, not built: Effect kinds beyond `command` and `http`, and an Open argv bound by `customize()`.

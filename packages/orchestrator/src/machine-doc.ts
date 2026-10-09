@@ -18,7 +18,7 @@
 import type { AnyStateMachine, StateNode, TransitionDefinition } from "xstate";
 import { z } from "zod";
 import type { EventAudience } from "@jr2/agent-protocol";
-import { argvText, isEffect } from "./effect.ts";
+import { argvText, isEffect, targetText, type EffectParts } from "./effect.ts";
 import { loadWarningsOf, seatsOf, vocabularyOf, type MachineSeat } from "./vocabulary.ts";
 
 /** One transition of the Machine, id-addressed at both ends. */
@@ -41,7 +41,10 @@ export type MachineTransitionDoc = {
 
 /** An Effect slot's parts, as the doc carries them (ADR-0067): a command's argv (an argv slot reads
  * `<name>`), its timeout, and the Repo Slot whose Worktree is its cwd, when it names one. */
-export type EffectDoc = { kind: "command"; argv: string[]; timeoutMs: number; slot?: string };
+export type EffectDoc =
+  | { kind: "command"; argv: string[]; timeoutMs: number; slot?: string }
+  /** An http Effect (ADR-0068): its method, its fixed target, the secrets it names — never a value. */
+  | { kind: "http"; method: string; target: string; secrets: string[]; timeoutMs: number; idempotent: boolean };
 
 /** One state of the Machine; `states` nests in document order. */
 export type MachineStateDoc = {
@@ -309,9 +312,7 @@ function serializeState(node: StateNode<any, any>, into: MachineTransitionDoc[],
     invoke: node.invoke.map((inv) => {
       const logic = typeof inv.src === "string" ? scope.actors[inv.src] : undefined;
       if (!isEffect(logic)) return { id: inv.id, src: srcName(inv.src) };
-      const { argv, timeoutMs, slot } = logic.effect;
-      const effect: EffectDoc = { kind: "command", argv: argvText(argv), timeoutMs, ...(slot ? { slot } : {}) };
-      return { id: inv.id, src: srcName(inv.src), effect };
+      return { id: inv.id, src: srcName(inv.src), effect: effectDoc(logic.effect) };
     }),
     tags: [...node.tags],
     states: children.map((child) => serializeState(child, into, scope)),
@@ -368,4 +369,14 @@ function serializeBody(machine: AnyStateMachine, path: Set<AnyStateMachine>): Ma
 export function serializeMachine(workflow: string, machine: AnyStateMachine): MachineDoc {
   const doc: MachineDoc = { workflow, ...serializeBody(machine, new Set()) };
   return { ...doc, opaqueStates: opaqueStates(doc) };
+}
+
+/** An Effect's plain data as the doc carries it: what it runs, read without running anything. */
+function effectDoc(parts: EffectParts): EffectDoc {
+  if (parts.kind === "http") {
+    const { method, secrets, timeoutMs, idempotent } = parts;
+    return { kind: "http", method, target: targetText(parts), secrets: [...secrets], timeoutMs, idempotent };
+  }
+  const { argv, timeoutMs, slot } = parts;
+  return { kind: "command", argv: argvText(argv), timeoutMs, ...(slot ? { slot } : {}) };
 }

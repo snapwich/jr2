@@ -17,6 +17,12 @@ export const INSTANCE_SECRET = "jr2-instance";
 export const INSTANCE_HARNESS_SERVICE = "jr2-instance-harness";
 export const INSTANCE_HARNESS_PORT = 8080;
 
+/** The Instance Effector (ADR-0068): its Deployment, headless Service, NetworkPolicy and Secret all
+ * carry this name. `jr2 up` converges them when a registered Machine places an Effect there. The
+ * port is the Effector's own (`JR2_EFFECTOR_PORT` default) — none of the Harness pod's ports. */
+export const INSTANCE_EFFECTOR = "jr2-instance-effector";
+export const EFFECTOR_PORT = 8082;
+
 /** Where a Harness persists its conversations, and the env var that tells it so (ADR-0031): one
  * fixed path in both placements — the Instance Harness's PersistentVolumeClaim (deploy.ts) and a
  * Sandbox's emptyDir (sandbox-kube.ts), each mounted into the Harness container alone. */

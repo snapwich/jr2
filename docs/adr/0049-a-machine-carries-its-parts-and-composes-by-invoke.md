@@ -23,6 +23,10 @@ because they are one problem: **what a Machine depends on that is not inside it.
     `researching → invoke researcher` instead of a uniform `agentRun`. Two Machines in one run may both carry a
     `researcher`; each resolves against its own implementations, and the Instance ID's actor path keeps their
     conversations apart.
+  - **An Effect is an actor slot too** ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once.md)), and its
+    plain-data parts ride the slot: the kind, where it runs, a `command`'s argv, an `http` Effect's method, fixed host
+    and the names of the secrets it names ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)).
+    `jr2 up` reads them without running anything.
   - **The Sandbox Image is a `workspace()` option**, static: `workspace(body, { input, image, repos, spec })` (`repos`
     is ADR-0051's, and follows the same rule). `image` is a string in one of two shapes — a `file:` URL
     (`import.meta.resolve("./image")`, a docker context the module ships) or a registry ref — or absent, which keeps

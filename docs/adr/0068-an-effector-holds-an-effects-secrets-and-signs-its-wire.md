@@ -35,6 +35,12 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
   nothing, not even whether an Effect exists. Reason: a process that takes the Effector's port while the Effector is
   down learns no secret from a request and can forge neither a request nor an answer. It can read a request's input,
   which is not secret, and it can make the call fail, which is output.
+- **The Orchestrator's side.** `@jr2/orchestrator` speaks the wire through an injected transport (the unit tests' seam,
+  [ADR-0010](0010-bdd-acceptance-tests.md)). The Instance Effector's address is derived from the namespace,
+  `jr2-instance-effector.<namespace>.svc:8082`, and its key from the signing key (`effectorKey`): the Orchestrator
+  stores neither. The real transport resolves that name to every replica's address; a start goes to one of them, and to
+  the next only when a replica was never reached or answered that it is stopping. An answer without the Effector's
+  signature is not the Effector's: it is treated as a transport failure, never as an outcome.
 - **Replica-aware.** Every answer names the replica that holds the Effect — its pod name and its address
   (`POD_IP:port`). A poll to a replica that does not hold the Effect gets 404 with `state: unknown` and that replica's
   name. A replica that gets SIGTERM refuses a new Effect (503, `error: stopping`, which starts nothing), finishes the
@@ -86,3 +92,5 @@ every Machine, so one fault there would reach every secret. So jr2 runs such an 
 - **Not a goal of scrubbing:** a transformed secret (a hash, a truncation, an encoding not listed above), a partial
   echo, a side channel. The claim is that an Effector does not return a secret it holds, in the forms it sent or in
   common encodings.
+- An `unknown` outcome is the Machine's to route. jr2 sends an `http` call again only when the author marked it
+  `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once.md)).

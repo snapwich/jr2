@@ -13,6 +13,9 @@ export * from "./agent.ts";
 // The Effect surface (ADR-0067): `command` itself is the wire-bound one, from harness-client.ts;
 // `fromPick`, `paramsOf` and `answer` are what an author writes between a pick and its work.
 export * from "./effect.ts";
+// The http kind (ADR-0068): `http`, `secret`, `bearer`, `basic`, `text`, and the Effector's wire.
+export * from "./http-effect.ts";
+export * from "./effector-wire.ts";
 export * from "./pick.ts";
 export * from "./parts.ts";
 export * from "./size.ts";

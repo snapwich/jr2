@@ -73,6 +73,7 @@ import { serializeMachine, type MachineDoc } from "./machine-doc.ts";
 import type { SnapshotStore } from "./snapshot-store.ts";
 import type { AgentAdmission } from "./actor.ts";
 import { dropSavedTails, type EffectRow } from "./effect.ts";
+import type { EffectorTarget } from "./http-effect.ts";
 import { reattachAgentRuns, serializeSnapshot } from "./durability.ts";
 
 /** The actors filled into a run's named slots — `.provide()` is the unit-test seam (ADR-0015);
@@ -569,6 +570,9 @@ export type RunHostOptions = {
    * signing key. Handed to every run's binding, and to the echo pusher below. Absent, no Harness
    * call bears one: only the stub Harness answers such a host. */
   harnessBearer?: (placement: string) => string;
+  /** Where an Effector placement is, and its key (ADR-0068) — `startInstance` derives both, the key
+   * from the signing key. Handed to every run's binding; absent, an http Effect faults pointedly. */
+  effector?: (placement: "instance") => EffectorTarget | undefined;
   /**
    * Build the run-narrative echo pusher for one Workspace's Harness (ADR-0023) — the seam a fake
    * echo server rides in tests; `startInstance` binds the real wire push (harness-client.ts).
@@ -694,6 +698,7 @@ export class RunHost {
   private readonly sandbox?: SandboxPort;
   private readonly instanceHarness?: string;
   private readonly harnessBearer?: (placement: string) => string;
+  private readonly effector?: (placement: "instance") => EffectorTarget | undefined;
   private readonly echoFactory?: (
     endpoint: string,
     bearer: string | undefined,
@@ -741,6 +746,7 @@ export class RunHost {
     this.sandbox = opts.sandbox;
     this.instanceHarness = opts.instanceHarness;
     this.harnessBearer = opts.harnessBearer;
+    this.effector = opts.effector;
     this.echoFactory = opts.echo;
     this.liveSetPush =
       opts.instanceHarness && opts.liveSet
@@ -1820,6 +1826,7 @@ export class RunHost {
       sandbox: this.sandbox,
       instanceHarness: this.instanceHarness,
       ...(this.harnessBearer ? { harnessBearer: this.harnessBearer } : {}),
+      ...(this.effector ? { effector: this.effector } : {}),
       // The admission ledger's write half (ADR-0016): the Agent's Actor reports the durable handle the
       // moment the Harness admits it, and the ledger hits the store in the same RunBlob save. An
       // admission arriving around stop/untrack still lands in `agents` but skips the save,
