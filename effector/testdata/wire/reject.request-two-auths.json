@@ -1,0 +1,21 @@
+{
+  "kind": "http",
+  "method": "GET",
+  "url": [
+    {
+      "text": "https://api.example.com"
+    }
+  ],
+  "auth": {
+    "bearer": {
+      "secret": "a"
+    },
+    "text": [
+      {
+        "secret": "a"
+      }
+    ]
+  },
+  "timeoutMs": 1000,
+  "maxBody": 1
+}

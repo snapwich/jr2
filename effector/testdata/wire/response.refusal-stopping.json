@@ -1,0 +1,7 @@
+{
+  "error": "stopping",
+  "replica": {
+    "name": "jr2-instance-effector-7d9f8-abcde",
+    "address": "10.244.0.17:8082"
+  }
+}

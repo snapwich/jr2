@@ -1,0 +1,157 @@
+// The Effector (ADR-0068): jr2's own process, in an image the author chose (the jr2-harness Kit
+// image for the Instance Effector), that runs for a Machine the Effects that hold an Effect secret.
+// A container becomes an Effector by running /opt/jr2/bin/effector as its command (B4.2).
+//
+// Its env names only where its own mount holds things — never a value:
+//
+//	JR2_EFFECTOR_PORT     the listen port (default 8082)
+//	JR2_EFFECTOR_KEY      the placement's signing key file (default /run/jr2/effector/key)
+//	JR2_EFFECTOR_CONFIG   the targets jr2 up wrote (default /run/jr2/effector/effector.json)
+//	JR2_EFFECTOR_SECRETS  the Effect secrets, one file each (default /run/jr2/secrets)
+//	JR2_CA_FILE           the instance's caBundle, trusted beside the system roots (optional)
+//	JR2_EFFECTOR_DRAIN_SECONDS  how long a stopping replica waits for its Effects (default 30)
+//	POD_NAME, POD_IP      the replica's name and address (the downward API)
+package main
+
+import (
+	"context"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/snapwich/jr2/effector/internal/httpkind"
+	"github.com/snapwich/jr2/effector/internal/scrub"
+	"github.com/snapwich/jr2/effector/internal/secrets"
+	"github.com/snapwich/jr2/effector/internal/server"
+	"github.com/snapwich/jr2/effector/internal/sign"
+	"github.com/snapwich/jr2/effector/internal/wire"
+)
+
+func main() {
+	logger := log.New(os.Stdout, "", log.LstdFlags|log.LUTC)
+	if err := run(logger); err != nil {
+		logger.Printf("jr2.effector action=exit reason=%q", err.Error())
+		os.Exit(1)
+	}
+}
+
+func env(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func run(logger *log.Logger) error {
+	if len(os.Args) > 1 {
+		return errors.New("usage: effector (configured by its env; see ADR-0068)")
+	}
+	port := env("JR2_EFFECTOR_PORT", "8082")
+	rawKey, err := os.ReadFile(env("JR2_EFFECTOR_KEY", "/run/jr2/effector/key"))
+	if err != nil {
+		return fmt.Errorf("no placement key: %w", err)
+	}
+	key := []byte(strings.TrimSpace(string(rawKey)))
+	if len(key) < 32 {
+		return errors.New("the placement key is shorter than 32 bytes")
+	}
+	config, err := secrets.ReadConfig(env("JR2_EFFECTOR_CONFIG", "/run/jr2/effector/effector.json"))
+	if err != nil {
+		return err
+	}
+	held, err := secrets.Read(env("JR2_EFFECTOR_SECRETS", "/run/jr2/secrets"))
+	if err != nil {
+		return err
+	}
+	roots, err := trust(os.Getenv("JR2_CA_FILE"))
+	if err != nil {
+		return err
+	}
+	drain, err := strconv.Atoi(env("JR2_EFFECTOR_DRAIN_SECONDS", "30"))
+	if err != nil || drain < 0 {
+		return errors.New("JR2_EFFECTOR_DRAIN_SECONDS is not a number of seconds")
+	}
+	hostname, _ := os.Hostname()
+	replica := wire.Replica{
+		Name:    env("POD_NAME", hostname),
+		Address: net.JoinHostPort(env("POD_IP", "127.0.0.1"), port),
+	}
+
+	scrubber := scrub.New(held)
+	srv := server.New(server.Options{
+		Verifier: sign.NewVerifier(key, nil),
+		Runner:   &httpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots},
+		Scrubber: scrubber,
+		Replica:  replica,
+		Log:      logger,
+	})
+	httpServer := &http.Server{Addr: ":" + port, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
+
+	listener, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(held))
+	for name := range held {
+		names = append(names, name)
+	}
+	logger.Printf("jr2.effector ready placement=%s replica=%s secrets=%s targets=%d",
+		config.Placement, replica.Name, strings.Join(names, ","), len(config.Targets))
+
+	sweep := time.NewTicker(time.Minute)
+	defer sweep.Stop()
+	go func() {
+		for now := range sweep.C {
+			srv.Sweep(now)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+	served := make(chan error, 1)
+	go func() { served <- httpServer.Serve(listener) }()
+	select {
+	case err := <-served:
+		return err
+	case <-stop:
+	}
+	// SIGTERM: refuse new Effects, finish the ones in flight, and stay until each outcome was read
+	// or the drain time is spent — the pod's grace period carries this (B2.4).
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(drain)*time.Second)
+	defer cancel()
+	srv.Drain(ctx)
+	shutdown, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelShutdown()
+	return httpServer.Shutdown(shutdown)
+}
+
+// trust is the system roots plus the instance's caBundle (ADR-0020), when one is mounted.
+func trust(caFile string) (*x509.CertPool, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if caFile == "" {
+		return pool, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return pool, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("%s holds no PEM certificate", caFile)
+	}
+	return pool, nil
+}

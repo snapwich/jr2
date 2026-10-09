@@ -1,0 +1,31 @@
+{
+  "kind": "http",
+  "method": "POST",
+  "url": [
+    {
+      "text": "https://jira.example.com/rest/api/2/issue"
+    }
+  ],
+  "path": ["PROJ-7", "comment"],
+  "headers": {
+    "accept": [
+      {
+        "text": "application/json"
+      }
+    ]
+  },
+  "auth": {
+    "bearer": {
+      "secret": "jira"
+    }
+  },
+  "body": {
+    "json": {
+      "body": "Tests pass.",
+      "visibility": null,
+      "labels": ["ci", 1, true]
+    }
+  },
+  "timeoutMs": 30000,
+  "maxBody": 65536
+}

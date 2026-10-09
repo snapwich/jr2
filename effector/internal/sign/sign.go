@@ -1,0 +1,118 @@
+// Package sign is the Effector's authentication (ADR-0068, B2.2): signed requests and signed
+// responses, and no bearer. The key is the placement's, `HMAC(signing key, "effector:" +
+// placement)`, which the Orchestrator derives and the Effector reads from a file in its own mount.
+//
+// A request carries an HMAC over its method, its path, a time, a nonce and the sha-256 of its
+// body. The time and the nonce make a replay detectable: a request outside the time window, or
+// with a nonce seen inside it, is refused. A response carries an HMAC over its status, the
+// request's method, path and nonce, and the sha-256 of its body — so an answer is bound to the one
+// request it answers, and a process that took the Effector's port can forge neither.
+package sign
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"strconv"
+	"sync"
+	"time"
+)
+
+// The headers a signed message carries.
+const (
+	HeaderTime      = "X-Jr2-Time"
+	HeaderNonce     = "X-Jr2-Nonce"
+	HeaderSignature = "X-Jr2-Signature"
+)
+
+// Window is how far a request's time may be from the Effector's clock, either way.
+const Window = 5 * time.Minute
+
+// RequestMAC is the signature of one request: base64url (no padding) of HMAC-SHA256 over
+// "jr2-effector-request\n" + method + "\n" + path + "\n" + time + "\n" + nonce + "\n" + hex(sha256(body)).
+func RequestMAC(key []byte, method, path, at, nonce string, body []byte) string {
+	return mac(key, "jr2-effector-request", method, path, at, nonce, bodyDigest(body))
+}
+
+// ResponseMAC is the signature of one response: HMAC-SHA256 over
+// "jr2-effector-response\n" + status + "\n" + method + "\n" + path + "\n" + nonce + "\n" + hex(sha256(body)),
+// where method, path and nonce are the request's.
+func ResponseMAC(key []byte, status int, method, path, nonce string, body []byte) string {
+	return mac(key, "jr2-effector-response", strconv.Itoa(status), method, path, nonce, bodyDigest(body))
+}
+
+func bodyDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func mac(key []byte, parts ...string) string {
+	m := hmac.New(sha256.New, key)
+	for i, p := range parts {
+		if i > 0 {
+			m.Write([]byte{'\n'})
+		}
+		m.Write([]byte(p))
+	}
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+}
+
+// ErrRefused is every verification failure. It says nothing about which check failed: a caller
+// that is refused learns nothing.
+var ErrRefused = errors.New("refused")
+
+// Verifier checks requests against one key and remembers the nonces it has seen.
+type Verifier struct {
+	key []byte
+	now func() time.Time
+
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+// NewVerifier verifies with key; now is the clock (time.Now when nil).
+func NewVerifier(key []byte, now func() time.Time) *Verifier {
+	if now == nil {
+		now = time.Now
+	}
+	return &Verifier{key: key, now: now, seen: map[string]time.Time{}}
+}
+
+// Key is the key the verifier holds, for signing the answers.
+func (v *Verifier) Key() []byte { return v.key }
+
+// Verify checks one request. It refuses a missing or wrong signature, a time outside the window,
+// and a nonce already seen inside it.
+func (v *Verifier) Verify(method, path, at, nonce, signature string, body []byte) error {
+	if at == "" || nonce == "" || signature == "" || len(nonce) < 16 || len(nonce) > 128 {
+		return ErrRefused
+	}
+	want := RequestMAC(v.key, method, path, at, nonce, body)
+	if !hmac.Equal([]byte(want), []byte(signature)) {
+		return ErrRefused
+	}
+	ms, err := strconv.ParseInt(at, 10, 64)
+	if err != nil {
+		return ErrRefused
+	}
+	now := v.now()
+	sent := time.UnixMilli(ms)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for n, until := range v.seen {
+		if now.After(until) {
+			delete(v.seen, n)
+		}
+	}
+	if sent.Before(now.Add(-Window)) || sent.After(now.Add(Window)) {
+		return ErrRefused
+	}
+	if _, replay := v.seen[nonce]; replay {
+		return ErrRefused
+	}
+	// Kept until the request's time leaves the window: past that the time check refuses it.
+	v.seen[nonce] = sent.Add(Window)
+	return nil
+}

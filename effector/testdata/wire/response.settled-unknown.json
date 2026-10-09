@@ -1,0 +1,12 @@
+{
+  "effect": "3f1c7a52-1b2d-4c8e-9a0f-6b5d4e3c2a19",
+  "replica": {
+    "name": "jr2-instance-effector-7d9f8-abcde",
+    "address": "10.244.0.17:8082"
+  },
+  "state": "settled",
+  "output": {
+    "outcome": "unknown",
+    "reason": "the timeout passed; the request may have reached the host, and no answer came"
+  }
+}

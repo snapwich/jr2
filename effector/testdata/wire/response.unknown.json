@@ -1,0 +1,8 @@
+{
+  "effect": "3f1c7a52-1b2d-4c8e-9a0f-6b5d4e3c2a19",
+  "replica": {
+    "name": "jr2-instance-effector-7d9f8-fghij",
+    "address": "10.244.0.18:8082"
+  },
+  "state": "unknown"
+}

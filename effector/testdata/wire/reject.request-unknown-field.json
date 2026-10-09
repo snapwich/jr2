@@ -1,0 +1,12 @@
+{
+  "kind": "http",
+  "method": "GET",
+  "url": [
+    {
+      "text": "https://api.example.com"
+    }
+  ],
+  "timeoutMs": 1000,
+  "maxBody": 1,
+  "retry": true
+}

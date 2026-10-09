@@ -1,0 +1,11 @@
+{
+  "kind": "http",
+  "method": "GET",
+  "url": [
+    {
+      "text": "https://api.example.com/v1/status"
+    }
+  ],
+  "timeoutMs": 30000,
+  "maxBody": 65536
+}
