@@ -26,15 +26,18 @@ together, before the request leaves; a `settled` row is written with the output,
 transition the output drives and again in the save that carries that transition; an `aborted` row when the Effect's
 state exited while it ran, kept in memory and saved by the save that carries that exit (a cancel's final save included),
 never by a save inside the transition. A restore reads the row and never guesses: settled → the output is delivered (the
-transition's save was lost); intent → a command re-attaches to its exec by id, or settles `unknown` when the Harness no
-longer knows it; no row → nothing was sent, so it starts. Nothing an Effect started is run twice by jr2. A row replaces
-the one before it and is never dropped: a restored child that is done or stopped never starts, so no restore reads a
-finished Effect's row, and the settled and aborted rows keep the Effect's id, kind and outcome for the run's life: the
-record of what the run's Effects did. A settled row's output TAIL is dropped once the save that carries its transition
-is on disk — that save's snapshot no longer holds the Effect running, so no restore reads it, and the full stream is on
-the run's feed. The ledger grows by one short row per Effect a run starts, never by its tails, and lives as long as the
-run's row (ADR-0065). An outstanding pick's hold is saved in the same blob and keeps its `chain` whole until the pick is
-answered (ADR-0067); that is the only place an Effect's tails accumulate.
+transition's save was lost); intent → per kind: a command re-attaches to its exec by id, or settles `unknown` when the
+Harness no longer knows it; an http call asks every replica of its Effector for its id and follows the one that holds
+it, and when none does it is sent again only when the author marked it `idempotent`, else it settles `unknown`; no row →
+nothing was sent, so it starts. jr2 runs an Effect it started a second time only where its author marked it
+`idempotent`; a command never. A row replaces the one before it and is never dropped: a restored child that is done or
+stopped never starts, so no restore reads a finished Effect's row, and the settled and aborted rows keep the Effect's
+id, kind and outcome for the run's life: the record of what the run's Effects did. A settled row's output TAIL is
+dropped once the save that carries its transition is on disk — that save's snapshot no longer holds the Effect running,
+so no restore reads it, and the full stream is on the run's feed. The ledger grows by one short row per Effect a run
+starts, never by its tails, and lives as long as the run's row (ADR-0065). An outstanding pick's hold is saved in the
+same blob and keeps its `chain` whole until the pick is answered (ADR-0067); that is the only place an Effect's tails
+accumulate.
 
 **Pending timers** do not ride the snapshot either. The host persists a **timer table** beside it in the same save: one
 row per pending `after`, named delay, delayed `raise` or delayed `sendTo` in the run's tree, with its absolute deadline.
@@ -89,7 +92,8 @@ The author writes plain xstate `after`; there is no kit timer actor, and `after`
   serializable input (the Harness client from an `endpoint`, the kube client from ambient config) — which is also why a
   mock↔real swap happens at the wire (ADR-0011's stub Harness), never inside actor code.
 - An Effect has no at-most-once sliver: its intent row is on disk before the call leaves, so a restart either finds no
-  row (nothing was sent) or finds the intent and settles `unknown` when it cannot re-attach.
+  row (nothing was sent) or finds the intent and settles `unknown` when it cannot re-attach — or, for an http call the
+  author marked `idempotent` that no replica holds, sends it again under the same id.
 - The known durability edge stands for Agents: a crash between "run admitted" and "admission persisted" degrades to an
   at-most-once re-POST (a live-run probe replays from `-1`; a genuinely-absent run re-POSTs), and an in-flight POST at
   the instant of the kill is the irreducible at-most-once sliver.

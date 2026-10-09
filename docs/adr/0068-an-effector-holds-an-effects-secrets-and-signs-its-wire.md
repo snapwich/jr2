@@ -156,7 +156,7 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   echo, a side channel. The claim is that an Effector does not return a secret it holds, in the forms it sent or in
   common encodings.
 - An `unknown` outcome is the Machine's to route. jr2 sends an `http` call again only when the author marked it
-  `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once.md)).
+  `idempotent` ([ADR-0067](0067-an-effect-is-an-actor-slot-and-runs-at-most-once-unless-marked-idempotent.md)).
 - The `@kind` tier carries the proofs a unit test cannot: an echo server in the seed namespace answers each header and
   the url in every encoding, and the run's snapshot, its feed and the answer the model reads must hold no form of the
   value (B3) — the step decodes every base64 and percent-encoded run it reads, so a leak of what the Effector built
