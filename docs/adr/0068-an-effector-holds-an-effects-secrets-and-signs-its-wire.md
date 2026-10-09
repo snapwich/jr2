@@ -30,11 +30,11 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   so it refuses it as unsigned. The Orchestrator never sends one: a start whose body is longer settles `refused`, with
   nothing sent and no intent row, because a body built from context or a pick's param can reach the bound.
 - **Hand-written types, and golden fixtures.** There is no code generator. The types are Go structs in
-  `effector/internal/wire` and zod schemas in `@jr2/orchestrator`. Go decodes with unknown fields disallowed. The golden
-  fixtures in `effector/testdata/wire/` keep the two equal: one JSON file per request shape (`request.*`), per answer
-  and outcome (`response.*`), per shape its decoder must refuse (`reject.*`), and the two signatures (`signature.*`). Go
-  decodes each request and encodes each response; the TypeScript tests read the same files by a relative path, encode
-  the requests and decode the responses.
+  `effector/internal/wire` and zod schemas in `@jr2/orchestrator`, the one definition each TypeScript type is inferred
+  from. Go decodes with unknown fields disallowed. The golden fixtures in `effector/testdata/wire/` keep the two equal:
+  one JSON file per request shape (`request.*`), per answer and outcome (`response.*`), per shape its decoder must
+  refuse (`reject.*`), and the two signatures (`signature.*`). Go decodes each request and encodes each response; the
+  TypeScript tests read the same files by a relative path, encode the requests and decode the responses.
 - **Signed requests and signed answers, and no bearer.** The key is the placement's,
   `HMAC(signing key, "effector:" + placement)`, as ADR-0058 derives the Harness bearer: the Orchestrator stores nothing.
   The Effector reads it from a file in its own mount. A request carries `X-Jr2-Time` (Unix milliseconds), `X-Jr2-Nonce`,

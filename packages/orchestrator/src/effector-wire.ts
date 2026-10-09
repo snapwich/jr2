@@ -1,7 +1,8 @@
 // The Effector's wire, from the Orchestrator's side (ADR-0068): the request it encodes, the
 // answers it decodes, the signatures on both, and the client that speaks it.
 //
-// The types are written by hand, here (zod is the source) and in Go (`effector/internal/wire`).
+// The types are written by hand, here and in Go (`effector/internal/wire`). Here each zod shape is
+// the one definition, and each type is inferred from it.
 // The golden fixtures in `effector/testdata/wire/` keep the two equal: these tests encode each
 // request fixture's shape and decode each answer; the Go tests do the reverse. An answer that does
 // not decode strictly is a jr2 defect, never an outcome.
@@ -15,50 +16,59 @@ import { lookup } from "node:dns/promises";
 import { z } from "zod";
 
 // --- The request (POST /effects/<id>) ------------------------------------------------------------
+//
+// Each zod shape is the one definition of its part of the wire; each type is inferred from it.
+
+export const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
+export const HttpMethodShape = z.enum(HTTP_METHODS);
+export type HttpMethod = z.infer<typeof HttpMethodShape>;
 
 /** One part of a string the Effector builds: literal text, or a secret it holds, by name. A
  * secret's value is never on the wire. */
-export type TextPart = { text: string } | { secret: string };
+export const TextPartShape = z.union([z.strictObject({ text: z.string() }), z.strictObject({ secret: z.string() })]);
+export type TextPart = z.infer<typeof TextPartShape>;
 
-export type WireAuth =
-  | { bearer: { secret: string } }
-  | { basic: { user: TextPart[]; password: TextPart[] } }
-  | { text: TextPart[] };
+export const WireAuthShape = z.union([
+  z.strictObject({ bearer: z.strictObject({ secret: z.string() }) }),
+  z.strictObject({ basic: z.strictObject({ user: z.array(TextPartShape), password: z.array(TextPartShape) }) }),
+  z.strictObject({ text: z.array(TextPartShape) }),
+]);
+export type WireAuth = z.infer<typeof WireAuthShape>;
 
-export type WireBody = { json: unknown } | { text: string };
+export const WireBodyShape = z.union([z.strictObject({ json: z.unknown() }), z.strictObject({ text: z.string() })]);
+export type WireBody = z.infer<typeof WireBodyShape>;
 
-export type StartRequest = {
-  kind: "http";
-  method: HttpMethod;
-  url: TextPart[];
-  path?: string[];
-  headers?: Record<string, TextPart[]>;
-  auth?: WireAuth;
-  body?: WireBody;
-  timeoutMs: number;
-  maxBody: number;
-};
+export const StartRequestShape = z.strictObject({
+  kind: z.literal("http"),
+  method: HttpMethodShape,
+  url: z.array(TextPartShape),
+  path: z.array(z.string()).optional(),
+  headers: z.record(z.string(), z.array(TextPartShape)).optional(),
+  auth: WireAuthShape.optional(),
+  body: WireBodyShape.optional(),
+  timeoutMs: z.number().int(),
+  maxBody: z.number().int(),
+});
+export type StartRequest = z.infer<typeof StartRequestShape>;
 
 /** The most bytes of a start's body the Effector reads (its `maxRequestBody`). A longer body
  * cannot be verified, so the Effector refuses it as unsigned; the Orchestrator never sends one. */
 export const MAX_START_BYTES = 4 << 20;
 
-export const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
-export type HttpMethod = (typeof HTTP_METHODS)[number];
-
 // --- The answers ---------------------------------------------------------------------------------
 
 /** The `response` outcome: a status came back. The body is there when it is text, bounded and
  * scrubbed; a body that is not text is its size and content type only. */
-export type HttpResponse = {
-  outcome: "response";
-  status: number;
-  headers: Record<string, string>;
-  contentType: string;
-  size: number;
-  body?: string;
-  truncated?: boolean;
-};
+export const HttpResponseShape = z.strictObject({
+  outcome: z.literal("response"),
+  status: z.number().int(),
+  headers: z.record(z.string(), z.string()),
+  contentType: z.string(),
+  size: z.number().int().nonnegative(),
+  body: z.string().optional(),
+  truncated: z.boolean().optional(),
+});
+export type HttpResponse = z.infer<typeof HttpResponseShape>;
 
 /**
  * An `http` Effect's output. Every outcome is output (ADR-0067): `response`; `unreachable` (nothing
@@ -66,38 +76,26 @@ export type HttpResponse = {
  * or empty, a host no Effect placed there names); `unknown` (it may have been sent, and no answer
  * came — or jr2 cannot tell, after a restart or a state exit).
  */
-export type HttpOutput = HttpResponse | { outcome: "unreachable" | "refused" | "unknown"; reason: string };
-
-/** The replica that holds an Effect, and where to poll it. */
-export type Replica = { name: string; address: string };
-
-/** Every answer of `POST` and `GET /effects/<id>`. */
-export type EffectState = {
-  effect: string;
-  replica: Replica;
-  state: "running" | "settled" | "unknown";
-  output?: HttpOutput;
-};
-
-const ReplicaShape = z.strictObject({ name: z.string(), address: z.string() });
-const HttpOutputShape = z.union([
-  z.strictObject({
-    outcome: z.literal("response"),
-    status: z.number().int(),
-    headers: z.record(z.string(), z.string()),
-    contentType: z.string(),
-    size: z.number().int().nonnegative(),
-    body: z.string().optional(),
-    truncated: z.boolean().optional(),
-  }),
+export const HttpOutputShape = z.union([
+  HttpResponseShape,
   z.strictObject({ outcome: z.enum(["unreachable", "refused", "unknown"]), reason: z.string() }),
 ]);
+export type HttpOutput = z.infer<typeof HttpOutputShape>;
+
+/** The replica that holds an Effect, and where to poll it. */
+export const ReplicaShape = z.strictObject({ name: z.string(), address: z.string() });
+export type Replica = z.infer<typeof ReplicaShape>;
+
+/** Every answer of `POST` and `GET /effects/<id>`. */
 export const EffectStateShape = z.strictObject({
   effect: z.string(),
   replica: ReplicaShape,
   state: z.enum(["running", "settled", "unknown"]),
   output: HttpOutputShape.optional(),
 });
+export type EffectState = z.infer<typeof EffectStateShape>;
+
+/** A refusal's body: the reason, and the replica when it names one. */
 export const RefusalShape = z.strictObject({ error: z.string(), replica: ReplicaShape.optional() });
 
 // --- Signatures ----------------------------------------------------------------------------------
@@ -223,7 +221,7 @@ export function createEffectorClient(opts: {
   const state = (answer: RawAnswer, what: string): EffectState => {
     const parsed = EffectStateShape.safeParse(parseJson(answer.body));
     if (!parsed.success) throw new EffectorMalformed(`the Effector's answer to ${what} is not the wire's shape`);
-    return parsed.data as EffectState;
+    return parsed.data;
   };
   const refusal = (answer: RawAnswer): string => {
     const parsed = RefusalShape.safeParse(parseJson(answer.body));

@@ -15,6 +15,7 @@ import {
   EffectStateShape,
   RefusalShape,
   requestMac,
+  StartRequestShape,
   responseMac,
   type EffectorTransport,
 } from "../src/effector-wire.ts";
@@ -103,6 +104,25 @@ function normalize(v: unknown): unknown {
   }
   return v;
 }
+
+test("the request's zod shape, which its type is inferred from, takes every request fixture and refuses each reject", () => {
+  const requests = named("request.");
+  assert.ok(requests.length > 0);
+  for (const name of requests) {
+    const parsed = StartRequestShape.safeParse(fixture(name));
+    assert.ok(parsed.success, name);
+    assert.deepEqual(parsed.data, fixture(name), name);
+  }
+  const rejects = named("reject.request");
+  assert.ok(rejects.length > 0);
+  for (const name of rejects) assert.ok(!StartRequestShape.safeParse(fixture(name)).success, name);
+  // What a definition encodes is the shape's too.
+  const encoded = startRequestOf(
+    httpParts({ method: "POST", url: text`https://api.example.com/a`, auth: basic("bot", secret("pw")) }),
+    { json: { n: 1 } },
+  );
+  assert.ok(StartRequestShape.safeParse(JSON.parse(JSON.stringify(encoded))).success);
+});
 
 test("every answer fixture decodes strictly; every reject fixture is refused", () => {
   for (const name of named("response.")) {
