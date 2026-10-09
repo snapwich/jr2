@@ -1159,12 +1159,29 @@ export function instanceEffectorObjects(opts: {
   return JSON.stringify({ apiVersion: "v1", kind: "List", items });
 }
 
-/** The Instance Effector's template digest: an HMAC over every secret input, keyed with the signing
- * key so the annotation reveals nothing about a value. */
-export function effectorDigest(signingKey: Buffer, plan: EffectorPlan, key: string): string {
+/** A keyed digest of one key's value in the user's Secret, as the API returns it (base64): what a
+ * template digest holds for a `valueFrom`, so an edit of the value rolls the pod and the annotation
+ * reveals nothing about it. `jr2 up` keeps the digest, never the value. */
+export function storedValueDigest(signingKey: Buffer, secret: string, key: string, base64: string): string {
+  return createHmac("sha256", signingKey)
+    .update(`jr2-secret-value\n${secret}\n${key}\n`)
+    .update(Buffer.from(base64, "base64"))
+    .digest("base64url");
+}
+
+/** The digest of each `valueFrom` value, by the user's Secret and key; undefined when not read. */
+export type ValueDigest = (secret: string, key: string) => string | undefined;
+
+/** The Instance Effector's template digest: an HMAC over every secret input — a literal's value, a
+ * `valueFrom`'s reference and the digest of its value — keyed with the signing key so the
+ * annotation reveals nothing about a value. */
+export function effectorDigest(signingKey: Buffer, plan: EffectorPlan, key: string, valueDigest: ValueDigest): string {
   const mac = createHmac("sha256", signingKey);
   mac.update(JSON.stringify({ secrets: plan.secrets, targets: plan.targets, longest: plan.longestTimeoutMs }));
   for (const name of Object.keys(plan.values).sort()) mac.update(`${name}=${plan.values[name]}`);
+  for (const s of plan.secrets) {
+    if (s.source.kind === "secret") mac.update(`${s.name}<-${valueDigest(s.source.secret, s.source.key) ?? ""}`);
+  }
   mac.update(key);
   return mac.digest("base64url").slice(0, 32);
 }

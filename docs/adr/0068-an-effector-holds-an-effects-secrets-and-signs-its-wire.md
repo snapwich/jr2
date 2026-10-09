@@ -82,10 +82,12 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   every non-ASCII character as `\uXXXX`, `\b` and `\f` or their `\u` forms, U+2028 and U+2029 as `\u2028` and `\u2029`
   or as they are, and `\u` hex in either case. A match becomes `[secret:<name>]`. A body is scrubbed as it streams,
   across chunk borders, with a window one byte shorter than the longest form. The Effector refuses to start with a
-  secret shorter than 8 characters, and names it: a shorter one would match ordinary text. A literal is refused earlier,
-  by `jr2 up`; a value from the user's own Secret is first seen here.
+  secret shorter than 8 characters, and names it: a shorter one would match ordinary text. `jr2 up` refuses a short one
+  earlier, a literal and a value in the user's own Secret alike (see the secrets list below); the Effector's refusal is
+  for a Secret edited after the converge.
 - **Every Effect secret is a file in the Effector's own mount**, `/run/jr2/secrets/<name>`, read once at start. One
-  trailing `\n` or `\r\n` is taken off, as the Custodian does.
+  trailing `\n` or `\r\n` is taken off, as the Custodian does. A value changed after the start reaches the Effector when
+  its pod rolls; the template digest below makes the next `jr2 up` roll it.
 - **The `http` kind.** The request is built in the Effector from the definition's parts: the method (GET, HEAD, POST,
   PUT, PATCH, DELETE, OPTIONS); a url, as `text` parts where a secret is a part and never a value on the wire, a secret
   in it percent-encoded as a path segment — so a secret sits only in the url's path, after the host: one after a `?` or
@@ -146,7 +148,9 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
     `jr2-harness` image, command `/opt/jr2/bin/effector`, non-root, no privilege escalation, every capability dropped, a
     read-only root filesystem, an emptyDir scratch as `$HOME`, no ServiceAccount token, the control tier's PriorityClass
     ([ADR-0060](0060-a-workspace-states-its-size-and-jr2-reserves-all-of-it.md)). Its pod template carries
-    `jr2.dev/effector-digest`, an HMAC over every secret input keyed with the signing key, so an edit rolls it.
+    `jr2.dev/effector-digest`, an HMAC over every secret input keyed with the signing key, so an edit rolls it at the
+    next `jr2 up`: a literal's value, a `valueFrom`'s reference, and a digest of the value in the user's Secret, keyed
+    with the signing key, which `jr2 up` takes when it measures the value and keeps in place of it.
     `terminationGracePeriodSeconds` is the longest timeout among the Effects placed there plus 30 s for the outcome to
     be read; the drain ends 5 s before it.
   - A **headless Service** that publishes addresses that are not ready: "ask every replica" is its name's addresses, a

@@ -123,6 +123,8 @@ import {
   instanceHarnessObjects,
   instanceEffectorObjects,
   effectorDigest,
+  storedValueDigest,
+  type ValueDigest,
   effectorGraceSeconds,
   INSTANCE_EFFECTOR,
   instanceObjects,
@@ -860,9 +862,13 @@ export async function up(args: string[], io: Io): Promise<number> {
 
   // --- secrets (ADR-0059, ADR-0068): resolved HERE, host-side, where `.env` exists --------------
   // R10: a Secret an entry references must exist with its key. Read once per Secret — each key's
-  // NAME and the LENGTH of its value, never the value — for both placements. The length is B3.5's:
-  // an Effect secret shorter than 8 characters is refused wherever its value is kept (ADR-0068).
+  // NAME, the LENGTH of its value, and a keyed digest of it, never the value — for both
+  // placements. The length is B3.5's: an Effect secret shorter than 8 characters is refused
+  // wherever its value is kept (ADR-0068). The digest goes into the template digest of each
+  // long-lived pod that reads the value once at start — the Instance Harness's Custodian and the
+  // Instance Effector — so a value edited in the user's Secret rolls them at the next `jr2 up`.
   const referenced = new Map<string, Map<string, number> | undefined>();
+  const valueDigests = new Map<string, string>();
   for (const entry of config.secrets ?? []) {
     const ref = entry.valueFrom?.secretKeyRef.name;
     if (ref === undefined || referenced.has(ref)) continue;
@@ -876,7 +882,11 @@ export async function up(args: string[], io: Io): Promise<number> {
       ref,
       found ? new Map(Object.entries(found.data ?? {}).map(([k, b64]) => [k, storedValueLength(b64)])) : undefined,
     );
+    for (const [k, b64] of Object.entries(found?.data ?? {})) {
+      valueDigests.set(`${ref}/${k}`, storedValueDigest(Buffer.from(signingKey, "base64"), ref, k, b64));
+    }
   }
+  const valueDigest = (secret: string, key: string) => valueDigests.get(`${secret}/${key}`);
   const secretKeys = (secret: string) => {
     const keys = referenced.get(secret);
     return keys && [...keys.keys()];
@@ -1017,7 +1027,12 @@ export async function up(args: string[], io: Io): Promise<number> {
         harnessImage,
         custodianImage,
         held: instanceHeld(held.objects).manifest,
-        heldDigest: heldDigest(Buffer.from(signingKey, "base64"), held.objects, instanceHeld(held.objects)),
+        heldDigest: heldDigest(
+          Buffer.from(signingKey, "base64"),
+          held.objects,
+          instanceHeld(held.objects),
+          valueDigest,
+        ),
         harness: config.harness,
         caBundle: caPem !== undefined,
         // The wire's gate (ADR-0058): the digest of the bearer the Orchestrator derives for this
@@ -1075,7 +1090,7 @@ export async function up(args: string[], io: Io): Promise<number> {
         harnessImage: refs.harness,
         plan: effectorPlan,
         key,
-        digest: effectorDigest(signing, effectorPlan, key),
+        digest: effectorDigest(signing, effectorPlan, key, valueDigest),
         caBundle: caPem !== undefined,
         ...(config.priorityClasses ? { priorityClasses: config.priorityClasses } : {}),
       }),
@@ -1294,13 +1309,18 @@ function instanceHeld(held: HeldObjects): HeldPodObjects {
 }
 
 /** The Instance Harness's `jr2.dev/held-digest` (ADR-0059): an HMAC over its pod's held-secret
- * inputs, keyed with the signing key so the annotation reveals nothing about a value. */
-function heldDigest(key: Buffer, all: HeldObjects, held: HeldPodObjects): string {
+ * inputs — a literal's value, a `valueFrom`'s reference and the digest of its value — keyed with
+ * the signing key so the annotation reveals nothing about a value. Its Custodian reads each value
+ * once at start, so a value edited in the user's Secret must roll it. */
+function heldDigest(key: Buffer, all: HeldObjects, held: HeldPodObjects, valueDigest: ValueDigest): string {
   const mac = createHmac("sha256", key);
   mac.update(JSON.stringify(held.manifest));
   const stems = new Set(held.manifest.secrets.flatMap((s) => s.hosts.map((h) => h.leaf)));
   for (const stem of [...stems].sort()) mac.update(`${stem}:${fingerprint(all.leaves[stem]!.cert)}`);
   for (const name of Object.keys(held.values).sort()) mac.update(`${name}=${held.values[name]}`);
+  for (const s of held.manifest.secrets) {
+    if (s.source.kind === "secret") mac.update(`${s.name}<-${valueDigest(s.source.secret, s.source.key) ?? ""}`);
+  }
   mac.update(held.bootstrap);
   mac.update(held.script);
   return mac.digest("base64url").slice(0, 32);

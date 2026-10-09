@@ -3033,6 +3033,74 @@ test("the Instance Effector's digest is a function of its secret inputs: the sam
   );
 });
 
+test("a value edited in the user's Secret behind a valueFrom rolls the Instance Effector at the next converge, and the digest shows no value (ADR-0068)", async () => {
+  const root = await withHttpEffect(
+    await mkInstance(
+      `export default { name: "myinst", secrets: [{ name: "jira", valueFrom: { secretKeyRef: { name: "team", key: "jira" } } }] };\n`,
+    ),
+  );
+  const w = mkWorld(root);
+  const b64 = (s: string) => Buffer.from(s).toString("base64");
+  // The kept signing key: the digest is keyed with it, so every converge here keys with one.
+  w.kube.set("myinst", "secret", "jr2-instance", {
+    data: { JR2_INSTANCE_TOKEN: b64("tok"), JR2_SIGNING_KEY: b64(randomBytes(32).toString("base64")) },
+  } as never);
+  const digest = async (): Promise<string> => {
+    w.kube.applied.length = 0;
+    assert.equal(await up(["--yes"], w.io), 0);
+    const list = w.kube.applied.find(
+      (m) => m.includes(`"name":"jr2-instance-effector"`) && m.includes(`"kind":"Deployment"`),
+    )!;
+    const items = (JSON.parse(list) as { items: Array<Record<string, any>> }).items;
+    return items.find((i) => i.kind === "Deployment")!.spec.template.metadata.annotations["jr2.dev/effector-digest"];
+  };
+  w.kube.set("myinst", "secret", "team", { data: { jira: b64("team-jira-value-0123") } } as never);
+  const first = await digest();
+  assert.equal(await digest(), first, "the same value, the same pod");
+  w.kube.set("myinst", "secret", "team", { data: { jira: b64("team-jira-value-4567") } } as never);
+  const rotated = await digest();
+  assert.notEqual(rotated, first, "a new value under the same key rolls it");
+  assert.ok(!w.kube.applied.some((m) => m.includes("team-jira-value")), "no applied object holds the value");
+});
+
+test("a value edited in the user's Secret behind a valueFrom rolls the Instance Harness at the next converge (ADR-0059)", async () => {
+  const root = await mkInstance(
+    `export default { name: "myinst", secrets: [` +
+      `{ name: "ANTHROPIC_API_KEY", valueFrom: { secretKeyRef: { name: "team", key: "anthropic" } } }] };\n`,
+    "myinst",
+    DECISIONER_AGENTS,
+  );
+  const w = mkWorld(root);
+  const b64 = (s: string) => Buffer.from(s).toString("base64");
+  // The kept signing key: the digest is keyed with it, so every converge here keys with one.
+  w.kube.set("myinst", "secret", "jr2-instance", {
+    data: { JR2_INSTANCE_TOKEN: b64("tok"), JR2_SIGNING_KEY: b64(randomBytes(32).toString("base64")) },
+  } as never);
+  const digest = async (): Promise<string> => {
+    w.kube.applied.length = 0;
+    assert.equal(await up(["--yes"], w.io), 0);
+    // The cluster keeps the CA and the leaves this converge applied, as a real one does.
+    const items = (
+      JSON.parse(w.kube.applied.find((m) => m.includes(`"kind":"List"`) && m.includes(`"jr2-held-ca"`))!) as {
+        items: Array<Record<string, any>>;
+      }
+    ).items;
+    for (const name of ["jr2-held-ca", "jr2-held-tls"]) {
+      const kept = items.find((i) => i.metadata.name === name)!.stringData as Record<string, string>;
+      w.kube.set("myinst", "secret", name, {
+        data: Object.fromEntries(Object.entries(kept).map(([k, v]) => [k, b64(v)])),
+      } as never);
+    }
+    return findInstanceHarness(w).statefulSet!.spec.template.metadata.annotations["jr2.dev/held-digest"];
+  };
+  w.kube.set("myinst", "secret", "team", { data: { anthropic: b64("sk-ant-first-value") } } as never);
+  const first = await digest();
+  assert.equal(await digest(), first, "the same value, the same pod");
+  w.kube.set("myinst", "secret", "team", { data: { anthropic: b64("sk-ant-rotated-value") } } as never);
+  assert.notEqual(await digest(), first, "a new value under the same key rolls it");
+  assert.ok(!w.kube.applied.some((m) => m.includes("sk-ant-")), "no applied object holds the value");
+});
+
 test("no Effect placed there: no Instance Effector, and a stale one is deleted (ADR-0068)", async () => {
   const w = mkWorld(await mkInstance(`export default { name: "myinst" };\n`));
   assert.equal(await up(["--yes"], w.io), 0);

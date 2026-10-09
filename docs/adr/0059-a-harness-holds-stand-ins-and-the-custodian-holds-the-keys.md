@@ -202,8 +202,10 @@ decision generalizes that container. It holds every credential the Harness in it
   pod key; `jr2 up` refuses them when they would hold different names. One function, `custodianComposition`, builds what
   a pod gains from its pod's manifest; `kubeSandbox` and `instanceHarnessObjects` both call it, so the two pod shapes
   cannot drift. The Instance Harness's pod template carries `jr2.dev/held-digest`, an HMAC over its pod's held-secret
-  inputs keyed with the signing key, so a held-secret edit rolls it. A live Sandbox keeps what its Custodian read at
-  start.
+  inputs keyed with the signing key, so a held-secret edit rolls it at the next `jr2 up`. Its Custodian reads each value
+  once at start, so the inputs are a literal's value, a `valueFrom`'s reference, and a digest of the value in the user's
+  Secret, keyed with the signing key: `jr2 up` reads that Secret to check the key exists, and keeps the digest in place
+  of the value, so a value edited there rolls the pod too. A live Sandbox keeps what its Custodian read at start.
 
 ## Considered options
 

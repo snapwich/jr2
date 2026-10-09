@@ -19,8 +19,9 @@ import (
 // Read loads every secret under dir, by file name. A name that starts with "." is the kubelet's
 // own (`..data`) and is skipped. One trailing "\n" or "\r\n" is taken off, as the Custodian does.
 // An empty value, or one shorter than scrub.MinLength, stops the start with a line that names it
-// (ADR-0068): `jr2 up` refuses a short literal, and this is where a value from the user's own Secret
-// is first seen.
+// (ADR-0068): `jr2 up` refuses a short one before the converge, a literal and a value in the
+// user's own Secret alike, and this refusal is for a Secret edited after it. Read once, at start:
+// when a value changed, the next `jr2 up` rolls the pod.
 func Read(dir string) (map[string]string, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
