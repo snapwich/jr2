@@ -42,10 +42,11 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   and the hex sha-256 of the body, one per line. An answer carries an HMAC over `jr2-effector-response`, its status, the
   request's method, path and nonce, and the sha-256 of its body. So an answer is bound to the one request it answers.
   The Effector refuses a request with no signature, a wrong one, a time more than 5 minutes from its clock, or a nonce
-  it saw inside that window: 401, an empty body, no signature, before any route is read. A refused caller learns
-  nothing, not even whether an Effect exists. Reason: a process that takes the Effector's port while the Effector is
-  down learns no secret from a request and can forge neither a request nor an answer. It can read a request's input,
-  which is not secret, and it can make the call fail, which is output.
+  it saw inside that window: 401, an empty body, no signature, before any route is read. A replica keeps the nonces it
+  saw in its process memory only (see Consequences). A refused caller learns nothing, not even whether an Effect exists.
+  Reason: a process that takes the Effector's port while the Effector is down learns no secret from a request and can
+  forge neither a request nor an answer. It can read a request's input, which is not secret, and it can make the call
+  fail, which is output.
 - **The Orchestrator's side.** `@jr2/orchestrator` speaks the wire through an injected transport (the unit tests' seam,
   [ADR-0010](0010-bdd-acceptance-tests.md)). The Instance Effector's address is derived from the namespace,
   `jr2-instance-effector.<namespace>.svc:8082`, and its key from the signing key (`effectorKey`): the Orchestrator
@@ -166,3 +167,7 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), `jr2-instance-effector` and every user Secret a
   `valueFrom` names among them. So a fault that gives code execution in the Orchestrator reaches the Effect secrets
   through the API, though the Orchestrator never holds one. Narrowing the Role is a separate decision.
+- **Open gap: a replay to another replica.** The nonces are per process. Another replica, or the same replica after its
+  process restarts, has not seen a nonce, so a captured signed start sent to it again inside the 5 minutes is accepted
+  and sends the call again. The NetworkPolicy is the control that stands: only the Orchestrator reaches the port. A
+  request bound to the replica it is sent to is a separate decision.
