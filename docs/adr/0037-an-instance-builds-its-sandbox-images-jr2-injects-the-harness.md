@@ -142,7 +142,10 @@ every build) and promotes incidental image properties into contract items.
 - **A glibc floor.** Bases older than the one jr2's node was built against fail the preflight, and alpine/musl is out
   entirely. Named in the error — at converge for a built image, at provision for a ref — not discovered in a pod log.
 - **The stock Harness image is also the injection source**: the `image` volume mounts its `/opt/jr2`, and it carries the
-  vendoring step (static ripgrep per `TARGETARCH`, the two relocated C++ runtime libraries).
+  vendoring step (static ripgrep per `TARGETARCH`, the two relocated C++ runtime libraries). It also carries the static
+  Effector binary at `/opt/jr2/bin/effector`, built from the top-level `effector/` Go module: a container becomes an
+  Effector by running it as its command, in whatever image it runs
+  ([ADR-0068](0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md)). Static, so it owes no glibc floor.
 - **A Kubernetes floor: 1.35**, where image volumes are on by default (GA in 1.36). `jr2 up` reads the server version
   and refuses below it, naming the version found and the floor
   ([ADR-0046](0046-a-converge-failure-carries-its-diagnosis.md)). The container runtime must support image volumes too

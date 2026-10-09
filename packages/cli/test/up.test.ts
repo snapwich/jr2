@@ -387,6 +387,10 @@ async function mkKit(): Promise<string> {
     "operator/go.sum": "",
     "operator/cmd/jr2-upload-pack/main.go": "package main\n",
     "operator/internal/uploadpack/uploadpack.go": "package uploadpack\n",
+    // And the Effector (ADR-0068), on /opt/jr2 beside it.
+    "effector/go.mod": "module github.com/snapwich/jr2/effector\n",
+    "effector/cmd/effector/main.go": "package main\n",
+    "effector/internal/wire/wire.go": "package wire\n",
     "packages/harness/package.json": `{"name":"@jr2/harness"}`,
   };
   for (const [rel, content] of Object.entries(files)) {

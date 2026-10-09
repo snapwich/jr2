@@ -20,8 +20,8 @@
 #      baked on their own registry is runnable without jr2 ever touching it.
 #
 # So **/opt/jr2 is a published surface**, not an implementation detail. Its shape —
-#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/jr2-upload-pack · lib/*.so · src/ · node_modules/ ·
-#   package.json
+#   bin/node · bin/rg · bin/tini · bin/work-acl · bin/jr2-upload-pack · bin/effector · lib/*.so · src/ ·
+#   node_modules/ · package.json
 # — is mounted verbatim, this image's own layers, into a stranger's filesystem. Moving anything inside
 # it (or making bin/ and lib/ non-siblings, see the rpath below) breaks every Sandbox, on a base
 # this repo never sees. `/opt/jr2` and not `/app`, because a user's base may already use /app and a
@@ -170,6 +170,28 @@ RUN set -eux; \
     GODEBUG=asyncpreemptoff=1 /out/jr2-upload-pack 2>&1 | grep -q '^usage: jr2-upload-pack'
 
 # ---------------------------------------------------------------------------------------------
+# effector stage — discarded. The Effector (ADR-0068): jr2's own process in the container that runs
+# the Effects holding an Effect secret. It rides /opt/jr2 like rg and work-acl (B4.2): a container
+# becomes an Effector by running /opt/jr2/bin/effector as its command, in this image (the Instance
+# Effector) or in an image the author chose, so it is STATIC and owes no glibc floor. The
+# uploadpack stage's reasons hold: the BUILD platform, cross-compiled; the standard library only,
+# so nothing is downloaded and only its own module is copied.
+# ---------------------------------------------------------------------------------------------
+FROM --platform=$BUILDPLATFORM golang:1.26 AS effector
+
+ARG TARGETARCH
+
+WORKDIR /effector
+COPY effector/go.mod ./
+COPY effector/cmd ./cmd
+COPY effector/internal ./internal
+
+# The smoke, as above: with an argument the program prints its usage line and exits 1.
+RUN set -eux; \
+    CGO_ENABLED=0 GOOS=linux GOARCH="${TARGETARCH}" go build -ldflags="-s -w" -o /out/effector ./cmd/effector; \
+    GODEBUG=asyncpreemptoff=1 /out/effector --help 2>&1 | grep -q 'usage: effector'
+
+# ---------------------------------------------------------------------------------------------
 # The image itself.
 # ---------------------------------------------------------------------------------------------
 FROM node:24-slim
@@ -181,6 +203,9 @@ COPY --from=vendor /opt/jr2/lib /opt/jr2/lib
 # Beside work-acl, and published with it: the fetch url lives in the shared `default/.git/config`,
 # so every seat that holds the checkouts holds the program (ADR-0053).
 COPY --from=uploadpack --chmod=0755 /out/jr2-upload-pack /opt/jr2/bin/jr2-upload-pack
+
+# The Effector (ADR-0068): the Instance Effector runs this image with it as its command.
+COPY --from=effector --chmod=0755 /out/effector /opt/jr2/bin/effector
 
 WORKDIR /opt/jr2
 ENV NODE_ENV=production

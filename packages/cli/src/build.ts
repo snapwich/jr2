@@ -403,6 +403,9 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
     // not the whole module: the rest of `operator/` addresses the operator image, and the program
     // imports the standard library alone — which the Dockerfile's builder stage enforces by
     // copying no more than this and downloading nothing.
+    //
+    // And the Effector (ADR-0068), on /opt/jr2 beside it: its own Go module, again exactly what the
+    // Dockerfile's stage copies — never `effector/bin`, the linter and the local build.
     sources: [
       "packages/harness",
       "deploy/harness",
@@ -410,6 +413,9 @@ export const KIT_IMAGES: Record<KitImageName, KitImage> = {
       "operator/go.sum",
       "operator/cmd/jr2-upload-pack",
       "operator/internal/uploadpack",
+      "effector/go.mod",
+      "effector/cmd",
+      "effector/internal",
     ],
     exclude: KIT_PACKAGE_EXCLUDE,
   },

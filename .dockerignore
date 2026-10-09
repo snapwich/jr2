@@ -4,6 +4,7 @@
 **/dist
 .git
 operator/bin
+effector/bin
 operator/testbin
 poc
 tmp

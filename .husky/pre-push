@@ -1,22 +1,30 @@
-# operator / Lint (CI) runs golangci-lint on any change under operator/. Run it here first, only
-# when this push changes operator/, so a push that fails it never leaves this machine.
+# operator / Lint and effector / Lint (CI) run golangci-lint on any change under their module. Run
+# each here first, only when this push changes it, so a push that fails one never leaves this machine.
 zero=0000000000000000000000000000000000000000
-changed=
+changed_operator=
+changed_effector=
 while read -r _ local_sha _ remote_sha; do
   [ "$local_sha" = "$zero" ] && continue
   if [ "$remote_sha" = "$zero" ]; then
     base=$(git merge-base "$local_sha" origin/main 2>/dev/null) || base=
-    [ -z "$base" ] && { changed=1; continue; }
+    [ -z "$base" ] && { changed_operator=1; changed_effector=1; continue; }
   else
     base=$remote_sha
   fi
-  git diff --quiet "$base" "$local_sha" -- operator/ || changed=1
+  git diff --quiet "$base" "$local_sha" -- operator/ || changed_operator=1
+  git diff --quiet "$base" "$local_sha" -- effector/ || changed_effector=1
 done
-[ -z "$changed" ] && exit 0
+[ -z "$changed_operator" ] && [ -z "$changed_effector" ] && exit 0
 
 if ! command -v go >/dev/null 2>&1; then
-  echo "pre-push: operator/ changed but go is not on PATH; skipped golangci-lint (CI still runs it)" >&2
+  echo "pre-push: a Go module changed but go is not on PATH; skipped golangci-lint (CI still runs it)" >&2
   exit 0
 fi
-echo "pre-push: operator/ changed; running golangci-lint" >&2
-make -C operator lint
+if [ -n "$changed_operator" ]; then
+  echo "pre-push: operator/ changed; running golangci-lint" >&2
+  make -C operator lint || exit 1
+fi
+if [ -n "$changed_effector" ]; then
+  echo "pre-push: effector/ changed; running golangci-lint" >&2
+  make -C effector lint || exit 1
+fi

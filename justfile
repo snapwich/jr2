@@ -141,6 +141,18 @@ operator-run:
 operator-test:
     cd operator && make test
 
+# --- the Effector (ADR-0068; requires go) ---
+#
+# The static binary the Harness image carries at /opt/jr2/bin/effector. Its tests are loopback only.
+
+# run the Effector's tests
+effector-test:
+    cd effector && make test
+
+# lint the Effector (golangci-lint, the operator's version)
+effector-lint:
+    cd effector && make lint
+
 # apply the sample Sandbox CR
 sandbox-sample:
     kubectl apply -f operator/config/samples/core_v1alpha1_sandbox.yaml

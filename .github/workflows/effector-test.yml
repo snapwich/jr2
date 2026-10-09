@@ -1,0 +1,40 @@
+name: effector / Tests
+
+on:
+  push:
+    paths:
+      - "effector/**"
+      - ".github/workflows/effector-test.yml"
+  pull_request:
+    paths:
+      - "effector/**"
+      - ".github/workflows/effector-test.yml"
+
+permissions: {}
+
+defaults:
+  run:
+    working-directory: effector
+
+jobs:
+  test:
+    permissions:
+      contents: read
+    name: Run on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: effector/go.mod
+          # The module has no dependencies, so no go.sum: the cache keys on go.mod.
+          cache-dependency-path: effector/go.mod
+
+      # Loopback only (ADR-0010's socket rule is the TypeScript gate's; a Go test may use loopback).
+      - name: Running Tests
+        run: make test
