@@ -79,11 +79,10 @@ are CLAIMS — an ADR's measured claim as N trials with a floor: `obedience` (Al
 `advised` (a Menu-only Agent's first call is its pick), `workdir` (a relative write lands in the Worktree), `noticed` (a
 memory-kill notice is acted on), the mode and step-boundary claims (`mode-follow`, `mode-refusal`, `mode-stop`, `wake`,
 `push-follow`), the held-answer claims (`chain-answer`, `cut-pick`), and the command-Effect claims (`answered`,
-`allowed-after-route`, `unknown-outcome`; `allowed-after-route` is open, below its floor — ADR-0066 says why). Two are
-THE RUN — `ticket`: planner, coder, reviewer, and a commit verified in the pod (branch ahead of `main`, HEAD is the
-named commit, tree clean, `node --test` passes); and `ticket-modes`, one coder Turn through three modes. The whole tier
-is about 70 minutes on the home lab (four runs, 65 to 75); each claim is a few minutes, `mode-stop` and `wake` about
-ten.
+`allowed-after-route`, `unknown-outcome`). Two are THE RUN — `ticket`: planner, coder, reviewer, and a commit verified
+in the pod (branch ahead of `main`, HEAD is the named commit, tree clean, `node --test` passes); and `ticket-modes`, one
+coder Turn through three modes. The whole tier is about 70 minutes on the home lab (four runs, 65 to 75); each claim is
+a few minutes, `mode-stop` and `wake` about ten.
 
 **Reading the result.** Every cell is written to `features/.tmp/model-scorecard.json`, keyed by model id, and printed as
 `scorecard: <model> <cell>: k/N`. Two thresholds, two meanings:

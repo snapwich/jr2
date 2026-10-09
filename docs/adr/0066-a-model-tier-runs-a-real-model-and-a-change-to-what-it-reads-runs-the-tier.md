@@ -141,7 +141,7 @@ recover, finish — are exercised only one scripted tool call at a time.
     binds its own seed Repo (`billing.git`), whose suite has one failing test that names the defect, and `run_tests`
     runs that suite in the Worktree. A correct Agent may fix the code, but only `run_tests` passing takes the workflow
     back to where `ship` is allowed; the miss is a `ship` after its own fix without the workflow's check. The floor and
-    the measure are unchanged. It is open until a run with this setup is read.
+    the measure are unchanged. Its first run with this setup (2026-10-08) read 10 of 10, now a baseline.
 - **A trial that reaches either of its task's finals finished.** A claim whose workflow has two task finals (`wake`,
   `chain-answer`, and the three command-Effect claims) counts a trial finished at either; its measure already counts the
   wrong one a miss, and counting it unfinished too would fail the scenario on one miss — the floor 10 of 10 in all but
