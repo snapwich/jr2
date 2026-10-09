@@ -296,9 +296,11 @@ export type JR2Config = {
   /** The instance's identity (ADR-0019): its kube namespace defaults to this (`-n` overrides),
    * and `jr2 up` labels every object it owns with it. Default: the instance folder's name. */
   name?: string;
-  /** Every secret of the Instance, one list for both sides (ADR-0068): a Held secret where it has
-   * `hosts` — a model API key belongs here, never in `harness.env` (ADR-0059) — and an Effect
-   * secret where an Effect names it with `secret("name")`. See `SecretEntry`. */
+  /** Every secret of the Instance, one list for both sides (ADR-0068). Naming is the placement: a
+   * Held secret where a `workspace()` lists it under `secrets: [...]` or an Agent's provider reads
+   * it — a model API key belongs here, never in `harness.env` (ADR-0059) — and an Effect secret
+   * where an Effect names it with `secret("name")`. `hosts` is a Held secret's binding, never its
+   * placement: an entry nothing names goes nowhere. See `SecretEntry`. */
   secrets?: readonly SecretEntry[];
   /** How the cluster authenticates to Repos, and the fence a per-run url must pass (ADR-0051).
    * NOT a list of Repos: a Machine names those itself, through its `workspace()`'s Repo Slots, and

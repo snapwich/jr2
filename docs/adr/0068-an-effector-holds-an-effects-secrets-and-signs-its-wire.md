@@ -136,11 +136,13 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   or a `workspace()` that names a secret the list does not hold (with the line to add) and a literal Effect secret
   shorter than 8 characters, saying why. A `valueFrom` names a key of the user's Secret, which `jr2 up` checks once it
   reaches the cluster: the key exists, and its value is 8 characters or more, measured as the Effector reads the file
-  (bytes, one trailing newline off). `jr2 up` keeps only that length, never the value, and refuses a short one with the
-  same line. The Effector refuses to start with an empty or short value, for a Secret edited after the converge. A
-  secret reaches only the pods where something names it: a literal is written into the placement's own Secret, and a
-  `valueFrom` is projected from the user's Secret by reference, never copied. `git.credentials` stays its own list: a
-  fence keyed by url prefix, not a named value.
+  (bytes, one trailing newline off). `jr2 up` keeps that length and a keyed digest of the value, never the value, and
+  refuses a short one with the same line. The digest rolls each long-lived pod that reads the value once at start: the
+  Instance Effector (its Deployment, below) and the Instance Harness (its Custodian, ADR-0059). The Effector refuses to
+  start with an empty or short value, for a Secret edited after the converge. A secret reaches only the pods where
+  something names it: a literal is written into the placement's own Secret, and a `valueFrom` is projected from the
+  user's Secret by reference, never copied. `git.credentials` stays its own list: a fence keyed by url prefix, not a
+  named value.
 - **The Instance Effector's objects.** `jr2 up` converges them when a registered Machine places an Effect there, and
   deletes them otherwise; it reports either (`instance effector: converging (<workflow>/<slot>; secrets …; grace …)` or
   `instance effector: none`). All four are named `jr2-instance-effector`:

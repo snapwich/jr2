@@ -6,6 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import type { JR2Config } from "../src/config.ts";
 import { heldSecretsOf, workspaceHeldPod } from "../src/held-secrets.ts";
 import type { CarriedEffect, WorkspacePod } from "../src/parts.ts";
@@ -285,4 +286,23 @@ test("one name listed twice is refused", () => {
       ),
     /secrets\[1\]\.name x is listed twice/,
   );
+});
+
+test("the hover text of `secrets` and `SecretEntry` states the rule these tests hold: naming places, `hosts` binds", async () => {
+  // A user reads the config's doc comments, not this file. `JR2Config.secrets` once said "a Held
+  // secret where it has `hosts`" after B6.3 made naming the placement — a user who added `hosts`
+  // for a Held secret got one that went nowhere (the GATEWAY_KEY case above).
+  const source = await readFile(new URL("../src/config.ts", import.meta.url), "utf8");
+  const docBefore = (marker: string): string => {
+    const at = source.indexOf(marker);
+    assert.ok(at > 0, `config.ts still has ${marker}`);
+    const open = source.lastIndexOf("/**", at);
+    return source.slice(open, at).replace(/\s*\*\s*/g, " ");
+  };
+  for (const doc of [docBefore("  secrets?: readonly SecretEntry[];"), docBefore("export type SecretEntry = {")]) {
+    assert.doesNotMatch(doc, /Held secret (?:where|when|if) it has `hosts`/);
+    assert.match(doc, /`hosts`[^.]*binding, never (?:its|the) placement/);
+    assert.match(doc, /`workspace\(\)`/, "it names what places a Held secret");
+    assert.match(doc, /secret\("name"\)/, "it names what places an Effect secret");
+  }
 });

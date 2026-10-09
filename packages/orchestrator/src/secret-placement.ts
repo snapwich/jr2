@@ -133,7 +133,7 @@ export function secretPlacementsOf(
         shortRefusal(e, value.length);
         values[e.name] = value;
       } else {
-        // The user's Secret holds the value; `jr2 up` measures it there and keeps only the length.
+        // The user's Secret holds the value; `jr2 up` measures it there, and this check reads its length.
         const length = lookups.valueLength?.(source.secret, source.key);
         if (length !== undefined) shortRefusal(e, length);
       }

@@ -3063,6 +3063,31 @@ test("a value edited in the user's Secret behind a valueFrom rolls the Instance 
   assert.ok(!w.kube.applied.some((m) => m.includes("team-jira-value")), "no applied object holds the value");
 });
 
+test("every text that says what jr2 up keeps of a valueFrom value names the digest beside the length (ADR-0068)", async () => {
+  // The test above holds the code: `jr2 up` keeps a value's length (B3.5) AND a keyed digest of it
+  // (the roll). A sentence that says it keeps the length ALONE tells a reader the digest does not
+  // exist — ADR-0068 said so after the digest landed. So no ADR and no source says "only" of it.
+  let read = 0;
+  for (const dir of ["docs/adr", "packages/cli/src", "packages/orchestrator/src"]) {
+    for (const file of await readdir(join(REPO_ROOT, dir), { recursive: true })) {
+      if (!/\.(md|ts)$/.test(file)) continue;
+      read += 1;
+      const text = (await readFile(join(REPO_ROOT, dir, file), "utf8")).replace(/\s+/g, " ");
+      const stale = /keeps only (?:that|the|its) length/i.exec(text);
+      assert.equal(stale, null, `${dir}/${file} says jr2 up "${stale?.[0]}" of a value; it also keeps a keyed digest`);
+    }
+  }
+  assert.ok(read > 0, "the texts were read");
+  const adr = await readFile(
+    join(REPO_ROOT, "docs/adr/0068-an-effector-holds-an-effects-secrets-and-signs-its-wire.md"),
+    "utf8",
+  );
+  const flat = adr.replace(/\s+/g, " ");
+  assert.match(flat, /keeps that length and a keyed digest of the value/);
+  // Both tests above roll a pod on that digest; the ADR names both, not the Effector alone.
+  assert.match(flat, /The digest rolls [^.]*the Instance Effector[^.]*and the Instance Harness/);
+});
+
 test("a value edited in the user's Secret behind a valueFrom rolls the Instance Harness at the next converge (ADR-0059)", async () => {
   const root = await mkInstance(
     `export default { name: "myinst", secrets: [` +
