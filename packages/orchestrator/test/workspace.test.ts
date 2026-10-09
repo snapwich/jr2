@@ -627,7 +627,7 @@ test("a provision reads the pod key jr2 up writes, at every route an author can 
     jr2Setup({ events: [], actors: actors as never }).createMachine({
       id,
       initial: "x",
-      states: { x: { invoke: { src: src as never, onDone: "done" } }, done: { type: "final" } },
+      states: { x: { invoke: { src, onDone: "done" } as never }, done: { type: "final" } },
     });
   const named = invoking("named", "review", { review: ws });
   const inline = invoking("inline", ws);
