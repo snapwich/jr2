@@ -5,7 +5,7 @@
 
 import { h, type JSX } from "preact";
 import { useEffect, useRef } from "preact/hooks";
-import type { GateCard, HeldLine, ObservedRun, WaitingLine } from "../store.ts";
+import { docSeats, type GateCard, type HeldLine, type ObservedRun, type WaitingLine } from "../store.ts";
 import {
   clearCanvas,
   initCanvas,
@@ -59,6 +59,7 @@ export function MachinePane(props: {
     h("div", { id: "placeholder", hidden: !view.placeholder }, view.placeholder ?? ""),
     h("div", { id: "error", hidden: !view.note, class: view.note?.notice ? "notice" : "" }, view.note?.text ?? ""),
     rootTransitionStrip(view.doc),
+    seatsPanel(view.doc),
     waitingStrip(waiting),
     heldStrip(held),
     h("svg", { id: "machine-svg", ref: svgRef }),
@@ -85,6 +86,47 @@ function rootTransitionStrip(doc: MachineDoc | null): JSX.Element {
       const target = t.targets.length ? ` → ${t.targets.map((id) => keyOf.get(id) ?? id).join(", ")}` : "";
       return h("span", { key: i }, `on ${t.label}${guard}${target}`);
     }),
+  );
+}
+
+/** Who may send what, per state, and the load warnings (ADR-0015) — what `jr2 up` prints, for the
+ *  Machine and every Machine it composes. Structure, so tokenless too. Folded by default: the
+ *  diagram keeps the pane, and a warning shows in the summary so it is not missed folded. */
+function seatsPanel(doc: MachineDoc | null): JSX.Element | null {
+  const { seats, warnings } = docSeats(doc);
+  if (!seats.length && !warnings.length) return null;
+  return h(
+    "details",
+    { id: "seats" },
+    h(
+      "summary",
+      null,
+      "who may send what",
+      h("span", { class: "dim" }, ` · ${seats.length} seat${seats.length === 1 ? "" : "s"}`),
+      warnings.length
+        ? h("span", { class: "seats-warned" }, ` · ${warnings.length} warning${warnings.length === 1 ? "" : "s"}`)
+        : null,
+    ),
+    h(
+      "ul",
+      { class: "seat-list" },
+      seats.map((seat) =>
+        h(
+          "li",
+          { key: `${seat.state} ${seat.party} ${seat.agent ?? ""}` },
+          h("span", { class: "seat-state" }, seat.state),
+          h("span", { class: "dim" }, seat.party === "agent" ? ` agent:${seat.agent}` : " gate"),
+          h("span", { class: "seat-names" }, ` ${seat.names.length ? seat.names.join(", ") : "—"}`),
+        ),
+      ),
+    ),
+    warnings.length
+      ? h(
+          "ul",
+          { class: "seat-warnings" },
+          warnings.map((w) => h("li", { key: w }, w)),
+        )
+      : null,
   );
 }
 

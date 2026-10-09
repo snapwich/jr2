@@ -80,8 +80,8 @@ export function inputSchemaOf(machine: AnyStateMachine): z.ZodObject | undefined
 }
 
 // Who may send what, per state (ADR-0015): the seats the menu-derivation walk computed. Same key
-// choice as the vocabulary, for the same reasons. The Machine's doc carries them and `jr2 up`
-// prints them, so an author reads the audience rule's answer for their own Machine.
+// choice as the vocabulary, for the same reasons. The Machine's doc carries them; `jr2 up` and the
+// Console show them, so an author reads the audience rule's answer for their own Machine.
 
 /** One party's seat on one state: the state's id, the party, and the names it may send there —
  * for an Agent the derived set its guards narrow; for a Gate its accepted set, unless the Gate's

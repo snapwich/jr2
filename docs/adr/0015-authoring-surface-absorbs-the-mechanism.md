@@ -74,8 +74,9 @@ meanings are two defs. The reach itself is unchanged by the rule — own and anc
 party-invoking state between (an Agent's modes, a Gate's plain children) — and the rule only filters inside it, so no
 case widens who can send a pick; a test scans every shipped Machine and fixture for it, both the derived names and the
 writings each party may take at run time. The walk computes every party's seat — per state, who may send what — and the
-Machine's doc carries it, and `jr2 up` prints it for every registered Machine and every Machine it composes. An explicit
-`accepts:` on a Gate's input remains an escape hatch.
+Machine's doc carries it; `jr2 up` prints it for every registered Machine and every Machine it composes, and the Console
+shows the same lines, folded beside the workflow's diagram (structure, so tokenless too). An explicit `accepts:` on a
+Gate's input remains an escape hatch.
 
 **`sentBy(id)`: a writing that declines other senders.** Every event a party delivers carries its sender (ADR-0011):
 `sender: { party, id }`, the Agent's slot or the Gate's invoke id. `jr2Setup` registers one guard, `jr2.sentBy`, and the
@@ -108,17 +109,17 @@ sends there, and every case with the Agent's state at Rest.
 derived set, so it is on no Menu and no Gate. It refuses a parallel region below a state that invokes an Agent — the
 Agent's state itself being parallel included, since its regions are below it: the shape is reserved for picks the Agent
 does not wait for, which jr2 does not build, and background work goes above the Agent's state. It warns — the Machine
-stays legal, and the doc carries the warning and `jr2 up` prints it — about a mode that nothing enters (not initial, and
-no state the Machine can enter has a transition into it or a state inside it — so neither the mode's own `initial` nor
-its transition into itself counts: its picks are on the Menu and never allowed; a transition into a history state enters
-that history state's default target, shallow or deep, or its parent's initial state when it names none, and a default
-target the walk cannot resolve is its own warning); about a Gate above an Agent's state that takes an unset-audience
-writing the Agent reaches (the one narrowing of the audience rule an author may not expect); about two parties' writings
-of one name that can be active together; about one party's writings of one name that mean two things; and about two
-shapes below an Agent's state that keep it from Rest, so every pick of the Agent waits (ADR-0024): a Gate whose answer
-has no target (the Gate stays open after it), and a long-lived invoke — one that runs until its state exits, not a
-promise, an Effect, a Gate, an Agent or a child Machine. A child with no `onDone` that strands the Agent in it — a
-one-way mode — is legal and silent on purpose, an Effect child included.
+stays legal; the doc carries the warning, `jr2 up` prints it and the Console shows it with the seats — about a mode that
+nothing enters (not initial, and no state the Machine can enter has a transition into it or a state inside it — so
+neither the mode's own `initial` nor its transition into itself counts: its picks are on the Menu and never allowed; a
+transition into a history state enters that history state's default target, shallow or deep, or its parent's initial
+state when it names none, and a default target the walk cannot resolve is its own warning); about a Gate above an
+Agent's state that takes an unset-audience writing the Agent reaches (the one narrowing of the audience rule an author
+may not expect); about two parties' writings of one name that can be active together; about one party's writings of one
+name that mean two things; and about two shapes below an Agent's state that keep it from Rest, so every pick of the
+Agent waits (ADR-0024): a Gate whose answer has no target (the Gate stays open after it), and a long-lived invoke — one
+that runs until its state exits, not a promise, an Effect, a Gate, an Agent or a child Machine. A child with no `onDone`
+that strands the Agent in it — a one-way mode — is legal and silent on purpose, an Effect child included.
 
 **Load checks on Effects** (ADR-0067). `createMachine` refuses a state below an Agent's state that invokes something and
 that nothing enters: what it invokes never runs (a mode nothing enters is only the warning above). Both checks read one

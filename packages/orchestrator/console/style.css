@@ -162,6 +162,43 @@ main {
   display: none;
 }
 
+/* Who may send what, per state (ADR-0015) — structure, folded by default so the diagram keeps the
+   pane; open, it scrolls inside its own cap rather than push the diagram out. */
+#seats {
+  margin: 0 28px 16px;
+  max-width: 720px;
+}
+#root-transitions:empty + #seats {
+  margin-top: 28px;
+}
+#seats summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+#seats .seats-warned {
+  color: var(--amber);
+}
+#seats ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 30vh;
+  overflow: auto;
+}
+#seats .seat-list li {
+  padding: 2px 0;
+}
+#seats .seat-names {
+  color: var(--blue);
+}
+#seats .seat-warnings li {
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  color: var(--amber);
+}
+
 /* A wait for capacity (ADR-0064): the selected run's Workspaces in "placing", and why. Amber like
    the notice — the run is not wrong, it is waiting on the cluster. */
 #waiting {

@@ -8,7 +8,7 @@
 // Working state only, never belief: the fold set, the viewport transform, and what is SHOWN live
 // here — everything the page believes stays in store.ts and arrives as `updateCanvas` arguments.
 
-import type { GateCard, ObservedRun } from "./store.ts";
+import type { GateCard, ObservedRun, Seat } from "./store.ts";
 
 // ---- The machine doc, as `GET /workflows/:name/machine` serves it -------------------------------
 // Mirrors machine-doc.ts (the server's serializer) the way store.ts mirrors `RunObservation`: the
@@ -71,6 +71,10 @@ export type MachineBodyDoc = {
   /** The events THIS Machine declares, and only this one (ADR-0049): a nested Machine's ride its
    *  own body doc, because event names are scoped to the Machine that declared them. */
   events: MachineEventDoc[];
+  /** Who may send what, per state (ADR-0015) — mirrors `MachineSeat`. */
+  seats: Seat[];
+  /** What the build found legal and suspect (ADR-0015). */
+  warnings: string[];
 };
 
 /** The serialized structure of a workflow's Machine — mirrors `MachineDoc`. */

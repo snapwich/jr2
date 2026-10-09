@@ -84,3 +84,16 @@ Feature: The Console in a real browser
       Then the child-machine box is selected and still unfolded
       When I click the child-machine fold icon
       Then the child-machine subgraph is folded shut
+
+  Rule: the Machine's seats say who may send what, per state
+    ADR-0015: the load walk computes each party's seat, the Machine's doc carries it, and the
+    Console shows it beside the diagram — the same lines `jr2 up` prints. Structure, so tokenless.
+
+    Scenario: the review workflow shows its Agent's seat and its Gate's
+      Given a fresh instance
+      And the instance also has the "review" workflow
+      And the orchestrator is serving
+      When I open the Console at "/workflows/review"
+      And I open the seats
+      Then the seats show "review.working" as "agent:coder" sending "request_review"
+      And the seats show "review.humanReview" as "gate" sending "approve"

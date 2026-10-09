@@ -172,3 +172,23 @@ Then("the child-machine subgraph is folded shut", async function (this: E2EWorld
   await box.waitFor({ state: "attached", timeout: APPEAR });
   assert.equal(await box.locator("g.state").count(), 0, "a folded subgraph hides its inner states");
 });
+
+// --- the seats (ADR-0015) --------------------------------------------------------------------------
+
+When("I open the seats", async function (this: E2EWorld): Promise<void> {
+  await thePage(this).locator("#seats summary").click({ timeout: APPEAR });
+});
+
+Then(
+  "the seats show {string} as {string} sending {string}",
+  async function (this: E2EWorld, state: string, party: string, names: string): Promise<void> {
+    // One row per seat, read as the reader reads it: the state, the party, the names.
+    const row = thePage(this)
+      .locator("#seats .seat-list li")
+      .filter({
+        has: thePage(this).locator(".seat-state", { hasText: new RegExp(`^${state.replace(/\./g, "\\.")}$`) }),
+      });
+    await row.first().waitFor({ state: "visible", timeout: APPEAR });
+    assert.equal((await row.first().innerText()).replace(/\s+/g, " ").trim(), `${state} ${party} ${names}`);
+  },
+);

@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   emptyStore,
   applyFrame,
+  docSeats,
   fleetRuns,
   gateCount,
   selectedRunGates,
@@ -23,6 +24,7 @@ import {
   type Frame,
   type GateCard,
   type WaitingLine,
+  type SeatedBody,
 } from "../console/store.ts";
 
 const run = (runId: string, status = "active", workflow = "wf") => ({
@@ -538,4 +540,33 @@ test("the reason cannot outlive the credential, the run, or a whole-set frame th
     { kind: "fleet", workflow: "other", runs: [] },
   );
   assert.equal(other.waiting.size, 0, "a fleet snapshot settles its own workflow's the same way");
+});
+
+// --- the seats (ADR-0015): who may send what, per state, for the Machine and what it composes ----
+
+test("docSeats reads the root's seats and warnings, then each child Machine's, depth-first in state order", () => {
+  const leaf = (machine?: SeatedBody): SeatedBody["root"] => ({ states: [], children: machine ? [{ machine }] : [] });
+  const child = (id: string, warnings: string[] = []): SeatedBody => ({
+    seats: [{ state: `${id}.s`, party: "gate" as const, names: [id] }],
+    warnings,
+    root: leaf(),
+  });
+  const doc = {
+    seats: [{ state: "wf.w", party: "agent" as const, agent: "coder", names: ["finish", "submit"] }],
+    warnings: ["a mode nothing enters"],
+    root: { states: [leaf(child("a", ["one name, two meanings"])), leaf(child("b"))], children: [] },
+  };
+  assert.deepEqual(docSeats(doc), {
+    seats: [
+      { state: "wf.w", party: "agent", agent: "coder", names: ["finish", "submit"] },
+      { state: "a.s", party: "gate", names: ["a"] },
+      { state: "b.s", party: "gate", names: ["b"] },
+    ],
+    warnings: ["a mode nothing enters", "one name, two meanings"],
+  });
+});
+
+test("docSeats is empty with no doc, and for a recursive child (no body) or a Machine not built by jr2Setup", () => {
+  assert.deepEqual(docSeats(null), { seats: [], warnings: [] });
+  assert.deepEqual(docSeats({ root: { states: [], children: [{}] } }), { seats: [], warnings: [] });
 });

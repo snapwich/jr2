@@ -382,6 +382,42 @@ export function selectedRunHeld(store: Store): HeldLine[] {
   return store.waiting.get(store.selectedRunId)?.held ?? [];
 }
 
+/** One party's seat on one state (ADR-0015): who may send which names there — mirrors
+ *  `MachineSeat` in vocabulary.ts. */
+export type Seat = { state: string; party: "agent" | "gate"; agent?: string; names: string[] };
+
+/** The part of a Machine doc the seats are read from: each body's `seats` and `warnings`, and the
+ *  child Machines below its states (canvas.ts's `MachineBodyDoc`, structurally). */
+export type SeatedBody = {
+  seats?: Seat[];
+  warnings?: string[];
+  root: SeatedState;
+};
+type SeatedState = { states: SeatedState[]; children: Array<{ machine?: SeatedBody }> };
+
+/**
+ * Who may send what, per state, and what the build found suspect (ADR-0015) — for the Machine and
+ * every Machine it composes, in the order `jr2 up` prints them: the root's body, then each child
+ * Machine's, depth-first in state order. A function of the doc, not of the store: the doc is
+ * structure the server serves (app.ts's `MachineView`), and this is the one piece of it worth a
+ * unit test outside the canvas.
+ */
+export function docSeats(doc: SeatedBody | null): { seats: Seat[]; warnings: string[] } {
+  const seats: Seat[] = [];
+  const warnings: string[] = [];
+  const body = (b: SeatedBody): void => {
+    seats.push(...(b.seats ?? []));
+    warnings.push(...(b.warnings ?? []));
+    state(b.root);
+  };
+  const state = (s: SeatedState): void => {
+    for (const child of s.children) if (child.machine) body(child.machine);
+    s.states.forEach(state);
+  };
+  if (doc) body(doc);
+  return { seats, warnings };
+}
+
 /** What the nav badge counts: every open gate everywhere — attention is global even when the
  *  inbox view is filtered. */
 export function gateCount(store: Store): number {
