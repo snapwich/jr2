@@ -79,7 +79,9 @@ export class FakeEffector {
       const replica = this.replicas.find((r) => r.address === address);
       if (!replica || replica.down) throw refused(address);
       const nonce = headers[HEADER_NONCE] ?? "";
-      const expect = requestMac(this.key, method, path, headers[HEADER_TIME] ?? "", nonce, body);
+      // Verified for THIS replica's address, as the Effector verifies: a request signed for another
+      // replica is refused here.
+      const expect = requestMac(this.key, method, replica.address, path, headers[HEADER_TIME] ?? "", nonce, body);
       if (headers[HEADER_SIGNATURE] !== expect) return { status: 401, headers: {}, body: "" };
       if (method === "GET" && this.forgePolls > 0) {
         this.forgePolls--;

@@ -31,7 +31,7 @@ const named = (prefix: string): string[] => readdirSync(FIXTURES).filter((f) => 
 test("the golden signatures: a request and an answer signed as the Go side signs them", () => {
   const req = fixture("signature.request.json") as Record<string, string>;
   const key = Buffer.from(req.key!, "base64");
-  assert.equal(requestMac(key, req.method!, req.path!, req.time!, req.nonce!, req.body!), req.signature);
+  assert.equal(requestMac(key, req.method!, req.address!, req.path!, req.time!, req.nonce!, req.body!), req.signature);
   const res = fixture("signature.response.json") as {
     key: string;
     status: number;
@@ -155,6 +155,26 @@ test("the client starts on a replica, which its answer names, and polls that rep
   const polled = await client.poll(started.replica, "e1", signal);
   assert.equal(polled.state, "settled");
   assert.ok(fake.calls.filter((c) => c.method === "GET").every((c) => c.address === started.replica.address));
+});
+
+test("a start is signed for the replica it is sent to: the same request sent to another replica is refused", async () => {
+  const fake = new FakeEffector(["a", "b"]);
+  const sent: Array<Parameters<EffectorTransport["send"]>> = [];
+  const recording: EffectorTransport = {
+    replicas: fake.transport.replicas,
+    send: (...args) => {
+      sent.push(args);
+      return fake.transport.send(...args);
+    },
+  };
+  const client = createEffectorClient({ key: EFFECTOR_KEY, transport: recording });
+  const started = await client.start("e1", req, signal);
+  const [address, method, path, headers, body] = sent.find((s) => s[1] === "POST")!;
+  assert.equal(address, started.replica.address);
+  const other = fake.replicas.find((r) => r.address !== address)!;
+  const replayed = await fake.transport.send(other.address, method, path, headers, body, signal);
+  assert.equal(replayed.status, 401, "another replica refuses a start signed for the first");
+  assert.equal(fake.starts.length, 1, "the one Effect started once");
 });
 
 test("find asks every replica: the one that holds it, or none", async () => {

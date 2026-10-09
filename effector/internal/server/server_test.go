@@ -22,6 +22,9 @@ import (
 
 var key = []byte("placement-key-for-the-server-tests")
 
+// replicaAddress is the replica the tests' server is: the address each request is signed for.
+const replicaAddress = "10.0.0.1:8082"
+
 const startBody = `{"kind":"http","method":"GET","url":[{"text":"https://api.example.com"}],"timeoutMs":1000,"maxBody":100}`
 
 // fakeRunner settles each Effect when release is closed, and counts runs.
@@ -42,10 +45,10 @@ func (f *fakeRunner) Run(context.Context, *wire.StartRequest) wire.Output {
 func newServer(t *testing.T, runner Runner) (*Server, *httptest.Server) {
 	t.Helper()
 	s := New(Options{
-		Verifier: sign.NewVerifier(key, nil),
+		Verifier: sign.NewVerifier(key, replicaAddress, time.Now(), nil),
 		Runner:   runner,
 		Scrubber: scrub.New(map[string]string{"jira": "the-jira-secret-value"}),
-		Replica:  wire.Replica{Name: "effector-a", Address: "10.0.0.1:8082"},
+		Replica:  wire.Replica{Name: "effector-a", Address: replicaAddress},
 		Hold:     100 * time.Millisecond,
 	})
 	srv := httptest.NewServer(s)
@@ -63,7 +66,7 @@ func call(t *testing.T, base, method, path, body string, k []byte) answer {
 	t.Helper()
 	nonce := newNonce()
 	at := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	return send(t, base, method, path, body, at, nonce, sign.RequestMAC(k, method, path, at, nonce, []byte(body)))
+	return send(t, base, method, path, body, at, nonce, sign.RequestMAC(k, method, replicaAddress, path, at, nonce, []byte(body)))
 }
 
 func send(t *testing.T, base, method, path, body, at, nonce, signature string) answer {
@@ -114,7 +117,7 @@ func TestARefusedRequestLearnsNothing(t *testing.T) {
 		"another key":      call(t, srv.URL, "POST", "/effects/e1", startBody, []byte("not the placement's key")),
 		"an unknown route": send(t, srv.URL, "GET", "/nothing", "", "", "", ""),
 		"signed for another body": send(t, srv.URL, "POST", "/effects/e1", startBody, at, nonce,
-			sign.RequestMAC(key, "POST", "/effects/e1", at, nonce, []byte(`{}`))),
+			sign.RequestMAC(key, "POST", replicaAddress, "/effects/e1", at, nonce, []byte(`{}`))),
 	}
 	for name, a := range cases {
 		if a.status != http.StatusUnauthorized || len(a.body) != 0 {
@@ -132,12 +135,55 @@ func TestAReplayedRequestIsRefused(t *testing.T) {
 	_, srv := newServer(t, runner)
 	at := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	nonce := newNonce()
-	sig := sign.RequestMAC(key, "POST", "/effects/e1", at, nonce, []byte(startBody))
+	sig := sign.RequestMAC(key, "POST", replicaAddress, "/effects/e1", at, nonce, []byte(startBody))
 	if a := send(t, srv.URL, "POST", "/effects/e1", startBody, at, nonce, sig); a.status != http.StatusAccepted {
 		t.Fatalf("got %d %s", a.status, a.body)
 	}
 	if a := send(t, srv.URL, "POST", "/effects/e1", startBody, at, nonce, sig); a.status != http.StatusUnauthorized {
 		t.Fatalf("a replay got %d %s", a.status, a.body)
+	}
+}
+
+// A start captured on its way to one replica, sent again inside the window to another replica of
+// the placement or to the same replica after its process restarted, starts nothing: the one Effect
+// is sent once (ADR-0068).
+func TestAReplayToAnotherReplicaOrARestartedOneIsRefused(t *testing.T) {
+	runner := &fakeRunner{release: make(chan struct{})}
+	defer close(runner.release)
+	replica := func(address string) *httptest.Server {
+		srv := httptest.NewServer(New(Options{
+			Verifier: sign.NewVerifier(key, address, time.Now(), nil),
+			Runner:   runner,
+			Scrubber: scrub.New(nil),
+			Replica:  wire.Replica{Name: "effector-" + address, Address: address},
+			Hold:     100 * time.Millisecond,
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	a := replica(replicaAddress)
+	at := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	nonce := newNonce()
+	sig := sign.RequestMAC(key, "POST", replicaAddress, "/effects/e1", at, nonce, []byte(startBody))
+	if got := send(t, a.URL, "POST", "/effects/e1", startBody, at, nonce, sig); got.status != http.StatusAccepted {
+		t.Fatalf("got %d %s", got.status, got.body)
+	}
+
+	b := replica("10.0.0.2:8082")
+	if got := send(t, b.URL, "POST", "/effects/e1", startBody, at, nonce, sig); got.status != http.StatusUnauthorized ||
+		len(got.body) != 0 {
+		t.Fatalf("the replay to another replica got %d %q", got.status, got.body)
+	}
+
+	// The same address, a new process: it never saw the nonce, and the request is older than it.
+	time.Sleep(2 * time.Millisecond)
+	restarted := replica(replicaAddress)
+	if got := send(t, restarted.URL, "POST", "/effects/e1", startBody, at, nonce, sig); got.status != http.StatusUnauthorized ||
+		len(got.body) != 0 {
+		t.Fatalf("the replay to the restarted replica got %d %q", got.status, got.body)
+	}
+	if n := runner.runs.Load(); n > 1 {
+		t.Fatalf("the one Effect was sent %d times", n)
 	}
 }
 

@@ -108,7 +108,7 @@ func (e *effector) call(t *testing.T, method, path, body string) (int, string) {
 	req, _ := http.NewRequest(method, e.base+path, strings.NewReader(body))
 	req.Header.Set(sign.HeaderTime, at)
 	req.Header.Set(sign.HeaderNonce, nonce)
-	req.Header.Set(sign.HeaderSignature, sign.RequestMAC([]byte(placementKey), method, path, at, nonce, []byte(body)))
+	req.Header.Set(sign.HeaderSignature, sign.RequestMAC([]byte(placementKey), method, strings.TrimPrefix(e.base, "http://"), path, at, nonce, []byte(body)))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

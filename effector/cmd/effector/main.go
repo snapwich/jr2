@@ -52,6 +52,9 @@ func env(name, fallback string) string {
 }
 
 func run(logger *log.Logger) error {
+	// Taken first: a request signed before this process started is refused (a replay the process
+	// before this one saw), and every request this process can answer is signed after it.
+	started := time.Now()
 	if len(os.Args) > 1 {
 		return errors.New("usage: effector (configured by its env; see ADR-0068)")
 	}
@@ -88,7 +91,9 @@ func run(logger *log.Logger) error {
 
 	scrubber := scrub.New(held)
 	srv := server.New(server.Options{
-		Verifier: sign.NewVerifier(key, nil),
+		// Bound to this replica's address and this process: a start signed for another replica,
+		// or before this process started, starts nothing here.
+		Verifier: sign.NewVerifier(key, replica.Address, started, nil),
 		Runner:   &httpkind.Runner{Secrets: held, Config: config, Scrubber: scrubber, Roots: roots},
 		Scrubber: scrubber,
 		Replica:  replica,

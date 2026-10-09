@@ -38,15 +38,19 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
 - **Signed requests and signed answers, and no bearer.** The key is the placement's,
   `HMAC(signing key, "effector:" + placement)`, as ADR-0058 derives the Harness bearer: the Orchestrator stores nothing.
   The Effector reads it from a file in its own mount. A request carries `X-Jr2-Time` (Unix milliseconds), `X-Jr2-Nonce`,
-  and `X-Jr2-Signature`: base64url HMAC-SHA256 over `jr2-effector-request`, the method, the path, the time, the nonce
-  and the hex sha-256 of the body, one per line. An answer carries an HMAC over `jr2-effector-response`, its status, the
-  request's method, path and nonce, and the sha-256 of its body. So an answer is bound to the one request it answers.
-  The Effector refuses a request with no signature, a wrong one, a time more than 5 minutes from its clock, or a nonce
+  and `X-Jr2-Signature`: base64url HMAC-SHA256 over `jr2-effector-request`, the method, the address the request is sent
+  to (the replica's `POD_IP:port`), the path, the time, the nonce and the hex sha-256 of the body, one per line. The
+  address is signed and not sent: the Effector verifies with its own. An answer carries an HMAC over
+  `jr2-effector-response`, its status, the request's method, path and nonce, and the sha-256 of its body. So an answer
+  is bound to the one request it answers. The Effector refuses a request with no signature, a wrong one (one signed for
+  another replica's address is one), a time before its process started or more than 5 minutes from its clock, or a nonce
   it saw inside that window: 401, an empty body, no signature, before any route is read. A replica keeps the nonces it
-  saw in its process memory only (see Consequences). A refused caller learns nothing, not even whether an Effect exists.
-  Reason: a process that takes the Effector's port while the Effector is down learns no secret from a request and can
-  forge neither a request nor an answer. It can read a request's input, which is not secret, and it can make the call
-  fail, which is output.
+  saw in its process memory; the address and the start time cover what that memory cannot. So a start sent again — to
+  another replica of the placement (a rollout runs two), or to the same replica after its process restarted — starts
+  nothing. A refused caller learns nothing, not even whether an Effect exists. Reason: a process that takes the
+  Effector's port while the Effector is down learns no secret from a request and can forge neither a request nor an
+  answer. It can read a request's input, which is not secret, and it can make the call fail, which is output. A start it
+  took, sent to the Effector once it is back, was signed before that process started.
 - **The Orchestrator's side.** `@jr2/orchestrator` speaks the wire through an injected transport (the unit tests' seam,
   [ADR-0010](0010-bdd-acceptance-tests.md)). The Instance Effector's address is derived from the namespace,
   `jr2-instance-effector.<namespace>.svc:8082`, and its key from the signing key (`effectorKey`): the Orchestrator
@@ -185,7 +189,8 @@ only asks. (The Orchestrator's Role can still read the Secrets that hold them; s
   ([ADR-0058](0058-a-harness-answers-the-orchestrator-alone.md)), `jr2-instance-effector` and every user Secret a
   `valueFrom` names among them. So a fault that gives code execution in the Orchestrator reaches the Effect secrets
   through the API, though the Orchestrator never holds one. Narrowing the Role is a separate decision.
-- **Open gap: a replay to another replica.** The nonces are per process. Another replica, or the same replica after its
-  process restarts, has not seen a nonce, so a captured signed start sent to it again inside the 5 minutes is accepted
-  and sends the call again. The NetworkPolicy is the control that stands: only the Orchestrator reaches the port. A
-  request bound to the replica it is sent to is a separate decision.
+- **The start time asks the clocks to agree.** A replica refuses a request signed before its process started, by the
+  Orchestrator's clock against its own. If the Orchestrator's clock is behind by more than the time between a replica's
+  start and the first request it gets, that request is refused as unsigned: to the Orchestrator an answer lost, so every
+  replica is asked, and a call not marked `idempotent` settles `unknown` with nothing sent. The clocks of a cluster's
+  nodes agree far closer than that.

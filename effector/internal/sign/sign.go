@@ -2,9 +2,12 @@
 // responses, and no bearer. The key is the placement's, `HMAC(signing key, "effector:" +
 // placement)`, which the Orchestrator derives and the Effector reads from a file in its own mount.
 //
-// A request carries an HMAC over its method, its path, a time, a nonce and the sha-256 of its
-// body. The time and the nonce make a replay detectable: a request outside the time window, or
-// with a nonce seen inside it, is refused. A response carries an HMAC over its status, the
+// A request carries an HMAC over its method, the address it is sent to (the replica's
+// `POD_IP:port`), its path, a time, a nonce and the sha-256 of its body. The address, the time and
+// the nonce make a replay detectable: a request signed for another replica, a request signed
+// before this process started, a request outside the time window, or one with a nonce seen inside
+// it, is refused. So a captured start sent again to another replica, or to this replica after its
+// process restarted, starts nothing. A response carries an HMAC over its status, the
 // request's method, path and nonce, and the sha-256 of its body — so an answer is bound to the one
 // request it answers, and a process that took the Effector's port can forge neither.
 package sign
@@ -31,9 +34,10 @@ const (
 const Window = 5 * time.Minute
 
 // RequestMAC is the signature of one request: base64url (no padding) of HMAC-SHA256 over
-// "jr2-effector-request\n" + method + "\n" + path + "\n" + time + "\n" + nonce + "\n" + hex(sha256(body)).
-func RequestMAC(key []byte, method, path, at, nonce string, body []byte) string {
-	return mac(key, "jr2-effector-request", method, path, at, nonce, bodyDigest(body))
+// "jr2-effector-request\n" + method + "\n" + address + "\n" + path + "\n" + time + "\n" + nonce +
+// "\n" + hex(sha256(body)), where address is the `host:port` the request is sent to.
+func RequestMAC(key []byte, method, address, path, at, nonce string, body []byte) string {
+	return mac(key, "jr2-effector-request", method, address, path, at, nonce, bodyDigest(body))
 }
 
 // ResponseMAC is the signature of one response: HMAC-SHA256 over
@@ -63,33 +67,40 @@ func mac(key []byte, parts ...string) string {
 // that is refused learns nothing.
 var ErrRefused = errors.New("refused")
 
-// Verifier checks requests against one key and remembers the nonces it has seen.
+// Verifier checks requests against one key, for one replica's address and one process, and
+// remembers the nonces it has seen.
 type Verifier struct {
-	key []byte
-	now func() time.Time
+	key     []byte
+	address string
+	started time.Time
+	now     func() time.Time
 
 	mu   sync.Mutex
 	seen map[string]time.Time
 }
 
-// NewVerifier verifies with key; now is the clock (time.Now when nil).
-func NewVerifier(key []byte, now func() time.Time) *Verifier {
+// NewVerifier verifies with key the requests sent to address (this replica's `host:port`) and
+// signed at or after started (when this process started); now is the clock (time.Now when nil).
+func NewVerifier(key []byte, address string, started time.Time, now func() time.Time) *Verifier {
 	if now == nil {
 		now = time.Now
 	}
-	return &Verifier{key: key, now: now, seen: map[string]time.Time{}}
+	// To the millisecond, as a request's time is written.
+	started = time.UnixMilli(started.UnixMilli())
+	return &Verifier{key: key, address: address, started: started, now: now, seen: map[string]time.Time{}}
 }
 
 // Key is the key the verifier holds, for signing the answers.
 func (v *Verifier) Key() []byte { return v.key }
 
-// Verify checks one request. It refuses a missing or wrong signature, a time outside the window,
-// and a nonce already seen inside it.
+// Verify checks one request. It refuses a missing or wrong signature (a request signed for another
+// address is one), a time before this process started or outside the window, and a nonce already
+// seen inside it.
 func (v *Verifier) Verify(method, path, at, nonce, signature string, body []byte) error {
 	if at == "" || nonce == "" || signature == "" || len(nonce) < 16 || len(nonce) > 128 {
 		return ErrRefused
 	}
-	want := RequestMAC(v.key, method, path, at, nonce, body)
+	want := RequestMAC(v.key, method, v.address, path, at, nonce, body)
 	if !hmac.Equal([]byte(want), []byte(signature)) {
 		return ErrRefused
 	}
@@ -106,7 +117,9 @@ func (v *Verifier) Verify(method, path, at, nonce, signature string, body []byte
 			delete(v.seen, n)
 		}
 	}
-	if sent.Before(now.Add(-Window)) || sent.After(now.Add(Window)) {
+	// The nonces of the process before this one are gone: a request signed before this process
+	// started is refused, so a restart forgets no replay.
+	if sent.Before(v.started) || sent.Before(now.Add(-Window)) || sent.After(now.Add(Window)) {
 		return ErrRefused
 	}
 	if _, replay := v.seen[nonce]; replay {

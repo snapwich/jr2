@@ -108,16 +108,18 @@ const digest = (body: string): string => createHash("sha256").update(body, "utf8
 const mac = (key: Buffer | string, parts: string[]): string =>
   createHmac("sha256", key).update(parts.join("\n"), "utf8").digest("base64url");
 
-/** A request's signature: over its method, path, time, nonce and the sha-256 of its body. */
+/** A request's signature: over its method, the address it is sent to (the replica's `host:port`),
+ * its path, time, nonce and the sha-256 of its body. */
 export function requestMac(
   key: Buffer | string,
   method: string,
+  address: string,
   path: string,
   time: string,
   nonce: string,
   body: string,
 ): string {
-  return mac(key, ["jr2-effector-request", method, path, time, nonce, digest(body)]);
+  return mac(key, ["jr2-effector-request", method, address, path, time, nonce, digest(body)]);
 }
 
 /** An answer's signature: over its status, the request's method, path and nonce, and its body. */
@@ -206,7 +208,9 @@ export function createEffectorClient(opts: {
       "content-type": "application/json",
       [HEADER_TIME]: time,
       [HEADER_NONCE]: nonce,
-      [HEADER_SIGNATURE]: requestMac(key, method, path, time, nonce, body),
+      // Signed for the replica it is sent to: another replica, or this one after a restart, refuses
+      // it sent again (ADR-0068).
+      [HEADER_SIGNATURE]: requestMac(key, method, address, path, time, nonce, body),
     };
     const answer = await transport.send(address, method, path, headers, body, signal);
     const signature = answer.headers[HEADER_SIGNATURE] ?? "";

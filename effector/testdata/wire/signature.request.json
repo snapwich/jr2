@@ -1,9 +1,10 @@
 {
   "key": "anIyLWdvbGRlbi1rZXktbm90LWEtc2VjcmV0LTAxMjM=",
   "method": "POST",
+  "address": "10.244.0.17:8082",
   "path": "/effects/3f1c7a52-1b2d-4c8e-9a0f-6b5d4e3c2a19",
   "time": "1760000000000",
   "nonce": "c2lnbmF0dXJlLW5vbmNlLTAx",
   "body": "{\"kind\":\"http\",\"method\":\"GET\",\"url\":[{\"text\":\"https://api.example.com/v1\"}],\"timeoutMs\":30000,\"maxBody\":65536}",
-  "signature": "8rGOZJfxI59Z4d5xcrGzCXINjTTqTMjNAGT54G3efE0"
+  "signature": "OAEp4loJ56yNWwwYxYabVmX_IZnwzMWjYQ0gdNjS_Eo"
 }
